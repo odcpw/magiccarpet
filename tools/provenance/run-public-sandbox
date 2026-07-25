@@ -1,0 +1,83 @@
+#!/bin/sh
+set -eu
+
+usage() {
+    echo "usage: run-public-sandbox PUBLIC_ROOT COMMAND [ARG ...]" >&2
+    exit 64
+}
+
+[ "$#" -ge 2 ] || usage
+
+public_root=$1
+shift
+
+case "$public_root" in
+    /*) ;;
+    *) echo "PUBLIC_ROOT must be absolute" >&2; exit 64 ;;
+esac
+
+[ -d "$public_root" ] || {
+    echo "PUBLIC_ROOT is not a directory: $public_root" >&2
+    exit 66
+}
+
+resolved_root=$(realpath -- "$public_root")
+private_root=/home/oliver/Projects/odcpw/magiccarpet
+expected_root=/home/oliver/Projects/odcpw/carpet-flight
+
+case "$resolved_root" in
+    "$private_root"|"$private_root"/*)
+        echo "refusing to expose the private lab as a public workspace" >&2
+        exit 77
+        ;;
+esac
+
+[ "$resolved_root" = "$expected_root" ] || {
+    echo "refusing unapproved public root: $resolved_root" >&2
+    echo "approved root: $expected_root" >&2
+    exit 77
+}
+
+scanner="$private_root/tools/provenance/audit_public_tree.py"
+policy="$private_root/docs/provenance/public-boundary-policy.json"
+asset_manifest="$resolved_root/provenance/assets.json"
+
+if [ -f "$asset_manifest" ]; then
+    resolved_manifest=$(realpath -- "$asset_manifest")
+    case "$resolved_manifest" in
+        "$resolved_root"/*) ;;
+        *)
+            echo "asset manifest escapes the public root" >&2
+            exit 77
+            ;;
+    esac
+    /usr/bin/python3 "$scanner" "$resolved_root" \
+        --policy "$policy" \
+        --asset-manifest "$resolved_manifest"
+else
+    /usr/bin/python3 "$scanner" "$resolved_root" --policy "$policy"
+fi
+
+exec bwrap \
+    --unshare-all \
+    --die-with-parent \
+    --new-session \
+    --clearenv \
+    --ro-bind /usr /usr \
+    --symlink usr/bin /bin \
+    --symlink usr/lib /lib \
+    --symlink usr/lib64 /lib64 \
+    --symlink usr/sbin /sbin \
+    --dir /etc \
+    --ro-bind /etc/ld.so.cache /etc/ld.so.cache \
+    --ro-bind /etc/localtime /etc/localtime \
+    --tmpfs /tmp \
+    --dir /workspace \
+    --bind "$resolved_root" /workspace \
+    --proc /proc \
+    --dev /dev \
+    --chdir /workspace \
+    --setenv HOME /tmp \
+    --setenv PATH /usr/bin:/bin \
+    --setenv PUBLIC_WORKSPACE /workspace \
+    -- "$@"

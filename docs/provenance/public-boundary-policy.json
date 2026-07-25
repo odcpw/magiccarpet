@@ -1,0 +1,282 @@
+{
+  "schema_version": 1,
+  "policy_id": "PUBLIC-BOUNDARY-0001",
+  "forbidden_path_fragments": [
+    ".beads",
+    ".codex",
+    ".agents",
+    "analysis/private",
+    "research/downloads",
+    "research/private",
+    "research/transfer",
+    "Magic Carpet 2 GOG",
+    "Magic Carpet [GOG]"
+  ],
+  "forbidden_suffixes": [
+    ".7z",
+    ".a",
+    ".apk",
+    ".appimage",
+    ".bin",
+    ".bz2",
+    ".cab",
+    ".class",
+    ".com",
+    ".core",
+    ".cue",
+    ".dat",
+    ".deb",
+    ".dll",
+    ".dmp",
+    ".dylib",
+    ".elf",
+    ".exe",
+    ".gbf",
+    ".gz",
+    ".gpr",
+    ".gzf",
+    ".iso",
+    ".jar",
+    ".lib",
+    ".lz4",
+    ".msi",
+    ".o",
+    ".pak",
+    ".pdb",
+    ".rar",
+    ".rep",
+    ".rpm",
+    ".rom",
+    ".sav",
+    ".so",
+    ".tar",
+    ".tbz2",
+    ".tgz",
+    ".trace",
+    ".unitypackage",
+    ".wad",
+    ".wasm",
+    ".xz",
+    ".zst",
+    ".zip"
+  ],
+  "forbidden_directory_suffixes": [
+    ".rep"
+  ],
+  "manifest_required_suffixes": [
+    ".3ds",
+    ".aiff",
+    ".avi",
+    ".blend",
+    ".bmp",
+    ".fbx",
+    ".flac",
+    ".gif",
+    ".glb",
+    ".gltf",
+    ".jpeg",
+    ".jpg",
+    ".m4a",
+    ".mkv",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".obj",
+    ".ogg",
+    ".otf",
+    ".pdf",
+    ".png",
+    ".psd",
+    ".svg",
+    ".tga",
+    ".tif",
+    ".tiff",
+    ".ttf",
+    ".wav",
+    ".webm",
+    ".webp",
+    ".woff",
+    ".woff2"
+  ],
+  "forbidden_magic": [
+    "ar",
+    "bzip2",
+    "cab",
+    "coff",
+    "elf",
+    "gzip",
+    "lz4",
+    "macho",
+    "pe",
+    "rar",
+    "seven_zip",
+    "tar",
+    "wasm",
+    "xz",
+    "zstd",
+    "zip"
+  ],
+  "manifest_required_magic": [
+    "blend",
+    "dds",
+    "flac",
+    "gif",
+    "glb",
+    "iso_bmff",
+    "jpeg",
+    "matroska",
+    "mp3",
+    "ogg",
+    "pdf",
+    "png",
+    "psd",
+    "riff",
+    "tiff",
+    "truetype",
+    "webp",
+    "woff"
+  ],
+  "forbidden_text_fragments": [
+    "/home/oliver/Games/gog/magic-carpet",
+    "/home/oliver/Projects/odcpw/magiccarpet",
+    "research/private/",
+    "analysis/private/"
+  ],
+  "forbidden_sha256": [
+    {
+      "sha256": "595f7ec8e1fd7745c6c34d31885ce65a779ccf146c5f01144fc95b74aa0999cb",
+      "source_id": "OWN-MC1-GOG"
+    },
+    {
+      "sha256": "2e4df4bd4ddf47b53f6def899b153a753d412ff7dd3177ff1bfb92420ef6aa89",
+      "source_id": "OWN-MC1-MANUAL"
+    },
+    {
+      "sha256": "b990a471c4b49e8d0d0a59588f67c844a6ede7208ce7c711e82d0d4f781304b2",
+      "source_id": "OWN-MC2-GOG-200006"
+    },
+    {
+      "sha256": "93d3bc28396c8b156be4458a2437a0a541086daaf00a588441330a5546ff6183",
+      "source_id": "OWN-MC2-AVATAR-200006"
+    },
+    {
+      "sha256": "832d62adb222464439ee5ef6eb160cc3db5b74d6062909e6ac32b48932c30e1f",
+      "source_id": "OWN-MC2-REFCARD-200006"
+    },
+    {
+      "sha256": "3da1615427621c5063670af3d51424e9590e07ae4c219b9a95d28e4e92c365f1",
+      "source_id": "OWN-MC2-MANUAL-200006"
+    },
+    {
+      "sha256": "7aadf5c22c1c7214a2377d639138fe26217bac509d19f4fd2d6d166e57be334c",
+      "source_id": "OBS-MC2-CONTACT-20260722"
+    },
+    {
+      "sha256": "a2d2cae4299af6fd326bdf2afe84ce1a865e7cb08271a5aa4f11a5b8486d064e",
+      "source_id": "OBS-MC2-FRAME-000230"
+    },
+    {
+      "sha256": "4476899d3fd55d12b654bfb2deae54b3df14ea1353000c69117e32cad4f353d7",
+      "source_id": "OBS-MC2-FRAME-000440"
+    },
+    {
+      "sha256": "76907e4904d9ea8b7f2a221674c597c1a136170a5ef00c4cbebb6bae8398db05",
+      "source_id": "OBS-MC2-FRAME-000940"
+    },
+    {
+      "sha256": "9484ade9093c4462fca1f854e09f50bf705618ee67fe0b1432e48a7b9e66af27",
+      "source_id": "OBS-MC2-FRAME-002100"
+    },
+    {
+      "sha256": "3e88c46de16d26047173b59f29193d235b4ce3b674f130506c318a38a057e6dc",
+      "source_id": "OBS-MC2-FRAME-002330"
+    },
+    {
+      "sha256": "464bde29a176970d9a73e6533a79f9f40a7fe86ffb7f4dbd6669230531946bb7",
+      "source_id": "OBS-MC2-FRAME-004300"
+    },
+    {
+      "sha256": "9973e6a4c477594f656bcceae9da02c5f0532c3d48bbe5d38271fa0e3f9a73dc",
+      "source_id": "OBS-MC2-FRAME-004900"
+    },
+    {
+      "sha256": "a10cdb3778dcbcc746fb4f7b3750f9d7e5d2e2aa0bf4ee0b3cb2572cf9613a0a",
+      "source_id": "OBS-MC2-FRAME-010400"
+    },
+    {
+      "sha256": "bec61b03451b97c04aefcc3e4b64723967b7d958937c3ca0ddc5b33e566ae76e",
+      "source_id": "OBS-MC2-FRAME-012400"
+    },
+    {
+      "sha256": "df62dce5131d87961395276fb1ff4e8d006bb9e999b7ce7c060f55db9458625c",
+      "source_id": "OBS-MC2-FRAME-013000"
+    },
+    {
+      "sha256": "f1d5f95f2b401f9df88b9a4a15dcbc513d8086b5f9a7b6e5d54168862669581c",
+      "source_id": "OBS-MC2-FRAME-014300"
+    },
+    {
+      "sha256": "26256018650928cc781a539ced25bd77a330d65898eebb5f48c1ef7b81ffc8a8",
+      "source_id": "OBS-MC2-FRAME-014800"
+    },
+    {
+      "sha256": "958872b9fe760ef1b90ae2e86b2619b0d8fa36f8124342dddf54abbfe112027c",
+      "source_id": "OBS-MC2-FRAME-020800"
+    },
+    {
+      "sha256": "01ae155d6f999dcb64445e6fb44962d46357e5a3de35ec021f10e8e604160d3a",
+      "source_id": "OBS-MC2-FRAME-021800"
+    },
+    {
+      "sha256": "3cdfb4845a4b3c94acd418812819aeff6c1817b3d68caf08e9f0c00647972c6f",
+      "source_id": "OBS-MC2-FRAME-023300"
+    },
+    {
+      "sha256": "5cbc0bb1e1c6b92ad371dfe4b80f792d898a5f5e74c0893d0e25f381b95aca5c",
+      "source_id": "OBS-MC2-FRAME-024000"
+    },
+    {
+      "sha256": "5c6a32571ad0d70a8326539661e4b5f93a0bb2934efa4b0f9c43a615cbc2c78b",
+      "source_id": "PRIVATE-MC2-LONGPLAY-ANALYSIS"
+    },
+    {
+      "sha256": "f545457a54844b56af134b599ab56dff982bf096576e91988ee99648f1c800ff",
+      "source_id": "PRIVATE-MC2-MANUAL-INVENTORY"
+    },
+    {
+      "sha256": "682acc453e7468b6f2346db6e2212deeaa37824f02b05546df5c66d3d48834b6",
+      "source_id": "PRIVATE-SOURCE-REGISTER-20260723"
+    },
+    {
+      "sha256": "9e08da13cd6c1c3fd4fade46ed22ae45a7e8c89f5d136e7db9a799c37dba3355",
+      "source_id": "OWN-MC2-INSTALLED-MC2DAT-PREMANIFEST"
+    },
+    {
+      "sha256": "f97fa59fd80e59ce75c976ddd39fe4993aec09f44d8a768e569075f87046744b",
+      "source_id": "OWN-MC1-INSTALLED-GAMEGOG-PREMANIFEST"
+    },
+    {
+      "sha256": "9cff7deb8ac07488aa44d9e1d5fb0eae73ee3ef362f1951e5672e3203a4333d7",
+      "source_id": "OWN-MC2-INSTALLED-MANUAL"
+    },
+    {
+      "sha256": "94cf5b91b49dfdd0c104eeae8a3326efe904c195188b09ba38eb1d457a7359ee",
+      "source_id": "OWN-MC2-INSTALLED-REFCARD"
+    }
+  ],
+  "required_asset_fields": [
+    "path",
+    "sha256",
+    "class",
+    "author",
+    "source",
+    "license",
+    "modification",
+    "attribution",
+    "redistribution"
+  ],
+  "allowed_asset_classes": [
+    "ORIGINAL_PROJECT",
+    "THIRD_PARTY_LICENSED"
+  ]
+}

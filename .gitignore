@@ -1,0 +1,93 @@
+# Local agent, task-graph, editor, and build state.
+/.agents/
+/.beads/
+/.bv/
+/.codex/
+/.ntm/
+/.repo_janitor_workspace/
+/log.txt
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+
+# This workspace is the private reference lab. Never publish owned game
+# material, analyzer projects, or retained private evidence.
+/Magic Carpet 2 GOG/
+/Magic Carpet \[GOG\]/
+/research/downloads/
+/research/protocol-dry-runs/
+/research/transfer/
+/analysis/private/
+/tmp/
+
+# Private evidence is deny-by-default. Only authored source, tests, and
+# operational documentation for the private lab are tracked below.
+/research/private/*
+!/research/private/boundary/
+!/research/private/lab-storage/
+!/research/private/protocol-smoke/
+!/research/private/registry/
+!/research/private/remc2-atlas/
+!/research/private/remc2-audio/
+!/research/private/remc2-frame-trace/
+!/research/private/remc2-level-asset-closure/
+!/research/private/remc2-level-exporter/
+!/research/private/remc2-sim-rs/
+!/research/private/remc2-unity-asset-cache/
+!/research/private/remc2-unity-native/
+!/research/private/tools/
+!/research/private/wasm-probes/
+
+# Only the remote-service policy is versioned from the boundary evidence.
+/research/private/boundary/*
+!/research/private/boundary/approved-services.md
+
+# Generated/private atlas data and owned asset extracts.
+/research/private/remc2-atlas/generated/
+/research/private/remc2-atlas/semantics/generated/
+/research/private/remc2-atlas/semantics/owned-assets/
+
+# Rust, web, probe, and native build products.
+**/target/
+**/node_modules/
+**/dist/
+**/artifacts/
+*.so
+*.a
+*.o
+
+# Unity-generated state and players. Authored Assets, Packages, and
+# ProjectSettings remain versioned.
+/research/private/remc2-unity-native/Builds/
+/research/private/remc2-unity-native/Library/
+/research/private/remc2-unity-native/Logs/
+/research/private/remc2-unity-native/Temp/
+/research/private/remc2-unity-native/UserSettings/
+/research/private/remc2-unity-native/mono_crash.*
+
+# Ghidra project state and common private analysis outputs.
+*.gpr
+*.rep/
+*.gbf
+*.gzf
+*.trace
+*.dmp
+*.core
+
+# Defense in depth only. This file is not the publication boundary; the whole
+# current root is private and must never become the public implementation repo.
+*.exe
+*.com
+*.dll
+*.iso
+*.cue
+*.bin
+*.rom
+*.pak
+*.wad
+*.dat
+*.sav
+*.zip
+*.rar
+*.7z
