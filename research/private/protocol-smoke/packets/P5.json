@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "packet_id": "PKT-SYNTH-P5-0001",
+  "phase": "P5",
+  "campaign_id": "CAM-SYNTH-P5-0001",
+  "question_id": "Q-CAM-SYNTH-P5-0001-01",
+  "experiment_id": "EXP-CAM-SYNTH-P5-0001-001",
+  "outcome": "Reject contaminated transfer material, enforce reviewer independence, consume a clean exact transfer, and atomically revoke its receipt.",
+  "hypotheses": [
+    {
+      "id": "HYP-CAM-SYNTH-P5-0001-001",
+      "statement": "The clean fixture contains no original payload and is eligible for a Green synthetic vector."
+    },
+    {
+      "id": "HYP-CAM-SYNTH-P5-0001-002",
+      "statement": "The contaminated fixture is eligible for a Green synthetic vector."
+    }
+  ],
+  "fixtures": {
+    "fixtures/transfer_oracle.py": "5e695c0bdf28e0e591280da3cf224aa2de394bcd90907c620f20743855264de3"
+  },
+  "runs": [
+    {
+      "run_id": "RUN-EXP-CAM-SYNTH-P5-0001-001-001",
+      "arguments": ["--variant", "clean"],
+      "expected_exit": 0,
+      "expected_json": {"accepted": true, "contains_original_payload": false, "traffic_light": "GREEN", "variant": "clean"},
+      "terminal_disposition": "SUCCESS"
+    },
+    {
+      "run_id": "RUN-EXP-CAM-SYNTH-P5-0001-001-002",
+      "arguments": ["--variant", "contaminated"],
+      "expected_exit": 0,
+      "expected_json": {"accepted": true, "contains_original_payload": true, "traffic_light": "RED", "variant": "contaminated"},
+      "terminal_disposition": "SUCCESS"
+    }
+  ],
+  "negative_cases": [
+    "A contaminated vector cannot be accepted and its transfer cannot be approved.",
+    "Self-review and inherited-context review cannot be recorded.",
+    "A consumed transfer cannot be revoked while its receipt remains CURRENT."
+  ],
+  "allowed_reads": ["this packet", "declared fixture", "registry implementation", "Python interpreter", "/etc/os-release"],
+  "denied": ["owned MC2 paths or bytes", "network", "remote models", "Ghidra", "Beads mutation", "workspace writes outside the caller-supplied private output"],
+  "reset_tier": "COLD_LAUNCH",
+  "input_determinism": "D2_REPLAYED_HOST",
+  "stopping_rule": "Execute clean and contaminated fixtures once and apply each lifecycle candidate once; no retry."
+}

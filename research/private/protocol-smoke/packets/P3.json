@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "packet_id": "PKT-SYNTH-P3-0001",
+  "phase": "P3",
+  "campaign_id": "CAM-SYNTH-P3-0001",
+  "question_id": "Q-CAM-SYNTH-P3-0001-01",
+  "experiment_id": "EXP-CAM-SYNTH-P3-0001-001",
+  "outcome": "Correlate static decorator markers, function bodies, and a table with runtime tags.",
+  "hypotheses": [
+    {
+      "id": "HYP-CAM-SYNTH-P3-0001-001",
+      "statement": "Static marker/table entries identify the runtime tag and value."
+    },
+    {
+      "id": "HYP-CAM-SYNTH-P3-0001-002",
+      "statement": "Function names themselves are the emitted runtime tags."
+    }
+  ],
+  "fixtures": {
+    "fixtures/correlation_oracle.py": "64f891cb35c564f0ea52e5be25b7ad86eb18ba8c05d70535dbf6d009a144a1b4",
+    "fixtures/correlation_table.json": "9fd8732b03836eaaa36a458b4b9c36966483b90a9f6d7a29c9d0873697644a2e"
+  },
+  "runs": [
+    {
+      "run_id": "RUN-EXP-CAM-SYNTH-P3-0001-001-001",
+      "arguments": ["--marker", "ALPHA"],
+      "expected_exit": 0,
+      "expected_json": {"accepted": true, "marker": "ALPHA", "runtime_tag": "LIFT", "value": 3},
+      "terminal_disposition": "SUCCESS"
+    },
+    {
+      "run_id": "RUN-EXP-CAM-SYNTH-P3-0001-001-002",
+      "arguments": ["--marker", "OMEGA"],
+      "expected_exit": 0,
+      "expected_json": {"accepted": true, "marker": "OMEGA", "runtime_tag": "DROP", "value": -2},
+      "terminal_disposition": "SUCCESS"
+    },
+    {
+      "run_id": "RUN-EXP-CAM-SYNTH-P3-0001-001-003",
+      "arguments": ["--marker", "UNKNOWN"],
+      "expected_exit": 2,
+      "expected_json": {"accepted": false, "error": "unknown_marker"},
+      "terminal_disposition": "SUCCESS"
+    }
+  ],
+  "negative_cases": [
+    "A deliberately wrong expected table hash aborts before append and preserves the registry bytes/root.",
+    "An observation ID that embeds a different run than payload.run_id is rejected without append."
+  ],
+  "allowed_reads": ["this packet", "declared fixtures", "registry implementation", "Python interpreter", "/etc/os-release"],
+  "denied": ["owned MC2 paths or bytes", "network", "remote models", "Ghidra", "Beads mutation", "workspace writes outside the caller-supplied private output"],
+  "reset_tier": "COLD_LAUNCH",
+  "input_determinism": "D2_REPLAYED_HOST",
+  "stopping_rule": "Parse the static fixtures once and execute each prescribed runtime case once; no retry."
+}

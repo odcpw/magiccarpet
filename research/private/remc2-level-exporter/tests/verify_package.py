@@ -1,0 +1,659 @@
+#!/usr/bin/env python3
+"""Strict verifier for private mc2-owner-level-export/v1 and v2 packages."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import stat
+import struct
+import sys
+
+SCHEMA_V1 = "mc2-owner-level-export/v1"
+SCHEMA_V2 = "mc2-owner-level-export/v2"
+SCHEMAS = {SCHEMA_V1, SCHEMA_V2}
+STATE_SEQUENCE = (
+    "remc2-regression-test/memimages/regressions/level1/"
+    "sequence-002285FF-00356038.bin"
+)
+STATE_SEQUENCE_SHA256 = (
+    "021ab6f582cae920546dc3bcf55b06d00937fea5ddaabfeae079c0368b314e7f"
+)
+TERRAIN_ORACLE_HASHES = {
+    "type": "59a9d0c19d12fc068bbd5e8364a66db5519040ceacb2aa008de31de7c5538a73",
+    "height": "50f3a45214f435ac3b8423254a69b7cc87b80a8039085c25a0fe2033eed1ecba",
+    "shade": "6e15d0bebdbbd89ab82eae6dbb1c3e8f1fdc000449aa35eb99a11a1d9bca139c",
+    "angle": "342e64a393dc8b35518d0e10753734cbc1d2006ce85dcff1562c8a34172ec02f",
+    "secondary_cave": "944112ef6eb54e042889c9cc841ed1d7bdb129c38c1c61ce4c8b8e81589f466b",
+    "entity_indices": "d4a35266bee1854dfb8b4fb6c9175549a12e0de2edafff667cc0872d4cb3e72f",
+}
+REQUIRED_FILES = {
+    "authored-level.bin",
+    "entities.bin",
+    "players.bin",
+    "presentation.bin",
+    "runtime.bin",
+    "terrain.bin",
+}
+STATE_HASH_ORDER = [
+    "entity_index:u16", "position.x:u16", "position.y:u16", "position.z:i16",
+    "yaw:i16", "display_pitch:i16", "effective_pitch:i16",
+    "roll_accumulator:i16", "pitch_accumulator:i16", "target_speed:i16",
+    "speed_changed_flag:i16", "actual_speed:i16", "strafe_speed:i16",
+    "roll_delta:i16", "pitch_delta:i16", "recoil_speed:i16",
+    "recoil_yaw:i16", "impulse_x:i16", "impulse_y:i16", "impulse_z:i16",
+    "entity_fov:i16", "water_counter:i8", "speed_modifier:u8",
+    "speed_modifier_counter:i8", "immobilize_counter:i8",
+    "immobilize_subcounter:i8", "tether_prior_distance:i32",
+    "tether_target_index:u16", "tether_holder_index:u16", "tether_tier:u16",
+    "speed_spell_holder_index:u16", "entity_phase:u8",
+    "ambient_loop_5_distance:i32", "ambient_loop_31_distance:i32",
+    "player_color_index:u8", "music_countdown:i16", "recovery_latch:u8",
+    "skip_flight_once:u8", "tick:u64",
+]
+
+
+def expected_field_mappings() -> dict:
+    mappings = {}
+    player_fields = {
+        "entity_index": (4, "u16_le"),
+        "effective_pitch": (38, "i16_le"),
+        "roll_accumulator": (46, "i16_le"),
+        "pitch_accumulator": (48, "i16_le"),
+        "target_speed": (20, "i16_le"),
+        "strafe_speed": (22, "i16_le"),
+        "roll_delta": (16, "i16_le"),
+        "pitch_delta": (18, "i16_le"),
+        "recoil_speed": (32, "i16_le"),
+        "recoil_yaw": (34, "i16_le"),
+        "impulse_x": (54, "i16_le"),
+        "impulse_y": (56, "i16_le"),
+        "impulse_z": (58, "i16_le"),
+        "speed_modifier": (44, "u8"),
+        "speed_modifier_counter": (45, "i8"),
+        "ambient_loop_5_distance": (565, "i32_le"),
+        "ambient_loop_31_distance": (569, "i32_le"),
+        "player_color_index": (40, "u8_low_of_i16_le"),
+    }
+    for field, (offset, encoding) in player_fields.items():
+        mappings[field] = {
+            "kind": "exported_field",
+            "file": "players.bin",
+            "record": "local_player_slot",
+            "offset": offset,
+            "encoding": encoding,
+        }
+    mappings["ambient_loop_5_distance"]["source_field"] = "dword_0x19A_410"
+    mappings["ambient_loop_31_distance"]["source_field"] = "maxDistance_0x19E_414"
+    entity_fields = {
+        "position.x": (80, "u16_le"),
+        "position.y": (82, "u16_le"),
+        "position.z": (84, "i16_le"),
+        "yaw": (32, "i16_le"),
+        "display_pitch": (34, "i16_le"),
+        "actual_speed": (134, "i16_le"),
+        "entity_fov": (38, "i16_le"),
+        "entity_phase": (66, "u8"),
+    }
+    for field, (offset, encoding) in entity_fields.items():
+        mappings[field] = {
+            "kind": "entity_relation_field",
+            "file": "entities.bin",
+            "offset": offset,
+            "encoding": encoding,
+        }
+    for field, value in {
+        "speed_changed_flag": 0,
+        "water_counter": 0,
+        "immobilize_counter": 0,
+        "immobilize_subcounter": 0,
+        "tether_prior_distance": 0,
+        "tether_target_index": 0,
+        "tether_holder_index": 0,
+        "tether_tier": 0,
+        "speed_spell_holder_index": 0,
+        "music_countdown": 0,
+        "recovery_latch": False,
+        "tick": 0,
+    }.items():
+        mappings[field] = {"kind": "zero_at_seam", "value": value}
+    mappings["skip_flight_once"] = {
+        "kind": "entity_relation_bit",
+        "file": "entities.bin",
+        "offset": 17,
+        "bit": 3,
+    }
+    return mappings
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def u16(data: bytes, offset: int) -> int:
+    return struct.unpack_from("<H", data, offset)[0]
+
+
+def u32(data: bytes, offset: int) -> int:
+    return struct.unpack_from("<I", data, offset)[0]
+
+
+def decode(data: bytes, offset: int, encoding: str) -> int:
+    formats = {
+        "u8": "<B",
+        "i8": "<b",
+        "u16_le": "<H",
+        "i16_le": "<h",
+        "i32_le": "<i",
+    }
+    if encoding == "u8_low_of_i16_le":
+        assert data[offset + 1] == 0
+        return data[offset]
+    return struct.unpack_from(formats[encoding], data, offset)[0]
+
+
+def flatten_expected_state(state: dict) -> dict:
+    result = dict(state)
+    position = result.pop("position")
+    result.update({f"position.{axis}": value for axis, value in position.items()})
+    return result
+
+
+def state_hash(state: dict) -> str:
+    result = bytearray()
+
+    def add(name: str, width: int, signed: bool = False) -> None:
+        result.extend(int(state[name]).to_bytes(width, "little", signed=signed))
+
+    add("entity_index", 2)
+    add("position.x", 2)
+    add("position.y", 2)
+    add("position.z", 2, True)
+    for name in (
+        "yaw", "display_pitch", "effective_pitch", "roll_accumulator",
+        "pitch_accumulator", "target_speed", "speed_changed_flag",
+        "actual_speed", "strafe_speed", "roll_delta", "pitch_delta",
+        "recoil_speed", "recoil_yaw", "impulse_x", "impulse_y",
+        "impulse_z", "entity_fov",
+    ):
+        add(name, 2, True)
+    add("water_counter", 1, True)
+    add("speed_modifier", 1)
+    add("speed_modifier_counter", 1, True)
+    add("immobilize_counter", 1, True)
+    add("immobilize_subcounter", 1, True)
+    add("tether_prior_distance", 4, True)
+    for name in (
+        "tether_target_index", "tether_holder_index", "tether_tier",
+        "speed_spell_holder_index",
+    ):
+        add(name, 2)
+    add("entity_phase", 1)
+    add("ambient_loop_5_distance", 4, True)
+    add("ambient_loop_31_distance", 4, True)
+    add("player_color_index", 1)
+    add("music_countdown", 2, True)
+    add("recovery_latch", 1)
+    add("skip_flight_once", 1)
+    add("tick", 8)
+    value = 0xCBF29CE484222325
+    for byte in result:
+        value = ((value ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"{value:016x}"
+
+
+def verify_ambient_sequence(upstream_root: Path, manifest: dict) -> None:
+    path = upstream_root / STATE_SEQUENCE
+    assert path.is_file()
+    assert sha256(path) == STATE_SEQUENCE_SHA256
+    data = path.read_bytes()
+    frame_bytes = 224_790
+    assert len(data) == 20 * frame_bytes
+    observations = []
+    for frame_index in range(20):
+        frame = data[frame_index * frame_bytes : (frame_index + 1) * frame_bytes]
+        player_slot = u16(frame, 0x000C)
+        transient = 0x2BDE + player_slot * 0x084C + 0x03E6
+        observations.append(
+            (
+                player_slot,
+                struct.unpack_from("<i", frame, transient + 0x019A)[0],
+                struct.unpack_from("<i", frame, transient + 0x019E)[0],
+            )
+        )
+    assert observations == [(0, 2048, 1746)] * 20
+    assert manifest["reference"]["ambient_distance_sequence"] == {
+        "capture_site": "0x002285ff",
+        "frames": {"first": 0, "last": 19, "count": 20},
+        "local_player_slot": 0,
+        "dword_0x19A_410": {
+            "semantic": "ambient_loop_5_distance",
+            "value": 2048,
+            "invariant": True,
+        },
+        "maxDistance_0x19E_414": {
+            "semantic": "ambient_loop_31_distance",
+            "value": 1746,
+            "invariant": True,
+        },
+    }
+
+
+def verify_record_file(
+    path: Path,
+    magic: bytes,
+    expected_version: int,
+    expected_count: int,
+    manifest_record_size: int,
+) -> bytes:
+    data = path.read_bytes()
+    assert data[:4] == magic
+    assert u16(data, 4) == expected_version
+    record_size = u16(data, 6)
+    count = u32(data, 8)
+    assert record_size == manifest_record_size
+    assert count == expected_count
+    assert len(data) == 12 + record_size * count
+    return data
+
+
+def verify_reset_projection(
+    manifest: dict, players: bytes, entities: bytes, runtime: bytes
+) -> None:
+    contract = manifest["reset_projection"]
+    assert contract["schema"] == "mc2-flight-reset-projection/v1"
+    assert contract["source"] == {
+        "capture_frame": 0,
+        "local_player_slot": {
+            "file": "runtime.bin",
+            "offset": 16,
+            "encoding": "i16_le",
+            "minimum": 0,
+            "maximum": 7,
+        },
+        "entity_relation": (
+            "players.bin local-player record offset 4 is the zero-based "
+            "entities.bin record index"
+        ),
+    }
+    mappings = contract["field_mappings"]
+    assert mappings == expected_field_mappings()
+    expected = flatten_expected_state(contract["expected_state"])
+    assert set(mappings) == set(expected)
+    player_size = manifest["record_sizes"]["player"]
+    entity_size = manifest["record_sizes"]["entity"]
+    local_player_slot = struct.unpack_from("<h", runtime, 16)[0]
+    assert 0 <= local_player_slot <= 7
+    player_start = 12 + local_player_slot * player_size
+    entity_index = u16(players, player_start + 4)
+    assert 0 <= entity_index < manifest["counts"]["entity_slots"]
+    entity_start = 12 + entity_index * entity_size
+    assert entities[entity_start + 2] == 1
+    projected = {}
+    encoding_widths = {
+        "u8": 1, "i8": 1, "u16_le": 2, "i16_le": 2,
+        "i32_le": 4, "u8_low_of_i16_le": 2,
+    }
+    for field, mapping in mappings.items():
+        kind = mapping["kind"]
+        if kind == "zero_at_seam":
+            projected[field] = mapping["value"]
+        elif kind == "exported_field":
+            assert mapping["file"] == "players.bin"
+            assert mapping["record"] == "local_player_slot"
+            assert mapping["encoding"] in encoding_widths
+            assert (
+                0 <= mapping["offset"]
+                <= player_size - encoding_widths[mapping["encoding"]]
+            )
+            projected[field] = decode(
+                players, player_start + mapping["offset"], mapping["encoding"]
+            )
+        elif kind == "entity_relation_field":
+            assert mapping["file"] == "entities.bin"
+            assert mapping["encoding"] in encoding_widths
+            assert (
+                0 <= mapping["offset"]
+                <= entity_size - encoding_widths[mapping["encoding"]]
+            )
+            projected[field] = decode(
+                entities, entity_start + mapping["offset"], mapping["encoding"]
+            )
+        elif kind == "entity_relation_bit":
+            assert mapping["file"] == "entities.bin"
+            assert 0 <= mapping["offset"] < entity_size
+            projected[field] = bool(
+                entities[entity_start + mapping["offset"]] & (1 << mapping["bit"])
+            )
+        else:
+            raise AssertionError(f"unknown reset projection kind {kind!r}")
+    assert projected == expected
+    assert contract["state_hash"] == {
+        "api": "mc_sim_reset",
+        "schema": "mc2-flight-state-hash/fnv1a64-v1",
+        "algorithm": "FNV-1a 64-bit",
+        "byte_order": "little-endian",
+        "canonical_bytes": 81,
+        "ordered_fields": STATE_HASH_ORDER,
+        "hex": "9da4bc91af58f3ce",
+    }
+    assert state_hash(projected) == contract["state_hash"]["hex"]
+    assert contract["conformance_hash"] == {
+        "schema": "mc2-flight-conformance-hash/fnv1a64-v1",
+        "context": "NativeSim::owner_level_one",
+        "hex": "77b96b82492d6f4b",
+        "derivation": (
+            "sim-core conformance_hash over reset FlightState and sim-capi ABI "
+            "v1 owner-level-one FlightContext"
+        ),
+    }
+
+
+def verify_binary_structure(package: Path, manifest: dict) -> None:
+    authored = (package / "authored-level.bin").read_bytes()
+    assert len(authored) == 0x6604
+    assert authored[6] == 1
+
+    entities = verify_record_file(
+        package / "entities.bin",
+        b"MCE1",
+        1,
+        1000,
+        manifest["record_sizes"]["entity"],
+    )
+    entity_record_size = manifest["record_sizes"]["entity"]
+    assert entity_record_size == 176
+    for index in range(1000):
+        offset = 12 + index * entity_record_size
+        assert u16(entities, offset) == index
+        assert entities[offset + 2] in (0, 1)
+        next_relation = u32(entities, offset + 4)
+        assert 0 <= next_relation <= 1000
+        assert 0 <= u32(entities, offset + 164) <= 157
+        special_domain = entities[offset + 168]
+        special_relation = u32(entities, offset + 172)
+        assert special_domain in (0, 1, 2)
+        if special_domain == 0:
+            assert special_relation == 0
+        elif special_domain == 1:
+            assert 1 <= special_relation <= 8
+        else:
+            assert special_relation == 1
+
+    players = verify_record_file(
+        package / "players.bin",
+        b"MCP1",
+        2 if manifest["schema"] == SCHEMA_V2 else 1,
+        8,
+        manifest["record_sizes"]["player"],
+    )
+    player_record_size = manifest["record_sizes"]["player"]
+    expected_player_size = 573 if manifest["schema"] == SCHEMA_V2 else 565
+    assert player_record_size == expected_player_size
+    for index in range(8):
+        offset = 12 + index * player_record_size
+        assert u16(players, offset) == index
+        assert players[offset + 50 : offset + 54] == bytes(4)
+    if manifest["schema"] == SCHEMA_V2:
+        layout = manifest["record_layouts"]["player"]
+        assert layout == {
+            "index_offset": 0,
+            "normalized_host_time_offset": 50,
+            "legacy_v1_bytes": 565,
+            "ambient_loop_5_distance_offset": 565,
+            "ambient_loop_31_distance_offset": 569,
+            "record_bytes": 573,
+        }
+        assert struct.unpack_from("<i", players, 12 + 565)[0] == 2048
+        assert struct.unpack_from("<i", players, 12 + 569)[0] == 1746
+
+    runtime = (package / "runtime.bin").read_bytes()
+    assert runtime[:4] == b"MCR1"
+    assert u16(runtime, 4) == 1
+    assert u16(runtime, 6) == 0
+    divergences = manifest["reference"]["runtime_scalar_divergences"]
+    assert divergences == [
+        {
+            "field": "maptypeMusic_0x235",
+            "original_state_offset": "0x235",
+            "runtime_bin_offset": 32,
+            "exported_remc2_value": 1,
+            "preserved_dos_frames": "0..19",
+            "preserved_dos_value": 0,
+            "status": "presentation_environment_divergence",
+            "evidence": (
+                "native remc2 selects the Night music bank when music is enabled; "
+                "the oracle capture had music inactive"
+            ),
+        }
+    ]
+    assert u32(runtime, 32) == 1
+    if manifest["schema"] == SCHEMA_V2:
+        verify_reset_projection(manifest, players, entities, runtime)
+    else:
+        assert "reset_projection" not in manifest
+    runtime_layout = manifest["record_layouts"]["runtime"]
+    section_names = [
+        "stages",
+        "objectives",
+        "stage_variables",
+        "events",
+        "player_inputs",
+    ]
+    assert runtime_layout["scalar_prefix_bytes"] == runtime_layout["stages"]["offset"]
+    for current, following in zip(section_names, section_names[1:]):
+        section = runtime_layout[current]
+        assert (
+            section["offset"] + section["count"] * section["record_bytes"]
+            == runtime_layout[following]["offset"]
+        )
+    inputs = runtime_layout["player_inputs"]
+    assert inputs["offset"] + inputs["count"] * inputs["record_bytes"] == len(runtime)
+    assert runtime_layout["bytes"] == len(runtime)
+
+    stages = runtime_layout["stages"]
+    assert stages["record_bytes"] == 14
+    for index in range(stages["count"]):
+        offset = stages["offset"] + index * stages["record_bytes"]
+        stage_type = runtime[offset]
+        flags = runtime[offset + 1]
+        domain = runtime[offset + 6]
+        relation = u32(runtime, offset + 10)
+        if stage_type in (1, 2, 4):
+            assert domain == (2 if flags & 1 else 1)
+        elif stage_type == 3:
+            assert domain == (2 if flags & 1 else 0)
+        elif stage_type == 6:
+            assert domain == (3 if flags & 1 else 1)
+        else:
+            assert domain == 0
+        if domain == 1:
+            assert 0 <= relation <= 1200
+        elif domain == 2:
+            assert 0 <= relation <= 1000
+        elif domain == 3:
+            assert 0 <= relation < 1000
+
+    stage_vars = runtime_layout["stage_variables"]
+    assert stage_vars["record_bytes"] == 12
+    for index in range(stage_vars["count"]):
+        offset = stage_vars["offset"] + index * stage_vars["record_bytes"]
+        variable_type = runtime[offset]
+        flags = runtime[offset + 1]
+        domain = runtime[offset + 4]
+        relation = u32(runtime, offset + 8)
+        pointer_payload = (
+            (3 <= variable_type <= 5 or 8 <= variable_type <= 9)
+            and flags & 2 == 0
+        )
+        assert domain == (1 if pointer_payload else 0)
+        if domain == 1:
+            assert 0 <= relation <= 1000
+
+    events = runtime_layout["events"]
+    for index in range(events["count"]):
+        offset = events["offset"] + index * events["record_bytes"]
+        domain = runtime[offset + 10]
+        relation = u32(runtime, offset + 14)
+        assert domain == (1 if runtime[offset] != 0 else 0)
+        if domain == 1:
+            assert 0 <= relation <= 1000
+        else:
+            assert relation == 0
+
+    presentation = (package / "presentation.bin").read_bytes()
+    assert presentation[:4] == b"MCV1"
+    assert u16(presentation, 4) == 1
+    assert u16(presentation, 6) == 0
+    assert u32(presentation, 8) == 347
+    sprite_count_offset = 12 + 347 * 14
+    assert u32(presentation, sprite_count_offset) == 504
+    parameter_count_offset = sprite_count_offset + 4 + 504
+    assert u32(presentation, parameter_count_offset) == 157
+    assert len(presentation) == parameter_count_offset + 4 + 157 * 34
+
+    terrain = (package / "terrain.bin").read_bytes()
+    planes = manifest["reference"]["terrain_planes"]
+    assert [plane["name"] for plane in planes] == [
+        "type",
+        "height",
+        "shade",
+        "angle",
+        "secondary_cave",
+        "entity_indices",
+    ]
+    for plane in planes:
+        start = plane["offset"]
+        end = start + plane["bytes"]
+        exported_hash = hashlib.sha256(terrain[start:end]).hexdigest()
+        assert exported_hash == plane["exported_sha256"]
+        assert plane["oracle_sha256"] == TERRAIN_ORACLE_HASHES[plane["name"]]
+        if plane["name"] == "secondary_cave":
+            assert plane["stock_regression_compared"] is False
+            assert plane["source_status"] == "inactive_uninitialized_host_state"
+            assert plane["normalization"] == "inactive_non_regression_compared_zeroed"
+            assert exported_hash == hashlib.sha256(bytes(0x10000)).hexdigest()
+            assert plane["match"] is False
+        else:
+            assert plane["stock_regression_compared"] is True
+            assert plane["match"] is True
+            assert exported_hash == plane["oracle_sha256"]
+    assert manifest["reference"]["terrain_full_match"] is False
+
+
+def verify(
+    package: Path,
+    source_root: Path | None = None,
+    upstream_root: Path | None = None,
+) -> dict:
+    package = package.resolve(strict=True)
+    manifest_path = package / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["schema"] in SCHEMAS
+    assert manifest["level"]["external"] == 1
+    assert manifest["level"]["internal"] == 0
+    assert manifest["level"]["map_type"] == {"id": 1, "name": "Night"}
+    assert manifest["capture"] == {"frame": 0, "site": "0x002285ff"}
+    assert manifest["byte_order"] == "little-endian"
+    assert manifest["counts"]["authored_features"] == 1200
+    assert manifest["counts"]["entity_slots"] == 1000
+    assert manifest["counts"]["active_entities"] == 177
+    assert manifest["dimensions"]["terrain"] == [256, 256]
+    assert set(manifest["files"]) == REQUIRED_FILES
+    assert stat.S_IMODE(package.stat().st_mode) == 0o700
+    assert len(manifest["source"]["upstream_commit"]) == 40
+    assert len(manifest["source"]["upstream_worktree_diff_sha256"]) == 64
+    assert len(manifest["source"]["compiled_source_sha256"]) == 64
+    modified_hashes = {
+        entry["path"]: entry["sha256"] for entry in manifest["source"]["modified_files"]
+    }
+    for path in manifest["source"]["modified_paths"]:
+        assert path in modified_hashes
+        assert len(modified_hashes[path]) == 64
+    if source_root is not None or upstream_root is not None:
+        assert source_root is not None and upstream_root is not None
+        source_root = source_root.resolve(strict=True)
+        upstream_root = upstream_root.resolve(strict=True)
+        identity = []
+        for entry in manifest["source"]["compiled_files"]:
+            logical_path = entry["path"]
+            if logical_path.startswith("private-exporter/"):
+                path = source_root / logical_path.removeprefix("private-exporter/")
+            else:
+                path = upstream_root / logical_path
+            assert path.is_file()
+            actual = sha256(path)
+            assert actual == entry["sha256"]
+            identity.append(f"{logical_path}\\0{actual}\\n")
+        assert identity == sorted(identity)
+        aggregate = hashlib.sha256("".join(identity).encode()).hexdigest()
+        assert aggregate == manifest["source"]["compiled_source_sha256"]
+        if manifest["schema"] == SCHEMA_V2:
+            verify_ambient_sequence(upstream_root, manifest)
+
+    identity_rows = []
+    for relative_name in sorted(REQUIRED_FILES):
+        entry = manifest["files"][relative_name]
+        path = package / relative_name
+        assert path.is_file()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert path.stat().st_size == entry["bytes"]
+        actual_hash = sha256(path)
+        assert actual_hash == entry["sha256"]
+        identity_rows.append(f"{relative_name}\0{actual_hash}\0{entry['bytes']}\n")
+
+    expected_identity = hashlib.sha256("".join(identity_rows).encode()).hexdigest()
+    assert manifest["package_sha256"] == expected_identity
+    assert (package / "terrain.bin").stat().st_size == 0x70000
+    assert (package / "authored-level.bin").stat().st_size == 0x6604
+    verify_binary_structure(package, manifest)
+
+    raw_manifest = manifest_path.read_text(encoding="utf-8")
+    assert str(package) not in raw_manifest
+    assert "/home/" not in raw_manifest
+    assert "\\\\" not in raw_manifest
+    assert "missing:" not in raw_manifest
+    return manifest
+
+
+def compare(first: Path, second: Path) -> None:
+    first_files = sorted(path.relative_to(first) for path in first.rglob("*") if path.is_file())
+    second_files = sorted(path.relative_to(second) for path in second.rglob("*") if path.is_file())
+    assert first_files == second_files
+    for relative_name in first_files:
+        assert (first / relative_name).read_bytes() == (second / relative_name).read_bytes()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("package", type=Path, nargs="?")
+    parser.add_argument("--compare", type=Path, nargs=2, metavar=("FIRST", "SECOND"))
+    parser.add_argument("--source-root", type=Path)
+    parser.add_argument("--upstream-root", type=Path)
+    args = parser.parse_args()
+    try:
+        if args.compare:
+            first, second = (path.resolve(strict=True) for path in args.compare)
+            verify(first, args.source_root, args.upstream_root)
+            verify(second, args.source_root, args.upstream_root)
+            compare(first, second)
+            print("PASS: packages are structurally valid and byte-identical")
+        elif args.package:
+            verify(args.package, args.source_root, args.upstream_root)
+            print("PASS: package is structurally valid")
+        else:
+            parser.error("provide PACKAGE or --compare FIRST SECOND")
+    except (AssertionError, KeyError, OSError, json.JSONDecodeError, struct.error) as error:
+        print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

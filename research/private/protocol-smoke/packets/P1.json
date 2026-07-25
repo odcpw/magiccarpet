@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "packet_id": "PKT-SYNTH-P1-0001",
+  "phase": "P1",
+  "campaign_id": "CAM-SYNTH-P1-0001",
+  "question_id": "Q-CAM-SYNTH-P1-0001-01",
+  "experiment_id": "EXP-CAM-SYNTH-P1-0001-001",
+  "outcome": "Discriminate modulo-100 wrapping from saturation and quarantine a deliberate protocol deviation.",
+  "hypotheses": [
+    {
+      "id": "HYP-CAM-SYNTH-P1-0001-001",
+      "statement": "Accepted inputs use modulo 100 and report whether the unreduced sum crossed 100."
+    },
+    {
+      "id": "HYP-CAM-SYNTH-P1-0001-002",
+      "statement": "Accepted inputs saturate at 99."
+    }
+  ],
+  "fixtures": {
+    "fixtures/discrete_oracle.py": "cf6a3ac5852d4d2bc3d4afaa6ec08f9bf9709136780c72b0f1b96ecc294bc3c7"
+  },
+  "runs": [
+    {
+      "run_id": "RUN-EXP-CAM-SYNTH-P1-0001-001-001",
+      "arguments": ["--current", "10", "--increment", "5"],
+      "expected_exit": 0,
+      "expected_json": {"accepted": true, "current": 15, "wrapped": false},
+      "terminal_disposition": "SUCCESS"
+    },
+    {
+      "run_id": "RUN-EXP-CAM-SYNTH-P1-0001-001-002",
+      "arguments": ["--current", "97", "--increment", "5"],
+      "expected_exit": 0,
+      "expected_json": {"accepted": true, "current": 2, "wrapped": true},
+      "terminal_disposition": "SUCCESS"
+    },
+    {
+      "run_id": "RUN-EXP-CAM-SYNTH-P1-0001-001-003",
+      "arguments": ["--current", "50", "--increment", "0"],
+      "expected_exit": 2,
+      "expected_json": {"accepted": false, "error": "increment_out_of_range"},
+      "terminal_disposition": "SUCCESS"
+    },
+    {
+      "run_id": "RUN-EXP-CAM-SYNTH-P1-0001-001-004",
+      "arguments": ["--current", "96", "--increment", "5"],
+      "expected_exit": 0,
+      "expected_json": {"accepted": true, "current": 1, "wrapped": true},
+      "terminal_disposition": "INVALID",
+      "deviation_id": "PDEV-EXP-CAM-SYNTH-P1-0001-001-01",
+      "validity_disposition": "INVALID_CONFIRMATORY"
+    }
+  ],
+  "negative_cases": [
+    "The deviated run cannot transition to VALID when its preregistered terminal disposition is INVALID.",
+    "Invalidating the deviated run without revoking or retest-marking its dependent observation and measurement must fail atomically."
+  ],
+  "allowed_reads": ["this packet", "declared fixture", "registry implementation", "Python interpreter", "/etc/os-release"],
+  "denied": ["owned MC2 paths or bytes", "network", "remote models", "Ghidra", "Beads mutation", "workspace writes outside the caller-supplied private output"],
+  "reset_tier": "COLD_LAUNCH",
+  "input_determinism": "D2_REPLAYED_HOST",
+  "stopping_rule": "Execute each prescribed deterministic process exactly once; no retry."
+}

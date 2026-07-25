@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "packet_id": "PKT-SYNTH-P1-P5-FRESH-0001",
+  "outcome": "Recreate the exact deterministic P1-P5 private registry roots and terminal states from pinned known-source synthetic inputs.",
+  "prior_context": "Fresh worker receives this packet, expected.json, the five normative phase packets, declared fixtures, runner, registry implementation, interpreter identity, and no prior results.",
+  "preconditions": [
+    "Run from /home/oliver/Projects/odcpw/magiccarpet.",
+    "The caller-supplied output directory /tmp/mc-protocol-smoke-fresh-worker does not exist.",
+    "Use one local worker and no retry."
+  ],
+  "exact_command": "PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3.14 research/private/protocol-smoke/runner.py --output-dir /tmp/mc-protocol-smoke-fresh-worker",
+  "manifest_source": "research/private/protocol-smoke/expected.json artifact_sha256",
+  "success": [
+    "All pinned input hashes match before execution.",
+    "All five phase summaries exactly match expected.json.",
+    "Every expected rejection preserves byte-identical events.jsonl and root.",
+    "All generated directories are mode 0700 and files mode 0600."
+  ],
+  "allowed_reads": [
+    "research/private/protocol-smoke",
+    "research/private/registry/registry.py",
+    "/usr/bin/python3.14",
+    "/etc/os-release"
+  ],
+  "denied": [
+    "owned MC2 paths or bytes",
+    "network",
+    "remote models",
+    "Ghidra",
+    "Beads mutation",
+    "workspace writes outside the caller-supplied private output"
+  ],
+  "cleanup": "After recording the sanitized result, delete only the exact caller-supplied /tmp/mc-protocol-smoke-fresh-worker directory.",
+  "scope": "Synthetic protocol and registry qualification only; never MC2 evidence or implementation input."
+}

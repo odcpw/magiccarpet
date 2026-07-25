@@ -1,0 +1,327 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:magiccarpet:private-registry:event:v1",
+  "title": "Behavioral reverse-engineering registry event",
+  "$comment": "CREATE payload fields, type-specific hashed detail manifests, semantic dependency types, nested parent IDs, review targets, and lifecycle gates are closed by registry.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "entity_type",
+    "entity_id",
+    "entity_version",
+    "timestamp",
+    "author",
+    "classification",
+    "status",
+    "previous_event_hash",
+    "entity_previous_hash",
+    "payload",
+    "event_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^EVT-[0-9]{12}$"
+    },
+    "event_type": {
+      "enum": ["CREATE", "TRANSITION", "AMEND", "LINK"]
+    },
+    "entity_type": {
+      "enum": [
+        "source",
+        "build_manifest",
+        "environment",
+        "calibration",
+        "tool",
+        "campaign",
+        "question",
+        "experiment",
+        "worker_packet",
+        "run",
+        "capture",
+        "observation",
+        "measurement",
+        "hypothesis",
+        "mechanism",
+        "finding",
+        "contradiction",
+        "protocol_deviation",
+        "product_deviation",
+        "vector",
+        "transfer",
+        "review",
+        "receipt"
+      ]
+    },
+    "entity_id": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 180
+    },
+    "entity_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "classification": {
+      "enum": [
+        "PRIVATE_OWNED_REFERENCE",
+        "PRIVATE_ANALYSIS",
+        "PUBLIC_SAFE_CANDIDATE",
+        "SYNTHETIC_ONLY"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]*$"
+    },
+    "previous_event_hash": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "entity_previous_hash": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "payload": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "event_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "CREATE"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "detail"
+            ],
+            "properties": {
+              "detail": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "schema_id",
+                  "artifact_id",
+                  "manifest",
+                  "manifest_sha256"
+                ],
+                "properties": {
+                  "schema_id": {
+                    "type": "string",
+                    "pattern": "^mc2-behavioral-registry/[a-z_]+/0\\.2$"
+                  },
+                  "artifact_id": {
+                    "type": "string",
+                    "pattern": "^DET-"
+                  },
+                  "manifest": {
+                    "type": "object",
+                    "minProperties": 1
+                  },
+                  "manifest_sha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "TRANSITION"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["reason"],
+            "properties": {
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "independence": {
+                "enum": [
+                  "FRESH_NO_CONTEXT",
+                  "INDEPENDENT_ACCESS",
+                  "INHERITED_CONTEXT"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "allOf": [
+          {
+            "properties": {
+              "event_type": {
+                "const": "TRANSITION"
+              }
+            }
+          },
+          {
+            "properties": {
+              "entity_type": {
+                "enum": [
+                  "finding",
+                  "vector"
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "status": {
+                "enum": [
+                  "REVIEWED",
+                  "ACCEPTED"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity_type": {
+            "not": {
+              "enum": [
+                "transfer",
+                "review",
+                "receipt"
+              ]
+            }
+          },
+          "payload": {
+            "required": [
+              "reason",
+              "independence"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "AMEND"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "entity_type": {
+            "not": {
+              "enum": [
+                "transfer",
+                "review",
+                "receipt"
+              ]
+            }
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["reason", "changes"],
+            "properties": {
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "changes": {
+                "type": "object",
+                "minProperties": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_type": {
+            "const": "LINK"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "entity_type": {
+            "not": {
+              "enum": [
+                "transfer",
+                "review",
+                "receipt"
+              ]
+            }
+          },
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["target_id", "relation"],
+            "properties": {
+              "target_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "relation": {
+                "enum": [
+                  "supports",
+                  "contradicts",
+                  "falsifies",
+                  "refines",
+                  "supersedes",
+                  "rejects",
+                  "revokes",
+                  "verifies",
+                  "implements",
+                  "invalidates",
+                  "requires_retest"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

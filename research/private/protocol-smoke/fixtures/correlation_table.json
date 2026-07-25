@@ -1,0 +1,12 @@
+{
+  "ALPHA": {
+    "function": "alpha_handler",
+    "runtime_tag": "LIFT",
+    "value": 3
+  },
+  "OMEGA": {
+    "function": "omega_handler",
+    "runtime_tag": "DROP",
+    "value": -2
+  }
+}
