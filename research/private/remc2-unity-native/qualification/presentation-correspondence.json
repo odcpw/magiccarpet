@@ -1,0 +1,543 @@
+{
+  "schema": "mc2-private-level1-presentation-correspondence/v1",
+  "comparison_mode": "structural_only_independent_clocks_no_pixel_equivalence",
+  "reference_corpus": "level1-reference-corpus.json",
+  "reference_suite": "level1-idle-full-frame",
+  "unity_suite": "unity-synthetic-presentation-route",
+  "original_timeline": {
+    "checkpoint_ids": [
+      "remc2-idle-frame-00",
+      "remc2-idle-frame-08",
+      "remc2-idle-frame-19"
+    ],
+    "framebuffer_encoding": "320x200 row-major palette indices, top-to-bottom",
+    "display_decode": {
+      "authority": "base-PALN structural decode",
+      "palette_rgb6_path": "research/private/generated/level1-unity-asset-cache/palette/paln.rgb6",
+      "palette_rgb6_sha256": "6b55d0714b939e8bd25cef89466806299dbae933f2f2f96e0cf8402fc607d16f",
+      "palette_rgb8_path": "research/private/generated/level1-unity-asset-cache/palette/paln.rgb8",
+      "palette_rgb8_sha256": "7c4dfbbc6c0f68a99214fe3ca93d7a1cf0dd658e17a40ad7ecb302152264f507",
+      "conversion": "channel_rgb8 = channel_rgb6 * 4",
+      "active_dac_palette": "not captured at these checkpoints",
+      "claim_limit": "derived PNGs preserve exact framebuffer indices through the pinned base Night palette; they are not exact active-DAC RGB captures"
+    },
+    "derived_png_sha256": {
+      "remc2-idle-frame-00": "49cd1c2f34474de1d14fe246c0c9b431adb432b0dc86a38a0bf39739c937cfc7",
+      "remc2-idle-frame-08": "a263622f3b31ff9c455eac4eac26cf80e58fc0c01e51178917a1bf4096e11d8c",
+      "remc2-idle-frame-19": "ff35a867b296c27d36db7a63effbaf4e2d1fb805f0b9b374a5a017e32d2b4adc"
+    }
+  },
+  "unity_timeline": {
+    "checkpoint_ids": [
+      "unity-route-145",
+      "unity-route-163",
+      "unity-route-220",
+      "unity-route-303",
+      "unity-route-400"
+    ],
+    "authority": "synthetic-native-unity-regression",
+    "claim_limit": "deterministic Unity regression only; no remc2 pixel or clock equivalence"
+  },
+  "controlled_gallery": {
+    "authority": "controlled-debug-gallery",
+    "simulation_mutation": false,
+    "qualified_view": false,
+    "png_sha256": "90125b5655da20a54b8c5e08fe6ed8cdf0ced9945182a8dda8b9b7e496fc9563",
+    "source_player_sha256": "8027f7d1f9ae7dacfc826fb218adcc1ae7464af098a8a59397e7531c0f7ec0bc",
+    "owner_cache_content_sha256": "a5fdd9961ebd61566b0230e2dc1b468219dae74536279b51d89d9c2d6cc0ce81",
+    "selectors": [79, 152, 154, 154, 155, 180, 183, 199],
+    "views": 8,
+    "claim_limit": "controlled cache-bound geometry and owner-raster evidence; not an original or qualified simulation view"
+  },
+  "pairing": {
+    "one_to_one_pairs": [],
+    "rule": "the timelines are displayed independently; no reference frame is paired with a Unity route checkpoint"
+  },
+  "timelines": [
+    {
+      "timeline_id": "original-remc2-hook-002285ff",
+      "authority": "exact_build_bytes",
+      "clock_domain": "reference_frame",
+      "checkpoints": [
+        {"checkpoint_id": "remc2-idle-frame-00", "clock": 0, "source_turn": 1},
+        {"checkpoint_id": "remc2-idle-frame-08", "clock": 8, "source_turn": 9},
+        {"checkpoint_id": "remc2-idle-frame-19", "clock": 19, "source_turn": 20}
+      ]
+    },
+    {
+      "timeline_id": "unity-synthetic-route",
+      "authority": "synthetic-native-unity-regression",
+      "clock_domain": "unity_checkpoint_tick",
+      "checkpoints": [
+        {"checkpoint_id": "unity-route-145", "clock": 145, "native_render_tick": 144},
+        {"checkpoint_id": "unity-route-163", "clock": 163, "native_render_tick": 162},
+        {"checkpoint_id": "unity-route-220", "clock": 220, "native_render_tick": 219},
+        {"checkpoint_id": "unity-route-303", "clock": 303, "native_render_tick": 302},
+        {"checkpoint_id": "unity-route-400", "clock": 400, "native_render_tick": 399}
+      ]
+    },
+    {
+      "timeline_id": "controlled-debug-gallery",
+      "authority": "owner-cache-derived-controlled-debug",
+      "clock_domain": "none",
+      "simulation_mutation": false,
+      "checkpoints": []
+    },
+    {
+      "timeline_id": "owner-cache",
+      "authority": "content-addressed-owner-assets",
+      "clock_domain": "timeless",
+      "checkpoints": []
+    }
+  ],
+  "layers": [
+    {
+      "id": "original.framebuffer.indexed",
+      "classification": "exact",
+      "present": true,
+      "authority_domain": "original-remc2-hook-002285ff",
+      "exact_domain": "320x200 indexed framebuffer bytes only",
+      "exact_against": "pinned remc2 regression fixture slices",
+      "evidence": ["reference_corpus.original_framebuffer_sha256"],
+      "comparison_policy": "within-timeline-identity",
+      "not_claimed": ["active DAC RGB", "Unity pixel equality"]
+    },
+    {
+      "id": "owner.palette.base",
+      "classification": "exact",
+      "present": true,
+      "authority_domain": "owner-cache",
+      "exact_domain": "PALN-0 RGB6 owner bytes and validated VGA multiplication by four",
+      "exact_against": "content-addressed owner cache",
+      "evidence": ["palette/paln.rgb6", "palette/paln.rgb8"],
+      "comparison_policy": "structural-correspondence",
+      "not_claimed": ["per-frame active DAC palette"]
+    },
+    {
+      "id": "native.terrain.indexed",
+      "classification": "exact",
+      "present": true,
+      "authority_domain": "unity-synthetic-route",
+      "exact_domain": "qualified native ABI indexed terrain output and registered GPU transfer",
+      "exact_against": "same native build route registry",
+      "evidence": ["terrain index, coverage, layout, counter, and GPU hashes"],
+      "comparison_policy": "within-timeline-identity",
+      "not_claimed": ["original full-frame pixel equality"]
+    },
+    {
+      "id": "unity.route.pngs",
+      "classification": "exact",
+      "present": true,
+      "authority_domain": "unity-synthetic-route",
+      "exact_domain": "same-build deterministic Unity PNG and raw RGBA identities",
+      "exact_against": "two independent same-build Unity runs",
+      "evidence": ["five registered PNG and raw RGBA hashes"],
+      "comparison_policy": "within-timeline-identity",
+      "not_claimed": ["remc2 pixel equality", "remc2 clock equality"]
+    },
+    {
+      "id": "actors.reset_observed",
+      "classification": "adapted",
+      "present": true,
+      "authority_domain": "unity-synthetic-route",
+      "source_checkpoint": "Level 1 package reset plus same-tick native Goat-family rows",
+      "transform": "thirty-three Rust-owned GoatLive poses and lifecycle states plus thirty-one FrozenObserved owner-cache poses are presented as camera-facing Unity billboards",
+      "not_equivalent_to": ["live original sprite rasterization", "original software sprite depth ordering"],
+      "immutability_gate": "qualified autoplay reports exactly 33 GoatLive and 31 FrozenObserved owner sprites with zero unresolved debug sprites in both runs",
+      "evidence": ["native Goat bulk ABI", "entities/presentation.json", "both qualified autoplay logs"],
+      "comparison_policy": "structural-correspondence",
+      "not_claimed": ["live villagers", "live dolmens", "original software sprite depth behavior"]
+    },
+    {
+      "id": "hud.objective.reset",
+      "classification": "frozen",
+      "present": true,
+      "authority_domain": "owner-cache",
+      "source_checkpoint": "Level 1 initial objective selector 48",
+      "immutability_gate": "HUD verifier compares objective pixels at Unity route checkpoints 145 and 400",
+      "evidence": ["hud/level1.json", "owner HUD two-capture gate"],
+      "comparison_policy": "structural-correspondence",
+      "not_claimed": ["later objective progression"]
+    },
+    {
+      "id": "hud.owner_layout.reset",
+      "classification": "frozen",
+      "present": true,
+      "authority_domain": "owner-cache",
+      "source_checkpoint": "Level 1 package reset HUD state",
+      "immutability_gate": "HUD verifier binds ten owner placements and fixed top-bar pixels across two captures",
+      "evidence": ["eleven MSPRN/FONT1 source bitmaps", "owner HUD verifier"],
+      "comparison_policy": "structural-correspondence",
+      "not_claimed": ["live bars, tiers, charge, castle, or balloon progression"]
+    },
+    {
+      "id": "original.review_decode.base_paln",
+      "classification": "adapted",
+      "present": true,
+      "authority_domain": "original-remc2-hook-002285ff",
+      "transform": "exact indexed bytes decoded through the pinned base Night PALN with channel_rgb8=channel_rgb6*4",
+      "not_equivalent_to": ["active DAC RGB output", "Unity route pixels"],
+      "evidence": ["three derived PNG hashes"],
+      "comparison_policy": "side-by-side-non-equivalence",
+      "not_claimed": ["exact displayed RGB"]
+    },
+    {
+      "id": "unity.composition.1600x900",
+      "classification": "adapted",
+      "present": true,
+      "authority_domain": "unity-synthetic-route",
+      "transform": "native indexed terrain plus qualified frozen/adapted layers composed at 1600x900",
+      "not_equivalent_to": ["DOS 320x200 composition", "DOS aspect and depth behavior"],
+      "evidence": ["qualified full-frame manifests"],
+      "comparison_policy": "side-by-side-non-equivalence",
+      "not_claimed": ["original software interleaving"]
+    },
+    {
+      "id": "camera.unity",
+      "classification": "adapted",
+      "present": true,
+      "authority_domain": "unity-synthetic-route",
+      "transform": "native camera rows mapped to a 76 degree Unity perspective camera",
+      "not_equivalent_to": ["DOS projection and clipping"],
+      "evidence": ["registered presentation and render-camera rows"],
+      "comparison_policy": "structural-correspondence",
+      "not_claimed": ["DOS pixel projection"]
+    },
+    {
+      "id": "actors.billboard_geometry",
+      "classification": "adapted",
+      "present": true,
+      "authority_domain": "controlled-debug-gallery",
+      "transform": "full-camera-facing quads with bottom-center-at-entity-XYZ viewer pivot",
+      "not_equivalent_to": ["original DrawSprite anchor, clipping, and depth traversal"],
+      "evidence": ["cache-bound eight-view owner gallery"],
+      "comparison_policy": "structural-correspondence",
+      "not_claimed": ["exact source hotspot or anchor"]
+    },
+    {
+      "id": "hud.uniform_transform",
+      "classification": "adapted",
+      "present": true,
+      "authority_domain": "unity-synthetic-route",
+      "transform": "640x480 owner reference layout uniformly scaled by 1.875 into 1600x900",
+      "not_equivalent_to": ["original 320x200 framebuffer blend"],
+      "evidence": ["owner HUD verifier"],
+      "comparison_policy": "structural-correspondence",
+      "not_claimed": ["DOS placement at the Unity output resolution"]
+    },
+    {
+      "id": "minimap.mixed_authority",
+      "classification": "adapted",
+      "present": true,
+      "authority_domain": "unity-synthetic-route",
+      "transform": "owner TABLESN aperture and rotation with live player pose and generic white reset entity dots",
+      "not_equivalent_to": ["original entity colors, reveal, marks, filters, and blend"],
+      "evidence": ["owner HUD verifier moving-minimap gate"],
+      "comparison_policy": "structural-correspondence",
+      "not_claimed": ["exact original minimap"]
+    },
+    {
+      "id": "audio.unity_playback",
+      "classification": "adapted",
+      "present": true,
+      "authority_domain": "unity-synthetic-route",
+      "transform": "typed owner sound/music requests played through Unity and deterministic ADLMIDI render",
+      "not_equivalent_to": ["DOS hardware timbre", "render-frame clock"],
+      "evidence": ["owner audio cache and dedicated audio qualifiers"],
+      "comparison_policy": "structural-correspondence",
+      "not_claimed": ["whole-file autoplay audio hash determinism"]
+    },
+    {
+      "id": "projectile.debug_proxy",
+      "classification": "omitted",
+      "present": false,
+      "authority_domain": "unity-synthetic-route",
+      "replacement": "none",
+      "absence_gate": "firePresentationClean=True and projectile visual_suppressed in both qualified autoplay logs",
+      "evidence": ["both qualified autoplay logs"],
+      "comparison_policy": "absence-only",
+      "not_claimed": ["qualified projectile presentation"]
+    },
+    {
+      "id": "carpet.approximate_proxy",
+      "classification": "omitted",
+      "present": false,
+      "authority_domain": "unity-synthetic-route",
+      "replacement": "none",
+      "absence_gate": "carpetOverlayClean=True in both qualified autoplay logs",
+      "evidence": ["both qualified autoplay logs"],
+      "comparison_policy": "absence-only",
+      "not_claimed": ["qualified carpet overlay"]
+    },
+    {
+      "id": "diagnostic.presentation",
+      "classification": "omitted",
+      "present": false,
+      "authority_domain": "unity-synthetic-route",
+      "replacement": "none",
+      "absence_gate": "presentationClean=True and diagnosticObjectsClean=True in both qualified autoplay logs",
+      "evidence": ["both qualified autoplay logs"],
+      "comparison_policy": "absence-only",
+      "not_claimed": ["debug lights, entities, materials, text, or physics"]
+    },
+    {
+      "id": "sprite.source_hotspot_anchor",
+      "classification": "deferred",
+      "present": false,
+      "authority_domain": "owner-cache",
+      "reason": "source DrawSprite centering depends on camera trigonometry and dimensions absent from the particle descriptor",
+      "follow_on": "capture and qualify the original DrawSprite anchor path",
+      "evidence": ["entities/presentation.json source_anchor_status"],
+      "comparison_policy": "deferred-no-pixels",
+      "not_claimed": ["exact hotspot or anchor"]
+    },
+    {
+      "id": "renderer.dos_depth_interleaving_aspect",
+      "classification": "deferred",
+      "present": false,
+      "authority_domain": "original-remc2-hook-002285ff",
+      "reason": "whole-world software depth, sprite/particle interleaving, fog, clipping, and aspect are not yet projected into Unity",
+      "follow_on": "renderer correspondence qualification",
+      "evidence": [],
+      "comparison_policy": "deferred-no-pixels",
+      "not_claimed": ["DOS renderer equivalence"]
+    },
+    {
+      "id": "palette.transient_runtime",
+      "classification": "deferred",
+      "present": false,
+      "authority_domain": "original-remc2-hook-002285ff",
+      "reason": "active DAC palette sequences were not captured for frames 0, 8, or 19",
+      "follow_on": "capture per-frame DAC palette and paletteMod behavior",
+      "evidence": [],
+      "comparison_policy": "deferred-no-pixels",
+      "not_claimed": ["exact active-DAC RGB"]
+    },
+    {
+      "id": "hud.hsprn_and_live_progression",
+      "classification": "deferred",
+      "present": false,
+      "authority_domain": "owner-cache",
+      "reason": "HSPRN and live bars, tiers, charge, castle, balloon, and objective progression are not qualified",
+      "follow_on": "HUD progression qualification",
+      "evidence": [],
+      "comparison_policy": "deferred-no-pixels",
+      "not_claimed": ["feature-complete HUD"]
+    },
+    {
+      "id": "projectile.presentation",
+      "classification": "deferred",
+      "present": false,
+      "authority_domain": "unity-synthetic-route",
+      "reason": "typed fire requests are exact native events but their visual is intentionally suppressed",
+      "follow_on": "source projectile presentation qualification",
+      "evidence": ["typed fire event records"],
+      "comparison_policy": "deferred-no-pixels",
+      "not_claimed": ["faithful fireball visual"]
+    },
+    {
+      "id": "simulation.ai_spells_creatures_progression",
+      "classification": "deferred",
+      "present": false,
+      "authority_domain": "unity-synthetic-route",
+      "reason": "the current Level 1 viewer qualifies flight and bounded presentation, not full game simulation",
+      "follow_on": "system-by-system preservation milestones",
+      "evidence": [],
+      "comparison_policy": "deferred-no-pixels",
+      "not_claimed": ["complete MC2 gameplay"]
+    }
+  ],
+  "comparisons": [
+    {
+      "comparison_id": "original-vs-unity-structural",
+      "left_timeline": "original-remc2-hook-002285ff",
+      "right_timeline": "unity-synthetic-route",
+      "comparison_policy": "side-by-side-non-equivalence",
+      "checkpoint_pairs": []
+    },
+    {
+      "comparison_id": "owner-cache-to-unity-structural",
+      "left_timeline": "owner-cache",
+      "right_timeline": "unity-synthetic-route",
+      "comparison_policy": "structural-correspondence",
+      "checkpoint_pairs": []
+    }
+  ],
+  "forbidden_claims": [
+    "cross-timeline pixel-equality",
+    "cross-timeline clock-equality",
+    "implicit checkpoint pairing",
+    "base-PALN review decode is exact active-DAC RGB",
+    "controlled debug gallery is an original or qualified simulation view",
+    "adapted billboard pivot is an exact source hotspot",
+    "omitted or deferred layers are present in qualified mode"
+  ],
+  "forbidden_placeholder_selectors": [
+    426,
+    427,
+    428,
+    429,
+    430,
+    431,
+    432,
+    433,
+    434,
+    435,
+    436
+  ],
+  "surfaces": [
+    {
+      "id": "palette",
+      "exact": [
+        "ordered owner PALN-0 RGB6 bytes",
+        "VGA channel multiplication by four",
+        "TABLESN and CLRN owner identities"
+      ],
+      "frozen": [
+        "base Night palette selection"
+      ],
+      "adapted": [
+        "base-PALN decoding of original indexed fixtures for human inspection"
+      ],
+      "omitted": [],
+      "deferred": [
+        "per-frame active DAC palette",
+        "runtime palette fades, flashes, hit effects, and monochrome variants"
+      ]
+    },
+    {
+      "id": "terrain_material",
+      "exact": [
+        "six terrain planes",
+        "BL32N selector and D4 orientation inputs",
+        "TABLESN static shade lookup",
+        "native indexed terrain output"
+      ],
+      "frozen": [],
+      "adapted": [
+        "indexed result uploaded into a 1600x900 Unity composition"
+      ],
+      "omitted": [
+        "whole-world software sprite and particle interleaving"
+      ],
+      "deferred": [
+        "DOS aspect and source depth behavior"
+      ]
+    },
+    {
+      "id": "tmap_actors",
+      "exact": [
+        "owner TMAP payloads, selectors, dimensions, scale inputs, yaw sectors, and mirror rule",
+        "thirty-three source-ordered Rust Goat-family rows and lifecycle states"
+      ],
+      "frozen": [
+        "three dolmens and twenty-eight villagers at observed reset poses"
+      ],
+      "adapted": [
+        "camera-facing Unity billboards"
+      ],
+      "omitted": [
+        "transient reset effects, carpet, and projectile presentation"
+      ],
+      "deferred": [
+        "selector-global animation clocks and live non-Goat actor simulation"
+      ]
+    },
+    {
+      "id": "sprite_hotspot",
+      "exact": [
+        "descriptor proof that type_particle_str contains no per-sprite hotspot"
+      ],
+      "frozen": [],
+      "adapted": [
+        "bottom-center-at-entity-XYZ Unity pivot"
+      ],
+      "omitted": [],
+      "deferred": [
+        "original DrawSprite camera centering, clipping, terrain traversal, and depth behavior"
+      ]
+    },
+    {
+      "id": "hud",
+      "exact": [
+        "registered MSPRN selector set",
+        "FONT1 masks",
+        "640x480 owner layout",
+        "Fireball and Possess owner icons"
+      ],
+      "frozen": [
+        "base objective, spell layout, blank castle state, and blank balloon state"
+      ],
+      "adapted": [
+        "uniform fit into 1600x900"
+      ],
+      "omitted": [
+        "invented bars, diagnostic text, and Unity default-font overlays"
+      ],
+      "deferred": [
+        "live health, mana, tier, charge, castle, and balloon progression"
+      ]
+    },
+    {
+      "id": "minimap",
+      "exact": [
+        "64x64 TABLESN aperture, fixed-point rotation, terrain lookup, and PALN"
+      ],
+      "frozen": [
+        "terrain and entity positions from the owner package"
+      ],
+      "adapted": [
+        "live player center and yaw",
+        "nearest-neighbor two-times display",
+        "generic white entity dots"
+      ],
+      "omitted": [],
+      "deferred": [
+        "original entity colors, filters, reveal rules, and objective marks"
+      ]
+    },
+    {
+      "id": "objective",
+      "exact": [
+        "owner objective selector, FONT1 mapping, frame selectors, layout, and Night tint"
+      ],
+      "frozen": [
+        "Level 1 initial objective state"
+      ],
+      "adapted": [],
+      "omitted": [],
+      "deferred": [
+        "later objective progression and live textbox blending"
+      ]
+    },
+    {
+      "id": "audio",
+      "exact": [
+        "registered owner sound and music payload identities",
+        "typed event requests",
+        "integer gain, pan, attenuation, and loop rules"
+      ],
+      "frozen": [],
+      "adapted": [
+        "Unity playback and deterministic XMI-to-PCM render"
+      ],
+      "omitted": [
+        "unqualified combat stem and inferred Fireball sound"
+      ],
+      "deferred": [
+        "exact DOS sound-card timbre and unresolved tagged-channel behavior"
+      ]
+    }
+  ],
+  "required_gates": [
+    "reference_corpus",
+    "owner_asset_cache",
+    "qualified_full_frames",
+    "owner_hud",
+    "entity_gallery",
+    "no_magenta",
+    "no_placeholder_claim",
+    "independent_timeline_labels"
+  ],
+  "privacy": "all generated images and HTML remain in a caller-selected system-temporary directory"
+}

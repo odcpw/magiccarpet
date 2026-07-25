@@ -1,0 +1,450 @@
+{
+  "schema": "mc2-private-level1-viewer-reference-corpus/v1",
+  "scope": "owner-local Level 1 Night flight-viewer qualification",
+  "privacy": "private preservation evidence; never copy into a distributable repository",
+  "reference_build": {
+    "project": "magic-carpet-2-hd/remc2",
+    "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+    "capture_hook": "0x002285ff",
+    "level": {
+      "external": 1,
+      "internal": 0,
+      "map_type": 1,
+      "map_type_name": "Night"
+    }
+  },
+  "authority_classes": {
+    "exact_build_bytes": "bytes captured from the pinned remc2 regression run",
+    "exact_flight_projection": "sim-core FlightState reproduced field-for-field from exact-build state",
+    "source_derived": "reconstructed source behavior with focused tests but no matching exact-build byte surface",
+    "viewer_regression_only": "deterministic Unity/Rust regression; never evidence of remc2 pixel equality",
+    "adapted_or_deferred": "Unity presentation adaptation or unsupported behavior kept visibly absent"
+  },
+  "tick_convention": {
+    "reference_frame": "zero-based frame in each fixed-size remc2 sequence at hook 0x002285ff",
+    "source_turn": "player turn stored in the captured state frame",
+    "native_step_count": "number of completed mc_native_session_step calls from package frame 0",
+    "native_render_tick": "stored pre-entity-update camera row; at a post-step checkpoint N it is N-1",
+    "unity_checkpoint_tick": "native_step_count frozen before WaitForEndOfFrame capture",
+    "comparison_rule": "compare named clocks explicitly; never compare equal-looking integers from different clocks"
+  },
+  "runtime_pins": {
+    "package_identity_sha256": "730d2fa084265df839f3f2b55ed766ac167a8b152ca4631b5ded9d0bb9104ac8",
+    "package_manifest_file_sha256": "169b4bda478df3c6d708041f911bf37a0b5779695b3677d500bb737ba8846c53",
+    "closure_identity_sha256": "1c3774ca5c032c1a7b8b1c48870840eee33011a2830d08c51f3104fb5c5bcc12",
+    "closure_file_sha256": "3ec878d88cc2550d3e7792e16ce527331873be1e403c98ff665b6c099a4da636",
+    "owner_cache_content_sha256": "a5fdd9961ebd61566b0230e2dc1b468219dae74536279b51d89d9c2d6cc0ce81",
+    "owner_cache_manifest_file_sha256": "2c3845fff2b35dea336662de9d636e5c620271eeea4ac19a6acb898f62714d51",
+    "unity_player_file_sha256": "8027f7d1f9ae7dacfc826fb218adcc1ae7464af098a8a59397e7531c0f7ec0bc",
+    "unity_managed_assembly_path": "MagicCarpetNative_Data/Managed/MagicCarpet.Native.Runtime.dll",
+    "unity_managed_assembly_sha256": "4c8d72550d048b5c88a39651e7f46264358d15a07dd6964a26700dff0663fc32",
+    "unity_globalgamemanagers_sha256": "7882c265b2885cb3ea42e32ac8148cc4009227c5d58cde5441f3460e5d704a0c",
+    "unity_build_guid": "9971bde0b30c4fe2bb5696dca4e9849d",
+    "native_plugin_file_sha256": "dc1f27e8f36736b37c046113faacead948413c90fc8d2baca0313921f2904e7b",
+    "built_native_plugin_file_sha256": "dc1f27e8f36736b37c046113faacead948413c90fc8d2baca0313921f2904e7b",
+    "unity_version": "6000.3.20f1",
+    "native_abi": 2
+  },
+  "state_hash_contract": {
+    "name": "sim-core FlightState state_hash",
+    "algorithm": "FNV-1a-64 over the declared ordered little-endian FlightState projection",
+    "source": "research/private/remc2-sim-rs/crates/sim-core/src/lib.rs::state_hash",
+    "includes_additive_native_tick": true,
+    "excludes": [
+      "complete MC2 process state",
+      "rendered pixels",
+      "Unity presentation",
+      "unprojected AI and world systems"
+    ]
+  },
+  "source_projection_hash_contract": {
+    "name": "sim-core FlightState source_projection_hash",
+    "algorithm": "the state_hash contract with only the additive native session tick normalized to zero",
+    "source": "research/private/remc2-sim-rs/crates/sim-core/src/lib.rs::source_projection_hash",
+    "purpose": "compare native replay with original MC2 state, which has no native session tick field"
+  },
+  "event_hash_contract": {
+    "algorithm": "SHA-256",
+    "byte_order": "little-endian",
+    "concatenation": "events in strictly increasing sequence order within the checkpoint range, with no count or framing bytes",
+    "content_schema": "mc2-native-event-logical-content-le/sha256-v1",
+    "content_ordered_fields": [
+      "sequence:u64",
+      "state_hash:u64",
+      "kind:u32",
+      "code:u32",
+      "entity_index:u16",
+      "player_index:i16",
+      "value0:i32",
+      "value1:i32",
+      "asset_ref_index:u32"
+    ],
+    "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1",
+    "lifecycle_rule": "prepend generation:u64 to every event before the content fields",
+    "excluded": ["abi_version", "struct_size", "reserved ABI bytes"]
+  },
+  "presentation_scopes": {
+    "original-dos-complete-frame": {
+      "exact": ["320x200 indexed framebuffer bytes", "captured main-state bytes", "captured terrain-state bytes"],
+      "frozen": [],
+      "adapted": [],
+      "omitted": [],
+      "deferred": ["Unity correspondence is a separate structural comparison"]
+    },
+    "native-flight-projection-only": {
+      "exact": ["bounded FlightState projection"],
+      "frozen": [],
+      "adapted": [],
+      "omitted": ["original framebuffer", "camera row", "typed additive event journal"],
+      "deferred": ["presentation correspondence"]
+    },
+    "unity-qualified-viewer-v2": {
+      "exact": ["native flight state", "native presentation camera", "native render camera", "native indexed sky-and-terrain layer"],
+      "frozen": ["observed owner actors", "base-frame HUD objective and spell layout"],
+      "adapted": ["1600x900 Unity composition", "76 degree Unity camera FOV", "mixed-authority minimap", "owner audio playback"],
+      "omitted": ["unqualified projectile visual", "whole-world DOS sprite and particle interleaving"],
+      "deferred": ["DOS aspect and depth behavior", "live AI and progression", "full spell and creature simulation"]
+    }
+  },
+  "suites": [
+    {
+      "id": "level1-idle-full-frame",
+      "authority": [
+        "exact_build_bytes",
+        "exact_flight_projection"
+      ],
+      "purpose": "bind the package reset seam and two later idle frames to original state, terrain memory and complete original framebuffer bytes",
+      "fixtures": [
+        {
+          "role": "main_state",
+          "path": "upstream/magic-carpet-2-hd/remc2-regression-test/memimages/regressions/level1/sequence-002285FF-00356038.bin",
+          "sha256": "021ab6f582cae920546dc3bcf55b06d00937fea5ddaabfeae079c0368b314e7f",
+          "frame_bytes": 224790,
+          "frame_count": 20
+        },
+        {
+          "role": "terrain_state",
+          "path": "upstream/magic-carpet-2-hd/remc2-regression-test/memimages/regressions/level1/sequence-002285FF-002DC4E0.bin",
+          "sha256": "16f0f778b120ddaab042f28b8a322efb37940bb68b4527b7d12dac82101db88f",
+          "frame_bytes": 458752,
+          "frame_count": 21
+        },
+        {
+          "role": "complete_indexed_framebuffer",
+          "path": "upstream/magic-carpet-2-hd/remc2-regression-test/memimages/regressions/level1/sequence-002285FF-003AA0A4.bin",
+          "sha256": "f1d66f5647049166b477840bd971d8e2e7d62642ff92022200b0d8c7628c4b06",
+          "frame_bytes": 64000,
+          "width": 320,
+          "height": 200,
+          "frame_count": 20
+        }
+      ],
+      "checkpoints": [
+        {
+          "checkpoint_id": "remc2-idle-frame-00",
+          "reference_frame": 0,
+          "source_turn": 1,
+          "native_step_count": 0,
+          "input": {
+            "raw_10_bytes": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            "roll": 0,
+            "pitch": 0,
+            "flags": 0
+          },
+          "flight": {
+            "entity_index": 152,
+            "position": [19840, 56960, 5024],
+            "yaw": 0,
+            "display_pitch": 0,
+            "effective_pitch": 0,
+            "target_speed": 0,
+            "actual_speed": 0,
+            "roll_accumulator": 0,
+            "pitch_accumulator": 0,
+            "state_hash_fnv1a64": "9da4bc91af58f3ce"
+          },
+          "state_frame_sha256": "68d18c0c6006ffcad02a891a16d1ebcf0ec504cfad0cfcbce0aeb98d23caecc6",
+          "terrain_frame_sha256": "05d4d12788d3754577b800883f2e4dac32ed722628a303eb5cd7577cb09c967c",
+          "original_framebuffer_sha256": "9ddf76c94719670d8e32cb0e1a038c5b8ea0107ad513dda834d5fe8e91e6ce6e",
+          "state_identity": {"status": "available", "authority": "exact_build_bytes+exact_flight_projection", "projection_hash_fnv1a64": "9da4bc91af58f3ce", "raw_frame_sha256": "68d18c0c6006ffcad02a891a16d1ebcf0ec504cfad0cfcbce0aeb98d23caecc6"},
+          "event_identity": {"status": "unavailable", "authority": "not-captured", "reason": "the regression hook captured memory and framebuffer bytes, not an ordered logical event journal", "follow_on_bead": "mc-dl0r.17.11.7.2"},
+          "camera_identity": {"status": "unavailable-at-this-hook", "authority": "not-captured", "reason": "the fixed state sequence does not contain the qualified presentation/render-camera ABI rows; the separate first-presented-frame trace records the reset pose"},
+          "presentation_scope_ref": "original-dos-complete-frame",
+          "provenance": {"fixture_role": "main_state+terrain_state+complete_indexed_framebuffer", "byte_offset_frames": [0, 0, 0], "capture_hook": "0x002285ff", "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"}
+        },
+        {
+          "checkpoint_id": "remc2-idle-frame-08",
+          "reference_frame": 8,
+          "source_turn": 9,
+          "native_step_count": 8,
+          "input": {
+            "raw_10_bytes": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            "roll": 0,
+            "pitch": 0,
+            "flags": 0
+          },
+          "flight": {
+            "entity_index": 152,
+            "position": [19840, 56960, 5024],
+            "yaw": 0,
+            "display_pitch": 0,
+            "effective_pitch": 0,
+            "target_speed": 0,
+            "actual_speed": 0,
+            "roll_accumulator": 0,
+            "pitch_accumulator": 0,
+            "state_hash_fnv1a64": "0e4547b42a98c976"
+          },
+          "state_frame_sha256": "66b44dc9a0904dfd2264937b29c4ec93c111e9956578eb5bdcfa02b20b20505f",
+          "terrain_frame_sha256": "facea3f9da82cb973728d4463006bee1547d11b54d3b6f05d8fd0ed86d8d7869",
+          "original_framebuffer_sha256": "9d0c90db3cf2174f5795a03c7562135342ea397174e7475bb780270c73eff162",
+          "state_identity": {"status": "available", "authority": "exact_build_bytes+exact_flight_projection", "projection_hash_fnv1a64": "0e4547b42a98c976", "raw_frame_sha256": "66b44dc9a0904dfd2264937b29c4ec93c111e9956578eb5bdcfa02b20b20505f"},
+          "event_identity": {"status": "unavailable", "authority": "not-captured", "reason": "the regression hook captured memory and framebuffer bytes, not an ordered logical event journal", "follow_on_bead": "mc-dl0r.17.11.7.2"},
+          "camera_identity": {"status": "unavailable-at-this-hook", "authority": "not-captured", "reason": "the fixed state sequence does not contain the qualified presentation/render-camera ABI rows"},
+          "presentation_scope_ref": "original-dos-complete-frame",
+          "provenance": {"fixture_role": "main_state+terrain_state+complete_indexed_framebuffer", "byte_offset_frames": [8, 8, 8], "capture_hook": "0x002285ff", "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"}
+        },
+        {
+          "checkpoint_id": "remc2-idle-frame-19",
+          "reference_frame": 19,
+          "source_turn": 20,
+          "native_step_count": 19,
+          "input": {
+            "raw_10_bytes": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            "roll": 0,
+            "pitch": 0,
+            "flags": 0
+          },
+          "flight": {
+            "entity_index": 152,
+            "position": [19840, 56960, 5024],
+            "yaw": 0,
+            "display_pitch": 0,
+            "effective_pitch": 0,
+            "target_speed": 0,
+            "actual_speed": 0,
+            "roll_accumulator": 0,
+            "pitch_accumulator": 0,
+            "state_hash_fnv1a64": "13f7f355fcf6738f"
+          },
+          "state_frame_sha256": "4ae72526d70e492ed39acdba2fb0f5cc05f280adcc8a6baf25e9c4fee1fe9781",
+          "terrain_frame_sha256": "b95e1dc9f43220be8b71dc90a556f91d54a31af64671b1d7ab11333a84b065c6",
+          "original_framebuffer_sha256": "cd94f9781e92afeb174b8f3e0189b698afecbf50244a70fc8d80e2ce001e718d",
+          "state_identity": {"status": "available", "authority": "exact_build_bytes+exact_flight_projection", "projection_hash_fnv1a64": "13f7f355fcf6738f", "raw_frame_sha256": "4ae72526d70e492ed39acdba2fb0f5cc05f280adcc8a6baf25e9c4fee1fe9781"},
+          "event_identity": {"status": "unavailable", "authority": "not-captured", "reason": "the regression hook captured memory and framebuffer bytes, not an ordered logical event journal", "follow_on_bead": "mc-dl0r.17.11.7.2"},
+          "camera_identity": {"status": "unavailable-at-this-hook", "authority": "not-captured", "reason": "the fixed state sequence does not contain the qualified presentation/render-camera ABI rows"},
+          "presentation_scope_ref": "original-dos-complete-frame",
+          "provenance": {"fixture_role": "main_state+terrain_state+complete_indexed_framebuffer", "byte_offset_frames": [19, 19, 19], "capture_hook": "0x002285ff", "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"}
+        }
+      ],
+      "native_abi_idle_probe": {
+        "status": "source projection exact at frames 0, 8 and 19; live hash differs only by the additive native tick",
+        "native_step_hashes": {
+          "0": "9da4bc91af58f3ce",
+          "8": "061b7ffc82131a7e",
+          "19": "a6b40ecb8b1d373c"
+        },
+        "original_projection_hashes": {
+          "0": "9da4bc91af58f3ce",
+          "8": "0e4547b42a98c976",
+          "19": "13f7f355fcf6738f"
+        },
+        "source_projection_hashes": {
+          "0": "9da4bc91af58f3ce",
+          "8": "0e4547b42a98c976",
+          "19": "13f7f355fcf6738f"
+        },
+        "qualification_rule": "compare original state with source_projection_hash; retain state_hash for live lifecycle replay"
+      },
+      "presentation_comparison": {
+        "rule": "original framebuffer is a side-by-side reference, not an expected Unity pixel hash",
+        "reason": "Unity currently presents an exact isolated sky-and-terrain layer plus adapted/frozen owner overlays; original whole-world interleaving, aspect and depth are not yet implemented"
+      }
+    },
+    {
+      "id": "level1-first-presented-frame-trace",
+      "authority": ["exact_build_bytes"],
+      "purpose": "bind the original reset pose and complete ordered final-render event set for the first presented gameplay frame",
+      "checkpoints": [
+        {
+          "checkpoint_id": "remc2-first-presented-frame",
+          "reference_frame": "first qualified DrawAndEventsInGame_47560 epoch reaching the final VGA_Blit",
+          "source_turn": "not captured by this trace",
+          "native_step_count": "not applicable",
+          "input_identity": {"status": "none", "recording_mode": "none", "argv_max_regression_steps": 0},
+          "state_identity": {"status": "pose-only", "authority": "exact-build GDB observation", "position": [19840, 56960, 5024], "entity_index": 152},
+          "event_identity": {"status": "available", "authority": "exact-build ordered final-render entry set", "schema": "mc2-frame-event-set/sha256-v1", "count": 76, "sha256": "945247ea42612fd448a27c85fca8f3e28c1574cb1d919a3798cd9e119d0aebd4"},
+          "camera_identity": {"status": "available", "authority": "exact-build GDB observation", "entity_index": 152, "position": [19840, 56960, 5024], "yaw": 0, "pitch": 0, "roll": 0},
+          "presentation_scope_ref": "original-dos-complete-frame",
+          "provenance": {
+            "trace_a": "research/private/generated/level1-frame-trace-final-v2-a/trace.jsonl",
+            "trace_b": "research/private/generated/level1-frame-trace-final-v2-b/trace.jsonl",
+            "trace_sha256": "12260e957f3fc1d13c81f71b63c2dc23f3121f8bfae4068e126af6826f7e3e3f",
+            "qualification_sha256": "4665eb6b80da567f6a35bf30d5dc94146ab575efb961ca6d0c36922a33f7c4f6",
+            "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+          }
+        }
+      ]
+    },
+    {
+      "id": "level1-native-eight-forward",
+      "authority": [
+        "exact_flight_projection",
+        "source_derived"
+      ],
+      "purpose": "active flight handling and state continuity from the exact Level 1 reset seam",
+      "input_per_step": {
+        "roll": 0,
+        "pitch": 0,
+        "flags": 1,
+        "meaning": "forward acceleration"
+      },
+      "input_identities": {
+        "forward-latch-command": {
+          "schema": "mc2-player-command-10-byte-le/v1",
+          "raw_10_bytes": [0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+          "original_trace_semantics": "latched once before the original entity-pass sequence",
+          "native_abi_semantics": "reapplied once per one-pass native session step"
+        }
+      },
+      "checkpoints": [
+        {"checkpoint_id": "forward-pass-01", "native_step_count": 1, "original_entity_pass": 1, "source_turn": "single traced outer turn; no per-pass turn", "input_identity_ref": "forward-latch-command", "position": [19840, 56944, 5024], "target_speed": 16, "speed_changed_flag": 1, "actual_speed": 16, "entity_phase": 154, "state_hash_fnv1a64": "78bdb3c319b88f27", "state_identity": {"status": "available", "authority": "exact_flight_projection"}, "event_identity": {"status": "unavailable", "authority": "not part of exact FlightState trace", "follow_on_bead": "mc-dl0r.17.11.7.2"}, "camera_identity": {"status": "unavailable", "authority": "not captured by multipass trace"}, "presentation_scope_ref": "native-flight-projection-only", "provenance": {"record": "NATIVE_FORWARD_TRACE[0]", "machine_check": "sim-cli inspect-forward"}},
+        {"checkpoint_id": "forward-pass-02", "native_step_count": 2, "original_entity_pass": 2, "source_turn": "single traced outer turn; no per-pass turn", "input_identity_ref": "forward-latch-command", "position": [19840, 56912, 5024], "target_speed": 32, "speed_changed_flag": 1, "actual_speed": 32, "entity_phase": 155, "state_hash_fnv1a64": "3741b3035d5ec051", "state_identity": {"status": "available", "authority": "exact_flight_projection"}, "event_identity": {"status": "unavailable", "authority": "not part of exact FlightState trace", "follow_on_bead": "mc-dl0r.17.11.7.2"}, "camera_identity": {"status": "unavailable", "authority": "not captured by multipass trace"}, "presentation_scope_ref": "native-flight-projection-only", "provenance": {"record": "NATIVE_FORWARD_TRACE[1]", "machine_check": "sim-cli inspect-forward"}},
+        {"checkpoint_id": "forward-pass-03", "native_step_count": 3, "original_entity_pass": 3, "source_turn": "single traced outer turn; no per-pass turn", "input_identity_ref": "forward-latch-command", "position": [19840, 56864, 5024], "target_speed": 48, "speed_changed_flag": 1, "actual_speed": 48, "entity_phase": 156, "state_hash_fnv1a64": "51c3bb382c608863", "state_identity": {"status": "available", "authority": "exact_flight_projection"}, "event_identity": {"status": "unavailable", "authority": "not part of exact FlightState trace", "follow_on_bead": "mc-dl0r.17.11.7.2"}, "camera_identity": {"status": "unavailable", "authority": "not captured by multipass trace"}, "presentation_scope_ref": "native-flight-projection-only", "provenance": {"record": "NATIVE_FORWARD_TRACE[2]", "machine_check": "sim-cli inspect-forward"}},
+        {"checkpoint_id": "forward-pass-04", "native_step_count": 4, "original_entity_pass": 4, "source_turn": "single traced outer turn; no per-pass turn", "input_identity_ref": "forward-latch-command", "position": [19840, 56800, 5028], "target_speed": 64, "speed_changed_flag": 1, "actual_speed": 64, "entity_phase": 157, "state_hash_fnv1a64": "633f5a05e18b4102", "state_identity": {"status": "available", "authority": "exact_flight_projection"}, "event_identity": {"status": "unavailable", "authority": "not part of exact FlightState trace", "follow_on_bead": "mc-dl0r.17.11.7.2"}, "camera_identity": {"status": "unavailable", "authority": "not captured by multipass trace"}, "presentation_scope_ref": "native-flight-projection-only", "provenance": {"record": "NATIVE_FORWARD_TRACE[3]", "machine_check": "sim-cli inspect-forward"}},
+        {"checkpoint_id": "forward-pass-05", "native_step_count": 5, "original_entity_pass": 5, "source_turn": "single traced outer turn; no per-pass turn", "input_identity_ref": "forward-latch-command", "position": [19840, 56720, 5038], "target_speed": 80, "speed_changed_flag": 1, "actual_speed": 80, "entity_phase": 158, "state_hash_fnv1a64": "d8714d8b5fbbdd72", "state_identity": {"status": "available", "authority": "exact_flight_projection"}, "event_identity": {"status": "unavailable", "authority": "not part of exact FlightState trace", "follow_on_bead": "mc-dl0r.17.11.7.2"}, "camera_identity": {"status": "unavailable", "authority": "not captured by multipass trace"}, "presentation_scope_ref": "native-flight-projection-only", "provenance": {"record": "NATIVE_FORWARD_TRACE[4]", "machine_check": "sim-cli inspect-forward"}},
+        {"checkpoint_id": "forward-pass-06", "native_step_count": 6, "original_entity_pass": 6, "source_turn": "single traced outer turn; no per-pass turn", "input_identity_ref": "forward-latch-command", "position": [19840, 56640, 5040], "target_speed": 80, "speed_changed_flag": 0, "actual_speed": 80, "entity_phase": 159, "state_hash_fnv1a64": "fb9a1bde254d29b1", "state_identity": {"status": "available", "authority": "exact_flight_projection"}, "event_identity": {"status": "unavailable", "authority": "not part of exact FlightState trace", "follow_on_bead": "mc-dl0r.17.11.7.2"}, "camera_identity": {"status": "unavailable", "authority": "not captured by multipass trace"}, "presentation_scope_ref": "native-flight-projection-only", "provenance": {"record": "NATIVE_FORWARD_TRACE[5]", "machine_check": "sim-cli inspect-forward"}},
+        {"checkpoint_id": "forward-pass-07", "native_step_count": 7, "original_entity_pass": 7, "source_turn": "single traced outer turn; no per-pass turn", "input_identity_ref": "forward-latch-command", "position": [19840, 56560, 5040], "target_speed": 80, "speed_changed_flag": 0, "actual_speed": 80, "entity_phase": 160, "state_hash_fnv1a64": "c0cad8366e43e1b6", "state_identity": {"status": "available", "authority": "exact_flight_projection"}, "event_identity": {"status": "unavailable", "authority": "not part of exact FlightState trace", "follow_on_bead": "mc-dl0r.17.11.7.2"}, "camera_identity": {"status": "unavailable", "authority": "not captured by multipass trace"}, "presentation_scope_ref": "native-flight-projection-only", "provenance": {"record": "NATIVE_FORWARD_TRACE[6]", "machine_check": "sim-cli inspect-forward"}},
+        {"checkpoint_id": "forward-pass-08", "native_step_count": 8, "original_entity_pass": 8, "source_turn": "single traced outer turn; no per-pass turn", "input_identity_ref": "forward-latch-command", "position": [19840, 56480, 5040], "target_speed": 80, "speed_changed_flag": 0, "actual_speed": 80, "entity_phase": 161, "state_hash_fnv1a64": "956246bd7f270164", "state_identity": {"status": "available", "authority": "exact_flight_projection"}, "event_identity": {"status": "unavailable", "authority": "not part of exact FlightState trace", "follow_on_bead": "mc-dl0r.17.11.7.2"}, "camera_identity": {"status": "unavailable", "authority": "not captured by multipass trace"}, "presentation_scope_ref": "native-flight-projection-only", "provenance": {"record": "NATIVE_FORWARD_TRACE[7]", "machine_check": "sim-cli inspect-forward"}}
+      ],
+      "exact_build_evidence": "private remc2 multipass GDB trace recorded in SOURCE-FIDELITY-MAP.md and pinned by regression_state::NATIVE_FORWARD_TRACE",
+      "event_authority": "source_derived; the additive typed event journal is deterministic but is not part of the exact-build FlightState projection"
+    },
+    {
+      "id": "afterloadtest2-recorded-flight-support",
+      "authority": [
+        "exact_build_bytes",
+        "exact_flight_projection"
+      ],
+      "purpose": "supporting breadth: 24 consecutive original state transitions, including pitch input and five forward-acceleration transitions",
+      "state_sequence_path": "upstream/magic-carpet-2-hd/remc2-regression-test/memimages/regressions/afterloadtest2/sequence-002285FF-00356038.bin",
+      "state_sequence_sha256": "7273049dfa6978bdf5b36c557f9b39634f852d1967fcf3ea08c979f099ad0fae",
+      "recording_path": "upstream/magic-carpet-2-hd/remc2-regression-test/memimages/regressions/afterloadtest2/Levels-1-5-Recording.bin",
+      "recording_sha256": "2ba6c2295eab413c6856f190b2afbe625e294fe4e0db3a16db5f2bde00050d60",
+      "recording_layout": "legacy bare layout selected explicitly",
+      "known_harness_boundary": "pinned remc2 current loader misparses the legacy recording after an unconditional 208-byte metadata read; Rust explicit parsing and captured state agree",
+      "viewer_use": "simulation support only; this saved state is not the package reset and is not loaded into the Unity player"
+    },
+    {
+      "id": "unity-synthetic-presentation-route",
+      "authority": [
+        "viewer_regression_only"
+      ],
+      "purpose": "stable moving-view, fire-event and presentation coverage after the remc2-reference suites pass",
+      "not_a_claim": "these checkpoints are not remc2 input or pixel-reference frames",
+      "route": {
+        "definition": "MagicCarpetRuntime.BuildAutoplayCommand",
+        "final_step_count": 440,
+        "command_index_origin": "zero-based pre-step",
+        "command_encoding": "mc2-player-command-10-byte-le/v1",
+        "full_command_stream_sha256": "8fa8b94878d622e784477c94ee3ed20b4fe56f4d4b98c3ef268ccc447f72926d",
+        "segments": [
+          {"indices": [0, 144], "roll": 38, "pitch": 0, "flags_base": 1},
+          {"indices": [145, 179], "roll": 0, "pitch": 0, "flags_base": 1},
+          {"indices": [180, 249], "roll": -32, "pitch": -22, "flags_base": 1},
+          {"indices": [250, 324], "roll": 0, "pitch": 24, "flags_base": 1},
+          {"indices": [325, 359], "roll": 0, "pitch": 0, "flags_base": 9},
+          {"indices": [360, 364], "roll": 0, "pitch": 0, "flags_base": 8},
+          {"indices": [365, 439], "roll": 0, "pitch": 0, "flags_base": 0}
+        ],
+        "fire_command_indices": [160, 300]
+      },
+      "reset": {
+        "tick": 0,
+        "event_head": 0,
+        "state_hash_fnv1a64": "9da4bc91af58f3ce",
+        "package_reset_conformance_hash_fnv1a64": "77b96b82492d6f4b",
+        "live_session_conformance_hash_fnv1a64": "00cc7b799d6917fc",
+        "position": [19840, 56960, 5024],
+        "source_turn": 1
+      },
+      "lifecycle": {
+        "independent_sessions": 2,
+        "complete_steps_per_run": 440,
+        "reset_replay": "normalized records byte-identical",
+        "generation_behavior": "generation-inclusive event hashes change after reset; generation-normalized content hashes remain exact",
+        "old_generation_queries": "must fail after reset"
+      },
+      "checkpoints": [
+        {
+          "checkpoint_id": "unity-route-145", "unity_checkpoint_tick": 145, "last_command_index": 144, "source_turn": 146,
+          "input_identity": {"last_command_raw_10_bytes": [0,0,0,38,0,1,0,0,0,0], "prefix_sha256": "a2eec00e0cdd9a65392775c8ccc2310b4004ae176639e4e5fc698818b0f62e40"},
+          "state_identity": {"status": "available", "authority": "native C ABI post-step snapshot", "generation": 1, "tick": 145, "event_head": 937, "state_hash_fnv1a64": "4c3ead1f07462136", "conformance_hash_fnv1a64": "171753329509c90f", "entity_index": 152, "position": [24705,59043,4768], "yaw": 1277, "display_pitch": 0, "effective_pitch": 0, "roll": 73, "target_speed": 80, "actual_speed": 80, "strafe_speed": 0, "phase": 42, "last_resolution": 0, "profile": 0, "fire_sequence": 0},
+          "event_identity": {"status": "available", "authority": "native typed event journal", "generation": 1, "first_sequence": 1, "last_sequence": 937, "count": 937, "content_schema": "mc2-native-event-logical-content-le/sha256-v1", "content_sha256": "2a1757d6905c66c5f1cc72651f9876320064c80723fbe2e4a69bcea377529be2", "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1", "lifecycle_sha256": "603e9d8767a632b1922a246aa3436815944bc1c93bcd0b4b97b7cd3fa9da5baf"},
+          "camera_identity": {"status": "available", "authority": "native stored pre-update camera", "presentation": {"generation":1,"tick":144,"source_turn":146,"position":[24762,58985,4896],"yaw":1268,"pitch":0,"roll":73,"fov":128,"authority":2,"flags":3}, "render": {"generation":1,"tick":144,"source_turn":146,"history":[24762,58985],"eye_z":4896,"yaw":1268,"pitch":0,"roll":73,"fov":128,"slope_target":[64,0],"render_offset":[56,8],"authority":2,"flags":1}},
+          "terrain_identity": {"generation":1,"tick":144,"width":320,"height":200,"stride":320,"viewport_x":0,"viewport_y":0,"viewport_width":320,"viewport_height":200,"index_hash_fnv1a64":"0a49c01e798aa855","coverage_hash_fnv1a64":"4805132e71142646","reflected":0,"mode5":586,"mode26":0,"writes":57887,"gpu_bottom_up_fnv1a64":"6116176f23d78261","logical_top_down_fnv1a64":"6d2584eb3f5e1d21"},
+          "unity_frame_identity": {"schema":"mc2-private-qualified-full-frame-v2","png_sha256":"851ad519d9000d49b8b858c36f1f92550765d95bafade331fbd8126d820f9e45","raw_rgba_sha256":"923d2ffe19d7bd584e1f0016ab69c7fc193d7bda6e113bd9a75454b9ad0242fc"},
+          "presentation_scope_ref": "unity-qualified-viewer-v2", "provenance": {"authority":"synthetic-native-unity-regression","oracle_status":"no-dynamic-remc2-route-capture","capture_manifest":"magiccarpet-autoplay-145.json"}
+        },
+        {
+          "checkpoint_id": "unity-route-163", "unity_checkpoint_tick": 163, "last_command_index": 162, "source_turn": 164,
+          "input_identity": {"last_command_raw_10_bytes": [0,0,0,0,0,1,0,0,0,0], "prefix_sha256": "29e1f705610953107f09e61ed03309addcb5c3866a5dc647ead3e837311917a5"},
+          "state_identity": {"status": "available", "authority": "native C ABI post-step snapshot", "generation": 1, "tick": 163, "event_head": 1055, "state_hash_fnv1a64": "14b0c5a8341ab28b", "conformance_hash_fnv1a64": "31eb67307fe37434", "entity_index": 152, "position": [23630,60010,4512], "yaw": 1300, "display_pitch": 0, "effective_pitch": 0, "roll": 3, "target_speed": 80, "actual_speed": 80, "strafe_speed": 0, "phase": 60, "last_resolution": 0, "profile": 0, "fire_sequence": 1},
+          "event_identity": {"status": "available", "authority": "native typed event journal", "generation": 1, "first_sequence": 938, "last_sequence": 1055, "count": 118, "content_schema": "mc2-native-event-logical-content-le/sha256-v1", "content_sha256": "6d376dca7a842dd5a00a6a0dab8a71ca4761b40693b589c7f311f578f05d97a7", "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1", "lifecycle_sha256": "c0e56f6d57784ad926ef24eb1e06b4bb8b92562d98755c6f953e5884eb331639"},
+          "camera_identity": {"status": "available", "authority": "native stored pre-update camera", "presentation": {"generation":1,"tick":162,"source_turn":164,"position":[23690,59957,4656],"yaw":1300,"pitch":0,"roll":3,"fov":128,"authority":2,"flags":3}, "render": {"generation":1,"tick":162,"source_turn":164,"history":[23690,59957],"eye_z":4656,"yaw":1300,"pitch":0,"roll":3,"fov":128,"slope_target":[0,0],"render_offset":[0,4],"authority":2,"flags":1}},
+          "terrain_identity": {"generation":1,"tick":162,"width":320,"height":200,"stride":320,"viewport_x":0,"viewport_y":0,"viewport_width":320,"viewport_height":200,"index_hash_fnv1a64":"bd5bfe083fe9866b","coverage_hash_fnv1a64":"1606b3e784f10124","reflected":0,"mode5":606,"mode26":0,"writes":61935,"gpu_bottom_up_fnv1a64":"a49d30cade4f2b95","logical_top_down_fnv1a64":"989c263a5446e8b5"},
+          "unity_frame_identity": {"schema":"mc2-private-qualified-full-frame-v2","png_sha256":"54c4c0f1d9cd8e57941feb9ace9d488c5d43644fa4caea57abadbd88b430b8d9","raw_rgba_sha256":"1008c630e4074dafc9d7639071b984297fb5989df212cf6d8e60f3a38b6055aa"},
+          "presentation_scope_ref": "unity-qualified-viewer-v2", "provenance": {"authority":"synthetic-native-unity-regression","oracle_status":"no-dynamic-remc2-route-capture","capture_manifest":"magiccarpet-autoplay-163.json"}
+        },
+        {
+          "checkpoint_id": "unity-route-220", "unity_checkpoint_tick": 220, "last_command_index": 219, "source_turn": 221,
+          "input_identity": {"last_command_raw_10_bytes": [0,0,0,224,234,1,0,0,0,0], "prefix_sha256": "fd5aa43307fa298aceb3d7f6074bfa78968684a46680da2daf20508cb5ec80d5"},
+          "state_identity": {"status": "available", "authority": "native C ABI post-step snapshot", "generation": 1, "tick": 220, "event_head": 1415, "state_hash_fnv1a64": "8d15e8c188324cb0", "conformance_hash_fnv1a64": "f5ab6471ab0ab875", "entity_index": 152, "position": [21215,63670,4458], "yaw": 1040, "display_pitch": 2007, "effective_pitch": 2007, "roll": -61, "target_speed": 80, "actual_speed": 80, "strafe_speed": 0, "phase": 117, "last_resolution": 0, "profile": 0, "fire_sequence": 1},
+          "event_identity": {"status": "available", "authority": "native typed event journal", "generation": 1, "first_sequence": 1056, "last_sequence": 1415, "count": 360, "content_schema": "mc2-native-event-logical-content-le/sha256-v1", "content_sha256": "a64989e7167eb2fdb0113f704bd591dccde4ccc97a715f4d982c8d200417cf72", "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1", "lifecycle_sha256": "1799abc5b68d7798deb556b6c1639f6584ad81e7c90debc7940ab377e49e7bc8"},
+          "camera_identity": {"status": "available", "authority": "native stored pre-update camera", "presentation": {"generation":1,"tick":219,"source_turn":221,"position":[21219,63591,4591],"yaw":1047,"pitch":-20,"roll":-61,"fov":128,"authority":2,"flags":3}, "render": {"generation":1,"tick":219,"source_turn":221,"history":[21219,63591],"eye_z":4591,"yaw":1047,"pitch":-20,"roll":-61,"fov":128,"slope_target":[6,2],"render_offset":[-7,-11],"authority":2,"flags":1}},
+          "terrain_identity": {"generation":1,"tick":219,"width":320,"height":200,"stride":320,"viewport_x":0,"viewport_y":0,"viewport_width":320,"viewport_height":200,"index_hash_fnv1a64":"ba9873861a554bcf","coverage_hash_fnv1a64":"d1d7279797f670f3","reflected":0,"mode5":588,"mode26":6,"writes":29921,"gpu_bottom_up_fnv1a64":"9d5154f952c93735","logical_top_down_fnv1a64":"42e55c4ea9e59855"},
+          "unity_frame_identity": {"schema":"mc2-private-qualified-full-frame-v2","png_sha256":"ae47c77702e9bda65176518f5bf1fbc227d61465bb4d23b4f5cebb88f1f10c11","raw_rgba_sha256":"bca7f1383fada3c7f298b6a3dc28b03c2149ac5604b58477f4e29289293b331c"},
+          "presentation_scope_ref": "unity-qualified-viewer-v2", "provenance": {"authority":"synthetic-native-unity-regression","oracle_status":"no-dynamic-remc2-route-capture","capture_manifest":"magiccarpet-autoplay-220.json"}
+        },
+        {
+          "checkpoint_id": "unity-route-303", "unity_checkpoint_tick": 303, "last_command_index": 302, "source_turn": 304,
+          "input_identity": {"last_command_raw_10_bytes": [0,0,0,0,24,1,0,0,0,0], "prefix_sha256": "414173b2b45c6b7cdd421919eb9ec5fa3035c1fa628d24e9a12fc1e6bb23e43c"},
+          "state_identity": {"status": "available", "authority": "native C ABI post-step snapshot", "generation": 1, "tick": 303, "event_head": 1949, "state_hash_fnv1a64": "031307cd7b0a3e21", "conformance_hash_fnv1a64": "2b0d8c15493b485a", "entity_index": 152, "position": [24338,3730,4032], "yaw": 812, "display_pitch": 45, "effective_pitch": 45, "roll": -3, "target_speed": 80, "actual_speed": 80, "strafe_speed": 0, "phase": 200, "last_resolution": 0, "profile": 0, "fire_sequence": 2},
+          "event_identity": {"status": "available", "authority": "native typed event journal", "generation": 1, "first_sequence": 1416, "last_sequence": 1949, "count": 534, "content_schema": "mc2-native-event-logical-content-le/sha256-v1", "content_sha256": "95e279bcee4cd376d3806286fbc35a543408dccf0745cfc9876837a7121c683a", "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1", "lifecycle_sha256": "9a38be07ab3ce3f85388be1922e665f1da40cfeb443d3e8ebfd6010f703b7855"},
+          "camera_identity": {"status": "available", "authority": "native stored pre-update camera", "presentation": {"generation":1,"tick":302,"source_turn":304,"position":[24291,3667,4168],"yaw":812,"pitch":22,"roll":-3,"fov":128,"authority":2,"flags":3}, "render": {"generation":1,"tick":302,"source_turn":304,"history":[24291,3667],"eye_z":4168,"yaw":812,"pitch":22,"roll":-3,"fov":128,"slope_target":[-32,0],"render_offset":[-40,-7],"authority":2,"flags":1}},
+          "terrain_identity": {"generation":1,"tick":302,"width":320,"height":200,"stride":320,"viewport_x":0,"viewport_y":0,"viewport_width":320,"viewport_height":200,"index_hash_fnv1a64":"1a3250f953440c12","coverage_hash_fnv1a64":"8e818be5a1fecac3","reflected":0,"mode5":362,"mode26":234,"writes":50474,"gpu_bottom_up_fnv1a64":"6e2f9520b717ac5d","logical_top_down_fnv1a64":"257fa41076ba68cd"},
+          "unity_frame_identity": {"schema":"mc2-private-qualified-full-frame-v2","png_sha256":"44897004cbcfc1ec20d371518a5281a65d5a0d6f4a1ece0a1a32bcee246eea11","raw_rgba_sha256":"25189f266aec55c0eb0203e5feff43d07e86dff6c98fca45e507a5003b06c968"},
+          "presentation_scope_ref": "unity-qualified-viewer-v2", "provenance": {"authority":"synthetic-native-unity-regression","oracle_status":"no-dynamic-remc2-route-capture","capture_manifest":"magiccarpet-autoplay-303.json"}
+        },
+        {
+          "checkpoint_id": "unity-route-400", "unity_checkpoint_tick": 400, "last_command_index": 399, "source_turn": 401,
+          "input_identity": {"last_command_raw_10_bytes": [0,0,0,0,0,0,0,0,0,0], "prefix_sha256": "e393b346b503dc0c058214f70eed3dfd6ab6a4103b8ec2cfe74d3d4324fe42eb"},
+          "state_identity": {"status": "available", "authority": "native C ABI post-step snapshot", "generation": 1, "tick": 400, "event_head": 2580, "state_hash_fnv1a64": "6ea3b184dbd5eeb1", "conformance_hash_fnv1a64": "a6e825cb672d3f0a", "entity_index": 152, "position": [25849,12174,3802], "yaw": 812, "display_pitch": 3, "effective_pitch": 3, "roll": -3, "target_speed": 80, "actual_speed": 80, "strafe_speed": 0, "phase": 41, "last_resolution": 0, "profile": 0, "fire_sequence": 2},
+          "event_identity": {"status": "available", "authority": "native typed event journal", "generation": 1, "first_sequence": 1950, "last_sequence": 2580, "count": 631, "content_schema": "mc2-native-event-logical-content-le/sha256-v1", "content_sha256": "90058610274ede23c48d81e909d3eedb17a0bd82f9f4de8932b4670bc9ad50a5", "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1", "lifecycle_sha256": "6bb62aa7a2f6fcc0f8d6fb87a5953efe9da4420735a79b22b4c3dc386573ac3e"},
+          "camera_identity": {"status": "available", "authority": "native stored pre-update camera", "presentation": {"generation":1,"tick":399,"source_turn":401,"position":[25802,12111,3946],"yaw":812,"pitch":1,"roll":-3,"fov":128,"authority":2,"flags":3}, "render": {"generation":1,"tick":399,"source_turn":401,"history":[25802,12111],"eye_z":3946,"yaw":812,"pitch":1,"roll":-3,"fov":128,"slope_target":[-16,-12],"render_offset":[-4,2],"authority":2,"flags":1}},
+          "terrain_identity": {"generation":1,"tick":399,"width":320,"height":200,"stride":320,"viewport_x":0,"viewport_y":0,"viewport_width":320,"viewport_height":200,"index_hash_fnv1a64":"a8bdd2d0941251d3","coverage_hash_fnv1a64":"35be7aa3bef7daef","reflected":924,"mode5":214,"mode26":36,"writes":6895,"gpu_bottom_up_fnv1a64":"4efa2d8019069801","logical_top_down_fnv1a64":"5e407e2f551c0381"},
+          "unity_frame_identity": {"schema":"mc2-private-qualified-full-frame-v2","png_sha256":"8b638d505863445de39fe70ea0b670fea50574dfd5b3262ac1cd8836899782a2","raw_rgba_sha256":"90aaaefb113c75980890f0eed87e5cae256f2f9f36742cf0ca8f49bc37edec35"},
+          "presentation_scope_ref": "unity-qualified-viewer-v2", "provenance": {"authority":"synthetic-native-unity-regression","oracle_status":"no-dynamic-remc2-route-capture","capture_manifest":"magiccarpet-autoplay-400.json"}
+        }
+      ]
+    }
+  ],
+  "required_follow_on_gates": {
+    "mc-dl0r.17.11.7.2": [
+      "require the exact source projection at original idle frames 0, 8 and 19 while retaining the additive live tick hash",
+      "require every eight-forward active checkpoint, not only the final state",
+      "record camera, presentation, conformance and event-journal identities on named clocks",
+      "prove two sessions, reset/replay and old-generation invalidation"
+    ],
+    "mc-dl0r.17.11.7.3": [
+      "decode selected original full-frame references for side-by-side review",
+      "compare structural owner IDs and palettes, not raw Unity pixel equality",
+      "enumerate exact, frozen, adapted, omitted and deferred presentation layers"
+    ],
+    "mc-dl0r.17.11.7.4": [
+      "add Unity EditMode and PlayMode coverage",
+      "measure bulk ABI and allocation behavior",
+      "repeat lifecycle, player-build and owner-data privacy gates"
+    ]
+  }
+}

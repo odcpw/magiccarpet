@@ -1,0 +1,21 @@
+{
+  "name": "MagicCarpet.Native.PlayModeTests",
+  "rootNamespace": "MagicCarpet.Native.Tests",
+  "references": [
+    "MagicCarpet.Native.Runtime"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ]
+}

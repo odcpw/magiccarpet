@@ -1,0 +1,657 @@
+# Native Unity Level 1 diagnostic viewer
+
+Owner-local Track P presentation harness for Unity `6000.3.20f1`. This is the
+first truthful Level 1 viewer over the package-backed `sim_capi` ABI v2. It is
+not a final asset-fidelity or gameplay-qualified Unity port.
+
+## What is exact
+
+- The caller-supplied, validated package M reset projection and closure binding.
+- World `1/0`, Night/outdoor profile, counts `1000/177/8`, package and
+  closure hashes, reset state hash `9da4bc91af58f3ce`, preserved package-reset
+  conformance hash `77b96b82492d6f4b`, and additive playable-session effects
+  conformance hash `00cc7b799d6917fc`.
+- All six 65,536-cell terrain planes.
+- The 257×257 ground mesh heights (`ground byte * 32` source units), wrapped
+  row/column zero duplication, and alternating source diagonals.
+- With the qualified owner cache supplied, the source-locked 152-tile Night
+  `BL32N0-0` atlas is repacked using remc2's 256-byte stride/address grid and
+  sampled by direct terrain-type index through the exact ordered `PALN-0`
+  palette. The exact Level 1 selector set contains 65 values with maximum 139.
+  Per-cell D4 orientation follows `(terrain angle >> 4) & 7`, the 32-row
+  source `UVTable_D4350`, and eight camera-independent Unity mappings.
+- Static terrain brightness indexes the first 65,536 bytes of `TABLESN` as
+  `TABLESN[(brightness << 8) | source palette index]` before PALN lookup.
+  `CLRN-0` is also cache-locked. PALN's RGB6 channels use VGA scaling
+  `value * 4` (maximum 252), not bit replication.
+- The normal owner-cache view now presents an exact isolated 320×200 indexed
+  `sky + terrain` layer from Rust. It seeds the framebuffer with source
+  `DrawSky_40950`, builds and projects the 40×21 outdoor lattice, resolves the
+  complete reflection pass before primary terrain, executes source mode 5 and
+  framebuffer-dependent water mode 26 in submission order, and returns both
+  the final index plane and terrain-write coverage. The ABI binds those 64,000
+  byte planes to generation and render-camera tick and validates their FNV-1a
+  hashes before Unity upload. Unity reverses source top-down rows exactly once,
+  uploads persistent point-sampled R8 textures with no mipmaps, and resolves
+  every index through the exact ordered PALN palette before opaque diagnostic
+  objects. Coverage remains diagnostic because uncovered pixels are the exact
+  sky seed required by mode 26.
+- All 129 scene-reachable `TMAPS1-0` selectors are cache-locked: 118 exact RNC
+  decoded payloads and 11 verified one-byte placeholders. The four frame-observed
+  selectors are `40`, `41`, `54`, and `63`; complete decoded animation streams
+  are preserved alongside first-frame indexed images.
+- The package-derived presentation catalog assigns all 177 active reset rows
+  to 17 exact class/model/action/parameter/particle groups. It proves 130
+  terrain-chain heads: 83 pass the reset-state renderer gate, 47 are suppressed,
+  and 47 further active rows are off-chain.
+- Normal owner-cache mode renders exactly 64 stable actor billboards: 33
+  `GoatLive` goats plus 31 `FrozenObserved` dolmen/villager sprites. Every
+  Goat transform, yaw sector, active state, action, phase, and lifecycle comes
+  from one generation/tick/hash-bound 33-row Rust bulk snapshot. Selector
+  choice, 16-sector mode-20 yaw lookup, rear-sector mirroring,
+  PALN binding, source-unit scale, and aspect ratio come from the descriptor and
+  exact TMAP payloads. The viewer uses an explicit camera-facing,
+  bottom-center-at-entity-xyz pivot to avoid terrain clipping. That pivot is a
+  presentation approximation: original `DrawSprite_41BD3` anchoring also
+  applies a camera sin/cos-dependent offset and remains deferred.
+- Atomic flight snapshots, exact integer simulation, live player row, ordered
+  event journal, and eight immutable objective records.
+- With the owner cache supplied, the normal qualified view now uses a
+  uniformly scaled 640×480 owner HUD reference: Night MSPRN panels at
+  nearest-neighbour 2×, empty castle/balloon reset panels, the player panel and
+  icons without invented bars, reset Fireball/Possess big icons 123/124, the
+  exact selector-48 English objective in FONT1 and owner frame tiles 171–173,
+  and an owner-font `FROZEN OBSERVED` badge.
+- Its minimap follows the qualified MSPRN path: native 64×64, exact TABLESN
+  scanline aperture, exact fixed-point remc2 rotation, and nearest 2× display
+  to 128×128. It is player-centered and yaw-rotated. Frozen terrain uses the
+  exact minimap TABLESN two-step lookup and PALN; only `FrozenObserved` reset
+  entities remain in the white reference overlay, while Goat dots are omitted
+  until the original live mark pass is qualified. The center/player pose moves
+  from the live ABI. Exact original entity colors, filtering, reveal, and mark
+  passes remain deferred.
+- With the qualified cache, the native world appends exactly eleven
+  descriptor-backed audio references (asset-ref count 87 rather than the
+  frame-only 76) and typed `PrepareSound`, `EndLoop`, and `UpdateMusic` events
+  carry those indices. Unity loads the exact owner Night bank 1 / quality 822
+  WAV records for IDs 1, 2, 5, 29, 31, 37, 39, 43, and 46; ID 12 is an
+  explicit silent mapping, and the final reference is the Level 1 music track.
+  Local ambient loops 1/2/5/31, player-local feedback 29, and positional IDs
+  37/39/43 all use the original shared ten-effect-voice pool.
+  Positional commands arrive in a separate 88-byte sidecar; a missing or
+  invalid sidecar is silent.
+  Ambient loops start at volume zero, move one integer unit per 60 Hz callback
+  toward targets 70/70/120/85, do not restart on repeated prepare events, and
+  fade to zero on `EndLoop`. Their original loop count is -1: at zero they
+  remain silent, playing, and resident in the shared pool so reactivation
+  continues sample phase. Only reset frees them.
+- Level 1 logical music track 1 preserves remc2's playback-slot-0 /
+  loop-pointer-slot-1 indexing wart. Owner XMIDI is converted through remc2's
+  converter, then rendered deterministically to streaming 44.1 kHz stereo
+  PCM16 with pinned libADLMIDI bank 59. Playback begins only after the additive
+  native `StartMusic` event corresponding to the original second
+  `DrawAndEvents` pass at local `gameTurn=1`; reset stops, seeks, clears the
+  controller state, and rearms that same gate. This is an owner-local
+  presentation adaptation, not exact DOS sound-card timbre.
+
+## What is diagnostic
+
+The exact indexed layer is deliberately narrower than the complete original
+world frame. It contains sky and terrain only. Terrain-linked sprites and
+particles, other entity billboards, the carpet, spell effects, and HUD are not
+interleaved into the native software framebuffer yet. The returned flags make
+that omission machine-readable; the viewer never calls this a complete
+original frame.
+
+The source mode-5 software-raster contract now has a renderer-independent Rust
+CPU reference under `sim-core::mode5_raster`. It preserves the original
+vertex-order decision tree, quantized 16.16 edge tests, distinct ordinary and
+flat-edge divisors, scanline ownership, clipping, wrapped attribute carries,
+and per-pixel texture/TABLESN addressing. The reference is qualified with
+synthetic split, flat, clipped, byte-wrap, and both-diagonal seam vectors.
+
+Primary Level 1 water uses the separate mode-26 kernel now preserved under
+`sim-core::mode26_raster`. It reuses the exact mode-5 triangle setup and
+clipping, shades every source texel through TABLESN, and for raw texture
+indices 0 through 11 performs the second framebuffer-dependent lookup at
+`0x4000 + (existing_index << 8) + shaded_index`. The reference mutates the
+indexed framebuffer in source order and is pinned at the direct/blended
+threshold, maximum blend address, clipped first sample, repeated submission,
+complete triangle, and qualified owner TABLESN vectors.
+
+In explicit debug mode, the former Unity terrain shader remains available as
+a depth-only aid for diagnostic object markers. Qualified mode disables all
+nine Unity terrain mesh renderers because the native frame does not yet expose
+source depth and no approximate occlusion is silently substituted. Qualified
+mode also omits the primitive carpet, trim, overlay camera, moon light, and
+spell-event visual. Current owner entity placement and the 1600×900 stretch of
+the logical 320×200 buffer remain presentation adaptations. A reviewed 4:3 DOS
+pixel-aspect
+presentation and exact whole-world interleaving are separate work. The
+spell-event sphere/trail exists only in explicit debug mode.
+
+Only explicit `-mc-debug` may run without the owner cache. With
+`-mc-debug-entities`, numerical/default-font diagnostics and entity labels
+return as a test view. They are absent from `-mc-qualified`. The primitive
+carpet, lighting, depth proxy, and spell-event visual are debug-only and are
+not claims about original MC2 art, projectile simulation, or final asset
+fidelity. All objective rows are `FrozenObserved`. Of the 177 active entity
+rows, exactly 142 are `FrozenObserved`, 33 are `GoatLive`, entity 152 is
+`PlayerFlightLive`, and entity 153 is `SpellActivationLive`; the latter's
+changing holder fields are not exposed by ABI v2. Of the 64 qualified actor
+sprites, 33 are live Goats and 31 remain frozen.
+
+Unity owns no gameplay physics. The viewer creates no `Rigidbody`, gameplay
+`Collider`, Unity `Terrain`, or PhysX simulation authority.
+
+The unchanged 72-byte event ABI is accompanied by an additive 88-byte effect
+sidecar carrying wrapped relative coordinates, raw volume/pan, playback rate,
+arbitration action, and shared native voice index. Unity renders the original
+integer left/right gains. `spatialBlend`, `panStereo`, Doppler, and rolloff
+remain zero/disabled so Unity does not apply a second spatializer. The
+`UpdateMusic(mode, 3)` event is consumed and validated; `3` is the source
+timer multiplier, producing a 90 Hz integer dynamic-music envelope, not a
+group ID. Unity preserves the exact integer 0..127 state, one-unit callback
+steps, endpoint retirement, reversal, and reset guard. Playback slot 0 has no
+controller-119 tags while AIL pointer slot 1 tags channels 7 and 8. Until an
+active reference trace resolves that pointer distinction, Unity leaves the
+complete stereo track unchanged and excludes the optional danger OGG rather
+than fabricating a combat stem. A playable effect without its complete
+matching sidecar is silent and emits
+`MC_AUDIO_UNSUPPORTED ... action=suppressed reason=missing_audio_command`.
+Genuinely
+unknown mappings use the distinct `MC_AUDIO_UNKNOWN` record and also fail
+normal qualification. The local-audio harness retains its negative probes;
+`-mc-audio-qualify-positional` adds formula, listener, and live shared-pool
+qualification.
+
+The reset chain also contains 19 structurally drawable transient rows: 12
+Fireball impacts, one explosion/death effect, and six smoke particles. They are
+fully mapped to reset selectors 39, 54, and 63, but remain hidden in qualified
+mode because original update passes mutate them before the first presented
+frame. Debug mode may show their exact frozen capture-site state. The qualified
+first-presented-frame trace instead observes `TMAP40×10`, `41×14`, `54×8`,
+and `63×23`; live transient animation/link/lifetime parity is not claimed.
+
+Goat and villager TMAPs retain their complete four-frame delta streams. Their
+animation clock is selector-global in remc2, not per entity. Live Goats still
+use the exact base frame only, and typed sound-46 requests stay silent until
+the source numeric pitch is qualified. Shared used-TMAP clock reconstruction
+and pitch-exact Goat playback remain explicitly deferred rather than guessed.
+
+Owner packages are never copied into `Assets`, `StreamingAssets`, or the built
+player. A player must receive paths explicitly:
+
+```text
+-mc-qualified
+-mc-package /absolute/path/to/level1-export-m
+-mc-closure /absolute/path/to/level1-asset-closure.json
+-mc-asset-cache /absolute/path/to/level1-unity-asset-cache
+```
+
+`MC_PACKAGE_PATH` and `MC_CLOSURE_PATH` are equivalent environment fallbacks.
+Only the Unity editor defaults to the private sibling `generated/` paths.
+
+The private decoded owner-asset cache is required by `-mc-qualified`. It is
+optional only for the explicit `-mc-debug` fallback. Pass
+`-mc-asset-cache PATH` or set
+`MC_ASSET_CACHE_PATH`. Unity validates its schema, exact package/closure
+bindings, every size and SHA-256, and its aggregate content identity before
+accepting it. The cache remains external; raw DAT/TAB files are never loaded.
+
+TMAP actor selection and base-frame presentation are qualified and loaded.
+TMAP animation groups and complete delta streams are preserved rather than
+guessed or flattened.
+Records 426–436 are one-byte `b'0'` placeholders, not decoded textures and not
+the TAB record-504 offset sentinel.
+
+## Rebuild and install the native plugin
+
+```bash
+cd /home/oliver/Projects/odcpw/magiccarpet/research/private/remc2-sim-rs
+cargo build -p sim-capi --release --locked
+install -Dm755 target/release/libsim_capi.so \
+  /home/oliver/Projects/odcpw/magiccarpet/research/private/remc2-unity-native/Assets/Plugins/x86_64/libsim_capi.so
+```
+
+## Build the Linux player
+
+```bash
+/home/oliver/Unity/Hub/Editor/6000.3.20f1/Editor/Unity \
+  -batchmode -nographics -quit \
+  -projectPath /home/oliver/Projects/odcpw/magiccarpet/research/private/remc2-unity-native \
+  -executeMethod MagicCarpet.Native.Editor.BuildNativePlayer.BuildLinuxPlayer \
+  -logFile /tmp/magiccarpet-unity-build-v2.log
+```
+
+## Run the v2 headless qualification
+
+```bash
+Builds/Linux/MagicCarpetNative.x86_64 \
+  -batchmode -nographics -mc-qualified -mc-self-test \
+  -mc-package /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-export-m \
+  -mc-closure /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-asset-closure.json \
+  -mc-asset-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache \
+  -logFile /tmp/magiccarpet-native-selftest-v2.log
+```
+
+The test locks managed layouts, both hashes, counts, all planes, objectives,
+two independent sessions, reset-generation invalidation, the deterministic
+eight-forward route, live player row agreement, event ordering/fire/cursor,
+modular wrap arithmetic, exact-once session destruction, the pre-entity-update
+camera row, additive look/FOV inputs, reset camera history, and the additive
+72-byte `DrawWorld_411A0` terrain-slope camera sidecar. The renderer-independent
+Rust tests separately pin its four-height sampling, half-tile/wrap selection,
+±100 target clamps, signed `>>3` persistent easing, reset, terrain divisor
+floor/rejection boundaries, and strict object depth `>64`. The Unity
+`nearClipPlane=0.035` is explicitly logged as a raster-safety adaptation; it is
+not presented as an equivalent of any of those original projection rules.
+The test also locks the complete HUD selector/dimension/authority contract.
+With the cache supplied it also locks
+the 87-ref native bridge, known-only typed audio vector, descriptor parsing,
+streaming music extent, zero/ramp/repeated-prepare/fade loop envelope, the
+managed 40/96-byte terrain-frame ABI layouts, exact reset index/coverage
+hashes, same-tick equality, independent-session equality, row-flip
+involution, and reset/replay stability.
+
+## Run the viewer
+
+The owner-local launcher supplies the qualified package, closure, and external
+asset-cache paths:
+
+```bash
+./run-level1.sh
+```
+
+Set `MC_FULLSCREEN=1` for fullscreen, or override `MC_WIDTH` and `MC_HEIGHT`.
+Additional Unity/player arguments are passed through.
+
+The equivalent explicit invocation is:
+
+```bash
+Builds/Linux/MagicCarpetNative.x86_64 \
+  -mc-qualified \
+  -screen-fullscreen 0 -screen-width 1600 -screen-height 900 \
+  -mc-package /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-export-m \
+  -mc-closure /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-asset-closure.json \
+  -mc-asset-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache
+```
+
+Use `-mc-debug -mc-debug-entities` instead of `-mc-qualified` to expose and
+label all 177 active registry rows,
+including frozen reset-effect sprites and unresolved diagnostic control
+proxies, and to restore the diagnostic numerical `OnGUI`. `-mc-qualified`
+shows the owner HUD plus only the 64 evidence-backed dolmen, goat, and villager
+sprites. Its player-origin registry marker remains hidden, and no substitute
+carpet is rendered. Debug mode retains the temporary foreground carpet aid.
+
+Controls: `W/S` speed, `A/D` strafe, persistent absolute mouse steering,
+`I/J/K/L` keyboard steering, `C` or middle mouse to centre, `Space` or left
+mouse to request fire, `Esc` release capture, click recapture, `R` reset,
+`F11` fullscreen, and `F10` quit.
+
+## Graphical autoplay and captures
+
+```bash
+MC_AUTOPLAY_CAPTURE_DIR=/tmp/magiccarpet-autoplay-v2 \
+  Builds/Linux/MagicCarpetNative.x86_64 \
+  -mc-qualified \
+  -screen-fullscreen 0 -screen-width 1600 -screen-height 900 \
+  -mc-package /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-export-m \
+  -mc-closure /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-asset-closure.json \
+  -mc-asset-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache \
+  -mc-autoplay -mc-autoplay-quit \
+  -logFile /tmp/magiccarpet-autoplay-v2.log
+```
+
+After two runs into separate temporary directories, verify every manifest,
+recompute every PNG hash and magenta count, and require byte-identical PNG and
+manifest artifacts:
+
+```bash
+python3 verify_qualified_full_frames.py /tmp/run-a /tmp/run-b
+```
+
+Autoplay asserts turning, altitude change, typed fire events, 177 registry
+rows, zero runtime `Rigidbody`/`Collider`, the absence of every diagnostic
+presentation object in qualified mode, and writes five 1600×900 captures.
+Qualified mode deliberately has no approximate carpet proxy, so its logged
+clearance diagnostic is `Infinity`.
+Each checkpoint is armed inside the authoritative fixed simulation step. The
+simulation is then frozen until `WaitForEndOfFrame` captures the displayed
+frame, so checkpoints 145, 163, 220, 303, and 400 cannot silently drift to a
+later tick. Every PNG has a JSON manifest binding its checkpoint and native
+render tick, command-prefix identity, post-step state/conformance row, typed
+event range and logical hashes, pre-update presentation/render-camera rows,
+terrain-frame identity, package/closure/cache/plugin identities, Unity build
+and graphics identity, PNG and raw-RGBA SHA-256, dimensions, and zero-magenta
+result. The durable reference registry and executable verifier live in
+`qualification/`; they explicitly separate pinned remc2 evidence from the
+synthetic native/Unity route.
+The post-fire captures at ticks 163 and 303 retain the input-latch and typed
+kind-4 event evidence. Qualified mode deliberately renders no placeholder
+projectile: it logs `visual_suppressed
+reason=projectile-presentation-not-qualified`. Explicit `-mc-debug` mode may
+still show the moving sphere/trail as a diagnostic event marker;
+`-mc-debug-entities` additionally exposes unresolved entity diagnostics.
+Water is represented by the exact terrain-type plane coloring; there is no
+coplanar presentation-only water sheet.
+
+The current Level 1 integration run is recorded in:
+
+- `/tmp/magiccarpet-unity-build-exact-captures-v2.log`: Unity Linux player
+  build PASS, 86,136,066 bytes;
+- `/tmp/magiccarpet-native-selftest-exact-captures.log`: headless
+  `MC_SELF_TEST PASS`;
+- `/tmp/magiccarpet-autoplay-exact-capture-b.log` and
+  `/tmp/magiccarpet-autoplay-exact-capture-c.log`: two graphical
+  `MC_QUALIFIED_AUTOPLAY PASS` at tick 440 with all five captures, 64 qualified
+  owner sprites, no Rigidbody/Collider, exact terrain-frame route checks, one
+  source-turn music start, and `presentationClean`, `physicsClean`,
+  `terrainFrameClean`, `carpetOverlayClean`, `firePresentationClean`, and
+  `diagnosticObjectsClean` all true, plus `magentaClean=5/5`.
+- `/tmp/magiccarpet-qualified-full-frame-verification.log`:
+  `MC_QUALIFIED_FULL_FRAMES PASS checkpoints=5 exact=5 magenta=0
+  byte-identical-runs=2`.
+- `verify_owner_hud.py` on tick 145 versus tick 400: PASS with zero magenta
+  pixels, zero bottom-right near-white overlay pixels, all exact owner bitmap
+  samples present, and 43,273 changed minimap pixels.
+
+The later Level 1 reference-corpus qualification is recorded in:
+
+- `/tmp/magiccarpet-unity-build-level1-qualification-final-v4.log`: current
+  qualified Linux player build PASS;
+- `/tmp/magiccarpet-native-selftest-level1-qualification-final-v4.log`:
+  `MC_ROUTE_QUAL PASS` for five checkpoints, 440 steps, two independent
+  sessions, reset replay, stale-generation rejection, state, camera, terrain,
+  and typed event identities;
+- `/tmp/magiccarpet-level1-reference-corpus-verification-final-v4.log`:
+  original idle frames 0/8/19, all eight active forward passes, all 24
+  supporting recorded transitions, and all five synthetic Unity checkpoints
+  PASS with explicit evidence classifications;
+- `/tmp/magiccarpet-qualified-full-frame-level1-final-v4.log`: two final
+  schema-v2 graphical runs are byte-identical at all five exact checkpoints
+  with zero magenta pixels. The full-frame gate also binds entity/profile,
+  terrain generation/layout/viewport, exact Unity version and build GUID.
+- `/tmp/magiccarpet-presentation-v4.tmkwl0/`: private two-timeline review
+  evidence with three base-PALN original-frame decodes, five independently
+  clocked Unity captures, a typed 23-layer correspondence contract, and
+  `MC_LEVEL1_PRESENTATION PASS` with zero cross-timeline pixel/clock claims,
+  placeholders, missing owner references, or magenta pixels.
+
+Neutral native replay reproduces the original flight projection exactly at
+idle frames 0, 8, and 19. The live hashes at frames 8 and 19 are
+`061b7ffc82131a7e`/`a6b40ecb8b1d373c`; after normalizing only the additive
+native session tick, the source-projection hashes are the original
+`0e4547b42a98c976`/`13f7f355fcf6738f`. Both contracts remain visible so a
+lifecycle clock is never mistaken for a 1995 state field.
+
+Both typed fire requests remain observable, but qualified mode emits
+`visual_suppressed reason=projectile-presentation-not-qualified` and creates
+no placeholder sphere. The diagnostic visual remains available only with
+explicit `-mc-debug`; `-mc-debug-entities` additionally shows unresolved
+entity diagnostics.
+
+The runtime-supplied owner-data boundary is now an executable gate:
+`qualification/verify_unity_lifecycle_privacy.py`. It requires exact 5/5
+EditMode and 1/1 graphics-backed PlayMode results; pins the launcher, runtime
+assembly, global managers, plug-in, and build GUID; checks Unity build
+metadata; rejects StreamingAssets, symlinks, owner container/audio extensions,
+and registered owner-payload hash intersections; and reruns the full
+built-player self-test. Seven negative launches cover missing inputs and
+package/closure/cache corruption. Both batch and normal graphical
+missing-input starts exit 2, so a failed player never remains as a frozen,
+apparently runnable window.
+
+A straight-ahead autoplay baseline approached a genuine steep terrain face
+around tick 80. The retained presentation route now turns from its first tick;
+the exact simulation and camera are not changed or cheated. Whether remc2
+applies a missing forward-probe/collision response on the straight route
+remains an explicit later qualification question.
+Semantic prefab replacement, resolved tagged-channel dynamic music,
+high-resolution HSPRN parity, complete live HUD progression,
+exact minimap mark/filter parity, and wider-map qualification remain later
+work.
+
+## Owner-audio mixer qualification
+
+The runtime's post-listener capture tap is dormant unless
+`MC_AUDIO_CAPTURE_PATH` is explicitly set. The dedicated local-audio
+qualification path disables base music, freezes simulation stepping, drives
+typed events through the normal presentation code, and advances its stages
+from the captured audio sample clock rather than render-frame time:
+
+```bash
+MC_AUDIO_CAPTURE_PATH=/tmp/magiccarpet-local-audio-qual.wav \
+  xvfb-run -a Builds/Linux/MagicCarpetNative.x86_64 \
+  -mc-qualified \
+  -screen-fullscreen 0 -screen-width 640 -screen-height 480 \
+  -mc-audio-qualify-local \
+  -mc-package /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-export-m \
+  -mc-closure /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-asset-closure.json \
+  -mc-asset-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache \
+  -logFile /tmp/magiccarpet-local-audio-qual.log
+```
+
+The local run emits one `MC_AUDIO_WINDOW` record per bounded listener interval
+and cannot report `MC_AUDIO_LOCAL_QUAL PASS` unless all 24 local windows pass.
+Raw transition markers remain in the evidence, while silent steady-state
+measurement begins after one fixed 20 ms audio block so a callback already in
+flight cannot be misclassified as post-transition playback. Amplitude and RMS
+thresholds remain unchanged.
+It covers:
+
+- initial silence and the increasing ocean start-at-zero ramp;
+- ocean-to-crickets crossfade continuity and eventual mutual exclusion;
+- crickets, Fire, and Market fade-to-silence while their loop voices remain
+  resident;
+- Fire/Market near-versus-far loop-command outcomes as a separate
+  already-resolved 1536-unit accumulator path;
+- repeated Market prepare without source restart or a silent 20 ms block;
+- one audible CANTUSE player-local feedback event followed by silence;
+- explicit NULL, positional-missing-sidecar, and unknown negative windows remaining
+  silent with distinct structured diagnostics; and
+- an audible generation-tagged loop followed by a real native session reset,
+  generation increment, and silent cleanup window.
+
+The separate positional and shared-voice qualifier uses the same paths with
+`-mc-audio-qualify-positional`. It emits 17 positional/live-allocator windows
+and proves exact
+left/right gains, near/far energy, measured low/high-rate signal behavior,
+natural completion/reuse, ten first-free allocations, eleventh-effect
+no-steal, duplicate suppression, and reset while the pool is full:
+
+```bash
+MC_AUDIO_CAPTURE_PATH=/tmp/magiccarpet-positional-postfix.wav \
+  xvfb-run -a Builds/Linux/MagicCarpetNative.x86_64 \
+  -mc-qualified \
+  -screen-fullscreen 0 -screen-width 640 -screen-height 480 \
+  -mc-audio-qualify-positional \
+  -mc-package /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-export-m \
+  -mc-closure /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-asset-closure.json \
+  -mc-asset-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache \
+  -logFile /tmp/magiccarpet-positional-postfix.log
+```
+
+One observed 24/24 run produced PCM16 stereo at 48 kHz for 18.026667 seconds:
+1,730,560 interleaved samples, 1,271,430 nonzero samples, peak 0.668132, and
+temporary capture SHA-256
+`8f1725b319fb3d18ebbaed05fa3ad26c283ab699665f3d9be4d14bbffb8de026`.
+An independent second run again passed all 24 windows while producing
+17.792000 seconds, 1,708,032 samples, 1,242,834 nonzero samples, and a
+different observed hash
+`b63493b7053287a15b7f15fbe0413d830291db44729a49b578c8e448bc7781ee`.
+The window verdicts and command/state invariants are the qualification
+contract; the whole-file hash is scheduling-dependent private evidence, not a
+golden.
+
+The final signed-loop-count rebuild passed the local qualification 24/24 at
+`/tmp/magiccarpet-local-loop-count-final.log`, the positional/shared-pool
+qualification 17/17 at
+`/tmp/magiccarpet-positional-loop-count-final.log`, and the headless
+self-test at `/tmp/magiccarpet-selftest-loop-count-final.log`. The local
+run additionally proves that a faded ambient loop stays resident on the same
+voice, advances phase while silent, resumes through `UPDATE_EXISTING` without
+another play start, and occupies the shared pool until reset.
+
+The final camera-history/slope/raw-yaw build passed the headless gate at
+`/tmp/magiccarpet-native-selftest-raw-yaw-final.log`, the five-capture
+graphical gate at `/tmp/magiccarpet-autoplay-raw-yaw-final.log`, local audio
+24/24 at `/tmp/magiccarpet-local-raw-yaw-final.log`, and
+positional/shared-pool audio 17/17 at
+`/tmp/magiccarpet-positional-raw-yaw-final.log`.
+
+The exact pnt5-grid build passed 25 native-v2 tests, the Unity player build at
+`/tmp/magiccarpet-unity-build-pnt5-grid.log`, the headless gate at
+`/tmp/magiccarpet-native-selftest-pnt5-grid.log`, and the five-capture
+graphical gate at `/tmp/magiccarpet-autoplay-pnt5-grid.log`. The graphical
+run reports 840 unique source vertices, 612 eligible four-corner cells for the
+reset view, 13 CPU/GPU pnt5 boundary vectors, and keeps the screen-linear
+mode-5 stage explicitly deferred.
+
+The qualified isolated indexed terrain-frame build passes all 30 native-v2
+tests and 159 sim-core tests, the Unity build at
+`/tmp/magiccarpet-unity-build-terrain-qualified-order-final.log`, the headless
+gate at
+`/tmp/magiccarpet-native-selftest-terrain-qualified-order-final.log`, and two
+independent five-capture graphical gates at
+`/tmp/magiccarpet-autoplay-terrain-qualified-order-a.log` and
+`/tmp/magiccarpet-autoplay-terrain-qualified-order-b.log`.
+
+The reset frame pins index hash `2f38beef8e4a62fb`, coverage hash
+`65fa674ae4afefec`, GPU PALN-resolved bottom-up readback hash
+`20adbcad23e28889`, logical top-down RGBA hash `4f565333a9bbcab9`, 578
+primary mode-5 triangles, and 37,174 terrain writes. GPU qualification reads
+back all 64,000 raw index pixels, all 64,000 raw coverage pixels, all 256 PALN
+entries, and all 64,000 resolved RGBA pixels. It repeats the reset readback at
+the same tick and records the graphics API/device.
+
+Rust qualification also pins a reset-lattice census of 672 visible / 168
+culled vertices, 388 near / 212 fog-ramp / 72 fog-zero visible vertices, both
+checkerboard parities at 336 each, and all eight D4 groups in every distance
+band. Consecutive low-water turns pin moving-wave index/coverage hashes with
+36 reflected and 300 mode-26 triangles. Explicit `render_y=65535` and
+`render_y=0` vectors pin the toroidal seam.
+
+The deterministic live route pins native index, coverage, triangle/write, and
+GPU RGBA hashes at ticks 145, 163, 220, 303, and 400. Tick 220 first exercises
+mode 26; tick 400 exercises 924 reflected, 214 primary mode-5, and 36 primary
+mode-26 triangles. Each checkpoint writes a bounded private 320×200 RGBA PNG,
+source-order R8 index plane, source-order R8 coverage plane, and JSON manifest
+under the requested system-temporary capture directory. The v2 manifest names
+the source-top-down R8 order, Unity bottom-up GPU readback storage order, and
+logical top-down PNG order separately and pins both RGBA hashes. The final
+local evidence is under
+`/tmp/magiccarpet-terrain-qualified-order-a.OW4TJF/`; it is private ephemeral
+owner-data evidence, not a distributable artifact. All 20 bounded terrain
+artifacts were byte-identical to the independent capture under
+`/tmp/magiccarpet-terrain-qualified-order-b.3sgBOd/`.
+
+The earlier base-music/autoplay capture path remains useful as a whole-view
+smoke test:
+
+```bash
+MC_AUDIO_CAPTURE_PATH=/tmp/magiccarpet-unity-listener-mix.wav \
+  xvfb-run -a Builds/Linux/MagicCarpetNative.x86_64 \
+  -mc-qualified \
+  -screen-fullscreen 0 -screen-width 640 -screen-height 480 \
+  -mc-autoplay -mc-autoplay-quit \
+  -mc-package /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-export-m \
+  -mc-closure /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-asset-closure.json \
+  -mc-asset-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache \
+  -logFile /tmp/magiccarpet-audio-listener-player.log
+
+ffprobe -v error \
+  -show_entries stream=codec_name,sample_rate,channels,duration \
+  -of json /tmp/magiccarpet-unity-listener-mix.wav
+ffmpeg -hide_banner -nostats \
+  -i /tmp/magiccarpet-unity-listener-mix.wav \
+  -af volumedetect -f null -
+```
+
+One observed qualified run produced 9.600 seconds of PCM16 stereo at 48 kHz,
+868,327 nonzero interleaved samples, peak 0.157493, mean -30.9 dB and maximum
+-16.1 dB. The capture SHA-256 was
+`cb64476cce28c7a99b19b916e8b0ca406303bb1bba0cfd6a525b681349dc7299`.
+A second reviewed run had the same format, duration, peak and volume metrics,
+but 870,375 nonzero samples and SHA-256
+`f76584994984bf0999f5dc21ae6651b88a844fbc2045995f9372dad6b337642f`.
+Unity mixer scheduling makes these observed capture hashes non-repeatable
+evidence, not golden artifacts. The deterministic pre-mixer music WAVE hash
+`03b3f951…4605d` remains the repeatable golden.
+The final suppression/confinement build was captured again: 9.557333 seconds,
+917,504 samples, 864,231 nonzero, the same 0.157493 peak / -30.9 dB mean /
+-16.1 dB maximum, and observed SHA-256
+`f68c59fffd38549728948c8dbb039d412333fe781fe09e0938fa9d6f36fbb61b`.
+It is owner-derived private evidence: keep it out of `Assets`, `Builds`, and
+all distributable repositories, then delete it after review.
+
+The capture writer accepts only direct descendants of the system temporary
+directory whose existing parent chain contains no symlink/reparse point. It
+rejects Unity `Assets`, `StreamingAssets`, `Builds`, parent escapes,
+nonexistent parents, symlinked parents, and directory targets before opening
+the output. Capture-path preflight runs synchronously in
+`MagicCarpetRuntime.Awake`; an invalid requested path produces `MC_FATAL`,
+nonzero exit, no autoplay PASS, and no output file.
+`-mc-audio-qualify-local` additionally requires both an armed capture path and
+the exact owner cache. A missing or failed capture request exits 2 before any
+local-audio PASS marker.
+
+## Controlled owner-HUD capture
+
+The normal owner view contains no Unity/default-font HUD. The Linux player is
+built without Unity's `Development Build` overlay. A deterministic capture and
+moving-pose comparison can be produced with:
+
+```bash
+capture_dir=/tmp/magiccarpet-owner-hud
+mkdir -p "$capture_dir/autoplay"
+MC_HUD_CAPTURE_PATH="$capture_dir/hud.png" \
+MC_HUD_COMPARISON_CAPTURE_PATH="$capture_dir/hud-moving.png" \
+MC_AUTOPLAY_CAPTURE_DIR="$capture_dir/autoplay" \
+  xvfb-run -a Builds/Linux/MagicCarpetNative.x86_64 \
+  -mc-qualified \
+  -screen-fullscreen 0 -screen-width 1600 -screen-height 900 \
+  -mc-package /absolute/path/to/level1-export-m \
+  -mc-closure /absolute/path/to/level1-asset-closure.json \
+  -mc-asset-cache /absolute/path/to/level1-unity-asset-cache \
+  -mc-autoplay -mc-autoplay-quit
+
+python3 verify_owner_hud.py "$capture_dir/hud.png" \
+  --comparison "$capture_dir/hud-moving.png"
+```
+
+The verifier checks the 640×480 uniform reference transform; exact palette
+samples from the minimap/health/blank/player/icon panels and both spell frames
+plus Fireball/Possess icons; the exact Night red FONT1 objective and frozen
+badge; owner minimap diversity; centered live player marker; fixed opaque
+objective/top-bar pixels across moving captures; a changed
+player-centered/yaw-rotated minimap; no magenta shader failure; and no
+bottom-right Unity/default-font overlay. The specific autoplay capture tick is
+reported by the runtime and can change if the presentation capture cadence is
+adjusted.
+
+## Controlled entity gallery
+
+The test-only gallery does not step or mutate the simulation. It places the
+exact dolmen, three goat orientation samples (including a rear-sector UV
+mirror), and all four villager appearances at controlled distance and common
+baselines:
+
+```bash
+MC_ENTITY_GALLERY_CAPTURE_PATH=/tmp/magiccarpet-entity-gallery.png \
+  Builds/Linux/MagicCarpetNative.x86_64 \
+  -mc-debug \
+  -screen-fullscreen 0 -screen-width 1600 -screen-height 900 \
+  -mc-package /absolute/path/to/level1-export-m \
+  -mc-closure /absolute/path/to/level1-asset-closure.json \
+  -mc-asset-cache /absolute/path/to/level1-unity-asset-cache \
+  -mc-entity-gallery -mc-autoplay-quit
+
+python3 verify_entity_gallery.py /tmp/magiccarpet-entity-gallery.png
+```
+
+The verifier locks each projected quad against its TMAP dimensions and
+`rotSpeed / 64` scale, requires visible bounds and PALN color diversity,
+compares the side goat against the rear UV mirror, and rejects magenta shader
+failures.
