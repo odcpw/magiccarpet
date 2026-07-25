@@ -1,0 +1,465 @@
+:root {
+  color: #f4dfae;
+  background: #081918;
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: geometricPrecision;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#game-shell {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: #081918;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+button {
+  font: inherit;
+}
+
+#game-shell {
+  position: relative;
+  isolation: isolate;
+}
+
+#game-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  outline: none;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at 50% 52%, transparent 0 22%, rgb(5 17 16 / 0.24) 58%),
+    linear-gradient(180deg, rgb(5 20 20 / 0.1), rgb(4 13 13 / 0.76));
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+
+.overlay.departing {
+  opacity: 0;
+  transform: scale(1.025);
+  pointer-events: none;
+}
+
+.intro-panel {
+  width: min(630px, calc(100vw - 42px));
+  padding: 46px 46px 38px;
+  text-align: center;
+  background: linear-gradient(145deg, rgb(5 24 23 / 0.83), rgb(8 17 17 / 0.7));
+  border: 1px solid rgb(223 183 100 / 0.5);
+  box-shadow:
+    0 32px 90px rgb(0 0 0 / 0.38),
+    inset 0 0 50px rgb(219 170 74 / 0.035);
+  backdrop-filter: blur(12px);
+}
+
+.private-mark,
+.objective span,
+.meters small,
+.telemetry,
+.intro-controls {
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+}
+
+.private-mark {
+  margin: 0 0 18px;
+  color: #c9ad72;
+  font-size: 10px;
+}
+
+h1 {
+  margin: 0;
+  color: #f5d797;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(44px, 7vw, 78px);
+  font-weight: 400;
+  line-height: 0.94;
+  letter-spacing: -0.045em;
+  text-shadow: 0 5px 28px rgb(0 0 0 / 0.42);
+}
+
+.intro-copy {
+  max-width: 490px;
+  margin: 24px auto 28px;
+  color: #e7e0ca;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 17px;
+  line-height: 1.65;
+}
+
+#enter-button {
+  min-width: 220px;
+  padding: 13px 24px 12px;
+  color: #122321;
+  background: #e1b966;
+  border: 1px solid #f4d794;
+  border-radius: 1px;
+  box-shadow: 0 8px 25px rgb(0 0 0 / 0.28);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  transition: background 0.16s ease, transform 0.16s ease;
+}
+
+#enter-button:hover:not(:disabled) {
+  background: #f0ce84;
+  transform: translateY(-1px);
+}
+
+#enter-button:disabled {
+  opacity: 0.52;
+  cursor: wait;
+}
+
+.intro-controls {
+  margin: 25px 0 0;
+  color: #8f9f91;
+  font-size: 9px;
+}
+
+.boot-error {
+  color: #f1a589;
+  font-size: 12px;
+}
+
+#hud {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  text-shadow: 0 2px 7px rgb(0 0 0 / 0.75);
+}
+
+.objective {
+  position: absolute;
+  top: 30px;
+  left: 50%;
+  min-width: 310px;
+  padding: 0 46px 9px;
+  transform: translateX(-50%);
+  text-align: center;
+  border-bottom: 1px solid rgb(233 194 111 / 0.5);
+}
+
+.objective::before,
+.objective::after {
+  content: "";
+  position: absolute;
+  bottom: -4px;
+  width: 7px;
+  height: 7px;
+  background: #d6ad5e;
+  border: 1px solid #152e2c;
+  transform: rotate(45deg);
+}
+
+.objective::before {
+  left: 0;
+}
+
+.objective::after {
+  right: 0;
+}
+
+.objective span {
+  display: block;
+  color: #ead39c;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 12px;
+}
+
+.objective strong {
+  display: block;
+  margin-top: 6px;
+  color: #c2c9b8;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+}
+
+.objective strong.complete {
+  color: #ffd477;
+}
+
+.reticle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transform: translate(-50%, -50%);
+  color: #f0d18b;
+  filter: drop-shadow(0 1px 3px #000);
+}
+
+.reticle i {
+  display: block;
+  width: 12px;
+  height: 1px;
+  background: currentColor;
+}
+
+.reticle b {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border: 1px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.minimap-frame {
+  position: absolute;
+  left: 26px;
+  bottom: 24px;
+  width: 190px;
+  height: 190px;
+  padding: 8px;
+  border: 1px solid rgb(230 193 111 / 0.62);
+  border-radius: 50%;
+  background: rgb(4 18 18 / 0.64);
+  box-shadow: inset 0 0 25px rgb(0 0 0 / 0.65);
+  backdrop-filter: blur(6px);
+}
+
+#minimap {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+}
+
+.map-north {
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  color: #e8c36e;
+  font-family: Georgia, serif;
+  font-size: 11px;
+  transform: translateX(-50%);
+}
+
+.meters {
+  position: absolute;
+  right: 27px;
+  bottom: 25px;
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.meter {
+  display: grid;
+  grid-template-rows: 19px 112px 18px 14px;
+  justify-items: center;
+  width: 43px;
+}
+
+.meter-icon {
+  color: #e7c36f;
+  font-family: Georgia, serif;
+  font-size: 17px;
+}
+
+.meter-track {
+  position: relative;
+  width: 12px;
+  height: 105px;
+  margin: 4px 0;
+  border: 1px solid rgb(235 198 110 / 0.76);
+  background: rgb(3 15 15 / 0.58);
+}
+
+.meter-track::before,
+.meter-track::after {
+  content: "";
+  position: absolute;
+  left: -4px;
+  width: 18px;
+  height: 1px;
+  background: rgb(235 198 110 / 0.58);
+}
+
+.meter-track::before {
+  top: 2px;
+}
+
+.meter-track::after {
+  bottom: 2px;
+}
+
+.meter-track i {
+  position: absolute;
+  inset: 4px 3px;
+  background: linear-gradient(#83ddd0, #168d85);
+  box-shadow: 0 0 9px rgb(65 211 198 / 0.45);
+  transform: scaleY(0);
+  transform-origin: bottom;
+  transition: transform 0.1s linear;
+}
+
+.meter-track.magic i {
+  background: linear-gradient(#ffe16e, #9ea924);
+  box-shadow: 0 0 9px rgb(255 223 87 / 0.42);
+}
+
+.meter strong {
+  color: #f1dfb5;
+  font-family: Georgia, serif;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.meter small {
+  color: #d6bc82;
+  font-size: 7px;
+}
+
+.control-ribbon {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  min-width: 385px;
+  padding: 8px 30px;
+  color: #e5c983;
+  background: linear-gradient(90deg, transparent, rgb(6 22 21 / 0.76) 12% 88%, transparent);
+  border-top: 1px solid rgb(215 175 87 / 0.34);
+  border-bottom: 1px solid rgb(215 175 87 / 0.34);
+  font-family: Georgia, serif;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-align: center;
+  text-transform: uppercase;
+  transform: translateX(-50%);
+}
+
+.control-ribbon b {
+  padding: 0 11px;
+  color: #8b9c8d;
+}
+
+.telemetry {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  color: rgb(226 221 190 / 0.66);
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  font-size: 8px;
+}
+
+.toast {
+  position: absolute;
+  top: 29%;
+  left: 50%;
+  padding: 10px 18px;
+  color: #ffe0a0;
+  background: rgb(5 20 19 / 0.74);
+  border: 1px solid rgb(224 184 96 / 0.46);
+  font-family: Georgia, serif;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  opacity: 0;
+  transform: translate(-50%, 10px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.pause-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  color: #f2d897;
+  background: rgb(3 14 14 / 0.58);
+  text-align: center;
+  backdrop-filter: blur(5px);
+}
+
+.pause-panel[hidden] {
+  display: none;
+}
+
+.pause-panel strong {
+  font-family: Georgia, serif;
+  font-size: 40px;
+  font-weight: 400;
+}
+
+.pause-panel span {
+  color: #c3c9b5;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 900px) {
+  .intro-panel {
+    padding: 34px 24px 28px;
+  }
+
+  .objective {
+    top: 20px;
+    min-width: 260px;
+  }
+
+  .minimap-frame {
+    width: 128px;
+    height: 128px;
+    left: 14px;
+    bottom: 15px;
+  }
+
+  .meters {
+    right: 10px;
+    bottom: 16px;
+    gap: 6px;
+    transform: scale(0.82);
+    transform-origin: right bottom;
+  }
+
+  .control-ribbon {
+    display: none;
+  }
+
+  .telemetry {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

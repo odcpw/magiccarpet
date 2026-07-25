@@ -1,0 +1,26 @@
+{
+  "name": "carpet-flight-private-playable",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build:wasm": "PATH=\"$HOME/.cargo/bin:$PATH\" wasm-pack build ../crates/sim-wasm --target web --out-dir ../../web/pkg --out-name sim_wasm --mode normal --dev",
+    "build:wasm:release": "PATH=\"$HOME/.cargo/bin:$PATH\" wasm-pack build ../crates/sim-wasm --target web --out-dir ../../web/pkg --out-name sim_wasm --mode normal --release",
+    "dev": "vite --host 127.0.0.1 --port 8878",
+    "play": "pnpm build:wasm && pnpm dev",
+    "build": "pnpm build:wasm:release && tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 8878",
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.58.2",
+    "@types/three": "0.185.1",
+    "typescript": "7.0.2",
+    "vite": "8.1.5"
+  },
+  "packageManager": "pnpm@10.32.1"
+}

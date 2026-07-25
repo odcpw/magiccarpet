@@ -1,0 +1,22 @@
+[workspace]
+members = [
+    "crates/atlas-registry",
+    "crates/sim-core",
+    "crates/sim-cli",
+    "crates/sim-capi",
+    "crates/sim-wasm",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "LicenseRef-Private-Research-Only"
+publish = false
+rust-version = "1.97"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

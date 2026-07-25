@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#081918" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><text y=%2225%22 font-size=%2226%22>✦</text></svg>" />
+    <title>The Wind Remembers — Private Flight Lab</title>
+  </head>
+  <body>
+    <main id="game-shell">
+      <canvas id="game-canvas" aria-label="Magic carpet flight view"></canvas>
+
+      <section id="intro" class="overlay" data-testid="intro">
+        <div class="intro-panel">
+          <p class="private-mark">Owner-local Rust / Wasm flight lab</p>
+          <h1>The Wind Remembers</h1>
+          <p class="intro-copy">
+            Cross the island, skim the coast and ignite the six sky beacons
+            before you reach the caldera.
+          </p>
+          <button id="enter-button" type="button" disabled data-testid="enter-button">
+            Preparing the wind…
+          </button>
+          <p class="intro-controls">WASD fly · Mouse steer · Space fire · R restart · P pause</p>
+        </div>
+      </section>
+
+      <section id="hud" aria-live="polite">
+        <div class="objective">
+          <span>Reach the caldera</span>
+          <strong id="objective-progress" data-testid="objective-progress">0 / 6 beacons</strong>
+        </div>
+
+        <div class="reticle" aria-hidden="true">
+          <i></i><b></b><i></i>
+        </div>
+
+        <div class="minimap-frame">
+          <canvas id="minimap" width="220" height="220" aria-label="Island minimap"></canvas>
+          <span class="map-north">N</span>
+        </div>
+
+        <div class="meters">
+          <div class="meter">
+            <span class="meter-icon">≋</span>
+            <div class="meter-track"><i id="speed-fill"></i></div>
+            <strong id="speed-value">0</strong>
+            <small>Speed</small>
+          </div>
+          <div class="meter">
+            <span class="meter-icon">△</span>
+            <div class="meter-track"><i id="altitude-fill"></i></div>
+            <strong id="altitude-value">0</strong>
+            <small>Altitude</small>
+          </div>
+          <div class="meter">
+            <span class="meter-icon">✦</span>
+            <div class="meter-track magic"><i id="magic-fill"></i></div>
+            <strong id="magic-value">100</strong>
+            <small>Magic</small>
+          </div>
+        </div>
+
+        <div class="control-ribbon">WASD fly <b>·</b> Mouse steer <b>·</b> Space fire</div>
+        <div id="telemetry" class="telemetry" data-testid="telemetry">Rust core · tick 0</div>
+        <div id="toast" class="toast" role="status"></div>
+      </section>
+
+      <section id="pause-panel" class="pause-panel" hidden>
+        <strong>Wind held</strong>
+        <span>Press P to continue</span>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
