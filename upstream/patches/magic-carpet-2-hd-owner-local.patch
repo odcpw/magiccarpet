@@ -1,0 +1,178 @@
+diff --git a/remc2/engine/Animation.cpp b/remc2/engine/Animation.cpp
+index a1cece5..f1b318d 100644
+--- a/remc2/engine/Animation.cpp
++++ b/remc2/engine/Animation.cpp
+@@ -70,6 +70,9 @@ void PlayInfoFmv(__int16 allowSkip, __int16 redrawText, Type_SoundEvent_E17CC* p
+ 		AnimCurrentTime = std::chrono::system_clock::now();
+ 		do
+ 		{
++			if (IsQuitRequested())
++				break;
++
+ 			SetFrameStart(std::chrono::system_clock::now());
+ 			if (stopPlaybackFlag_17DB5A)
+ 				break;
+@@ -690,4 +693,3 @@ void ReadIntroPalettes_76260()
+ 	}
+ }
+ 
+-
+diff --git a/remc2/engine/EventsFunctions.cpp b/remc2/engine/EventsFunctions.cpp
+index dd6da41..14ade6b 100644
+--- a/remc2/engine/EventsFunctions.cpp
++++ b/remc2/engine/EventsFunctions.cpp
+@@ -31305,6 +31305,9 @@ void sub_46830_main_loop(unsigned __int16 actLevel)//227830
+ 
+ 	while (1)
+ 	{
++		if (IsQuitRequested())
++			break;
++
+ 		g_state_monitor.Update();
+ 
+ 		if (D41A0_0.array_0x2BDE[D41A0_0.LevelIndex_0xc].byte_0x004_2BE0_11234)
+@@ -31479,6 +31482,8 @@ void sub_46830_main_loop(unsigned __int16 actLevel)//227830
+ 				StopMusic_8E020();
+ 				StopCdPlayback_86860(x_WORD_1803EC);
+ 				RestoreSoundVolume_59BF0();
++				if (IsQuitRequested())
++					return;
+ 				sub_90B27_VGA_pal_fadein_fadeout(0, 0x10u, 0);
+ 				if (x_WORD_180660_VGA_type_resolution & 1)
+ 					ClearGraphicsBuffer_72883((void*)pdwScreenBuffer_351628, 320, 200, getPaletteIndex_5BE80((TColor*)*xadatapald0dat2.colorPalette_var28, 0, 0, 0));
+@@ -31620,6 +31625,9 @@ void InGameLoop_47320()//228320
+ 
+ 	while (1)
+ 	{
++		if (IsQuitRequested())
++			break;
++
+ 		g_state_monitor.Update();
+ 
+ 		//debug
+diff --git a/remc2/engine/MenusAndIntros.cpp b/remc2/engine/MenusAndIntros.cpp
+index 8570319..58e99f4 100644
+--- a/remc2/engine/MenusAndIntros.cpp
++++ b/remc2/engine/MenusAndIntros.cpp
+@@ -606,6 +606,9 @@ void MenusAndIntros_76930(bool skipMenus)//257930
+ 	WriteConfigDat_81DB0();//262DB0
+ 	do
+ 	{
++		if (IsQuitRequested())
++			break;
++
+ 		g_state_monitor.Update();
+ 		//2b39d8
+ 		switch (nextMenu_E29D8)
+@@ -770,9 +773,13 @@ void Intros_76D10(char introType)//257d10
+ 	case 0:
+ #ifndef debug_hide_graphics
+ 		ShowWelcomeScreen_83850();//frog logo and wait
++		if (IsQuitRequested())
++			return;
+ #endif
+ 		sprintf(introPath, "%s/%s", cdDataPath.c_str(), "INTRO/INTRO.DAT");
+ 		PlayInfoFmv(1, 1, str_E17CC_0, introPath);//257160 intro .. 2b27cc
++		if (IsQuitRequested())
++			return;
+ 		StopSubtitles_2EB40();
+ 		DisplaySubtitles_D41C1 = 0;
+ 		DisplaySubtitles_D41C0 = 0;
+@@ -851,6 +858,9 @@ void MainMenu_76FA0()//257fa0
+ 		int scanCode = x_DWORD_17DE38str.x_BYTE_17DF10_get_key_scancode;
+ 		while (!m_ExitMenuLoop_E29DC)
+ 		{
++			if (IsQuitRequested())
++				break;
++
+ 			g_state_monitor.Update();
+ 
+ 			SetFrameStart(std::chrono::system_clock::now());
+@@ -4361,6 +4371,9 @@ void ShowWelcomeScreen_83850()//264850
+ 	LastPressedKey_1806E4 = 0;
+ 	while (!LastPressedKey_1806E4 && !x_WORD_180746_mouse_left_button && !x_WORD_180744_mouse_right_button && (j___clock() - time) / 100 <= 20)
+ 	{
++		if (IsQuitRequested())
++			return;
++
+ 		SetFrameStart(std::chrono::system_clock::now());
+ 		if (x_WORD_180660_VGA_type_resolution & 1)
+ 			CopyScreen(x_DWORD_E9C38_smalltit, pdwScreenBuffer_351628, 320, 200);
+diff --git a/remc2/portability/port_sdl_vga_mouse.cpp b/remc2/portability/port_sdl_vga_mouse.cpp
+index 131ccca..64d9aaf 100644
+--- a/remc2/portability/port_sdl_vga_mouse.cpp
++++ b/remc2/portability/port_sdl_vga_mouse.cpp
+@@ -46,6 +46,7 @@ Scene m_Scene = Scene::PREAMBLE_MENU;
+ const char* default_caption = "Magic Carpet 2 HD - (Community Update)";
+ 
+ bool m_initiated = false;
++bool m_quitRequested = false;
+ Uint8 tempPalettebuffer[768];
+ 
+ int oldWidth;
+@@ -120,6 +121,7 @@ void VGA_Init(Uint32  /*flags*/, int windowWidth, int windowHeight, int gameResW
+ {
+ 	if (!m_initiated)
+ 	{
++		m_quitRequested = false;
+ 		m_bMaintainAspectRatio = maintainAspectRatio;
+ 		m_iWindowWidth = windowWidth;
+ 		m_iWindowHeight = windowHeight;
+@@ -877,7 +879,12 @@ int PollSdlEvents()
+ 		{
+ 		case SDL_WINDOWEVENT:
+ 		{
+-			if (event.window.event == SDL_WINDOWEVENT_EXPOSED || event.window.event == SDL_WINDOWEVENT_RESIZED)
++			if (event.window.event == SDL_WINDOWEVENT_CLOSE)
++			{
++				m_quitRequested = true;
++				return 0;
++			}
++			else if (event.window.event == SDL_WINDOWEVENT_EXPOSED || event.window.event == SDL_WINDOWEVENT_RESIZED)
+ 			{
+ 				int newWidth = 0;
+ 				int newHeight = 0;
+@@ -959,7 +966,9 @@ int PollSdlEvents()
+ 			}
+ 			break;
+ 		}
+-		case SDL_QUIT: return 0;
++		case SDL_QUIT:
++			m_quitRequested = true;
++			return 0;
+ 		}
+ 	}
+ 	gamepad_poll_data(&gpe);
+@@ -967,6 +976,11 @@ int PollSdlEvents()
+ 	return 1;
+ }
+ 
++bool IsQuitRequested()
++{
++	return m_quitRequested;
++}
++
+ void SetMouseEvents(uint32_t buttons, int16_t x, int16_t y) 
+ {
+ 	ScaleUpMouseCoordsToVga(x, y);
+@@ -1155,6 +1169,8 @@ void VGA_close()
+ 	SDL_DestroyWindow(m_window);
+ 	m_window = nullptr;
+ 	SDL_Quit();
++	m_initiated = false;
++	m_quitRequested = false;
+ 	//free(m_currentPalletColours);
+ }
+ 
+diff --git a/remc2/portability/port_sdl_vga_mouse.h b/remc2/portability/port_sdl_vga_mouse.h
+index 44758a7..66398cf 100644
+--- a/remc2/portability/port_sdl_vga_mouse.h
++++ b/remc2/portability/port_sdl_vga_mouse.h
+@@ -56,6 +56,7 @@ bool VGA_check_standart_input_status();
+ uint16_t VGA_read_char_from_buffer();
+ void VGA_Set_mouse(int16_t a1, int16_t a2);
+ int PollSdlEvents();
++bool IsQuitRequested();
+ uint16_t TranslateSdlKeysToGameKeys(uint16_t scancode);
+ uint32_t TranslateSdlMouseToGameMouse(SDL_MouseButtonEvent event);
+ uint32_t TranslateButtonState(SDL_MouseButtonEvent button);

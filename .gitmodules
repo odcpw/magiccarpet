@@ -1,0 +1,5 @@
+[submodule "upstream/magic-carpet-2-hd"]
+	path = upstream/magic-carpet-2-hd
+	url = https://github.com/thobbsinteractive/magic-carpet-2-hd.git
+	branch = development
+
