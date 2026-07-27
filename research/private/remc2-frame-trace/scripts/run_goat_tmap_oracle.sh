@@ -44,5 +44,5 @@ exec gdb -q -nx -batch -x "$trace_root/goat_tmap_oracle.py" --args "$binary" \
     --text_output_to_console \
     --set_level 0 \
     --config_file_path "$config" \
-    --memimages_path "$owner_root/memimages/regressions" \
+    --memimages_path "$owner_root/memimages/" \
     --set_max_regressions_steps 0

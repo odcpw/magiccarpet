@@ -1,4 +1,4 @@
-# Level 1 flight-viewer qualification
+# Level 1 playable-slice qualification
 
 This directory registers the private, owner-local reference corpus for
 `mc-dl0r.17.11.7`. The machine-readable contract is
@@ -55,10 +55,15 @@ silently normalize the offset.
 ## Comparison policy
 
 The original framebuffer is a side-by-side reference. It is not a golden hash
-for the Unity window. The current exact native indexed layer contains sky and
-terrain only; Unity then adds frozen/adapted owner actors and HUD. Whole-world
-sprite/particle/carpet/spell/HUD interleaving, source depth, DOS aspect, and
-several live systems remain absent or deferred.
+for the Unity window. The current source-mapped native indexed world layer contains
+sky, terrain, and the qualified Goat, Archer, Firefly, combat, objective-prop,
+castle, mana-carrier, and mana-sphere families in one source-slot compositor.
+Its supported families use the remc2 reflection-before-primary and
+terrain/entity owner interleave. Unity adds the adapted live HUD. The source
+projection scale and 4:3 display rectangle are present. Villagers and dolmens
+now share the native painter, reflection, and shadow path; the carpet,
+unsupported sprite raster modes, and some animation clocks remain absent or
+deferred.
 
 The qualification therefore has separate gates:
 
@@ -106,9 +111,15 @@ structural-only comparisons, and forbidden claims. In particular:
   route and are exact only against the same-build Unity regression;
 - the controlled eight-view entity gallery is cache-bound debug evidence,
   has no simulation clock, and is never called an original or qualified view;
-- source sprite hotspots/anchors, DOS depth/interleaving/aspect, transient
-  palettes, HSPRN/live HUD progression, projectile presentation, and wider
-  simulation remain deferred.
+- unsupported sprite raster modes, remaining animation clocks, native carpet
+  presentation, multiplayer minimap reveal, and wider simulation remain
+  deferred. The source-mapped transient palette, 4:3
+  projection, HSPRN HUD,
+  Level 1 minimap entity/mark pass, and live indexed objective textbox are
+  registered adapted layers. The textbox preserves exact source geometry,
+  33-turn timing, TABLESN selector-61 blending, HFONT3 text, and HSPRN frame
+  order; only the pixel-centre-nearest 320×200-to-640×480 display mapping is
+  adapted.
 
 Materialize the private viewer only under a dedicated empty temporary
 directory:
@@ -157,9 +168,14 @@ The production scripts compile into `MagicCarpet.Native.Runtime.dll`; test
 code remains in separate EditMode and PlayMode assemblies and is not included
 in the player. The focused suite is:
 
-- six Linux EditMode native-integration tests for ABI/layout, exact input and
+- twenty-six Linux EditMode native-integration tests for ABI/layout, exact input and
   camera routing, reset/generation behavior, two-session isolation,
-  idempotent disposal, bad owner inputs, and preallocated bulk copying;
+  idempotent disposal, bad owner inputs, preallocated bulk copying, and the
+  qualified selector-clock seam, live Level 1 actor/exit exposure,
+  session-local terrain/lifecycle hashing and reset, owner-cache identity,
+  ordinary presentation ownership, and the input-only post-completion combat
+  route with no-overlap, incomplete-multipart, and insufficient-combat
+  negative controls;
 - one graphics-backed PlayMode test for a clean qualified startup, tick
   advancement, absence of diagnostic physics/light/carpet/fire proxies, and
   complete session disposal.
@@ -203,7 +219,7 @@ python3 qualification/verify_unity_lifecycle_privacy.py \
   --play-log /tmp/magiccarpet-unity-playmode.log
 ```
 
-It requires exactly 6/6 and 1/1 tests; pins the rebuilt launcher, runtime
+It requires exactly 26/26 and 1/1 tests; pins the rebuilt launcher, runtime
 assembly, global managers, plug-in, and build GUID; inspects Unity build
 metadata; rejects StreamingAssets, symlinks, owner container/audio
 extensions, and registered owner-payload hash intersections; reruns the full

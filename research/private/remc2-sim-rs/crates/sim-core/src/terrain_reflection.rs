@@ -198,6 +198,15 @@ pub const fn terrain_material_is_reflective(texture_index: u8) -> bool {
     )
 }
 
+/// First 164-byte half of remc2's `x_BYTE_D41D8` material table.
+///
+/// `DrawSprites_3E360` suppresses ground shadows when this classifier is
+/// non-zero for the owner terrain cell's texture selector.
+#[must_use]
+pub const fn terrain_material_blocks_shadow(texture_index: u8) -> bool {
+    matches!(texture_index, 8..=12 | 21..=27)
+}
+
 /// Texture lookup is offset one cell toward the view-sector corner. The UV
 /// row combines the four-way yaw sector with the texture cell's angle bits.
 #[must_use]

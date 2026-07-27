@@ -18,14 +18,17 @@ namespace MagicCarpet.Native
         private const float MouseDeflectionGain = 4.5f;
         private const float KeyboardDeflectionRate = 110f;
         private const int CarpetOverlayLayer = 30;
+        private const byte Level1ExitSwitchActorKind = 6;
+        private const byte Level1MultipartHeadActorKind = 7;
+        private const byte Level1ExperienceScrollActorKind = 8;
         private const int AutoplayFinalTick = 440;
         private static readonly int[] AutoplayCaptureTicks = { 145, 163, 220, 303, 400 };
         private static readonly ulong[] AutoplayTerrainIndexHashes =
         {
             0x0a49c01e798aa855,
-            0xbd5bfe083fe9866b,
+            0x02e0640cb428a25b,
             0xba9873861a554bcf,
-            0x1a3250f953440c12,
+            0xf2a9d22a315d76cc,
             0xa8bdd2d0941251d3
         };
         private static readonly ulong[] AutoplayTerrainCoverageHashes =
@@ -39,17 +42,17 @@ namespace MagicCarpet.Native
         private static readonly ulong[] AutoplayTerrainReadbackBottomUpHashes =
         {
             0x6116176f23d78261,
-            0xa49d30cade4f2b95,
+            0xb245ef2b4a212b99,
             0x9d5154f952c93735,
-            0x6e2f9520b717ac5d,
+            0x27a1f7c896646a2d,
             0x4efa2d8019069801
         };
         private static readonly ulong[] AutoplayTerrainLogicalTopDownHashes =
         {
             0x6d2584eb3f5e1d21,
-            0x989c263a5446e8b5,
+            0x5264da2e29ef24f9,
             0x42e55c4ea9e59855,
-            0x257fa41076ba68cd,
+            0xbd7ebbb1ff33991d,
             0x5e407e2f551c0381
         };
         private static readonly uint[] AutoplayTerrainReflected =
@@ -70,16 +73,18 @@ namespace MagicCarpet.Native
         };
         private static readonly ulong[] AutoplayConformanceHashes =
         {
-            0x171753329509c90f,
-            0x31eb67307fe37434,
-            0xf5ab6471ab0ab875,
-            0x2b0d8c15493b485a,
-            0xa6e825cb672d3f0a
+            0x4815130636a26ec8,
+            0xcc4504bc54cb99c4,
+            0xbe93dd782bd49559,
+            0x3680ffc8e2362696,
+            0xea2f94497d970ab8
         };
         private static readonly ulong[] AutoplayEventHeads =
-            { 937, 1055, 1415, 1949, 2580 };
+            { 938, 1058, 1419, 1954, 2585 };
         private static readonly int[] YawLookupMode20 =
             { 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 0, 0 };
+        private static readonly int[] YawLookupMode19 =
+            { 0, 1, 1, 2, 2, 3, 3, 4, 4, 3, 3, 2, 2, 1, 1, 0 };
         private static readonly string[] AutoplayCommandPrefixHashes =
         {
             "a2eec00e0cdd9a65392775c8ccc2310b4004ae176639e4e5fc698818b0f62e40",
@@ -90,23 +95,23 @@ namespace MagicCarpet.Native
         };
         private static readonly string[] AutoplayEventLifecycleHashes =
         {
-            "603e9d8767a632b1922a246aa3436815944bc1c93bcd0b4b97b7cd3fa9da5baf",
-            "c0e56f6d57784ad926ef24eb1e06b4bb8b92562d98755c6f953e5884eb331639",
-            "1799abc5b68d7798deb556b6c1639f6584ad81e7c90debc7940ab377e49e7bc8",
-            "9a38be07ab3ce3f85388be1922e665f1da40cfeb443d3e8ebfd6010f703b7855",
-            "6bb62aa7a2f6fcc0f8d6fb87a5953efe9da4420735a79b22b4c3dc386573ac3e"
+            "a2f8b7e0dfdf877703e0c9cadad157527f4ddc2996289528538106ae197dc3af",
+            "a457a1b2afcd97f36f5a87e648b3f4edd27f1a7ec5f45520777e93cb53c4c1b9",
+            "c30dc421454ab112e5063810573d167967b4a21f71bb198137f11f03be76bf1d",
+            "4b1dcba6fc302388f48abbb53f5579c8daa3ac8a1c45415bfba9e2f88a173cf4",
+            "00df8fc7d9659e5607d4da359be5d2ed19a669a09a18541ae1c429fbc7a7d29d"
         };
         private static readonly string[] AutoplayEventContentHashes =
         {
-            "2a1757d6905c66c5f1cc72651f9876320064c80723fbe2e4a69bcea377529be2",
-            "6d376dca7a842dd5a00a6a0dab8a71ca4761b40693b589c7f311f578f05d97a7",
-            "a64989e7167eb2fdb0113f704bd591dccde4ccc97a715f4d982c8d200417cf72",
-            "95e279bcee4cd376d3806286fbc35a543408dccf0745cfc9876837a7121c683a",
-            "90058610274ede23c48d81e909d3eedb17a0bd82f9f4de8932b4670bc9ad50a5"
+            "491c5f782e185390aa0b7a30eb558b572d6d409c86aa7fc95b00686776f1bd0f",
+            "9a387bd605da30129cd735d18355136c490b85a5067cffd965e42b7ab7f8e57c",
+            "a0512208935d98a5116414f29fa0167c0016a786ad4de375b29d040a93ea789e",
+            "105b23978a5681c5c709b481d4b2fa8cb49f9af0b7e5b6fef49a59cb32aef96c",
+            "188b97402e2d14ebc89b24e56186e406ac1b76a4a3c99cea318d1bb3c1899e46"
         };
         private const ulong ExpectedResetHash = 0x9da4bc91af58f3ce;
         private const ulong ExpectedResetConformanceHash = 0x77b96b82492d6f4b;
-        private const ulong ExpectedSessionConformanceHash = 0x00cc7b799d6917fc;
+        private const ulong ExpectedSessionConformanceHash = 0xe7ec6bc18b5fe775;
         private static readonly byte[] ExpectedLevel1TerrainSelectors =
         {
             0, 1, 2, 4, 5, 9, 22, 23, 24, 25, 26, 27, 36, 37, 38, 39, 44, 45,
@@ -123,9 +128,11 @@ namespace MagicCarpet.Native
         internal const string ExpectedPackageHash =
             "730d2fa084265df839f3f2b55ed766ac167a8b152ca4631b5ded9d0bb9104ac8";
         internal const string ExpectedClosureHash =
-            "1c3774ca5c032c1a7b8b1c48870840eee33011a2830d08c51f3104fb5c5bcc12";
+            "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719";
+        internal const string ExpectedOwnerAssetClosureHash =
+            "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719";
         internal const string ExpectedNativePluginHash =
-            "dc1f27e8f36736b37c046113faacead948413c90fc8d2baca0313921f2904e7b";
+            "be69fcff460fd8cb0f05f633a2decc0ddbe97a314ff2325b5f7bc7e137368ccf";
 
         private NativeSession session;
         private OwnerAssetCache ownerAssetCache;
@@ -135,11 +142,33 @@ namespace MagicCarpet.Native
         private PositionalAudioQualification positionalAudioQualification;
         private NativeSim.WorldInfo worldInfo;
         private NativeSim.SessionSnapshot snapshot;
+        private NativeSim.TerrainState terrainState;
         private NativeSim.PresentationState presentationState;
         private NativeSim.RenderCameraState renderCameraState;
         private NativeSim.ObjectiveSnapshot[] objectives;
         private NativeSim.EntitySnapshot[] entities;
         private NativeSim.GoatSnapshot[] goats;
+        private NativeSim.Level1MissionSnapshot mission;
+        private NativeSim.Level1HudSnapshot level1Hud;
+        private NativeSim.Level1MinimapMarks level1MinimapMarks;
+        private NativeSim.Level1MinimapEntityCommand[] level1MinimapEntities =
+            Array.Empty<NativeSim.Level1MinimapEntityCommand>();
+        private NativeSim.Level1MinimapEntitiesInfo level1MinimapEntitiesInfo;
+        private NativeSim.Level1PaletteInfo level1Palette;
+        private NativeSim.Level1ExitPresentation exitPresentation;
+        private NativeSim.Level1ActorSnapshot[] missionActors =
+            Array.Empty<NativeSim.Level1ActorSnapshot>();
+        private NativeSim.Level1MultipartSegmentSnapshot[] multipartSegments =
+            Array.Empty<NativeSim.Level1MultipartSegmentSnapshot>();
+        private NativeSim.Level1CastleSnapshot level1Castle;
+        private NativeSim.Level1CastleLifecycleSnapshot castleLifecycle;
+        private NativeSim.ManaCarrierSnapshot manaCarrier;
+        private NativeSim.ManaSphereSnapshot[] manaSpheres =
+            Array.Empty<NativeSim.ManaSphereSnapshot>();
+        private NativeSim.FireballProjectileSnapshot[] fireballProjectiles =
+            Array.Empty<NativeSim.FireballProjectileSnapshot>();
+        private NativeSim.FireballImpactSnapshot[] fireballImpacts =
+            Array.Empty<NativeSim.FireballImpactSnapshot>();
         private int[] goatOrdinalByEntity;
         private byte[] terrainTypes;
         private byte[] groundHeights;
@@ -153,9 +182,13 @@ namespace MagicCarpet.Native
         private Texture2D angleTexture;
         private Texture2D secondaryTexture;
         private Texture2D minimapTexture;
-        private Texture2D ownerObjectiveTexture;
+        private Mesh terrainMesh;
+        private readonly Dictionary<int, Texture2D> ownerObjectiveTextures = new();
+        private readonly Dictionary<int, HudObjectiveRowDescriptor> ownerObjectiveRows = new();
         private Texture2D ownerAuthorityBadgeTexture;
         private Texture2D ownerPaletteTexture;
+        private byte[] ownerOriginalPaletteRgb8;
+        private readonly byte[] level1EffectivePaletteRgb8 = new byte[256 * 3];
         private Texture2D ownerShadeLutTexture;
         private Texture2DArray ownerTerrainTiles;
         private Material ownerTerrainMaterial;
@@ -180,6 +213,8 @@ namespace MagicCarpet.Native
         private bool terrainFrameLiveLogged;
         private bool terrainFrameGpuValidated;
         private bool terrainFrameRouteGpuValidated;
+        private int ownerObjectiveVisibleSelector = -1;
+        private bool ownerObjectiveBlendLogged;
         private readonly float[] terrainPnt5Rows =
             new float[TerrainCells * TerrainCells];
         private readonly float[] terrainSurfaceDisplacement =
@@ -190,7 +225,18 @@ namespace MagicCarpet.Native
             new byte[TerrainCells * TerrainCells];
         private bool terrainGridLiveLogged;
         private byte[] ownerHudPaletteRgb8;
+        private readonly Dictionary<int, Color32[]> ownerHudBasePixels = new();
+        private readonly Dictionary<int, byte[]> ownerObjectiveRasters = new();
+        private readonly Dictionary<int, byte[]> ownerObjectiveOverlayIndices = new();
+        private readonly Dictionary<int, byte[]> ownerObjectiveOverlayMasks = new();
+        private readonly Dictionary<int, Color32[]> ownerObjectiveUploadPixels = new();
+        private Color32[] ownerAuthorityBadgeBasePixels;
+        private byte appliedExitPaletteEffect = byte.MaxValue;
+        private byte appliedExitPaletteWeight = byte.MaxValue;
+        private byte appliedExitPaletteDenominator = byte.MaxValue;
+        private short appliedPaletteCount = short.MinValue;
         private byte[] ownerHudTables;
+        private byte[] ownerHudClrn;
         private byte[] ownerHudMinimapAperture;
         private int[] ownerHudSine;
         private TerrainMaterialDescriptor terrainMaterialDescriptor;
@@ -199,11 +245,23 @@ namespace MagicCarpet.Native
         private readonly Dictionary<int, TmapDescriptor> tmapDescriptors = new();
         private readonly Dictionary<int, HudBitmapDescriptor> hudBitmapDescriptors = new();
         private readonly Dictionary<int, Texture2D> hudBitmapTextures = new();
+        private readonly Dictionary<int, byte[]> hudBitmapIndices = new();
+        private readonly Dictionary<int, byte[]> hudBitmapMasks = new();
+        private readonly Dictionary<int, Texture2D> ownerSpellTierTextures = new();
         private readonly Dictionary<int, Material> entitySpriteMaterials = new();
+        private readonly Dictionary<int, Texture2D> entitySpriteTextures = new();
         private readonly Dictionary<int, string> entitySpriteIndicesSha256 = new();
         private Mesh entityQuadMesh;
         private Mesh entityQuadMirroredMesh;
         private readonly List<EntityMarker> entityRegistry = new();
+        private readonly Dictionary<ushort, MissionMarker> missionActorRegistry = new();
+        private readonly Dictionary<ushort, MissionMarker> multipartSegmentRegistry = new();
+        private readonly Dictionary<uint, MissionMarker> missionProjectileRegistry = new();
+        private readonly Dictionary<uint, MissionMarker> missionImpactRegistry = new();
+        private readonly Dictionary<uint, MissionMarker> manaSphereRegistry = new();
+        private MissionMarker castleMarker;
+        private MissionMarker manaCarrierMarker;
+        private Transform missionPresentationRoot;
         private readonly List<Transform> terrainTiles = new();
         private readonly Queue<string> recentEventDiagnostics = new();
         private Camera flightCamera;
@@ -224,8 +282,17 @@ namespace MagicCarpet.Native
         private sbyte appliedRoll;
         private sbyte appliedPitch;
         private bool fireRequested;
+        private bool rightSpellRequested;
+        private bool selectedSpellRequested;
+        private short requestedSpell = NativeSim.NoRequestedSpell;
         private bool autoplay;
         private bool autoplayQuit;
+        private bool level1Autoplay;
+        private bool level1AutoplayQuit;
+        private bool level1AutoplayFast;
+        private bool level1AutoplayPostgame;
+        private Level1Autopilot level1AutopilotDriver;
+        private string level1AutoplayPhase = string.Empty;
         private bool localAudioQualificationMode;
         private bool localAudioQualificationExitRequested;
         private bool positionalAudioQualificationMode;
@@ -238,13 +305,14 @@ namespace MagicCarpet.Native
         private bool hudCaptureRequested;
         private bool hudCaptured;
         private bool hudComparisonCaptured;
+        private bool level1StageFourCaptured;
         private bool runtimeExitRequested;
-        private bool cameraFovFrozen;
         private bool disposed;
         private bool autoplayCapturePending;
         private int simTick;
         private int autoplayCaptureTick = -1;
         private int entityGalleryFrames;
+        private int level1StageFourCaptureFrames;
         private int autoplayFinalWaitFrames;
         private string autoplayCaptureFailure;
         private float minimumCarpetTerrainClearanceSource = float.PositiveInfinity;
@@ -252,6 +320,7 @@ namespace MagicCarpet.Native
         private ulong fireEventsObserved;
         private ulong fireInputLatchedCount;
         private ulong fireFlagsSubmittedCount;
+        private bool AutomatedInput => autoplay || level1Autoplay;
         private ulong fireVisualSpawnedCount;
         private ulong goatLiveWorldHash;
         private ulong goatBatchGeneration;
@@ -286,6 +355,7 @@ namespace MagicCarpet.Native
                 bool rendererEnabled,
                 int materialSelector,
                 string indicesSha256,
+                bool indicesTextureBound,
                 bool mirroredMesh)
             {
                 Generation = generation;
@@ -313,6 +383,7 @@ namespace MagicCarpet.Native
                 RendererEnabled = rendererEnabled;
                 MaterialSelector = materialSelector;
                 IndicesSha256 = indicesSha256;
+                IndicesTextureBound = indicesTextureBound;
                 MirroredMesh = mirroredMesh;
             }
 
@@ -341,6 +412,7 @@ namespace MagicCarpet.Native
             internal bool RendererEnabled { get; }
             internal int MaterialSelector { get; }
             internal string IndicesSha256 { get; }
+            internal bool IndicesTextureBound { get; }
             internal bool MirroredMesh { get; }
         }
 
@@ -434,6 +506,13 @@ namespace MagicCarpet.Native
                     materialSelector,
                     out var indicesSha256),
                 $"qualified Goat indices identity {entityIndex}");
+            Require(
+                entitySpriteTextures.TryGetValue(
+                    materialSelector,
+                    out var expectedIndicesTexture),
+                $"qualified Goat indices texture {entityIndex}");
+            var boundIndicesTexture =
+                marker.Renderer.sharedMaterial.GetTexture("_Indices");
             Require(presentationRig != null, "qualified Goat presentation rig");
             return new GoatPresentationProbe(
                 snapshot.generation,
@@ -461,7 +540,36 @@ namespace MagicCarpet.Native
                 marker.Renderer.enabled,
                 materialSelector,
                 indicesSha256,
+                ReferenceEquals(boundIndicesTexture, expectedIndicesTexture),
                 mirroredMesh);
+        }
+
+        internal GoatPresentationProbe QualificationBindGoatMode20Sector(
+            ushort entityIndex,
+            int orientation)
+        {
+            Require(
+                qualifiedMode && orientation >= 0 && orientation < 16,
+                "qualified Goat mode20 sector");
+            var marker = entityRegistry.Find(value => value.Index == entityIndex);
+            Require(
+                marker != null &&
+                marker.Group != null &&
+                marker.Group.particle.render_mode == 20 &&
+                marker.Group.selector.mirror_when_orientation_gte_8,
+                $"qualified Goat mode20 group {entityIndex}");
+            var syntheticYaw = unchecked((short)(
+                renderCameraState.yaw + (orientation << 7)));
+            UpdateOwnerEntitySprite(
+                entityIndex,
+                syntheticYaw,
+                marker.Group.key.animation_frame,
+                marker.Group,
+                marker.SpriteVisual,
+                marker.Renderer);
+            var probe = QualificationGoatPresentation(entityIndex);
+            UpdateEntityPresentation();
+            return probe;
         }
 
         internal void QualificationInjectGoatDamage(ushort entityIndex, int damage)
@@ -941,7 +1049,20 @@ namespace MagicCarpet.Native
             public string source_function;
             public int frame_selector;
             public HudSpellSlotDescriptor[] slots;
+            public HudSpellTierRowDescriptor[] tier_rows;
             public HudDeferredField glow_tier_charge;
+        }
+
+        [Serializable]
+        private sealed class HudSpellTierRowDescriptor
+        {
+            public int tier;
+            public string text;
+            public string render_path;
+            public int render_width;
+            public int render_height;
+            public int[] glyph_indices;
+            public int palette_index;
         }
 
         [Serializable]
@@ -970,7 +1091,8 @@ namespace MagicCarpet.Native
             public string glyph_expression;
             public int[] glyph_indices;
             public int[] frame_selectors;
-            public string render_path;
+            public string raster_path;
+            public int raster_plane_bytes;
             public int render_width;
             public int render_height;
             public int reference_x;
@@ -978,6 +1100,47 @@ namespace MagicCarpet.Native
             public string authority;
             public int objective_textbox_ticks;
             public HudTintDescriptor tint;
+            public HudObjectiveBackgroundBlendDescriptor background_blend;
+            public string[] draw_order;
+            public HudObjectiveRowDescriptor[] rows;
+        }
+
+        [Serializable]
+        private sealed class HudObjectiveBackgroundBlendDescriptor
+        {
+            public string source_table_path;
+            public int table_offset;
+            public int clrn_selector;
+            public int blend_selector;
+            public string expression;
+            public string underlay_scope;
+            public string display_adaptation;
+        }
+
+        [Serializable]
+        private sealed class HudObjectiveRowDescriptor
+        {
+            public int selector;
+            public string text_bytes_path;
+            public string text_sha256;
+            public string[] lines_ascii;
+            public int[] text_advances;
+            public string raster_path;
+            public int raster_plane_bytes;
+            public string foreground_indices_sha256;
+            public string foreground_mask_sha256;
+            public int foreground_opaque_pixels;
+            public int render_width;
+            public int render_height;
+            public int reference_x;
+            public int reference_y;
+            public int text_x;
+            public int text_y;
+            public int blend_x;
+            public int blend_y;
+            public int blend_width;
+            public int blend_height;
+            public string authority;
         }
 
         [Serializable]
@@ -1012,7 +1175,7 @@ namespace MagicCarpet.Native
             public int logical_height;
             public int presentation_scale;
             public string map_mode;
-            public string low_resolution_branch;
+            public string resolution_branch;
             public HudMinimapApertureDescriptor aperture;
             public HudMinimapRotationDescriptor rotation;
             public string terrain_authority;
@@ -1065,6 +1228,33 @@ namespace MagicCarpet.Native
                 var arguments = Environment.GetCommandLineArgs();
                 autoplay = HasArgument(arguments, "-mc-autoplay");
                 autoplayQuit = HasArgument(arguments, "-mc-autoplay-quit");
+                level1Autoplay = HasArgument(arguments, "-mc-level1-autoplay");
+                level1AutoplayQuit =
+                    HasArgument(arguments, "-mc-level1-autoplay-quit");
+                level1AutoplayFast =
+                    HasArgument(arguments, "-mc-level1-autoplay-fast");
+                level1AutoplayPostgame =
+                    HasArgument(arguments, "-mc-level1-autoplay-postgame");
+                if (autoplay && level1Autoplay)
+                {
+                    throw new InvalidDataException(
+                        "synthetic autoplay and Level 1 autoplay are mutually exclusive");
+                }
+                if (level1AutoplayFast && !level1Autoplay)
+                {
+                    throw new InvalidDataException(
+                        "-mc-level1-autoplay-fast requires -mc-level1-autoplay");
+                }
+                if (level1AutoplayPostgame && !level1Autoplay)
+                {
+                    throw new InvalidDataException(
+                        "-mc-level1-autoplay-postgame requires -mc-level1-autoplay");
+                }
+                if (level1AutoplayFast)
+                {
+                    Debug.Log(
+                        "MC_LEVEL1_AUTOPLAY fast fixed-tick pump enabled");
+                }
                 localAudioQualificationMode =
                     HasArgument(arguments, "-mc-audio-qualify-local");
                 positionalAudioQualificationMode =
@@ -1112,7 +1302,9 @@ namespace MagicCarpet.Native
                 if (assetCachePath != null)
                 {
                     ownerAssetCache = OwnerAssetCache.OpenAndValidate(
-                        assetCachePath, ExpectedPackageHash, ExpectedClosureHash);
+                        assetCachePath,
+                        ExpectedPackageHash,
+                        ExpectedOwnerAssetClosureHash);
                     Debug.Log(
                         $"MC_ASSET_CACHE VERIFIED outputs={ownerAssetCache.OutputCount} " +
                         $"content={ownerAssetCache.ContentHash}");
@@ -1130,7 +1322,7 @@ namespace MagicCarpet.Native
                         transform,
                         session.CompleteAudioVoice);
                     Debug.Log(
-                        "MC_AUDIO VERIFIED bank=1 quality=822 refs=10 " +
+                        "MC_AUDIO VERIFIED bank=1 quality=822 refs=31 " +
                         "music=C2GAME1-adlmidi-bank59.wav");
                 }
                 Debug.Log(
@@ -1195,6 +1387,17 @@ namespace MagicCarpet.Native
                         $"{snapshot.y},{snapshot.z} yaw={snapshot.yaw} " +
                         $"registry={entityRegistry.Count} debugEntities={debugEntities}");
                 }
+                else if (level1Autoplay)
+                {
+                    level1AutopilotDriver =
+                        new Level1Autopilot(level1AutoplayPostgame);
+                    ReleaseMouse();
+                    Debug.Log(
+                        $"MC_LEVEL1_AUTOPLAY BEGIN position={snapshot.x}," +
+                        $"{snapshot.y},{snapshot.z} yaw={snapshot.yaw} " +
+                        $"stage={mission.currentStage} " +
+                        $"postgame={level1AutoplayPostgame}");
+                }
                 else
                 {
                     CaptureMouse();
@@ -1216,17 +1419,18 @@ namespace MagicCarpet.Native
 
         private void FixedUpdate()
         {
+            if (level1AutoplayFast) return;
             if (runtimeExitRequested || autoplayCapturePending) return;
             try
             {
-                FixedUpdateCore();
+                FixedUpdateCore(true);
             }
             catch (Exception exception)
             {
                 runtimeExitRequested = true;
                 fatalError = exception.ToString();
                 Debug.LogError("MC_RUNTIME_FATAL " + fatalError);
-                if (autoplay || Application.isBatchMode)
+                if (AutomatedInput || Application.isBatchMode)
                 {
                     DisposeSession();
                     Application.Quit(3);
@@ -1238,14 +1442,57 @@ namespace MagicCarpet.Native
             }
         }
 
-        private void FixedUpdateCore()
+        private void FixedUpdateCore(bool updatePresentation)
         {
             if (localAudioQualificationMode || positionalAudioQualificationMode) return;
             if (entityGallery) return;
             int flags;
-            if (autoplay)
+            short selectedSpell;
+            sbyte opcode = 0;
+            sbyte argument1 = 0;
+            if (level1Autoplay)
+            {
+                var command = level1AutopilotDriver.Next(
+                    Level1Autopilot.Observe(
+                        snapshot,
+                        mission,
+                        missionActors,
+                        goats,
+                        manaSpheres,
+                        level1Castle));
+                appliedRoll = command.Roll;
+                appliedPitch = command.Pitch;
+                flags = unchecked((byte)command.Flags);
+                selectedSpell = command.RequestedSpell;
+                opcode = command.Opcode;
+                argument1 = command.Argument1;
+                if (command.Phase != level1AutoplayPhase)
+                {
+                    level1AutoplayPhase = command.Phase;
+                    Debug.Log(
+                        $"MC_LEVEL1_AUTOPLAY PHASE tick={simTick} " +
+                        $"stage={mission.currentStage} phase={command.Phase} " +
+                        $"position={snapshot.x},{snapshot.y},{snapshot.z} " +
+                        $"life={mission.playerLife} mana={mission.playerMana}");
+                }
+                else if (
+                    command.Phase == "possess-mana" &&
+                    simTick % 1_024 == 0)
+                {
+                    Debug.Log(
+                        $"MC_LEVEL1_AUTOPLAY AIM tick={simTick} " +
+                        $"distance={level1AutopilotDriver.LastAimDistance:F0} " +
+                        $"yawError={level1AutopilotDriver.LastAimYawError} " +
+                        $"pitchError={level1AutopilotDriver.LastAimPitchError} " +
+                        $"input={appliedRoll},{appliedPitch},{flags} " +
+                        $"position={snapshot.x},{snapshot.y},{snapshot.z}");
+                }
+            }
+            else if (autoplay)
             {
                 BuildAutoplayCommand(simTick, out appliedRoll, out appliedPitch, out flags);
+                selectedSpell = requestedSpell;
+                requestedSpell = NativeSim.NoRequestedSpell;
                 if ((flags & 0x10) != 0)
                 {
                     fireInputLatchedCount++;
@@ -1261,6 +1508,8 @@ namespace MagicCarpet.Native
                 appliedPitch = Cursor.lockState == CursorLockMode.Locked
                     ? ClampToSByte(steeringPitch)
                     : (sbyte)0;
+                selectedSpell = requestedSpell;
+                requestedSpell = NativeSim.NoRequestedSpell;
             }
 
             if ((flags & 0x10) != 0)
@@ -1274,17 +1523,36 @@ namespace MagicCarpet.Native
             {
                 AppendAutoplayCommand(appliedRoll, appliedPitch, unchecked((sbyte)flags));
             }
-            snapshot = session.Step(appliedRoll, appliedPitch, unchecked((sbyte)flags));
-            movementResolution = ResolutionName(snapshot.lastResolution);
-            RefreshLivePlayerRow();
+            snapshot = session.Step(
+                appliedRoll,
+                appliedPitch,
+                unchecked((sbyte)flags),
+                opcode: opcode,
+                argument1: argument1,
+                requestedSpell: selectedSpell);
+            RefreshLiveTerrain();
             RefreshLiveGoats();
-            DrainEvents();
-            ReadAuthoritativePose(false);
-            UpdateExactTerrainGrid();
+            RefreshLiveMission();
+            if (updatePresentation)
+            {
+                RefreshFastForwardPresentation();
+            }
             simTick++;
+            if (level1Autoplay)
+            {
+                FinishLevel1AutoplayIfTerminal();
+            }
             var terrainRouteIndex = Array.IndexOf(AutoplayCaptureTicks, simTick);
             if (autoplay && terrainFrameCompositeLive && terrainRouteIndex >= 0)
             {
+                Debug.Log(
+                    $"MC_TERRAIN_ROUTE_OBSERVED tick={simTick} " +
+                    $"indexHash=0x{terrainFrameInfo.indexHash:x16} " +
+                    $"coverageHash=0x{terrainFrameInfo.coverageHash:x16} " +
+                    $"triangles={terrainFrameInfo.reflectedTriangles}+" +
+                    $"{terrainFrameInfo.primaryMode5Triangles}+" +
+                    $"{terrainFrameInfo.primaryMode26Triangles} " +
+                    $"writes={terrainFrameInfo.terrainPixelWrites}");
                 ValidateTerrainFrameGpuGolden(
                     $"route-{simTick}",
                     AutoplayTerrainReadbackBottomUpHashes[terrainRouteIndex],
@@ -1351,7 +1619,33 @@ namespace MagicCarpet.Native
         private void Update()
         {
             if (localAudioQualificationMode || positionalAudioQualificationMode) return;
-            if (!autoplay && Cursor.lockState == CursorLockMode.Locked)
+            if (level1AutoplayFast && !runtimeExitRequested)
+            {
+                try
+                {
+                    const int ticksPerRenderedFrame = 256;
+                    for (var tick = 0;
+                         tick < ticksPerRenderedFrame && !runtimeExitRequested;
+                         tick++)
+                    {
+                        FixedUpdateCore(false);
+                    }
+                    if (!runtimeExitRequested)
+                    {
+                        RefreshFastForwardPresentation();
+                    }
+                }
+                catch (Exception exception)
+                {
+                    runtimeExitRequested = true;
+                    fatalError = exception.ToString();
+                    Debug.LogError("MC_RUNTIME_FATAL " + fatalError);
+                    DisposeSession();
+                    Application.Quit(3);
+                }
+                return;
+            }
+            if (!AutomatedInput && Cursor.lockState == CursorLockMode.Locked)
             {
                 steeringRoll = Mathf.Clamp(
                     steeringRoll + Input.GetAxisRaw("Mouse X") * MouseDeflectionGain,
@@ -1376,12 +1670,19 @@ namespace MagicCarpet.Native
                     Debug.Log(
                         $"MC_FIRE input_latched source=mouse count={fireInputLatchedCount}");
                 }
+                if (Input.GetMouseButtonDown(1))
+                {
+                    rightSpellRequested = true;
+                    fireInputLatchedCount++;
+                    Debug.Log(
+                        $"MC_FIRE input_latched source=right-mouse count={fireInputLatchedCount}");
+                }
                 if (Input.GetKeyDown(KeyCode.C) || Input.GetMouseButtonDown(2))
                 {
                     CenterSteering();
                 }
             }
-            if (!autoplay && Input.GetKeyDown(KeyCode.Space))
+            if (!AutomatedInput && Input.GetKeyDown(KeyCode.Space))
             {
                 // Keyboard fire remains available while the mouse is released;
                 // cursor capture is a presentation concern, not simulation input.
@@ -1389,12 +1690,44 @@ namespace MagicCarpet.Native
                 fireInputLatchedCount++;
                 Debug.Log($"MC_FIRE input_latched source=space count={fireInputLatchedCount}");
             }
-            if (!autoplay && Input.GetKeyDown(KeyCode.Escape)) ReleaseMouse();
-            if (!autoplay && Input.GetMouseButtonDown(0) &&
+            if (!AutomatedInput && Input.GetKeyDown(KeyCode.Q))
+            {
+                selectedSpellRequested = true;
+                fireInputLatchedCount++;
+                Debug.Log(
+                    $"MC_FIRE input_latched source=selected-key count={fireInputLatchedCount}");
+            }
+            if (!AutomatedInput && Input.GetKeyDown(KeyCode.Alpha1))
+            {
+                requestedSpell = 0;
+                selectedSpellRequested = true;
+            }
+            if (!AutomatedInput && Input.GetKeyDown(KeyCode.Alpha2))
+            {
+                requestedSpell = 1;
+                selectedSpellRequested = true;
+            }
+            if (!AutomatedInput && Input.GetKeyDown(KeyCode.Alpha3))
+            {
+                requestedSpell = 2;
+                selectedSpellRequested = true;
+            }
+            if (!AutomatedInput && Input.GetKeyDown(KeyCode.Escape)) ReleaseMouse();
+            if (!AutomatedInput && Input.GetMouseButtonDown(0) &&
                 Cursor.lockState != CursorLockMode.Locked) CaptureMouse();
             if (Input.GetKeyDown(KeyCode.F11)) Screen.fullScreen = !Screen.fullScreen;
             if (Input.GetKeyDown(KeyCode.F10)) Application.Quit();
             if (Input.GetKeyDown(KeyCode.R)) ResetSession();
+        }
+
+        private void RefreshFastForwardPresentation()
+        {
+            session.EvaluateGoatDrawAdmission(snapshot.generation, snapshot.tick);
+            movementResolution = ResolutionName(snapshot.lastResolution);
+            RefreshLivePlayerRow();
+            DrainEvents();
+            ReadAuthoritativePose(false);
+            UpdateExactTerrainGrid();
         }
 
         private void LateUpdate()
@@ -1520,6 +1853,49 @@ namespace MagicCarpet.Native
                 Debug.Log(
                     $"MC_OWNER_HUD COMPARISON_CAPTURE path={absolute} tick={simTick}");
             }
+            var stageFourCapturePath =
+                Environment.GetEnvironmentVariable("MC_LEVEL1_STAGE4_CAPTURE_PATH");
+            var activeFireflies = 0;
+            var nearestFireflyDistanceSquared = long.MaxValue;
+            if (mission.currentStage == 4)
+            {
+                foreach (var actor in missionActors)
+                {
+                    if (actor.kind != 2 || actor.active == 0)
+                        continue;
+                    activeFireflies++;
+                    var deltaX = ModularDelta(actor.x, snapshot.x);
+                    var deltaY = ModularDelta(actor.y, snapshot.y);
+                    var deltaZ = actor.z - snapshot.z;
+                    var distanceSquared =
+                        (long)deltaX * deltaX +
+                        (long)deltaY * deltaY +
+                        (long)deltaZ * deltaZ;
+                    nearestFireflyDistanceSquared =
+                        Math.Min(nearestFireflyDistanceSquared, distanceSquared);
+                }
+            }
+            if (
+                level1Autoplay &&
+                !level1StageFourCaptured &&
+                !string.IsNullOrWhiteSpace(stageFourCapturePath) &&
+                mission.currentStage == 4 &&
+                nearestFireflyDistanceSquared <= 2_500L * 2_500L)
+            {
+                level1StageFourCaptureFrames++;
+                if (level1StageFourCaptureFrames >= 2)
+                {
+                    var absolute = Path.GetFullPath(stageFourCapturePath);
+                    Directory.CreateDirectory(Path.GetDirectoryName(absolute));
+                    ScreenCapture.CaptureScreenshot(absolute);
+                    level1StageFourCaptured = true;
+                    Debug.Log(
+                        $"MC_LEVEL1_STAGE4_CAPTURE path={absolute} tick={simTick} " +
+                        $"activeFireflies={activeFireflies} " +
+                        $"nearestDistanceSquared={nearestFireflyDistanceSquared} " +
+                        $"nativeFireflies={((terrainFrameInfo.flags & NativeSim.TerrainFrameFirefliesComposited) != 0).ToString().ToLowerInvariant()}");
+                }
+            }
 
             if (!autoplay) return;
             if (autoplayQuit && simTick >= AutoplayFinalTick)
@@ -1565,7 +1941,30 @@ namespace MagicCarpet.Native
                         terrainFrameInfo.generation == renderCameraState.generation &&
                         terrainFrameInfo.tick == renderCameraState.tick &&
                         terrainFrameInfo.indexBytes == NativeSim.TerrainFramePixels &&
-                        terrainFrameInfo.coverageBytes == NativeSim.TerrainFramePixels
+                        terrainFrameInfo.coverageBytes == NativeSim.TerrainFramePixels &&
+                        (terrainFrameInfo.flags &
+                         (
+                             NativeSim.TerrainFrameGoatsComposited |
+                             NativeSim.TerrainFrameArchersComposited |
+                             NativeSim.TerrainFrameFirefliesComposited |
+                             NativeSim.TerrainFrameCombatComposited |
+                             NativeSim.TerrainFrameObjectivePropsComposited |
+                             NativeSim.TerrainFrameEconomyComposited |
+                             NativeSim.TerrainFrameReflectedSpritesComposited |
+                             NativeSim.TerrainFrameSpriteShadowsComposited |
+                             NativeSim.TerrainFrameFrozenActorsComposited
+                         )) ==
+                        (
+                            NativeSim.TerrainFrameGoatsComposited |
+                            NativeSim.TerrainFrameArchersComposited |
+                            NativeSim.TerrainFrameFirefliesComposited |
+                            NativeSim.TerrainFrameCombatComposited |
+                            NativeSim.TerrainFrameObjectivePropsComposited |
+                            NativeSim.TerrainFrameEconomyComposited |
+                            NativeSim.TerrainFrameReflectedSpritesComposited |
+                            NativeSim.TerrainFrameSpriteShadowsComposited |
+                            NativeSim.TerrainFrameFrozenActorsComposited
+                        )
                     );
                 var carpetOverlayClean =
                     qualifiedMode
@@ -1639,7 +2038,8 @@ namespace MagicCarpet.Native
                 Require(frame != null, "full-frame screenshot texture");
                 Require(
                     frame.width == 1600 && frame.height == 900,
-                    "qualified full-frame capture is exactly 1600x900");
+                    $"qualified full-frame capture is exactly 1600x900, got " +
+                    $"{frame.width}x{frame.height}");
 
                 var directory = ResolveAutoplayCaptureDirectory();
                 var stem = Path.Combine(
@@ -1948,8 +2348,8 @@ namespace MagicCarpet.Native
             Require(worldInfo.activeEntityCount == 177, "177 active entities");
             Require(worldInfo.playerCount == 8, "8 players");
             Require(
-                worldInfo.assetRefCount == (ownerAssetCache == null ? 76u : 87u),
-                "76 frame refs plus optional 11 descriptor-backed audio refs");
+                worldInfo.assetRefCount == (ownerAssetCache == null ? 76u : 108u),
+                "76 frame refs plus optional 32 descriptor-backed audio refs");
             Require(worldInfo.terrainWidth == 256 && worldInfo.terrainHeight == 256, "256x256 terrain");
             Require(worldInfo.resetStateHash == ExpectedResetHash, "reset state hash");
             Require(
@@ -1962,6 +2362,11 @@ namespace MagicCarpet.Native
                 snapshot.conformanceHash == ExpectedSessionConformanceHash,
                 "Level 1 session-audio conformance hash");
 
+            terrainState = session.TerrainState();
+            Require(
+                terrainState.generation == snapshot.generation &&
+                terrainState.tick == snapshot.tick,
+                "initial live terrain matches atomic flight snapshot");
             terrainTypes = session.BytePlane(NativeSim.TerrainTypes);
             groundHeights = session.BytePlane(NativeSim.TerrainHeight);
             terrainShade = session.BytePlane(NativeSim.TerrainShade);
@@ -1973,6 +2378,15 @@ namespace MagicCarpet.Native
                 terrainShade.Length == 65536 && terrainAngles.Length == 65536 &&
                 secondaryHeights.Length == 65536 && terrainEntityIndices.Length == 65536,
                 "all six 65536-cell terrain planes");
+            Require(
+                TerrainHash(
+                    terrainTypes,
+                    groundHeights,
+                    terrainShade,
+                    terrainAngles,
+                    secondaryHeights,
+                    terrainEntityIndices) == terrainState.terrainHash,
+                "initial live terrain canonical hash");
             var terrainSelectorCoverage = new HashSet<byte>(terrainTypes);
             byte maximumTerrainSelector = 0;
             foreach (var selector in terrainSelectorCoverage)
@@ -2008,6 +2422,7 @@ namespace MagicCarpet.Native
             goatOrdinalByEntity = new int[entities.Length];
             Array.Fill(goatOrdinalByEntity, -1);
             RefreshLiveGoats();
+            RefreshLiveMission();
             for (var ordinal = 0; ordinal < goats.Length; ordinal++)
             {
                 var goat = goats[ordinal];
@@ -2045,16 +2460,21 @@ namespace MagicCarpet.Native
                 hudDescriptor.reference_layout != null &&
                 hudDescriptor.reference_layout.width == 640 &&
                 hudDescriptor.reference_layout.height == 480 &&
-                hudDescriptor.reference_layout.resolution_bank == "MSPRN0-0" &&
-                hudDescriptor.reference_layout.source_scale == 2 &&
+                hudDescriptor.reference_layout.resolution_bank == "HSPRN0-0" &&
+                hudDescriptor.reference_layout.source_scale == 1 &&
                 hudDescriptor.reference_layout.filter == "nearest" &&
                 hudDescriptor.reference_layout.bank_status ==
-                    "trace_qualified_Night_low_resolution_bank_scaled_2x" &&
+                    "source_mapped_Night_high_resolution_bank_native" &&
                 hudDescriptor.reference_layout.high_resolution_bank_status.StartsWith(
-                    "Deferred", StringComparison.Ordinal),
-                "qualified Level 1 MSPRN owner HUD reference layout");
+                    "Qualified", StringComparison.Ordinal),
+                "qualified Level 1 HSPRN owner HUD reference layout");
 
-            var expectedSelectors = new[] { 1, 40, 41, 42, 43, 54, 123, 124, 171, 172, 173 };
+            var expectedSelectors = new[]
+            {
+                1, 2, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+                51, 52, 53, 54, 55, 58, 66, 83, 84, 123, 124, 125, 126,
+                171, 172, 173,
+            };
             Require(
                 hudDescriptor.bitmap_assets != null &&
                 hudDescriptor.bitmap_assets.Length == expectedSelectors.Length,
@@ -2066,12 +2486,12 @@ namespace MagicCarpet.Native
                 Require(
                     row != null &&
                     row.selector == expectedSelectors[index] &&
-                    row.bank == "MSPRN0-0" &&
+                    row.bank == "HSPRN0-0" &&
                     row.source_asset_id ==
-                        $"owner_data:DATA/MSPRN0-0.DAT#{row.selector}" &&
-                    row.source_scale == 2 &&
-                    row.runtime_width == row.stored_width * 2 &&
-                    row.runtime_height == row.stored_height * 2 &&
+                        $"owner_data:DATA/HSPRN0-0.DAT#{row.selector}" &&
+                    row.source_scale == 1 &&
+                    row.runtime_width == row.stored_width &&
+                    row.runtime_height == row.stored_height &&
                     row.palette == "PALN-0" &&
                     row.filter == "nearest" &&
                     row.authority == "FrozenObserved" &&
@@ -2094,16 +2514,17 @@ namespace MagicCarpet.Native
                 hudDescriptor.top_bar.panels != null &&
                 hudDescriptor.top_bar.panels.Length == 6 &&
                 hudDescriptor.top_bar.health_mana_bars != null &&
-                hudDescriptor.top_bar.health_mana_bars.authority == "Deferred",
-                "frozen owner top bar and deferred health/mana");
+                hudDescriptor.top_bar.health_mana_bars.authority ==
+                    "MissionStateLiveSourceMapped",
+                "source-mapped owner top bar and live integer health/mana");
             var expectedPanels = new[]
             {
-                ("minimap_panel", 40, 4, 4),
-                ("castle_empty_panel", 54, 128, 4),
-                ("balloon_empty_panel", 54, 256, 4),
-                ("player_health_mana_panel", 41, 384, 4),
-                ("player_icon", 43, 388, 4),
-                ("player_health_mana_icons", 42, 460, 4),
+                ("minimap_panel", 40, 2, 2),
+                ("castle_empty_panel", 54, 126, 2),
+                ("balloon_empty_panel", 54, 254, 2),
+                ("player_health_mana_panel", 41, 382, 2),
+                ("player_icon", 43, 384, 2),
+                ("player_health_mana_icons", 42, 420, 2),
             };
             for (var index = 0; index < expectedPanels.Length; index++)
             {
@@ -2114,7 +2535,7 @@ namespace MagicCarpet.Native
                     row.selector == expected.Item2 &&
                     row.x == expected.Item3 &&
                     row.y == expected.Item4 &&
-                    row.authority == "FrozenObserved",
+                    row.authority == "SourceMappedLive",
                     $"qualified HUD panel {expected.Item1}");
             }
             Require(
@@ -2123,29 +2544,52 @@ namespace MagicCarpet.Native
                 hudDescriptor.spells.slots != null &&
                 hudDescriptor.spells.slots.Length == 2 &&
                 hudDescriptor.spells.slots[0].semantic_role == "left_fireball" &&
+                hudDescriptor.spells.slots[0].x == 510 &&
+                hudDescriptor.spells.slots[0].y == 2 &&
                 hudDescriptor.spells.slots[0].holder_entity == 153 &&
                 hudDescriptor.spells.slots[0].model == 0 &&
                 hudDescriptor.spells.slots[0].icon_selector == 123 &&
-                hudDescriptor.spells.slots[0].authority == "FrozenObserved" &&
+                hudDescriptor.spells.slots[0].authority == "MissionStateLive" &&
                 hudDescriptor.spells.slots[0].activation_authority ==
                     "SpellActivationLive" &&
                 hudDescriptor.spells.slots[1].semantic_role == "right_possess" &&
+                hudDescriptor.spells.slots[1].x == 574 &&
+                hudDescriptor.spells.slots[1].y == 2 &&
                 hudDescriptor.spells.slots[1].holder_entity == 154 &&
                 hudDescriptor.spells.slots[1].model == 1 &&
                 hudDescriptor.spells.slots[1].icon_selector == 124 &&
-                hudDescriptor.spells.slots[1].authority == "FrozenObserved" &&
-                hudDescriptor.spells.slots[1].activation_authority == "Deferred" &&
-                hudDescriptor.spells.glow_tier_charge.authority == "Deferred",
-                "qualified reset spell selectors and authority split");
+                hudDescriptor.spells.slots[1].authority == "MissionStateLive" &&
+                hudDescriptor.spells.slots[1].activation_authority ==
+                    "SpellActivationLive" &&
+                hudDescriptor.spells.tier_rows != null &&
+                hudDescriptor.spells.tier_rows.Length == 5 &&
+                hudDescriptor.spells.glow_tier_charge.authority ==
+                    "MissionStateLiveSourceMapped",
+                "qualified live spell selectors, activation, tier and charge authority");
+            for (var tier = 0; tier < hudDescriptor.spells.tier_rows.Length; tier++)
+            {
+                var row = hudDescriptor.spells.tier_rows[tier];
+                Require(
+                    row.tier == tier &&
+                    row.text == new[] { "I", "II", "III", "IV", "V" }[tier] &&
+                    row.render_width == 8 * row.text.Length &&
+                    row.render_height == 14 &&
+                    row.palette_index == 61 &&
+                    !string.IsNullOrEmpty(row.render_path),
+                    $"qualified HSPRN spell tier {tier}");
+            }
             Require(
                 hudDescriptor.objective != null &&
                 hudDescriptor.objective.selector == 48 &&
-                hudDescriptor.objective.authority == "FrozenObserved" &&
+                hudDescriptor.objective.authority ==
+                    "SourceMappedLiveIndexedFramebuffer" &&
                 hudDescriptor.objective.objective_textbox_ticks == 33 &&
                 hudDescriptor.objective.render_width == 256 &&
                 hudDescriptor.objective.render_height == 38 &&
                 hudDescriptor.objective.reference_x == 192 &&
-                hudDescriptor.objective.reference_y == 126 &&
+                hudDescriptor.objective.reference_y == 234 &&
+                hudDescriptor.objective.raster_plane_bytes == 256 * 38 &&
+                !string.IsNullOrEmpty(hudDescriptor.objective.raster_path) &&
                 hudDescriptor.objective.tint != null &&
                 hudDescriptor.objective.tint.active_map_palette_lut == "CLRN-0" &&
                 hudDescriptor.objective.tint.lut_selector == 3840 &&
@@ -2155,52 +2599,110 @@ namespace MagicCarpet.Native
                 hudDescriptor.objective.tint.paln_rgb8[0] == 252 &&
                 hudDescriptor.objective.tint.paln_rgb8[1] == 36 &&
                 hudDescriptor.objective.tint.paln_rgb8[2] == 36 &&
+                hudDescriptor.objective.background_blend != null &&
+                hudDescriptor.objective.background_blend.source_table_path ==
+                    "palette/tablesn.u8" &&
+                hudDescriptor.objective.background_blend.table_offset == 0x4000 &&
+                hudDescriptor.objective.background_blend.clrn_selector == 0 &&
+                hudDescriptor.objective.background_blend.blend_selector == 61 &&
+                hudDescriptor.objective.draw_order != null &&
+                hudDescriptor.objective.draw_order.Length == 3 &&
+                hudDescriptor.objective.draw_order[0] ==
+                    "TABLESN_background_blend" &&
+                hudDescriptor.objective.draw_order[1] ==
+                    "HFONT3_text_palette_119" &&
+                hudDescriptor.objective.draw_order[2] ==
+                    "HSPRN_frame_171_172_173" &&
+                hudDescriptor.objective.rows != null &&
+                hudDescriptor.objective.rows.Length == 6 &&
+                hudDescriptor.objective.rows[0].selector == 48 &&
+                hudDescriptor.objective.rows[5].selector == 53 &&
                 snapshot.objectiveTextboxTicks == 33 &&
                 objectives[0].textSelector == 0 &&
                 ownerAssetCache.ReadOutputText(
                     hudDescriptor.objective.text_bytes_path) ==
                     "\"Fly towards my beacon.\"",
-                "qualified frozen Level 1 selector-48 objective");
+                "qualified source-mapped live Level 1 objectives");
+            var expectedObjectiveGeometry = new[,]
+            {
+                { 48, 192, 234, 256, 38, 224, 246, 208, 244, 224, 18 },
+                { 49, 128, 220, 384, 52, 160, 232, 144, 230, 352, 32 },
+                { 50, 144, 220, 352, 52, 164, 232, 160, 230, 320, 32 },
+                { 51, 144, 220, 352, 52, 164, 232, 160, 230, 320, 32 },
+                { 52, 176, 220, 288, 52, 208, 232, 192, 230, 256, 32 },
+                { 53, 128, 220, 384, 52, 160, 232, 144, 230, 352, 32 },
+            };
+            for (var index = 0; index < expectedObjectiveGeometry.GetLength(0); index++)
+            {
+                var row = hudDescriptor.objective.rows[index];
+                Require(
+                    row.selector == expectedObjectiveGeometry[index, 0] &&
+                    row.reference_x == expectedObjectiveGeometry[index, 1] &&
+                    row.reference_y == expectedObjectiveGeometry[index, 2] &&
+                    row.render_width == expectedObjectiveGeometry[index, 3] &&
+                    row.render_height == expectedObjectiveGeometry[index, 4] &&
+                    row.text_x == expectedObjectiveGeometry[index, 5] &&
+                    row.text_y == expectedObjectiveGeometry[index, 6] &&
+                    row.blend_x == expectedObjectiveGeometry[index, 7] &&
+                    row.blend_y == expectedObjectiveGeometry[index, 8] &&
+                    row.blend_width == expectedObjectiveGeometry[index, 9] &&
+                    row.blend_height == expectedObjectiveGeometry[index, 10] &&
+                    row.raster_plane_bytes ==
+                        row.render_width * row.render_height &&
+                    row.foreground_indices_sha256 != null &&
+                    row.foreground_indices_sha256.Length == 64 &&
+                    row.foreground_mask_sha256 != null &&
+                    row.foreground_mask_sha256.Length == 64 &&
+                    row.foreground_opaque_pixels > 0 &&
+                    row.authority ==
+                        "SourceMappedLiveIndexedFramebuffer" &&
+                    !string.IsNullOrEmpty(row.raster_path) &&
+                    row.reference_y >= 128,
+                    $"qualified objective indexed geometry {row.selector}");
+            }
             Require(
                 hudDescriptor.authority_badge != null &&
                 hudDescriptor.authority_badge.text == "FROZEN OBSERVED" &&
-                hudDescriptor.authority_badge.render_width == 60 &&
-                hudDescriptor.authority_badge.render_height == 7 &&
+                hudDescriptor.authority_badge.render_width == 120 &&
+                hudDescriptor.authority_badge.render_height == 14 &&
                 hudDescriptor.minimap != null &&
                 hudDescriptor.minimap.width == 128 &&
                 hudDescriptor.minimap.height == 128 &&
-                hudDescriptor.minimap.logical_width == 64 &&
-                hudDescriptor.minimap.logical_height == 64 &&
-                hudDescriptor.minimap.presentation_scale == 2 &&
+                hudDescriptor.minimap.logical_width == 128 &&
+                hudDescriptor.minimap.logical_height == 128 &&
+                hudDescriptor.minimap.presentation_scale == 1 &&
                 hudDescriptor.minimap.map_mode ==
                     "player_centered_yaw_rotated_TABLESN_scanline_aperture" &&
-                hudDescriptor.minimap.low_resolution_branch ==
-                    "MSPRN_effective_64x64_scaling512_then_nearest_2x" &&
+                hudDescriptor.minimap.resolution_branch ==
+                    "HSPRN_native_128x128_scaling256" &&
                 hudDescriptor.minimap.aperture != null &&
-                hudDescriptor.minimap.aperture.opaque_pixels == 3204 &&
+                hudDescriptor.minimap.aperture.opaque_pixels == 12848 &&
                 hudDescriptor.minimap.aperture.table_offset == 0x14300 &&
-                hudDescriptor.minimap.aperture.phase_step == 0x80000 &&
+                hudDescriptor.minimap.aperture.phase_step == 0x40000 &&
                 hudDescriptor.minimap.aperture.scanlines != null &&
-                hudDescriptor.minimap.aperture.scanlines.Length == 64 &&
+                hudDescriptor.minimap.aperture.scanlines.Length == 128 &&
                 hudDescriptor.minimap.rotation != null &&
                 !string.IsNullOrEmpty(
                     hudDescriptor.minimap.rotation.sine_table_path) &&
-                hudDescriptor.minimap.terrain_authority == "FrozenObserved" &&
-                hudDescriptor.minimap.entity_positions_authority == "FrozenObserved" &&
+                hudDescriptor.minimap.terrain_authority ==
+                    "OwnerLevelStaticLiveSampling" &&
+                hudDescriptor.minimap.entity_positions_authority ==
+                    "SourceArenaLive" &&
                 hudDescriptor.minimap.entity_overlay_mode ==
-                    "non_original_FrozenObserved_reset_reference_overlay" &&
+                    "Rust_source_slot_ordered_DrawMinimapEntities_commands" &&
                 hudDescriptor.minimap.player_pose_authority == "PlayerFlightLive" &&
                 hudDescriptor.minimap.entity_colour_filter_status.StartsWith(
-                    "Deferred", StringComparison.Ordinal) &&
+                    "SourceMappedLive", StringComparison.Ordinal) &&
                 hudDescriptor.minimap.objective_marks_status.StartsWith(
-                    "Deferred", StringComparison.Ordinal),
-                "qualified mixed-authority minimap descriptor");
+                    "SourceMappedLive", StringComparison.Ordinal),
+                "qualified live mixed-authority minimap descriptor");
             Debug.Log(
-                "MC_HUD_DESCRIPTOR VERIFIED bitmaps=11 bank=MSPRN-scale2 " +
-                "objective=48/FrozenObserved tint=CLRN3840:119:252,36,36 " +
-                "spells=123/FrozenObserved+activationLive,124/Deferred " +
-                "minimap=64-native+nearest2x/TABLESN-aperture/exact-fixed-rotation " +
-                "entityDots=non-original-FrozenObserved-reset-reference-overlay");
+                "MC_HUD_DESCRIPTOR VERIFIED bitmaps=29 bank=HSPRN-native " +
+                "objectives=48-53/indexed-live-framebuffer " +
+                "blend=TABLESN:0x4000+61x256+dst tint=CLRN3840:119:252,36,36 " +
+                "spells=123-126/MissionStateLive+activationLive " +
+                "minimap=128-native/TABLESN-aperture/exact-fixed-rotation " +
+                "entityPass=Rust-source-slot-ordered objectiveMarks=SourceMappedLive");
         }
 
         private void ConfigureWorld()
@@ -2228,6 +2730,7 @@ namespace MagicCarpet.Native
             secondaryTexture = CreatePlaneTexture("Secondary Heights", secondaryHeights);
             CreateTerrainCopies();
             CreateEntityRegistry();
+            CreateMissionPresentationRegistry();
             if (ownerAssetCache != null) CreateOwnerHud();
             else CreateMinimap();
         }
@@ -2247,7 +2750,11 @@ namespace MagicCarpet.Native
             // an explicitly presentation-only raster safety adaptation.
             flightCamera.nearClipPlane = 0.035f;
             flightCamera.farClipPlane = 1800f;
-            flightCamera.fieldOfView = 76f;
+            flightCamera.fieldOfView =
+                Level1ExitPresentationMath.UnityVerticalFov(128);
+            flightCamera.rect =
+                Level1ExitPresentationMath.SourceDisplayRect(
+                    Screen.width, Screen.height);
             flightCamera.clearFlags = CameraClearFlags.SolidColor;
             flightCamera.backgroundColor = RenderSettings.fogColor;
             Debug.Log(
@@ -2394,7 +2901,7 @@ namespace MagicCarpet.Native
         private void UpdateExactTerrainFrame()
         {
             if (terrainFrameCompositeMaterial == null) return;
-            terrainFrameInfo = session.TerrainFrame(
+            terrainFrameInfo = session.WorldFrame(
                 renderCameraState,
                 terrainFrameIndices,
                 terrainFrameCoverage);
@@ -2411,12 +2918,12 @@ namespace MagicCarpet.Native
             if (!terrainFrameGpuValidated)
             {
                 var first = ValidateTerrainFrameGpuGolden(
-                    "reset",
+                    "reset-world-supported-families",
                     0x20adbcad23e28889,
                     0x4f565333a9bbcab9,
                     true);
                 var repeated = ValidateTerrainFrameGpuGolden(
-                    "reset-repeat",
+                    "reset-world-supported-families-repeat",
                     0x20adbcad23e28889,
                     0x4f565333a9bbcab9,
                     false);
@@ -2424,6 +2931,7 @@ namespace MagicCarpet.Native
                 terrainFrameGpuValidated = true;
             }
             terrainFrameCompositeLive = true;
+            UpdateOwnerObjectiveTextbox();
 
             if (!terrainFrameLiveLogged)
             {
@@ -2439,8 +2947,115 @@ namespace MagicCarpet.Native
                     $"{terrainFrameInfo.primaryMode5Triangles}+" +
                     $"{terrainFrameInfo.primaryMode26Triangles} " +
                     $"writes={terrainFrameInfo.terrainPixelWrites} " +
-                    "layer=isolated-sky-and-terrain nonTerrain=omitted " +
+                    "layer=source-ordered-terrain-actors-projectiles-economy " +
+                    "frozenActors=villagers-dolmens-native " +
+                    "remainingNonTerrain=omitted " +
                     "upload=R8-point-top-down-row-flip-once");
+            }
+        }
+
+        private void UpdateOwnerObjectiveTextbox()
+        {
+            if (
+                hudDescriptor?.objective?.background_blend == null ||
+                ownerObjectiveRows.Count == 0)
+                return;
+            var visibleSelector = mission.objectiveTextboxTicks > 0
+                ? mission.textSelector
+                : -1;
+            if (
+                ownerObjectiveVisibleSelector >= 48 &&
+                ownerObjectiveVisibleSelector <= 53 &&
+                ownerObjectiveVisibleSelector != visibleSelector &&
+                ownerObjectiveRows.TryGetValue(
+                    ownerObjectiveVisibleSelector,
+                    out var previousRow))
+            {
+                UpdateOwnerObjectiveTexture(previousRow, 0);
+            }
+            if (
+                visibleSelector >= 48 &&
+                visibleSelector <= 53 &&
+                ownerObjectiveRows.TryGetValue(visibleSelector, out var row))
+            {
+                UpdateOwnerObjectiveTexture(
+                    row,
+                    mission.objectiveTextboxTicks);
+            }
+            ownerObjectiveVisibleSelector = visibleSelector;
+        }
+
+        private void UpdateOwnerObjectiveTexture(
+            HudObjectiveRowDescriptor row,
+            int visibleTicks)
+        {
+            byte[] raster = null;
+            byte[] overlayIndices = null;
+            byte[] overlayMask = null;
+            Color32[] uploadPixels = null;
+            Texture2D texture = null;
+            Require(
+                ownerObjectiveRasters.TryGetValue(row.selector, out raster) &&
+                ownerObjectiveOverlayIndices.TryGetValue(
+                    row.selector, out overlayIndices) &&
+                ownerObjectiveOverlayMasks.TryGetValue(
+                    row.selector, out overlayMask) &&
+                ownerObjectiveUploadPixels.TryGetValue(
+                    row.selector, out uploadPixels) &&
+                ownerObjectiveTextures.TryGetValue(
+                    row.selector, out texture),
+                $"indexed objective runtime resources {row.selector}");
+            var blend = hudDescriptor.objective.background_blend;
+            Require(
+                blend.table_offset == 0x4000 &&
+                blend.clrn_selector == 0 &&
+                blend.blend_selector == ownerHudClrn[0] &&
+                blend.blend_selector == 61 &&
+                row.reference_y >= 128,
+                $"indexed objective source blend contract {row.selector}");
+            ObjectiveTextboxCompositor.ComposeOverlayIndices(
+                visibleTicks,
+                terrainFrameIndices,
+                NativeSim.TerrainFrameWidth,
+                NativeSim.TerrainFrameHeight,
+                hudDescriptor.reference_layout.width,
+                hudDescriptor.reference_layout.height,
+                row.reference_x,
+                row.reference_y,
+                row.render_width,
+                row.render_height,
+                row.blend_x,
+                row.blend_y,
+                row.blend_width,
+                row.blend_height,
+                ownerHudTables,
+                blend.table_offset,
+                checked((byte)blend.blend_selector),
+                raster,
+                overlayIndices,
+                overlayMask);
+            ObjectiveTextboxCompositor.MaterializeBottomUpRgba(
+                overlayIndices,
+                overlayMask,
+                row.render_width,
+                row.render_height,
+                ownerHudPaletteRgb8,
+                uploadPixels);
+            texture.SetPixels32(uploadPixels);
+            texture.Apply(false, false);
+            if (visibleTicks > 0 && !ownerObjectiveBlendLogged)
+            {
+                ownerObjectiveBlendLogged = true;
+                Debug.Log(
+                    "MC_OBJECTIVE_INDEXED_BLEND LIVE " +
+                    $"selector={row.selector} ticks={visibleTicks} " +
+                    $"outer={row.reference_x},{row.reference_y}," +
+                    $"{row.render_width},{row.render_height} " +
+                    $"blend={row.blend_x},{row.blend_y}," +
+                    $"{row.blend_width},{row.blend_height} " +
+                    "order=TABLESN61->HFONT3-119->HSPRN171/172/173 " +
+                    "underlay=qualified-320x200-indexed-world/" +
+                    "pixel-centre-nearest-to-640x480");
             }
         }
 
@@ -2585,14 +3200,23 @@ namespace MagicCarpet.Native
                 }
                 var readbackBottomUpHash = ByteHash(readbackBottomUp);
                 var logicalTopDownHash = ByteHash(logicalTopDown);
+                Debug.Log(
+                    "MC_TERRAIN_FRAME_GPU_OBSERVED " +
+                    $"label={label} " +
+                    $"rgbaReadbackBottomUpHash=0x{readbackBottomUpHash:x16} " +
+                    $"rgbaLogicalTopDownHash=0x{logicalTopDownHash:x16}");
                 Require(
                     expectedReadbackBottomUpHash == 0 ||
                     readbackBottomUpHash == expectedReadbackBottomUpHash,
-                    $"terrain frame GPU {label} bottom-up readback golden hash");
+                    $"terrain frame GPU {label} bottom-up readback golden hash " +
+                    $"expected=0x{expectedReadbackBottomUpHash:x16} " +
+                    $"observed=0x{readbackBottomUpHash:x16}");
                 Require(
                     expectedLogicalTopDownHash == 0 ||
                     logicalTopDownHash == expectedLogicalTopDownHash,
-                    $"terrain frame GPU {label} logical top-down golden hash");
+                    $"terrain frame GPU {label} logical top-down golden hash " +
+                    $"expected=0x{expectedLogicalTopDownHash:x16} " +
+                    $"observed=0x{logicalTopDownHash:x16}");
                 if (validateRawUploads)
                 {
                     ValidateRawTerrainFrameGpuPlane(
@@ -2835,7 +3459,9 @@ namespace MagicCarpet.Native
                 "  \"r8_row_order\": \"source-top-down\",\n" +
                 "  \"gpu_readback_storage_order\": \"unity-bottom-up\",\n" +
                 "  \"rgba_png_row_order\": \"logical-top-down\",\n" +
-                "  \"scope\": \"isolated-sky-and-terrain; non-terrain-omitted\"\n" +
+                "  \"scope\": \"source-ordered-world-frame; terrain, qualified " +
+                "actors, projectiles, and economy composited; remaining " +
+                "non-terrain omitted\"\n" +
                 "}\n");
         }
 
@@ -2869,6 +3495,189 @@ namespace MagicCarpet.Native
                 }
             }
             return hash;
+        }
+
+        internal static ulong TerrainHash(
+            byte[] types,
+            byte[] heights,
+            byte[] shading,
+            byte[] angles,
+            byte[] secondary,
+            short[] entityIndices)
+        {
+            const ulong Offset = 0xcbf29ce484222325UL;
+            const ulong Prime = 0x100000001b3UL;
+            var hash = Offset;
+            void Append(byte value)
+            {
+                unchecked
+                {
+                    hash ^= value;
+                    hash *= Prime;
+                }
+            }
+            void AppendBytes(byte[] values)
+            {
+                foreach (var value in values) Append(value);
+            }
+
+            AppendBytes(Encoding.ASCII.GetBytes("mc2-session-terrain-v1\0"));
+            Append(0);
+            Append(1);
+            Append(0);
+            Append(1);
+            AppendBytes(types);
+            AppendBytes(heights);
+            AppendBytes(shading);
+            AppendBytes(angles);
+            AppendBytes(secondary);
+            foreach (var entityIndex in entityIndices)
+            {
+                var value = unchecked((ushort)entityIndex);
+                Append((byte)value);
+                Append((byte)(value >> 8));
+            }
+            return hash;
+        }
+
+        private void RefreshLiveTerrain()
+        {
+            var next = session.TerrainState();
+            Require(
+                next.generation == snapshot.generation &&
+                next.tick == snapshot.tick,
+                "live terrain matches atomic flight snapshot");
+            var changed =
+                next.mutationSequence != terrainState.mutationSequence ||
+                next.terrainHash != terrainState.terrainHash;
+            if (!changed)
+            {
+                terrainState = next;
+                return;
+            }
+
+            var nextTypes = session.BytePlane(NativeSim.TerrainTypes);
+            var nextHeights = session.BytePlane(NativeSim.TerrainHeight);
+            var nextShading = session.BytePlane(NativeSim.TerrainShade);
+            var nextAngles = session.BytePlane(NativeSim.TerrainAngle);
+            var nextSecondary = session.BytePlane(NativeSim.TerrainSecondary);
+            var nextEntityIndices = session.EntityIndexPlane();
+            Require(
+                TerrainHash(
+                    nextTypes,
+                    nextHeights,
+                    nextShading,
+                    nextAngles,
+                    nextSecondary,
+                    nextEntityIndices) == next.terrainHash,
+                "mutated live terrain canonical hash");
+
+            terrainTypes = nextTypes;
+            groundHeights = nextHeights;
+            terrainShade = nextShading;
+            terrainAngles = nextAngles;
+            secondaryHeights = nextSecondary;
+            terrainEntityIndices = nextEntityIndices;
+            terrainState = next;
+            ApplyLiveTerrainPresentation();
+            Debug.Log(
+                $"MC_TERRAIN_MUTATION_APPLIED sequence={terrainState.mutationSequence} " +
+                $"hash=0x{terrainState.terrainHash:x16}");
+        }
+
+        private void ApplyLiveTerrainPresentation()
+        {
+            UploadPlaneTexture(typeTexture, terrainTypes);
+            UploadPlaneTexture(heightTexture, groundHeights);
+            UploadPlaneTexture(shadeTexture, terrainShade);
+            UploadPlaneTexture(angleTexture, terrainAngles);
+            UploadPlaneTexture(secondaryTexture, secondaryHeights);
+            UpdatePersistentTerrainMesh();
+            UpdateDiagnosticMinimap();
+            UpdateExactTerrainGrid();
+        }
+
+        private static void UploadPlaneTexture(Texture2D texture, byte[] values)
+        {
+            if (texture == null) return;
+            texture.LoadRawTextureData(values);
+            texture.Apply(false, false);
+        }
+
+        private void UpdatePersistentTerrainMesh()
+        {
+            if (terrainMesh == null) return;
+            var vertexCount = TerrainCells * TerrainCells * 4;
+            var vertices = new Vector3[vertexCount];
+            var colors = new Color[vertexCount];
+            var uvs = new Vector2[vertexCount];
+            var selectors = new Vector2[vertexCount];
+            var shades = new Vector2[vertexCount];
+            for (var y = 0; y < TerrainCells; y++)
+            {
+                for (var x = 0; x < TerrainCells; x++)
+                {
+                    var sourceIndex = x + y * TerrainCells;
+                    var lowerLeft = sourceIndex * 4;
+                    var lowerRight = lowerLeft + 1;
+                    var upperLeft = lowerLeft + 2;
+                    var upperRight = lowerLeft + 3;
+                    vertices[lowerLeft] = TerrainVertex(x, y);
+                    vertices[lowerRight] = TerrainVertex(x + 1, y);
+                    vertices[upperLeft] = TerrainVertex(x, y + 1);
+                    vertices[upperRight] = TerrainVertex(x + 1, y + 1);
+                    var diagnostic = DiagnosticTerrainColor(
+                        terrainTypes[sourceIndex],
+                        terrainShade[sourceIndex],
+                        groundHeights[sourceIndex]);
+                    colors[lowerLeft] = colors[lowerRight] =
+                        colors[upperLeft] = colors[upperRight] = diagnostic;
+                    var orientation = (terrainAngles[sourceIndex] >> 4) & 7;
+                    var cellUvs = TerrainOrientationUvs[orientation];
+                    uvs[lowerLeft] = cellUvs[0];
+                    uvs[lowerRight] = cellUvs[1];
+                    uvs[upperLeft] = cellUvs[2];
+                    uvs[upperRight] = cellUvs[3];
+                    var selector = new Vector2(terrainTypes[sourceIndex], 0f);
+                    selectors[lowerLeft] = selectors[lowerRight] =
+                        selectors[upperLeft] = selectors[upperRight] = selector;
+                    shades[lowerLeft] =
+                        new Vector2(TerrainPlaneValue(terrainShade, x, y), 0);
+                    shades[lowerRight] =
+                        new Vector2(TerrainPlaneValue(terrainShade, x + 1, y), 0);
+                    shades[upperLeft] =
+                        new Vector2(TerrainPlaneValue(terrainShade, x, y + 1), 0);
+                    shades[upperRight] =
+                        new Vector2(TerrainPlaneValue(terrainShade, x + 1, y + 1), 0);
+                }
+            }
+            terrainMesh.vertices = vertices;
+            terrainMesh.colors = colors;
+            terrainMesh.uv = uvs;
+            terrainMesh.uv2 = selectors;
+            terrainMesh.uv3 = shades;
+            terrainMesh.RecalculateNormals();
+            terrainMesh.RecalculateBounds();
+        }
+
+        private void UpdateDiagnosticMinimap()
+        {
+            if (
+                minimapTexture == null ||
+                ownerAssetCache != null ||
+                minimapTexture.width != TerrainCells ||
+                minimapTexture.height != TerrainCells)
+                return;
+            var pixels = new Color32[TerrainCells * TerrainCells];
+            for (var index = 0; index < pixels.Length; index++)
+            {
+                pixels[index] = DiagnosticTerrainColor(
+                    terrainTypes[index],
+                    terrainShade[index],
+                    groundHeights[index]);
+            }
+            minimapTexture.SetPixels32(pixels);
+            minimapTexture.Apply(false, false);
         }
 
         private void CreateTerrainCopies()
@@ -2948,7 +3757,7 @@ namespace MagicCarpet.Native
                     }
                 }
             }
-            var mesh = new Mesh
+            terrainMesh = new Mesh
             {
                 name = "Exact 257x257 Wrapped Level One Mesh",
                 indexFormat = IndexFormat.UInt32,
@@ -2961,8 +3770,8 @@ namespace MagicCarpet.Native
                 uv5 = mapCells,
                 triangles = triangles
             };
-            mesh.RecalculateNormals();
-            mesh.RecalculateBounds();
+            terrainMesh.RecalculateNormals();
+            terrainMesh.RecalculateBounds();
             var material = ownerAssetCache == null
                 ? CreateMaterial(Color.white, 0.12f, 0f)
                 : CreateExactOwnerTerrainMaterial();
@@ -2971,7 +3780,7 @@ namespace MagicCarpet.Native
                 for (var tileX = -1; tileX <= 1; tileX++)
                 {
                     var tile = new GameObject($"Exact Terrain Copy {tileX},{tileY}");
-                    tile.AddComponent<MeshFilter>().sharedMesh = mesh;
+                    tile.AddComponent<MeshFilter>().sharedMesh = terrainMesh;
                     tile.AddComponent<MeshRenderer>().sharedMaterial = material;
                     tile.transform.position = new Vector3(
                         tileX * MapUnitySize,
@@ -3091,9 +3900,9 @@ namespace MagicCarpet.Native
                 descriptor.tmaps1.frame_used_selectors[2] == 54 &&
                 descriptor.tmaps1.frame_used_selectors[3] == 63 &&
                 descriptor.tmaps1.scene_reachable_selectors != null &&
-                descriptor.tmaps1.scene_reachable_selectors.Length == 129 &&
+                descriptor.tmaps1.scene_reachable_selectors.Length == 163 &&
                 descriptor.tmaps1.textures != null &&
-                descriptor.tmaps1.textures.Length == 129,
+                descriptor.tmaps1.textures.Length == 163,
                 "qualified Level 1 TMAP selector closure");
             terrainMaterialDescriptor = descriptor;
             tmapDescriptors.Clear();
@@ -3132,6 +3941,7 @@ namespace MagicCarpet.Native
                 paletteRgb8.Length == 256 * 3 && Array.TrueForAll(
                     paletteRgb8, value => value <= 252),
                 "qualified PALN exact RGB6-times-four palette bytes");
+            ownerOriginalPaletteRgb8 = (byte[])paletteRgb8.Clone();
             ownerPaletteTexture = new Texture2D(
                 256, 1, TextureFormat.RGB24, false, false)
             {
@@ -3140,7 +3950,7 @@ namespace MagicCarpet.Native
                 wrapMode = TextureWrapMode.Clamp
             };
             ownerPaletteTexture.LoadRawTextureData(paletteRgb8);
-            ownerPaletteTexture.Apply(false, true);
+            ownerPaletteTexture.Apply(false, false);
 
             var shadeLut = ownerAssetCache.ReadOutput(descriptor.palette.shade_lut_path);
             Require(shadeLut.Length == 256 * 256, "qualified TABLESN shade LUT bytes");
@@ -3211,7 +4021,7 @@ namespace MagicCarpet.Native
             Debug.Log(
                 "MC_MATERIAL_BRIDGE VERIFIED bl32=152 selectors_used=65 " +
                 "palette=PALN shade=TABLESN-live-pnt5 uv=UVTable-D4 " +
-                "tmaps_frame=40,41,54,63 sceneTmaps=129 decoded=118 placeholders=11 " +
+                "tmaps_frame=40,41,54,63 sceneTmaps=163 decoded=152 placeholders=11 " +
                 "grid=40x21 water=source-order fog=source-distance " +
                 "deferred=screen-linear-mode5-raster");
             return material;
@@ -3584,6 +4394,7 @@ namespace MagicCarpet.Native
 
             var qualifiedSpriteCount = 0;
             var liveGoatSpriteCount = 0;
+            var qualifiedFrozenActorCount = 0;
             var resetEffectDebugCount = 0;
             var unresolvedDebugCount = 0;
             foreach (var entity in entities)
@@ -3625,6 +4436,11 @@ namespace MagicCarpet.Native
                 Renderer renderer = null;
                 Transform spriteVisual = null;
                 var ownerSprite = qualifiedSprite || resetEffectDebug;
+                var qualifiedFrozenActor =
+                    qualifiedSprite &&
+                    entity.authority == NativeSim.FrozenObserved;
+                if (qualifiedFrozenActor)
+                    qualifiedFrozenActorCount++;
                 if (visible)
                 {
                     if (ownerSprite)
@@ -3661,7 +4477,8 @@ namespace MagicCarpet.Native
                     Visible = visible,
                     Group = group,
                     SpriteVisual = spriteVisual,
-                    OwnerSprite = ownerSprite
+                    OwnerSprite = ownerSprite,
+                    QualifiedFrozenActor = qualifiedFrozenActor
                 });
             }
             Require(entityRegistry.Count == 177, "177 entity registry nodes");
@@ -3676,7 +4493,8 @@ namespace MagicCarpet.Native
                         "qualified viewer has exactly 64 stable actor sprites");
                     Require(
                         liveGoatSpriteCount == 33 &&
-                        qualifiedSpriteCount - liveGoatSpriteCount == 31,
+                        qualifiedSpriteCount - liveGoatSpriteCount == 31 &&
+                        qualifiedFrozenActorCount == 31,
                         "qualified owner sprites split 33 GoatLive and 31 FrozenObserved");
                     Require(resetEffectDebugCount == 0 && unresolvedDebugCount == 0,
                         "qualified viewer has no transient/control diagnostic proxies");
@@ -3685,13 +4503,467 @@ namespace MagicCarpet.Native
             Debug.Log(
                 $"MC_ENTITY_PRESENTATION VERIFIED registry=177 qualifiedSprites=" +
                 $"{qualifiedSpriteCount} goatLive={liveGoatSpriteCount} " +
-                $"frozenOwnerSprites={qualifiedSpriteCount - liveGoatSpriteCount} " +
+                $"frozenOwnerSprites={qualifiedFrozenActorCount} " +
                 $"resetEffectDebug={resetEffectDebugCount} " +
                 $"unresolvedDebug={unresolvedDebugCount} " +
                 $"mode={(qualifiedMode ? "qualified" : "debug")} " +
                 "qualifiedSpriteAuthority=33-GoatLive+31-FrozenObserved " +
-                "baseFrameOnly=true pivot=viewer-bottom-center-approx noPhysics=true");
+                "managedFallbacks=native-capability-gated " +
+                "nativeAnimatedFamilies=Goat,Archer,Villager nativeStaticFamilies=Dolmen " +
+                "pivot=source-indexed-compositor noPhysics=true");
             UpdateEntityPresentation();
+        }
+
+        private void CreateMissionPresentationRegistry()
+        {
+            missionPresentationRoot =
+                new GameObject("Live Level 1 mission presentation").transform;
+            missionPresentationRoot.SetParent(transform, false);
+            if (ownerAssetCache == null)
+            {
+                Debug.Log(
+                    "MC_LEVEL1_PRESENTATION absent reason=owner-cache-not-supplied");
+                return;
+            }
+            Require(missionActors.Length == 19, "19 live Level 1 mission actors");
+            foreach (var actor in missionActors)
+            {
+                Require(
+                    !missionActorRegistry.ContainsKey(actor.authoredIndex),
+                    $"unique live mission actor {actor.authoredIndex}");
+                missionActorRegistry.Add(
+                    actor.authoredIndex,
+                    CreateMissionMarker(
+                        $"Mission actor {actor.authoredIndex:D3} kind={actor.kind}",
+                        actor.authoredIndex));
+            }
+            Require(
+                missionActorRegistry.Count == 19,
+                "19 separate live mission presentation nodes");
+            Debug.Log(
+                "MC_LEVEL1_PRESENTATION CREATED actors=19 multipart=dynamic " +
+                "effects=snapshot-owned ownerTmaps=true noPhysics=true");
+        }
+
+        private MissionMarker CreateMissionMarker(string name, ulong identity)
+        {
+            var node = new GameObject(name).transform;
+            node.SetParent(missionPresentationRoot, false);
+            var visual = new GameObject("Exact owner TMAP sprite").transform;
+            visual.SetParent(node, false);
+            visual.gameObject.AddComponent<MeshFilter>().sharedMesh = EntityQuad(false);
+            var renderer = visual.gameObject.AddComponent<MeshRenderer>();
+            renderer.enabled = false;
+            return new MissionMarker
+            {
+                Identity = identity,
+                Node = node,
+                Visual = visual,
+                Renderer = renderer,
+                Selector = -1
+            };
+        }
+
+        private void UpdateMissionPresentation()
+        {
+            if (ownerAssetCache == null || missionPresentationRoot == null) return;
+
+            foreach (var actor in missionActors)
+            {
+                Require(
+                    missionActorRegistry.TryGetValue(
+                        actor.authoredIndex, out var marker),
+                    $"live mission actor presentation {actor.authoredIndex}");
+                if (actor.kind == Level1ExitSwitchActorKind)
+                {
+                    // Feature 137 is an authored collision trigger with no
+                    // sprite/render tuple. It is exposed only by the adapted
+                    // live minimap marker until the exact remc2 mark pass is
+                    // ported.
+                    marker.Renderer.enabled = false;
+                    continue;
+                }
+                MissionActorSelector(actor, out var selector, out var mirrored);
+                UpdateMissionMarker(
+                    marker,
+                    actor.x,
+                    actor.y,
+                    actor.z,
+                    selector,
+                    actor.logicalHeight,
+                    mirrored,
+                    ManagedMissionActorVisible(
+                        actor.kind,
+                        actor.active,
+                        actor.visible,
+                        terrainFrameInfo.flags));
+            }
+
+            var liveSegmentIds = new HashSet<ushort>();
+            foreach (var segment in multipartSegments)
+            {
+                Require(
+                    liveSegmentIds.Add(segment.sourceEntityIndex),
+                    $"unique multipart segment source slot {segment.sourceEntityIndex}");
+                if (!multipartSegmentRegistry.TryGetValue(
+                        segment.sourceEntityIndex, out var marker))
+                {
+                    marker = CreateMissionMarker(
+                        $"Multipart segment {segment.sourceEntityIndex:D3} " +
+                        $"head={segment.headAuthoredIndex:D3} ordinal={segment.ordinal:D2}",
+                        segment.sourceEntityIndex);
+                    multipartSegmentRegistry.Add(segment.sourceEntityIndex, marker);
+                }
+                UpdateMissionMarker(
+                    marker,
+                    segment.x,
+                    segment.y,
+                    segment.z,
+                    segment.baseTmap,
+                    segment.logicalHeight,
+                    false,
+                    segment.active != 0 &&
+                    segment.visible != 0 &&
+                    (terrainFrameInfo.flags &
+                     NativeSim.TerrainFrameFirefliesComposited) == 0);
+            }
+            RemoveMissingMultipartMarkers(liveSegmentIds);
+
+            castleMarker ??= CreateMissionMarker("Level 1 stage-one castle", ulong.MaxValue - 1);
+            UpdateMissionMarker(
+                castleMarker,
+                castleLifecycle.rootX,
+                castleLifecycle.rootY,
+                castleLifecycle.rootZ,
+                level1Castle.baseTmap,
+                level1Castle.logicalHeight,
+                false,
+                ManagedEconomyVisible(
+                    castleLifecycle.rootActive,
+                    terrainFrameInfo.flags));
+
+            manaCarrierMarker ??=
+                CreateMissionMarker("Level 1 mana carrier", ulong.MaxValue - 2);
+            UpdateMissionMarker(
+                manaCarrierMarker,
+                manaCarrier.x,
+                manaCarrier.y,
+                manaCarrier.z,
+                manaCarrier.baseTmap,
+                manaCarrier.logicalHeight,
+                false,
+                ManagedEconomyVisible(manaCarrier.active, terrainFrameInfo.flags));
+
+            var liveSpheres = new HashSet<uint>();
+            foreach (var sphere in manaSpheres)
+            {
+                Require(
+                    liveSpheres.Add(sphere.sphereId),
+                    $"unique mana sphere {sphere.sphereId}");
+                if (!manaSphereRegistry.TryGetValue(sphere.sphereId, out var marker))
+                {
+                    marker = CreateMissionMarker(
+                        $"Mana sphere {sphere.sphereId} owner={sphere.ownerEntityIndex}",
+                        sphere.sphereId);
+                    manaSphereRegistry.Add(sphere.sphereId, marker);
+                }
+                UpdateMissionMarker(
+                    marker,
+                    sphere.x,
+                    sphere.y,
+                    sphere.z,
+                    sphere.baseTmap,
+                    sphere.logicalHeight,
+                    false,
+                    ManagedEconomyVisible(sphere.active, terrainFrameInfo.flags));
+            }
+            RemoveMissingMissionMarkers(manaSphereRegistry, liveSpheres);
+
+            var liveProjectiles = new HashSet<uint>();
+            foreach (var projectile in fireballProjectiles)
+            {
+                Require(
+                    liveProjectiles.Add(projectile.projectileId),
+                    $"unique Fireball projectile {projectile.projectileId}");
+                if (!missionProjectileRegistry.TryGetValue(
+                    projectile.projectileId, out var marker))
+                {
+                    marker = CreateMissionMarker(
+                        $"Level 1 projectile {projectile.projectileId} " +
+                        $"kind={projectile.projectileKind}",
+                        projectile.projectileId);
+                    missionProjectileRegistry.Add(projectile.projectileId, marker);
+                }
+                var selector = (int)projectile.baseTmap;
+                var mirrored = false;
+                if (projectile.projectileKind == 1 || projectile.projectileKind == 3)
+                {
+                    Require(
+                        projectile.renderMode == 21 &&
+                        projectile.baseTmap == 463 &&
+                        projectile.animationFrame == 0,
+                        $"Fireball projectile presentation {projectile.projectileId}");
+                }
+                else if (projectile.projectileKind == 2)
+                {
+                    Require(
+                        projectile.renderMode == 19 &&
+                        projectile.baseTmap == 105 &&
+                        projectile.animationFrame == 0,
+                        $"Archer arrow presentation {projectile.projectileId}");
+                    var orientation =
+                        (((projectile.yaw - renderCameraState.yaw) >> 3) & 0xF0) >> 4;
+                    selector += YawLookupMode19[orientation];
+                    mirrored = orientation >= 8;
+                }
+                else if (projectile.projectileKind == 4)
+                {
+                    Require(
+                        projectile.renderMode == 21 &&
+                        projectile.baseTmap == 61 &&
+                        projectile.animationFrame == 0,
+                        $"Castle projectile presentation {projectile.projectileId}");
+                }
+                else if (projectile.projectileKind == 5)
+                {
+                    Require(
+                        projectile.renderMode == 21 &&
+                        projectile.baseTmap == 144 &&
+                        projectile.animationFrame == 0,
+                        $"Possession projectile presentation {projectile.projectileId}");
+                }
+                else
+                {
+                    throw new InvalidOperationException(
+                        $"unsupported Level 1 projectile kind {projectile.projectileKind}");
+                }
+                UpdateMissionMarker(
+                    marker,
+                    projectile.x,
+                    projectile.y,
+                    projectile.z,
+                    selector,
+                    projectile.logicalHeight,
+                    mirrored,
+                    ManagedMissionProjectileVisible(
+                        projectile.projectileKind,
+                        projectile.active,
+                        terrainFrameInfo.flags));
+            }
+            RemoveMissingMissionMarkers(
+                missionProjectileRegistry, liveProjectiles);
+
+            var liveImpacts = new HashSet<uint>();
+            foreach (var impact in fireballImpacts)
+            {
+                Require(
+                    liveImpacts.Add(impact.impactId),
+                    $"unique Fireball impact {impact.impactId}");
+                if (!missionImpactRegistry.TryGetValue(
+                    impact.impactId, out var marker))
+                {
+                    marker = CreateMissionMarker(
+                        $"Fireball impact {impact.impactId}",
+                        impact.impactId);
+                    missionImpactRegistry.Add(impact.impactId, marker);
+                }
+                var supportedImpact =
+                    impact.model == 0 &&
+                    impact.renderMode == 36 &&
+                    impact.baseTmap == 38 &&
+                    impact.logicalHeight == 250 ||
+                    impact.model == 5 &&
+                    impact.renderMode == 11 &&
+                    impact.baseTmap == 186 &&
+                    impact.logicalHeight == 300;
+                Require(
+                    supportedImpact &&
+                    impact.animationFrame >= 0 &&
+                    impact.animationFrame <= 9,
+                    $"class-10 effect presentation {impact.impactId}");
+                UpdateMissionMarker(
+                    marker,
+                    impact.x,
+                    impact.y,
+                    impact.z,
+                    impact.baseTmap + impact.animationFrame,
+                    impact.logicalHeight,
+                    false,
+                    ManagedMissionImpactVisible(
+                        impact.active,
+                        terrainFrameInfo.flags));
+            }
+            RemoveMissingMissionMarkers(missionImpactRegistry, liveImpacts);
+        }
+
+        private void MissionActorSelector(
+            NativeSim.Level1ActorSnapshot actor,
+            out int selector,
+            out bool mirrored)
+        {
+            selector = actor.baseTmap;
+            mirrored = false;
+            if (actor.renderMode == 0 || actor.renderMode == 1)
+            {
+                Require(
+                    actor.kind == 3 || actor.kind == 4 || actor.kind == 5 ||
+                    actor.kind == Level1ExperienceScrollActorKind,
+                    $"fixed-selector mission actor {actor.authoredIndex}");
+                return;
+            }
+            var orientation =
+                (((actor.yaw - renderCameraState.yaw) >> 3) & 0xF0) >> 4;
+            if (actor.renderMode == 20)
+            {
+                Require(
+                    actor.kind == 1,
+                    $"mode20 Archer actor {actor.authoredIndex}");
+                selector += YawLookupMode20[orientation];
+                mirrored = orientation >= 8;
+                return;
+            }
+            if (actor.renderMode == 17)
+            {
+                Require(
+                    actor.kind == 2 || actor.kind == Level1MultipartHeadActorKind,
+                    $"mode17 Firefly/multipart actor {actor.authoredIndex}");
+                selector += orientation < 8 ? orientation : 15 - orientation;
+                mirrored = orientation >= 8;
+                return;
+            }
+            throw new InvalidOperationException(
+                $"unsupported live mission actor render mode {actor.renderMode} " +
+                $"for {actor.authoredIndex}");
+        }
+
+        internal static bool ManagedMissionActorVisible(
+            byte actorKind,
+            byte active,
+            byte visible,
+            uint worldFrameFlags)
+        {
+            if (active == 0 || visible == 0) return false;
+            return actorKind switch
+            {
+                1 => (worldFrameFlags &
+                      NativeSim.TerrainFrameArchersComposited) == 0,
+                2 => (worldFrameFlags &
+                      NativeSim.TerrainFrameFirefliesComposited) == 0,
+                3 or 4 or 5 => (worldFrameFlags &
+                                NativeSim.TerrainFrameObjectivePropsComposited) == 0,
+                Level1MultipartHeadActorKind => (worldFrameFlags &
+                    NativeSim.TerrainFrameFirefliesComposited) == 0,
+                Level1ExperienceScrollActorKind => (worldFrameFlags &
+                    NativeSim.TerrainFrameObjectivePropsComposited) == 0,
+                _ => true
+            };
+        }
+
+        internal static bool ManagedMissionProjectileVisible(
+            uint projectileKind,
+            byte active,
+            uint worldFrameFlags)
+        {
+            if (active == 0) return false;
+            return (worldFrameFlags & NativeSim.TerrainFrameCombatComposited) == 0;
+        }
+
+        internal static bool ManagedMissionImpactVisible(
+            byte active,
+            uint worldFrameFlags)
+        {
+            return active != 0 &&
+                   (worldFrameFlags & NativeSim.TerrainFrameCombatComposited) == 0;
+        }
+
+        internal static bool ManagedEconomyVisible(byte active, uint worldFrameFlags)
+        {
+            return active != 0 &&
+                   (worldFrameFlags & NativeSim.TerrainFrameEconomyComposited) == 0;
+        }
+
+        internal static bool ManagedFrozenActorVisible(
+            byte active,
+            bool qualifiedFrozenActor,
+            uint worldFrameFlags)
+        {
+            return active != 0 &&
+                   (!qualifiedFrozenActor ||
+                    (worldFrameFlags &
+                     NativeSim.TerrainFrameFrozenActorsComposited) == 0);
+        }
+
+        private void UpdateMissionMarker(
+            MissionMarker marker,
+            ushort sourceX,
+            ushort sourceY,
+            short sourceZ,
+            int selector,
+            ushort logicalHeight,
+            bool mirrored,
+            bool active)
+        {
+            var nearestX = unwrappedSourceX +
+                ModularDelta(sourceX, presentationState.cameraX);
+            var nearestY = unwrappedSourceY +
+                ModularDelta(sourceY, presentationState.cameraY);
+            marker.Node.position = SourceToUnity(nearestX, nearestY, sourceZ);
+            if (flightCamera != null)
+                marker.Node.rotation = flightCamera.transform.rotation;
+            if (!active)
+            {
+                marker.Renderer.enabled = false;
+                return;
+            }
+            if (!tmapDescriptors.TryGetValue(selector, out var textureRow))
+                throw new InvalidOperationException(
+                    $"required invariant failed: live mission TMAP selector {selector}");
+            Require(
+                textureRow.status == "decoded_indexed_texture" &&
+                textureRow.width > 0 &&
+                textureRow.height > 0 &&
+                logicalHeight > 0,
+                $"decoded live mission selector {selector}");
+            marker.Renderer.sharedMaterial =
+                EntitySpriteMaterial(selector, textureRow);
+            marker.Visual.GetComponent<MeshFilter>().sharedMesh =
+                EntityQuad(mirrored);
+            var height = logicalHeight / SourceUnitsPerUnityUnit;
+            var width = height * textureRow.width / textureRow.height;
+            marker.Visual.localPosition = new Vector3(0f, height * 0.5f, 0f);
+            marker.Visual.localScale = new Vector3(width, height, 1f);
+            marker.Selector = selector;
+            marker.Renderer.enabled =
+                presentationRig == null ||
+                Vector3.SqrMagnitude(marker.Node.position - targetPosition) >= 1f;
+        }
+
+        private static void RemoveMissingMissionMarkers(
+            Dictionary<uint, MissionMarker> registry,
+            HashSet<uint> liveIds)
+        {
+            var removed = new List<uint>();
+            foreach (var pair in registry)
+            {
+                if (liveIds.Contains(pair.Key)) continue;
+                if (pair.Value.Node != null)
+                    Destroy(pair.Value.Node.gameObject);
+                removed.Add(pair.Key);
+            }
+            foreach (var id in removed) registry.Remove(id);
+        }
+
+        private void RemoveMissingMultipartMarkers(HashSet<ushort> liveIds)
+        {
+            var removed = new List<ushort>();
+            foreach (var pair in multipartSegmentRegistry)
+            {
+                if (liveIds.Contains(pair.Key)) continue;
+                if (pair.Value.Node != null)
+                    Destroy(pair.Value.Node.gameObject);
+                removed.Add(pair.Key);
+            }
+            foreach (var id in removed) multipartSegmentRegistry.Remove(id);
         }
 
         private Transform CreateOwnerEntitySprite(
@@ -3881,6 +5153,7 @@ namespace MagicCarpet.Native
             material.SetTexture("_Indices", texture);
             material.SetTexture("_Palette", ownerPaletteTexture);
             entitySpriteMaterials.Add(selector, material);
+            entitySpriteTextures.Add(selector, texture);
             entitySpriteIndicesSha256.Add(selector, Sha256Hex(bytes));
             return material;
         }
@@ -3985,10 +5258,103 @@ namespace MagicCarpet.Native
             });
         }
 
+        private void ApplyExitPalettePresentation()
+        {
+            if (
+                ownerOriginalPaletteRgb8 == null ||
+                ownerHudPaletteRgb8 == null ||
+                ownerPaletteTexture == null ||
+                ownerAuthorityBadgeTexture == null)
+                return;
+            if (
+                appliedExitPaletteEffect == level1Palette.effect &&
+                appliedExitPaletteWeight == level1Palette.weight &&
+                appliedExitPaletteDenominator == level1Palette.denominator &&
+                appliedPaletteCount == level1Palette.paletteCount)
+                return;
+
+            // Rust materializes PaletteChanges from the exact PALN RGB6 bytes.
+            // Every indexed Unity consumer receives the same atomic RGB8
+            // palette; Unity does not recreate or time the effect.
+            Buffer.BlockCopy(
+                level1EffectivePaletteRgb8,
+                0,
+                ownerHudPaletteRgb8,
+                0,
+                ownerHudPaletteRgb8.Length);
+            ownerPaletteTexture.LoadRawTextureData(ownerHudPaletteRgb8);
+            ownerPaletteTexture.Apply(false, false);
+
+            foreach (var pair in ownerHudBasePixels)
+            {
+                ApplyNativePaletteToTexture(
+                    hudBitmapTextures[pair.Key],
+                    pair.Value);
+            }
+            ApplyNativePaletteToTexture(
+                ownerAuthorityBadgeTexture,
+                ownerAuthorityBadgeBasePixels);
+
+            appliedExitPaletteEffect = level1Palette.effect;
+            appliedExitPaletteWeight = level1Palette.weight;
+            appliedExitPaletteDenominator = level1Palette.denominator;
+            appliedPaletteCount = level1Palette.paletteCount;
+        }
+
+        private void ApplyNativePaletteToTexture(
+            Texture2D texture,
+            Color32[] originalPixels)
+        {
+            if (texture == null || originalPixels == null) return;
+            var paletteMap = new Dictionary<int, int>();
+            for (var paletteIndex = 0; paletteIndex < 256; paletteIndex++)
+            {
+                var offset = paletteIndex * 3;
+                var key =
+                    ownerOriginalPaletteRgb8[offset] |
+                    ownerOriginalPaletteRgb8[offset + 1] << 8 |
+                    ownerOriginalPaletteRgb8[offset + 2] << 16;
+                if (!paletteMap.ContainsKey(key))
+                    paletteMap.Add(key, paletteIndex);
+            }
+            var effective = new Color32[originalPixels.Length];
+            for (var index = 0; index < originalPixels.Length; index++)
+            {
+                var source = originalPixels[index];
+                if (source.a == 0)
+                {
+                    effective[index] = source;
+                    continue;
+                }
+                var key = source.r | source.g << 8 | source.b << 16;
+                Require(
+                    paletteMap.TryGetValue(key, out var paletteIndex),
+                    "owner HUD pixel resolves to PALN index");
+                var offset = paletteIndex * 3;
+                effective[index] = new Color32(
+                    ownerHudPaletteRgb8[offset],
+                    ownerHudPaletteRgb8[offset + 1],
+                    ownerHudPaletteRgb8[offset + 2],
+                    source.a);
+            }
+            texture.SetPixels32(effective);
+            texture.Apply(false, false);
+        }
+
         private void CreateOwnerHud()
         {
-            ownerHudPaletteRgb8 = ownerAssetCache.ReadOutput("palette/paln.rgb8");
+            var hudPalette = ownerAssetCache.ReadOutput("palette/paln.rgb8");
+            Require(
+                ownerOriginalPaletteRgb8 != null &&
+                hudPalette.Length == ownerOriginalPaletteRgb8.Length,
+                "shared owner PALN is initialized before HUD");
+            for (var index = 0; index < hudPalette.Length; index++)
+                Require(
+                    hudPalette[index] == ownerOriginalPaletteRgb8[index],
+                    $"shared owner PALN byte {index}");
+            ownerHudPaletteRgb8 = (byte[])ownerOriginalPaletteRgb8.Clone();
             ownerHudTables = ownerAssetCache.ReadOutput("palette/tablesn.u8");
+            ownerHudClrn = ownerAssetCache.ReadOutput("palette/clrn.indices.u8");
             ownerHudMinimapAperture = ownerAssetCache.ReadOutput(
                 hudDescriptor.minimap.aperture.path);
             var sinePayload = ownerAssetCache.ReadOutput(
@@ -3996,32 +5362,34 @@ namespace MagicCarpet.Native
             Require(
                 ownerHudPaletteRgb8.Length == 256 * 3 &&
                 ownerHudTables.Length == 83456 &&
-                ownerHudMinimapAperture.Length == 64 * 64 &&
+                ownerHudClrn.Length == 4096 &&
+                ownerHudClrn[4095] == 176 &&
+                ownerHudMinimapAperture.Length == 128 * 128 &&
                 sinePayload.Length == 2560 * 4,
-                "owner HUD PALN, TABLESN, aperture and sine payloads");
+                "owner HUD PALN, CLRN, TABLESN, aperture and sine payloads");
             var opaquePixels = 0;
             foreach (var value in ownerHudMinimapAperture)
             {
                 Require(value == 0 || value == 1, "binary minimap aperture");
                 opaquePixels += value;
             }
-            Require(opaquePixels == 3204, "exact 64x64 TABLESN minimap aperture");
-            for (var y = 0; y < 64; y++)
+            Require(opaquePixels == 12848, "exact 128x128 TABLESN minimap aperture");
+            for (var y = 0; y < 128; y++)
             {
                 var row = hudDescriptor.minimap.aperture.scanlines[y];
                 Require(
                     row.y == y &&
                     row.start_x_inclusive >= 0 &&
-                    row.end_x_exclusive <= 64 &&
+                    row.end_x_exclusive <= 128 &&
                     row.start_x_inclusive < row.end_x_exclusive,
                     $"valid minimap aperture scanline {y}");
-                for (var x = 0; x < 64; x++)
+                for (var x = 0; x < 128; x++)
                 {
                     var expected = (
                         x >= row.start_x_inclusive &&
                         x < row.end_x_exclusive) ? 1 : 0;
                     Require(
-                        ownerHudMinimapAperture[y * 64 + x] == expected,
+                        ownerHudMinimapAperture[y * 128 + x] == expected,
                         $"minimap aperture scanline contract {y}");
                 }
             }
@@ -4044,13 +5412,13 @@ namespace MagicCarpet.Native
             };
             var directionXs = new[]
             {
-                32, 48, 32, 16, 32, 48, 32, 16,
-                32, 48, 32, 16, 32, 48, 32, 16
+                64, 96, 64, 32, 64, 96, 64, 32,
+                64, 96, 64, 32, 64, 96, 64, 32
             };
             var directionYs = new[]
             {
-                16, 32, 48, 32, 16, 32, 48, 32,
-                16, 32, 48, 32, 16, 32, 48, 32
+                32, 64, 96, 64, 32, 64, 96, 64,
+                32, 64, 96, 64, 32, 64, 96, 64
             };
             var expectedTileXs = new[]
             {
@@ -4080,13 +5448,16 @@ namespace MagicCarpet.Native
             for (var yaw = 0; yaw < 2048; yaw += 256)
             {
                 OwnerMinimapSourceFixed(
-                    snapshot.x, snapshot.y, yaw, 32, 32,
+                    snapshot.x, snapshot.y, yaw, 64, 64,
                     out var centreX, out var centreY);
                 Require(
                     centreX == snapshot.x && centreY == snapshot.y,
                     $"exact minimap centre at yaw {yaw}");
             }
             hudBitmapTextures.Clear();
+            hudBitmapIndices.Clear();
+            hudBitmapMasks.Clear();
+            ownerHudBasePixels.Clear();
             foreach (var row in hudDescriptor.bitmap_assets)
             {
                 var indices = ownerAssetCache.ReadOutput(row.indices_path);
@@ -4118,24 +5489,108 @@ namespace MagicCarpet.Native
                     false,
                     true)
                 {
-                    name = $"Owner MSPRN selector {row.selector} FrozenObserved",
+                    name = $"Owner HSPRN selector {row.selector} FrozenObserved",
                     filterMode = FilterMode.Point,
                     wrapMode = TextureWrapMode.Clamp
                 };
                 texture.SetPixels32(rgba);
-                texture.Apply(false, true);
+                texture.Apply(false, false);
                 hudBitmapTextures.Add(row.selector, texture);
+                hudBitmapIndices.Add(row.selector, indices);
+                hudBitmapMasks.Add(row.selector, mask);
+                ownerHudBasePixels.Add(
+                    row.selector,
+                    (Color32[])rgba.Clone());
             }
-            ownerObjectiveTexture = CreateTopDownRgbaTexture(
-                "Owner Level 1 objective 48 FrozenObserved",
-                ownerAssetCache.ReadOutput(hudDescriptor.objective.render_path),
-                hudDescriptor.objective.render_width,
-                hudDescriptor.objective.render_height);
+            ownerSpellTierTextures.Clear();
+            foreach (var row in hudDescriptor.spells.tier_rows)
+            {
+                ownerSpellTierTextures.Add(
+                    row.tier,
+                    CreateTopDownRgbaTexture(
+                        $"Owner HFONT3 spell tier {row.text}",
+                        ownerAssetCache.ReadOutput(row.render_path),
+                        row.render_width,
+                        row.render_height));
+            }
+            ownerObjectiveTextures.Clear();
+            ownerObjectiveRows.Clear();
+            ownerObjectiveRasters.Clear();
+            ownerObjectiveOverlayIndices.Clear();
+            ownerObjectiveOverlayMasks.Clear();
+            ownerObjectiveUploadPixels.Clear();
+            foreach (var row in hudDescriptor.objective.rows)
+            {
+                Require(
+                    row.selector >= 48 &&
+                    row.selector <= 53 &&
+                    row.authority ==
+                        "SourceMappedLiveIndexedFramebuffer" &&
+                    !ownerObjectiveRows.ContainsKey(row.selector),
+                    $"source-mapped objective row {row.selector}");
+                var raster = ownerAssetCache.ReadOutput(row.raster_path);
+                var planeBytes = row.render_width * row.render_height;
+                Require(
+                    row.raster_plane_bytes == planeBytes &&
+                    raster.Length == planeBytes * 2,
+                    $"indexed objective raster extent {row.selector}");
+                var foregroundIndices = new byte[planeBytes];
+                var foregroundMask = new byte[planeBytes];
+                Buffer.BlockCopy(raster, 0, foregroundIndices, 0, planeBytes);
+                Buffer.BlockCopy(
+                    raster,
+                    planeBytes,
+                    foregroundMask,
+                    0,
+                    planeBytes);
+                var foregroundOpaquePixels = 0;
+                var foregroundMaskBinary = true;
+                foreach (var value in foregroundMask)
+                {
+                    if (value == 1) foregroundOpaquePixels++;
+                    else if (value != 0) foregroundMaskBinary = false;
+                }
+                Require(
+                    Sha256Hex(foregroundIndices) ==
+                        row.foreground_indices_sha256 &&
+                    Sha256Hex(foregroundMask) ==
+                        row.foreground_mask_sha256 &&
+                    foregroundOpaquePixels ==
+                        row.foreground_opaque_pixels &&
+                    foregroundMaskBinary,
+                    $"indexed objective planes {row.selector}");
+                ownerObjectiveRows.Add(row.selector, row);
+                ownerObjectiveRasters.Add(row.selector, raster);
+                ownerObjectiveOverlayIndices.Add(
+                    row.selector,
+                    new byte[planeBytes]);
+                ownerObjectiveOverlayMasks.Add(
+                    row.selector,
+                    new byte[planeBytes]);
+                ownerObjectiveUploadPixels.Add(
+                    row.selector,
+                    new Color32[planeBytes]);
+                var objectiveTexture = new Texture2D(
+                    row.render_width,
+                    row.render_height,
+                    TextureFormat.RGBA32,
+                    false,
+                    true)
+                {
+                    name =
+                        $"Owner Level 1 objective {row.selector} indexed live blend",
+                    filterMode = FilterMode.Point,
+                    wrapMode = TextureWrapMode.Clamp
+                };
+                ownerObjectiveTextures.Add(row.selector, objectiveTexture);
+            }
             ownerAuthorityBadgeTexture = CreateTopDownRgbaTexture(
-                "Owner FONT1 FrozenObserved badge",
+                "Owner HFONT3 FrozenObserved badge",
                 ownerAssetCache.ReadOutput(hudDescriptor.authority_badge.render_path),
                 hudDescriptor.authority_badge.render_width,
                 hudDescriptor.authority_badge.render_height);
+            ownerAuthorityBadgeBasePixels =
+                ownerAuthorityBadgeTexture.GetPixels32();
             minimapTexture = new Texture2D(
                 hudDescriptor.minimap.logical_width,
                 hudDescriptor.minimap.logical_height,
@@ -4148,12 +5603,17 @@ namespace MagicCarpet.Native
                 wrapMode = TextureWrapMode.Clamp
             };
             UpdateOwnerMinimap();
+            appliedExitPaletteEffect = byte.MaxValue;
+            appliedExitPaletteWeight = byte.MaxValue;
+            appliedExitPaletteDenominator = byte.MaxValue;
+            ApplyExitPalettePresentation();
             Debug.Log(
-                "MC_OWNER_HUD READY textures=11 objective=selector48/FrozenObserved " +
-                "minimap=64-native+nearest2x/TABLESN-aperture/fixed-rotation " +
-                "terrain+entities/FrozenObserved,playerPose/PlayerFlightLive " +
-                "entityDots=non-original-reset-reference-overlay " +
-                "bars=Deferred highres=Deferred");
+                "MC_OWNER_HUD READY textures=26 " +
+                "objectives=selectors48-53/indexed-live-TABLESN-blend " +
+                "minimap=128-native/TABLESN-aperture/fixed-rotation " +
+                "terrain/OwnerLevelStatic,entities/MissionStateLive," +
+                "playerPose/PlayerFlightLive objectiveMarks=SourceMappedLive " +
+                "bars=MissionStateLiveSourceMapped highres=HSPRN-native");
         }
 
         private static Texture2D CreateTopDownRgbaTexture(
@@ -4182,7 +5642,7 @@ namespace MagicCarpet.Native
                 wrapMode = TextureWrapMode.Clamp
             };
             texture.LoadRawTextureData(flipped);
-            texture.Apply(false, true);
+            texture.Apply(false, false);
             return texture;
         }
 
@@ -4191,16 +5651,14 @@ namespace MagicCarpet.Native
             if (
                 minimapTexture == null ||
                 ownerHudTables == null ||
+                ownerHudClrn == null ||
                 ownerHudMinimapAperture == null ||
                 ownerHudSine == null)
                 return;
-            const int side = 64;
-            const int centre = side / 2;
-            const int scaling = 512;
+            const int side = 128;
+            var indices = new byte[side * side];
+            var objectiveOverlay = new bool[side * side];
             var pixels = new Color32[side * side];
-            var angle = snapshot.yaw & 0x7ff;
-            var sineRaw = ownerHudSine[angle];
-            var cosineRaw = ownerHudSine[angle + 0x200];
 
             for (var screenY = 0; screenY < side; screenY++)
             {
@@ -4220,54 +5678,486 @@ namespace MagicCarpet.Native
                     var tileY = (sourceY >> 8) & 255;
                     var tile = tileX + tileY * 256;
                     var baseIndex = ownerHudTables[0x14000 + terrainTypes[tile]];
-                    var paletteIndex = ownerHudTables[(terrainShade[tile] << 8) | baseIndex];
-                    SetTopDownPixel(
-                        pixels,
-                        side,
-                        screenX,
-                        screenY,
-                        PaletteColour(ownerHudPaletteRgb8, paletteIndex));
+                    var terrainIndex =
+                        ownerHudTables[(terrainShade[tile] << 8) | baseIndex];
+                    var framebufferX =
+                        screenX * NativeSim.TerrainFrameWidth / 640;
+                    var framebufferY =
+                        screenY * NativeSim.TerrainFrameHeight / 480;
+                    var framebufferIndex = terrainFrameIndices[
+                        framebufferY * NativeSim.TerrainFrameWidth +
+                        framebufferX];
+                    indices[screenY * side + screenX] = ownerHudTables[
+                        0x4000 + (framebufferIndex << 8) + terrainIndex];
                 }
             }
 
-            // Non-original reference overlay: reset positions are exact, but
-            // original entity filters, reveal rules, and per-type/player
-            // colors are deferred and must not be implied by these white dots.
-            var frozenColour = PaletteColour(ownerHudPaletteRgb8, 176);
-            foreach (var entity in entities)
+            // Rust owns the complete source-slot walk and emits commands in
+            // castle-rope then ascending 1..999 order. Unity only performs the
+            // source raster operations against the owner aperture/bitmaps.
+            foreach (var command in level1MinimapEntities)
             {
                 if (
-                    entity.active == 0 ||
-                    entity.authority != NativeSim.FrozenObserved)
+                    command.x < 0 || command.x >= side ||
+                    command.y < 0 || command.y >= side ||
+                    ownerHudMinimapAperture[command.y * side + command.x] == 0)
                     continue;
-                var deltaX = ModularDelta(entity.x, snapshot.x);
-                var deltaY = ModularDelta(entity.y, snapshot.y);
-                var localRight = (int)(
-                    ((long)deltaX * cosineRaw + (long)deltaY * sineRaw) >> 16);
-                var localDown = (int)(
-                    (-(long)deltaX * sineRaw + (long)deltaY * cosineRaw) >> 16);
-                var x = centre + Mathf.RoundToInt(localRight / (float)scaling);
-                var y = centre + Mathf.RoundToInt(localDown / (float)scaling);
-                if (
-                    x < 1 || x >= side - 1 || y < 1 || y >= side - 1 ||
-                    ownerHudMinimapAperture[y * side + x] == 0)
-                    continue;
-                SetTopDownPixel(pixels, side, x, y, frozenColour);
+                if (command.kind == NativeSim.Level1MinimapCommandBlendPixel)
+                {
+                    BlendOwnerMinimapIndexUnclipped(
+                        indices, side, command.x, command.y, command.paletteIndex);
+                }
+                else if (command.kind == NativeSim.Level1MinimapCommandDot)
+                {
+                    for (var drawY = 0; drawY < command.size; drawY++)
+                    {
+                        for (var drawX = 0; drawX < command.size; drawX++)
+                            SetOwnerMinimapIndexUnclipped(
+                                indices,
+                                side,
+                                command.x + drawX,
+                                command.y + drawY,
+                                command.paletteIndex);
+                    }
+                }
+                else
+                {
+                    BlitOwnerMinimapBitmap(
+                        indices,
+                        side,
+                        command.selector,
+                        command.x,
+                        command.y,
+                        command.anchor);
+                }
             }
 
-            // The original mark pass is deliberately not guessed. This small,
-            // centred arrow consumes only the ABI's live player pose.
-            var liveColour = PaletteColour(ownerHudPaletteRgb8, 119);
-            for (var y = -2; y <= 1; y++)
+            // The source centre is (63,64). Blend each of the 41 unique cross
+            // pixels exactly once; the previous four-arm loop transformed the
+            // centre four times.
+            var crossX = level1MinimapEntitiesInfo.crossX;
+            var crossY = level1MinimapEntitiesInfo.crossY;
+            var crossArm = level1MinimapEntitiesInfo.crossArmLength;
+            var crossColour = level1MinimapEntitiesInfo.crossColour;
+            BlendOwnerMinimapIndexUnclipped(
+                indices, side, crossX, crossY, crossColour);
+            for (var arm = 1; arm <= crossArm; arm++)
             {
-                var halfWidth = y < 0 ? (2 + y) / 2 : 1;
-                for (var x = -halfWidth; x <= halfWidth; x++)
-                    SetTopDownPixel(pixels, side, centre + x, centre + y, liveColour);
+                BlendOwnerMinimapIndexUnclipped(
+                    indices, side, crossX - arm, crossY, crossColour);
+                BlendOwnerMinimapIndexUnclipped(
+                    indices, side, crossX + arm, crossY, crossColour);
+                BlendOwnerMinimapIndexUnclipped(
+                    indices, side, crossX, crossY - arm, crossColour);
+                BlendOwnerMinimapIndexUnclipped(
+                    indices, side, crossX, crossY + arm, crossColour);
             }
-            SetTopDownPixel(pixels, side, centre - 1, centre + 2, liveColour);
-            SetTopDownPixel(pixels, side, centre + 1, centre + 2, liveColour);
+
+            DrawOwnerMinimapMarks(indices, objectiveOverlay, side);
+
+            for (var y = 0; y < side; y++)
+            {
+                for (var x = 0; x < side; x++)
+                {
+                    if (
+                        ownerHudMinimapAperture[y * side + x] == 0 &&
+                        !objectiveOverlay[y * side + x])
+                        continue;
+                    SetTopDownPixel(
+                        pixels,
+                        side,
+                        x,
+                        y,
+                        PaletteColour(ownerHudPaletteRgb8, indices[y * side + x]));
+                }
+            }
             minimapTexture.SetPixels32(pixels);
             minimapTexture.Apply(false, false);
+        }
+
+        private void DrawOwnerMinimapMarks(
+            byte[] indices,
+            bool[] overlay,
+            int side)
+        {
+            var count = Math.Min(level1MinimapMarks.markCount, (byte)16);
+            for (var ordinal = 0; ordinal < count; ordinal++)
+            {
+                var x = level1MinimapMarks.markX[ordinal];
+                var y = level1MinimapMarks.markY[ordinal];
+                if (!OwnerMinimapMarkInsideAperture(x, y, side)) continue;
+                if (level1MinimapMarks.markPulse == 0) continue;
+                var colour = level1MinimapMarks.markColour[ordinal];
+                for (var offsetY = -1; offsetY <= 1; offsetY++)
+                {
+                    for (var offsetX = -1; offsetX <= 1; offsetX++)
+                    {
+                        if (offsetX == 0 && offsetY == 0) continue;
+                        SetOwnerMinimapOverlayIndex(
+                            indices,
+                            overlay,
+                            side,
+                            x + offsetX,
+                            y + offsetY,
+                            colour);
+                    }
+                }
+            }
+
+            if (level1MinimapMarks.arrowVisible == 0) return;
+            var arrow = level1MinimapMarks.arrowXY;
+            const byte arrowColour = 119;
+            int[,] segments =
+            {
+                { 0, 1 },
+                { 1, 3 },
+                { 3, 4 },
+                { 4, 5 },
+                { 5, 6 },
+                { 6, 2 },
+                { 2, 0 }
+            };
+            for (var segment = 0; segment < segments.GetLength(0); segment++)
+            {
+                var from = segments[segment, 0];
+                var to = segments[segment, 1];
+                DrawOwnerMinimapLine(
+                    indices,
+                    overlay,
+                    side,
+                    arrow[from * 2],
+                    arrow[from * 2 + 1],
+                    arrow[to * 2],
+                    arrow[to * 2 + 1],
+                    arrowColour);
+            }
+        }
+
+        private bool OwnerMinimapMarkInsideAperture(int x, int y, int side)
+        {
+            if (x < 0 || x >= side || y < 3 || y >= side - 3) return false;
+            var left = 0;
+            while (
+                left < side &&
+                ownerHudMinimapAperture[y * side + left] == 0)
+                left++;
+            var rightExclusive = side;
+            while (
+                rightExclusive > left &&
+                ownerHudMinimapAperture[
+                    y * side + rightExclusive - 1] == 0)
+                rightExclusive--;
+            return x >= left + 3 && x < rightExclusive - 3;
+        }
+
+        private static void DrawOwnerMinimapLine(
+            byte[] indices,
+            bool[] overlay,
+            int side,
+            int x1,
+            int y1,
+            int x2,
+            int y2,
+            byte colour)
+        {
+            // `DrawLine_BD542` sorts by Y before its integer viewport clip.
+            if (y1 > y2)
+            {
+                (x1, x2) = (x2, x1);
+                (y1, y2) = (y2, y1);
+            }
+            if (y2 < 0 || y1 >= side) return;
+            if (y1 < 0)
+            {
+                x1 += -y1 * (x2 - x1) / (y2 - y1);
+                y1 = 0;
+            }
+            if (y2 >= side)
+            {
+                x2 = x1 + (side - y1) * (x2 - x1) / (y2 - y1);
+                y2 = side - 1;
+            }
+
+            if (x1 >= 0 && x1 < side)
+            {
+                if (x2 >= side)
+                {
+                    y2 = y1 + (side - x1) * (y2 - y1) / (x2 - x1);
+                    x2 = side - 1;
+                }
+                else if (x2 < 0)
+                {
+                    y2 = y1 + x1 * (y2 - y1) / (x1 - x2);
+                    x2 = 0;
+                }
+            }
+            else if (x1 >= side)
+            {
+                if (x2 >= side) return;
+                y1 += (x1 - side) * (y2 - y1) / (x1 - x2);
+                x1 = side - 1;
+                if (x2 < 0)
+                {
+                    y2 -= -x2 * (y2 - y1) / (x1 - x2);
+                    x2 = 0;
+                }
+            }
+            else
+            {
+                if (x2 < 0) return;
+                y1 += -x1 * (y2 - y1) / (x2 - x1);
+                x1 = 0;
+                if (x2 >= side)
+                {
+                    y2 = y1 + side * (y2 - y1) / x2;
+                    x2 = side - 1;
+                }
+            }
+
+            SetOwnerMinimapOverlayIndex(
+                indices, overlay, side, x1, y1, colour);
+            var stepX = x2 >= x1 ? 1 : -1;
+            var deltaX = Math.Abs(x2 - x1);
+            var deltaY = y2 - y1;
+            if (deltaX == 0)
+            {
+                for (var y = y1 + 1; y <= y2; y++)
+                    SetOwnerMinimapOverlayIndex(
+                        indices, overlay, side, x1, y, colour);
+                return;
+            }
+            if (deltaY == 0)
+            {
+                for (var x = x1 + stepX; x != x2 + stepX; x += stepX)
+                    SetOwnerMinimapOverlayIndex(
+                        indices, overlay, side, x, y1, colour);
+                return;
+            }
+
+            var major = Math.Max(deltaX, deltaY);
+            var minor = Math.Min(deltaX, deltaY);
+            var error = 2 * minor - major;
+            var majorIsX = deltaX >= deltaY;
+            var xCurrent = x1;
+            var yCurrent = y1;
+            for (var remaining = major; remaining > 0; remaining--)
+            {
+                if (majorIsX) xCurrent += stepX;
+                else yCurrent++;
+                if (error >= 0)
+                {
+                    if (majorIsX) yCurrent++;
+                    else xCurrent += stepX;
+                    error += 2 * (minor - major);
+                }
+                else
+                {
+                    error += 2 * minor;
+                }
+                SetOwnerMinimapOverlayIndex(
+                    indices, overlay, side, xCurrent, yCurrent, colour);
+            }
+        }
+
+        private static void SetOwnerMinimapOverlayIndex(
+            byte[] indices,
+            bool[] overlay,
+            int side,
+            int x,
+            int y,
+            byte paletteIndex)
+        {
+            if (x < 0 || y < 0 || x >= side || y >= side) return;
+            var offset = y * side + x;
+            indices[offset] = paletteIndex;
+            overlay[offset] = true;
+        }
+
+        private bool OwnerMinimapBlip(
+            byte classId,
+            byte model,
+            byte action,
+            out byte paletteIndex,
+            out int selector,
+            out int blipSize)
+        {
+            paletteIndex = 0;
+            selector = 0;
+            blipSize = 1;
+            switch (classId)
+            {
+                case 2:
+                    if (model == 3 || (model == 0 && action == 2) || model == 1)
+                        return false;
+                    paletteIndex = 0x84;
+                    return true;
+                case 5:
+                    if (
+                        action == 0xb4 ||
+                        (action >= 0xe8 && action <= 0xea))
+                        return false;
+                    paletteIndex = model is >= 12 and <= 14
+                        ? ownerHudClrn[15]
+                        : ownerHudClrn[4095];
+                    return true;
+                case 9:
+                    paletteIndex = ownerHudClrn[3855];
+                    return true;
+                case 10:
+                    if (model == 18 || model == 78) return false;
+                    paletteIndex = model is 39 or 57
+                        ? (byte)0xe8
+                        : ownerHudClrn[3855];
+                    blipSize = model == 34 ? 2 : 1;
+                    return true;
+                case 11:
+                    if (model != 12) return false;
+                    selector = 83;
+                    return true;
+                case 12:
+                case 15:
+                    paletteIndex = ownerHudClrn[3840];
+                    return true;
+                case 14:
+                    if (model != 5) return false;
+                    paletteIndex = ownerHudClrn[4095];
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private void PlotOwnerMinimapBlip(
+            byte[] indices,
+            ushort sourceX,
+            ushort sourceY,
+            byte paletteIndex,
+            int selector,
+            int blipSize,
+            int sineRaw,
+            int cosineRaw)
+        {
+            const int side = 128;
+            const int centre = side / 2;
+            const int scaling = 256;
+            var deltaX = ModularDelta(sourceX, snapshot.x);
+            var deltaY = ModularDelta(sourceY, snapshot.y);
+            var inverseScale = 0x10000 / scaling;
+            var localDownAxis =
+                (int)(-((long)inverseScale * sineRaw) >> 16);
+            var localRightAxis =
+                (int)(((long)inverseScale * cosineRaw) >> 16);
+            var x = centre + (int)(
+                ((long)deltaX * localRightAxis -
+                 (long)deltaY * localDownAxis) >> 16);
+            var y = centre + (int)(
+                ((long)localRightAxis * deltaY +
+                 (long)localDownAxis * deltaX) >> 16);
+            if (
+                x < 0 || x >= side || y < 0 || y >= side ||
+                ownerHudMinimapAperture[y * side + x] == 0)
+                return;
+            if (selector != 0)
+            {
+                BlitOwnerMinimapBitmap(indices, side, selector, x, y);
+                return;
+            }
+            for (var drawY = 0; drawY < blipSize; drawY++)
+            {
+                for (var drawX = 0; drawX < blipSize; drawX++)
+                    SetOwnerMinimapIndex(
+                        indices, side, x + drawX, y + drawY, paletteIndex);
+            }
+        }
+
+        private void BlitOwnerMinimapBitmap(
+            byte[] destination,
+            int destinationSide,
+            int selector,
+            int anchorX,
+            int anchorY,
+            byte anchor = NativeSim.Level1MinimapAnchorBottomCenter)
+        {
+            HudBitmapDescriptor descriptor = null;
+            byte[] source = null;
+            byte[] mask = null;
+            Require(
+                hudBitmapDescriptors.TryGetValue(selector, out descriptor) &&
+                hudBitmapIndices.TryGetValue(selector, out source) &&
+                hudBitmapMasks.TryGetValue(selector, out mask),
+                $"materialized minimap HSPRN selector {selector}");
+            var left = anchor == NativeSim.Level1MinimapAnchorBottomLeft
+                ? anchorX
+                : anchorX - descriptor.stored_width / 2;
+            var top = anchorY - descriptor.stored_height;
+            for (var sourceY = 0; sourceY < descriptor.stored_height; sourceY++)
+            {
+                for (var sourceX = 0; sourceX < descriptor.stored_width; sourceX++)
+                {
+                    var sourceOffset = sourceY * descriptor.stored_width + sourceX;
+                    if (mask[sourceOffset] == 0) continue;
+                    SetOwnerMinimapIndexUnclipped(
+                        destination,
+                        destinationSide,
+                        left + sourceX,
+                        top + sourceY,
+                        source[sourceOffset]);
+                }
+            }
+        }
+
+        private void BlendOwnerMinimapIndex(
+            byte[] indices,
+            int side,
+            int x,
+            int y,
+            byte blendIndex)
+        {
+            if (
+                x < 0 || y < 0 || x >= side || y >= side ||
+                ownerHudMinimapAperture[y * side + x] == 0)
+                return;
+            var offset = y * side + x;
+            indices[offset] =
+                ownerHudTables[0x4000 + (blendIndex << 8) + indices[offset]];
+        }
+
+        private void BlendOwnerMinimapIndexUnclipped(
+            byte[] indices,
+            int side,
+            int x,
+            int y,
+            byte blendIndex)
+        {
+            if (x < 0 || y < 0 || x >= side || y >= side) return;
+            var offset = y * side + x;
+            indices[offset] =
+                ownerHudTables[0x4000 + (blendIndex << 8) + indices[offset]];
+        }
+
+        private void SetOwnerMinimapIndex(
+            byte[] indices,
+            int side,
+            int x,
+            int y,
+            byte paletteIndex)
+        {
+            if (
+                x < 0 || y < 0 || x >= side || y >= side ||
+                ownerHudMinimapAperture[y * side + x] == 0)
+                return;
+            indices[y * side + x] = paletteIndex;
+        }
+
+        private static void SetOwnerMinimapIndexUnclipped(
+            byte[] indices,
+            int side,
+            int x,
+            int y,
+            byte paletteIndex)
+        {
+            if (x < 0 || y < 0 || x >= side || y >= side) return;
+            indices[y * side + x] = paletteIndex;
         }
 
         private void OwnerMinimapSourceFixed(
@@ -4279,8 +6169,8 @@ namespace MagicCarpet.Native
             out int sourceX,
             out int sourceY)
         {
-            const int side = 64;
-            const int scaling = 512;
+            const int side = 128;
+            const int scaling = 256;
             var angle = yaw & 0x7ff;
             var sineScaled = (int)(((long)scaling * ownerHudSine[angle]) >> 16);
             var cosineScaled = (int)(
@@ -4349,7 +6239,7 @@ namespace MagicCarpet.Native
                 }
             }
             minimapTexture.SetPixels32(pixels);
-            minimapTexture.Apply(false, true);
+            minimapTexture.Apply(false, false);
         }
 
         private static Texture2D CreatePlaneTexture(string name, byte[] values)
@@ -4361,7 +6251,7 @@ namespace MagicCarpet.Native
                 wrapMode = TextureWrapMode.Repeat
             };
             texture.LoadRawTextureData(values);
-            texture.Apply(false, true);
+            texture.Apply(false, false);
             return texture;
         }
 
@@ -4408,24 +6298,30 @@ namespace MagicCarpet.Native
             targetRotation = Quaternion.Euler(pitchDegrees, yawDegrees, bankDegrees);
             if (flightCamera != null)
             {
-                flightCamera.fieldOfView = 76f;
+                var unityFov =
+                    Level1ExitPresentationMath.UnityVerticalFov(
+                        presentationState.cameraFov);
+                flightCamera.fieldOfView = unityFov;
+                flightCamera.rect =
+                    Level1ExitPresentationMath.SourceDisplayRect(
+                        Screen.width, Screen.height);
                 if (carpetOverlayCamera != null)
-                    carpetOverlayCamera.fieldOfView = 76f;
-                if (presentationState.cameraFov != 128 && !cameraFovFrozen)
                 {
-                    cameraFovFrozen = true;
-                    Debug.LogWarning(
-                        $"MC_CAMERA_FOV_FROZEN source={presentationState.cameraFov} " +
-                        "baseline=128 unityDegrees=76 reason=projection-not-qualified");
+                    carpetOverlayCamera.fieldOfView = unityFov;
+                    carpetOverlayCamera.rect = flightCamera.rect;
                 }
             }
-            RepositionTerrainCopies();
-            UpdateEntityPresentation();
-            if (hudDescriptor != null) UpdateOwnerMinimap();
-            if (snap && presentationRig != null)
+            // Billboards read the camera's world rotation below. Apply the
+            // authoritative pose first so they cannot inherit a render-frame-old
+            // rotation when several fixed simulation ticks precede one frame.
+            if (presentationRig != null)
             {
                 presentationRig.SetPositionAndRotation(targetPosition, targetRotation);
             }
+            RepositionTerrainCopies();
+            UpdateEntityPresentation();
+            UpdateMissionPresentation();
+            if (hudDescriptor != null) UpdateOwnerMinimap();
         }
 
         private static void ValidatePresentationState(NativeSim.PresentationState state)
@@ -4557,12 +6453,23 @@ namespace MagicCarpet.Native
                 marker.Node.position = SourceToUnity(nearestX, nearestY, sourceZ);
                 if (marker.Renderer != null)
                 {
+                    var nativeFrozenActor =
+                        !liveGoat &&
+                        marker.QualifiedFrozenActor;
                     var distanceSquared = presentationRig == null
                         ? float.PositiveInfinity
                         : Vector3.SqrMagnitude(
                             marker.Node.position - targetPosition);
                     marker.Renderer.enabled =
                         active && drawingEnabled &&
+                        !(liveGoat &&
+                          (terrainFrameInfo.flags &
+                           NativeSim.TerrainFrameGoatsComposited) != 0) &&
+                        !(nativeFrozenActor &&
+                          !ManagedFrozenActorVisible(
+                              1,
+                              marker.QualifiedFrozenActor,
+                              terrainFrameInfo.flags)) &&
                         (debugEntities || distanceSquared >= 1f);
                     if (marker.OwnerSprite && marker.Group != null &&
                         marker.SpriteVisual != null)
@@ -4641,6 +6548,85 @@ namespace MagicCarpet.Native
             }
         }
 
+        private void RefreshLiveMission()
+        {
+            var nextMission = session.Level1Mission();
+            var nextHud = session.Level1Hud(nextMission);
+            var nextMinimapMarks = session.Level1MinimapMarks(nextMission);
+            var nextMinimapEntities = session.Level1MinimapEntities(
+                nextMission, out var nextMinimapEntitiesInfo);
+            var nextPalette = ownerAssetCache == null
+                ? default
+                : session.Level1Palette(
+                    nextMission, level1EffectivePaletteRgb8);
+            var nextExitPresentation =
+                session.Level1ExitPresentation(nextMission);
+            Require(
+                nextMission.generation == snapshot.generation &&
+                nextMission.tick == snapshot.tick &&
+                nextHud.generation == snapshot.generation &&
+                nextHud.tick == snapshot.tick &&
+                nextMinimapMarks.generation == snapshot.generation &&
+                nextMinimapMarks.tick == snapshot.tick &&
+                nextMinimapEntitiesInfo.generation == snapshot.generation &&
+                nextMinimapEntitiesInfo.tick == snapshot.tick &&
+                (ownerAssetCache == null ||
+                    (nextPalette.generation == snapshot.generation &&
+                     nextPalette.tick == snapshot.tick)) &&
+                nextExitPresentation.generation == snapshot.generation &&
+                nextExitPresentation.tick == snapshot.tick,
+                "live Level 1 mission and exit presentation match atomic flight snapshot");
+            if (simTick == 0 && nextMission.fidelityGapFlags != 0)
+            {
+                Debug.LogWarning(
+                    $"MC_LEVEL1_FIDELITY_GAPS flags=0x{nextMission.fidelityGapFlags:x2} " +
+                    $"unifiedSourcePool={((nextMission.fidelityGapFlags & 0x01) == 0).ToString().ToLowerInvariant()} " +
+                    "archerTerrainAvoidance=true " +
+                    "archerLinkedAction35=true");
+            }
+            var nextActors = session.Level1Actors(nextMission);
+            var nextMultipartSegments = session.Level1MultipartSegments(nextMission);
+            var nextCastle = session.Level1Castle(nextMission);
+            var nextCastleLifecycle = session.Level1CastleLifecycle(nextMission);
+            var nextCarrier = session.Level1ManaCarrier(nextMission);
+            var nextManaSpheres = session.Level1ManaSpheres(nextMission);
+            var nextProjectiles = session.FireballProjectiles(nextMission);
+            var nextImpacts = session.FireballImpacts(nextMission);
+            Require(
+                nextActors.Length == nextMission.actorCount &&
+                nextActors.Length == 19 &&
+                nextMultipartSegments.Length <= 48 &&
+                nextProjectiles.Length == nextMission.projectileCount &&
+                nextImpacts.Length == nextMission.impactCount &&
+                nextCastleLifecycle.rootActive == nextMission.castleExists &&
+                nextCastleLifecycle.terrainMutationSequence ==
+                    terrainState.mutationSequence,
+                "complete live Level 1 mission snapshot family");
+            var actorIds = new HashSet<ushort>();
+            foreach (var actor in nextActors)
+            {
+                Require(
+                    actorIds.Add(actor.authoredIndex),
+                    $"unique live Level 1 actor {actor.authoredIndex}");
+            }
+            mission = nextMission;
+            level1Hud = nextHud;
+            level1MinimapMarks = nextMinimapMarks;
+            level1MinimapEntities = nextMinimapEntities;
+            level1MinimapEntitiesInfo = nextMinimapEntitiesInfo;
+            level1Palette = nextPalette;
+            exitPresentation = nextExitPresentation;
+            missionActors = nextActors;
+            multipartSegments = nextMultipartSegments;
+            level1Castle = nextCastle;
+            castleLifecycle = nextCastleLifecycle;
+            manaCarrier = nextCarrier;
+            manaSpheres = nextManaSpheres;
+            fireballProjectiles = nextProjectiles;
+            fireballImpacts = nextImpacts;
+            ApplyExitPalettePresentation();
+        }
+
         private void DrainEvents()
         {
             var buffer = new NativeSim.NativeEvent[64];
@@ -4676,11 +6662,22 @@ namespace MagicCarpet.Native
                     if (goatEvent)
                     {
                         HandleGoatEvent(nativeEvent);
+                        if (nativeEvent.kind == NativeSim.EventGoatSoundRequest &&
+                            ownerAudio != null)
+                        {
+                            NativeSim.AudioCommand? audioCommand = null;
+                            if (session.TryAudioCommand(
+                                nativeEvent, out var command, out _))
+                            {
+                                audioCommand = command;
+                            }
+                            ownerAudio.Consume(nativeEvent, audioCommand);
+                        }
                     }
                     else if (ownerAudio != null &&
-                        (nativeEvent.kind == NativeSim.EventPrepareSound ||
-                         nativeEvent.kind == NativeSim.EventEndLoop) &&
-                        nativeEvent.code != 12)
+                        EventUsesAudioSidecar(nativeEvent.kind) &&
+                        OwnerAudioPresentation.EventSoundId(
+                            nativeEvent.kind, nativeEvent.code) != 12)
                     {
                         NativeSim.AudioCommand? audioCommand = null;
                         if (session.TryAudioCommand(
@@ -4700,11 +6697,11 @@ namespace MagicCarpet.Native
                         Debug.Log(
                             $"MC_FIRE kind4_event sequence={nativeEvent.sequence} " +
                             $"count={fireEventsObserved}");
-                        if (debugMode)
+                        if (debugMode && ownerAssetCache == null)
                         {
                             SpawnDiagnosticFireVisual(nativeEvent);
                         }
-                        else
+                        else if (ownerAssetCache == null)
                         {
                             Debug.Log(
                                 $"MC_FIRE visual_suppressed sequence={nativeEvent.sequence} " +
@@ -4715,6 +6712,20 @@ namespace MagicCarpet.Native
                 eventCursor = batch.nextCursor;
                 if (batch.hasMore == 0) break;
             }
+        }
+
+        internal static bool EventUsesAudioSidecar(uint kind)
+        {
+            return kind == NativeSim.EventPrepareSound ||
+                kind == NativeSim.EventEndLoop ||
+                kind == NativeSim.EventGoatSoundRequest ||
+                kind == NativeSim.EventLevel1ArcherArrowSound ||
+                kind == NativeSim.EventLevel1FireflyChargeSound ||
+                kind == NativeSim.EventLevel1FireballImpacted ||
+                kind == NativeSim.EventLevel1CastleProjectileSpawned ||
+                kind == NativeSim.EventLevel1CastleConstructionSound ||
+                kind == NativeSim.EventLevel1ManaSphereClaimed ||
+                kind == NativeSim.EventLevel1WaterSplashed;
         }
 
         private void HandleGoatEvent(NativeSim.NativeEvent nativeEvent)
@@ -4732,7 +6743,7 @@ namespace MagicCarpet.Native
                 Debug.Log(
                     $"MC_GOAT_SOUND_REQUEST sequence={nativeEvent.sequence} " +
                     $"entity={nativeEvent.entityIndex} sound=46 " +
-                    "playback=suppressed reason=numeric-source-pitch-not-qualified");
+                    "playback=authoritative-audio-sidecar");
                 return;
             }
             Debug.Log(
@@ -4779,6 +6790,10 @@ namespace MagicCarpet.Native
             qualificationGoatEvents.Clear();
             simTick = 0;
             CenterSteering();
+            fireRequested = false;
+            rightSpellRequested = false;
+            selectedSpellRequested = false;
+            requestedSpell = NativeSim.NoRequestedSpell;
             terrainFrameGpuValidated = false;
             terrainFrameRouteGpuValidated = false;
             qualifiedTerrainRouteTicks.Clear();
@@ -4788,8 +6803,10 @@ namespace MagicCarpet.Native
             autoplayEventLifecycleBytes.SetLength(0);
             autoplayEventRangeStart = 1;
             InitializeUnwrappedPose();
+            RefreshLiveTerrain();
             RefreshLivePlayerRow();
             RefreshLiveGoats();
+            RefreshLiveMission();
             ReadAuthoritativePose(true);
             UpdateExactTerrainGrid();
         }
@@ -4816,6 +6833,18 @@ namespace MagicCarpet.Native
             var terrainCoverage = new byte[NativeSim.TerrainFramePixels];
             ulong cursor = 0;
             ulong rangeStart = 1;
+
+            // DrawWorld services draw-gated selector clocks on every outer
+            // turn. Prime the reset frame and render every stepped frame so
+            // this headless evidence route has the same presentation history
+            // as the graphical player; checkpoint-only sampling would create
+            // a different animation timeline.
+            var routePresentation = routeSession.PresentationState();
+            var routeCamera = routeSession.RenderCameraState();
+            _ = routeSession.WorldFrame(
+                routeCamera,
+                terrainIndices,
+                terrainCoverage);
 
             for (var commandIndex = 0; commandIndex < AutoplayFinalTick; commandIndex++)
             {
@@ -4859,15 +6888,15 @@ namespace MagicCarpet.Native
                 }
                 Require(cursor == routeSnapshot.eventHead, "route cursor reaches event head");
 
-                var checkpointTick = commandIndex + 1;
-                var checkpointIndex = Array.IndexOf(AutoplayCaptureTicks, checkpointTick);
-                if (checkpointIndex < 0) continue;
-                var routePresentation = routeSession.PresentationState();
-                var routeCamera = routeSession.RenderCameraState();
-                var routeTerrain = routeSession.TerrainFrame(
+                routePresentation = routeSession.PresentationState();
+                routeCamera = routeSession.RenderCameraState();
+                var routeTerrain = routeSession.WorldFrame(
                     routeCamera,
                     terrainIndices,
                     terrainCoverage);
+                var checkpointTick = commandIndex + 1;
+                var checkpointIndex = Array.IndexOf(AutoplayCaptureTicks, checkpointTick);
+                if (checkpointIndex < 0) continue;
                 var count = routeSnapshot.eventHead >= rangeStart
                     ? routeSnapshot.eventHead - rangeStart + 1
                     : 0;
@@ -5011,12 +7040,18 @@ namespace MagicCarpet.Native
                 Require(
                     hudDescriptor != null &&
                     hudDescriptor.objective.selector == 48 &&
-                    hudDescriptor.objective.authority == "FrozenObserved" &&
+                    hudDescriptor.objective.authority ==
+                        "SourceMappedLiveIndexedFramebuffer" &&
+                    hudDescriptor.objective.background_blend.blend_selector == 61 &&
+                    hudDescriptor.minimap.entity_positions_authority ==
+                        "SourceArenaLive" &&
                     hudDescriptor.minimap.player_pose_authority == "PlayerFlightLive" &&
+                    hudDescriptor.top_bar.health_mana_bars.authority ==
+                        "MissionStateLiveSourceMapped" &&
                     hudDescriptor.spells.slots[0].activation_authority ==
                         "SpellActivationLive",
                     "headless owner HUD descriptor authority");
-                Require(ownerAudio != null && worldInfo.assetRefCount == 87,
+                Require(ownerAudio != null && worldInfo.assetRefCount == 108,
                     "headless descriptor-backed owner audio");
                 var cleanupBefore =
                     OwnerAudioPresentation.QualificationTransactionalCleanupCount;
@@ -5272,7 +7307,7 @@ namespace MagicCarpet.Native
                         Require(
                             ownerAssetCache != null
                                 ? eventBuffer[index].assetRefIndex >= 76 &&
-                                  eventBuffer[index].assetRefIndex <= 86
+                                  eventBuffer[index].assetRefIndex <= 107
                                 : eventBuffer[index].assetRefIndex == uint.MaxValue,
                             ownerAssetCache != null
                                 ? "typed audio event descriptor-backed asset reference"
@@ -5332,7 +7367,7 @@ namespace MagicCarpet.Native
                     code = 1,
                     value0 = 0,
                     value1 = 1,
-                    assetRefIndex = 86
+                    assetRefIndex = 107
                 };
                 ownerAudio.Consume(musicStartEvent);
                 Require(
@@ -5345,7 +7380,7 @@ namespace MagicCarpet.Native
                     kind = NativeSim.EventUpdateMusic,
                     code = 2,
                     value0 = 3,
-                    assetRefIndex = 86
+                    assetRefIndex = 107
                 };
                 ownerAudio.Consume(combatMusicEvent);
                 Require(
@@ -5378,7 +7413,7 @@ namespace MagicCarpet.Native
                     "proven local feedback one-shot is playable");
                 oneShotEvent.sequence++;
                 oneShotEvent.code = 37;
-                oneShotEvent.assetRefIndex = 82;
+                oneShotEvent.assetRefIndex = 95;
                 ownerAudio.Consume(oneShotEvent);
                 Require(
                     ownerAudio.HadSuppressedUnsupportedPositional &&
@@ -5524,7 +7559,7 @@ namespace MagicCarpet.Native
                 "generationInvalidation=true " +
                 "fireEvent=true wrap=true " +
                 $"ownerHud={(ownerAssetCache != null ? "48/mixed-authority" : "none")} " +
-                $"ownerAudio={(ownerAssetCache != null ? "Night822/C2GAME1/refs10/shared10voices/positionalStereo/sourceTurnStart/music90Hz" : "none")}");
+                $"ownerAudio={(ownerAssetCache != null ? "Night822/C2GAME1/refs32/shared10voices/positionalStereo/sourceTurnStart/music90Hz" : "none")}");
             DisposeSession();
             Application.Quit(0);
         }
@@ -5551,6 +7586,16 @@ namespace MagicCarpet.Native
                 flags |= 0x10;
                 fireRequested = false;
             }
+            if (rightSpellRequested)
+            {
+                flags |= 0x20;
+                rightSpellRequested = false;
+            }
+            if (selectedSpellRequested)
+            {
+                flags |= 0x40;
+                selectedSpellRequested = false;
+            }
             return flags;
         }
 
@@ -5572,7 +7617,7 @@ namespace MagicCarpet.Native
             Require(
                 hudDescriptor != null &&
                 minimapTexture != null &&
-                ownerObjectiveTexture != null &&
+                ownerObjectiveTextures.Count == 6 &&
                 ownerAuthorityBadgeTexture != null,
                 "owner HUD is fully materialized before draw");
             var scale = Mathf.Min(
@@ -5598,58 +7643,229 @@ namespace MagicCarpet.Native
                     minimapTexture,
                     ScaleMode.StretchToFill,
                     true);
-                foreach (var panel in hudDescriptor.top_bar.panels)
+                // DrawGameFrame_2BE30 draws both hands before the top bar.
+                DrawOwnerSpellSlot(
+                    hudDescriptor.spells.slots[0].x,
+                    hudDescriptor.spells.slots[0].y,
+                    level1Hud.left);
+                DrawOwnerSpellSlot(
+                    hudDescriptor.spells.slots[1].x,
+                    hudDescriptor.spells.slots[1].y,
+                    level1Hud.right);
+                DrawOwnerTopBar();
+                if (
+                    mission.objectiveTextboxTicks > 0 &&
+                    ownerObjectiveRows.TryGetValue(mission.textSelector, out var objectiveRow) &&
+                    ownerObjectiveTextures.TryGetValue(
+                        mission.textSelector, out var objectiveTexture))
                 {
-                    var bitmap = hudBitmapDescriptors[panel.selector];
                     GUI.DrawTexture(
                         new Rect(
-                            panel.x,
-                            panel.y,
-                            bitmap.runtime_width,
-                            bitmap.runtime_height),
-                        hudBitmapTextures[panel.selector],
+                            objectiveRow.reference_x,
+                            objectiveRow.reference_y,
+                            objectiveRow.render_width,
+                            objectiveRow.render_height),
+                        objectiveTexture,
                         ScaleMode.StretchToFill,
                         true);
                 }
-                foreach (var slot in hudDescriptor.spells.slots)
-                {
-                    var frame = hudBitmapDescriptors[hudDescriptor.spells.frame_selector];
-                    GUI.DrawTexture(
-                        new Rect(slot.x, slot.y, frame.runtime_width, frame.runtime_height),
-                        hudBitmapTextures[hudDescriptor.spells.frame_selector],
-                        ScaleMode.StretchToFill,
-                        true);
-                    var icon = hudBitmapDescriptors[slot.icon_selector];
-                    GUI.DrawTexture(
-                        new Rect(slot.x, slot.y, icon.runtime_width, icon.runtime_height),
-                        hudBitmapTextures[slot.icon_selector],
-                        ScaleMode.StretchToFill,
-                        true);
-                }
-                GUI.DrawTexture(
-                    new Rect(
-                        hudDescriptor.objective.reference_x,
-                        hudDescriptor.objective.reference_y,
-                        hudDescriptor.objective.render_width,
-                        hudDescriptor.objective.render_height),
-                    ownerObjectiveTexture,
-                    ScaleMode.StretchToFill,
-                    true);
-                GUI.DrawTexture(
-                    new Rect(
-                        hudDescriptor.authority_badge.reference_x,
-                        hudDescriptor.authority_badge.reference_y,
-                        hudDescriptor.authority_badge.render_width,
-                        hudDescriptor.authority_badge.render_height),
-                    ownerAuthorityBadgeTexture,
-                    ScaleMode.StretchToFill,
-                    true);
             }
             finally
             {
                 GUI.matrix = priorMatrix;
                 GUI.color = priorColour;
             }
+        }
+
+        private void DrawOwnerTopBar()
+        {
+            DrawOwnerHudBitmap(40, 2, 2);
+
+            const int castlePanelX = 126;
+            if (level1Castle.active != 0)
+            {
+                DrawOwnerHudBitmap(
+                    level1Hud.castleHitFrameTicks > 0 &&
+                    level1Hud.colorPhase1 != 0
+                        ? 55
+                        : 41,
+                    castlePanelX,
+                    2);
+                var castleIcon = 43 + level1Castle.level;
+                Require(
+                    castleIcon >= 44 && castleIcon <= 50,
+                    $"source castle HUD icon selector {castleIcon}");
+                DrawOwnerHudBitmap(castleIcon, castlePanelX + 2, 2);
+                DrawOwnerHudBitmap(42, castlePanelX + 38, 2);
+                DrawOwnerHudBar(
+                    castlePanelX + 58,
+                    10,
+                    SourceHudWidth(level1Castle.life, level1Castle.maxLife),
+                    10,
+                    level1Hud.lifeColorIndex);
+                DrawOwnerHudBar(
+                    castlePanelX + 58,
+                    28,
+                    SourceHudWidth(
+                        level1Castle.manaCapacity,
+                        level1Hud.globalManaDenominator),
+                    10,
+                    level1Hud.manaMaxColorIndex);
+                DrawOwnerHudBar(
+                    castlePanelX + 58,
+                    28,
+                    SourceHudWidth(
+                        level1Castle.mana + level1Hud.securedManaComponent,
+                        level1Hud.globalManaDenominator),
+                    10,
+                    level1Hud.manaColorIndex);
+                var goalX = castlePanelX + 58 +
+                    Math.Min(64, Math.Max(0, level1Hud.goalPercent * 64 / 100));
+                var goalColour = level1Hud.colorPhase2 == 0
+                    ? level1Hud.manaColorIndex
+                    : level1Hud.manaMaxColorIndex;
+                DrawOwnerHudBar(goalX, 26, 2, 2, goalColour);
+                DrawOwnerHudBar(goalX, 38, 2, 2, goalColour);
+            }
+            else
+            {
+                DrawOwnerHudBitmap(54, castlePanelX, 2);
+            }
+
+            // Level 1 has no reachable player balloon ownership row.
+            DrawOwnerHudBitmap(54, 254, 2);
+
+            const int playerPanelX = 382;
+            DrawOwnerHudBitmap(
+                level1Hud.playerHitFrameTicks > 0 &&
+                level1Hud.colorPhase1 != 0
+                    ? 55
+                    : 41,
+                playerPanelX,
+                2);
+            DrawOwnerHudBitmap(43, playerPanelX + 2, 2);
+            DrawOwnerHudBitmap(42, playerPanelX + 38, 2);
+            DrawOwnerHudBar(
+                playerPanelX + 58,
+                10,
+                SourceHudWidth(mission.playerLife, mission.playerMaxLife),
+                10,
+                level1Hud.lifeColorIndex);
+            DrawOwnerHudBar(
+                playerPanelX + 58,
+                28,
+                SourceHudWidth(
+                    mission.playerMaxMana,
+                    level1Hud.globalManaDenominator),
+                10,
+                level1Hud.manaMaxColorIndex);
+            DrawOwnerHudBar(
+                playerPanelX + 58,
+                28,
+                SourceHudWidth(
+                    mission.playerMana,
+                    level1Hud.globalManaDenominator),
+                10,
+                level1Hud.manaColorIndex);
+        }
+
+        private void DrawOwnerSpellSlot(
+            int x,
+            int y,
+            NativeSim.Level1HudSpellSlot slot)
+        {
+            if (slot.holderEntityIndex == 0) return;
+            if (
+                (slot.enabledFlags & 4) != 0 &&
+                slot.activeValue > 0 &&
+                slot.activeValue < 32 &&
+                level1Hud.colorPhase1 != 0)
+                return;
+            Require(
+                slot.frameSelector == (slot.activeValue == 0 ? 1 : 2) &&
+                slot.iconSelector == 123 + slot.model &&
+                slot.tier >= 0 &&
+                slot.tier < 5,
+                $"source spell HUD row {slot.holderEntityIndex}");
+            DrawOwnerHudBitmap(slot.frameSelector, x, y);
+            DrawOwnerHudBitmap(slot.iconSelector, x, y);
+            var tierRow = hudDescriptor.spells.tier_rows[slot.tier];
+            Require(
+                ownerSpellTierTextures.TryGetValue(
+                    slot.tier, out var tierTexture),
+                $"materialized spell tier {slot.tier}");
+            GUI.DrawTexture(
+                new Rect(
+                    x + 64 - tierRow.render_width - 2,
+                    y,
+                    tierRow.render_width,
+                    tierRow.render_height),
+                tierTexture,
+                ScaleMode.StretchToFill,
+                true);
+            if (slot.maxMana <= 0) return;
+
+            var remainder = slot.casterMana % slot.maxMana;
+            DrawOwnerHudBar(
+                x + 4,
+                y + 36,
+                (int)(56L * remainder / slot.maxMana),
+                4,
+                level1Hud.manaMaxColorIndex);
+            var wholeCharges = slot.casterMana / slot.maxMana;
+            for (var column = 0; column < 27 && wholeCharges > 0; column++)
+            {
+                for (var row = 0; row < 2 && wholeCharges > 0; row++)
+                {
+                    DrawOwnerHudBar(
+                        x + 2 * (column + 2),
+                        y + 2 * (row + 18),
+                        2,
+                        2,
+                        level1Hud.manaColorIndex);
+                    wholeCharges--;
+                }
+            }
+        }
+
+        private void DrawOwnerHudBitmap(int selector, int x, int y)
+        {
+            HudBitmapDescriptor bitmap = null;
+            Texture2D texture = null;
+            Require(
+                hudBitmapDescriptors.TryGetValue(selector, out bitmap) &&
+                hudBitmapTextures.TryGetValue(selector, out texture),
+                $"materialized HSPRN selector {selector}");
+            GUI.DrawTexture(
+                new Rect(x, y, bitmap.runtime_width, bitmap.runtime_height),
+                texture,
+                ScaleMode.StretchToFill,
+                true);
+        }
+
+        private static int SourceHudWidth(int value, int denominator)
+        {
+            if (denominator <= 0) return 0;
+            return Math.Min(64, (int)((long)value * 64 / denominator));
+        }
+
+        private void DrawOwnerHudBar(
+            int x,
+            int y,
+            int width,
+            int height,
+            byte paletteIndex)
+        {
+            width = Math.Min(width, 64);
+            if (width < 2) return;
+            var prior = GUI.color;
+            GUI.color = PaletteColour(ownerHudPaletteRgb8, paletteIndex);
+            GUI.DrawTexture(
+                new Rect(x, y, width, height),
+                Texture2D.whiteTexture,
+                ScaleMode.StretchToFill,
+                true);
+            GUI.color = prior;
         }
 
         private void OnGUI()
@@ -5669,13 +7885,6 @@ namespace MagicCarpet.Native
                 GUI.Label(new Rect(20, 20, Screen.width - 40, Screen.height - 40),
                     "MC LEVEL 1 VIEWER FAILED\n" + fatalError, titleStyle);
                 return;
-            }
-            if (cameraFovFrozen)
-            {
-                GUI.Label(
-                    new Rect(20, Screen.height - 44, Screen.width - 40, 30),
-                    $"SOURCE FOV {presentationState.cameraFov} UNSUPPORTED — VIEW FROZEN AT 128",
-                    hudStyle);
             }
             if (session == null) return;
             if (entityGallery)
@@ -5886,6 +8095,35 @@ namespace MagicCarpet.Native
             return ((current - previous + 32768) & 0xffff) - 32768;
         }
 
+        private void FinishLevel1AutoplayIfTerminal()
+        {
+            const int maximumTicks = 120_000;
+            var complete = mission.exitSequenceComplete != 0 &&
+                           mission.exitResultCode == 10;
+            var failed = mission.playerDead != 0 || simTick >= maximumTicks;
+            if (!complete && !failed) return;
+
+            runtimeExitRequested = true;
+            var passed = complete && !failed;
+            Debug.Log(
+                $"MC_LEVEL1_AUTOPLAY {(passed ? "PASS" : "FAIL")} " +
+                $"tick={simTick} stage={mission.currentStage} " +
+                $"exitComplete={mission.exitSequenceComplete} " +
+                $"result={mission.exitResultCode} playerDead={mission.playerDead} " +
+                $"life={mission.playerLife} mana={mission.playerMana} " +
+                $"phase={level1AutoplayPhase} postgame={level1AutoplayPostgame}");
+            if (level1AutoplayQuit || Application.isBatchMode)
+            {
+                DisposeSession();
+                Application.Quit(passed ? 0 : 4);
+            }
+            else
+            {
+                level1Autoplay = false;
+                ReleaseMouse();
+            }
+        }
+
         private static int SignedAngle11(short value)
         {
             var wrapped = value & 0x07ff;
@@ -6069,6 +8307,16 @@ namespace MagicCarpet.Native
             internal EntityPresentationGroup Group;
             internal Transform SpriteVisual;
             internal bool OwnerSprite;
+            internal bool QualifiedFrozenActor;
+        }
+
+        private sealed class MissionMarker
+        {
+            internal ulong Identity;
+            internal Transform Node;
+            internal Transform Visual;
+            internal Renderer Renderer;
+            internal int Selector;
         }
 
         private sealed class EntityGalleryItem

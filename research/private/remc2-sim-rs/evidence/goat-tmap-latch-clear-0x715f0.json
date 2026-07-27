@@ -1,0 +1,72 @@
+{
+  "schema": "mc2-private-executable-instruction-evidence/v1",
+  "scope": "PRIVATE_TRACK_P_OWNER_DATA",
+  "claim": "The non-grouped TMAP animation path clears flag bit 0x08 and writes the cleared byte back before testing bit 0x01.",
+  "source_executable": {
+    "path": "research/private/build-manifests/BLD-MC2-0001/analysis-input/NETHERW.EXE",
+    "sha256": "bd4bc0dbcb98d5bfa0dd749f6b6b21b84045b8e1991ecda7a2b0424c9176add8",
+    "size": 1039105,
+    "format": "LE"
+  },
+  "le_mapping": {
+    "header_offset": 10648,
+    "page_size": 4096,
+    "object_table_relative_offset": 196,
+    "object_table_absolute_offset": 10844,
+    "page_map_relative_offset": 292,
+    "data_pages_absolute_offset": 215040,
+    "object": 1,
+    "object_relocation_base": 65536,
+    "object_first_page": 1,
+    "object_page_count": 176,
+    "target_virtual_address": 464368,
+    "target_object_offset": 398832,
+    "target_object_page_ordinal": 97,
+    "target_page_map_entry_absolute_offset": 11328,
+    "target_page_map_entry_hex": "00006200",
+    "target_physical_page": 98,
+    "target_in_page_offset": 1520,
+    "target_file_offset": 613872
+  },
+  "byte_window": {
+    "virtual_address": 464368,
+    "file_offset": 613872,
+    "size": 32,
+    "hex": "80e1f78808f6c1010f8491000000528b35089c010056e8e50e000083c40850e8",
+    "sha256": "c123bb4378a4d2cfd0980558bebb49760734c88d25d0d16e03e5e847abd8802d"
+  },
+  "decoded_instructions": [
+    {
+      "virtual_address": 464368,
+      "bytes": "80e1f7",
+      "instruction": "and cl,0xf7",
+      "role": "clear used flag bit 0x08 in the register"
+    },
+    {
+      "virtual_address": 464371,
+      "bytes": "8808",
+      "instruction": "mov byte ptr [eax],cl",
+      "role": "write the cleared flag byte back to the descriptor"
+    },
+    {
+      "virtual_address": 464373,
+      "bytes": "f6c101",
+      "instruction": "test cl,0x1",
+      "role": "test animation-enabled bit 0x01 after the clear"
+    }
+  ],
+  "source_correspondence": {
+    "mechanical_source_path": "upstream/magic-carpet-2-hd/tools/decompressTMAPS/DecompressTMAPS/DecompressTMAPS.cpp",
+    "mechanical_source_function": "sub_715B0",
+    "mechanical_source_expression": "v4 = v3 & 0xF7; *(x_BYTE*)result = v4; if (v4 & 1)",
+    "current_remc2_path": "upstream/magic-carpet-2-hd/remc2/engine/EventsFunctions.cpp",
+    "current_remc2_function": "sub_715B0",
+    "current_remc2_omission": "The non-grouped branch computes v4 = (*v2x)->word_0 & 0xF7 but comments out the write-back before testing v4 & 1."
+  },
+  "tool_provenance": {
+    "mapping_verifier": "research/private/remc2-sim-rs/tools/verify_goat_tmap_latch_clear.py",
+    "disassembler": "/usr/bin/objdump",
+    "disassembler_version": "GNU objdump (GNU Binutils) 2.46.1",
+    "disassembler_command": "objdump -D -b binary -m i386 -M intel --adjust-vma=0x715e0 <bounded-64-byte-window>"
+  }
+}

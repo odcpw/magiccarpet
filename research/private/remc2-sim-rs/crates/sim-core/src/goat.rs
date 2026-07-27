@@ -1,13 +1,16 @@
 //! Source-ordered Level 1 Goat-family simulation.
 //!
-//! This module is deliberately bounded to the class-5/model-1 action-15
-//! patrol path proven by the private remc2 source and exact-build captures.
-//! Unsupported action and `StageVar` branches remain explicit.
+//! This module is deliberately bounded to the class-5/model-1 action-9,
+//! action-14, and action-15 paths proven by the private remc2 source and
+//! exact-build captures. Unsupported action and `StageVar` branches remain
+//! explicit.
 
-use crate::native_world::EntitySnapshot;
 use crate::{
-    FlightWorld, Position, angle_distance, heading_for_positions, move_entity, turn_toward,
-    wrapping_i16,
+    FlightWorld, Position, angle_distance, distance_3d_wrapped,
+    goat_map_chain::{GoatMapChains, GoatMapSeed},
+    heading_for_positions, move_entity,
+    native_world::EntitySnapshot,
+    turn_toward, wrapping_i16,
 };
 
 pub const LEVEL_ONE_GOAT_INDICES: [u16; 33] = [
@@ -33,6 +36,7 @@ pub struct GoatBehaviorConfig {
     pub ground_clearance: i16,
     pub vertical_relaxation: i16,
     pub terrain_threshold: i16,
+    pub allowed_material_mask: u32,
     pub perception_cadence: u16,
     pub perception_radius: u16,
     pub perception_half_angle: i16,
@@ -45,6 +49,7 @@ impl GoatBehaviorConfig {
         ground_clearance: 0,
         vertical_relaxation: -256,
         terrain_threshold: 20,
+        allowed_material_mask: 0xfff0_80fe,
         perception_cadence: 32,
         perception_radius: 1_536,
         perception_half_angle: 853,
@@ -63,6 +68,7 @@ impl GoatBehaviorConfig {
             ground_clearance: read_i16(bytes, 12),
             vertical_relaxation: read_i16(bytes, 14),
             terrain_threshold: read_i16(bytes, 16),
+            allowed_material_mask: read_u32(bytes, 20),
             perception_cadence: read_u16(bytes, 26),
             perception_radius: read_u16(bytes, 28),
             perception_half_angle: read_i16(bytes, 30),
@@ -140,6 +146,8 @@ pub struct GoatState {
     pub roll: i16,
     pub position: Position,
     pub collision_half_width: i16,
+    pub collision_vertical_offset: i16,
+    pub collision_half_height: i16,
     pub render_parameter_index: u16,
     pub animation_frame: i8,
     pub action: u8,
@@ -196,6 +204,8 @@ impl GoatState {
                 z: read_i16(bytes, 0x0050),
             },
             collision_half_width: read_i16(bytes, 0x0054),
+            collision_vertical_offset: read_i16(bytes, 0x0052),
+            collision_half_height: read_i16(bytes, 0x0058),
             render_parameter_index: read_u16(bytes, 0x005a),
             animation_frame: bytes[0x005c].cast_signed(),
             action: bytes[0x0045],
@@ -256,6 +266,8 @@ impl GoatState {
             roll: read_i16(bytes, 0x0024),
             position: snapshot.position,
             collision_half_width: read_i16(bytes, 0x0058),
+            collision_vertical_offset: read_i16(bytes, 0x0056),
+            collision_half_height: read_i16(bytes, 0x005c),
             render_parameter_index: read_u16(bytes, 0x005e),
             animation_frame: bytes[0x0060].cast_signed(),
             action: snapshot.action,
@@ -386,8 +398,16 @@ impl GoatFamily {
         world: &W,
         players: &[GoatPlayerTarget],
     ) -> Vec<GoatStepEvent> {
-        let mut events = Vec::new();
+        let mut events = self.begin_source_turn(players);
+        for source_slot in LEVEL_ONE_GOAT_INDICES {
+            events.extend(self.step_source_slot(source_slot, world, players));
+        }
+        self.finish_source_turn();
+        events
+    }
 
+    fn begin_source_turn(&mut self, players: &[GoatPlayerTarget]) -> Vec<GoatStepEvent> {
+        let mut events = Vec::new();
         // `UpdateEntities_57730` reclaims drawing-disabled slots before list
         // construction, countdown processing, and entity dispatch.
         for goat in &mut self.goats {
@@ -424,32 +444,58 @@ impl GoatFamily {
             }
             goat.proximity_subcounter = 0;
         }
-
-        for family_index in 0..self.goats.len() {
-            if !self.goats[family_index].active {
-                continue;
-            }
-            match self.goats[family_index].action {
-                GOAT_PATROL_ACTION
-                    if self.goats[family_index].stage_var_2 == GOAT_PATROL_STAGE_MODE =>
-                {
-                    self.step_one_patrol(family_index, world, players, &mut events);
-                }
-                12 => {
-                    // `PreKillGoat_1F4F0` selects base action + 5.
-                    self.goats[family_index].action = 13;
-                }
-                13 => self.step_final_kill(family_index, &mut events),
-                _ => {
-                    // Other handlers are an explicit unsupported boundary.
-                    continue;
-                }
-            }
-
-            self.goats[family_index].phase = self.goats[family_index].phase.wrapping_add(1);
-        }
-        self.outer_tick = self.outer_tick.wrapping_add(1);
         events
+    }
+
+    fn reclaim_source_slot(&mut self, source_slot: u16) -> Option<GoatStepEvent> {
+        let goat = self
+            .goats
+            .iter_mut()
+            .find(|goat| goat.entity_index == source_slot)?;
+        if !goat.active || goat.control_flags & 0x0000_0400 == 0 {
+            return None;
+        }
+        goat.active = false;
+        Some(GoatStepEvent::Reclaimed {
+            entity_index: source_slot,
+        })
+    }
+
+    fn step_source_slot<W: FlightWorld>(
+        &mut self,
+        source_slot: u16,
+        world: &W,
+        players: &[GoatPlayerTarget],
+    ) -> Vec<GoatStepEvent> {
+        let mut events = Vec::new();
+        let Some(family_index) = self
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == source_slot && goat.active)
+        else {
+            return events;
+        };
+        match self.goats[family_index].action {
+            9 => self.step_roam(family_index, world, players, &mut events),
+            GOAT_PATROL_ACTION
+                if self.goats[family_index].stage_var_2 == GOAT_PATROL_STAGE_MODE =>
+            {
+                self.step_one_patrol(family_index, world, players, &mut events);
+            }
+            14 => self.step_retaliation(family_index, world, players, &mut events),
+            12 => {
+                // `PreKillGoat_1F4F0` selects base action + 5.
+                self.goats[family_index].action = 13;
+            }
+            13 => self.step_final_kill(family_index, &mut events),
+            _ => return events,
+        }
+        self.goats[family_index].phase = self.goats[family_index].phase.wrapping_add(1);
+        events
+    }
+
+    fn finish_source_turn(&mut self) {
+        self.outer_tick = self.outer_tick.wrapping_add(1);
     }
 
     #[allow(clippy::verbose_bit_mask)]
@@ -466,12 +512,35 @@ impl GoatFamily {
                 || signed_axis_distance(goat.position.y, self.stage_point.y) > 3_072
         };
 
-        self.apply_pending_damage(family_index);
-        if self.goats[family_index].life < 0 {
-            // `sub_1DDA0` selects base action + 4; Goat base is eight.
-            self.goats[family_index].action = 12;
-            self.advance_action_15_tail(family_index, events);
-            return;
+        match self.apply_pending_damage(family_index) {
+            DamageResult::None => {}
+            DamageResult::Hit(attacker) => {
+                if players
+                    .iter()
+                    .any(|player| player.entity_index.cast_signed() == attacker)
+                {
+                    let goat = &mut self.goats[family_index];
+                    goat.target_entity_index = Some(attacker.cast_unsigned());
+                    goat.stage_var_2 = 10;
+                    // Row 98 behavior flag bit 3 selects base action + 6.
+                    goat.action = 14;
+                }
+                let goat = &mut self.goats[family_index];
+                relax_to_terrain(
+                    &mut goat.position,
+                    world,
+                    self.config.ground_clearance,
+                    self.config.vertical_relaxation,
+                );
+                self.advance_action_15_tail(family_index, events);
+                return;
+            }
+            DamageResult::Dead => {
+                // `sub_1DDA0` selects base action + 4; Goat base is eight.
+                self.goats[family_index].action = 12;
+                self.advance_action_15_tail(family_index, events);
+                return;
+            }
         }
 
         self.move_patrol(family_index, world);
@@ -511,7 +580,125 @@ impl GoatFamily {
         self.advance_action_15_tail(family_index, events);
     }
 
-    fn apply_pending_damage(&mut self, family_index: usize) {
+    fn step_roam<W: FlightWorld>(
+        &mut self,
+        family_index: usize,
+        world: &W,
+        players: &[GoatPlayerTarget],
+        events: &mut Vec<GoatStepEvent>,
+    ) {
+        match self.apply_pending_damage(family_index) {
+            DamageResult::Dead => {
+                self.goats[family_index].action = 12;
+            }
+            DamageResult::Hit(attacker) => {
+                let goat = &mut self.goats[family_index];
+                goat.target_entity_index = Some(attacker.cast_unsigned());
+                goat.action = if self.config.behavior_flags & 8 != 0 {
+                    14
+                } else {
+                    10
+                };
+                relax_to_terrain(
+                    &mut goat.position,
+                    world,
+                    self.config.ground_clearance,
+                    self.config.vertical_relaxation,
+                );
+            }
+            DamageResult::None => {
+                self.move_patrol(family_index, world);
+                if u16::from(self.goats[family_index].phase)
+                    .is_multiple_of(self.config.perception_cadence)
+                {
+                    let first = next_rng(self.goats[family_index].rng);
+                    let second = next_rng(first);
+                    self.goats[family_index].rng = second;
+                    let sign = 2 * (i32::from(first % 157) / 79) - 1;
+                    let magnitude = i32::from(second & 0xff) + 85;
+                    self.goats[family_index].roll = wrapping_i16(
+                        i64::from(self.goats[family_index].roll) + i64::from(sign * magnitude),
+                    ) & 0x07ff;
+
+                    if self.goats[family_index].proximity_countdown != 0
+                        && let Some(target_entity_index) =
+                            self.nearest_player_in_cone(family_index, players)
+                    {
+                        let goat = &mut self.goats[family_index];
+                        goat.target_entity_index = Some(target_entity_index);
+                        goat.action = if self.config.behavior_flags & 8 != 0 {
+                            14
+                        } else {
+                            10
+                        };
+                        events.push(GoatStepEvent::EngagementBoundaryReached {
+                            entity_index: goat.entity_index,
+                            target_entity_index,
+                        });
+                    }
+                }
+            }
+        }
+        self.advance_action_9_tail(family_index, events);
+    }
+
+    fn step_retaliation<W: FlightWorld>(
+        &mut self,
+        family_index: usize,
+        world: &W,
+        players: &[GoatPlayerTarget],
+        events: &mut Vec<GoatStepEvent>,
+    ) {
+        match self.apply_pending_damage(family_index) {
+            DamageResult::Dead => {
+                self.goats[family_index].action = 12;
+            }
+            DamageResult::Hit(attacker) => {
+                self.goats[family_index].target_entity_index = Some(attacker.cast_unsigned());
+                let goat = &mut self.goats[family_index];
+                relax_to_terrain(
+                    &mut goat.position,
+                    world,
+                    self.config.ground_clearance,
+                    self.config.vertical_relaxation,
+                );
+            }
+            DamageResult::None => {
+                self.move_patrol(family_index, world);
+                let target = self.goats[family_index]
+                    .target_entity_index
+                    .and_then(|target| {
+                        players
+                            .iter()
+                            .find(|player| player.entity_index == target)
+                            .copied()
+                    });
+                if let Some(target) = target {
+                    if self.goats[family_index].phase & 3 == 0 {
+                        let heading = heading_for_positions(
+                            self.goats[family_index].position,
+                            target.position,
+                        );
+                        self.goats[family_index].roll = i16::try_from((heading + 1_024) & 0x07ff)
+                            .expect("11-bit retreat heading fits i16");
+                        self.apply_peer_separation(family_index);
+                    }
+                    if u16::from(self.goats[family_index].phase)
+                        .is_multiple_of(self.config.perception_cadence)
+                        && distance_3d_wrapped(self.goats[family_index].position, target.position)
+                            >= u32::from(self.config.perception_radius)
+                    {
+                        self.goats[family_index].action = 9;
+                    }
+                } else {
+                    self.goats[family_index].action = 9;
+                }
+            }
+        }
+        self.advance_action_14_tail(family_index, events);
+    }
+
+    fn apply_pending_damage(&mut self, family_index: usize) -> DamageResult {
         let goat = &mut self.goats[family_index];
         if goat.pending_attacker != 0 {
             goat.life = goat.life.wrapping_sub(goat.pending_damage);
@@ -523,23 +710,69 @@ impl GoatFamily {
         }
         if goat.life < 0 {
             goat.kill_credit_entity = goat.current_attacker;
+            DamageResult::Dead
+        } else if goat.current_attacker != 0 {
+            DamageResult::Hit(goat.current_attacker)
+        } else {
+            DamageResult::None
         }
     }
 
     fn move_patrol<W: FlightWorld>(&mut self, family_index: usize, world: &W) {
+        let original = self.goats[family_index].position;
+        let original_yaw = self.goats[family_index].yaw;
+        let headings = [
+            original_yaw,
+            original_yaw.wrapping_add(341) & 0x07ff,
+            original_yaw.wrapping_sub(341) & 0x07ff,
+            original_yaw.wrapping_add(1_024) & 0x07ff,
+        ];
+
+        for (attempt, heading) in headings.into_iter().enumerate() {
+            let mut candidate = original;
+            relax_to_terrain(
+                &mut candidate,
+                world,
+                self.config.ground_clearance,
+                self.config.vertical_relaxation,
+            );
+            move_entity(
+                &mut candidate,
+                heading,
+                0,
+                self.goats[family_index].actual_speed,
+            );
+            let crossed_tile = source_tile(candidate) != source_tile(original);
+            let blocked = (attempt != 0 || crossed_tile)
+                && (material_probe_blocked(
+                    candidate,
+                    heading,
+                    self.goats[family_index].collision_half_width,
+                    self.config.allowed_material_mask,
+                    world,
+                ) || terrain_slope_measure(candidate, world)
+                    >= i32::from(self.config.terrain_threshold));
+            if blocked {
+                self.goats[family_index].control_flags |= 0x0004_0000;
+                self.goats[family_index].yaw = heading;
+                continue;
+            }
+
+            let goat = &mut self.goats[family_index];
+            goat.position = candidate;
+            goat.yaw =
+                heading.wrapping_add(turn_toward(heading, goat.roll, self.config.turn_clamp))
+                    & 0x07ff;
+            if attempt == 0 {
+                goat.control_flags &= !0x0004_0000;
+            }
+            return;
+        }
+
         let goat = &mut self.goats[family_index];
-        relax_to_terrain(
-            &mut goat.position,
-            world,
-            self.config.ground_clearance,
-            self.config.vertical_relaxation,
-        );
-        move_entity(&mut goat.position, goat.yaw, 0, goat.actual_speed);
-        goat.yaw =
-            (goat
-                .yaw
-                .wrapping_add(turn_toward(goat.yaw, goat.roll, self.config.turn_clamp)))
-                & 0x07ff;
+        if self.config.behavior_flags & 1 != 0 || world.material_mask(goat.position) == 1 {
+            goat.life = -1;
+        }
     }
 
     fn apply_peer_separation(&mut self, family_index: usize) {
@@ -581,6 +814,34 @@ impl GoatFamily {
         };
     }
 
+    fn advance_action_9_tail(&mut self, family_index: usize, events: &mut Vec<GoatStepEvent>) {
+        let goat = &mut self.goats[family_index];
+        goat.rng = next_rng(goat.rng);
+        if goat.rng.is_multiple_of(77) {
+            events.push(GoatStepEvent::Bleat {
+                entity_index: goat.entity_index,
+                sound_id: 46,
+            });
+        }
+        if goat.action == 14 {
+            goat.actual_speed = goat.minimum_speed;
+        }
+    }
+
+    fn advance_action_14_tail(&mut self, family_index: usize, events: &mut Vec<GoatStepEvent>) {
+        let goat = &mut self.goats[family_index];
+        if goat.action != 14 {
+            goat.actual_speed = goat.maximum_speed;
+        }
+        goat.rng = next_rng(goat.rng);
+        if goat.rng.is_multiple_of(43) {
+            events.push(GoatStepEvent::Bleat {
+                entity_index: goat.entity_index,
+                sound_id: 46,
+            });
+        }
+    }
+
     fn acquire_player_boundary(
         &mut self,
         family_index: usize,
@@ -596,6 +857,25 @@ impl GoatFamily {
             return;
         }
 
+        let Some(target_entity_index) = self.nearest_player_in_cone(family_index, players) else {
+            return;
+        };
+        let goat = &mut self.goats[family_index];
+        goat.target_entity_index = Some(target_entity_index);
+        goat.stage_var_2 = 10;
+        goat.action = 14;
+        events.push(GoatStepEvent::EngagementBoundaryReached {
+            entity_index: goat.entity_index,
+            target_entity_index,
+        });
+    }
+
+    fn nearest_player_in_cone(
+        &self,
+        family_index: usize,
+        players: &[GoatPlayerTarget],
+    ) -> Option<u16> {
+        let goat = &self.goats[family_index];
         let mut nearest: Option<(u32, u16)> = None;
         for player in players {
             if player.control_flags & 0x20 != 0 {
@@ -618,17 +898,7 @@ impl GoatFamily {
                 nearest = Some((distance, player.entity_index));
             }
         }
-
-        if let Some((_, target_entity_index)) = nearest {
-            let goat = &mut self.goats[family_index];
-            goat.target_entity_index = Some(target_entity_index);
-            goat.stage_var_2 = 10;
-            goat.action = 14;
-            events.push(GoatStepEvent::EngagementBoundaryReached {
-                entity_index: goat.entity_index,
-                target_entity_index,
-            });
-        }
+        nearest.map(|(_, entity_index)| entity_index)
     }
 
     #[allow(clippy::verbose_bit_mask)]
@@ -675,16 +945,28 @@ impl GoatFamily {
             .iter_mut()
             .find(|goat| goat.entity_index == entity_index && goat.active)
             .ok_or_else(|| format!("Goat entity {entity_index} is not live"))?;
-        goat.pending_damage = damage;
+        if goat.pending_attacker != 0 {
+            goat.pending_damage = goat.pending_damage.wrapping_add(damage);
+        } else {
+            goat.pending_damage = damage;
+        }
         goat.pending_attacker = attacker;
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DamageResult {
+    None,
+    Hit(i16),
+    Dead,
 }
 
 /// Complete mutable non-player state owned by one native play session.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LiveWorldState {
     goats: GoatFamily,
+    goat_map_chains: GoatMapChains,
 }
 
 impl LiveWorldState {
@@ -698,8 +980,39 @@ impl LiveWorldState {
         stage_point: Position,
         config: GoatBehaviorConfig,
     ) -> Result<Self, String> {
+        let goats = GoatFamily::from_entities(entities, stage_point, config)?;
+        let goat_map_chains = GoatMapChains::from_positions(&goat_map_seeds(goats.goats()))?;
         Ok(Self {
-            goats: GoatFamily::from_entities(entities, stage_point, config)?,
+            goats,
+            goat_map_chains,
+        })
+    }
+
+    /// Construct the owner-package live world with exact reset terrain-cell
+    /// membership and `oldMapEntity` ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns Goat decode errors or any malformed/missing map-chain error.
+    pub fn from_entities_with_map(
+        entities: &[EntitySnapshot],
+        terrain_entity_indices: &[i16],
+        stage_point: Position,
+        config: GoatBehaviorConfig,
+    ) -> Result<Self, String> {
+        let goats = GoatFamily::from_entities(entities, stage_point, config)?;
+        let goat_map_chains = GoatMapChains::from_reset(
+            &goat_map_seeds(goats.goats()),
+            terrain_entity_indices,
+            |entity_index| {
+                entities
+                    .get(usize::from(entity_index))
+                    .map(EntitySnapshot::old_map_entity)
+            },
+        )?;
+        Ok(Self {
+            goats,
+            goat_map_chains,
         })
     }
 
@@ -713,6 +1026,11 @@ impl LiveWorldState {
         self.goats.goats()
     }
 
+    #[must_use]
+    pub const fn goat_map_chains(&self) -> &GoatMapChains {
+        &self.goat_map_chains
+    }
+
     pub fn reset(
         &mut self,
         entities: &[EntitySnapshot],
@@ -720,11 +1038,14 @@ impl LiveWorldState {
         config: GoatBehaviorConfig,
     ) -> Result<(), String> {
         self.goats = GoatFamily::from_entities(entities, stage_point, config)?;
+        self.goat_map_chains = GoatMapChains::from_positions(&goat_map_seeds(self.goats()))?;
         Ok(())
     }
 
     pub fn step<W: FlightWorld>(&mut self, world: &W) -> Vec<GoatStepEvent> {
-        self.goats.step_patrol(world)
+        let events = self.goats.step_patrol(world);
+        self.sync_goat_map_chains();
+        events
     }
 
     pub fn step_with_players<W: FlightWorld>(
@@ -732,7 +1053,33 @@ impl LiveWorldState {
         world: &W,
         players: &[GoatPlayerTarget],
     ) -> Vec<GoatStepEvent> {
-        self.goats.step_with_players(world, players)
+        let events = self.goats.step_with_players(world, players);
+        self.sync_goat_map_chains();
+        events
+    }
+
+    pub fn begin_source_turn(&mut self, players: &[GoatPlayerTarget]) -> Vec<GoatStepEvent> {
+        self.goats.begin_source_turn(players)
+    }
+
+    pub fn step_source_slot<W: FlightWorld>(
+        &mut self,
+        source_slot: u16,
+        world: &W,
+        players: &[GoatPlayerTarget],
+    ) -> Vec<GoatStepEvent> {
+        self.goats.step_source_slot(source_slot, world, players)
+    }
+
+    pub fn finish_source_turn(&mut self) {
+        self.goats.finish_source_turn();
+        self.sync_goat_map_chains();
+    }
+
+    pub fn reclaim_source_slot(&mut self, source_slot: u16) -> Option<GoatStepEvent> {
+        let event = self.goats.reclaim_source_slot(source_slot);
+        self.sync_goat_map_chains();
+        event
     }
 
     pub fn inject_damage(
@@ -769,6 +1116,8 @@ impl LiveWorldState {
             hash.u16(goat.position.y);
             hash.i16(goat.position.z);
             hash.i16(goat.collision_half_width);
+            hash.i16(goat.collision_vertical_offset);
+            hash.i16(goat.collision_half_height);
             hash.u16(goat.render_parameter_index);
             hash.u8(goat.action);
             hash.u8(goat.phase);
@@ -790,6 +1139,24 @@ impl LiveWorldState {
         }
         hash.finish()
     }
+
+    fn sync_goat_map_chains(&mut self) {
+        self.goat_map_chains
+            .sync(&goat_map_seeds(self.goats.goats()))
+            .expect("validated Goat map chains remain internally consistent");
+    }
+}
+
+fn goat_map_seeds(goats: &[GoatState]) -> Vec<GoatMapSeed> {
+    goats
+        .iter()
+        .map(|goat| GoatMapSeed {
+            entity_index: goat.entity_index,
+            active: goat.active,
+            x: goat.position.x,
+            y: goat.position.y,
+        })
+        .collect()
 }
 
 struct Fnv1a64(u64);
@@ -858,6 +1225,48 @@ fn squared_wrapping_xy_distance(left: Position, right: Position) -> u32 {
         .wrapping_add(dy.wrapping_mul(dy).cast_unsigned())
 }
 
+fn source_tile(position: Position) -> (u8, u8) {
+    (position.x.to_be_bytes()[0], position.y.to_be_bytes()[0])
+}
+
+fn material_probe_blocked<W: FlightWorld>(
+    candidate: Position,
+    heading: i16,
+    collision_half_width: i16,
+    allowed_material_mask: u32,
+    world: &W,
+) -> bool {
+    let mut probe = candidate;
+    let maximum = i32::from(collision_half_width.max(0));
+    let mut distance = 0_i32;
+    while distance <= maximum {
+        if !allowed_material_mask & world.material_mask(probe) != 0 {
+            return true;
+        }
+        distance += 256;
+        move_entity(&mut probe, heading, 0, 256);
+    }
+    false
+}
+
+fn terrain_slope_measure<W: FlightWorld>(position: Position, world: &W) -> i32 {
+    let (tile_x, tile_y) = source_tile(position);
+    let height = |x: u8, y: u8| {
+        i32::from(world.ground_height(Position {
+            x: u16::from(x) << 8,
+            y: u16::from(y) << 8,
+            z: 0,
+        })) >> 5
+    };
+    let point_1 = height(tile_x, tile_y);
+    let point_2 = height(tile_x.wrapping_add(1), tile_y);
+    let point_3 = height(tile_x.wrapping_add(1), tile_y.wrapping_add(1));
+    let point_4 = height(tile_x, tile_y.wrapping_add(1));
+    let diagonal_1 = (point_1 + point_4 - point_2 - point_3).abs();
+    let diagonal_2 = (point_1 + point_2 - point_4 - point_3).abs();
+    diagonal_1.max(diagonal_2)
+}
+
 fn relax_to_terrain<W: FlightWorld>(
     position: &mut Position,
     world: &W,
@@ -907,10 +1316,64 @@ mod tests {
 
     use super::*;
     use crate::{
+        Tile,
         legacy_terrain::LegacyTerrain,
         native_world::NativeWorld,
         regression_state::{RegressionEntity, RegressionStateSequence},
     };
+
+    struct MaterialBoundaryWorld {
+        all_water: bool,
+    }
+
+    impl FlightWorld for MaterialBoundaryWorld {
+        fn ground_height(&self, _position: Position) -> i16 {
+            0
+        }
+
+        fn ceiling_height(&self, _position: Position) -> Option<i16> {
+            None
+        }
+
+        fn material_mask(&self, position: Position) -> u32 {
+            if self.all_water || position.x.to_be_bytes()[0] == 1 {
+                1
+            } else {
+                4
+            }
+        }
+
+        fn angle_flags(&self, _tile: Tile) -> u8 {
+            0
+        }
+    }
+
+    struct SlopeWorld {
+        raw_point_2: i16,
+    }
+
+    impl FlightWorld for SlopeWorld {
+        fn ground_height(&self, position: Position) -> i16 {
+            let tile = source_tile(position);
+            if tile == (2, 0) {
+                self.raw_point_2 * 32
+            } else {
+                0
+            }
+        }
+
+        fn ceiling_height(&self, _position: Position) -> Option<i16> {
+            None
+        }
+
+        fn material_mask(&self, _position: Position) -> u32 {
+            4
+        }
+
+        fn angle_flags(&self, _tile: Tile) -> u8 {
+            0
+        }
+    }
 
     fn fixture_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
@@ -1439,5 +1902,251 @@ mod tests {
         suppressed.goats.goats[0].control_flags |= 1;
         suppressed.step_with_players(world.terrain(), &[near]);
         assert_eq!(suppressed.goats()[0].proximity_countdown, 0);
+    }
+
+    #[test]
+    fn row_98_material_mask_and_slope_threshold_are_exact() {
+        let private_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let world = NativeWorld::load(
+            private_root.join("generated/level1-export-m"),
+            private_root.join("generated/level1-asset-closure.json"),
+        )
+        .expect("qualified Level 1 owner package");
+        assert_eq!(world.goat_config().allowed_material_mask, 0xfff0_80fe);
+        assert_eq!(world.goat_config().terrain_threshold, 20);
+
+        let probe = Position {
+            x: 1 << 8,
+            y: 0,
+            z: 0,
+        };
+        assert_eq!(
+            terrain_slope_measure(probe, &SlopeWorld { raw_point_2: 19 }),
+            19
+        );
+        assert_eq!(
+            terrain_slope_measure(probe, &SlopeWorld { raw_point_2: 20 }),
+            20
+        );
+    }
+
+    #[test]
+    fn generic_goat_mover_rejects_water_and_uses_opposite_fallback() {
+        let private_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let world = NativeWorld::load(
+            private_root.join("generated/level1-export-m"),
+            private_root.join("generated/level1-asset-closure.json"),
+        )
+        .expect("qualified Level 1 owner package");
+        let mut family = GoatFamily::from_entities(
+            world.entities(),
+            world.goat_stage_point(),
+            world.goat_config(),
+        )
+        .expect("live Goat family");
+        let goat = &mut family.goats[0];
+        goat.position = Position {
+            x: 250,
+            y: 32_768,
+            z: 0,
+        };
+        goat.yaw = 512;
+        goat.roll = 1_536;
+        goat.actual_speed = 54;
+        goat.control_flags &= !0x0004_0000;
+
+        family.move_patrol(0, &MaterialBoundaryWorld { all_water: false });
+        let goat = &family.goats[0];
+        assert_eq!(goat.position.x, 196);
+        assert_eq!(goat.position.y, 32_768);
+        assert_eq!(goat.yaw, 1_536);
+        assert_eq!(goat.life, 600);
+        assert_ne!(goat.control_flags & 0x0004_0000, 0);
+        assert_eq!(
+            MaterialBoundaryWorld { all_water: false }.material_mask(goat.position),
+            4
+        );
+    }
+
+    #[test]
+    fn generic_goat_mover_kills_when_all_four_headings_are_blocked() {
+        let private_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let world = NativeWorld::load(
+            private_root.join("generated/level1-export-m"),
+            private_root.join("generated/level1-asset-closure.json"),
+        )
+        .expect("qualified Level 1 owner package");
+        let mut family = GoatFamily::from_entities(
+            world.entities(),
+            world.goat_stage_point(),
+            world.goat_config(),
+        )
+        .expect("live Goat family");
+        let goat = &mut family.goats[0];
+        goat.position = Position {
+            x: 250,
+            y: 32_768,
+            z: 0,
+        };
+        goat.yaw = 512;
+        goat.actual_speed = 54;
+
+        family.move_patrol(0, &MaterialBoundaryWorld { all_water: true });
+        let goat = &family.goats[0];
+        assert_eq!(
+            goat.position,
+            Position {
+                x: 250,
+                y: 32_768,
+                z: 0,
+            }
+        );
+        assert_eq!(goat.yaw, 1_536);
+        assert_eq!(goat.life, -1);
+        assert_ne!(goat.control_flags & 0x0004_0000, 0);
+    }
+
+    #[test]
+    fn action_15_hit_enters_action_14_and_retaliation_consumes_accumulated_damage() {
+        let private_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let world = NativeWorld::load(
+            private_root.join("generated/level1-export-m"),
+            private_root.join("generated/level1-asset-closure.json"),
+        )
+        .expect("qualified Level 1 owner package");
+        let mut family = GoatFamily::from_entities(
+            world.entities(),
+            world.goat_stage_point(),
+            world.goat_config(),
+        )
+        .expect("live Goat family");
+        let player = GoatPlayerTarget {
+            entity_index: 152,
+            position: Position {
+                x: family.goats[0].position.x,
+                y: family.goats[0].position.y.wrapping_sub(100),
+                z: family.goats[0].position.z,
+            },
+            control_flags: 0,
+        };
+
+        family.inject_damage(50, 100, 152).expect("first area hit");
+        family.step_with_players(world.terrain(), &[player]);
+        let goat = &family.goats[0];
+        assert_eq!(goat.life, 500);
+        assert_eq!(goat.action, 14);
+        assert_eq!(goat.stage_var_2, 10);
+        assert_eq!(goat.target_entity_index, Some(152));
+        assert_eq!(goat.phase, 2);
+        assert_eq!(goat.actual_speed, goat.minimum_speed);
+
+        family
+            .inject_damage(50, 200, 152)
+            .expect("first pending retaliation hit");
+        family
+            .inject_damage(50, 301, 152)
+            .expect("second pending retaliation hit");
+        assert_eq!(family.goats[0].pending_damage, 501);
+        family.step_with_players(world.terrain(), &[player]);
+        let goat = &family.goats[0];
+        assert_eq!(goat.life, -1);
+        assert_eq!(goat.action, 12);
+        assert_eq!(goat.phase, 3);
+        assert_eq!(goat.pending_damage, 0);
+        assert_eq!(goat.pending_attacker, 0);
+        assert_eq!(goat.kill_credit_entity, 152);
+        assert_eq!(goat.actual_speed, goat.maximum_speed);
+    }
+
+    #[test]
+    fn action_9_reacquires_on_cadence_and_damage_interrupts_immediately() {
+        let private_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let world = NativeWorld::load(
+            private_root.join("generated/level1-export-m"),
+            private_root.join("generated/level1-asset-closure.json"),
+        )
+        .expect("qualified Level 1 owner package");
+        let mut family = GoatFamily::from_entities(
+            world.entities(),
+            world.goat_stage_point(),
+            world.goat_config(),
+        )
+        .expect("live Goat family");
+        let player = GoatPlayerTarget {
+            entity_index: 152,
+            position: Position {
+                x: family.goats[0].position.x,
+                y: family.goats[0].position.y.wrapping_sub(100),
+                z: family.goats[0].position.z,
+            },
+            control_flags: 0,
+        };
+
+        {
+            let goat = &mut family.goats[0];
+            goat.action = 9;
+            goat.stage_var_2 = 10;
+            goat.phase = 32;
+            goat.proximity_countdown = 2;
+            goat.yaw = 0;
+            goat.roll = 0;
+            goat.actual_speed = 0;
+            goat.target_entity_index = None;
+        }
+        let events = family.step_with_players(world.terrain(), &[player]);
+        let goat = &family.goats[0];
+        assert_eq!(goat.action, 14);
+        assert_eq!(goat.target_entity_index, Some(152));
+        assert_eq!(goat.actual_speed, goat.minimum_speed);
+        assert!(events.contains(&GoatStepEvent::EngagementBoundaryReached {
+            entity_index: 50,
+            target_entity_index: 152,
+        }));
+
+        {
+            let goat = &mut family.goats[0];
+            goat.action = 9;
+            goat.phase = 33;
+            goat.target_entity_index = None;
+        }
+        family
+            .inject_damage(50, 100, 152)
+            .expect("action-9 pending hit");
+        family.step_with_players(world.terrain(), &[player]);
+        let goat = &family.goats[0];
+        assert_eq!(goat.life, 500);
+        assert_eq!(goat.action, 14);
+        assert_eq!(goat.target_entity_index, Some(152));
+        assert_eq!(goat.actual_speed, goat.minimum_speed);
+        assert_eq!(goat.pending_damage, 0);
+        assert_eq!(goat.pending_attacker, 0);
+    }
+
+    #[test]
+    fn owner_map_live_goats_never_commit_to_disallowed_materials() {
+        let private_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let world = NativeWorld::load(
+            private_root.join("generated/level1-export-m"),
+            private_root.join("generated/level1-asset-closure.json"),
+        )
+        .expect("qualified Level 1 owner package");
+        let mut family = GoatFamily::from_entities(
+            world.entities(),
+            world.goat_stage_point(),
+            world.goat_config(),
+        )
+        .expect("live Goat family");
+
+        for tick in 0..10_000 {
+            family.step_patrol(world.terrain());
+            for goat in family.goats().iter().filter(|goat| goat.active) {
+                assert_eq!(
+                    !world.goat_config().allowed_material_mask & world.material_mask(goat.position),
+                    0,
+                    "Goat {} entered a disallowed material at tick {tick}",
+                    goat.entity_index
+                );
+            }
+        }
     }
 }

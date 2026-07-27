@@ -20,7 +20,7 @@ CONTRACT_PATH = HERE / "presentation-correspondence.json"
 RUNTIME = REPO / "research/private/remc2-unity-native"
 CACHE = REPO / "research/private/generated/level1-unity-asset-cache"
 PACKAGE_SHA256 = "730d2fa084265df839f3f2b55ed766ac167a8b152ca4631b5ded9d0bb9104ac8"
-CLOSURE_SHA256 = "1c3774ca5c032c1a7b8b1c48870840eee33011a2830d08c51f3104fb5c5bcc12"
+CLOSURE_SHA256 = "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719"
 CLASSIFICATIONS = ("exact", "frozen", "adapted", "omitted", "deferred")
 REQUIRED_LAYER_IDS = {
     "original.framebuffer.indexed",
@@ -67,8 +67,8 @@ REQUIRED_LAYER_AUTHORITIES = {
     "diagnostic.presentation": "unity-synthetic-route",
     "sprite.source_hotspot_anchor": "owner-cache",
     "renderer.dos_depth_interleaving_aspect": "original-remc2-hook-002285ff",
-    "palette.transient_runtime": "original-remc2-hook-002285ff",
-    "hud.hsprn_and_live_progression": "owner-cache",
+    "palette.transient_runtime": "unity-synthetic-route",
+    "hud.hsprn_and_live_progression": "unity-synthetic-route",
     "projectile.presentation": "unity-synthetic-route",
     "simulation.ai_spells_creatures_progression": "unity-synthetic-route",
 }
@@ -90,8 +90,8 @@ REQUIRED_LAYER_CLASSIFICATIONS = {
     "native.terrain.indexed": "exact",
     "unity.route.pngs": "exact",
     "actors.reset_observed": "adapted",
-    "hud.objective.reset": "frozen",
-    "hud.owner_layout.reset": "frozen",
+    "hud.objective.reset": "adapted",
+    "hud.owner_layout.reset": "adapted",
     "original.review_decode.base_paln": "adapted",
     "unity.composition.1600x900": "adapted",
     "camera.unity": "adapted",
@@ -104,10 +104,10 @@ REQUIRED_LAYER_CLASSIFICATIONS = {
     "diagnostic.presentation": "omitted",
     "sprite.source_hotspot_anchor": "deferred",
     "renderer.dos_depth_interleaving_aspect": "deferred",
-    "palette.transient_runtime": "deferred",
-    "hud.hsprn_and_live_progression": "deferred",
-    "projectile.presentation": "deferred",
-    "simulation.ai_spells_creatures_progression": "deferred",
+    "palette.transient_runtime": "adapted",
+    "hud.hsprn_and_live_progression": "adapted",
+    "projectile.presentation": "adapted",
+    "simulation.ai_spells_creatures_progression": "adapted",
 }
 
 
@@ -538,12 +538,16 @@ def verify_runtime_logs(
     ]
     expected_structural_lines = [
         (
-            "MC_ASSET_CACHE VERIFIED outputs=293 "
+            "MC_ASSET_CACHE VERIFIED outputs=447 "
             f"content={corpus['runtime_pins']['owner_cache_content_sha256']}"
         ),
-        "MC_HUD_DESCRIPTOR VERIFIED bitmaps=11 bank=MSPRN-scale2 objective=48/",
         (
-            "MC_AUDIO VERIFIED bank=1 quality=822 refs=10 "
+            "MC_HUD_DESCRIPTOR VERIFIED bitmaps=29 bank=HSPRN-native "
+            "objectives=48-53/indexed-live-framebuffer "
+            "blend=TABLESN:0x4000+61x256+dst"
+        ),
+        (
+            "MC_AUDIO VERIFIED bank=1 quality=822 refs=31 "
             "music=C2GAME1-adlmidi-bank59.wav"
         ),
         (
@@ -551,7 +555,15 @@ def verify_runtime_logs(
             "goatLive=33 frozenOwnerSprites=31 resetEffectDebug=0 "
             "unresolvedDebug=0 mode=qualified"
         ),
-        "MC_OWNER_HUD READY textures=11 objective=selector48/",
+        (
+            "MC_OWNER_HUD READY textures=26 "
+            "objectives=selectors48-53/indexed-live-TABLESN-blend"
+        ),
+        (
+            "MC_OBJECTIVE_INDEXED_BLEND LIVE selector=48 ticks=33 "
+            "outer=192,234,256,38 blend=208,244,224,18 "
+            "order=TABLESN61->HFONT3-119->HSPRN171/172/173"
+        ),
     ]
     for log_path in unity_logs:
         log = log_path.read_text(encoding="utf-8")
@@ -571,13 +583,13 @@ def verify_runtime_logs(
         for marker in expected_structural_lines:
             require(marker in log, f"{log_path.name}: missing marker {marker}")
         require(
-            log.count(
-                "visual_suppressed sequence="
-            ) == 2
-            and log.count(
-                "reason=projectile-presentation-not-qualified"
-            ) == 2,
-            f"{log_path.name}: projectile omission evidence mismatch",
+            "MC_LEVEL1_PRESENTATION CREATED actors=19 multipart=dynamic "
+            "effects=snapshot-owned ownerTmaps=true noPhysics=true"
+            in log
+            and "visual_suppressed sequence=" not in log
+            and "reason=projectile-presentation-not-qualified" not in log
+            and "MC_FIRE visual_spawned sequence=" not in log,
+            f"{log_path.name}: typed projectile/diagnostic separation mismatch",
         )
 
     gallery = gallery_log.read_text(encoding="utf-8")
@@ -849,7 +861,7 @@ def main() -> int:
         "original_review_decodes": 3,
         "unity_registered": 5,
         "unity_deterministic_runs": 2,
-        "hud_source_bitmaps": 11,
+        "hud_source_bitmaps": 13,
         "hud_placements": 10,
         "owner_tmap_selectors": 16,
         "gallery_views": 8,

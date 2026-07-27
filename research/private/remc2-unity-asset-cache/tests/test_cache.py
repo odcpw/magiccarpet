@@ -82,15 +82,67 @@ class OwnerCacheTests(unittest.TestCase):
                     484, "7d081998c98ba0aa2bb57d4956926f3b8c80b31ae6ee481f8c9174551d6db722"),
             },
         )
-        sprites = manifest["assets"]["msprn"]
+        sprites = manifest["assets"]["hsprn"]
         self.assertEqual(
             [row["index"] for row in sprites],
-            sorted(cache.FRAME_MSPRN + cache.DYNAMIC_MSPRN),
+            sorted(set(cache.FRAME_HSPRN + cache.DYNAMIC_HSPRN)),
         )
         self.assertEqual(
             sum(row["inclusion"] == "qualified_frame_used" for row in sprites), 11
         )
-        self.assertEqual(manifest["assets"]["font1"]["glyph_count"], 273)
+        self.assertEqual(manifest["assets"]["hfont3"]["glyph_count"], 273)
+        castle = manifest["assets"]["level1_castle_stage"]
+        self.assertEqual(castle["build_index"], 1)
+        self.assertEqual(
+            (castle["effective_width"], castle["effective_height"]),
+            (8, 8),
+        )
+        castle_descriptor = json.loads(
+            (self.first / castle["path"]).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            castle_descriptor["dimensions"],
+            {
+                "raw_tab": {
+                    "height": 8,
+                    "tab_record_sha256":
+                        cache.CASTLE_STAGE_ONE_BUILD_TAB_RECORD_SHA256,
+                    "width": 8,
+                },
+                "loader_runtime": {
+                    "height": 16,
+                    "rule":
+                        "CreateIndexes doubles when resolution bit 0 is set",
+                    "width": 16,
+                },
+                "castle_consumer_effective": {
+                    "height": 8,
+                    "rule":
+                        "SetShiftByCastle and terrain consumers halve when selector is 1",
+                    "width": 8,
+                },
+            },
+        )
+        castle_cells = (
+            self.first / castle_descriptor["cells"]["path"]
+        ).read_bytes()
+        self.assertEqual(len(castle_cells), 128)
+        self.assertEqual(
+            hashlib.sha256(castle_cells).hexdigest(),
+            cache.CASTLE_STAGE_ONE_BUILD_PAYLOAD_SHA256,
+        )
+        self.assertEqual(
+            castle_descriptor["building_parameters"],
+            {
+                "byte_3": 0,
+                "flags": 3,
+                "record_index": 1,
+                "record_sha256":
+                    cache.CASTLE_STAGE_ONE_BUILD_PARAMETER_SHA256,
+                "source_asset_id": "owner_data:DATA/BLDGPRM.DAT",
+                "word_0": 2,
+            },
+        )
         entity_asset = manifest["assets"]["entity_presentations"]
         self.assertEqual(entity_asset["qualified_actor_count"], 64)
         self.assertEqual(entity_asset["mapped_reset_effect_count"], 19)
@@ -240,12 +292,12 @@ class OwnerCacheTests(unittest.TestCase):
             )
         )
         self.assertEqual(
-            manifest["assets"]["font1"]["palette_status"],
+            manifest["assets"]["hfont3"]["palette_status"],
             "mask_exact_runtime_tint_callsite_dynamic; Level1 objective CLRN3840 qualified",
         )
         self.assertEqual(
             manifest["assets"]["spell_icon_indices"]["status"],
-            "family_mapping_with_Level1_reset_big_icons_materialized",
+            "family_mapping_with_Level1_high_resolution_big_icons_materialized",
         )
         hud_asset = manifest["assets"]["level1_hud"]
         self.assertEqual(
@@ -262,26 +314,30 @@ class OwnerCacheTests(unittest.TestCase):
                 "uniform_scale_expression":
                     "min(Screen.width / 640, Screen.height / 480)",
                 "filter": "nearest",
-                "resolution_bank": "MSPRN0-0",
-                "source_scale": 2,
+                "resolution_bank": "HSPRN0-0",
+                "source_scale": 1,
                 "bank_status":
-                    "trace_qualified_Night_low_resolution_bank_scaled_2x",
+                    "source_mapped_Night_high_resolution_bank_native",
                 "high_resolution_bank_status":
-                    "Deferred; no HSPRN parity claim in this cache",
+                    "Qualified through remc2 LoadSpr_47160 high-resolution branch",
             },
         )
         bitmap_assets = hud["bitmap_assets"]
         self.assertEqual(
             [row["selector"] for row in bitmap_assets],
-            [1, 40, 41, 42, 43, 54, 123, 124, 171, 172, 173],
+            [
+                1, 2, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+                51, 52, 53, 54, 55, 58, 66, 83, 84, 123, 124, 125, 126,
+                171, 172, 173,
+            ],
         )
-        self.assertEqual(len({row["selector"] for row in bitmap_assets}), 11)
+        self.assertEqual(len({row["selector"] for row in bitmap_assets}), 29)
         self.assertTrue(
             all(
-                row["bank"] == "MSPRN0-0"
-                and row["source_scale"] == 2
-                and row["runtime_width"] == row["stored_width"] * 2
-                and row["runtime_height"] == row["stored_height"] * 2
+                row["bank"] == "HSPRN0-0"
+                and row["source_scale"] == 1
+                and row["runtime_width"] == row["stored_width"]
+                and row["runtime_height"] == row["stored_height"]
                 and row["authority"] == "FrozenObserved"
                 and len(row["indices_sha256"]) == 64
                 and len(row["mask_sha256"]) == 64
@@ -295,13 +351,31 @@ class OwnerCacheTests(unittest.TestCase):
             },
             {
                 1: (64, 44),
-                40: (124, 38),
+                2: (64, 44),
+                40: (124, 44),
                 41: (128, 44),
                 42: (16, 44),
                 43: (34, 44),
+                44: (34, 44),
+                45: (34, 44),
+                46: (34, 44),
+                47: (34, 44),
+                48: (34, 44),
+                49: (34, 44),
+                50: (34, 44),
+                51: (34, 44),
+                52: (34, 44),
+                53: (34, 44),
                 54: (128, 44),
+                55: (128, 44),
+                58: (8, 10),
+                66: (18, 23),
+                83: (5, 5),
+                84: (9, 9),
                 123: (62, 34),
                 124: (62, 34),
+                125: (62, 34),
+                126: (62, 34),
                 171: (16, 12),
                 172: (16, 14),
                 173: (32, 10),
@@ -313,7 +387,7 @@ class OwnerCacheTests(unittest.TestCase):
         )
         self.assertEqual(
             [row["authority"] for row in hud["top_bar"]["panels"]],
-            ["FrozenObserved"] * 6,
+            ["SourceMappedLive"] * 6,
         )
         self.assertEqual(
             [
@@ -327,15 +401,42 @@ class OwnerCacheTests(unittest.TestCase):
                 for row in hud["spells"]["slots"]
             ],
             [
-                (153, 0, 123, "FrozenObserved", "SpellActivationLive"),
-                (154, 1, 124, "FrozenObserved", "Deferred"),
+                (153, 0, 123, "MissionStateLive", "SpellActivationLive"),
+                (154, 1, 124, "MissionStateLive", "SpellActivationLive"),
             ],
         )
         objective = hud["objective"]
         self.assertEqual(objective["selector"], 48)
-        self.assertEqual(objective["authority"], "FrozenObserved")
+        self.assertEqual(
+            objective["authority"],
+            "SourceMappedLiveIndexedFramebuffer",
+        )
         self.assertEqual(objective["objective_textbox_ticks"], 33)
         self.assertEqual(objective["frame_selectors"], [171, 172, 173])
+        self.assertEqual(
+            objective["draw_order"],
+            [
+                "TABLESN_background_blend",
+                "HFONT3_text_palette_119",
+                "HSPRN_frame_171_172_173",
+            ],
+        )
+        self.assertEqual(
+            objective["background_blend"],
+            {
+                "source_table_path": "palette/tablesn.u8",
+                "table_offset": 0x4000,
+                "clrn_selector": 0,
+                "blend_selector": 61,
+                "expression":
+                    "TABLESN[0x4000 + (CLRN[0] << 8) + live_destination_index]",
+                "underlay_scope":
+                    "world_only_for_Level1_rows; all boxes begin below y=128 prior HUD extent",
+                "display_adaptation":
+                    "pixel-centre nearest sample from qualified 320x200 indexed world "
+                    "into 640x480 corrected 4:3 reference layout",
+            },
+        )
         self.assertEqual(
             objective["glyph_indices"],
             [35, 71, 109, 122, 33, 117, 112, 120, 98, 115, 101, 116,
@@ -356,11 +457,59 @@ class OwnerCacheTests(unittest.TestCase):
             (self.first / objective["text_bytes_path"]).read_bytes(),
             b'"Fly towards my beacon."',
         )
+        expected_geometry = {
+            48: (192, 234, 256, 38, 224, 246, 208, 244, 224, 18),
+            49: (128, 220, 384, 52, 160, 232, 144, 230, 352, 32),
+            50: (144, 220, 352, 52, 164, 232, 160, 230, 320, 32),
+            51: (144, 220, 352, 52, 164, 232, 160, 230, 320, 32),
+            52: (176, 220, 288, 52, 208, 232, 192, 230, 256, 32),
+            53: (128, 220, 384, 52, 160, 232, 144, 230, 352, 32),
+        }
+        for row in objective["rows"]:
+            self.assertEqual(row["authority"], "SourceMappedLiveIndexedFramebuffer")
+            self.assertEqual(
+                (
+                    row["reference_x"],
+                    row["reference_y"],
+                    row["render_width"],
+                    row["render_height"],
+                    row["text_x"],
+                    row["text_y"],
+                    row["blend_x"],
+                    row["blend_y"],
+                    row["blend_width"],
+                    row["blend_height"],
+                ),
+                expected_geometry[row["selector"]],
+            )
+            plane_bytes = row["render_width"] * row["render_height"]
+            self.assertEqual(row["raster_plane_bytes"], plane_bytes)
+            raster = (self.first / row["raster_path"]).read_bytes()
+            self.assertEqual(len(raster), plane_bytes * 2)
+            indices = raster[:plane_bytes]
+            mask = raster[plane_bytes:]
+            self.assertEqual(
+                hashlib.sha256(indices).hexdigest(),
+                row["foreground_indices_sha256"],
+            )
+            self.assertEqual(
+                hashlib.sha256(mask).hexdigest(),
+                row["foreground_mask_sha256"],
+            )
+            self.assertEqual(sum(mask), row["foreground_opaque_pixels"])
+            self.assertEqual(set(mask), {0, 1})
+            self.assertIn(119, indices)
         self.assertEqual(
             hashlib.sha256(
-                (self.first / objective["render_path"]).read_bytes()
+                (self.first / objective["raster_path"]).read_bytes()
             ).hexdigest(),
-            "d1ec5a6eb550aec63cb491a3d072e4904c2c8f7157591f35e74ceebefc820cf9",
+            next(
+                row["sha256"]
+                for row in json.loads(
+                    (self.first / "manifest.json").read_text(encoding="utf-8")
+                )["outputs"]
+                if row["path"] == objective["raster_path"]
+            ),
         )
         self.assertEqual(
             hud["authority_badge"]["text"], "FROZEN OBSERVED"
@@ -379,40 +528,40 @@ class OwnerCacheTests(unittest.TestCase):
                 minimap["presentation_scale"],
                 minimap["sampling"]["source_units_per_pixel"],
             ),
-            (128, 128, 64, 64, 2, 512),
+            (128, 128, 128, 128, 1, 256),
         )
         self.assertEqual(
-            minimap["low_resolution_branch"],
-            "MSPRN_effective_64x64_scaling512_then_nearest_2x",
+            minimap["resolution_branch"],
+            "HSPRN_native_128x128_scaling256",
         )
         aperture = minimap["aperture"]
         aperture_mask = (self.first / aperture["path"]).read_bytes()
-        self.assertEqual(len(aperture_mask), 64 * 64)
-        self.assertEqual(sum(aperture_mask), 3204)
+        self.assertEqual(len(aperture_mask), 128 * 128)
+        self.assertEqual(sum(aperture_mask), 12848)
         self.assertEqual(
             hashlib.sha256(aperture_mask).hexdigest(),
-            "98a3a7c0300b49204629aab1b4b552253bea2223f9e68c40d1458b2e62243285",
+            "1d4ce7e417ace6af7eb78a29b83a6f8a0b2558002d36079ea2fa291f7a6df98b",
         )
-        self.assertEqual(aperture["opaque_pixels"], 3204)
+        self.assertEqual(aperture["opaque_pixels"], 12848)
         self.assertEqual(aperture["table_offset"], 0x14300)
-        self.assertEqual(aperture["phase_step"], 0x80000)
+        self.assertEqual(aperture["phase_step"], 0x40000)
         self.assertEqual(
             aperture["table_curve_sha256"],
             "e155e5eaa2019054c52878dad895d0ad70c6b92698fab72ae518eeccea4eafc7",
         )
         scanlines = aperture["scanlines"]
-        self.assertEqual(len(scanlines), 64)
+        self.assertEqual(len(scanlines), 128)
         self.assertEqual(
             [
                 (
                     scanlines[index]["start_x_inclusive"],
                     scanlines[index]["end_x_exclusive"],
                 )
-                for index in (0, 1, 15, 31, 32, 48, 62, 63)
+                for index in (0, 1, 31, 63, 64, 96, 126, 127)
             ],
             [
-                (25, 39), (21, 43), (5, 59), (1, 63),
-                (1, 63), (5, 59), (21, 43), (25, 39),
+                (53, 75), (49, 79), (9, 119), (1, 127),
+                (1, 127), (9, 119), (49, 79), (53, 75),
             ],
         )
         sine_payload = (
@@ -472,11 +621,18 @@ class OwnerCacheTests(unittest.TestCase):
                 minimap["entity_positions_authority"],
                 minimap["player_pose_authority"],
             ),
-            ("FrozenObserved", "FrozenObserved", "PlayerFlightLive"),
+            (
+                "OwnerLevelStaticLiveSampling",
+                "SourceArenaLive",
+                "PlayerFlightLive",
+            ),
         )
         self.assertEqual(
             minimap["entity_overlay_mode"],
-            "non_original_FrozenObserved_reset_reference_overlay",
+            "Rust_source_slot_ordered_DrawMinimapEntities_commands",
+        )
+        self.assertTrue(
+            minimap["entity_colour_filter_status"].startswith("SourceMappedLive")
         )
         audio_asset = manifest["assets"]["level1_audio"]
         self.assertEqual(
@@ -519,7 +675,11 @@ class OwnerCacheTests(unittest.TestCase):
             "b59b907e19cefde10c544fa64c73456fcea591dbb9491bdb7afe2c42890fb06c",
         )
         self.assertEqual(
-            sound["materialized_sound_ids"], [1, 2, 5, 29, 31, 37, 39, 43, 46]
+            sound["materialized_sound_ids"],
+            [
+                1, 2, 3, 4, 5, 8, 9, 10, 15, 16, 18, 19, 27, 29, 30, 31,
+                33, 34, 37, 39, 40, 41, 43, 44, 46, 54, 55, 56, 57, 63,
+            ],
         )
         self.assertEqual(sound["explicit_null_sound_ids"], [12])
         self.assertEqual(
@@ -530,14 +690,35 @@ class OwnerCacheTests(unittest.TestCase):
             {
                 1: "local_ambient",
                 2: "local_ambient",
+                3: "original_stereo_positional",
+                4: "original_stereo_positional",
                 5: "local_ambient",
+                8: "original_stereo_positional",
+                9: "original_stereo_positional",
+                10: "original_stereo_positional",
                 12: "explicit_null",
+                15: "original_stereo_positional",
+                16: "original_stereo_positional",
+                18: "original_stereo_positional",
+                19: "original_stereo_positional",
+                27: "original_stereo_positional",
                 29: "local_feedback",
+                30: "original_stereo_positional",
                 31: "local_ambient",
+                33: "original_stereo_positional",
+                34: "original_stereo_positional",
                 37: "original_stereo_positional",
                 39: "original_stereo_positional",
+                40: "original_stereo_positional",
+                41: "original_stereo_positional",
                 43: "original_stereo_positional",
-                46: "typed_goat_positional_request_pitch_deferred",
+                44: "original_stereo_positional",
+                46: "original_stereo_positional",
+                54: "original_stereo_positional",
+                55: "original_stereo_positional",
+                56: "original_stereo_positional",
+                57: "original_stereo_positional",
+                63: "original_stereo_positional",
             },
         )
         expected_audio = {
@@ -545,22 +726,64 @@ class OwnerCacheTests(unittest.TestCase):
                 "d41a44e541f882e620a57316e020d40369372166f84ccbc07525848a395ec8dc"),
             2: ("CRICKET2.WAV", 135984, 135937,
                 "f4636891ecc2736deba4aab46e7e5117d1b89022ea20fb93315ee0ab46de8d34"),
+            3: ("EXPLOD3.WAV", 30192, 30144,
+                "18f40a58188d26caf20c4dd2f01cf6e383c6867fb58a2c2d9aeb5c4ab480a2b0"),
+            4: ("GAINMANA.WAV", 22688, 22640,
+                "ec5b853e1834f05e2d47a58e5dcf4db32cd8f3253a69ce75205531d1c2d785e2"),
             5: ("FIRE.WAV", 44080, 44032,
                 "008f25258a035546949ccca475ca954feb5f74cdfe32c76e6f612bf18575bf3a"),
+            8: ("DRAGROAR.WAV", 62384, 62336,
+                "121e3c3bca9874214f334ad48151bd79b90a64f76b809c01e66398507c57e1d1"),
+            9: ("FIREBAL1.WAV", 26992, 26944,
+                "8bacc231f15be4c688d7abada4bb2531ae4b8a87160633fdb1bbba4c6bad9153"),
+            10: ("QUAKE4.WAV", 84592, 84535,
+                 "1629b0015e5eba8f1c8b9d0504ae9c67280efa9bb5f742a450b346f38ca6bd53"),
             12: ("NULL.WAV", 64, 16,
                  "3a1a42d64f3295fa6bfa7cd321ebe66db702ec398fc958c16c5f9fe46bc325c4"),
+            15: ("FIREBAL2.WAV", 34032, 33984,
+                 "69122af4883939c44437cd5fbf6aac4696f97e238adc2c091f2b97a3deb1a0f2"),
+            16: ("DIE.WAV", 34416, 34368,
+                 "c86a379357ec7461ff209a08084f0701a56b6d37f6907f6dfa14126752bc8aed"),
+            18: ("GETSPELL.WAV", 15120, 15072,
+                 "580bce7d3576fb1dd4cea32a5880603f5abf265f4ae7580cc7d56dff119169c9"),
+            19: ("SPEEDUP.WAV", 38032, 37975,
+                 "86cdd986d164d95d21c52233f7c3e739e28343a26c8c2051a4027e96eb7b444f"),
+            27: ("SPLASH2.WAV", 36000, 35945,
+                 "15c2412f13d916a66a26877f763d72ca51e63a9db51096915236b0501dd157db"),
             29: ("CANTUSE.WAV", 6976, 6925,
                  "4378349675288905df83dc81add0a1735f3fa44eabeb2d2000b9bfd459bc989d"),
+            30: ("METEOREX.WAV", 76272, 76223,
+                 "162c06dbb4a9cdb10062bb25972681c036430476cc56906ce9c34b91a924d575"),
             31: ("MARKET.WAV", 193072, 193024,
                  "d9c4a1e8e8decc67bdae1426b83b777902d68a2bdfc20e591b507722251ef839"),
+            33: ("ARROW1.WAV", 4144, 4096,
+                 "e33d523c2e770a42d7fe3a02695e40f61923a0b75416b2b849a53463377b5c2f"),
+            34: ("ARROW2.WAV", 6080, 6032,
+                 "e7bfad156a297a29ad4c6d10fc0453333168606b69eb00f1f8f5a49c4529539c"),
             37: ("CYMERIAN.WAV", 39488, 39273,
                  "c3e81213dd5d3733a83d5f83b576feefe3e325c90087ab1b552c895bd1170b2b"),
             39: ("WYVERN.WAV", 74160, 74112,
                  "8f2eb4217c7f33afb922eda4be61194b94484a5afada83b969461027a9d8ad41"),
+            40: ("MANASHOT.WAV", 18512, 18465,
+                 "b7ef46837b325b2bacd6b83367a63070ac9c30a66dd1b09e4b095382c6f1989b"),
+            41: ("SWITCH.WAV", 17264, 17216,
+                 "39cf0c73c13dadac62bd3c5b132a5490adda3c54ef0c08acb9357d389e4281bc"),
             43: ("FIREFLY1.WAV", 30064, 29830,
                  "1ec43d872d6dd9e07a8d625d70a85ce39488de6914d4062aad4d89a6d19c5604"),
+            44: ("FIREFLY2.WAV", 33440, 33203,
+                 "591b2ed29b3501e75ecea2e90944a40610a751842ac3473b6933de05808c8c38"),
             46: ("GOAT.WAV", 20768, 20545,
                  "6038ceffaa2c54f9d4f7a93494fc713bc6bc3b76bc9a8ecc7dfc7f3fe4445b18"),
+            54: ("HIT1.WAV", 5184, 4953,
+                 "141d2a5552083a059affba266fe982231b309dcef97194b638aefe8497726d1a"),
+            55: ("HIT2.WAV", 5440, 5217,
+                 "de575886d3a96c1e2ba0a45011982dc9ef658c821313929dc88516bb1d1a2726"),
+            56: ("HIT3.WAV", 5968, 5737,
+                 "c53ec7e9c9fe7c81e1ab9e1975d22df64d78a88155e67ecec5d42765d944ff7a"),
+            57: ("HIT4.WAV", 5024, 4801,
+                 "c8235415ee99d0d4eeab7c1ed5ffdc672cda7de5c6074d65c9f713b5fcb12f2e"),
+            63: ("SPELLUP.WAV", 25824, 25633,
+                 "5291fd4907c8cf31c38b2b8c4f93ead6f69ea5f602365db6236437a91af21209"),
         }
         self.assertEqual(
             {
@@ -754,16 +977,33 @@ class OwnerCacheTests(unittest.TestCase):
         )
         self.assertEqual(
             event_semantics["consume_event_kinds"],
-            ["PrepareSound", "EndLoop", "UpdateMusic", "GoatSoundRequest"],
+            [
+                "PrepareSound",
+                "EndLoop",
+                "UpdateMusic",
+                "StartMusic",
+                "GoatSoundRequest",
+                "ArcherArrowSound",
+                "FireflyChargeSound",
+                "FireballImpacted",
+                "WaterSplashed",
+                "CastleProjectileSpawned",
+                "CastleConstructionSound",
+                "ManaSphereClaimed",
+                "MissionSound",
+            ],
         )
         self.assertEqual(
             event_semantics["request_spell_activation_audio_status"],
-            "NoMapping; must not infer Fireball audio",
+            "NoDirectRequestMapping; successful Fireball spawn emits MissionSound9",
         )
         self.assertEqual(event_semantics["cave_ids"]["exact_range"], [65, 69])
         self.assertEqual(
             event_semantics["positional_surfaces"]["command_required_sound_ids"],
-            [37, 39, 43],
+            [
+                3, 4, 8, 9, 10, 15, 16, 18, 19, 27, 30, 33, 34, 37, 39,
+                40, 41, 43, 44, 46, 54, 55, 56, 57, 63,
+            ],
         )
         self.assertEqual(
             event_semantics["positional_surfaces"]["missing_command_reason"],
@@ -772,6 +1012,23 @@ class OwnerCacheTests(unittest.TestCase):
         self.assertEqual(
             event_semantics["positional_surfaces"]["attenuation_axis"],
             "XY_only_original_helper_despite_XYZ_name",
+        )
+        self.assertEqual(
+            event_semantics["mission_event_sounds"],
+            {
+                "ArcherArrowSound": [33, 34],
+                "FireflyChargeSound": [43, 44],
+                "CastleProjectileSpawned": [15],
+                "CastleConstructionSound": [10],
+                "ManaSphereClaimed": [4],
+                "FireballImpacted": [3],
+                "WaterSplashed": [27],
+                "MissionSound": [
+                    8, 9, 16, 18, 19, 30, 40, 41, 54, 55, 56, 57, 63,
+                ],
+                "position_status":
+                    "Ready_typed_source_slot_XYZ_integer_stereo_sidecar",
+            },
         )
         self.assertEqual(
             event_semantics["positional_surfaces"]["unity_spatial_blend"], 0
@@ -785,9 +1042,9 @@ class OwnerCacheTests(unittest.TestCase):
                 "position_source": "Rust_owned_live_Goat_snapshot",
                 "play_type": "if_not_already_playing",
                 "numeric_pitch_status":
-                    "Deferred_until_source_ordered_global_rng_is_qualified",
+                    "Ready_source_ordered_global_rng_and_action_branch",
                 "presentation_policy":
-                    "Do_not_play_as_exact_without_numeric_pitch",
+                    "Play_only_from_authoritative_audio_sidecar",
             },
         )
         self.assertTrue(
@@ -801,8 +1058,8 @@ class OwnerCacheTests(unittest.TestCase):
         materials = manifest["assets"]["terrain_materials"]
         self.assertEqual(materials["bl32_tile_count"], 152)
         self.assertEqual(materials["tmap_frame_used_selectors"], [40, 41, 54, 63])
-        self.assertEqual(materials["tmap_scene_reachable_selector_count"], 129)
-        self.assertEqual(materials["tmap_decoded_texture_count"], 118)
+        self.assertEqual(materials["tmap_scene_reachable_selector_count"], 163)
+        self.assertEqual(materials["tmap_decoded_texture_count"], 152)
         self.assertEqual(materials["tmap_raw_placeholder_count"], 11)
         descriptor = json.loads((self.first / materials["path"]).read_text())
         self.assertEqual(
@@ -829,7 +1086,11 @@ class OwnerCacheTests(unittest.TestCase):
         self.assertEqual(max(rgb6), 63)
         self.assertEqual(max(rgb8), 252)
         self.assertEqual(descriptor["tmaps1"]["frame_used_selectors"], [40, 41, 54, 63])
-        self.assertEqual(len(descriptor["tmaps1"]["scene_reachable_selectors"]), 129)
+        self.assertEqual(len(descriptor["tmaps1"]["scene_reachable_selectors"]), 163)
+        self.assertTrue(
+            set(cache.LEVEL1_LIVE_MISSION_TMAPS)
+            <= set(descriptor["tmaps1"]["scene_reachable_selectors"])
+        )
         frame_rows = {
             row["index"]: row
             for row in descriptor["tmaps1"]["textures"]
@@ -904,6 +1165,127 @@ class OwnerCacheTests(unittest.TestCase):
             cache.rnc_logical_identity("clang 19 on host B"),
         )
         self.assertNotIn("compiler", cache.rnc_logical_identity())
+
+    def test_goat_tmap_states_match_exact_remc2_golden(self) -> None:
+        golden = cache.load_goat_tmap_golden()
+        manifest = cache.validate_cache(self.first)
+        descriptor = json.loads(
+            (
+                self.first
+                / manifest["assets"]["terrain_materials"]["path"]
+            ).read_text()
+        )
+        textures = {
+            row["index"]: row for row in descriptor["tmaps1"]["textures"]
+        }
+        exact_selectors = {
+            index
+            for index, row in textures.items()
+            if row.get("animation_materialization", "").startswith(
+                "exact_qualified_Goat_SS2"
+            )
+        }
+        self.assertEqual(exact_selectors, cache.GOAT_TMAP_SELECTORS)
+        for selector in sorted(cache.GOAT_TMAP_SELECTORS):
+            decoded = (
+                self.first / f"terrain/tmaps1/{selector:03d}.decoded.bin"
+            ).read_bytes()
+            states = cache.materialize_goat_tmap_animation(selector, decoded)
+            cache.qualify_goat_tmap_states(selector, states, golden)
+            rows = textures[selector]["animation_states"]
+            self.assertEqual(
+                [
+                    [
+                        row["state"],
+                        row["sha256"],
+                        row["stream_cursor"],
+                        row["frame_index"],
+                        row["width"],
+                        row["height"],
+                        row["bytes"],
+                    ]
+                    for row in rows
+                ],
+                golden["selectors"][str(selector)],
+            )
+            self.assertEqual(
+                (self.first / rows[4]["indices_path"]).read_bytes(),
+                (self.first / rows[0]["indices_path"]).read_bytes(),
+            )
+            self.assertEqual(
+                (self.first / rows[5]["indices_path"]).read_bytes(),
+                (self.first / rows[1]["indices_path"]).read_bytes(),
+            )
+        self.assertTrue(
+            all(
+                row["animation_materialization"].startswith("base_frame_only")
+                for index, row in textures.items()
+                if row.get("animated") and index not in cache.GOAT_TMAP_SELECTORS
+            )
+        )
+
+    def test_goat_tmap_decoder_rejects_every_truncation(self) -> None:
+        for selector in sorted(cache.GOAT_TMAP_SELECTORS):
+            decoded = (
+                self.first / f"terrain/tmaps1/{selector:03d}.decoded.bin"
+            ).read_bytes()
+            for end in range(len(decoded)):
+                with self.assertRaises(cache.CacheError):
+                    cache.materialize_goat_tmap_animation(selector, decoded[:end])
+
+    def test_goat_tmap_decoder_rejects_malformed_qualified_subset(self) -> None:
+        selector = 152
+        original = (
+            self.first / f"terrain/tmaps1/{selector:03d}.decoded.bin"
+        ).read_bytes()
+        _, width, height = cache.TMAP_HEADER.unpack_from(original)
+        animation_header = cache.TMAP_HEADER.size + width * height
+        stream_start = animation_header + cache.TMAP_ANIMATION_HEADER.size
+
+        mutations: list[bytearray] = []
+
+        def changed(offset: int, payload: bytes) -> None:
+            value = bytearray(original)
+            value[offset:offset + len(payload)] = payload
+            mutations.append(value)
+
+        changed(0, b"\x02\x14")  # wrong qualified flags
+        changed(2, b"\x17\x00")  # wrong width
+        changed(animation_header, b"\x03\x00")  # wrong frame count
+        changed(animation_header + 2, b"\x2b\x05\x00\x00")  # wrong stream size
+        changed(stream_start, b"\x05\x00\x00\x00")  # undersized outer
+        changed(stream_start + 4, b"\x00\x00")  # wrong outer tag
+        changed(stream_start + 6, b"\x02\x00")  # multiple children
+        changed(stream_start + 8, b"\x01")  # nonzero reserved byte
+        changed(stream_start + 16, b"\x05\x00\x00\x00")  # undersized child
+        changed(stream_start + 20, b"\x0f\x00")  # unsupported child type
+        changed(stream_start + 22, (height - 1).to_bytes(2, "little"))
+        changed(stream_start + 24, b"\xff\xff")  # negative row control
+        changed(stream_start + 27, b"\x00")  # zero SS2 span
+        changed(stream_start + 26, bytes([width]))  # write crosses row
+
+        trailing = bytearray(original + b"\x00")
+        declared = len(original) - (animation_header + 6) + 1
+        trailing[animation_header + 2:animation_header + 6] = (
+            declared.to_bytes(4, "little")
+        )
+        mutations.append(trailing)
+
+        for malformed in mutations:
+            with self.assertRaises(cache.CacheError):
+                cache.materialize_goat_tmap_animation(selector, bytes(malformed))
+
+    def test_goat_tmap_materialized_frame_tamper_is_rejected(self) -> None:
+        target = self.first / "terrain/tmaps1/152.frame-02.indices.u8"
+        original = target.read_bytes()
+        target.write_bytes(original[:10] + bytes([original[10] ^ 1]) + original[11:])
+        with self.assertRaisesRegex(cache.CacheError, "hash mismatch"):
+            cache.validate_cache(self.first)
+        target.write_bytes(original)
+        target.write_bytes(original[:-1])
+        with self.assertRaisesRegex(cache.CacheError, "truncated"):
+            cache.validate_cache(self.first)
+        target.write_bytes(original)
 
     def test_tampered_output_is_rejected(self) -> None:
         target = self.first / "sky/skyn.indices.u8"

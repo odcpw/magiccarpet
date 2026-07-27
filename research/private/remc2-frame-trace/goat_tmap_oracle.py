@@ -29,56 +29,73 @@ EXPECTED_COMPILED_SOURCE = (
 )
 descriptors: dict[int, int] = {}
 descriptor_order: list[int] = []
-loader_armed = False
 
 
 def integer(expression: str) -> int:
     return int(gdb.parse_and_eval(expression))
 
 
-class InitReturn(gdb.FinishBreakpoint):
-    def __init__(self, frame: gdb.Frame, selector: int):
-        self.selector = selector
-        super().__init__(frame, internal=True)
-
+class GoatLoaderPostCall(gdb.Breakpoint):
     def stop(self) -> bool:
-        address = int(self.return_value)
-        if address == 0:
+        loader_argument = integer("(unsigned short)a1")
+        group = integer("(unsigned short)v2")
+        selector = integer("(unsigned short)i")
+        if loader_argument != 152:
+            return False
+        if group != 152 or selector not in TARGETS:
             raise gdb.GdbError(
-                f"selector {self.selector} returned a null animation descriptor"
+                "Goat loader entered the wrong allocation group or member"
             )
-        descriptors[self.selector] = address
-        descriptor_order.append(self.selector)
-        return set(descriptors) == TARGETS
-
-
-class InitEntry(gdb.Breakpoint):
-    def stop(self) -> bool:
+        expected = [152, 153, 154]
+        if selector != expected[len(descriptor_order)]:
+            raise gdb.GdbError(
+                "Goat loader member order changed: "
+                f"expected {expected[len(descriptor_order)]}, got {selector}"
+            )
         names = []
         frame = gdb.newest_frame().older()
-        while frame is not None and len(names) < 8:
+        while frame is not None and len(names) < 4:
             names.append(frame.name() or "<unknown>")
             frame = frame.older()
-        if "InitTmaps(unsigned short)" not in names and "InitTmaps" not in names:
-            raise gdb.GdbError("Goat descriptor initialized outside the armed loader")
-        selector = integer("(unsigned short)a3")
-        if selector in TARGETS and selector not in descriptors:
-            InitReturn(gdb.newest_frame(), selector)
+        expected_callers = [
+            "sub_71780",
+            "sub_4A1E0",
+            "LevelInitGame_56A30",
+        ]
+        if names[:3] != expected_callers:
+            raise gdb.GdbError(
+                f"Goat loader call path changed: {names[:3]}"
+            )
+        address = integer("(uintptr_t)index")
+        if address == 0:
+            raise gdb.GdbError(
+                f"selector {selector} returned a null animation descriptor"
+            )
+        descriptors[selector] = address
+        descriptor_order.append(selector)
+        if len(descriptor_order) == len(expected):
+            self.enabled = False
+            return True
         return False
 
 
-class LoaderEntry(gdb.Breakpoint):
-    def stop(self) -> bool:
-        global loader_armed
-        selector = integer("(unsigned short)a1")
-        if selector != 152:
-            return False
-        if loader_armed:
-            raise gdb.GdbError("Goat TMAP loader epoch repeated")
-        loader_armed = True
-        InitEntry("sub_721C0_initTmap", internal=True)
-        self.enabled = False
-        return False
+def active_descriptors() -> dict[int, tuple[int, int]]:
+    result: dict[int, tuple[int, int]] = {}
+    count = integer("animations_E9C08x->word_0")
+    for slot in range(count):
+        value = gdb.parse_and_eval(f"animations_E9C08x->dword_2[{slot}]")
+        selector = int(value["word_26"])
+        if (
+            selector in TARGETS
+            and int(value["dword_0"]) != 0
+            and int(value["Particles_4"]) != 0
+        ):
+            if selector in result:
+                raise gdb.GdbError(
+                    f"selector {selector} has more than one active descriptor"
+                )
+            result[selector] = (int(value.address), slot)
+    return result
 
 
 def descriptor(address: int) -> gdb.Value:
@@ -138,18 +155,75 @@ def main() -> None:
         gdb.execute("set confirm off")
         gdb.execute("set debuginfod enabled off")
         gdb.execute("set breakpoint pending on")
-        LoaderEntry("InitTmaps", internal=True)
+        repo_root_for_breakpoint = Path(
+            os.environ["MC2_TRACE_REPO_ROOT"]
+        ).resolve(strict=True)
+        GoatLoaderPostCall(
+            str(
+                repo_root_for_breakpoint
+                / "upstream/magic-carpet-2-hd/remc2/engine/TextureMaps.cpp"
+            )
+            + ":495",
+            internal=True,
+        )
         gdb.execute("run")
 
-        if set(descriptors) != TARGETS or descriptor_order != [152, 153, 154]:
+        if descriptor_order != [152, 153, 154]:
             raise gdb.GdbError(
-                "Goat descriptors were not initialized as one ordered group: "
-                f"{descriptor_order}"
+                f"Goat loader did not complete one ordered epoch: {descriptor_order}"
             )
         if integer("bigSprites") != 0:
             raise gdb.GdbError("oracle must use original delta sprites")
         if integer("D41A0_0.terrain_2FECE.MapType") != 1:
             raise gdb.GdbError("oracle did not stop in the Night Level 1 bank")
+        allocation_groups = {
+            selector: integer(
+                f"str_TMAPS00TAB_BEGIN_BUFFER[{selector}].word_8"
+            )
+            for selector in sorted(TARGETS)
+        }
+        if allocation_groups != {152: 152, 153: 152, 154: 152}:
+            raise gdb.GdbError(
+                f"Goat selectors are not one allocation group: {allocation_groups}"
+            )
+        loaded = active_descriptors()
+        if set(loaded) != TARGETS:
+            raise gdb.GdbError(
+                "natural Level 1 initialization did not produce all Goat "
+                f"descriptors: {sorted(loaded)}"
+            )
+        descriptor_heap_slot_order = [
+            selector
+            for selector, _ in sorted(
+                loaded.items(),
+                key=lambda item: item[1][1],
+            )
+        ]
+        for selector in sorted(TARGETS):
+            cache_address = integer(
+                f"(uintptr_t)str_DWORD_F66F0x[{selector}]"
+            )
+            if cache_address == 0:
+                raise gdb.GdbError(
+                    f"selector {selector} cache is null after natural load"
+                )
+            address, slot = loaded[selector]
+            if descriptors[selector] != address:
+                raise gdb.GdbError(
+                    f"selector {selector} post-call and heap descriptors differ"
+                )
+            particle_address = int(descriptor(address)["Particles_4"])
+            cached_particle_address = integer(
+                f"(uintptr_t)*str_DWORD_F66F0x[{selector}]"
+            )
+            if particle_address != cached_particle_address:
+                raise gdb.GdbError(
+                    f"selector {selector} descriptor is not bound to its cache"
+                )
+            if int(descriptor(address)["word_24"]) != slot:
+                raise gdb.GdbError(
+                    f"selector {selector} descriptor slot does not match heap slot"
+                )
 
         rows: list[dict] = []
         for selector in sorted(TARGETS):
@@ -255,8 +329,16 @@ def main() -> None:
             "decoder": "compiled-remc2-sub_72350",
             "big_sprites": False,
             "loader_epoch": {
-                "entry": "InitTmaps(152)",
-                "descriptor_order": descriptor_order,
+                "entry": "InitTmaps post-call at TextureMaps.cpp:495",
+                "caller_path": [
+                    "sub_71780",
+                    "sub_4A1E0",
+                    "LevelInitGame_56A30",
+                ],
+                "loader_argument": 152,
+                "allocation_groups": allocation_groups,
+                "descriptor_member_order": descriptor_order,
+                "descriptor_heap_slot_order": descriptor_heap_slot_order,
                 "map_type": 1,
             },
             "bindings": {

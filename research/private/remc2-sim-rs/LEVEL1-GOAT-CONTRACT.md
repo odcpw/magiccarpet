@@ -142,19 +142,31 @@ The qualified owner presentation group uses:
   `(((entity_yaw - camera_yaw) >> 3) & 0xf0) >> 4`;
 - lookup `0,0,0,1,1,1,2,2,2,2,2,1,1,1,0,0`;
 - horizontal mirror for sectors `8..15`;
-- four retained animation frames per selector whose exact initial clock state
-  is not yet qualified; and
+- four exact mutable animation states per selector, plus reset and wrap
+  closure, qualified against the private remc2 oracle; and
 - positional Goat sound `46`.
 
 The orientation selector is camera-relative presentation derived from
-Rust-owned Goat yaw. The source proves that the animation clock is
-selector-global, not per entity, and that the global update runs once before
-each unpaused outer-turn input/entity update. The cache does not yet prove the
-selector's initial clock state or applied-frame sequence. Therefore the first
-entity-state slice freezes the qualified reset frame, excludes animation clock
-state from `live_world_hash_v1`, and forbids Unity-local animation. A later
-qualification must freeze the initial state and exact four-frame sequence
-before Rust advances or hashes that clock.
+Rust-owned Goat yaw. Selectors `152`, `153`, and `154` are independent shared
+descriptor clocks, not per-entity clocks and not one clock for their common
+allocation group. Rust owns each selector's source frame index,
+payload-relative cursor, mutable indexed pixels, and preceding-draw used
+latch. At the start of each unpaused outer turn it services selectors in
+ascending order, clears each used latch before advancing, and applies the
+exact `reset → F1 → F2 → F3 → F4 → F1` sequence. This includes the original
+executable sequence beginning at `0x715F0`. Its `MOV [EAX],CL` write-back at
+`0x715F3` is present in the pinned executable and mechanical source but is
+accidentally omitted from current remc2. The private, hash-pinned LE mapping
+and instruction proof is
+`evidence/goat-tmap-latch-clear-0x715f0.json`, verified by
+`tools/verify_goat_tmap_latch_clear.py`.
+Repeated draws collapse to one advance; paused rendering preserves the latch.
+
+The additive ABI exposes exact selector rows and accepts guarded authoritative
+post-draw feedback. The original CPU draw-admission predicate is still a
+separate qualification dependency, so normal Unity presentation submits no
+feedback and deliberately remains on the exact base frame. Unity-local
+animation remains forbidden.
 
 Sound `46` is materialized in the private owner cache as the exact
 `GOAT.WAV` record, but playback remains disabled until its numeric pitch is
@@ -178,6 +190,8 @@ in Unity source or a distributable player.
 
 - `NativeWorld` remains immutable and may be shared.
 - Every native session owns its own 33-row mutable Goat state.
+- Every cache-backed native session also owns three independent mutable
+  selector-frame states and their used latches.
 - Rust owns Goat position, yaw, roll target, speed, action, phase, proximity
   countdown and subcounter, RNG, life, active state, render selector, and
   lifecycle events.
@@ -197,9 +211,12 @@ option tags. The preserved Level 1 sequence proves ten global-RNG advances per
 outer turn, while only the `UpdateEntities_57730` advance is currently
 source-mapped in this slice.
 Therefore global RNG is excluded until all other source-ordered consumers and
-the value at sound dispatch are qualified. Unqualified global RNG,
-selector-animation clock state, generation, event cursors, audio voice
-allocation, Unity transforms, and wall-clock state are excluded.
+the value at sound dispatch are qualified. Selector animation remains
+excluded from `live_world_hash_v1` to preserve that contract; the separate
+`selector_state_hash` covers descriptor state, mutable pixels, latches, and
+accepted draw-feedback metadata. Unqualified global RNG, generation, event
+cursors, audio voice allocation, Unity transforms, and wall-clock state are
+excluded from `live_world_hash_v1`.
 
 ## Evidence and qualification
 
@@ -253,7 +270,9 @@ The following remain absent or frozen unless separately proven:
 - complete mana-sphere economy and credit attribution after death;
 - linked sub-entity damage propagation when a Goat has linked children;
 - all StageVar2 modes other than the qualified Level 1 value `2`;
-- exact selector-global animation cadence;
+- the exact CPU draw-admission predicate that decides which qualified
+  selector-local latch is set after presentation (the clock and its
+  one-advance-per-unpaused-outer-turn service cadence are exact);
 - complete per-turn global-RNG scheduling and Goat sound pitch values;
 - whole-program interactions with non-Goat creatures, buildings, villages,
   objectives, or multiplayer; and

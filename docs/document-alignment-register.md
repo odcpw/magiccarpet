@@ -29,6 +29,7 @@ replacement” plan to two isolated tracks:
 | `multiplayer-session-contract.md` | Current Track S session authority |
 | `provenance-policy.md` | Shared boundary and transfer policy |
 | `private-public-boundary.md` | Physical isolation and repository policy |
+| `level1-voxel-mode-direction.md` | Shared sequence from qualified Level 1 through separate VoxelMode to later city research |
 
 ## Aligned supporting documents
 

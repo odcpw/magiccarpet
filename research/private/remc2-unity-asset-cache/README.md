@@ -2,7 +2,7 @@
 
 This tool materializes a deterministic, owner-local cache for the qualified
 Level 1 Unity presentation. It is bound to the exact export package
-`730d2fa0...9104ac8` and closure `1c3774ca...bcc12`.
+`730d2fa0...9104ac8` and closure `87812390...75719`.
 
 The cache contains:
 
@@ -14,16 +14,20 @@ The cache contains:
   Unity mappings;
 - the full `TABLESN` and `CLRN-0` payloads, including the qualified 256×256
   static shade lookup `TABLESN[(brightness << 8) | source index]`;
-- all 129 scene-reachable `TMAPS1-0` records: 118 exact decoded streams and 11
-  source-verified one-byte `b'0'` placeholders;
+- all 163 Level 1 scene/live-mission `TMAPS1-0` records: 152 exact decoded
+  streams and 11 source-verified one-byte `b'0'` placeholders;
+- the exact four mutable indexed states for Goat selectors 152, 153, and 154,
+  decoded through the qualified type-7 SS2 subset and checked against the
+  pinned remc2 before/after oracle. Frame 4 restores reset, the next update
+  reproduces frame 1, and malformed or unsupported stream forms fail closed;
 - a canonical Level 1 entity-presentation descriptor derived from exact
   `MCE1`/`MCV1` package bytes and the terrain head plane. It maps all 177 active
   rows into 17 groups, locks the `83 drawable / 47 suppressed / 47 off-chain`
   reset disposition, and separates the 64 stable qualified actors from 19
   frozen transient rows that diverge before first presentation;
-- the 11 MSPRN bitmaps observed at qualified final render entries, with an
-  explicit Night low-resolution-bank, nearest-neighbour 2× presentation
-  contract for the current 640×480 reference layout;
+- twenty-nine source-selected HSPRN bitmaps, including the objective,
+  minimap-entity, Castle, Speed, spell, and panel selectors, with their exact
+  Night dimensions and the current 640×480 reference layout;
 - MSPRN index 9, included only because the closure proves it as a dynamic
   spell-menu dependency;
 - all 273 `FONT1` visibility masks in one offset-addressed blob;
@@ -32,19 +36,26 @@ The cache contains:
 - a canonical Level 1 HUD descriptor covering panels, reset Fireball/Possess
   slots, authority, dimensions, source functions, bitmap hashes, font
   byte-plus-one mapping, minimap mode, and every deferred field;
-- a deterministic 256×38 owner-frame/FONT1 objective raster and a FONT1
-  `FROZEN OBSERVED` authority badge; and
-- canonical spell family/tier icon indices. The Level 1 reset big icons 123
-  and 124 are materialized; the HSPRN bank is deliberately deferred rather
-  than silently mixed with MSPRN; and
+- six source-sized indexed objective foreground rasters using exact HFONT3
+  wrapping/advances and HSPRN 171/172/173 frame assembly, each paired with a
+  binary overwrite mask, plus the separate HFONT3 `FROZEN OBSERVED`
+  authority badge; and
+- canonical spell family/tier icon indices. Fireball, Possession, Castle, and
+  Speed big icons 123–126 are materialized from HSPRN; and
 - a deterministic music dynamic-control census: playback-slot-0 `C2GAME1`
   has no controller-119 tags, while loop-scan-pointer-slot-1 `C2GAME2` tags
   channels 7 and 8. The descriptor records the 90 Hz `30 * 3` envelope and
   leaves audible channel resolution explicit rather than inventing a stem;
   and
-- the exact owner `GOAT.WAV` record for typed Rust Goat-sound events. The
-  descriptor deliberately withholds exact playback until the source-ordered
-  global-RNG pitch value is qualified.
+- the exact owner `GOAT.WAV` record for typed Rust Goat-sound events, including
+  the source-ordered global-RNG pitch families of -10..+9 percent for ordinary
+  bleats and +10..+29 percent for action 14; and
+- all 30 materialized Level 1 effect records currently reachable through the
+  qualified mission/audio mapping, the explicit silent sound-12 contract,
+  and the deterministic owner-local Level 1 music stream. This includes exact
+  `DRAGROAR.WAV` sound 8 for the multipart creature chain,
+  `SPLASH2.WAV` sound 27 for class-10/model-5 water impacts, and
+  `SPELLUP.WAV` sound 63 for the group-34 spell scroll.
 
 Indexed pixels, visibility masks, and palettes remain separate. `FONT1` is a
 proven visibility mask recolored by the caller. For the Night Level 1
@@ -52,43 +63,66 @@ objective, the active table is `CLRN-0`: selector 3840 gives PALN index 119,
 or exact RGB8 `(252,36,36)`. The historical remc2 pointer name contains
 `clrd`, but `PaletteChanges_47760` installs CLRN for Night; the preserved
 Level 1 screenshot confirms the resulting color. MSPRN records use base PALN.
-Runtime `paletteMod`/`paletteSubMod` fade, hit, monochrome, and flash variants
-are not exposed by ABI v2 and remain explicitly deferred.
+The native ABI v2 exposes the complete effective 768-byte Level 1 palette,
+atomically bound to generation and tick. The Rust simulation owns the
+source-ordered hit-red, Speed, objective-white, exit-entry, fade-back, and
+black-fade RGB6 transitions; Unity applies the returned palette uniformly to
+the indexed world, sprites, HUD, minimap, and objective graphics. Ordinary
+single-player death does not enter the multiplayer/banishment monochrome
+path, so no unsupported grayscale effect is invented for this slice.
 
 The HUD authority contract is deliberately mixed:
 
-- `PlayerFlightLive`: minimap center and yaw only;
+- `PlayerFlightLive`: minimap center, yaw, terrain sampling, and source
+  projection;
 - `SpellActivationLive`: the left Fireball activation event only;
 - `GoatLive`: the 33 Level 1 Goat rows through the Rust-owned bulk ABI;
-- `FrozenObserved`: reset terrain, remaining entities, objective, panels, and
-  spell selectors; and
-- `Deferred`: health/mana bars, castle/balloon state, spell glow/tier/charge,
-  exact minimap entity color/filter/reveal and objective marks, high-resolution
-  HSPRN parity, and textbox blending against the live framebuffer.
+- `FrozenObserved`: reset terrain, panels, and immutable owner rasters; and
+- `SourceMappedLive`: health/mana bars, castle and spell state, the native
+  effective palette, and objective mark/arrow target, blink, and geometry;
+  and the Level 1 objective textbox selector, exact source geometry, 33-turn
+  clock, TABLESN selector-61 live indexed-world blend, HFONT3 text, and
+  HSPRN frame draw order; and
+- `Deferred`: multiplayer remote-player minimap reveal.
 
-The cached minimap descriptor requires the qualified low-resolution branch:
-a native 64×64 player-centered/yaw-rotated view, nearest-neighbor scaled 2× to
-128×128. Its aperture is the exact TABLESN `0x14300` scanline curve rather
+The objective compositor keeps indices authoritative until final palette
+resolution. For every live destination index it applies
+`TABLESN[0x4000 + (CLRN[0] << 8) + destination]`, then overwrites the exact
+HFONT3 text and HSPRN frame foreground. Unity's 640×480 corrected 4:3 HUD
+samples the qualified 320×200 indexed world at pixel centres with nearest
+selection; that explicit display transform is the only adaptation in this
+Level 1 textbox path.
+
+The cached minimap descriptor requires the qualified high-resolution HSPRN
+branch: a native 128×128 player-centered/yaw-rotated view with 256 source
+units per pixel. Its aperture is the exact TABLESN `0x14300` scanline curve rather
 than a Euclidean circle. The fixed-point row/column transform and remc2 sine
 table are cached with cardinal and octant source-coordinate vectors so a
 vertical reflection or floating-point drift fails qualification. Terrain coloring uses the original minimap
 lookup sequence `TABLESN[0x14000 + terrainType]`, then
 `TABLESN[(terrainShade << 8) | base]`, then PALN. Frozen entity positions and
-the live player marker are presented separately. The generic white entity dots
-are explicitly a **non-original `FrozenObserved` reset reference overlay**;
-exact original entity colors, filters, reveal rules, and mark behavior are not
-claimed.
+the live player marker are presented separately. The objective mark pass is
+Rust-owned and source-mapped, including target selection, source-slot
+ordering, wrapped distance, blink gates, arrow placement, and the seven arrow
+vertices. The same Rust-owned command stream maps
+`DrawMinimapEntities_B_61A00`: castle rope first, then ascending source slots,
+with exact Level 1 class/model/action/control/ownership filters, palette
+colors, phase rules, dot/sprite anchors, direct/blended writes, and the
+single-player reveal behavior.
 
 World entities use TMAPS1, not MSPRN. Mode-20 actor rows retain the exact
 16-sector yaw table and rear-sector mirror rule. Goat/villager TMAPs retain
 their complete four-frame decoded delta streams and are described as
-selector-global animation; the current qualified Unity view deliberately uses
-only their exact base frames.
+selector-global animation. The cache materializes every mutable state for
+Goat selectors 152–154 and preserves the complete villager selector streams.
+The cache descriptor's camera-facing billboard remains a controlled debug
+gallery and managed fallback. The qualified player instead consumes these
+payloads through the Rust world compositor, whose Goat and villager
+selector-global clocks advance only from native draw admission.
 
-The descriptor does not claim exact original sprite anchoring. It records the
-current viewer policy as camera-facing, bottom-center at entity xyz, and
-explicitly defers the `DrawSprite_41BD3` camera-dependent centering offset and
-software depth/raster traversal.
+The descriptor does not claim that its debug-gallery billboard anchor is the
+original sprite anchor. Qualified native families use the separately tested
+source projection, clipping, reflection, shadow, and painter traversal.
 
 The terrain material output is intentionally scoped as an indexed Night
 material and static-shade bridge. Camera/distance-dependent `pnt5` fog,

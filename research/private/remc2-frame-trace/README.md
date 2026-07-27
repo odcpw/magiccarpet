@@ -36,6 +36,17 @@ research/private/remc2-frame-trace/scripts/run_goat_tmap_oracle.sh \
 This captures selectors 152–154 at reset, after each of their four declared
 transitions, and after one cycle-closing transition. It does not infer the
 render-admission clock or claim that the reset buffer is a displayed frame.
+Two independent runs can be checked against the pinned state matrix:
+
+```sh
+python3 research/private/remc2-frame-trace/verify_goat_tmap_oracle.py \
+  /tmp/magiccarpet-goat-tmap-oracle-a \
+  /tmp/magiccarpet-goat-tmap-oracle-b
+```
+
+The verifier requires private directory/file modes, exact build/owner
+provenance through the manifest identity, byte-identical reruns, all 18 raw
+buffers, and both frame-one and reset/frame-four cycle closure.
 
 ## Run and compare
 

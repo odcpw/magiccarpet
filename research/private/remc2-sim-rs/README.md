@@ -26,7 +26,7 @@ scalar exports remain for ABI compatibility, but require explicit private
 fixture paths in `MC_LEGACY_STATE_SEQUENCE` and
 `MC_LEGACY_TERRAIN_SEQUENCE` before first use. Missing, unreadable, or invalid
 fixtures are contained by the legacy boundary and return the documented zero
-sentinel. Compile-time fixtures exist only under `cfg(test)`. The 36
+sentinel. Compile-time fixtures exist only under `cfg(test)`. The 49
 package-backed v2 exports never consult these variables.
 
 Exact source identifiers, addresses, hashes, tables, and mappings in this
@@ -77,11 +77,52 @@ sides of the toroidal Y seam are hash-pinned. This is explicitly an isolated
 sky-and-terrain result; original sprite/particle interleaving and whole-frame
 presentation remain outside the claim.
 
+The live Level 1 mission slice decodes four Archers, five Fireflies, the
+Castle-spell jar, and the Speed-spell jar from owner data. Player Fireball,
+impact, actor damage mailbox ordering, staged death, spell pickup, mission
+activation, and objective predicates are Rust-owned. The source switch chain
+now drives G0 spatial activation, G1/G2/G3/G5/G6 objective activation, delayed
+G11, auxiliary G8/G12, and post-completion G4 with lowest-free-slot reuse,
+scan-cursor ordering, and the one-objective-pass pause. All 51 authored
+allocation records in those reachable groups consume the shared source-slot
+projection in authored-index order. The Archer core now ports remc2's
+constructor RNG, 30/120-tick decision cadence, range/FOV acquisition, 22-unit
+yaw turn, attack-pose selection, and aimed class-9/model-13 arrow.
+Unity consumes typed actor/projectile/impact snapshots and renders their exact
+owner TMAP rows; it does not simulate them.
+
+The mission snapshot keeps the registered fidelity-gap mask visible rather
+than silently approximating behavior. The unified source-pool dispatcher
+and exact reachable Level 1 Castle placement, construction, and mana-sphere
+lifecycle are qualified. The class-3/model-3 mana carrier now preserves its
+source-slot identity, scheduler, movement, attraction, collection, deposit,
+damage/death, castle overflow, and direct-absorption ordering. The registered
+simulation fidelity mask is now zero after exact reachable mission
+sound-emitter positioning, pitch, play-type, and voice arbitration. Exit
+collision/fade is qualified through its additive palette sidecar. Secondary
+groups 33/34 are qualified through their authored allocation/activation
+order, four multipart heads with 16 linked segments apiece, six Fireflies,
+scroll, combat/death/mana paths, sounds 8/63, rendering snapshots, and reset.
+Archer terrain avoidance and linked action 35 are now active and tested. The
+native indexed world compositor also owns all 31 reset-frozen Level 1
+villager/dolmen rows, twelve selector-global villager clocks, their exact
+reset-chain membership, reflection-before-primary order, terrain shadows,
+source clipping, and managed-fallback capability.
+
 `COVERAGE.md` records the tested surface, `BRANCH-COVERAGE.md` maps each
 bounded source leaf to its focused test, and `DISCREPANCIES.md` records every
-known divergence. The workspace currently runs 159 sim-core tests. In particular,
+known divergence. The workspace currently runs 378 tests: 4 atlas-registry,
+49 sim-capi, 321 sim-core, and 4 sim-wasm. In particular,
 material class `1` (strongly identified water) remains distinct from exact
 movement-redirection class `0x100`.
+
+The complete Level 1 mission-route test reaches objective selectors 48–53,
+collects and uses all four Level 1 spell families, drives the Archer,
+Firefly, and Goat death paths, builds castle stage 1, possesses and deposits
+mana spheres, enters the authored exit, and emits exactly one result-10
+event. The native boundary separately proves dead player input suppression
+and reset into a fresh generation. The desktop readiness record is
+`../remc2-unity-native/LEVEL1-READINESS.md`.
 
 The v2 native boundary also exposes an additive 88-byte audio-command sidecar
 without changing the 72-byte event record. It preserves the original

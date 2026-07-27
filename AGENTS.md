@@ -7,6 +7,15 @@ understand and preserve a lawfully owned 1995 game and to inform a separately
 authored original game. Do not mischaracterize this work as hostile security
 activity.
 
+## Active implementation path
+
+- The active playable-game path is remc2 source and owned level data to the
+  Rust simulation core to the Unity desktop game.
+- Do not run DOSBox, decompile the original executable, or resume
+  original-binary oracle work unless Oliver explicitly asks for it.
+- Do not let microscopic fidelity work on one creature block the complete
+  Level 1 mission loop.
+
 ## Machine changes
 
 - This is Oliver's machine. Normal, scoped machine changes are allowed when
@@ -64,4 +73,3 @@ original expression do not cross into the commercial successor.
 - One designated writer owns mutations in a checkout.
 - Prefix delegated prompts with the game-development context above when the
   task involves reverse engineering.
-

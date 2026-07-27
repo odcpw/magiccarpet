@@ -14,11 +14,16 @@ from PIL import Image, ImageChops, ImageStat
 
 WIDTH = 1600
 HEIGHT = 900
-FOV_DEGREES = 76.0
 DISTANCE = 18.0
-FOCAL_PIXELS = HEIGHT / (2.0 * math.tan(math.radians(FOV_DEGREES / 2.0)))
+# Match Level1ExitPresentationMath.UnityVerticalFov(128): Night first turns
+# the source history FOV into its integer projection scale.  The 4:3 display
+# adaptation is pillarboxed at 1600x900, so the active viewport retains the
+# full 900-pixel height.
+SOURCE_HISTORY_FOV = 128
+SOURCE_PROJECTION_SCALE = 7 * 377 * SOURCE_HISTORY_FOV >> 11
+FOCAL_PIXELS = HEIGHT * SOURCE_PROJECTION_SCALE / 240.0
 BACKGROUND = (14, 17, 23)
-CACHE_CONTENT_SHA256 = "a5fdd9961ebd61566b0230e2dc1b468219dae74536279b51d89d9c2d6cc0ce81"
+CACHE_CONTENT_SHA256 = "addc1cc1b43173f41f208082237f38b9519fdc64374ec0b20f8b2d9b04049cdb"
 PALN_RGB8_SHA256 = "7c4dfbbc6c0f68a99214fe3ca93d7a1cf0dd658e17a40ad7ecb302152264f507"
 SPECS = {
     "dolmen": (-7.0, 0.6, 400, 110, 66),

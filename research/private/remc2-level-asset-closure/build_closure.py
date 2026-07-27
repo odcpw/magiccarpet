@@ -348,10 +348,18 @@ def parse_build_footprints(owner_root: Path, indices: Iterable[int]) -> list[dic
                 "span": {"offset": offset, "length": len(cells)},
                 "content_address": f"sha256:{sha256_bytes(cells)}",
                 "schema_evidence": {
-                    "consumer": "EventsFunctions.cpp:27077-27105",
+                    "loader": "EventsFunctions.cpp:46537-46570; Basic.cpp:271-273",
+                    "consumer": "EventsFunctions.cpp:27648-28032",
                     "cell_0": "terrain/shading control byte",
-                    "cell_1": "height delta or 0xff sentinel",
-                    "resolution_rule": "width and height are halved when VGA selector is 1",
+                    "cell_1":
+                        "target height offset from construction base or 0xff sentinel",
+                    "raw_dimensions": "BUILD TAB <IBB> width and height",
+                    "loader_resolution_rule":
+                        "CreateIndexes doubles indexed DAT/TAB dimensions when resolution bit 0 is set",
+                    "consumer_resolution_rule":
+                        "castle consumers halve runtime dimensions when VGA selector is 1",
+                    "effective_dimensions":
+                        "for Level 1 selector 1 the loader doubling and consumer halving cancel",
                 },
             }
         )
@@ -1018,6 +1026,24 @@ def build_closure(
                 "EventsFunctions.cpp:27077-27105; BUILD TAB <IBB> and DAT 2-byte cells",
             )
         )
+
+    # BUILD index 1 is absent from the reset entity set: it is selected only
+    # after the tier-zero Castle projectile creates a new class-3/model-2 root.
+    # Keep that causal dependency explicit rather than pretending it was
+    # observed in the frozen scene.
+    castle_stage_one = parse_build_footprints(owner_root, [1])[0]
+    dynamic_assets.append(castle_stage_one)
+    edges.append(
+        edge(
+            "spell.castle.stage_0_to_1",
+            castle_stage_one["asset_id"],
+            "sub_60480 increments the castle level before BUILD index 1 terrain construction",
+            "class=3, model=2, dword_0x10 stage",
+            "dynamic",
+            "EventsFunctions.cpp:61612-61652; "
+            "EventsFunctions.cpp:27648-28032; BUILD TAB <IBB> and DAT 2-byte cells",
+        )
+    )
 
     # Level 1's current objective is base 48 plus ObjectiveText 0.
     runtime = (export_dir / "runtime.bin").read_bytes()

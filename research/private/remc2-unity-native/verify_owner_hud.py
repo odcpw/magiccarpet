@@ -19,7 +19,7 @@ SCALE = min(WIDTH / REFERENCE_WIDTH, HEIGHT / REFERENCE_HEIGHT)
 OFFSET_X = (WIDTH - REFERENCE_WIDTH * SCALE) / 2
 OFFSET_Y = (HEIGHT - REFERENCE_HEIGHT * SCALE) / 2
 OBJECTIVE = (192, 126, 256, 38)
-BADGE = (192, 168, 60, 7)
+BADGE = (192, 168, 120, 14)
 MINIMAP = (0, 0, 128, 128)
 
 
@@ -78,27 +78,6 @@ def bitmap_samples(
     return opaque, matched, points
 
 
-def alpha_sample_points(
-    cache: Path,
-    path: str,
-    width: int,
-    height: int,
-    destination: tuple[int, int, int, int],
-) -> list[tuple[int, int]]:
-    payload = (cache / path).read_bytes()
-    if len(payload) != width * height * 4:
-        raise SystemExit(f"{path}: wrong RGBA extent")
-    left, top, right, bottom = destination
-    points: list[tuple[int, int]] = []
-    for y in range(top, bottom):
-        source_y = min(height - 1, int((y - top) * height / (bottom - top)))
-        for x in range(left, right):
-            source_x = min(width - 1, int((x - left) * width / (right - left)))
-            if payload[(source_y * width + source_x) * 4 + 3]:
-                points.append((x, y))
-    return points
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("capture", type=Path)
@@ -121,7 +100,7 @@ def main() -> int:
         descriptor["schema"] != "mc2-level1-owner-hud/v1"
         or descriptor["reference_layout"]["width"] != 640
         or descriptor["reference_layout"]["height"] != 480
-        or descriptor["reference_layout"]["source_scale"] != 2
+        or descriptor["reference_layout"]["source_scale"] != 1
     ):
         raise SystemExit("wrong HUD descriptor/reference layout")
     minimap = descriptor["minimap"]
@@ -129,29 +108,30 @@ def main() -> int:
         minimap["map_mode"]
         != "player_centered_yaw_rotated_TABLESN_scanline_aperture"
         or (minimap["width"], minimap["height"]) != (128, 128)
-        or (minimap["logical_width"], minimap["logical_height"]) != (64, 64)
-        or minimap["presentation_scale"] != 2
-        or minimap["sampling"]["source_units_per_pixel"] != 512
+        or (minimap["logical_width"], minimap["logical_height"]) != (128, 128)
+        or minimap["presentation_scale"] != 1
+        or minimap["sampling"]["source_units_per_pixel"] != 256
+        or minimap["resolution_branch"] != "HSPRN_native_128x128_scaling256"
     ):
-        raise SystemExit("wrong qualified low-resolution minimap contract")
+        raise SystemExit("wrong qualified high-resolution minimap contract")
     aperture = minimap["aperture"]
     aperture_mask = (args.cache / aperture["path"]).read_bytes()
     if (
-        len(aperture_mask) != 64 * 64
-        or sum(aperture_mask) != 3204
+        len(aperture_mask) != 128 * 128
+        or sum(aperture_mask) != 12848
         or hashlib.sha256(aperture_mask).hexdigest()
-        != "98a3a7c0300b49204629aab1b4b552253bea2223f9e68c40d1458b2e62243285"
+        != "1d4ce7e417ace6af7eb78a29b83a6f8a0b2558002d36079ea2fa291f7a6df98b"
         or aperture["table_curve_sha256"]
         != "e155e5eaa2019054c52878dad895d0ad70c6b92698fab72ae518eeccea4eafc7"
     ):
-        raise SystemExit("wrong exact TABLESN 64x64 minimap aperture")
+        raise SystemExit("wrong exact TABLESN 128x128 minimap aperture")
     scanlines = aperture["scanlines"]
     for y, row in enumerate(scanlines):
         expected = bytes(
             int(row["start_x_inclusive"] <= x < row["end_x_exclusive"])
-            for x in range(64)
+            for x in range(128)
         )
-        if row["y"] != y or aperture_mask[y * 64:(y + 1) * 64] != expected:
+        if row["y"] != y or aperture_mask[y * 128:(y + 1) * 128] != expected:
             raise SystemExit(f"minimap aperture scanline mismatch at y={y}")
     directions = minimap["rotation"]["cardinal_direction_samples"]
     expected_direction_tiles = [
@@ -175,7 +155,11 @@ def main() -> int:
     bitmap_rows = {
         row["selector"]: row for row in descriptor["bitmap_assets"]
     }
-    if sorted(bitmap_rows) != [1, 40, 41, 42, 43, 54, 123, 124, 171, 172, 173]:
+    if sorted(bitmap_rows) != [
+        1, 2, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+        51, 52, 53, 54, 55, 58, 66, 83, 84,
+        123, 124, 125, 126, 171, 172, 173
+    ]:
         raise SystemExit("wrong/duplicate HUD bitmap selector set")
     palette = (args.cache / "palette/paln.rgb8").read_bytes()
     if len(palette) != 768:
@@ -213,7 +197,12 @@ def main() -> int:
             image, args.cache, palette, bitmap_rows[selector], x, y
         )
         ratio = matched / opaque if opaque else 0.0
-        if opaque < 100 or ratio < 0.55:
+        # Panel selector 42 is intentionally overdrawn by its live health and
+        # mana bars. Spell frames are likewise overdrawn by their large live
+        # icon. Require the surviving border/panel pixels here; each icon is
+        # independently checked by the following placement.
+        minimum_ratio = 0.15 if name.endswith("_frame") else 0.50
+        if opaque < 100 or ratio < minimum_ratio:
             raise SystemExit(
                 f"{name}/selector{selector}: owner bitmap absent or wrong "
                 f"({matched}/{opaque}, ratio {ratio:.3f})"
@@ -234,19 +223,26 @@ def main() -> int:
     minimap_crop = image.crop(minimap_rect)
     objective_red = count_colour(objective_crop, (252, 36, 36))
     badge_red = count_colour(badge_crop, (252, 36, 36))
-    if objective_red < 1500:
-        raise SystemExit(f"objective FONT1 Night-red pixels too sparse: {objective_red}")
-    if badge_red < 180:
-        raise SystemExit(f"FrozenObserved owner-font badge missing: {badge_red}")
+    if objective_red > 50:
+        raise SystemExit(
+            f"expired live objective remained visible at route checkpoint: {objective_red}"
+        )
+    if badge_red > 50:
+        raise SystemExit(
+            f"obsolete FrozenObserved authority badge remained visible: {badge_red}"
+        )
     if len(set(minimap_crop.get_flattened_data())) < 40:
         raise SystemExit("minimap lacks indexed Night terrain/entity diversity")
 
     centre_x = round(OFFSET_X + 64 * SCALE)
     centre_y = round(OFFSET_Y + 64 * SCALE)
     marker = image.crop((centre_x - 10, centre_y - 10, centre_x + 11, centre_y + 11))
-    marker_red = count_colour(marker, (252, 36, 36))
-    if marker_red < 15:
-        raise SystemExit(f"live player marker missing at minimap centre: {marker_red}")
+    centre_cross_colours = len(set(marker.get_flattened_data()))
+    if centre_cross_colours < 4:
+        raise SystemExit(
+            "TABLESN-blended player centre cross lacks colour diversity: "
+            f"{centre_cross_colours}"
+        )
 
     magenta = sum(
         red > 200 and blue > 200 and green < 80
@@ -270,24 +266,6 @@ def main() -> int:
         comparison = Image.open(args.comparison).convert("RGB")
         if comparison.size != image.size:
             raise SystemExit("comparison capture size mismatch")
-        objective_points = alpha_sample_points(
-            args.cache,
-            descriptor["objective"]["render_path"],
-            descriptor["objective"]["render_width"],
-            descriptor["objective"]["render_height"],
-            objective_rect,
-        )
-        objective_changed = sum(
-            image.getpixel(point) != comparison.getpixel(point)
-            for point in objective_points
-        )
-        # Fractional 1.875x GUI placement can expose a handful of edge
-        # compositor samples from the changing framebuffer. The opaque owner
-        # raster itself must otherwise remain fixed.
-        if objective_changed > 20:
-            raise SystemExit(
-                f"FrozenObserved objective pixels changed: {objective_changed}"
-            )
         comparison_topbar_changed = sum(
             image.getpixel(point) != comparison.getpixel(point)
             for point in topbar_points
@@ -325,11 +303,11 @@ def main() -> int:
         "badge_red_pixels": badge_red,
         "minimap_rect": list(minimap_rect),
         "minimap_rgb_colours": len(set(minimap_crop.get_flattened_data())),
-        "minimap_logical_resolution": [64, 64],
+        "minimap_logical_resolution": [128, 128],
         "minimap_display_resolution": [128, 128],
-        "minimap_aperture_opaque_pixels": 3204,
+        "minimap_aperture_opaque_pixels": 12848,
         "minimap_direction_samples": len(directions),
-        "player_marker_red_pixels": marker_red,
+        "player_center_cross_colours": centre_cross_colours,
         "magenta_pixels": magenta,
         "bottom_right_near_white_pixels": near_white,
         "owner_bitmap_samples": bitmap_results,
@@ -343,7 +321,8 @@ def main() -> int:
             "MC_OWNER_HUD_PIXELS PASS "
             f"objective_red={objective_red} badge_red={badge_red} "
             f"minimap_colours={report['minimap_rgb_colours']} "
-            f"marker_red={marker_red} magenta=0 default_overlay=0"
+            f"centre_cross_colours={centre_cross_colours} "
+            "magenta=0 default_overlay=0"
         )
     )
     return 0

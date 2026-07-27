@@ -4,8 +4,18 @@ use std::cmp::Ordering;
 
 use spell_activation::{SpellActivationHolder, SpellCasterState, activate_spell};
 
+pub mod archer_tmap;
+pub mod combat_tmap;
+pub mod economy_tmap;
+pub mod firefly_tmap;
+pub mod frozen_actor_tmap;
 pub mod goat;
+pub mod goat_draw_admission;
+pub mod goat_map_chain;
+pub mod goat_sprite_raster;
+pub mod goat_tmap;
 pub mod legacy_terrain;
+pub mod level1_mission;
 pub mod mode26_raster;
 pub mod mode5_raster;
 pub mod music;
@@ -13,7 +23,10 @@ pub mod native_world;
 pub mod recording;
 pub mod regression_state;
 pub mod render_camera;
+pub mod renderable_map_chain;
 pub mod spell_activation;
+mod ss2_tmap;
+pub mod static_world_tmap;
 pub mod terrain_frame;
 pub mod terrain_grid;
 pub mod terrain_presentation;
@@ -66,25 +79,55 @@ pub struct PositionalSoundCommand {
     pub audible: bool,
 }
 
-/// Calculate the bounded positional command for the three Level 1 sound IDs
-/// proven reachable through the periodic effect mapping.
+/// Source playback policy produced by `PrepareEventSound_6E450`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreparedEventSoundCommand {
+    pub command: PositionalSoundCommand,
+    pub play_type: u8,
+}
+
+/// Calculate the bounded positional command for a sound routed through
+/// remc2's `PrepareEventSound_6E450`.
 ///
 /// # Panics
 ///
 /// Panics only if the recovered 11-bit angle-distance helper violates its
 /// proven non-negative 0..1024 range.
 #[must_use]
-pub fn positional_sound_command(
+pub fn prepare_event_sound_command(
     listener: Position,
     listener_yaw: i16,
     source: Position,
     sound_id: u16,
     random_state: u32,
     source_entity_id: u16,
-) -> Option<PositionalSoundCommand> {
-    if !matches!(sound_id, 37 | 39 | 43) {
-        return None;
-    }
+    source_action: u8,
+) -> Option<PreparedEventSoundCommand> {
+    let play_type = match sound_id {
+        3
+        | 4
+        | 6
+        | 9..=11
+        | 15
+        | 18..=28
+        | 30
+        | 38
+        | 40
+        | 41
+        | 48
+        | 50..=53
+        | 60
+        | 61
+        | 63
+        | 64 => 1,
+        7 | 8 | 12 | 13 | 16 | 17 | 32..=34 | 37 | 39 | 42..=46 | 54..=59 | 62 => 3,
+        47 | 49 => 4,
+        // Select/CantUse use play type 1 for both the current-level and
+        // entity-local branches. Ambient loops 1/2/5/31 are handled by their
+        // separate level-local envelope contract.
+        14 | 29 => 1,
+        _ => return None,
+    };
 
     let relative_x = i32::from(source.x) - i32::from(listener.x);
     let relative_y = i32::from(source.y) - i32::from(listener.y);
@@ -92,24 +135,39 @@ pub fn positional_sound_command(
     let dx = i32::from(source.x.wrapping_sub(listener.x).cast_signed());
     let dy = i32::from(source.y.wrapping_sub(listener.y).cast_signed());
     let distance_squared = square_wrapped_i16(dx).wrapping_add(square_wrapped_i16(dy));
-    let sound_flags = if sound_id == 43 {
+    let sound_flags = if matches!(
+        sound_id,
+        7 | 32 | 38 | 42..=44 | 46 | 47 | 49..=53 | 58 | 59 | 62
+    ) {
         0
     } else {
         source_entity_id.cast_signed()
     };
+    let random_value = random_state.wrapping_mul(9_377).wrapping_add(9_439);
+    let rate_delta_percent = match sound_id {
+        42..=44 => i16::try_from(random_value % 30).expect("modulo 30 fits i16") - 15,
+        46 if source_action == 14 => {
+            i16::try_from(random_value % 20).expect("modulo 20 fits i16") + 10
+        }
+        46 => i16::try_from(random_value % 20).expect("modulo 20 fits i16") - 10,
+        _ => 0,
+    };
 
     if distance_squared > POSITIONAL_SOUND_MAX_DISTANCE_SQUARED {
-        return Some(PositionalSoundCommand {
-            relative_x,
-            relative_y,
-            relative_z,
-            distance_xy: legacy_sqrt(distance_squared),
-            relative_yaw: 0,
-            volume_q15: 0,
-            pan_q16: 0x7fff,
-            rate_delta_percent: 0,
-            sound_flags,
-            audible: false,
+        return Some(PreparedEventSoundCommand {
+            command: PositionalSoundCommand {
+                relative_x,
+                relative_y,
+                relative_z,
+                distance_xy: legacy_sqrt(distance_squared),
+                relative_yaw: 0,
+                volume_q15: 0,
+                pan_q16: 0x7fff,
+                rate_delta_percent: 0,
+                sound_flags,
+                audible: false,
+            },
+            play_type,
         });
     }
 
@@ -134,17 +192,20 @@ pub fn positional_sound_command(
         .cast_signed();
     let volume = numerator / attenuation_radius;
     if volume < 512 {
-        return Some(PositionalSoundCommand {
-            relative_x,
-            relative_y,
-            relative_z,
-            distance_xy,
-            relative_yaw,
-            volume_q15: u16::try_from(volume.max(0)).unwrap_or(0),
-            pan_q16: 0x7fff,
-            rate_delta_percent: 0,
-            sound_flags,
-            audible: false,
+        return Some(PreparedEventSoundCommand {
+            command: PositionalSoundCommand {
+                relative_x,
+                relative_y,
+                relative_z,
+                distance_xy,
+                relative_yaw,
+                volume_q15: u16::try_from(volume.max(0)).unwrap_or(0),
+                pan_q16: 0x7fff,
+                rate_delta_percent: 0,
+                sound_flags,
+                audible: false,
+            },
+            play_type,
         });
     }
     let volume_q15 = u16::try_from(volume.min(0x7fff)).expect("clamped positional volume fits u16");
@@ -161,25 +222,48 @@ pub fn positional_sound_command(
     } else {
         0x7fff
     };
-    let rate_delta_percent = if sound_id == 43 {
-        let random_value = random_state.wrapping_mul(9_377).wrapping_add(9_439);
-        i16::try_from(random_value % 30).expect("modulo 30 fits i16") - 15
-    } else {
-        0
-    };
-
-    Some(PositionalSoundCommand {
-        relative_x,
-        relative_y,
-        relative_z,
-        distance_xy,
-        relative_yaw,
-        volume_q15,
-        pan_q16,
-        rate_delta_percent,
-        sound_flags,
-        audible: true,
+    Some(PreparedEventSoundCommand {
+        command: PositionalSoundCommand {
+            relative_x,
+            relative_y,
+            relative_z,
+            distance_xy,
+            relative_yaw,
+            volume_q15,
+            pan_q16,
+            rate_delta_percent,
+            sound_flags,
+            audible: true,
+        },
+        play_type,
     })
+}
+
+/// Compatibility projection for the three periodic Level 1 effect mappings
+/// that were qualified before the complete event-sound contract.
+#[must_use]
+pub fn positional_sound_command(
+    listener: Position,
+    listener_yaw: i16,
+    source: Position,
+    sound_id: u16,
+    random_state: u32,
+    source_entity_id: u16,
+) -> Option<PositionalSoundCommand> {
+    matches!(sound_id, 37 | 39 | 43)
+        .then(|| {
+            prepare_event_sound_command(
+                listener,
+                listener_yaw,
+                source,
+                sound_id,
+                random_state,
+                source_entity_id,
+                0,
+            )
+        })
+        .flatten()
+        .map(|prepared| prepared.command)
 }
 
 /// Exact `ShouldUpdateSound_6EA90` candidate rule used before a sound slot is
@@ -440,6 +524,11 @@ pub struct SpellFireContext {
     /// One registry preserves source aliasing when multiple fire selections
     /// resolve to the same holder entity.
     pub holders: Vec<SpellActivationHolder>,
+    /// Transient results from the current latched command. The source spell
+    /// handlers consume successful `sub_5F660` activations later in the same
+    /// entity update; keeping the result avoids mistaking a repeated reset
+    /// value for a rejected cast.
+    pub accepted_models: Vec<u8>,
     pub help_enabled: bool,
 }
 
@@ -541,6 +630,9 @@ pub fn latch_command_with_context(
     mut command: PlayerCommand,
     context: &mut FlightContext,
 ) -> LatchedCommand {
+    if let Some(fire) = context.spell_fire.as_mut() {
+        fire.accepted_models.clear();
+    }
     if command.opcode == 6 && command.flags.cast_unsigned() & 0x40 != 0 {
         let fire = context
             .spell_fire
@@ -947,13 +1039,17 @@ fn activate_selected_spell(
             .iter_mut()
             .find(|holder| holder.entity_index == holder_entity_index)
     };
-    activate_spell(
+    let holder_model = holder.as_ref().map(|holder| holder.model);
+    let accepted = activate_spell(
         &mut fire.caster,
         holder,
         direction_mask,
         fire.help_enabled,
         &mut context.events,
     );
+    if accepted && let Some(model) = holder_model {
+        fire.accepted_models.push(model);
+    }
 }
 
 fn finish_entity_pass(state: &mut FlightState) {
@@ -1591,7 +1687,7 @@ fn wrap_angle(value: i32) -> i16 {
     i16::try_from(value & i32::from(ANGLE_MASK)).expect("masked angle fits i16")
 }
 
-fn move_entity(position: &mut Position, yaw: i16, pitch: i16, speed: i16) {
+pub(crate) fn move_entity(position: &mut Position, yaw: i16, pitch: i16, speed: i16) {
     if speed == 0 {
         return;
     }
@@ -2265,6 +2361,75 @@ mod tests {
     }
 
     #[test]
+    fn prepared_event_sound_preserves_source_play_types_flags_and_pitch_families() {
+        let listener = Position {
+            x: 32_768,
+            y: 32_768,
+            z: 1_000,
+        };
+
+        for sound_id in [9, 30, 40, 41, 63] {
+            let prepared = prepare_event_sound_command(listener, 0, listener, sound_id, 28, 152, 0)
+                .expect("restart-or-start sound is in the source table");
+            assert_eq!(prepared.play_type, 1, "sound {sound_id}");
+            assert_eq!(prepared.command.sound_flags, 152, "sound {sound_id}");
+        }
+        for sound_id in [8, 16, 33, 34, 37, 39, 43, 44, 46, 54, 55, 56, 57] {
+            let prepared = prepare_event_sound_command(listener, 0, listener, sound_id, 28, 152, 0)
+                .expect("if-not-playing sound is in the source table");
+            assert_eq!(prepared.play_type, 3, "sound {sound_id}");
+        }
+
+        for sound_id in [43, 44, 46] {
+            let prepared =
+                prepare_event_sound_command(listener, 0, listener, sound_id, 28, 152, 0).unwrap();
+            assert_eq!(prepared.command.sound_flags, 0, "sound {sound_id}");
+        }
+        assert_eq!(
+            prepare_event_sound_command(listener, 0, listener, 43, 13, 152, 0)
+                .unwrap()
+                .command
+                .rate_delta_percent,
+            -15
+        );
+        assert_eq!(
+            prepare_event_sound_command(listener, 0, listener, 44, 20, 152, 0)
+                .unwrap()
+                .command
+                .rate_delta_percent,
+            14
+        );
+        assert_eq!(
+            prepare_event_sound_command(listener, 0, listener, 46, 13, 152, 14)
+                .unwrap()
+                .command
+                .rate_delta_percent,
+            10
+        );
+        assert_eq!(
+            prepare_event_sound_command(listener, 0, listener, 46, 13, 152, 0)
+                .unwrap()
+                .command
+                .rate_delta_percent,
+            -10
+        );
+        assert_eq!(
+            prepare_event_sound_command(listener, 0, listener, 46, 0, 152, 14)
+                .unwrap()
+                .command
+                .rate_delta_percent,
+            29
+        );
+        assert_eq!(
+            prepare_event_sound_command(listener, 0, listener, 46, 0, 152, 0)
+                .unwrap()
+                .command
+                .rate_delta_percent,
+            9
+        );
+    }
+
+    #[test]
     fn positional_sound_coordinate_wrap_and_rotated_yaw_are_hard_vectors() {
         let wrapped_listener = Position {
             x: 65_530,
@@ -2741,6 +2906,7 @@ mod tests {
         let fire = context.spell_fire.as_ref().unwrap();
         assert_eq!(fire.holders[0].active_value, 23);
         assert_eq!(fire.holders[0].action_marker, 1);
+        assert_eq!(fire.accepted_models, [1, 1]);
         assert_eq!(fire.caster.control_flags & 0x0300, 512);
         assert_eq!(
             context.events[..2],
@@ -2757,6 +2923,46 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn repeated_low_tier_fireball_activation_is_not_lost_when_reset_value_matches() {
+        let mut state = FlightState::default();
+        let mut context = FlightContext {
+            spell_fire: Some(SpellFireContext {
+                left_holder_index: 11,
+                caster: SpellCasterState {
+                    mana: 100,
+                    ..SpellCasterState::default()
+                },
+                holders: vec![SpellActivationHolder {
+                    entity_index: 11,
+                    model: 0,
+                    level_gate: 0,
+                    active_value: 23,
+                    activation_value: 23,
+                    mana_cost: 50,
+                    ..SpellActivationHolder::default()
+                }],
+                ..SpellFireContext::default()
+            }),
+            ..FlightContext::default()
+        };
+
+        step_turn_with_context(
+            &mut state,
+            PlayerCommand {
+                flags: 0x10,
+                ..PlayerCommand::default()
+            },
+            FlightProfile::OUTDOOR,
+            &FLAT,
+            &mut context,
+        );
+
+        let fire = context.spell_fire.as_ref().unwrap();
+        assert_eq!(fire.holders[0].active_value, 23);
+        assert_eq!(fire.accepted_models, [0]);
     }
 
     #[test]

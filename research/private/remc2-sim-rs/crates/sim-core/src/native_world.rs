@@ -7,7 +7,8 @@
 use std::{
     collections::BTreeMap,
     fmt, fs,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
+    sync::OnceLock,
 };
 
 use serde_json::{Value, json};
@@ -18,9 +19,28 @@ use crate::{
     Position, SpellFireContext, conformance_hash,
     goat::{
         GOAT_BASE_TMAP, GOAT_CLASS, GOAT_MODEL, GOAT_RENDER_PARAMETER_INDEX, GOAT_STAGE_POINT,
-        GoatBehaviorConfig, GoatPlayerTarget, LEVEL_ONE_GOAT_INDICES, LiveWorldState,
+        GoatBehaviorConfig, GoatPlayerTarget, GoatState, GoatStepEvent, LEVEL_ONE_GOAT_INDICES,
+        LiveWorldState,
     },
-    legacy_terrain::{LEGACY_MAP_CELLS, LegacyTerrain},
+    goat_tmap::{
+        GOAT_TMAP_SELECTORS, GOAT_TMAP_STATE_COUNT, GoatTmapBank, GoatTmapClocks, GoatTmapFrame,
+        GoatTmapSelectorBank,
+    },
+    legacy_terrain::{
+        LEGACY_MAP_CELLS, LegacyTerrain, interpolate_cave, interpolate_ground, material_mask,
+    },
+    level1_mission::{
+        ARCHER_BASE_TMAP, ARCHER_LOGICAL_HEIGHT, ARCHER_RENDER_INDEX, ARCHER_RENDER_MODE,
+        CASTLE_SPELL_FAMILY, CastleBuildFootprint, CastleTerrainUpdate, FIREBALL_BASE_TMAP,
+        FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_LOGICAL_HEIGHT, FIREBALL_IMPACT_RENDER_INDEX,
+        FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LOGICAL_HEIGHT, FIREBALL_RENDER_INDEX,
+        FIREBALL_RENDER_MODE, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT, FIREFLY_RENDER_INDEX,
+        FIREFLY_RENDER_MODE, Level1CastlePlacementBlocker, Level1CollisionTarget,
+        Level1MissionState, Level1MissionTemplate, Level1ResetSourceSlot, MANA_CARRIER_BASE_TMAP,
+        MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_RENDER_MODE,
+        SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX,
+        SPELL_JAR_RENDER_MODE,
+    },
     spell_activation::{SpellActivationHolder, SpellCasterState},
     state_hash, step_outer_turn_with_context,
 };
@@ -29,9 +49,9 @@ const MANIFEST_SCHEMA: &str = "mc2-owner-level-export/v2";
 const CLOSURE_SCHEMA: &str = "mc2-level-asset-closure/v2";
 const AUDIO_CACHE_SCHEMA: &str = "mc2-owner-unity-asset-cache/v1";
 const AUDIO_CACHE_MANIFEST_SHA256: &str =
-    "2c3845fff2b35dea336662de9d636e5c620271eeea4ac19a6acb898f62714d51";
+    "6e8557e06c6a1b9f1cc39c80564c58af24ff804ce1b75859ba2d0ea363c5e09a";
 const AUDIO_CACHE_CONTENT_SHA256: &str =
-    "a5fdd9961ebd61566b0230e2dc1b468219dae74536279b51d89d9c2d6cc0ce81";
+    "addc1cc1b43173f41f208082237f38b9519fdc64374ec0b20f8b2d9b04049cdb";
 const RESET_SCHEMA: &str = "mc2-flight-reset-projection/v1";
 const ENTITY_COUNT: usize = 1_000;
 const ENTITY_COUNT_U32: u32 = 1_000;
@@ -131,6 +151,7 @@ pub struct LevelMetadata {
     pub map_type: MapType,
     pub capture_site: String,
     pub capture_frame: u32,
+    pub vga_resolution_selector: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,10 +171,13 @@ pub struct EntitySnapshot {
     pub source_id: u16,
     pub authority: EntityAuthority,
     pub active: bool,
+    pub max_life: i32,
+    pub life: i32,
     pub next_relation: Option<u16>,
     pub class: u8,
     pub model: u8,
     pub control_flags: u32,
+    pub entity_rng: u16,
     pub action: u8,
     pub action_marker: i8,
     pub level_gate: i8,
@@ -167,6 +191,9 @@ pub struct EntitySnapshot {
     pub actual_speed: i16,
     pub mana_cost: i32,
     pub mana: i32,
+    /// Signed source field at record offset 94. Active renderable rows use a
+    /// non-negative index into the 347-row particle presentation table.
+    pub particle_parameter_index: Option<u16>,
     pub parameter_relation: Option<u16>,
     pub special_relation: EntitySpecialRelation,
     record: Box<[u8]>,
@@ -176,6 +203,32 @@ impl EntitySnapshot {
     #[must_use]
     pub fn record_bytes(&self) -> &[u8] {
         &self.record
+    }
+
+    /// Raw zero-terminated `oldMapEntity_0x16_22` link used by the outdoor
+    /// terrain-cell painter traversal.
+    #[must_use]
+    pub fn old_map_entity(&self) -> u16 {
+        u16::from_le_bytes([self.record[22], self.record[23]])
+    }
+
+    /// Raw reset `animationFrame_0x60_96` used by fixed and base-plus-frame
+    /// sprite families.
+    #[must_use]
+    pub fn animation_frame(&self) -> i8 {
+        i8::from_le_bytes([self.record[96]])
+    }
+
+    #[must_use]
+    fn castle_placement_blocker(&self) -> Level1CastlePlacementBlocker {
+        Level1CastlePlacementBlocker {
+            source_entity_index: self.index,
+            position: self.position,
+            // Exported axis_4d pitch/roll retain original record offsets
+            // 0x58/0x5a. They are distinct from the orientation fields.
+            half_x: i16::from_le_bytes([self.record[88], self.record[89]]),
+            half_y: i16::from_le_bytes([self.record[90], self.record[91]]),
+        }
     }
 }
 
@@ -214,6 +267,607 @@ pub struct TerrainPlanes {
     pub angles: Box<[u8]>,
     pub secondary_heights: Box<[u8]>,
     pub entity_indices: Box<[i16]>,
+}
+
+/// Mutable terrain owned by exactly one play session.
+///
+/// `NativeWorld` remains immutable and shareable. Castle construction changes
+/// these planes immediately after the action-44 source slot so subsequent
+/// source entities, flight, collision, and rendering all read the same state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionTerrain {
+    map_type: MapType,
+    planes: TerrainPlanes,
+    terrain_rng: u16,
+    mutation_sequence: u64,
+}
+
+impl SessionTerrain {
+    #[must_use]
+    pub fn from_world(world: &NativeWorld) -> Self {
+        Self {
+            map_type: world.metadata.map_type,
+            planes: world.terrain_planes.clone(),
+            // Exact post-generation `rand2_17B4E0` observed at the qualified
+            // Package-M export seam. Castle topology variants continue this
+            // independent 16-bit terrain stream.
+            terrain_rng: 39_663,
+            mutation_sequence: 0,
+        }
+    }
+
+    #[must_use]
+    pub const fn planes(&self) -> &TerrainPlanes {
+        &self.planes
+    }
+
+    #[must_use]
+    pub fn ground_heights(&self) -> &[u8] {
+        &self.planes.ground_heights
+    }
+
+    #[must_use]
+    pub const fn terrain_rng(&self) -> u16 {
+        self.terrain_rng
+    }
+
+    #[must_use]
+    pub const fn mutation_sequence(&self) -> u64 {
+        self.mutation_sequence
+    }
+
+    /// Canonical content hash for the six mutable source terrain planes.
+    ///
+    /// FNV-1a is applied to the schema domain, little-endian dimensions, five
+    /// byte planes, then every signed entity index in little-endian form.
+    /// The mutation sequence is intentionally separate from content identity.
+    #[must_use]
+    pub fn deterministic_hash(&self) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        let mut append = |bytes: &[u8]| {
+            for byte in bytes {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        append(b"mc2-session-terrain-v1\0");
+        append(&256_u16.to_le_bytes());
+        append(&256_u16.to_le_bytes());
+        append(&self.planes.terrain_types);
+        append(&self.planes.ground_heights);
+        append(&self.planes.shading);
+        append(&self.planes.angles);
+        append(&self.planes.secondary_heights);
+        for entity_index in &self.planes.entity_indices {
+            append(&entity_index.to_le_bytes());
+        }
+        hash
+    }
+
+    /// Apply one source-ordered BUILD[1] terrain update.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed timer. Mutation is transactional: an
+    /// error leaves all six terrain planes, the terrain RNG, and the mutation
+    /// sequence unchanged.
+    pub fn apply_castle_update(
+        &mut self,
+        update: CastleTerrainUpdate,
+        footprint: &CastleBuildFootprint,
+    ) -> std::result::Result<(), String> {
+        let mut staged = self.clone();
+        staged.apply_castle_update_inner(update, footprint)?;
+        staged.mutation_sequence = staged.mutation_sequence.wrapping_add(1);
+        *self = staged;
+        Ok(())
+    }
+
+    fn apply_castle_update_inner(
+        &mut self,
+        update: CastleTerrainUpdate,
+        footprint: &CastleBuildFootprint,
+    ) -> std::result::Result<(), String> {
+        let position = match update {
+            CastleTerrainUpdate::ConstructionPass { position, .. }
+            | CastleTerrainUpdate::ConstructionCompleted { position }
+            | CastleTerrainUpdate::StageDestroyed { position, .. } => position,
+        };
+        let center_x = position.x.wrapping_add(128).to_be_bytes()[0];
+        let center_y = position.y.wrapping_add(128).to_be_bytes()[0];
+        let start_x = center_x.wrapping_sub(footprint.width / 2);
+        let start_y = center_y.wrapping_sub(footprint.height / 2);
+
+        match update {
+            CastleTerrainUpdate::ConstructionPass { remaining, .. } => {
+                if !(1..=18).contains(&remaining) {
+                    return Err(format!(
+                        "Castle construction remaining count {remaining} is outside 1..=18"
+                    ));
+                }
+                let construction_base = i16::from(position.z >> 5);
+                for row in 0..footprint.height {
+                    for column in 0..footprint.width {
+                        let cell = footprint.cells()
+                            [usize::from(row) * usize::from(footprint.width) + usize::from(column)];
+                        let x = start_x.wrapping_add(column);
+                        let y = start_y.wrapping_add(row);
+                        let index = terrain_index(x, y);
+                        if (remaining % 7 == 0 || remaining == 1) && cell[0] != 0xff {
+                            apply_castle_material(&mut self.planes, x, y, cell[0], self.map_type);
+                        }
+                        if cell[1] == 0xff {
+                            continue;
+                        }
+                        let current = i16::from(self.planes.ground_heights[index]);
+                        let target = construction_base + i16::from(cell[1]);
+                        let delta = target - current;
+                        if delta == 0 {
+                            continue;
+                        }
+                        if current == 0
+                            || building_topology_rebuild_required(self.planes.terrain_types[index])
+                        {
+                            self.planes.angles[index] = (self.planes.angles[index] & 0xf8) | 1;
+                            add_building_to_terrain(
+                                &mut self.planes,
+                                x,
+                                y,
+                                self.map_type,
+                                &mut self.terrain_rng,
+                            );
+                        }
+                        let step = delta / remaining;
+                        self.planes.ground_heights[index] = current.wrapping_add(step) as u8;
+                        if remaining == 1 && self.planes.angles[index].cast_signed() < 0 {
+                            self.planes.angles[index] &= 0x7f;
+                            if self.map_type != MapType::Cave {
+                                self.planes.angles[index] |= 0x08;
+                            }
+                        }
+                        if self.map_type == MapType::Cave {
+                            let desired =
+                                target.max(i16::from(self.planes.ground_heights[index])) + 100;
+                            let desired = desired.min(255);
+                            let secondary = i16::from(self.planes.secondary_heights[index]);
+                            if desired > secondary {
+                                self.planes.secondary_heights[index] =
+                                    secondary.wrapping_add((desired - secondary) / remaining) as u8;
+                            }
+                            normalize_cave_clearance(&mut self.planes, index);
+                        } else if remaining == 2 {
+                            self.planes.angles[index] &= 0xf7;
+                        }
+                    }
+                }
+            }
+            CastleTerrainUpdate::ConstructionCompleted { .. } => {
+                if self.map_type != MapType::Cave {
+                    for row in 0..footprint.height {
+                        for column in 0..footprint.width {
+                            let index = terrain_index(
+                                start_x.wrapping_add(column),
+                                start_y.wrapping_add(row),
+                            );
+                            if self.planes.angles[index] & 0x08 != 0 {
+                                self.planes.angles[index] |= 0x80;
+                                self.planes.angles[index] &= 0xf7;
+                            }
+                        }
+                    }
+                }
+            }
+            CastleTerrainUpdate::StageDestroyed { entity_rng, .. } => {
+                remove_castle_stage(
+                    &mut self.planes,
+                    start_x,
+                    start_y,
+                    footprint,
+                    self.map_type,
+                    &mut self.terrain_rng,
+                    entity_rng,
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+impl FlightWorld for SessionTerrain {
+    fn ground_height(&self, position: Position) -> i16 {
+        interpolate_ground(&self.planes.ground_heights, position.x, position.y) as i16
+    }
+
+    fn ceiling_height(&self, position: Position) -> Option<i16> {
+        (self.map_type == MapType::Cave).then(|| {
+            interpolate_cave(&self.planes.secondary_heights, position.x, position.y) as i16
+        })
+    }
+
+    fn material_mask(&self, position: Position) -> u32 {
+        let x = position.x.to_be_bytes()[0];
+        let y = position.y.to_be_bytes()[0];
+        material_mask(self.planes.terrain_types[terrain_index(x, y)])
+    }
+
+    fn angle_flags(&self, tile: crate::Tile) -> u8 {
+        self.planes.angles[terrain_index(tile.x, tile.y)]
+    }
+}
+
+const TERRAIN_GENERATION_TABLE_PREFIX: [u8; 0x70] = [
+    0x1b, 0x00, 0x1b, 0x50, 0x1b, 0x30, 0x1b, 0x60, 0x1a, 0x00, 0x1a, 0x50, 0x1a, 0x30, 0x1a, 0x60,
+    0x0a, 0x00, 0x0a, 0x50, 0x0a, 0x30, 0x0a, 0x60, 0x0a, 0x00, 0x0a, 0x50, 0x0a, 0x30, 0x0a, 0x60,
+    0x0b, 0x00, 0x0b, 0x50, 0x0b, 0x30, 0x0b, 0x60, 0x0b, 0x00, 0x0b, 0x50, 0x0b, 0x30, 0x0b, 0x60,
+    0x0c, 0x00, 0x0c, 0x50, 0x0c, 0x30, 0x0c, 0x60, 0x0c, 0x00, 0x0c, 0x50, 0x0c, 0x30, 0x0c, 0x60,
+    0x15, 0x00, 0x15, 0x50, 0x15, 0x30, 0x15, 0x60, 0x16, 0x00, 0x16, 0x50, 0x16, 0x30, 0x16, 0x60,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x00, 0x18, 0x50, 0x18, 0x30, 0x18, 0x60,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x00, 0x17, 0x50, 0x17, 0x30, 0x17, 0x60,
+];
+
+fn terrain_index(x: u8, y: u8) -> usize {
+    usize::from(x) + usize::from(y) * 256
+}
+
+fn building_topology_rebuild_required(terrain_type: u8) -> bool {
+    matches!(
+        terrain_type,
+        0 | 0x25 | 0x26 | 0x2c..=0x2f | 0x51 | 0x53 | 0x68 | 0x69 | 0x6d | 0x72 | 0x74
+    )
+}
+
+fn add_building_to_terrain(
+    planes: &mut TerrainPlanes,
+    x: u8,
+    y: u8,
+    map_type: MapType,
+    terrain_rng: &mut u16,
+) {
+    // The first `AddBuildingToTerrain_46570` source loop marks the selected
+    // cell plus its west, north-west, and north neighbors as unresolved
+    // topology.
+    for (mark_x, mark_y) in [
+        (x, y),
+        (x.wrapping_sub(1), y),
+        (x.wrapping_sub(1), y.wrapping_sub(1)),
+        (x, y.wrapping_sub(1)),
+    ] {
+        planes.terrain_types[terrain_index(mark_x, mark_y)] = 1;
+    }
+
+    // `AddBuildingToTerrain_46570(tile, tile)` then resolves the 2x2 block
+    // whose south-east corner is the selected cell.
+    for row in 0..2_u8 {
+        for column in 0..2_u8 {
+            let tile_x = x.wrapping_sub(1).wrapping_add(column);
+            let tile_y = y.wrapping_sub(1).wrapping_add(row);
+            let index = terrain_index(tile_x, tile_y);
+            if planes.terrain_types[index] != 1 {
+                continue;
+            }
+            let topology_index = 343 * usize::from(planes.angles[index] & 7)
+                + 49 * usize::from(
+                    planes.angles[terrain_index(tile_x.wrapping_add(1), tile_y)] & 7,
+                )
+                + 7 * usize::from(
+                    planes.angles[terrain_index(tile_x.wrapping_add(1), tile_y.wrapping_add(1))]
+                        & 7,
+                )
+                + usize::from(planes.angles[terrain_index(tile_x, tile_y.wrapping_add(1))] & 7);
+            let [terrain_type, rotation] = building_topology_entry(topology_index);
+            planes.terrain_types[index] = terrain_type;
+            if terrain_type >= 8 {
+                // The decompiled source writes `(angle & 0x87) + rotation`.
+                planes.angles[index] = (planes.angles[index] & 0x87).wrapping_add(rotation);
+            } else {
+                *terrain_rng = terrain_rng.wrapping_mul(9_377).wrapping_add(9_439);
+                planes.angles[index] =
+                    (planes.angles[index] & 0x87).wrapping_add(16 * (*terrain_rng % 7) as u8);
+            }
+        }
+    }
+
+    // Finally recalculate the 3x3 shading neighborhood in the literal source
+    // order. The signed eight-bit temporary deliberately wraps.
+    for row in 0..3_u8 {
+        for column in 0..3_u8 {
+            let tile_x = x.wrapping_sub(1).wrapping_add(column);
+            let tile_y = y.wrapping_sub(1).wrapping_add(row);
+            let down_right = planes.ground_heights
+                [terrain_index(tile_x.wrapping_add(1), tile_y.wrapping_add(1))];
+            let up_left = planes.ground_heights
+                [terrain_index(tile_x.wrapping_sub(1), tile_y.wrapping_sub(1))];
+            let mut shade = (32_i16 - i16::from(down_right)) as i8;
+            shade = shade.wrapping_add(up_left as i8);
+            shade = if shade >= 28 {
+                if shade > 40 {
+                    (shade & 7).wrapping_add(40)
+                } else {
+                    shade
+                }
+            } else {
+                (shade & 3).wrapping_add(28)
+            };
+            let index = terrain_index(tile_x, tile_y);
+            planes.shading[index] = if map_type == MapType::Day {
+                shade as u8
+            } else {
+                64_i8.wrapping_sub(shade) as u8
+            };
+            if map_type == MapType::Cave {
+                normalize_cave_clearance(planes, index);
+            } else {
+                planes.angles[index] &= 0xf7;
+            }
+        }
+    }
+}
+
+fn building_topology_entry(index: usize) -> [u8; 2] {
+    debug_assert!(index < 7_usize.pow(4));
+    let catalog = terrain_corner_catalog();
+    for (terrain_type, corners) in catalog.iter().enumerate() {
+        if corners.iter().any(|corner| *corner < 0) {
+            continue;
+        }
+        let c = corners.map(|corner| corner as usize);
+        for (candidate, rotation) in [
+            (343 * c[0] + 49 * c[1] + 7 * c[2] + c[3], 0),
+            (343 * c[1] + 49 * c[0] + 7 * c[3] + c[2], 16),
+            (343 * c[2] + 49 * c[3] + 7 * c[0] + c[1], 48),
+            (343 * c[3] + 49 * c[2] + 7 * c[1] + c[0], 32),
+            (343 * c[1] + 49 * c[2] + 7 * c[3] + c[0], 96),
+            (343 * c[2] + 49 * c[1] + 7 * c[0] + c[3], 112),
+            (343 * c[3] + 49 * c[0] + 7 * c[1] + c[2], 80),
+            (343 * c[0] + 49 * c[3] + 7 * c[2] + c[1], 64),
+        ] {
+            if candidate == index {
+                return [terrain_type as u8, rotation];
+            }
+        }
+    }
+    [1, 0]
+}
+
+fn terrain_corner_catalog() -> &'static [[i8; 4]; 148] {
+    static CATALOG: OnceLock<[[i8; 4]; 148]> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        // remc2 keeps this functional terrain-topology catalog in a dedicated
+        // source table. Parsing its hexadecimal initializer here avoids
+        // duplicating a second hand-maintained 592-byte private table.
+        let source =
+            include_str!("../../../../../../upstream/magic-carpet-2-hd/remc2/engine/Unk_D47E0.cpp");
+        let initializer = source
+            .split_once("{//terrain gen")
+            .expect("remc2 terrain-corner initializer")
+            .1
+            .split_once("};")
+            .expect("remc2 terrain-corner terminator")
+            .0;
+        let bytes = initializer.as_bytes();
+        let mut values = Vec::with_capacity(148 * 4);
+        let mut cursor = 0;
+        while cursor + 3 < bytes.len() {
+            if bytes[cursor] == b'0'
+                && bytes[cursor + 1] == b'x'
+                && bytes[cursor + 2].is_ascii_hexdigit()
+                && bytes[cursor + 3].is_ascii_hexdigit()
+            {
+                let hex = std::str::from_utf8(&bytes[cursor + 2..cursor + 4])
+                    .expect("ASCII hexadecimal terrain corner");
+                values.push(u8::from_str_radix(hex, 16).expect("terrain corner byte") as i8);
+                cursor += 4;
+            } else {
+                cursor += 1;
+            }
+        }
+        assert_eq!(values.len(), 148 * 4);
+        let mut result = [[0_i8; 4]; 148];
+        for (row, values) in result.iter_mut().zip(values.chunks_exact(4)) {
+            row.copy_from_slice(values);
+        }
+        result
+    })
+}
+
+fn classify_castle_corner(planes: &TerrainPlanes, x: u8, y: u8, fallback: u8) -> usize {
+    let heights = [
+        planes.ground_heights[terrain_index(x, y)],
+        planes.ground_heights[terrain_index(x.wrapping_add(1), y)],
+        planes.ground_heights[terrain_index(x.wrapping_add(1), y.wrapping_add(1))],
+        planes.ground_heights[terrain_index(x, y.wrapping_add(1))],
+    ];
+    let mut maximum = 0_u8;
+    let mut maximum_corner = 0_usize;
+    let mut minimum = u8::MAX;
+    for (corner, height) in heights.into_iter().enumerate() {
+        if height > maximum {
+            maximum = height;
+            maximum_corner = corner;
+        }
+        minimum = minimum.min(height);
+    }
+    let mut second_maximum = 0_u8;
+    let mut second_corner = usize::from(fallback);
+    for (corner, height) in heights.into_iter().enumerate() {
+        if corner != maximum_corner && height > second_maximum {
+            second_maximum = height;
+            second_corner = corner;
+        }
+    }
+    if maximum.wrapping_sub(minimum) >= 8 && maximum.wrapping_sub(second_maximum) >= 8 {
+        return maximum_corner;
+    }
+    match maximum_corner {
+        0 => {
+            if second_corner == 1 {
+                4
+            } else {
+                7
+            }
+        }
+        1 => {
+            if second_corner == 2 {
+                5
+            } else {
+                4
+            }
+        }
+        2 => {
+            if second_corner == 3 {
+                6
+            } else {
+                5
+            }
+        }
+        3 => {
+            if second_corner != 0 {
+                6
+            } else {
+                7
+            }
+        }
+        _ => 0,
+    }
+}
+
+fn apply_castle_material(
+    planes: &mut TerrainPlanes,
+    x: u8,
+    y: u8,
+    material: u8,
+    map_type: MapType,
+) {
+    let index = terrain_index(x, y);
+    let preserve_existing_material =
+        material == 0x10 && matches!(planes.terrain_types[index], 10 | 11 | 12);
+    if !preserve_existing_material {
+        let corner = classify_castle_corner(planes, x, y, 7);
+        let table_offset = match material {
+            0x10 => 2 * corner,
+            0x12 => 0x50 + 2 * (8 * usize::from(x.wrapping_add(y) & 1) + corner),
+            _ => {
+                // BUILD[1] is qualified to contain only 0x10 and 0x12 controls.
+                return;
+            }
+        };
+        planes.terrain_types[index] = TERRAIN_GENERATION_TABLE_PREFIX[table_offset];
+        planes.angles[index] =
+            (planes.angles[index] & 0x8f) | TERRAIN_GENERATION_TABLE_PREFIX[table_offset + 1];
+    }
+    planes.angles[index] |= 0x80;
+    if map_type == MapType::Cave {
+        for (corner_x, corner_y) in [
+            (x, y),
+            (x.wrapping_add(1), y),
+            (x.wrapping_add(1), y.wrapping_add(1)),
+            (x, y.wrapping_add(1)),
+        ] {
+            normalize_cave_clearance(planes, terrain_index(corner_x, corner_y));
+        }
+    } else {
+        for (corner_x, corner_y) in [
+            (x, y),
+            (x.wrapping_add(1), y),
+            (x.wrapping_add(1), y.wrapping_add(1)),
+            (x, y.wrapping_add(1)),
+        ] {
+            planes.angles[terrain_index(corner_x, corner_y)] &= 0xf7;
+        }
+    }
+}
+
+fn normalize_cave_clearance(planes: &mut TerrainPlanes, index: usize) {
+    if planes.secondary_heights[index] > planes.ground_heights[index] {
+        planes.angles[index] &= 0xf7;
+    } else {
+        planes.secondary_heights[index] = planes.ground_heights[index].wrapping_sub(1);
+        planes.angles[index] |= 0x08;
+    }
+}
+
+fn remove_castle_stage(
+    planes: &mut TerrainPlanes,
+    start_x: u8,
+    start_y: u8,
+    footprint: &CastleBuildFootprint,
+    map_type: MapType,
+    terrain_rng: &mut u16,
+    mut entity_rng: u16,
+) {
+    for row in 0..footprint.height {
+        for column in 0..footprint.width {
+            let cell = footprint.cells()
+                [usize::from(row) * usize::from(footprint.width) + usize::from(column)];
+            if cell[0] == 0xff && cell[1] == 0xff {
+                continue;
+            }
+            let x = start_x.wrapping_add(column);
+            let y = start_y.wrapping_add(row);
+            let index = terrain_index(x, y);
+            planes.angles[index] = (planes.angles[index] & 0x70) | 1;
+            add_building_to_terrain(planes, x, y, map_type, terrain_rng);
+            if cell[1] == 0xff {
+                continue;
+            }
+            let offset = cell[1];
+            let height = planes.ground_heights[index];
+            if offset >= height {
+                planes.ground_heights[index] = 0;
+                continue;
+            }
+            entity_rng = entity_rng.wrapping_mul(9_377).wrapping_add(9_439);
+            if entity_rng % 50 <= 20 {
+                planes.ground_heights[index] = height.wrapping_sub(offset);
+            } else {
+                entity_rng = entity_rng.wrapping_mul(9_377).wrapping_add(9_439);
+                planes.ground_heights[index] = height
+                    .wrapping_sub(offset)
+                    .wrapping_add((entity_rng % 20) as u8);
+            }
+        }
+    }
+    for row in 0..footprint.height {
+        for column in 0..footprint.width {
+            smooth_building_height(
+                planes,
+                start_x.wrapping_add(column),
+                start_y.wrapping_add(row),
+                map_type,
+            );
+        }
+    }
+}
+
+fn smooth_building_height(planes: &mut TerrainPlanes, x: u8, y: u8, map_type: MapType) {
+    let index = terrain_index(x, y);
+    let ordinary = |terrain_type: u8| terrain_type <= 5 || terrain_type > 0x22;
+    if planes.angles[index] & 7 == 0
+        || planes.ground_heights[index] == 0
+        || !ordinary(planes.terrain_types[terrain_index(x.wrapping_sub(1), y.wrapping_sub(1))])
+        || !ordinary(planes.terrain_types[terrain_index(x, y.wrapping_sub(1))])
+        || !ordinary(planes.terrain_types[terrain_index(x.wrapping_sub(1), y)])
+        || !ordinary(planes.terrain_types[index])
+    {
+        return;
+    }
+    let mut height_sum = 0_u32;
+    let mut height_count = 0_u32;
+    for row_offset in [u8::MAX, 0, 1] {
+        for column_offset in [u8::MAX, 0, 1] {
+            let neighbor = terrain_index(x.wrapping_add(column_offset), y.wrapping_add(row_offset));
+            if ordinary(planes.terrain_types[neighbor]) {
+                height_sum = height_sum.wrapping_add(u32::from(planes.ground_heights[neighbor]));
+                height_count += 1;
+            }
+        }
+    }
+    if height_count != 0 {
+        planes.ground_heights[index] = (height_sum / height_count) as u8;
+        if map_type == MapType::Cave {
+            normalize_cave_clearance(planes, index);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -332,11 +986,13 @@ pub struct NativeWorld {
     asset_refs: Box<[AssetRef]>,
     sound_asset_refs: BTreeMap<u16, u32>,
     music_asset_ref: Option<u32>,
+    goat_tmap_bank: Option<GoatTmapBank>,
     reset_state: FlightState,
     reset_context: FlightContext,
     goat_stage_point: Position,
     goat_config: GoatBehaviorConfig,
     reset_live_world: LiveWorldState,
+    level1_mission: Level1MissionTemplate,
 }
 
 impl NativeWorld {
@@ -347,7 +1003,40 @@ impl NativeWorld {
     /// Returns an error on any schema, identity, size, version, relation,
     /// reset, closure-binding, or frame-resolution mismatch.
     pub fn load(package_dir: impl AsRef<Path>, closure_path: impl AsRef<Path>) -> Result<Self> {
-        let package_dir = package_dir.as_ref();
+        let owner_cache = std::env::var_os("MC_ASSET_CACHE_PATH").map(PathBuf::from);
+        Self::load_internal(
+            package_dir.as_ref(),
+            closure_path.as_ref(),
+            owner_cache.as_deref(),
+        )
+    }
+
+    /// Load with an explicit qualified private owner-asset cache.
+    ///
+    /// This is the deterministic equivalent of setting `MC_ASSET_CACHE_PATH`
+    /// and avoids process-global environment mutation in tools and tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on any package, closure, cache identity, binding,
+    /// output hash, or qualified descriptor mismatch.
+    pub fn load_with_owner_cache(
+        package_dir: impl AsRef<Path>,
+        closure_path: impl AsRef<Path>,
+        owner_cache: impl AsRef<Path>,
+    ) -> Result<Self> {
+        Self::load_internal(
+            package_dir.as_ref(),
+            closure_path.as_ref(),
+            Some(owner_cache.as_ref()),
+        )
+    }
+
+    fn load_internal(
+        package_dir: &Path,
+        closure_path: &Path,
+        owner_cache: Option<&Path>,
+    ) -> Result<Self> {
         let manifest_path = package_dir.join("manifest.json");
         let manifest_bytes = read_file(&manifest_path)?;
         let manifest: Value = serde_json::from_slice(&manifest_bytes)
@@ -390,7 +1079,9 @@ impl NativeWorld {
         let mut entities = parse_entities(member(&members, "entities.bin")?)?;
         let players = parse_players(member(&members, "players.bin")?)?;
         let runtime = parse_runtime(member(&members, "runtime.bin")?)?;
+        validate_level_one_mission_stages(&runtime)?;
         let presentation = parse_presentation(member(&members, "presentation.bin")?)?;
+        validate_level_one_mission_presentation(&presentation)?;
         validate_manifest_relations(counts, &entities, &players, &runtime, &presentation)?;
 
         let reset_state = parse_reset_state(
@@ -418,31 +1109,78 @@ impl NativeWorld {
             .particles
             .get(usize::from(GOAT_RENDER_PARAMETER_INDEX))
             .ok_or_else(|| NativeWorldError::new("Level 1 Goat render parameter 238 is absent"))?;
-        if goat_render.base_tmap != GOAT_BASE_TMAP {
+        let exact_goat_render = ParticleParameter {
+            base_tmap: GOAT_BASE_TMAP,
+            word_2: 8_492,
+            word_4: 42,
+            speed: 150,
+            rotation_speed: 150,
+            byte_10: 0,
+            byte_11: 1,
+            render_mode: 20,
+            byte_13: 0,
+        };
+        if *goat_render != exact_goat_render {
             return Err(NativeWorldError::new(format!(
-                "Level 1 Goat render parameter 238 mismatch: base TMAP {}",
-                goat_render.base_tmap
+                "Level 1 Goat render parameter 238 mismatch: got {goat_render:?}, expected {exact_goat_render:?}"
             )));
         }
-        let reset_live_world =
-            LiveWorldState::from_entities(&entities, goat_stage_point, goat_config)
-                .map_err(NativeWorldError::new)?;
-
-        let (closure_sha256, mut asset_refs) = parse_closure(
-            closure_path.as_ref(),
-            &package_sha256,
-            &manifest_bytes,
-            &members,
-        )?;
-        let (sound_asset_refs, music_asset_ref) = match std::env::var_os("MC_ASSET_CACHE_PATH") {
-            Some(cache_path) => append_level_one_audio_refs(
-                Path::new(&cache_path),
+        let reset_live_world = LiveWorldState::from_entities_with_map(
+            &entities,
+            &terrain_planes.entity_indices,
+            goat_stage_point,
+            goat_config,
+        )
+        .map_err(NativeWorldError::new)?;
+        let global_mana_denominator = level_one_global_mana_denominator(&entities)?;
+        let initial_source_slots = entities
+            .iter()
+            .map(|entity| Level1ResetSourceSlot {
+                index: entity.index,
+                active: entity.active,
+                class: entity.class,
+                model: entity.model,
+                action: entity.action,
+                phase: entity.phase,
+                entity_rng: entity.entity_rng,
+                control_flags: entity.control_flags,
+            })
+            .collect::<Vec<_>>();
+        let initial_castle_blockers = entities
+            .iter()
+            .filter(|entity| {
+                entity.active && entity.life >= 0 && entity.class == 3 && entity.model == 2
+            })
+            .map(EntitySnapshot::castle_placement_blocker)
+            .collect::<Vec<_>>();
+        let initial_building_blockers = entities
+            .iter()
+            .filter(|entity| entity.active && entity.class == 10 && entity.model == 45)
+            .map(EntitySnapshot::castle_placement_blocker)
+            .collect::<Vec<_>>();
+        let (closure_sha256, mut asset_refs) =
+            parse_closure(closure_path, &package_sha256, &manifest_bytes, &members)?;
+        let cache_assets = match owner_cache {
+            Some(cache_path) => append_level_one_cache_assets(
+                cache_path,
                 &package_sha256,
                 &closure_sha256,
                 &mut asset_refs,
             )?,
-            None => (BTreeMap::new(), None),
+            None => LevelOneCacheAssets::default(),
         };
+        let level1_mission =
+            Level1MissionTemplate::decode_with_source_slots_and_placement_blockers(
+                authored,
+                &terrain,
+                global_mana_denominator,
+                runtime.random_state,
+                &initial_source_slots,
+                &initial_castle_blockers,
+                &initial_building_blockers,
+                cache_assets.castle_stage_one_footprint,
+            )
+            .map_err(NativeWorldError::new)?;
 
         let profile = metadata.map_type.profile();
         Ok(Self {
@@ -457,13 +1195,15 @@ impl NativeWorld {
             runtime,
             presentation,
             asset_refs: asset_refs.into_boxed_slice(),
-            sound_asset_refs,
-            music_asset_ref,
+            sound_asset_refs: cache_assets.sound_asset_refs,
+            music_asset_ref: cache_assets.music_asset_ref,
+            goat_tmap_bank: cache_assets.goat_tmap_bank,
             reset_state,
             reset_context,
             goat_stage_point,
             goat_config,
             reset_live_world,
+            level1_mission,
         })
     }
 
@@ -533,6 +1273,11 @@ impl NativeWorld {
     }
 
     #[must_use]
+    pub const fn goat_tmap_bank(&self) -> Option<&GoatTmapBank> {
+        self.goat_tmap_bank.as_ref()
+    }
+
+    #[must_use]
     pub const fn reset_state(&self) -> &FlightState {
         &self.reset_state
     }
@@ -557,6 +1302,11 @@ impl NativeWorld {
         &self.reset_live_world
     }
 
+    #[must_use]
+    pub const fn level1_mission(&self) -> &Level1MissionTemplate {
+        &self.level1_mission
+    }
+
     /// Build the mutable per-session context.
     ///
     /// The package's reset projection predates typed presentation events, so
@@ -570,6 +1320,38 @@ impl NativeWorld {
             periodic_spell_effect: None,
             ..FlightEffectsContext::default()
         });
+        // The preserved reset conformance projection intentionally contains
+        // only the flight-critical left holder. A live Level 1 session needs
+        // the complete owned hand state: Fireball in the left hand and
+        // Possession in the right, plus the enabled-family lookup used by
+        // selected casting.
+        let player = &self.players[usize::from(self.runtime.local_player_slot)];
+        if let Some(fire) = context.spell_fire.as_mut() {
+            let left_slot = usize::from(player.left_spell_slot);
+            let right_slot = usize::from(player.right_spell_slot);
+            let left_index = player.enabled_spell_holders[left_slot];
+            let right_index = player.enabled_spell_holders[right_slot];
+            fire.left_holder_index = left_index;
+            fire.right_holder_index = right_index;
+            fire.selected_holder_index = left_index;
+            fire.selected_spell_ui_index = player.left_spell_slot;
+            fire.enabled_holder_indices[left_slot] = left_index;
+            fire.enabled_holder_indices[right_slot] = right_index;
+            if right_index != 0
+                && right_index != left_index
+                && let Some(holder) = self.entities.get(usize::from(right_index))
+            {
+                fire.holders.push(SpellActivationHolder {
+                    entity_index: holder.index,
+                    model: holder.model,
+                    level_gate: holder.level_gate,
+                    active_value: holder.active_value,
+                    activation_value: holder.activation_value,
+                    mana_cost: holder.mana_cost,
+                    action_marker: holder.action_marker,
+                });
+            }
+        }
         context
     }
 
@@ -577,9 +1359,16 @@ impl NativeWorld {
     pub fn session(&self) -> NativeSession<'_> {
         NativeSession {
             world: self,
+            terrain: SessionTerrain::from_world(self),
             state: self.reset_state,
             context: self.session_context(),
             live_world: self.reset_live_world.clone(),
+            goat_tmap_clocks: self.goat_tmap_bank.as_ref().map(GoatTmapClocks::from_bank),
+            camera_fov: 128,
+            mission: self.level1_mission.session(
+                self.entities[usize::from(self.reset_state.entity_index)].life,
+                1_000,
+            ),
         }
     }
 }
@@ -606,38 +1395,435 @@ impl FlightWorld for NativeWorld {
 #[derive(Debug)]
 pub struct NativeSession<'world> {
     world: &'world NativeWorld,
+    pub terrain: SessionTerrain,
     pub state: FlightState,
     pub context: FlightContext,
     pub live_world: LiveWorldState,
+    pub goat_tmap_clocks: Option<GoatTmapClocks>,
+    pub camera_fov: i16,
+    pub mission: Level1MissionState,
+}
+
+fn goat_collision_target(goat: &GoatState) -> Level1CollisionTarget {
+    Level1CollisionTarget {
+        entity_index: goat.entity_index,
+        position: goat.position,
+        collision_half_width: goat.collision_half_width,
+        collision_vertical_offset: goat.collision_vertical_offset,
+        collision_half_height: goat.collision_half_height,
+        active: goat.active,
+    }
 }
 
 impl NativeSession<'_> {
     pub fn reset(&mut self) {
+        self.terrain = SessionTerrain::from_world(self.world);
         self.state = self.world.reset_state;
         self.context = self.world.session_context();
         self.live_world = self.world.reset_live_world.clone();
+        self.goat_tmap_clocks = self
+            .world
+            .goat_tmap_bank
+            .as_ref()
+            .map(GoatTmapClocks::from_bank);
+        self.camera_fov = 128;
+        self.mission = self.world.level1_mission.session(
+            self.world.entities[usize::from(self.world.reset_state.entity_index)].life,
+            1_000,
+        );
     }
 
     pub fn step(&mut self, command: PlayerCommand) -> Vec<crate::StepEvidence> {
+        self.mission.finish_hud_draw(self.state.tick);
+        if let (Some(clocks), Some(bank)) = (
+            self.goat_tmap_clocks.as_mut(),
+            self.world.goat_tmap_bank.as_ref(),
+        ) {
+            clocks.service_unpaused_outer_turn(bank);
+        }
+        self.mission.advance_exit_palette_frame();
+        self.mission.sync_collected_spell_holders(&mut self.context);
+        self.mission
+            .sync_speed_holder_projection(&mut self.state, &mut self.context);
+        let holders_before = self
+            .context
+            .spell_fire
+            .as_ref()
+            .map_or_else(Vec::new, |fire| fire.holders.clone());
         self.context.events.clear();
-        let evidence = step_outer_turn_with_context(
-            &mut self.state,
-            command,
-            0,
-            self.world.profile,
-            self.world,
-            &mut self.context,
+        let initial_target = [GoatPlayerTarget {
+            entity_index: self.state.entity_index,
+            position: self.state.position,
+            control_flags: 0,
+        }];
+        self.mission.set_external_collision_targets(
+            self.live_world.goats().iter().map(goat_collision_target),
         );
-        self.live_world.step_with_players(
-            self.world,
-            &[GoatPlayerTarget {
+        self.mission.begin_source_turn();
+        self.reclaim_imported_source_slots();
+        let begin_goat_events = self.live_world.begin_source_turn(&initial_target);
+        self.process_goat_events(&begin_goat_events);
+        let mut evidence = Vec::new();
+        for source_slot in 1..ENTITY_COUNT {
+            let source_slot = u16::try_from(source_slot).expect("source cursor fits u16");
+            let player_target = [GoatPlayerTarget {
                 entity_index: self.state.entity_index,
                 position: self.state.position,
                 control_flags: 0,
-            }],
-        );
+            }];
+            let goat_events =
+                self.live_world
+                    .step_source_slot(source_slot, &self.terrain, &player_target);
+            self.process_goat_events(&goat_events);
+            if let Some(goat) = self
+                .live_world
+                .goats()
+                .iter()
+                .find(|goat| goat.entity_index == source_slot)
+            {
+                self.mission
+                    .update_external_collision_target(goat_collision_target(goat));
+                self.mission.sync_imported_source_slot(
+                    goat.entity_index,
+                    goat.active,
+                    goat.action,
+                    goat.phase,
+                    goat.rng,
+                    goat.control_flags,
+                );
+            }
+
+            let (fireball_activated, possession_activated, castle_cast_yaw) = if source_slot
+                == self.state.entity_index
+            {
+                evidence = if self.mission.exit_sequence_owns_player_action() {
+                    self.state.tick = self.state.tick.wrapping_add(1);
+                    Vec::new()
+                } else {
+                    step_outer_turn_with_context(
+                        &mut self.state,
+                        command,
+                        0,
+                        self.world.profile,
+                        &self.terrain,
+                        &mut self.context,
+                    )
+                };
+                let activated_model = |model| {
+                    self.context.spell_fire.as_ref().is_some_and(|fire| {
+                        fire.holders.iter().any(|holder| {
+                            holder.model == model
+                                && holder.activation_value != 0
+                                && holder.active_value == holder.activation_value.cast_signed()
+                                && holders_before
+                                    .iter()
+                                    .find(|before| before.entity_index == holder.entity_index)
+                                    .is_none_or(|before| before.active_value != holder.active_value)
+                        })
+                    })
+                };
+                let fireball = activated_model(0);
+                let possession = activated_model(1);
+                let castle = activated_model(CASTLE_SPELL_FAMILY);
+                self.mission
+                    .capture_spell_holder_active_values(&self.context);
+                if !self.mission.exit_sequence_owns_player_action() {
+                    self.mission
+                        .advance_speed_spell(&mut self.state, &mut self.context);
+                }
+                (fireball, possession, castle.then_some(self.state.yaw))
+            } else {
+                (false, false, None)
+            };
+            let mission_event_start = self.mission.events().len();
+            self.mission.dispatch_source_slot(
+                &self.terrain,
+                &self.state,
+                source_slot,
+                fireball_activated,
+                possession_activated,
+                castle_cast_yaw,
+            );
+            if source_slot == self.state.entity_index && self.mission.exit_sequence_active {
+                self.mission.advance_exit_sequence(
+                    &self.terrain,
+                    &mut self.state,
+                    &mut self.context,
+                    &mut self.camera_fov,
+                );
+            }
+            self.apply_castle_terrain_updates();
+            self.inject_new_fireball_impacts(mission_event_start);
+            self.reclaim_imported_source_slots();
+        }
+        self.live_world.finish_source_turn();
+        self.mission.finish_source_turn(&self.state);
+        if let Some(fire) = self.context.spell_fire.as_mut() {
+            // Class-15/model-0 consumes one active tick after the same-turn
+            // projectile factory. Keep the direct Rust session in lockstep
+            // with the C ABI production session for repeated Fireball input.
+            for holder in &mut fire.holders {
+                if holder.model == 0 && holder.active_value > 0 {
+                    holder.active_value -= 1;
+                }
+            }
+        }
+        self.mission.sync_collected_spell_holders(&mut self.context);
+        self.mission
+            .sync_speed_holder_projection(&mut self.state, &mut self.context);
         evidence
     }
+
+    fn apply_castle_terrain_updates(&mut self) {
+        let updates = self
+            .mission
+            .drain_castle_terrain_updates()
+            .collect::<Vec<_>>();
+        if updates.is_empty() {
+            return;
+        }
+        let footprint = self
+            .mission
+            .castle_stage_one_footprint()
+            .cloned()
+            .expect("Castle terrain updates require the validated BUILD[1] footprint");
+        for update in updates {
+            self.terrain
+                .apply_castle_update(update, &footprint)
+                .expect("qualified Level 1 Castle terrain update");
+        }
+    }
+
+    fn process_goat_events(&mut self, events: &[GoatStepEvent]) {
+        for event in events {
+            match *event {
+                GoatStepEvent::ManaConverted { entity_index, mana } => {
+                    if let Some((position, yaw, rng)) = self
+                        .live_world
+                        .goats()
+                        .iter()
+                        .find(|goat| goat.entity_index == entity_index)
+                        .map(|goat| (goat.position, goat.yaw, goat.rng))
+                    {
+                        self.mission.spawn_mana_sphere_from_death(
+                            &self.terrain,
+                            entity_index,
+                            position,
+                            yaw,
+                            rng,
+                            mana,
+                            0,
+                        );
+                        self.mission.disable_imported_source_slot(entity_index);
+                    }
+                }
+                GoatStepEvent::ExtraManaSphereRequested { entity_index } => {
+                    if let Some(position) = self
+                        .live_world
+                        .goats()
+                        .iter()
+                        .find(|goat| goat.entity_index == entity_index)
+                        .map(|goat| goat.position)
+                    {
+                        self.mission
+                            .spawn_death_burst_from_death(entity_index, position);
+                    }
+                }
+                GoatStepEvent::Reclaimed { .. } => {}
+                _ => {}
+            }
+        }
+    }
+
+    fn reclaim_imported_source_slots(&mut self) {
+        for source_slot in self.mission.take_reclaimed_imported_source_slots() {
+            let _ = self.live_world.reclaim_source_slot(source_slot);
+        }
+    }
+
+    fn inject_new_fireball_impacts(&mut self, event_start: usize) {
+        let impacts = self.mission.events()[event_start..]
+            .iter()
+            .filter_map(|event| {
+                let crate::level1_mission::Level1MissionEvent::FireballImpacted {
+                    impact_id,
+                    position,
+                    ..
+                } = event
+                else {
+                    return None;
+                };
+                let payload = self
+                    .mission
+                    .impacts()
+                    .iter()
+                    .find(|impact| impact.id == *impact_id)
+                    .map(|impact| {
+                        (
+                            impact.payload,
+                            impact.owner_entity_index,
+                            impact.external_target_entity_index,
+                        )
+                    })?;
+                Some((*position, payload.0, payload.1, payload.2))
+            })
+            .collect::<Vec<_>>();
+        for (position, payload, owner_entity_index, direct_target_entity_index) in impacts {
+            let targets = self
+                .live_world
+                .goats()
+                .iter()
+                .filter(|goat| {
+                    goat.active
+                        && goat.entity_index != owner_entity_index
+                        && (goat.entity_index == direct_target_entity_index
+                            || crate::level1_mission::source_entities_overlap(
+                                position,
+                                crate::level1_mission::FIREBALL_IMPACT_COLLISION_HALF_WIDTH,
+                                crate::level1_mission::FIREBALL_IMPACT_COLLISION_VERTICAL_OFFSET,
+                                crate::level1_mission::FIREBALL_IMPACT_COLLISION_HALF_HEIGHT,
+                                goat.position,
+                                goat.collision_half_width,
+                                goat.collision_vertical_offset,
+                                goat.collision_half_height,
+                            ))
+                })
+                .map(|goat| goat.entity_index)
+                .collect::<Vec<_>>();
+            for target in targets {
+                let _ = self.live_world.inject_damage(
+                    target,
+                    payload,
+                    owner_entity_index.cast_signed(),
+                );
+            }
+        }
+    }
+}
+
+fn validate_level_one_mission_stages(runtime: &RuntimeSnapshot) -> Result<()> {
+    let expected = [
+        (5, 29_440_u16, 54_272_u16, 0_u32),
+        (5, 49_664_u16, 54_528_u16, 0_u32),
+        (7, 0, 0, 4),
+        (0, 0, 0, 15),
+        (7, 0, 0, 19),
+    ];
+    if runtime.stage_index != 5 {
+        return Err(NativeWorldError::new(format!(
+            "Level 1 must expose five mission stages, got {}",
+            runtime.stage_index
+        )));
+    }
+    for (index, (kind, x, y, scalar)) in expected.into_iter().enumerate() {
+        let stage = &runtime.stages[index];
+        if stage.kind != kind
+            || stage.axis_x.cast_unsigned() != x
+            || stage.axis_y.cast_unsigned() != y
+            || stage.relation != RuntimeRelation::Scalar(scalar)
+        {
+            return Err(NativeWorldError::new(format!(
+                "Level 1 mission stage {index} mismatch: {stage:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_level_one_mission_presentation(presentation: &PresentationSelectors) -> Result<()> {
+    let expected = [
+        (
+            ARCHER_RENDER_INDEX,
+            ARCHER_BASE_TMAP,
+            ARCHER_RENDER_MODE,
+            ARCHER_LOGICAL_HEIGHT,
+            133_u16,
+            1_i8,
+        ),
+        (
+            FIREFLY_RENDER_INDEX,
+            FIREFLY_BASE_TMAP,
+            FIREFLY_RENDER_MODE,
+            FIREFLY_LOGICAL_HEIGHT,
+            210,
+            1,
+        ),
+        (
+            FIREBALL_RENDER_INDEX,
+            FIREBALL_BASE_TMAP,
+            FIREBALL_RENDER_MODE,
+            FIREBALL_LOGICAL_HEIGHT,
+            97,
+            1,
+        ),
+        (
+            FIREBALL_IMPACT_RENDER_INDEX,
+            FIREBALL_IMPACT_BASE_TMAP,
+            FIREBALL_IMPACT_RENDER_MODE,
+            FIREBALL_IMPACT_LOGICAL_HEIGHT,
+            256,
+            -1,
+        ),
+        (
+            SPELL_JAR_RENDER_INDEX,
+            SPELL_JAR_BASE_TMAP,
+            SPELL_JAR_RENDER_MODE,
+            SPELL_JAR_LOGICAL_HEIGHT,
+            184,
+            -1,
+        ),
+        (
+            MANA_CARRIER_RENDER_INDEX,
+            MANA_CARRIER_BASE_TMAP,
+            MANA_CARRIER_RENDER_MODE,
+            MANA_CARRIER_LOGICAL_HEIGHT,
+            545,
+            -16,
+        ),
+    ];
+    for (index, base_tmap, render_mode, logical_height, speed, byte_11) in expected {
+        let parameter = presentation
+            .particles
+            .get(usize::from(index))
+            .ok_or_else(|| {
+                NativeWorldError::new(format!("Level 1 render parameter {index} is absent"))
+            })?;
+        if parameter.base_tmap != base_tmap
+            || parameter.word_2 != 8_492
+            || parameter.word_4 != 42
+            || parameter.speed != speed
+            || parameter.rotation_speed != logical_height
+            || parameter.byte_10 != 0
+            || parameter.byte_11 != byte_11
+            || parameter.render_mode != render_mode
+            || parameter.byte_13 != 0
+        {
+            return Err(NativeWorldError::new(format!(
+                "Level 1 render parameter {index} mismatch: {parameter:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn level_one_global_mana_denominator(entities: &[EntitySnapshot]) -> Result<i32> {
+    let mut denominator = 1_i32;
+    for entity in entities.iter().skip(1).filter(|entity| entity.active) {
+        let contributes = entity.class == 5
+            || entity.class == 10 && matches!(entity.model, 39 | 45 | 58)
+            || entity.class == 3 && matches!(entity.model, 2 | 3);
+        if contributes {
+            denominator = denominator
+                .checked_add(entity.mana)
+                .ok_or_else(|| NativeWorldError::new("Level 1 global mana denominator overflow"))?;
+        }
+    }
+    if denominator <= 0 {
+        return Err(NativeWorldError::new(
+            "Level 1 global mana denominator is not positive",
+        ));
+    }
+    Ok(denominator)
 }
 
 fn decode_level_one_goat_stage_point(runtime: &RuntimeSnapshot) -> Result<Position> {
@@ -695,6 +1881,14 @@ fn parse_metadata(manifest: &serde_json::Map<String, Value>) -> Result<LevelMeta
         capture_frame: as_u32(
             require_value(capture, "frame", "manifest.capture")?,
             "manifest.capture.frame",
+        )?,
+        vga_resolution_selector: as_u8(
+            require_value(
+                require_object(manifest, "presentation_dependencies", "manifest")?,
+                "vga_resolution_selector",
+                "manifest.presentation_dependencies",
+            )?,
+            "manifest.presentation_dependencies.vga_resolution_selector",
         )?,
     })
 }
@@ -877,6 +2071,9 @@ fn parse_entities(bytes: &[u8]) -> Result<Vec<EntitySnapshot>> {
             ENTITY_PARAMETER_COUNT,
             "entity parameter relation",
         )?;
+        let particle_parameter_raw = read_i16(record, 94, "entity particle parameter index")?;
+        let particle_parameter_index =
+            (particle_parameter_raw >= 0).then(|| particle_parameter_raw.cast_unsigned());
         let domain = read_u8(record, 168, "entity special domain")?;
         if record[169..172] != [0, 0, 0] {
             return Err(NativeWorldError::new(format!(
@@ -906,10 +2103,13 @@ fn parse_entities(bytes: &[u8]) -> Result<Vec<EntitySnapshot>> {
                 EntityAuthority::Inactive
             },
             active,
+            max_life: read_i32(record, 8, "entity max life")?,
+            life: read_i32(record, 12, "entity life")?,
             next_relation: next,
             class: read_u8(record, 67, "entity class")?,
             model: read_u8(record, 68, "entity model")?,
             control_flags: read_u32(record, 16, "entity control flags")?,
+            entity_rng: read_u16(record, 20, "entity RNG")?,
             action: read_u8(record, 73, "entity action")?,
             action_marker: read_i8(record, 64, "entity action marker")?,
             level_gate: read_i8(record, 74, "entity level gate")?,
@@ -927,6 +2127,7 @@ fn parse_entities(bytes: &[u8]) -> Result<Vec<EntitySnapshot>> {
             actual_speed: read_i16(record, 134, "entity actual speed")?,
             mana_cost: read_i32(record, 144, "entity mana cost")?,
             mana: read_i32(record, 148, "entity mana")?,
+            particle_parameter_index,
             parameter_relation,
             special_relation,
             record: record.to_vec().into_boxed_slice(),
@@ -1134,7 +2335,7 @@ fn parse_runtime(bytes: &[u8]) -> Result<RuntimeSnapshot> {
         local_player_slot: u8::try_from(local_player).expect("validated player slot"),
         player_count: u8::try_from(player_count).expect("validated player count"),
         maptype_music: read_i32(bytes, 32, "runtime maptype music")?,
-        stage_index: read_u8(bytes, 66, "runtime stage index")?,
+        stage_index: read_u8(bytes, 65, "runtime stage index")?,
         objective_textbox_ticks: read_u8(bytes, 70, "runtime objective textbox ticks")?,
         stages: stages.into_boxed_slice(),
         stage_variables: stage_variables.into_boxed_slice(),
@@ -1878,7 +3079,7 @@ fn parse_closure(
     Ok((expected_closure_hash, refs))
 }
 
-fn read_audio_cache_output(root: &Path, relative: &str) -> Result<Vec<u8>> {
+fn read_owner_cache_output(root: &Path, relative: &str) -> Result<Vec<u8>> {
     let relative_path = Path::new(relative);
     if relative_path.is_absolute()
         || relative_path
@@ -1886,36 +3087,44 @@ fn read_audio_cache_output(root: &Path, relative: &str) -> Result<Vec<u8>> {
             .any(|component| !matches!(component, Component::Normal(_)))
     {
         return Err(NativeWorldError::new(
-            "audio cache output path is not a confined relative path",
+            "owner cache output path is not a confined relative path",
         ));
     }
     let root = root
         .canonicalize()
-        .map_err(|error| NativeWorldError::new(format!("cannot resolve audio cache: {error}")))?;
+        .map_err(|error| NativeWorldError::new(format!("cannot resolve owner cache: {error}")))?;
     let candidate = root.join(relative_path);
     if fs::symlink_metadata(&candidate)
-        .map_err(|error| NativeWorldError::new(format!("cannot inspect audio output: {error}")))?
+        .map_err(|error| NativeWorldError::new(format!("cannot inspect owner output: {error}")))?
         .file_type()
         .is_symlink()
     {
-        return Err(NativeWorldError::new("audio cache output is a symlink"));
+        return Err(NativeWorldError::new("owner cache output is a symlink"));
     }
     let resolved = candidate
         .canonicalize()
-        .map_err(|error| NativeWorldError::new(format!("cannot resolve audio output: {error}")))?;
+        .map_err(|error| NativeWorldError::new(format!("cannot resolve owner output: {error}")))?;
     if !resolved.starts_with(&root) {
-        return Err(NativeWorldError::new("audio cache output escapes its root"));
+        return Err(NativeWorldError::new("owner cache output escapes its root"));
     }
     read_file(&resolved)
 }
 
-fn append_level_one_audio_refs(
+#[derive(Debug, Default)]
+struct LevelOneCacheAssets {
+    sound_asset_refs: BTreeMap<u16, u32>,
+    music_asset_ref: Option<u32>,
+    goat_tmap_bank: Option<GoatTmapBank>,
+    castle_stage_one_footprint: Option<CastleBuildFootprint>,
+}
+
+fn append_level_one_cache_assets(
     root: &Path,
     package_sha256: &str,
     closure_sha256: &str,
     refs: &mut Vec<AssetRef>,
-) -> Result<(BTreeMap<u16, u32>, Option<u32>)> {
-    let manifest_bytes = read_audio_cache_output(root, "manifest.json")?;
+) -> Result<LevelOneCacheAssets> {
+    let manifest_bytes = read_owner_cache_output(root, "manifest.json")?;
     if sha256_hex(&manifest_bytes) != AUDIO_CACHE_MANIFEST_SHA256 {
         return Err(NativeWorldError::new(
             "owner audio cache manifest is not the qualified Level 1 manifest",
@@ -1965,6 +3174,12 @@ fn append_level_one_audio_refs(
         }
     }
     let assets = require_object(manifest, "assets", "audio cache manifest")?;
+    let castle_asset = require_object(assets, "level1_castle_stage", "owner cache assets")?;
+    require_exact_u64(castle_asset, "build_index", 1, "Castle cache asset")?;
+    require_exact_u64(castle_asset, "effective_width", 8, "Castle cache asset")?;
+    require_exact_u64(castle_asset, "effective_height", 8, "Castle cache asset")?;
+    let castle_descriptor_path = require_string(castle_asset, "path", "Castle cache asset")?;
+    let castle_cells_path = require_string(castle_asset, "cells_path", "Castle cache asset")?;
     let audio = require_object(assets, "level1_audio", "audio cache assets")?;
     let sound_path = require_string(audio, "sound_descriptor_path", "audio cache Level 1 assets")?;
     let music_path = require_string(audio, "music_descriptor_path", "audio cache Level 1 assets")?;
@@ -1972,7 +3187,7 @@ fn append_level_one_audio_refs(
         let (expected_hash, expected_bytes) = outputs
             .get(path)
             .ok_or_else(|| NativeWorldError::new(format!("audio output is undeclared: {path}")))?;
-        let bytes = read_audio_cache_output(root, path)?;
+        let bytes = read_owner_cache_output(root, path)?;
         if bytes.len() as u64 != *expected_bytes || sha256_hex(&bytes) != *expected_hash {
             return Err(NativeWorldError::new(format!(
                 "audio output hash/size mismatch: {path}"
@@ -1980,6 +3195,92 @@ fn append_level_one_audio_refs(
         }
         Ok(bytes)
     };
+
+    let castle_descriptor_bytes = load_output(castle_descriptor_path)?;
+    let castle_descriptor: Value =
+        serde_json::from_slice(&castle_descriptor_bytes).map_err(|error| {
+            NativeWorldError::new(format!("invalid Castle BUILD descriptor: {error}"))
+        })?;
+    let castle_descriptor = as_object(&castle_descriptor, "Castle BUILD descriptor")?;
+    if require_string(castle_descriptor, "schema", "Castle BUILD descriptor")?
+        != "mc2-level1-castle-build-footprint/v1"
+    {
+        return Err(NativeWorldError::new(
+            "Castle BUILD descriptor schema mismatch",
+        ));
+    }
+    require_exact_u64(
+        castle_descriptor,
+        "build_index",
+        1,
+        "Castle BUILD descriptor",
+    )?;
+    require_exact_u64(
+        castle_descriptor,
+        "vga_resolution_selector",
+        1,
+        "Castle BUILD descriptor",
+    )?;
+    let dimensions = require_object(castle_descriptor, "dimensions", "Castle BUILD descriptor")?;
+    let raw = require_object(dimensions, "raw_tab", "Castle BUILD dimensions")?;
+    let runtime = require_object(dimensions, "loader_runtime", "Castle BUILD dimensions")?;
+    let effective = require_object(
+        dimensions,
+        "castle_consumer_effective",
+        "Castle BUILD dimensions",
+    )?;
+    for (row, width, height, label) in [
+        (raw, 8, 8, "raw Castle BUILD dimensions"),
+        (runtime, 16, 16, "runtime Castle BUILD dimensions"),
+        (effective, 8, 8, "effective Castle BUILD dimensions"),
+    ] {
+        require_exact_u64(row, "width", width, label)?;
+        require_exact_u64(row, "height", height, label)?;
+    }
+    if require_hash_string(raw, "tab_record_sha256", "Castle BUILD raw dimensions")?
+        != "27a9da49ded1a0aa1a4e01dbaab8634404f5bf9d6789a5785884e94e35e2f804"
+    {
+        return Err(NativeWorldError::new(
+            "Castle BUILD TAB record identity changed",
+        ));
+    }
+    let cells = require_object(castle_descriptor, "cells", "Castle BUILD descriptor")?;
+    if require_string(cells, "path", "Castle BUILD cells")? != castle_cells_path
+        || require_hash_string(cells, "sha256", "Castle BUILD cells")?
+            != "f9fb9d8a5c6d2841849bba03479e6503966fa4ec14020508c343296602aa8ae3"
+    {
+        return Err(NativeWorldError::new(
+            "Castle BUILD descriptor cell binding changed",
+        ));
+    }
+    require_exact_u64(cells, "bytes", 128, "Castle BUILD cells")?;
+    require_exact_u64(cells, "stride_bytes", 2, "Castle BUILD cells")?;
+    let castle_cells = load_output(castle_cells_path)?;
+    if sha256_hex(&castle_cells)
+        != "f9fb9d8a5c6d2841849bba03479e6503966fa4ec14020508c343296602aa8ae3"
+    {
+        return Err(NativeWorldError::new(
+            "Castle BUILD materialized cells changed",
+        ));
+    }
+    let parameters = require_object(
+        castle_descriptor,
+        "building_parameters",
+        "Castle BUILD descriptor",
+    )?;
+    require_exact_u64(parameters, "record_index", 1, "Castle BUILD parameters")?;
+    require_exact_u64(parameters, "word_0", 2, "Castle BUILD parameters")?;
+    require_exact_u64(parameters, "flags", 3, "Castle BUILD parameters")?;
+    require_exact_u64(parameters, "byte_3", 0, "Castle BUILD parameters")?;
+    if require_hash_string(parameters, "record_sha256", "Castle BUILD parameters")?
+        != "7d6e4762a22170651b49bef86a5bb9d5de987f5d5f3e546901291fd24c411d39"
+    {
+        return Err(NativeWorldError::new(
+            "Castle BLDGPRM record identity changed",
+        ));
+    }
+    let castle_stage_one_footprint = CastleBuildFootprint::from_owner_cells(1, 8, 8, &castle_cells)
+        .map_err(NativeWorldError::new)?;
 
     let sound_bytes = load_output(sound_path)?;
     let sound: Value = serde_json::from_slice(&sound_bytes)
@@ -1992,7 +3293,10 @@ fn append_level_one_audio_refs(
     require_exact_u64(sound, "quality", 822, "sound descriptor")?;
     require_exact_u64(sound, "quality_index", 3, "sound descriptor")?;
     let sound_rows = require_array(sound, "level1_assets", "sound descriptor")?;
-    let expected_sound_ids = [1_u16, 2, 5, 12, 29, 31, 37, 39, 43, 46];
+    let expected_sound_ids = [
+        1_u16, 2, 3, 4, 5, 8, 9, 10, 12, 15, 16, 18, 19, 27, 29, 30, 31, 33, 34, 37, 39, 40, 41,
+        43, 44, 46, 54, 55, 56, 57, 63,
+    ];
     if sound_rows.len() != expected_sound_ids.len() {
         return Err(NativeWorldError::new(
             "sound descriptor Level 1 mapping count changed",
@@ -2120,7 +3424,234 @@ fn append_level_one_audio_refs(
             event,
         },
     });
-    Ok((sound_refs, Some(music_index)))
+    let terrain_assets = require_object(assets, "terrain_materials", "owner cache assets")?;
+    let materials_path = require_string(
+        terrain_assets,
+        "path",
+        "owner cache terrain-material assets",
+    )?;
+    let materials_bytes = load_output(materials_path)?;
+    let materials: Value = serde_json::from_slice(&materials_bytes)
+        .map_err(|error| NativeWorldError::new(format!("invalid terrain materials: {error}")))?;
+    let materials = as_object(&materials, "terrain materials")?;
+    let tmaps1 = require_object(materials, "tmaps1", "terrain materials")?;
+    let golden = require_object(tmaps1, "goat_animation_golden", "TMAPS1 materials")?;
+    if require_hash_string(golden, "file_sha256", "Goat TMAP golden")?
+        != "a5c3d430ba22c3503453124d76119ed7b93ff6ea8445e23cd616faa1015b5f64"
+        || require_hash_string(golden, "source_oracle_manifest_sha256", "Goat TMAP golden")?
+            != "cad16d830ece1f6422ec4f3f6a0a5ab4954fe6c20344e2e03c6ce1f0bc41e73b"
+        || require_string(golden, "selector_state_scope", "Goat TMAP golden")?
+            != "selector_global_shared_TMAP_state_not_per_entity"
+    {
+        return Err(NativeWorldError::new(
+            "Goat TMAP golden identity or selector scope changed",
+        ));
+    }
+    let textures = require_array(tmaps1, "textures", "TMAPS1 materials")?;
+    let expected_cursors = [
+        [490_u32, 818, 1146, 1472, 1812],
+        [710_u32, 1196, 1700, 2202, 2724],
+        [490_u32, 822, 1152, 1482, 1816],
+    ];
+    let expected_hashes = [
+        [
+            "cd5e773ab7c4e4e88536c5a690a8a1794a1b67361b402ab8365e9df3e59a1e9d",
+            "502c7e18c327f09578c7ebcd31c351cd2c537bae9482c3f7630a7035be130190",
+            "b22359a1aebc1f7afea7e5aa7a4e8c5bdfc5b238ca9a7f162e110470b3350103",
+            "2011b3fb136f072ca7dcdae7199b2e8b9dbbdb71bdaa812b1bd659b695c51d12",
+            "cd5e773ab7c4e4e88536c5a690a8a1794a1b67361b402ab8365e9df3e59a1e9d",
+        ],
+        [
+            "acea2351981a1fd9aefaf7a2713bc00c4c2b2461dd087b9a2621e7fa3fb819a3",
+            "4068c077eb4f66e39ae3bd13202462b477a418aa7781822d09f0feb3337765c7",
+            "d5d9ccc838119171cb7ac06315e6e6994e72c058cf40b3b9a9b6fb6709e8931f",
+            "f0f656d86c51628b5f0aac90932b79b448f64ef1ef38b41fcffc9d275df71fb1",
+            "acea2351981a1fd9aefaf7a2713bc00c4c2b2461dd087b9a2621e7fa3fb819a3",
+        ],
+        [
+            "7d081998c98ba0aa2bb57d4956926f3b8c80b31ae6ee481f8c9174551d6db722",
+            "897331a6a567a6f64be563755ba33a5ab1e75e0a1d77d5a1fc9a67ca8657d44a",
+            "22d9b6b2bad1a7fef49afcb05284c513f14200852c5cbaad097f684a0197f940",
+            "752525ceb8c9a097f0676def3bdeb58258bd093ce7efacf3fe170dc7ec4cbc84",
+            "7d081998c98ba0aa2bb57d4956926f3b8c80b31ae6ee481f8c9174551d6db722",
+        ],
+    ];
+    let expected_payload_bytes = [1818_u32, 2730, 1822];
+    let expected_state_names = [
+        "reset-base",
+        "frame-01",
+        "frame-02",
+        "frame-03",
+        "frame-04",
+        "closure-frame-01",
+    ];
+    let mut selector_rows = Vec::with_capacity(GOAT_TMAP_SELECTORS.len());
+    for selector_ordinal in 0..GOAT_TMAP_SELECTORS.len() {
+        let selector_row = (|| -> Result<_> {
+            let expected_selector = GOAT_TMAP_SELECTORS[selector_ordinal];
+            let texture = textures
+                .iter()
+                .find(|texture| {
+                    texture
+                        .as_object()
+                        .and_then(|object| object.get("index"))
+                        .and_then(Value::as_u64)
+                        == Some(u64::from(expected_selector))
+                })
+                .ok_or_else(|| {
+                    NativeWorldError::new(format!(
+                        "Goat TMAP selector {expected_selector} is absent"
+                    ))
+                })?;
+            let texture = as_object(texture, "Goat TMAP texture")?;
+            if require_value(texture, "animated", "Goat TMAP texture")?.as_bool() != Some(true)
+                || require_exact_u64(texture, "frame_count", 4, "Goat TMAP texture").is_err()
+                || require_exact_u64(texture, "header_word", 5123, "Goat TMAP texture").is_err()
+                || require_exact_u64(
+                    texture,
+                    "animation_or_allocation_group",
+                    152,
+                    "Goat TMAP texture",
+                )
+                .is_err()
+                || require_string(texture, "animation_materialization", "Goat TMAP texture")?
+                    != "exact_qualified_Goat_SS2_four_transition_states; selector_global_shared_TMAP_state_not_per_entity"
+            {
+                return Err(NativeWorldError::new(format!(
+                    "Goat TMAP selector {expected_selector} descriptor changed"
+                )));
+            }
+            let width = as_u16(
+                require_value(texture, "width", "Goat TMAP texture")?,
+                "Goat TMAP width",
+            )?;
+            let height = as_u16(
+                require_value(texture, "height", "Goat TMAP texture")?,
+                "Goat TMAP height",
+            )?;
+            let expected_width = if expected_selector == 153 { 32 } else { 22 };
+            if width != expected_width || height != 22 {
+                return Err(NativeWorldError::new(format!(
+                    "Goat TMAP selector {expected_selector} dimensions changed"
+                )));
+            }
+            let decoded_path =
+                require_string(texture, "decoded_payload_path", "Goat TMAP texture")?;
+            let decoded_payload = load_output(decoded_path)?;
+            if decoded_payload.len() != expected_payload_bytes[selector_ordinal] as usize {
+                return Err(NativeWorldError::new(format!(
+                    "Goat TMAP selector {expected_selector} payload extent changed"
+                )));
+            }
+            let rows = require_array(texture, "animation_states", "Goat TMAP texture")?;
+            if rows.len() != expected_state_names.len() {
+                return Err(NativeWorldError::new(format!(
+                    "Goat TMAP selector {expected_selector} state count changed"
+                )));
+            }
+            let mut runtime_states = Vec::with_capacity(GOAT_TMAP_STATE_COUNT);
+            for (state_ordinal, row) in rows.iter().take(GOAT_TMAP_STATE_COUNT).enumerate() {
+                let row = as_object(row, "Goat TMAP animation state")?;
+                if require_string(row, "state", "Goat TMAP animation state")?
+                    != expected_state_names[state_ordinal]
+                    || as_u32(
+                        require_value(row, "stream_cursor", "Goat TMAP animation state")?,
+                        "Goat TMAP stream cursor",
+                    )? != expected_cursors[selector_ordinal][state_ordinal]
+                    || as_u8(
+                        require_value(row, "frame_index", "Goat TMAP animation state")?,
+                        "Goat TMAP frame index",
+                    )? != state_ordinal as u8 + 1
+                    || as_u16(
+                        require_value(row, "width", "Goat TMAP animation state")?,
+                        "Goat TMAP state width",
+                    )? != width
+                    || as_u16(
+                        require_value(row, "height", "Goat TMAP animation state")?,
+                        "Goat TMAP state height",
+                    )? != height
+                    || require_hash_string(row, "sha256", "Goat TMAP animation state")?
+                        != expected_hashes[selector_ordinal][state_ordinal]
+                {
+                    return Err(NativeWorldError::new(format!(
+                        "Goat TMAP selector {expected_selector} state {state_ordinal} changed"
+                    )));
+                }
+                let path = require_string(row, "indices_path", "Goat TMAP animation state")?;
+                let pixels = load_output(path)?;
+                let declared_bytes = require_value(row, "bytes", "Goat TMAP animation state")?
+                    .as_u64()
+                    .ok_or_else(|| {
+                        NativeWorldError::new("Goat TMAP state byte count is not u64")
+                    })?;
+                if pixels.len() as u64 != declared_bytes
+                    || sha256_hex(&pixels) != expected_hashes[selector_ordinal][state_ordinal]
+                {
+                    return Err(NativeWorldError::new(format!(
+                        "Goat TMAP selector {expected_selector} state payload changed"
+                    )));
+                }
+                runtime_states.push(GoatTmapFrame {
+                    state_ordinal: state_ordinal as u8,
+                    frame_index: state_ordinal as u8 + 1,
+                    stream_cursor: expected_cursors[selector_ordinal][state_ordinal],
+                    width,
+                    height,
+                    sha256: expected_hashes[selector_ordinal][state_ordinal].to_owned(),
+                    pixels: pixels.into_boxed_slice(),
+                });
+            }
+            let closure = as_object(&rows[5], "Goat TMAP closure state")?;
+            if require_string(closure, "state", "Goat TMAP closure state")?
+                != expected_state_names[5]
+                || as_u32(
+                    require_value(closure, "stream_cursor", "Goat TMAP closure state")?,
+                    "Goat TMAP closure cursor",
+                )? != expected_cursors[selector_ordinal][1]
+                || as_u8(
+                    require_value(closure, "frame_index", "Goat TMAP closure state")?,
+                    "Goat TMAP closure frame index",
+                )? != 2
+                || require_hash_string(closure, "sha256", "Goat TMAP closure state")?
+                    != expected_hashes[selector_ordinal][1]
+                || require_string(closure, "indices_path", "Goat TMAP closure state")?
+                    != require_string(
+                        as_object(&rows[1], "Goat TMAP frame-01 state")?,
+                        "indices_path",
+                        "Goat TMAP frame-01 state",
+                    )?
+            {
+                return Err(NativeWorldError::new(format!(
+                    "Goat TMAP selector {expected_selector} closure changed"
+                )));
+            }
+            if runtime_states[4].pixels != runtime_states[0].pixels {
+                return Err(NativeWorldError::new(format!(
+                    "Goat TMAP selector {expected_selector} frame 4 does not restore reset pixels"
+                )));
+            }
+            let states: [GoatTmapFrame; GOAT_TMAP_STATE_COUNT] = runtime_states
+                .try_into()
+                .map_err(|_| NativeWorldError::new("Goat TMAP runtime state count changed"))?;
+            Ok(GoatTmapSelectorBank {
+                selector: expected_selector,
+                stream_start: expected_cursors[selector_ordinal][0],
+                payload_bytes: expected_payload_bytes[selector_ordinal],
+                states,
+            })
+        })()?;
+        selector_rows.push(selector_row);
+    }
+    let selectors: [GoatTmapSelectorBank; GOAT_TMAP_SELECTORS.len()] = selector_rows
+        .try_into()
+        .map_err(|_| NativeWorldError::new("Goat TMAP selector count changed"))?;
+    let bank = GoatTmapBank::new(selectors).map_err(NativeWorldError::new)?;
+    Ok(LevelOneCacheAssets {
+        sound_asset_refs: sound_refs,
+        music_asset_ref: Some(music_index),
+        goat_tmap_bank: Some(bank),
+        castle_stage_one_footprint: Some(castle_stage_one_footprint),
+    })
 }
 
 fn flight_state_json(state: &FlightState) -> Value {
@@ -2601,6 +4132,22 @@ mod tests {
             None
         );
         assert_eq!(world.entities.len(), 1_000);
+        assert_eq!(
+            world.entities.iter().filter(|entity| entity.active).count(),
+            177
+        );
+        assert_eq!(
+            world
+                .entities
+                .iter()
+                .filter(|entity| {
+                    entity.active
+                        && entity.control_flags & crate::level1_mission::SOURCE_REPLACEABLE_FLAG
+                            != 0
+                })
+                .count(),
+            31
+        );
         assert_eq!(world.players.len(), 8);
         assert_eq!(world.asset_refs.len(), 76);
         assert_eq!(world.runtime.objective_textbox_ticks, 33);
@@ -2620,7 +4167,7 @@ mod tests {
         );
         assert_eq!(
             world.closure_sha256(),
-            "1c3774ca5c032c1a7b8b1c48870840eee33011a2830d08c51f3104fb5c5bcc12"
+            "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719"
         );
         assert_eq!(state_hash(world.reset_state()), 0x9da4_bc91_af58_f3ce);
         assert_eq!(
@@ -2638,34 +4185,358 @@ mod tests {
         assert_eq!(world.reset_state.entity_phase, 153);
         assert_eq!(world.reset_state.ambient_loop_5_distance, 2_048);
         assert_eq!(world.reset_state.ambient_loop_31_distance, 1_746);
+        assert_eq!(
+            world.presentation.particles[usize::from(MANA_CARRIER_RENDER_INDEX)],
+            ParticleParameter {
+                base_tmap: MANA_CARRIER_BASE_TMAP,
+                word_2: 8_492,
+                word_4: 42,
+                speed: 545,
+                rotation_speed: MANA_CARRIER_LOGICAL_HEIGHT,
+                byte_10: 0,
+                byte_11: -16,
+                render_mode: MANA_CARRIER_RENDER_MODE,
+                byte_13: 0,
+            }
+        );
+        let (castle_blockers, building_blockers) = world.level1_mission.castle_placement_blockers();
+        assert!(castle_blockers.is_empty());
+        assert_eq!(building_blockers.len(), 47);
+        let expected_buildings = world
+            .entities
+            .iter()
+            .filter(|entity| entity.active && entity.class == 10 && entity.model == 45);
+        for (blocker, entity) in building_blockers.iter().zip(expected_buildings) {
+            assert_eq!(*blocker, entity.castle_placement_blocker());
+        }
     }
 
     #[test]
-    fn qualified_owner_cache_adds_only_descriptor_backed_level_one_audio_refs() {
+    fn owner_level_one_has_a_qualified_castle_site_near_the_stage_three_route() {
+        let (package, closure) = fixture_paths();
+        let world = NativeWorld::load(package, closure).expect("validated package M");
+        let (castles, buildings) = world.level1_mission.castle_placement_blockers();
+        let former_site = Position {
+            x: 50_048,
+            y: 51_584,
+            z: 1_200,
+        };
+        let qualified_site = Position {
+            x: 49_920,
+            y: 43_776,
+            z: 1_200,
+        };
+        assert!(!crate::level1_mission::castle_placement_valid(
+            &world,
+            former_site,
+            castles,
+            buildings
+        ));
+        assert!(crate::level1_mission::castle_placement_valid(
+            &world,
+            qualified_site,
+            castles,
+            buildings
+        ));
+    }
+
+    #[test]
+    fn qualified_level_one_castle_build_reaches_every_owner_height_transactionally() {
+        let (package, closure) = fixture_paths();
+        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let world = NativeWorld::load_with_owner_cache(
+            package,
+            closure,
+            private.join("generated/level1-unity-asset-cache"),
+        )
+        .expect("validated package M and owner cache");
+        let footprint = world
+            .level1_mission()
+            .castle_stage_one_footprint()
+            .expect("qualified BUILD[1]");
+        let candidate = Position {
+            x: 49_920,
+            y: 43_776,
+            z: 1_200,
+        };
+        let mut root = Position {
+            x: candidate.x & 0xff00,
+            y: candidate.y & 0xff00,
+            z: world.ground_height(candidate),
+        };
+        if ((root.x >> 8) + (root.y >> 8)) & 1 != 0 {
+            root.x = root.x.wrapping_add(256);
+        }
+        let start_x = (root.x >> 8) as u8 - footprint.width / 2;
+        let start_y = (root.y >> 8) as u8 - footprint.height / 2;
+        let mut base = u8::MAX;
+        for offset in 0..footprint.width {
+            for (x, y) in [
+                (start_x.wrapping_add(offset), start_y),
+                (
+                    start_x.wrapping_add(offset),
+                    start_y.wrapping_add(footprint.height),
+                ),
+            ] {
+                base = base.min(world.terrain_planes().ground_heights[terrain_index(x, y)]);
+            }
+        }
+        for offset in 0..footprint.height {
+            for (x, y) in [
+                (
+                    start_x.wrapping_add(footprint.width),
+                    start_y.wrapping_add(offset),
+                ),
+                (start_x, start_y.wrapping_add(offset)),
+            ] {
+                base = base.min(world.terrain_planes().ground_heights[terrain_index(x, y)]);
+            }
+        }
+        let anchor = Position {
+            z: i16::from(base) * 32,
+            ..root
+        };
+        let mut terrain = SessionTerrain::from_world(&world);
+        let unchanged = terrain.clone();
+        let error = terrain
+            .apply_castle_update(
+                CastleTerrainUpdate::ConstructionPass {
+                    position: anchor,
+                    remaining: 0,
+                },
+                footprint,
+            )
+            .expect_err("a malformed construction timer must fail closed");
+        assert!(error.contains("outside 1..=18"));
+        assert_eq!(
+            terrain, unchanged,
+            "a rejected update must not mutate planes, RNG, or sequence"
+        );
+
+        let mut first_session = world.session();
+        let mut second_session = world.session();
+        first_session
+            .terrain
+            .apply_castle_update(
+                CastleTerrainUpdate::ConstructionPass {
+                    position: anchor,
+                    remaining: 18,
+                },
+                footprint,
+            )
+            .expect("qualified first construction pass");
+        assert_ne!(first_session.terrain, second_session.terrain);
+        assert_eq!(second_session.terrain.mutation_sequence(), 0);
+        first_session.reset();
+        second_session.reset();
+        assert_eq!(first_session.terrain, second_session.terrain);
+        assert_eq!(first_session.terrain, SessionTerrain::from_world(&world));
+
+        for remaining in (1..=18).rev() {
+            terrain
+                .apply_castle_update(
+                    CastleTerrainUpdate::ConstructionPass {
+                        position: anchor,
+                        remaining,
+                    },
+                    footprint,
+                )
+                .expect("qualified Level 1 footprint does not require an unsupported topology");
+        }
+        terrain
+            .apply_castle_update(
+                CastleTerrainUpdate::ConstructionCompleted { position: anchor },
+                footprint,
+            )
+            .expect("qualified completion");
+        for row in 0..footprint.height {
+            for column in 0..footprint.width {
+                let cell = footprint.cells()
+                    [usize::from(row) * usize::from(footprint.width) + usize::from(column)];
+                assert_ne!(cell[1], 0xff);
+                assert_eq!(
+                    terrain.planes().ground_heights
+                        [terrain_index(start_x.wrapping_add(column), start_y.wrapping_add(row))],
+                    base.wrapping_add(cell[1])
+                );
+            }
+        }
+        assert_eq!(terrain.terrain_rng(), 37_256);
+        assert_eq!(terrain.mutation_sequence(), 19);
+        assert_eq!(
+            sha256_hex(&terrain.planes().terrain_types),
+            "6cf4397c008d4ea16e37340bbe819f6d58235e61f8d669260ee9f0ac41e94e16"
+        );
+        assert_eq!(
+            sha256_hex(&terrain.planes().ground_heights),
+            "7eff800ac2a60ccf3314bd917408c65a11c1a5cbe59b52d9670b4ed76b3c4533"
+        );
+        assert_eq!(
+            sha256_hex(&terrain.planes().shading),
+            "ad91ad8c250c0cd4e3bd9248ae9fa7bf95cb72d056921e7f0dbff03c7fdf7ec7"
+        );
+        assert_eq!(
+            sha256_hex(&terrain.planes().angles),
+            "79962c82610ea6abf727a11f82f5351b69355915f11aba9738e4eaca8d18484e"
+        );
+        terrain
+            .apply_castle_update(
+                CastleTerrainUpdate::StageDestroyed {
+                    position: anchor,
+                    entity_rng: 100,
+                },
+                footprint,
+            )
+            .expect("qualified Level 1 teardown");
+        assert_eq!(terrain.terrain_rng(), 33_028);
+        assert_eq!(terrain.mutation_sequence(), 20);
+        assert_eq!(
+            sha256_hex(&terrain.planes().terrain_types),
+            "5793a3375673e55b74dd3b62159ff6b239241035a3100d599987350b6faa24ae"
+        );
+        assert_eq!(
+            sha256_hex(&terrain.planes().ground_heights),
+            "50f3a45214f435ac3b8423254a69b7cc87b80a8039085c25a0fe2033eed1ecba"
+        );
+        assert_eq!(
+            sha256_hex(&terrain.planes().shading),
+            "f1a63a2c818a1e16f8e781dd8ef0777833b5194ac8f69a604723408c23e486a8"
+        );
+        assert_eq!(
+            sha256_hex(&terrain.planes().angles),
+            "4c72d5ae2beee363ffa2b51ef0b181bcd8c8d5f05ac4a801735ec2722aad3891"
+        );
+        assert_eq!(
+            sha256_hex(&terrain.planes().secondary_heights),
+            "de2f256064a0af797747c2b97505dc0b9f3df0de4f489eac731c23ae9ca9cc31"
+        );
+        assert_eq!(
+            terrain.planes().entity_indices,
+            world.terrain_planes().entity_indices
+        );
+    }
+
+    #[test]
+    fn qualified_owner_cache_adds_descriptor_backed_audio_and_goat_tmap_states() {
         let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let mut refs = Vec::new();
-        let (sound, music) = append_level_one_audio_refs(
+        let cache = append_level_one_cache_assets(
             &private.join("generated/level1-unity-asset-cache"),
             "730d2fa084265df839f3f2b55ed766ac167a8b152ca4631b5ded9d0bb9104ac8",
-            "1c3774ca5c032c1a7b8b1c48870840eee33011a2830d08c51f3104fb5c5bcc12",
+            "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719",
             &mut refs,
         )
         .expect("qualified owner audio cache");
-        assert_eq!(refs.len(), 11);
+        let sound = cache.sound_asset_refs;
+        let music = cache.music_asset_ref;
+        let goat_tmaps = cache.goat_tmap_bank;
+        let castle = cache
+            .castle_stage_one_footprint
+            .expect("qualified Castle BUILD footprint");
+        assert_eq!((castle.index, castle.width, castle.height), (1, 8, 8));
+        assert_eq!(castle.cells().len(), 64);
+        assert_eq!(refs.len(), 32);
         assert_eq!(
             sound.keys().copied().collect::<Vec<_>>(),
-            [1, 2, 5, 12, 29, 31, 37, 39, 43, 46]
+            [
+                1, 2, 3, 4, 5, 8, 9, 10, 12, 15, 16, 18, 19, 27, 29, 30, 31, 33, 34, 37, 39, 40,
+                41, 43, 44, 46, 54, 55, 56, 57, 63
+            ]
         );
-        assert_eq!(sound[&12], 3);
+        assert_eq!(sound[&12], 8);
         assert_eq!(
-            refs[3].asset_id,
+            refs[8].asset_id,
             "owner_cache:audio/sound-bank-1-822.json#sound_id=12"
         );
-        assert_eq!(music, Some(10));
+        assert_eq!(music, Some(31));
         assert_eq!(
-            refs[10].content_address,
+            refs[31].content_address,
             "sha256:03b3f951048504d8a6d30611d6c44a62ec1c463726b30c33c16e3cb69824605d"
         );
+        let goat_tmaps = goat_tmaps.expect("qualified Goat TMAP bank");
+        assert_eq!(
+            std::array::from_fn(|ordinal| goat_tmaps.selectors()[ordinal].selector),
+            GOAT_TMAP_SELECTORS
+        );
+        assert_eq!(
+            std::array::from_fn(|ordinal| {
+                goat_tmaps.selectors()[0].states[ordinal].stream_cursor
+            }),
+            [490, 818, 1146, 1472, 1812]
+        );
+        assert_eq!(goat_tmaps.selectors()[1].states[0].pixels.len(), 32 * 22);
+    }
+
+    #[test]
+    fn qualified_goat_tmap_clocks_materialize_every_exact_pixel_state_and_replay() {
+        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let cache = append_level_one_cache_assets(
+            &private.join("generated/level1-unity-asset-cache"),
+            "730d2fa084265df839f3f2b55ed766ac167a8b152ca4631b5ded9d0bb9104ac8",
+            "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719",
+            &mut Vec::new(),
+        )
+        .expect("qualified owner cache");
+        let bank = cache.goat_tmap_bank.expect("qualified Goat TMAP bank");
+        let expected_hashes = [
+            [
+                "cd5e773ab7c4e4e88536c5a690a8a1794a1b67361b402ab8365e9df3e59a1e9d",
+                "502c7e18c327f09578c7ebcd31c351cd2c537bae9482c3f7630a7035be130190",
+                "b22359a1aebc1f7afea7e5aa7a4e8c5bdfc5b238ca9a7f162e110470b3350103",
+                "2011b3fb136f072ca7dcdae7199b2e8b9dbbdb71bdaa812b1bd659b695c51d12",
+                "cd5e773ab7c4e4e88536c5a690a8a1794a1b67361b402ab8365e9df3e59a1e9d",
+            ],
+            [
+                "acea2351981a1fd9aefaf7a2713bc00c4c2b2461dd087b9a2621e7fa3fb819a3",
+                "4068c077eb4f66e39ae3bd13202462b477a418aa7781822d09f0feb3337765c7",
+                "d5d9ccc838119171cb7ac06315e6e6994e72c058cf40b3b9a9b6fb6709e8931f",
+                "f0f656d86c51628b5f0aac90932b79b448f64ef1ef38b41fcffc9d275df71fb1",
+                "acea2351981a1fd9aefaf7a2713bc00c4c2b2461dd087b9a2621e7fa3fb819a3",
+            ],
+            [
+                "7d081998c98ba0aa2bb57d4956926f3b8c80b31ae6ee481f8c9174551d6db722",
+                "897331a6a567a6f64be563755ba33a5ab1e75e0a1d77d5a1fc9a67ca8657d44a",
+                "22d9b6b2bad1a7fef49afcb05284c513f14200852c5cbaad097f684a0197f940",
+                "752525ceb8c9a097f0676def3bdeb58258bd093ce7efacf3fe170dc7ec4cbc84",
+                "7d081998c98ba0aa2bb57d4956926f3b8c80b31ae6ee481f8c9174551d6db722",
+            ],
+        ];
+        let expected_ordinals = [0_u8, 1, 2, 3, 4, 1];
+        let mut clocks = GoatTmapClocks::from_bank(&bank);
+        let reset_pixels: [Box<[u8]>; GOAT_TMAP_SELECTORS.len()] =
+            std::array::from_fn(|ordinal| clocks.states()[ordinal].pixels().into());
+
+        for (step, expected_ordinal) in expected_ordinals.into_iter().enumerate() {
+            for (selector_ordinal, clock) in clocks.states().iter().enumerate() {
+                assert_eq!(clock.state_ordinal(), expected_ordinal);
+                assert_eq!(
+                    sha256_hex(clock.pixels()),
+                    expected_hashes[selector_ordinal][usize::from(expected_ordinal)]
+                );
+            }
+            if expected_ordinal == 4 {
+                for (selector_ordinal, clock) in clocks.states().iter().enumerate() {
+                    assert_eq!(clock.pixels(), reset_pixels[selector_ordinal].as_ref());
+                }
+            }
+            if step + 1 < expected_ordinals.len() {
+                clocks
+                    .latch_draw_attempts(0b111)
+                    .expect("three qualified selectors");
+                clocks.service_unpaused_outer_turn(&bank);
+            }
+        }
+
+        let expected_replay = clocks.clone();
+        clocks.reset(&bank);
+        for _ in 0..5 {
+            clocks
+                .latch_draw_attempts(0b111)
+                .expect("three qualified selectors");
+            clocks.service_unpaused_outer_turn(&bank);
+        }
+        assert_eq!(clocks, expected_replay);
+        assert_eq!(clocks.hash_v1(), expected_replay.hash_v1());
     }
 
     #[test]
@@ -2768,8 +4639,8 @@ mod tests {
         );
         assert_eq!(
             conformance_hash(&first.state, &first.context),
-            0x00cc_7b79_9d69_17fc,
-            "the additive Level 1 session-audio contract is independently pinned"
+            0xe7ec_6bc1_8b5f_e775,
+            "the additive complete Level 1 hand/audio session contract is independently pinned"
         );
         assert_eq!(
             first.context.effects,
@@ -2787,6 +4658,76 @@ mod tests {
         first.reset();
         assert_eq!(first.state, *world.reset_state());
         assert_eq!(first.context, world.session_context());
+    }
+
+    #[test]
+    fn player_fireball_crosses_the_shared_arena_into_goat_death_and_one_mana_sphere() {
+        let (package, closure) = fixture_paths();
+        let world = NativeWorld::load(package, closure).expect("validated package M");
+        let mut session = world.session();
+        let goat = session
+            .live_world
+            .goats()
+            .iter()
+            .find(|goat| goat.active)
+            .expect("Level 1 has an active Goat")
+            .clone();
+
+        session.state.position = Position {
+            x: goat.position.x,
+            y: goat.position.y.wrapping_add(384),
+            z: goat.position.z.wrapping_sub(100),
+        };
+        session.state.yaw = 0;
+        session.state.effective_pitch = 0;
+        session.mission.has_fireball = true;
+        session.mission.player_mana = 1_000;
+        for _ in 0..3 {
+            assert!(session.mission.spawn_fireball(&session.state));
+        }
+
+        for _ in 0..24 {
+            session.step(PlayerCommand::default());
+            if session
+                .live_world
+                .goats()
+                .iter()
+                .find(|candidate| candidate.entity_index == goat.entity_index)
+                .is_some_and(|candidate| !candidate.active)
+            {
+                break;
+            }
+        }
+        let retired = session
+            .live_world
+            .goats()
+            .iter()
+            .find(|candidate| candidate.entity_index == goat.entity_index)
+            .expect("typed Goat row remains addressable after retirement");
+        assert!(!retired.active);
+        let sphere_count = session.mission.mana_spheres().len();
+        assert_eq!(sphere_count, 1);
+        let sphere = session.mission.mana_spheres()[0];
+        assert_eq!(sphere.mana, goat.mana);
+        assert_eq!(sphere.id, u32::from(sphere.source_entity_index));
+        assert_eq!(
+            session.mission.source_slots()[usize::from(sphere.source_entity_index)].entity_rng,
+            sphere.entity_rng
+        );
+
+        for _ in 0..8 {
+            session.step(PlayerCommand::default());
+        }
+        assert_eq!(
+            session.mission.mana_spheres().len(),
+            sphere_count,
+            "retiring the imported Goat must not emit duplicate mana"
+        );
+        assert!(
+            !session
+                .mission
+                .imported_source_slot_is_live(goat.entity_index)
+        );
     }
 
     #[test]
@@ -2854,6 +4795,28 @@ mod tests {
         let mut presentation = fs::read(package.join("presentation.bin")).unwrap();
         presentation[4] ^= 0xff;
         assert!(parse_presentation(&presentation).is_err());
+    }
+
+    #[test]
+    fn carrier_presentation_extent_mutations_fail_closed() {
+        let (package, _) = fixture_paths();
+        let original = fs::read(package.join("presentation.bin")).unwrap();
+        let row = 12 + usize::from(MANA_CARRIER_RENDER_INDEX) * PARTICLE_RECORD_BYTES;
+        for (offset, bytes) in [
+            (6_usize, 544_u16.to_le_bytes()),
+            (8_usize, 799_u16.to_le_bytes()),
+        ] {
+            let mut presentation = original.clone();
+            presentation[row + offset..row + offset + 2].copy_from_slice(&bytes);
+            let parsed = parse_presentation(&presentation).expect("well-formed mutation");
+            let error = validate_level_one_mission_presentation(&parsed).unwrap_err();
+            assert!(error.to_string().contains("169 mismatch"));
+        }
+        let mut presentation = original;
+        presentation[row + 11] = (-15_i8).cast_unsigned();
+        let parsed = parse_presentation(&presentation).expect("well-formed mutation");
+        let error = validate_level_one_mission_presentation(&parsed).unwrap_err();
+        assert!(error.to_string().contains("169 mismatch"));
     }
 
     #[test]

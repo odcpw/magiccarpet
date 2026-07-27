@@ -33,7 +33,10 @@ namespace MagicCarpet.Native.Tests
             Assert.That(baseline.UnwrappedCameraY, Is.EqualTo(independentCameraY));
             AssertGoatPresentationMatchesNative(
                 runtime, 50, independentCameraX, independentCameraY);
-            Assert.That(baseline.RendererEnabled, Is.True);
+            Assert.That(
+                baseline.RendererEnabled,
+                Is.False,
+                "the native world frame replaces the duplicate Unity Goat billboard");
 
             var tickBefore = runtime.QualificationNativeTick;
             var goatHashBefore = runtime.QualificationGoatLiveWorldHash;
@@ -150,6 +153,12 @@ namespace MagicCarpet.Native.Tests
                 "exact Goat lifecycle event count");
             Assert.That(observedLifecycle[0].value0, Is.EqualTo(300));
             Assert.That(
+                observedLifecycle[0].stateHash,
+                Is.EqualTo(removalQueuedHash));
+            Assert.That(
+                observedLifecycle[1].stateHash,
+                Is.EqualTo(removalQueuedHash));
+            Assert.That(
                 observedLifecycle[2].stateHash,
                 Is.EqualTo(removalQueuedHash));
             Assert.That(
@@ -183,7 +192,7 @@ namespace MagicCarpet.Native.Tests
                 afterStaleGeneration.GoatLiveWorldHash,
                 Is.EqualTo(resetProbe.GoatLiveWorldHash));
             AssertResetPresentation(afterStaleGeneration, resetProbe);
-            AssertAllMode20Sectors();
+            AssertAllMode20Sectors(runtime, 50);
 
             Object.Destroy(runtime.gameObject);
             yield return null;
@@ -255,17 +264,17 @@ namespace MagicCarpet.Native.Tests
                 Is.EqualTo(expectedIndicesHashes[probe.MaterialSelector - 152]),
                 "bound indexed texture bytes match the owner-cache selector");
             Assert.That(
+                probe.IndicesTextureBound,
+                Is.True,
+                "actual _Indices binding is the selector-owned texture");
+            Assert.That(
                 probe.MirroredMesh,
                 Is.EqualTo(orientation >= 8),
                 "rear mode-20 orientations use the mirrored mesh");
             Assert.That(
                 probe.RendererEnabled,
-                Is.EqualTo(
-                    probe.Goat.active != 0 &&
-                    (probe.Goat.controlFlags & 0x00000400) == 0 &&
-                    Vector3.SqrMagnitude(
-                        probe.NodePosition - expectedCameraTarget) >= 1f),
-                "native active/drawing state and current camera target drive visibility");
+                Is.False,
+                "source-ordered native Goat pixels replace the Unity billboard");
         }
 
         private static void AssertGoatResetRow(
@@ -330,10 +339,15 @@ namespace MagicCarpet.Native.Tests
             Assert.That(actual.RendererEnabled, Is.EqualTo(expected.RendererEnabled));
             Assert.That(actual.MaterialSelector, Is.EqualTo(expected.MaterialSelector));
             Assert.That(actual.IndicesSha256, Is.EqualTo(expected.IndicesSha256));
+            Assert.That(
+                actual.IndicesTextureBound,
+                Is.EqualTo(expected.IndicesTextureBound));
             Assert.That(actual.MirroredMesh, Is.EqualTo(expected.MirroredMesh));
         }
 
-        private static void AssertAllMode20Sectors()
+        private static void AssertAllMode20Sectors(
+            MagicCarpetRuntime runtime,
+            ushort entityIndex)
         {
             var expectedOffsets = new[]
                 { 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 0, 0 };
@@ -352,6 +366,20 @@ namespace MagicCarpet.Native.Tests
                     selectorOffset,
                     Is.EqualTo(expectedOffsets[expectedOrientation]));
                 Assert.That(rearHalf, Is.EqualTo(expectedOrientation >= 8));
+                var probe = runtime.QualificationBindGoatMode20Sector(
+                    entityIndex,
+                    expectedOrientation);
+                Assert.That(
+                    probe.MaterialSelector,
+                    Is.EqualTo(152 + expectedOffsets[expectedOrientation]));
+                Assert.That(
+                    probe.IndicesTextureBound,
+                    Is.True,
+                    "actual _Indices texture is the selector-owned texture");
+                Assert.That(
+                    probe.MirroredMesh,
+                    Is.EqualTo(expectedOrientation >= 8),
+                    "actual mesh binding follows the descriptor mirror rule");
             }
         }
 

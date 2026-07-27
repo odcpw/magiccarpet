@@ -50,6 +50,26 @@ extern "C" {
 #define MC_AUTHORITY_PLAYER_FLIGHT_LIVE 2u
 #define MC_AUTHORITY_SPELL_ACTIVATION_LIVE 3u
 #define MC_AUTHORITY_GOAT_LIVE 4u
+#define MC_AUTHORITY_SELECTOR_FRAME_LIVE 5u
+#define MC_AUTHORITY_LEVEL1_MISSION_LIVE 6u
+#define MC_AUTHORITY_SESSION_TERRAIN_LIVE 7u
+#define MC_LEVEL1_EXIT_FLAG_PALETTE_VISUAL_CURRENT 0x01u
+#define MC_LEVEL1_EXIT_FLAG_FOV_POST_ACTION_NEXT_HISTORY 0x02u
+#define MC_LEVEL1_EXIT_FLAG_END_SEQUENCE 0x04u
+#define MC_LEVEL1_GAP_ALLOCATION_ONLY_ACTORS (1u << 0)
+#define MC_LEVEL1_GAP_CASTLE_BUILD_FOOTPRINT (1u << 1)
+#define MC_LEVEL1_GAP_CASTLE_CONSTRUCTION_TIMING (1u << 2)
+#define MC_LEVEL1_GAP_MANA_SPHERE_ALLOCATION_RNG (1u << 3)
+#define MC_LEVEL1_GAP_MANA_CARRIER_FLIGHT (1u << 4)
+#define MC_LEVEL1_GAP_MISSION_SOUND_POSITIONING (1u << 5)
+#define MC_LEVEL1_GAP_EXIT_COLLISION_AND_FADE (1u << 6)
+#define MC_LEVEL1_GAP_SECONDARY_GROUP_33_34_CREATURES (1u << 7)
+#define MC_LEVEL1_CURRENT_FIDELITY_GAPS 0u
+
+#define MC_SELECTOR_FRAME_ANIMATED 0x0001u
+#define MC_SELECTOR_FRAME_GROUPED_UPDATE 0x0002u
+#define MC_SELECTOR_FRAME_USED_BY_PRECEDING_DRAW 0x0004u
+#define MC_SELECTOR_FRAME_PIXELS_MUTABLE 0x0008u
 
 #define MC_TERRAIN_TYPES_U8 0u
 #define MC_TERRAIN_HEIGHT_U8 1u
@@ -85,6 +105,31 @@ extern "C" {
 #define MC_EVENT_GOAT_REMOVAL_QUEUED 10u
 #define MC_EVENT_GOAT_RECLAIMED 11u
 #define MC_EVENT_GOAT_ENGAGEMENT_BOUNDARY 12u
+#define MC_EVENT_LEVEL1_OBJECTIVE_ADVANCED 13u
+#define MC_EVENT_LEVEL1_SPELL_COLLECTED 14u
+#define MC_EVENT_LEVEL1_FIREBALL_SPAWNED 15u
+#define MC_EVENT_LEVEL1_FIREBALL_IMPACTED 16u
+#define MC_EVENT_LEVEL1_ACTOR_DAMAGED 17u
+#define MC_EVENT_LEVEL1_ACTOR_KILLED 18u
+#define MC_EVENT_LEVEL1_CASTLE_BUILT 19u
+#define MC_EVENT_LEVEL1_CASTLE_MANA_CHANGED 20u
+#define MC_EVENT_LEVEL1_PLAYER_DAMAGED 21u
+#define MC_EVENT_LEVEL1_PLAYER_DIED 22u
+#define MC_EVENT_LEVEL1_COMPLETED 23u
+#define MC_EVENT_LEVEL1_ARCHER_ARROW_SPAWNED 24u
+#define MC_EVENT_LEVEL1_ARCHER_ARROW_SOUND 25u
+#define MC_EVENT_LEVEL1_FIREFLY_FIREBALL_SPAWNED 26u
+#define MC_EVENT_LEVEL1_FIREFLY_CHARGE_SOUND 27u
+#define MC_EVENT_LEVEL1_CASTLE_PROJECTILE_SPAWNED 28u
+#define MC_EVENT_LEVEL1_CASTLE_PLACEMENT_REJECTED 29u
+#define MC_EVENT_LEVEL1_CASTLE_CONSTRUCTION_SOUND 30u
+#define MC_EVENT_LEVEL1_POSSESSION_SPAWNED 31u
+#define MC_EVENT_LEVEL1_MANA_SPHERE_SPAWNED 32u
+#define MC_EVENT_LEVEL1_MANA_SPHERE_CLAIMED 33u
+#define MC_EVENT_LEVEL1_MANA_SPHERE_COLLECTED 34u
+#define MC_EVENT_LEVEL1_EXIT_SEQUENCE_STARTED 35u
+#define MC_EVENT_LEVEL1_EXIT_SEQUENCE_COMPLETED 36u
+#define MC_EVENT_LEVEL1_WATER_SPLASHED 37u
 
 #define MC_AUDIO_ACTION_START 1u
 #define MC_AUDIO_ACTION_RESTART 2u
@@ -102,6 +147,15 @@ extern "C" {
 #define MC_TERRAIN_FRAME_SKY_SEEDED 0x0002u
 #define MC_TERRAIN_FRAME_HAS_COVERAGE 0x0004u
 #define MC_TERRAIN_FRAME_NON_TERRAIN_OMITTED 0x0008u
+#define MC_TERRAIN_FRAME_GOATS_COMPOSITED 0x0010u
+#define MC_TERRAIN_FRAME_ARCHERS_COMPOSITED 0x0020u
+#define MC_TERRAIN_FRAME_FIREFLIES_COMPOSITED 0x0040u
+#define MC_TERRAIN_FRAME_COMBAT_COMPOSITED 0x0080u
+#define MC_TERRAIN_FRAME_OBJECTIVE_PROPS_COMPOSITED 0x0100u
+#define MC_TERRAIN_FRAME_ECONOMY_COMPOSITED 0x0200u
+#define MC_TERRAIN_FRAME_REFLECTED_SPRITES_COMPOSITED 0x0400u
+#define MC_TERRAIN_FRAME_SPRITE_SHADOWS_COMPOSITED 0x0800u
+#define MC_TERRAIN_FRAME_FROZEN_ACTORS_COMPOSITED 0x1000u
 
 #define MC_ASSET_REF_NONE UINT32_MAX
 #define MC_PARAMETER_RECORD_NONE UINT16_MAX
@@ -260,7 +314,7 @@ typedef struct McGoatSnapshotV2 {
     int8_t stage_var_2;
     int8_t proximity_countdown;
     int8_t proximity_subcounter;
-    /* Frozen until the selector-global animation clock is qualified. */
+    /* Per-entity reset byte; live selector-global state uses the sidecar. */
     int8_t animation_frame;
     uint8_t reserved_0;
     uint16_t x;
@@ -294,6 +348,483 @@ typedef struct McGoatBatchV2 {
     uint8_t reserved_0[3];
     uint32_t reserved[4];
 } McGoatBatchV2;
+
+typedef struct McLevel1MissionSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint8_t authority;
+    uint8_t current_stage;
+    uint8_t text_selector;
+    uint8_t objective_textbox_ticks;
+    uint8_t tasks_completed;
+    uint8_t player_dead;
+    uint8_t has_fireball;
+    uint8_t has_possession;
+    uint8_t has_castle_spell;
+    uint8_t has_speed_spell;
+    uint8_t castle_exists;
+    uint8_t castle_level;
+    uint8_t fidelity_gap_flags;
+    uint8_t exit_sequence_active;
+    uint8_t exit_sequence_complete;
+    uint8_t exit_result_code;
+    int32_t player_life;
+    int32_t player_max_life;
+    int32_t player_mana;
+    int32_t player_max_mana;
+    int32_t castle_mana;
+    int32_t secured_mana_percent;
+    uint32_t actor_count;
+    uint32_t projectile_count;
+    uint32_t impact_count;
+    uint32_t exit_sequence_phase;
+    int32_t exit_sequence_timer;
+    uint32_t reserved[2];
+} McLevel1MissionSnapshotV2;
+
+typedef struct McLevel1HudSpellSlotV2 {
+    uint16_t holder_entity_index;
+    uint16_t parent_entity_index;
+    uint8_t model;
+    int8_t tier;
+    uint8_t enabled_flags;
+    int8_t action_marker;
+    int16_t active_value;
+    uint16_t activation_value;
+    int32_t max_mana;
+    int32_t mana_regen;
+    int32_t caster_mana;
+    uint16_t frame_selector;
+    uint16_t icon_selector;
+    uint32_t reserved[2];
+} McLevel1HudSpellSlotV2;
+
+typedef struct McLevel1HudSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint8_t authority;
+    uint8_t mana_color_index;
+    uint8_t mana_max_color_index;
+    uint8_t life_color_index;
+    uint8_t color_phase_1;
+    uint8_t color_phase_2;
+    uint8_t player_hit_frame_ticks;
+    uint8_t castle_hit_frame_ticks;
+    int32_t global_mana_denominator;
+    int32_t secured_mana_component;
+    int32_t goal_percent;
+    uint32_t player_status_flags;
+    McLevel1HudSpellSlotV2 left;
+    McLevel1HudSpellSlotV2 right;
+    uint32_t reserved[2];
+} McLevel1HudSnapshotV2;
+
+typedef struct McLevel1MinimapMarksV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint8_t mark_count;
+    uint8_t mark_pulse;
+    uint8_t arrow_valid;
+    uint8_t arrow_visible;
+    int16_t mark_x[16];
+    int16_t mark_y[16];
+    uint8_t mark_colour[16];
+    uint8_t mark_help_selector[16];
+    int16_t arrow_xy[14];
+    uint32_t reserved[4];
+} McLevel1MinimapMarksV2;
+
+typedef struct McLevel1MinimapEntityCommandV2 {
+    uint16_t source_slot;
+    int16_t x;
+    int16_t y;
+    uint16_t selector;
+    uint8_t kind;
+    uint8_t palette_index;
+    uint8_t size;
+    uint8_t anchor;
+    uint8_t help_selector;
+    uint8_t flags;
+    uint16_t order;
+    uint32_t reserved[2];
+} McLevel1MinimapEntityCommandV2;
+
+typedef struct McLevel1MinimapEntitiesInfoV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint32_t total_count;
+    uint16_t cross_x;
+    uint16_t cross_y;
+    uint8_t cross_colour;
+    uint8_t cross_arm_length;
+    uint8_t reveal_active;
+    uint8_t authority;
+    uint8_t reserved_0[4];
+    uint64_t command_hash;
+    uint32_t reserved[4];
+} McLevel1MinimapEntitiesInfoV2;
+
+typedef struct McLevel1PaletteInfoV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint8_t submode;
+    uint8_t effect;
+    uint8_t weight;
+    uint8_t denominator;
+    int16_t palette_count;
+    uint16_t flags;
+    uint8_t rgb8_sha256[32];
+    uint32_t reserved[4];
+} McLevel1PaletteInfoV2;
+
+typedef struct McLevel1ExitPresentationV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint8_t authority;
+    uint8_t player_action;
+    uint8_t action_phase;
+    uint8_t palette_submode;
+    uint8_t palette_effect;
+    uint8_t palette_weight;
+    uint8_t palette_denominator;
+    uint8_t movement_resolution;
+    uint16_t target_source_entity_index;
+    uint8_t target_valid;
+    uint8_t input_suppressed;
+    int16_t camera_fov;
+    int16_t action_timer;
+    uint8_t player_status_flags;
+    uint8_t blur_mode;
+    uint8_t display_blank;
+    uint8_t result_code;
+    uint8_t active;
+    uint8_t complete;
+    uint8_t flags;
+    uint8_t reserved_0;
+    uint32_t reserved[4];
+} McLevel1ExitPresentationV2;
+
+typedef struct McLevel1CastleSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint8_t authority;
+    uint8_t active;
+    uint8_t level;
+    uint8_t class_id;
+    uint8_t model;
+    uint8_t action;
+    uint8_t render_mode;
+    uint8_t reserved_0;
+    uint16_t owner_entity_index;
+    uint16_t render_parameter_index;
+    uint16_t x;
+    uint16_t y;
+    int16_t z;
+    uint16_t base_tmap;
+    uint16_t logical_height;
+    uint16_t reserved_1;
+    int32_t life;
+    int32_t max_life;
+    int32_t mana;
+    int32_t mana_capacity;
+    /* Active class-3/model-3 carrier source slot, or zero. */
+    uint32_t carrier_id;
+    /* reserved[0] = authoritative castle-root remc2 source slot;
+       reserved[1] = castle-root presentation identity. */
+    uint32_t reserved[3];
+} McLevel1CastleSnapshotV2;
+
+typedef struct McTerrainStateV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint64_t mutation_sequence;
+    uint64_t terrain_hash;
+    uint16_t width;
+    uint16_t height;
+    uint8_t plane_count;
+    uint8_t hash_schema;
+    uint8_t authority;
+    uint8_t reserved_0;
+    uint32_t reserved[4];
+} McTerrainStateV2;
+
+typedef struct McLevel1CastleLifecycleSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint32_t root_presentation_id;
+    uint16_t root_source_entity_index;
+    uint16_t root_owner_entity_index;
+    uint16_t root_x;
+    uint16_t root_y;
+    int16_t root_z;
+    int16_t root_build_state;
+    uint8_t root_action;
+    uint8_t root_level;
+    uint8_t root_active;
+    uint8_t authority;
+    int32_t root_life;
+    uint32_t construction_id;
+    uint16_t construction_source_entity_index;
+    uint16_t construction_parent_entity_index;
+    uint16_t construction_owner_entity_index;
+    uint16_t construction_x;
+    uint16_t construction_y;
+    int16_t construction_z;
+    int16_t construction_timer;
+    uint8_t construction_stage;
+    uint8_t construction_present;
+    uint8_t construction_active;
+    uint8_t construction_initialized;
+    uint8_t reserved_0[2];
+    uint64_t terrain_mutation_sequence;
+} McLevel1CastleLifecycleSnapshotV2;
+
+typedef struct McManaSphereSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint32_t sphere_id;
+    uint16_t source_entity_index;
+    uint16_t owner_entity_index;
+    uint8_t authority;
+    uint8_t active;
+    uint8_t class_id;
+    uint8_t model;
+    uint8_t action;
+    uint8_t phase;
+    uint8_t render_mode;
+    uint8_t reserved_0;
+    uint16_t x;
+    uint16_t y;
+    int16_t z;
+    int16_t yaw;
+    int16_t velocity_x;
+    int16_t velocity_y;
+    int16_t vertical_velocity;
+    uint16_t render_parameter_index;
+    uint16_t base_tmap;
+    uint16_t logical_height;
+    int32_t mana;
+    /* Assigned class-3/model-3 carrier source slot, or zero. */
+    uint32_t assigned_carrier_id;
+    uint32_t reserved[3];
+} McManaSphereSnapshotV2;
+
+typedef struct McManaCarrierSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint32_t carrier_id;
+    uint32_t target_sphere_id;
+    uint16_t owner_entity_index;
+    uint16_t render_parameter_index;
+    uint8_t authority;
+    uint8_t active;
+    uint8_t class_id;
+    uint8_t model;
+    uint8_t action;
+    uint8_t returning_to_castle;
+    uint8_t render_mode;
+    uint8_t reserved_0;
+    uint16_t x;
+    uint16_t y;
+    int16_t z;
+    int16_t yaw;
+    int16_t speed;
+    uint16_t base_tmap;
+    uint16_t logical_height;
+    uint16_t reserved_1;
+    int32_t carried_mana;
+    /* carrier_id and reserved[0] are the same authoritative remc2 source
+       slot. The duplicate projection is retained for ABI v2 compatibility.
+       target_sphere_id is also a source-slot link: zero, a mana sphere, or
+       the owning castle while returning. */
+    uint32_t reserved[3];
+} McManaCarrierSnapshotV2;
+
+typedef struct McLevel1ActorSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint16_t authored_index;
+    int16_t activation_group;
+    uint8_t kind;
+    uint8_t authority;
+    uint8_t active;
+    uint8_t collected;
+    uint8_t class_id;
+    uint8_t model;
+    uint8_t action;
+    uint8_t render_mode;
+    uint16_t x;
+    uint16_t y;
+    int16_t z;
+    uint16_t render_parameter_index;
+    int32_t max_life;
+    int32_t life;
+    int32_t pending_damage;
+    uint16_t base_tmap;
+    uint16_t logical_height;
+    int16_t yaw;
+    int8_t animation_frame;
+    uint8_t visible;
+    uint32_t reserved[2];
+} McLevel1ActorSnapshotV2;
+
+typedef struct McLevel1MultipartSegmentSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint16_t source_entity_index;
+    uint16_t head_authored_index;
+    uint16_t head_source_entity_index;
+    uint16_t predecessor_source_entity_index;
+    uint16_t successor_source_entity_index;
+    uint8_t ordinal;
+    uint8_t authority;
+    uint8_t active;
+    uint8_t visible;
+    uint8_t class_id;
+    uint8_t model;
+    uint8_t action;
+    uint8_t render_mode;
+    uint16_t x;
+    uint16_t y;
+    int16_t z;
+    int16_t yaw;
+    int16_t pitch;
+    uint8_t phase;
+    uint8_t reserved_0;
+    int16_t owner_id;
+    int32_t life;
+    int32_t pending_damage;
+    uint16_t render_parameter_index;
+    uint16_t base_tmap;
+    uint16_t logical_height;
+    int16_t collision_half_width;
+    int16_t collision_half_height;
+    int16_t trailing_distance;
+    uint32_t reserved;
+} McLevel1MultipartSegmentSnapshotV2;
+
+typedef struct McFireballProjectileSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint32_t projectile_id;
+    uint16_t owner_entity_index;
+    uint16_t render_index;
+    uint8_t authority;
+    uint8_t active;
+    uint8_t class_id;
+    uint8_t model;
+    uint16_t x;
+    uint16_t y;
+    int16_t z;
+    int16_t yaw;
+    int16_t pitch;
+    int16_t speed;
+    int16_t life_ticks;
+    uint16_t base_tmap;
+    int32_t payload;
+    uint16_t logical_height;
+    uint8_t render_mode;
+    int8_t animation_frame;
+    /* 1 = player Fireball; 2 = Archer arrow; 3 = Firefly fireball;
+       4 = Castle build projectile; 5 = Possession projectile. */
+    uint32_t projectile_kind;
+    /* reserved[0] = authoritative remc2 source slot;
+       projectile_id remains presentation identity. */
+    uint32_t reserved[2];
+} McFireballProjectileSnapshotV2;
+
+typedef struct McFireballImpactSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint32_t impact_id;
+    uint32_t source_projectile_id;
+    uint8_t authority;
+    uint8_t active;
+    uint8_t damage_submitted;
+    uint8_t class_id;
+    uint8_t model;
+    uint8_t render_mode;
+    int8_t animation_frame;
+    uint8_t reserved_0;
+    uint16_t x;
+    uint16_t y;
+    int16_t z;
+    int16_t life_ticks;
+    int32_t payload;
+    uint16_t base_tmap;
+    uint16_t render_parameter_index;
+    uint16_t logical_height;
+    uint16_t reserved_1;
+    /* reserved[0] = authoritative remc2 source slot;
+       impact_id remains presentation identity. */
+    uint32_t reserved[2];
+} McFireballImpactSnapshotV2;
+
+typedef struct McSelectorFrameStateV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint16_t selector;
+    uint8_t mask_bit;
+    uint8_t authority;
+    uint16_t width;
+    uint16_t height;
+    uint16_t source_frame_index;
+    uint16_t frame_count;
+    uint32_t stream_start;
+    uint32_t stream_cursor;
+    uint32_t payload_bytes;
+    uint32_t pixel_bytes;
+    uint32_t flags;
+    uint64_t pixel_hash;
+    uint32_t reserved[4];
+} McSelectorFrameStateV2;
+
+typedef struct McSelectorFrameBatchV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint64_t selector_state_hash;
+    uint64_t last_draw_tick;
+    uint64_t last_draw_mask;
+    uint64_t valid_draw_mask;
+    uint32_t start_ordinal;
+    uint32_t written;
+    uint32_t total_count;
+    uint8_t has_more;
+    uint8_t has_draw_feedback;
+    uint16_t reserved_0;
+    uint32_t reserved[4];
+} McSelectorFrameBatchV2;
+
+typedef struct McSelectorDrawFeedbackV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t draw_tick;
+    uint64_t selector_mask;
+    uint32_t reserved[4];
+} McSelectorDrawFeedbackV2;
 
 typedef struct McGoatDamageCommandV2 {
     uint32_t abi_version;
@@ -550,6 +1081,8 @@ int32_t mc_native_session_snapshot(uint64_t handle,
  * remains the live lifecycle-sensitive hash. */
 int32_t mc_native_session_source_projection_hash(uint64_t handle,
                                                  uint64_t *out_hash);
+int32_t mc_native_session_source_arena_hash(uint64_t handle,
+                                            uint64_t *out_hash);
 int32_t mc_native_presentation_state(uint64_t handle,
                                      McPresentationStateV2 *out_state,
                                      uint32_t out_state_size);
@@ -565,6 +1098,11 @@ int32_t mc_native_session_terrain_grid_copy(
     uint64_t handle, McTerrainGridVertexV2 *buffer, uint32_t capacity,
     uint32_t element_size, uint32_t *out_written);
 int32_t mc_native_session_terrain_frame_copy(
+    uint64_t handle, const McTerrainFrameQueryV2 *query,
+    uint8_t *index_buffer, uint32_t index_capacity,
+    uint8_t *coverage_buffer, uint32_t coverage_capacity,
+    McTerrainFrameInfoV2 *out_info, uint32_t out_info_size);
+int32_t mc_native_session_world_frame_copy(
     uint64_t handle, const McTerrainFrameQueryV2 *query,
     uint8_t *index_buffer, uint32_t index_capacity,
     uint8_t *coverage_buffer, uint32_t coverage_capacity,
@@ -585,6 +1123,9 @@ int32_t mc_native_world_string_copy(uint64_t handle, uint32_t kind,
                                     uint32_t *out_length);
 int32_t mc_native_terrain_plane_length(uint64_t handle, uint32_t kind,
                                        uint32_t *out_count);
+int32_t mc_native_session_terrain_state(
+    uint64_t handle, McTerrainStateV2 *out_state,
+    uint32_t out_state_size);
 int32_t mc_native_terrain_plane_copy_u8(uint64_t handle, uint32_t kind,
                                         uint8_t *buffer, uint32_t capacity,
                                         uint32_t *out_written);
@@ -606,6 +1147,66 @@ int32_t mc_native_goats_copy(uint64_t handle, uint64_t generation,
                              McGoatSnapshotV2 *buffer, uint32_t capacity,
                              uint32_t element_size, McGoatBatchV2 *out_batch,
                              uint32_t out_batch_size);
+int32_t mc_native_level1_mission_snapshot(
+    uint64_t handle, McLevel1MissionSnapshotV2 *out_snapshot,
+    uint32_t out_snapshot_size);
+int32_t mc_native_level1_hud_snapshot(
+    uint64_t handle, McLevel1HudSnapshotV2 *out_snapshot,
+    uint32_t out_snapshot_size);
+int32_t mc_native_level1_minimap_marks(
+    uint64_t handle, McLevel1MinimapMarksV2 *out_state,
+    uint32_t out_state_size);
+int32_t mc_native_level1_minimap_entities_copy(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    McLevel1MinimapEntityCommandV2 *buffer, uint32_t capacity,
+    uint32_t element_size, McLevel1MinimapEntitiesInfoV2 *out_info,
+    uint32_t out_info_size);
+int32_t mc_native_level1_palette_copy(
+    uint64_t handle, uint8_t *rgb8_buffer, uint32_t rgb8_capacity,
+    McLevel1PaletteInfoV2 *out_info, uint32_t out_info_size);
+int32_t mc_native_level1_exit_presentation(
+    uint64_t handle, McLevel1ExitPresentationV2 *out_state,
+    uint32_t out_state_size);
+int32_t mc_native_level1_castle_snapshot(
+    uint64_t handle, McLevel1CastleSnapshotV2 *out_snapshot,
+    uint32_t out_snapshot_size);
+int32_t mc_native_level1_castle_lifecycle_snapshot(
+    uint64_t handle, McLevel1CastleLifecycleSnapshotV2 *out_snapshot,
+    uint32_t out_snapshot_size);
+int32_t mc_native_level1_mana_carrier_snapshot(
+    uint64_t handle, McManaCarrierSnapshotV2 *out_snapshot,
+    uint32_t out_snapshot_size);
+int32_t mc_native_level1_mana_spheres_copy(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint32_t start_ordinal, McManaSphereSnapshotV2 *buffer,
+    uint32_t capacity, uint32_t element_size, uint32_t *out_written);
+int32_t mc_native_level1_actors_copy(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint32_t start_ordinal, McLevel1ActorSnapshotV2 *buffer,
+    uint32_t capacity, uint32_t element_size, uint32_t *out_written);
+int32_t mc_native_level1_multipart_segments_copy(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint32_t start_ordinal, McLevel1MultipartSegmentSnapshotV2 *buffer,
+    uint32_t capacity, uint32_t element_size, uint32_t *out_written);
+int32_t mc_native_fireball_projectiles_copy(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint32_t start_ordinal, McFireballProjectileSnapshotV2 *buffer,
+    uint32_t capacity, uint32_t element_size, uint32_t *out_written);
+int32_t mc_native_fireball_impacts_copy(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint32_t start_ordinal, McFireballImpactSnapshotV2 *buffer,
+    uint32_t capacity, uint32_t element_size, uint32_t *out_written);
+int32_t mc_native_selector_frame_states_copy(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    uint32_t start_ordinal, McSelectorFrameStateV2 *buffer, uint32_t capacity,
+    uint32_t element_size, McSelectorFrameBatchV2 *out_batch,
+    uint32_t out_batch_size);
+int32_t mc_native_session_goat_draw_admission_evaluate(
+    uint64_t handle, uint64_t generation, uint64_t expected_tick,
+    McSelectorFrameBatchV2 *out_batch, uint32_t out_batch_size);
+int32_t mc_native_session_selector_draw_feedback_submit(
+    uint64_t handle, const McSelectorDrawFeedbackV2 *command,
+    McSelectorFrameBatchV2 *out_batch, uint32_t out_batch_size);
 int32_t mc_native_session_goat_inject_damage(
     uint64_t handle, const McGoatDamageCommandV2 *command,
     McGoatBatchV2 *out_batch, uint32_t out_batch_size);

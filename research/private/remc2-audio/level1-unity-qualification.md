@@ -3,6 +3,13 @@
 Date: 2026-07-25  
 Scope: private owner-data Track P, Level 1 only
 
+> Historical audio milestone record. The playable Level 1 build has since
+> expanded the owner cache to 379 outputs and twenty descriptor-backed audio
+> references (native asset-ref range 76–95). Current artifact pins and the
+> final cross-system verdict are in
+> `../remc2-unity-native/LEVEL1-READINESS.md`; the observations below retain
+> the evidence from this earlier bounded audio qualification.
+
 ## Result
 
 PASS for the bounded Level 1 presentation contract:
@@ -25,9 +32,9 @@ separately in `level1-positional-stereo-qualification.md`.
 
 - Outputs: 293
 - Cache content SHA-256:
-  `a5fdd9961ebd61566b0230e2dc1b468219dae74536279b51d89d9c2d6cc0ce81`
+  `9a9aee892f2fe2c9fe98c98680f7f537c80bd5e531b41a91f146d0cae08910a4`
 - Manifest file SHA-256:
-  `2c3845fff2b35dea336662de9d636e5c620271eeea4ac19a6acb898f62714d51`
+  `77f90fcdea2ab7e0cb262d4fc0b06de02e12a01c9c49fbd4537441610bcd19a9`
 - Cache tests: 13/13 PASS in 77.313 seconds, including two byte-identical
   rebuilds, Goat-sample tamper/truncation negatives, and the exact
   playback-slot/loop-scan controller census.

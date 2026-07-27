@@ -42,9 +42,9 @@
     "authority": "controlled-debug-gallery",
     "simulation_mutation": false,
     "qualified_view": false,
-    "png_sha256": "90125b5655da20a54b8c5e08fe6ed8cdf0ced9945182a8dda8b9b7e496fc9563",
+    "png_sha256": "d9d2d19e105a765045dc5e5c1f5eef2d3577f9373ed6c93c914bc92c695b9aa8",
     "source_player_sha256": "8027f7d1f9ae7dacfc826fb218adcc1ae7464af098a8a59397e7531c0f7ec0bc",
-    "owner_cache_content_sha256": "a5fdd9961ebd61566b0230e2dc1b468219dae74536279b51d89d9c2d6cc0ce81",
+    "owner_cache_content_sha256": "addc1cc1b43173f41f208082237f38b9519fdc64374ec0b20f8b2d9b04049cdb",
     "selectors": [79, 152, 154, 154, 155, 180, 183, 199],
     "views": 8,
     "claim_limit": "controlled cache-bound geometry and owner-raster evidence; not an original or qualified simulation view"
@@ -140,35 +140,37 @@
       "classification": "adapted",
       "present": true,
       "authority_domain": "unity-synthetic-route",
-      "source_checkpoint": "Level 1 package reset plus same-tick native Goat-family rows",
-      "transform": "thirty-three Rust-owned GoatLive poses and lifecycle states plus thirty-one FrozenObserved owner-cache poses are presented as camera-facing Unity billboards",
-      "not_equivalent_to": ["live original sprite rasterization", "original software sprite depth ordering"],
-      "immutability_gate": "qualified autoplay reports exactly 33 GoatLive and 31 FrozenObserved owner sprites with zero unresolved debug sprites in both runs",
-      "evidence": ["native Goat bulk ABI", "entities/presentation.json", "both qualified autoplay logs"],
+      "source_checkpoint": "Level 1 package reset plus live native Goat and Archer rows and 31 reset-frozen villager/dolmen rows",
+      "transform": "animated Goats, animated/static Archers, twelve selector-clock villagers, and three static dolmens are rasterized into the native indexed world frame in source-slot order with shared reflection, terrain-shadow, clipping, and primary passes; villager/dolmen entity poses remain frozen at their qualified reset observations",
+      "not_equivalent_to": ["complete original transient sprite rasterization", "original whole-frame pixel equality"],
+      "immutability_gate": "the native world-frame capability reports all 31 reset-frozen actors, exactly 31 matching managed fallbacks are suppressed, and qualified autoplay reports zero unresolved debug sprites",
+      "evidence": ["native Goat bulk ABI", "native world-frame ABI", "Archer and villager selector-clock tests", "31-row reset-chain test", "entities/presentation.json", "qualified autoplay log"],
       "comparison_policy": "structural-correspondence",
-      "not_claimed": ["live villagers", "live dolmens", "original software sprite depth behavior"]
+      "not_claimed": ["live villager or dolmen AI", "original whole-frame pixel equality"]
     },
     {
       "id": "hud.objective.reset",
-      "classification": "frozen",
+      "classification": "adapted",
       "present": true,
       "authority_domain": "owner-cache",
-      "source_checkpoint": "Level 1 initial objective selector 48",
-      "immutability_gate": "HUD verifier compares objective pixels at Unity route checkpoints 145 and 400",
-      "evidence": ["hud/level1.json", "owner HUD two-capture gate"],
+      "source_checkpoint": "Level 1 source-mapped objective selectors 48 through 53",
+      "transform": "Rust mission state and source-ordered 33-turn clock select the exact source-sized objective geometry; Unity pixel-centre-nearest samples the qualified 320x200 indexed world into the adapted 640x480 corrected 4:3 layout, applies TABLESN selector 61, then overwrites exact HFONT3 text and HSPRN 171/172/173 frame indices before palette resolution",
+      "not_equivalent_to": ["whole-frame DOS draw interleaving", "unscaled 320x200 framebuffer presentation"],
+      "evidence": ["hud/level1.json", "native Level 1 mission snapshot and clock test", "Unity all-256-indices compositor tests", "owner HUD pixel verifier", "two deterministic graphical runs"],
       "comparison_policy": "structural-correspondence",
-      "not_claimed": ["later objective progression"]
+      "not_claimed": ["whole-frame DOS pixel equality or clock equality"]
     },
     {
       "id": "hud.owner_layout.reset",
-      "classification": "frozen",
+      "classification": "adapted",
       "present": true,
       "authority_domain": "owner-cache",
-      "source_checkpoint": "Level 1 package reset HUD state",
-      "immutability_gate": "HUD verifier binds ten owner placements and fixed top-bar pixels across two captures",
-      "evidence": ["eleven MSPRN/FONT1 source bitmaps", "owner HUD verifier"],
+      "source_checkpoint": "Level 1 owner HUD assets plus live Rust mission state",
+      "transform": "owner bars, spell icons, objective text, task guidance, death/restart, departure, and completion state are composed by Unity from native snapshots",
+      "not_equivalent_to": ["pixel-identical DOS HUD composition", "high-resolution HSPRN parity"],
+      "evidence": ["MSPRN/FONT1 source bitmaps", "hud/level1.json", "owner HUD verifier", "Unity lifecycle tests"],
       "comparison_policy": "structural-correspondence",
-      "not_claimed": ["live bars, tiers, charge, castle, or balloon progression"]
+      "not_claimed": ["pixel-identical DOS HUD composition", "high-resolution HSPRN parity"]
     },
     {
       "id": "original.review_decode.base_paln",
@@ -230,11 +232,11 @@
       "classification": "adapted",
       "present": true,
       "authority_domain": "unity-synthetic-route",
-      "transform": "owner TABLESN aperture and rotation with live player pose and generic white reset entity dots",
-      "not_equivalent_to": ["original entity colors, reveal, marks, filters, and blend"],
-      "evidence": ["owner HUD verifier moving-minimap gate"],
+      "transform": "owner TABLESN aperture and fixed-point rotation with live player pose, Rust source-slot-ordered entity commands, objective marks, and one-pass centre-cross blend",
+      "not_equivalent_to": ["multiplayer remote-player reveal behavior", "whole-frame DOS interleaving"],
+      "evidence": ["owner HUD verifier moving-minimap gate", "native minimap command ABI tests"],
       "comparison_policy": "structural-correspondence",
-      "not_claimed": ["exact original minimap"]
+      "not_claimed": ["multiplayer minimap parity", "pixel-identical original full-frame composition"]
     },
     {
       "id": "audio.unity_playback",
@@ -253,10 +255,10 @@
       "present": false,
       "authority_domain": "unity-synthetic-route",
       "replacement": "none",
-      "absence_gate": "firePresentationClean=True and projectile visual_suppressed in both qualified autoplay logs",
+      "absence_gate": "firePresentationClean=True, no MC_FIRE visual_spawned marker, and snapshot-owned Level 1 presentation in both qualified autoplay logs",
       "evidence": ["both qualified autoplay logs"],
       "comparison_policy": "absence-only",
-      "not_claimed": ["qualified projectile presentation"]
+      "not_claimed": ["diagnostic sphere or TrailRenderer as a gameplay projectile"]
     },
     {
       "id": "carpet.approximate_proxy",
@@ -296,7 +298,7 @@
       "classification": "deferred",
       "present": false,
       "authority_domain": "original-remc2-hook-002285ff",
-      "reason": "whole-world software depth, sprite/particle interleaving, fog, clipping, and aspect are not yet projected into Unity",
+      "reason": "the source 4:3 display rectangle and projection scale are present, but whole-world software depth, sprite/particle interleaving, fog, and clipping are not yet reproduced",
       "follow_on": "renderer correspondence qualification",
       "evidence": [],
       "comparison_policy": "deferred-no-pixels",
@@ -304,47 +306,47 @@
     },
     {
       "id": "palette.transient_runtime",
-      "classification": "deferred",
-      "present": false,
-      "authority_domain": "original-remc2-hook-002285ff",
-      "reason": "active DAC palette sequences were not captured for frames 0, 8, or 19",
-      "follow_on": "capture per-frame DAC palette and paletteMod behavior",
-      "evidence": [],
-      "comparison_policy": "deferred-no-pixels",
-      "not_claimed": ["exact active-DAC RGB"]
+      "classification": "adapted",
+      "present": true,
+      "authority_domain": "unity-synthetic-route",
+      "transform": "Rust materializes source-ordered hit, Speed, objective, entry, fade-back, and black-fade RGB6 palettes from owner PALN and Unity atomically applies the returned RGB8 bytes",
+      "not_equivalent_to": ["captured original DAC bytes for the registered remc2 idle frames", "unsupported multiplayer monochrome paths"],
+      "evidence": ["native palette ABI tests", "Unity atomic palette test", "two registered graphical runs"],
+      "comparison_policy": "structural-correspondence",
+      "not_claimed": ["cross-timeline active-DAC pixel equality"]
     },
     {
       "id": "hud.hsprn_and_live_progression",
-      "classification": "deferred",
-      "present": false,
-      "authority_domain": "owner-cache",
-      "reason": "HSPRN and live bars, tiers, charge, castle, balloon, and objective progression are not qualified",
-      "follow_on": "HUD progression qualification",
-      "evidence": [],
-      "comparison_policy": "deferred-no-pixels",
-      "not_claimed": ["feature-complete HUD"]
+      "classification": "adapted",
+      "present": true,
+      "authority_domain": "unity-synthetic-route",
+      "transform": "twenty-nine owner HSPRN selectors, source coordinates, live bars, spell tier and charge, castle state, objective progression, exact indexed objective foregrounds and TABLESN live-world blend, native transient palette, and high-resolution minimap are composed in Unity",
+      "not_equivalent_to": ["whole-frame DOS draw interleaving and clock"],
+      "evidence": ["owner HUD pixel verifier", "native HUD ABI tests", "Unity lifecycle tests"],
+      "comparison_policy": "structural-correspondence",
+      "not_claimed": ["pixel-identical or timing-identical original HUD"]
     },
     {
       "id": "projectile.presentation",
-      "classification": "deferred",
-      "present": false,
+      "classification": "adapted",
+      "present": true,
       "authority_domain": "unity-synthetic-route",
-      "reason": "typed fire requests are exact native events but their visual is intentionally suppressed",
-      "follow_on": "source projectile presentation qualification",
-      "evidence": ["typed fire event records"],
-      "comparison_policy": "deferred-no-pixels",
-      "not_claimed": ["faithful fireball visual"]
+      "transform": "Rust-owned Fireball, arrow, castle, possession, and impact snapshots select owner TMAP sprites rendered by the Unity billboard presentation",
+      "not_equivalent_to": ["original software sprite depth/interleaving", "exact source animation clock for every projectile family"],
+      "evidence": ["native projectile and impact bulk ABI", "Level 1 presentation registry", "complete Level 1 route test"],
+      "comparison_policy": "structural-correspondence",
+      "not_claimed": ["pixel-identical original projectile rendering"]
     },
     {
       "id": "simulation.ai_spells_creatures_progression",
-      "classification": "deferred",
-      "present": false,
+      "classification": "adapted",
+      "present": true,
       "authority_domain": "unity-synthetic-route",
-      "reason": "the current Level 1 viewer qualifies flight and bounded presentation, not full game simulation",
-      "follow_on": "system-by-system preservation milestones",
-      "evidence": [],
-      "comparison_policy": "deferred-no-pixels",
-      "not_claimed": ["complete MC2 gameplay"]
+      "transform": "the Rust Level 1 session advances source-mapped objective switches, Archers, Fireflies, Goats, spells, castle construction, mana spheres/carrier, player death, and exit result 10",
+      "not_equivalent_to": ["a complete MC2 campaign engine", "all secondary actor chains or shared-slot allocation"],
+      "evidence": ["complete Level 1 route test", "native mission ABI", "Unity mission presentation"],
+      "comparison_policy": "structural-correspondence",
+      "not_claimed": ["complete MC2 gameplay", "perfect behavior for explicitly registered fidelity gaps"]
     }
   ],
   "comparisons": [
@@ -397,12 +399,13 @@
         "base Night palette selection"
       ],
       "adapted": [
-        "base-PALN decoding of original indexed fixtures for human inspection"
+        "base-PALN decoding of original indexed fixtures for human inspection",
+        "Rust-owned hit, Speed, objective, entry, fade-back, and black-fade palettes atomically applied by Unity"
       ],
       "omitted": [],
       "deferred": [
-        "per-frame active DAC palette",
-        "runtime palette fades, flashes, hit effects, and monochrome variants"
+        "captured active-DAC RGB for the three registered original idle frames",
+        "multiplayer-only monochrome variants"
       ]
     },
     {
@@ -421,94 +424,102 @@
         "whole-world software sprite and particle interleaving"
       ],
       "deferred": [
-        "DOS aspect and source depth behavior"
+        "whole-world source depth and software interleaving behavior"
       ]
     },
     {
       "id": "tmap_actors",
       "exact": [
         "owner TMAP payloads, selectors, dimensions, scale inputs, yaw sectors, and mirror rule",
-        "thirty-three source-ordered Rust Goat-family rows and lifecycle states"
+        "thirty-three source-ordered Rust Goat-family rows and lifecycle states",
+        "thirty-one source-ordered reset-frozen villager/dolmen rows with native reflection, terrain-shadow, clipping, and primary passes"
       ],
       "frozen": [
         "three dolmens and twenty-eight villagers at observed reset poses"
       ],
       "adapted": [
-        "camera-facing Unity billboards"
+        "Rust-owned live Archer, Firefly, multipart, projectile, castle, mana, and effect snapshots"
       ],
       "omitted": [
-        "transient reset effects, carpet, and projectile presentation"
+        "transient reset effects and carpet presentation"
       ],
       "deferred": [
-        "selector-global animation clocks and live non-Goat actor simulation"
+        "remaining selector-global animation clocks and unsupported source sprite modes"
       ]
     },
     {
       "id": "sprite_hotspot",
       "exact": [
-        "descriptor proof that type_particle_str contains no per-sprite hotspot"
+        "descriptor proof that type_particle_str contains no per-sprite hotspot",
+        "qualified native sprite families use the recovered source projection anchors"
       ],
       "frozen": [],
       "adapted": [
-        "bottom-center-at-entity-XYZ Unity pivot"
+        "the controlled debug gallery retains a bottom-center-at-entity-XYZ presentation pivot"
       ],
       "omitted": [],
       "deferred": [
-        "original DrawSprite camera centering, clipping, terrain traversal, and depth behavior"
+        "unsupported DrawSprite raster modes"
       ]
     },
     {
       "id": "hud",
       "exact": [
-        "registered MSPRN selector set",
+        "registered HSPRN selector set and source coordinates",
         "FONT1 masks",
         "640x480 owner layout",
-        "Fireball and Possess owner icons"
+        "Fireball, Possess, Castle, and Speed owner icons"
       ],
       "frozen": [
         "base objective, spell layout, blank castle state, and blank balloon state"
       ],
       "adapted": [
-        "uniform fit into 1600x900"
+        "uniform fit into 1600x900",
+        "live health, mana, tier, charge, castle, objective, and spell progression",
+        "pixel-centre-nearest mapping of the qualified 320x200 indexed world into the 640x480 objective underlay"
       ],
       "omitted": [
         "invented bars, diagnostic text, and Unity default-font overlays"
       ],
       "deferred": [
-        "live health, mana, tier, charge, castle, and balloon progression"
+        "unreachable Level 1 balloon ownership presentation"
       ]
     },
     {
       "id": "minimap",
       "exact": [
-        "64x64 TABLESN aperture, fixed-point rotation, terrain lookup, and PALN"
+        "128x128 HSPRN TABLESN aperture, fixed-point rotation, terrain lookup, and PALN",
+        "source-slot-ordered entity filters, colors, anchors, phases, castle rope, objective marks, and center cross"
       ],
       "frozen": [
         "terrain and entity positions from the owner package"
       ],
       "adapted": [
         "live player center and yaw",
-        "nearest-neighbor two-times display",
-        "generic white entity dots"
+        "Unity texture upload of the Rust-owned indexed minimap"
       ],
       "omitted": [],
       "deferred": [
-        "original entity colors, filters, reveal rules, and objective marks"
+        "multiplayer remote-player reveal behavior"
       ]
     },
     {
       "id": "objective",
       "exact": [
-        "owner objective selector, FONT1 mapping, frame selectors, layout, and Night tint"
+        "owner objective selectors and localization bytes",
+        "HFONT3 glyph mapping, word wrapping, advances, and Night palette-119 text",
+        "HSPRN 171/172/173 frame assembly and per-selector source geometry",
+        "33-turn source-ordered visibility clock",
+        "TABLESN selector-61 blend for every live destination index"
       ],
       "frozen": [
         "Level 1 initial objective state"
       ],
-      "adapted": [],
+      "adapted": [
+        "pixel-centre-nearest sampling from the qualified 320x200 indexed world into the corrected 640x480 reference layout"
+      ],
       "omitted": [],
-      "deferred": [
-        "later objective progression and live textbox blending"
-      ]
+      "deferred": []
     },
     {
       "id": "audio",

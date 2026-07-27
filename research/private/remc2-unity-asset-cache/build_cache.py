@@ -47,13 +47,34 @@ REMC2_TEXTURE_MAPPING = (
 )
 REMC2_UV_TABLE = REPO / "upstream/magic-carpet-2-hd/remc2/engine/UVTable_D4350.cpp"
 REMC2_MATHS_TABLE = REPO / "upstream/magic-carpet-2-hd/remc2/utilities/Maths.cpp"
+GOAT_TMAP_GOLDEN = (
+    PRIVATE / "remc2-frame-trace/goat_tmap_golden.json"
+)
 
 SCHEMA = "mc2-owner-unity-asset-cache/v1"
-GENERATOR_VERSION = "1.7.0"
+GENERATOR_VERSION = "1.10.0"
 EXPECTED_PACKAGE = "730d2fa084265df839f3f2b55ed766ac167a8b152ca4631b5ded9d0bb9104ac8"
-EXPECTED_CLOSURE = "1c3774ca5c032c1a7b8b1c48870840eee33011a2830d08c51f3104fb5c5bcc12"
-FRAME_MSPRN = (1, 40, 41, 42, 43, 54, 123, 124, 171, 172, 173)
+EXPECTED_CLOSURE = "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719"
+EXPECTED_GOAT_TMAP_GOLDEN = (
+    "a5c3d430ba22c3503453124d76119ed7b93ff6ea8445e23cd616faa1015b5f64"
+)
+EXPECTED_GOAT_TMAP_ORACLE_MANIFEST = (
+    "cad16d830ece1f6422ec4f3f6a0a5ab4954fe6c20344e2e03c6ce1f0bc41e73b"
+)
+GOAT_TMAP_SELECTORS = frozenset({152, 153, 154})
+RESET_FRAME_HSPRN = (
+    1, 40, 41, 42, 43, 54, 123, 124, 171, 172, 173,
+)
+RESET_FRAME_MSPRN = (1, 40, 41, 42, 43, 54, 123, 124, 171, 172, 173)
 DYNAMIC_MSPRN = (9,)
+FRAME_HSPRN = RESET_FRAME_HSPRN + (
+    2,
+    44, 45, 46, 47, 48, 49, 50,
+    51, 52, 53, 55,
+    58, 66, 83, 84,
+    125, 126,
+)
+DYNAMIC_HSPRN = (9,)
 FRAME_TMAPS = (40, 41, 54, 63)
 LEVEL1_TERRAIN_SELECTORS = (
     0, 1, 2, 4, 5, 9, 22, 23, 24, 25, 26, 27, 36, 37, 38, 39, 44, 45,
@@ -73,7 +94,14 @@ UNITY_TERRAIN_UV_GROUPS = (
 )
 SOURCE_PATHS = (
     "DATA/BL32N0-0.DAT",
+    "DATA/BLDGPRM.DAT",
+    "DATA/BUILD0-0.DAT",
+    "DATA/BUILD0-0.TAB",
     "DATA/CLRN-0.DAT",
+    "DATA/HFONT3.DAT",
+    "DATA/HFONT3.TAB",
+    "DATA/HSPRN0-0.DAT",
+    "DATA/HSPRN0-0.TAB",
     "DATA/MSPRN0-0.DAT",
     "DATA/MSPRN0-0.TAB",
     "DATA/PALN-0.DAT",
@@ -90,8 +118,11 @@ SOURCE_PATHS = (
     "SOUND/SOUND.DAT",
 )
 TAB_RECORD = struct.Struct("<IBB")
+BUILD_PARAMETER_RECORD = struct.Struct("<HBB")
 TMAP_TAB_RECORD = struct.Struct("<iiH")
 TMAP_HEADER = struct.Struct("<HHH")
+TMAP_ANIMATION_HEADER = struct.Struct("<HI")
+FLI_CHUNK_HEADER = struct.Struct("<IH")
 ENTITY_HEADER = struct.Struct("<4sHHI")
 PRESENTATION_HEADER = struct.Struct("<4sHHI")
 PARTICLE_RECORD = struct.Struct("<HHHHH BbBB")
@@ -117,6 +148,49 @@ EXPECTED_ACTOR_COUNTS = {
     "villager-d": 10,
 }
 YAW_LOOKUP_D4750_28 = (0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 0, 0)
+# Exact selectors reached by the live Level 1 mission kernel after the frozen
+# reset capture, including mode-19 Archer-arrow facings 105..109.
+LEVEL1_LIVE_MISSION_TMAPS = (
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    66,
+    11,
+    12,
+    13,
+    61,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    105,
+    106,
+    107,
+    108,
+    109,
+    121,
+    122,
+    123,
+    279,
+    280,
+    281,
+    282,
+    283,
+    284,
+    285,
+    286,
+    461,
+    463,
+)
 BL32_TILE_SIDE = 32
 BL32_TILE_BYTES = BL32_TILE_SIDE * BL32_TILE_SIDE
 BL32_ATLAS_WIDTH = 256
@@ -128,11 +202,29 @@ LEVEL1_OBJECTIVE_IDS = (48, 49, 50, 51, 52, 53)
 LEVEL1_REFERENCE_WIDTH = 640
 LEVEL1_REFERENCE_HEIGHT = 480
 LEVEL1_MINIMAP_DISPLAY_SIDE = 128
-LEVEL1_MINIMAP_LOGICAL_SIDE = 64
-LEVEL1_MINIMAP_SOURCE_SCALE = 512
-HUD_SOURCE_SCALE = 2
-LEVEL1_SOUND_IDS = (1, 2, 5, 12, 29, 31, 37, 39, 43, 46)
-LEVEL1_MATERIALIZED_SOUND_IDS = (1, 2, 5, 29, 31, 37, 39, 43, 46)
+LEVEL1_MINIMAP_LOGICAL_SIDE = 128
+LEVEL1_MINIMAP_SOURCE_SCALE = 256
+HUD_SOURCE_SCALE = 1
+LEVEL1_SOUND_IDS = (
+    1, 2, 3, 4, 5, 8, 9, 10, 12, 15, 16, 18, 19, 27, 29, 30, 31, 33, 34,
+    37, 39, 40, 41, 43, 44, 46, 54, 55, 56, 57, 63,
+)
+LEVEL1_MATERIALIZED_SOUND_IDS = (
+    1, 2, 3, 4, 5, 8, 9, 10, 15, 16, 18, 19, 27, 29, 30, 31, 33, 34, 37,
+    39, 40, 41, 43, 44, 46, 54, 55, 56, 57, 63,
+)
+CASTLE_STAGE_ONE_BUILD_INDEX = 1
+CASTLE_STAGE_ONE_BUILD_RAW_WIDTH = 8
+CASTLE_STAGE_ONE_BUILD_RAW_HEIGHT = 8
+CASTLE_STAGE_ONE_BUILD_PAYLOAD_SHA256 = (
+    "f9fb9d8a5c6d2841849bba03479e6503966fa4ec14020508c343296602aa8ae3"
+)
+CASTLE_STAGE_ONE_BUILD_TAB_RECORD_SHA256 = (
+    "27a9da49ded1a0aa1a4e01dbaab8634404f5bf9d6789a5785884e94e35e2f804"
+)
+CASTLE_STAGE_ONE_BUILD_PARAMETER_SHA256 = (
+    "7d6e4762a22170651b49bef86a5bb9d5de987f5d5f3e546901291fd24c411d39"
+)
 SOUND_QUALITY_ROWS = (1644, 1622, 1611, 822, 811, 800)
 
 
@@ -298,13 +390,8 @@ def build_minimap_aperture(
         if row is not None
         for x in range(side)
     )
-    if (
-        len(mask) != side * side
-        or sum(mask) != 3204
-        or sha256_bytes(mask) !=
-            "98a3a7c0300b49204629aab1b4b552253bea2223f9e68c40d1458b2e62243285"
-    ):
-        raise CacheError("qualified 64x64 TABLESN minimap aperture changed")
+    if len(mask) != side * side:
+        raise CacheError("qualified 128x128 TABLESN minimap aperture extent changed")
     return mask, scanlines
 
 
@@ -380,11 +467,13 @@ def build_minimap_direction_samples(
     tables: bytes,
     sine_table: list[int],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    centre = LEVEL1_MINIMAP_LOGICAL_SIDE // 2
+    quarter = LEVEL1_MINIMAP_LOGICAL_SIDE // 4
     points = (
-        ("top", 32, 16),
-        ("right", 48, 32),
-        ("bottom", 32, 48),
-        ("left", 16, 32),
+        ("top", centre, quarter),
+        ("right", centre + quarter, centre),
+        ("bottom", centre, centre + quarter),
+        ("left", quarter, centre),
     )
     rows = []
     for yaw in (0, 512, 1024, 1536):
@@ -416,12 +505,17 @@ def build_minimap_direction_samples(
     probe_rows = []
     for yaw in range(0, 2048, 256):
         fixed_x, fixed_y = minimap_source_fixed(
-            player_x, player_y, yaw, 42, 22, sine_table
+            player_x,
+            player_y,
+            yaw,
+            21 * LEVEL1_MINIMAP_LOGICAL_SIDE // 32,
+            11 * LEVEL1_MINIMAP_LOGICAL_SIDE // 32,
+            sine_table,
         )
         probe_rows.append({
             "yaw": yaw,
-            "screen_x": 42,
-            "screen_y": 22,
+            "screen_x": 21 * LEVEL1_MINIMAP_LOGICAL_SIDE // 32,
+            "screen_y": 11 * LEVEL1_MINIMAP_LOGICAL_SIDE // 32,
             "source_fixed_x": fixed_x & 0xFFFF,
             "source_fixed_y": fixed_y & 0xFFFF,
             "source_tile_x": (fixed_x >> 8) & 255,
@@ -497,6 +591,82 @@ def draw_indexed_rgba(
             )
 
 
+def draw_indexed_mask(
+    destination_indices: bytearray,
+    destination_mask: bytearray,
+    destination_width: int,
+    destination_height: int,
+    source_indices: bytes,
+    source_mask: bytes,
+    source_width: int,
+    source_height: int,
+    x: int,
+    y: int,
+    scale: int,
+) -> None:
+    for source_y in range(source_height):
+        for source_x in range(source_width):
+            source_offset = source_y * source_width + source_x
+            if not source_mask[source_offset]:
+                continue
+            for scale_y in range(scale):
+                target_y = y + source_y * scale + scale_y
+                if target_y < 0 or target_y >= destination_height:
+                    continue
+                for scale_x in range(scale):
+                    target_x = x + source_x * scale + scale_x
+                    if target_x < 0 or target_x >= destination_width:
+                        continue
+                    target_offset = target_y * destination_width + target_x
+                    destination_indices[target_offset] = source_indices[source_offset]
+                    destination_mask[target_offset] = 1
+
+
+def draw_solid_index_mask(
+    destination_indices: bytearray,
+    destination_mask: bytearray,
+    destination_width: int,
+    destination_height: int,
+    source_mask: bytes,
+    source_width: int,
+    source_height: int,
+    x: int,
+    y: int,
+    scale: int,
+    palette_index: int,
+) -> None:
+    draw_indexed_mask(
+        destination_indices,
+        destination_mask,
+        destination_width,
+        destination_height,
+        bytes([palette_index]) * (source_width * source_height),
+        source_mask,
+        source_width,
+        source_height,
+        x,
+        y,
+        scale,
+    )
+
+
+def split_text_into_source_lines(text: bytes, width: int) -> list[bytes]:
+    words = text.split(b" ")
+    lines: list[bytes] = []
+    line = b""
+    for word in words:
+        if not line:
+            line = word
+        elif len(line) + len(word) + 1 <= width:
+            line += b" " + word
+        else:
+            lines.append(line)
+            line = word
+    if line:
+        lines.append(line)
+    return lines
+
+
 def build_objective_rasters(
     text: bytes,
     glyph_rows: list[dict[str, Any]],
@@ -504,42 +674,172 @@ def build_objective_rasters(
     sprites: dict[int, tuple[bytes, bytes, int, int]],
     palette_rgb8: bytes,
     text_palette_index: int,
+    source_scale: int,
 ) -> tuple[bytes, bytes, dict[str, Any]]:
-    objective_width = 256
-    objective_height = 38
-    objective = bytearray(objective_width * objective_height * 4)
-    scale = HUD_SOURCE_SCALE
+    if not text:
+        raise CacheError("Level 1 objective text must not be empty")
+    scale = source_scale
+    char_width = 8 * scale
+    char_height = 14 * scale
+    text_width = char_width * len(text)
+    textbox_width = 320 * scale
+    if text_width <= textbox_width:
+        textbox_width = text_width
+    else:
+        if text_width % textbox_width < textbox_width // 2:
+            while (
+                textbox_width > 0
+                and text_width % textbox_width < textbox_width // 2
+            ):
+                textbox_width -= char_width
+        if textbox_width <= 0:
+            raise CacheError("objective textbox source width collapsed")
+    lines = split_text_into_source_lines(text, textbox_width // char_width)
+    textbox_height = char_height * len(lines)
+
+    text_x = 320 * scale - textbox_width // 2
+    text_y = 300 * scale - textbox_height // 2
     corner = sprites[171]
     vertical = sprites[172]
     horizontal = sprites[173]
+    corner_width = corner[2] * scale
+    corner_height = corner[3] * scale
+    if text_x < 40 * scale + corner_width:
+        text_x = 40 * scale + corner_width
+    if text_y < 80 * scale + corner_height:
+        text_y = 80 * scale + corner_height
+    if text_x + textbox_width >= 600 * scale:
+        text_x = 600 * scale - textbox_width
+    if text_y + textbox_height >= 260 * scale:
+        text_y = 260 * scale - textbox_height
 
-    for x in (0, 240):
-        draw_indexed_rgba(
-            objective, objective_width, objective_height,
-            *corner, x, 0, scale, palette_rgb8
+    horizontal_width = horizontal[2] * scale
+    horizontal_height = horizontal[3] * scale
+    vertical_height = vertical[3] * scale
+    frame_width = horizontal_width * (
+        (
+            horizontal_width
+            - scale
+            + textbox_width
+            + 8 * scale
         )
-        draw_indexed_rgba(
-            objective, objective_width, objective_height,
-            *corner, x, 26, scale, palette_rgb8
+        // horizontal_width
+    )
+    frame_x = text_x - (frame_width - textbox_width) // 2
+    frame_height = (
+        (vertical_height - scale + textbox_height)
+        // vertical_height
+        * vertical_height
+        + 2 * (corner_height - horizontal_height)
+    )
+    frame_y = text_y - (frame_height - textbox_height) // 2
+
+    outer_x = frame_x - vertical[2] * scale
+    outer_y = frame_y - horizontal_height
+    objective_width = frame_width + 2 * vertical[2] * scale
+    objective_height = frame_height + 2 * horizontal_height
+    text_local_x = text_x - outer_x
+    text_local_y = text_y - outer_y
+    blend_local_x = frame_x - outer_x
+    blend_local_y = frame_y - outer_y
+
+    line_advances = [
+        sum(
+            glyph_rows[33 if value == 32 else value + 1]["width"] * source_scale
+            for value in row
         )
-    for y in (12,):
-        draw_indexed_rgba(
-            objective, objective_width, objective_height,
-            *vertical, 0, y, scale, palette_rgb8
+        for row in lines
+    ]
+    foreground_indices = bytearray(objective_width * objective_height)
+    foreground_mask = bytearray(objective_width * objective_height)
+    glyph_sequence = []
+    for line_index, text_line in enumerate(lines):
+        cursor_x = text_local_x
+        for value in text_line:
+            glyph_index = value + 1
+            row = glyph_rows[glyph_index]
+            glyph_sequence.append(glyph_index)
+            if value != 32:
+                start = row["offset"]
+                draw_solid_index_mask(
+                    foreground_indices,
+                    foreground_mask,
+                    objective_width,
+                    objective_height,
+                    font_blob[start:start + row["length"]],
+                    row["width"],
+                    row["height"],
+                    cursor_x,
+                    text_local_y + line_index * char_height,
+                    scale,
+                    text_palette_index,
+                )
+            cursor_x += (
+                glyph_rows[33 if value == 32 else glyph_index]["width"] * scale
+            )
+
+    frame_end_x = blend_local_x + frame_width
+    frame_top_y = blend_local_y - horizontal_height
+    frame_bottom_y = blend_local_y + frame_height
+    frame_side_bottom_y = (
+        frame_top_y
+        + corner_height
+        + len(lines) * vertical_height
+    )
+    for x in (blend_local_x - vertical[2] * scale, frame_end_x):
+        draw_indexed_mask(
+            foreground_indices,
+            foreground_mask,
+            objective_width,
+            objective_height,
+            *corner,
+            x,
+            frame_top_y,
+            scale,
         )
-        draw_indexed_rgba(
-            objective, objective_width, objective_height,
-            *vertical, 240, y, scale, palette_rgb8
+    side_y = frame_top_y + corner_height
+    for _ in lines:
+        for x in (blend_local_x - vertical[2] * scale, frame_end_x):
+            draw_indexed_mask(
+                foreground_indices,
+                foreground_mask,
+                objective_width,
+                objective_height,
+                *vertical,
+                x,
+                side_y,
+                scale,
+            )
+        side_y += vertical_height
+    if side_y != frame_side_bottom_y:
+        raise CacheError("objective frame side clock changed")
+    for x in (blend_local_x - vertical[2] * scale, frame_end_x):
+        draw_indexed_mask(
+            foreground_indices,
+            foreground_mask,
+            objective_width,
+            objective_height,
+            *corner,
+            x,
+            frame_side_bottom_y,
+            scale,
         )
-    for x in range(16, 240, 32):
-        draw_indexed_rgba(
-            objective, objective_width, objective_height,
-            *horizontal, x, 0, scale, palette_rgb8
-        )
-        draw_indexed_rgba(
-            objective, objective_width, objective_height,
-            *horizontal, x, 28, scale, palette_rgb8
-        )
+    for x in range(
+        blend_local_x,
+        frame_end_x,
+        horizontal_width,
+    ):
+        for y in (frame_top_y, frame_bottom_y):
+            draw_indexed_mask(
+                foreground_indices,
+                foreground_mask,
+                objective_width,
+                objective_height,
+                *horizontal,
+                x,
+                y,
+                scale,
+            )
 
     palette_offset = text_palette_index * 3
     text_rgba = (
@@ -548,30 +848,6 @@ def build_objective_rasters(
         palette_rgb8[palette_offset + 2],
         255,
     )
-    cursor_x = 32
-    glyph_sequence = []
-    for value in text:
-        glyph_index = value + 1
-        row = glyph_rows[glyph_index]
-        glyph_sequence.append(glyph_index)
-        if value != 32:
-            start = row["offset"]
-            draw_mask_rgba(
-                objective,
-                objective_width,
-                objective_height,
-                font_blob[start:start + row["length"]],
-                row["width"],
-                row["height"],
-                cursor_x,
-                12,
-                scale,
-                text_rgba,
-            )
-        cursor_x += glyph_rows[33 if value == 32 else glyph_index]["width"] * scale
-    if cursor_x != 224:
-        raise CacheError("Level 1 objective FONT1 advance changed")
-    objective_advance = cursor_x - 32
 
     badge_text = b"FROZEN OBSERVED"
     badge_width = sum(
@@ -601,17 +877,92 @@ def build_objective_rasters(
                 text_rgba,
             )
         cursor_x += glyph_rows[33 if value == 32 else glyph_index]["width"]
-    return bytes(objective), bytes(badge), {
+    foreground = bytes(foreground_indices + foreground_mask)
+    return foreground, bytes(badge), {
         "objective_width": objective_width,
         "objective_height": objective_height,
-        "objective_text_origin": {"x": 32, "y": 12},
+        "objective_x": outer_x,
+        "objective_y": outer_y,
+        "objective_text_origin": {"x": text_x, "y": text_y},
+        "objective_text_local_origin": {
+            "x": text_local_x,
+            "y": text_local_y,
+        },
+        "objective_blend_rect": {
+            "x": frame_x,
+            "y": frame_y,
+            "width": frame_width,
+            "height": frame_height,
+        },
+        "objective_blend_local_rect": {
+            "x": blend_local_x,
+            "y": blend_local_y,
+            "width": frame_width,
+            "height": frame_height,
+        },
+        "objective_foreground_plane_bytes":
+            objective_width * objective_height,
+        "objective_foreground_indices_sha256":
+            sha256_bytes(bytes(foreground_indices)),
+        "objective_foreground_mask_sha256":
+            sha256_bytes(bytes(foreground_mask)),
+        "objective_foreground_opaque_pixels": sum(foreground_mask),
         "objective_glyph_indices": glyph_sequence,
-        "objective_text_advance": objective_advance,
+        "objective_text_advances": line_advances,
+        "objective_lines_ascii": [line.decode("ascii") for line in lines],
         "badge_text_ascii": badge_text.decode("ascii"),
         "badge_width": badge_width,
         "badge_height": badge_height,
         "badge_glyph_indices": badge_glyphs,
     }
+
+
+def build_hud_text_raster(
+    text: bytes,
+    glyph_rows: list[dict[str, Any]],
+    font_blob: bytes,
+    palette_rgb8: bytes,
+    palette_index: int,
+) -> tuple[bytes, int, int, list[int]]:
+    width = sum(
+        glyph_rows[33 if value == 32 else value + 1]["width"]
+        for value in text
+    )
+    height = max(
+        glyph_rows[value + 1]["height"]
+        for value in text
+        if value != 32
+    )
+    rgba = bytearray(width * height * 4)
+    palette_offset = palette_index * 3
+    tint = (
+        palette_rgb8[palette_offset],
+        palette_rgb8[palette_offset + 1],
+        palette_rgb8[palette_offset + 2],
+        255,
+    )
+    cursor_x = 0
+    glyphs = []
+    for value in text:
+        glyph_index = value + 1
+        glyphs.append(glyph_index)
+        row = glyph_rows[glyph_index]
+        if value != 32:
+            start = row["offset"]
+            draw_mask_rgba(
+                rgba,
+                width,
+                height,
+                font_blob[start:start + row["length"]],
+                row["width"],
+                row["height"],
+                cursor_x,
+                0,
+                1,
+                tint,
+            )
+        cursor_x += glyph_rows[33 if value == 32 else glyph_index]["width"]
+    return bytes(rgba), width, height, glyphs
 
 
 def tmap_records(tab: bytes) -> list[tuple[int, int, int]]:
@@ -1106,6 +1457,283 @@ def decode_tmap_rnc(
         detail = getattr(error, "stderr", "") or str(error)
         raise CacheError(f"TMAPS RNC decode failed at index {index}: {detail.strip()}") from error
     return target.read_bytes()
+
+
+def _checked_unpack(
+    layout: struct.Struct,
+    payload: bytes,
+    offset: int,
+    limit: int,
+    label: str,
+) -> tuple[Any, ...]:
+    end = offset + layout.size
+    if offset < 0 or end > limit or limit > len(payload):
+        raise CacheError(f"{label} is truncated")
+    return layout.unpack_from(payload, offset)
+
+
+def _apply_goat_tmap_delta(
+    decoded: bytes,
+    pixels: bytearray,
+    *,
+    selector: int,
+    width: int,
+    height: int,
+    cursor: int,
+    stream_end: int,
+) -> int:
+    """Apply the exact remc2 SS2 subset used by Goat selectors 152-154."""
+    outer_start = TMAP_HEADER.size + cursor
+    outer_size, outer_tag = _checked_unpack(
+        FLI_CHUNK_HEADER,
+        decoded,
+        outer_start,
+        stream_end,
+        f"Goat TMAP {selector} outer record",
+    )
+    if outer_size < FLI_CHUNK_HEADER.size + 10 + FLI_CHUNK_HEADER.size:
+        raise CacheError(f"Goat TMAP {selector} outer record is too small")
+    outer_end = outer_start + outer_size
+    if outer_end > stream_end:
+        raise CacheError(f"Goat TMAP {selector} outer record exceeds stream")
+    if outer_tag != 0xF1FA:
+        raise CacheError(f"Goat TMAP {selector} outer tag is not F1FA")
+
+    position = outer_start + FLI_CHUNK_HEADER.size
+    (child_count,) = _checked_unpack(
+        struct.Struct("<H"),
+        decoded,
+        position,
+        outer_end,
+        f"Goat TMAP {selector} child count",
+    )
+    position += 2
+    if child_count != 1:
+        raise CacheError(f"Goat TMAP {selector} must have exactly one child")
+    reserved_end = position + 8
+    if reserved_end > outer_end:
+        raise CacheError(f"Goat TMAP {selector} reserved bytes are truncated")
+    if decoded[position:reserved_end] != bytes(8):
+        raise CacheError(f"Goat TMAP {selector} reserved bytes are nonzero")
+    position = reserved_end
+
+    child_start = position
+    child_size, child_type = _checked_unpack(
+        FLI_CHUNK_HEADER,
+        decoded,
+        child_start,
+        outer_end,
+        f"Goat TMAP {selector} child record",
+    )
+    if child_size < FLI_CHUNK_HEADER.size + 2:
+        raise CacheError(f"Goat TMAP {selector} child record is too small")
+    child_end = child_start + child_size
+    if child_end > outer_end:
+        raise CacheError(f"Goat TMAP {selector} child record exceeds outer record")
+    if child_type != 7:
+        raise CacheError(f"Goat TMAP {selector} child type is not SS2 type 7")
+    position = child_start + FLI_CHUNK_HEADER.size
+
+    (row_count,) = _checked_unpack(
+        struct.Struct("<H"),
+        decoded,
+        position,
+        child_end,
+        f"Goat TMAP {selector} row count",
+    )
+    position += 2
+    if row_count != height:
+        raise CacheError(f"Goat TMAP {selector} row count disagrees with height")
+
+    for row in range(height):
+        (command_count,) = _checked_unpack(
+            struct.Struct("<h"),
+            decoded,
+            position,
+            child_end,
+            f"Goat TMAP {selector} row {row} command count",
+        )
+        position += 2
+        if command_count < 0:
+            raise CacheError(
+                f"Goat TMAP {selector} uses unsupported negative SS2 row control"
+            )
+        row_start = row * width
+        destination = row_start
+        row_end = row_start + width
+        for command in range(command_count):
+            if position + 2 > child_end:
+                raise CacheError(
+                    f"Goat TMAP {selector} row {row} command {command} is truncated"
+                )
+            destination += decoded[position]
+            span = struct.unpack_from("<b", decoded, position + 1)[0]
+            position += 2
+            if span == 0:
+                raise CacheError(
+                    f"Goat TMAP {selector} row {row} command {command} has zero span"
+                )
+            word_count = abs(span)
+            write_bytes = word_count * 2
+            if destination < row_start or destination + write_bytes > row_end:
+                raise CacheError(
+                    f"Goat TMAP {selector} row {row} command {command} crosses row"
+                )
+            if span > 0:
+                literal_end = position + write_bytes
+                if literal_end > child_end:
+                    raise CacheError(
+                        f"Goat TMAP {selector} row {row} literal is truncated"
+                    )
+                pixels[destination:destination + write_bytes] = (
+                    decoded[position:literal_end]
+                )
+                position = literal_end
+            else:
+                pair_end = position + 2
+                if pair_end > child_end:
+                    raise CacheError(
+                        f"Goat TMAP {selector} row {row} repeat pair is truncated"
+                    )
+                pixels[destination:destination + write_bytes] = (
+                    decoded[position:pair_end] * word_count
+                )
+                position = pair_end
+            destination += write_bytes
+
+    if position != child_end:
+        raise CacheError(f"Goat TMAP {selector} child record has trailing bytes")
+    if child_end != outer_end:
+        raise CacheError(f"Goat TMAP {selector} outer record has trailing bytes")
+    return outer_end - TMAP_HEADER.size
+
+
+def materialize_goat_tmap_animation(
+    selector: int,
+    decoded: bytes,
+) -> list[dict[str, Any]]:
+    """Decode the qualified four-frame Goat TMAP stream and its wrap closure."""
+    if selector not in GOAT_TMAP_SELECTORS:
+        raise CacheError(f"selector {selector} is outside the qualified Goat subset")
+    if len(decoded) < TMAP_HEADER.size:
+        raise CacheError(f"Goat TMAP {selector} header is truncated")
+    header_word, width, height = TMAP_HEADER.unpack_from(decoded)
+    if header_word != 5123:
+        raise CacheError(f"Goat TMAP {selector} header flags changed")
+    expected_extent = {152: (22, 22), 153: (32, 22), 154: (22, 22)}[selector]
+    if (width, height) != expected_extent:
+        raise CacheError(f"Goat TMAP {selector} extent changed")
+
+    first_frame_end = TMAP_HEADER.size + width * height
+    animation_end = first_frame_end + TMAP_ANIMATION_HEADER.size
+    if animation_end > len(decoded):
+        raise CacheError(f"Goat TMAP {selector} animation header is truncated")
+    frame_count, stream_size = TMAP_ANIMATION_HEADER.unpack_from(
+        decoded, first_frame_end
+    )
+    if frame_count != 4:
+        raise CacheError(f"Goat TMAP {selector} frame count changed")
+    stream_start = animation_end
+    stream_end = stream_start + stream_size
+    if stream_end != len(decoded):
+        raise CacheError(f"Goat TMAP {selector} declared stream extent changed")
+
+    pixels = bytearray(decoded[TMAP_HEADER.size:first_frame_end])
+    cursor = first_frame_end
+    states: list[dict[str, Any]] = [
+        {
+            "state": "reset-base",
+            "pixels": bytes(pixels),
+            "stream_cursor": cursor,
+            "frame_index": 1,
+            "width": width,
+            "height": height,
+        }
+    ]
+    for frame in range(1, frame_count + 1):
+        cursor = _apply_goat_tmap_delta(
+            decoded,
+            pixels,
+            selector=selector,
+            width=width,
+            height=height,
+            cursor=cursor,
+            stream_end=stream_end,
+        )
+        states.append(
+            {
+                "state": f"frame-{frame:02d}",
+                "pixels": bytes(pixels),
+                "stream_cursor": cursor,
+                "frame_index": frame + 1,
+                "width": width,
+                "height": height,
+            }
+        )
+    if TMAP_HEADER.size + cursor != stream_end:
+        raise CacheError(f"Goat TMAP {selector} has missing or extra frame records")
+
+    closure_pixels = bytearray(pixels)
+    closure_cursor = _apply_goat_tmap_delta(
+        decoded,
+        closure_pixels,
+        selector=selector,
+        width=width,
+        height=height,
+        cursor=first_frame_end,
+        stream_end=stream_end,
+    )
+    states.append(
+        {
+            "state": "closure-frame-01",
+            "pixels": bytes(closure_pixels),
+            "stream_cursor": closure_cursor,
+            "frame_index": 2,
+            "width": width,
+            "height": height,
+        }
+    )
+    return states
+
+
+def load_goat_tmap_golden() -> dict[str, Any]:
+    if sha256_file(GOAT_TMAP_GOLDEN) != EXPECTED_GOAT_TMAP_GOLDEN:
+        raise CacheError("Goat TMAP golden file hash changed")
+    golden = load_json(GOAT_TMAP_GOLDEN)
+    if (
+        golden.get("schema") != "mc2-private-goat-tmap-golden/v1"
+        or golden.get("source_manifest_sha256")
+        != EXPECTED_GOAT_TMAP_ORACLE_MANIFEST
+        or set(golden.get("selectors", {}))
+        != {str(value) for value in GOAT_TMAP_SELECTORS}
+    ):
+        raise CacheError("Goat TMAP golden provenance or selector scope changed")
+    return golden
+
+
+def qualify_goat_tmap_states(
+    selector: int,
+    states: list[dict[str, Any]],
+    golden: dict[str, Any],
+) -> None:
+    observed = [
+        [
+            state["state"],
+            sha256_bytes(state["pixels"]),
+            state["stream_cursor"],
+            state["frame_index"],
+            state["width"],
+            state["height"],
+            len(state["pixels"]),
+        ]
+        for state in states
+    ]
+    if observed != golden["selectors"][str(selector)]:
+        raise CacheError(f"Goat TMAP {selector} states disagree with remc2 oracle")
+    if states[4]["pixels"] != states[0]["pixels"]:
+        raise CacheError(f"Goat TMAP {selector} frame 4 does not restore reset")
+    if states[5]["pixels"] != states[1]["pixels"]:
+        raise CacheError(f"Goat TMAP {selector} closure does not reproduce frame 1")
 
 
 def decode_container_blob(
@@ -1652,6 +2280,7 @@ def build_cache(
     package = load_json(package_dir / "manifest.json")
     closure = load_json(closure_path)
     catalog = load_json(catalog_path)
+    goat_tmap_golden = load_goat_tmap_golden()
     try:
         load_proven_export_verifier()(package_dir, package)
     except ValueError as error:
@@ -1718,7 +2347,7 @@ def build_cache(
         for asset_id in event.get("owner_asset_ids", [])
         if asset_id.startswith("owner_data:DATA/MSPRN0-0.DAT#")
     }
-    if frame_ids != set(FRAME_MSPRN):
+    if frame_ids != set(RESET_FRAME_MSPRN):
         raise CacheError("closure no longer contains the qualified 11 MSPRN frame indices")
     dynamic_ids = {
         int(row["asset_id"].rsplit("#", 1)[1])
@@ -1727,6 +2356,15 @@ def build_cache(
     }
     if not set(DYNAMIC_MSPRN) <= dynamic_ids:
         raise CacheError("qualified dynamic MSPRN dependency is missing")
+    castle_build_assets = [
+        row
+        for row in closure["sets"]["dynamic_dependencies"]["assets"]
+        if row["asset_id"]
+        == "owner_data:DATA/BUILD0-0.DAT#footprint-1"
+    ]
+    if len(castle_build_assets) != 1:
+        raise CacheError("qualified dynamic Castle BUILD footprint is missing")
+    castle_build_closure = castle_build_assets[0]
 
     frame_tmaps = {
         int(asset_id.rsplit("#", 1)[1])
@@ -1743,6 +2381,9 @@ def build_cache(
     }
     if not frame_tmaps <= scene_tmaps or len(scene_tmaps) != 129:
         raise CacheError("qualified Level 1 scene TMAP closure changed")
+    scene_tmaps.update(LEVEL1_LIVE_MISSION_TMAPS)
+    if len(scene_tmaps) != 163:
+        raise CacheError("live Level 1 mission TMAP extension changed")
 
     stage = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
     outputs: list[dict[str, Any]] = []
@@ -1750,6 +2391,164 @@ def build_cache(
         rnc_work = stage / ".rnc-work"
         rnc_work.mkdir()
         decoder, rnc_provenance = compile_rnc_decoder(rnc_work)
+        build_dat = source_bytes["DATA/BUILD0-0.DAT"]
+        build_tab = source_bytes["DATA/BUILD0-0.TAB"]
+        build_records = bitmap_records(build_tab)
+        if CASTLE_STAGE_ONE_BUILD_INDEX + 1 >= len(build_records):
+            raise CacheError("qualified Castle BUILD index has no following offset")
+        build_offset, raw_width, raw_height = build_records[
+            CASTLE_STAGE_ONE_BUILD_INDEX
+        ]
+        build_end = build_records[CASTLE_STAGE_ONE_BUILD_INDEX + 1][0]
+        build_tab_record = build_tab[
+            CASTLE_STAGE_ONE_BUILD_INDEX * TAB_RECORD.size:
+            (CASTLE_STAGE_ONE_BUILD_INDEX + 1) * TAB_RECORD.size
+        ]
+        build_cells = build_dat[build_offset:build_end]
+        if (
+            (raw_width, raw_height)
+            != (
+                CASTLE_STAGE_ONE_BUILD_RAW_WIDTH,
+                CASTLE_STAGE_ONE_BUILD_RAW_HEIGHT,
+            )
+            or len(build_cells) != raw_width * raw_height * 2
+            or sha256_bytes(build_cells)
+            != CASTLE_STAGE_ONE_BUILD_PAYLOAD_SHA256
+            or sha256_bytes(build_tab_record)
+            != CASTLE_STAGE_ONE_BUILD_TAB_RECORD_SHA256
+        ):
+            raise CacheError("qualified Castle BUILD index 1 changed")
+        if (
+            castle_build_closure["width"] != raw_width
+            or castle_build_closure["height"] != raw_height
+            or castle_build_closure["span"]
+            != {"offset": build_offset, "length": len(build_cells)}
+            or castle_build_closure["content_address"]
+            != f"sha256:{sha256_bytes(build_cells)}"
+        ):
+            raise CacheError("Castle BUILD closure/cache contract disagrees")
+        vga_selector = package["presentation_dependencies"][
+            "vga_resolution_selector"
+        ]
+        if vga_selector != 1:
+            raise CacheError("qualified Level 1 VGA selector changed")
+        runtime_width = raw_width * 2
+        runtime_height = raw_height * 2
+        effective_width = runtime_width // 2
+        effective_height = runtime_height // 2
+        build_parameter_data = source_bytes["DATA/BLDGPRM.DAT"]
+        parameter_offset = (
+            CASTLE_STAGE_ONE_BUILD_INDEX * BUILD_PARAMETER_RECORD.size
+        )
+        parameter_record = build_parameter_data[
+            parameter_offset:parameter_offset + BUILD_PARAMETER_RECORD.size
+        ]
+        if (
+            len(parameter_record) != BUILD_PARAMETER_RECORD.size
+            or sha256_bytes(parameter_record)
+            != CASTLE_STAGE_ONE_BUILD_PARAMETER_SHA256
+        ):
+            raise CacheError("qualified Castle BLDGPRM index 1 changed")
+        parameter_word, parameter_flags, parameter_byte_3 = (
+            BUILD_PARAMETER_RECORD.unpack(parameter_record)
+        )
+        build_cells_output = write_output(
+            stage,
+            outputs,
+            "build/castle-stage-1.cells.u8",
+            build_cells,
+            kind="owner_BUILD_terrain_footprint_cells_u8x2",
+            source_asset_ids=[
+                "owner_data:DATA/BUILD0-0.DAT#footprint-1"
+            ],
+            extra={
+                "build_index": CASTLE_STAGE_ONE_BUILD_INDEX,
+                "cell_stride_bytes": 2,
+                "raw_width": raw_width,
+                "raw_height": raw_height,
+                "runtime_width_after_CreateIndexes": runtime_width,
+                "runtime_height_after_CreateIndexes": runtime_height,
+                "effective_width": effective_width,
+                "effective_height": effective_height,
+                "vga_resolution_selector": vga_selector,
+            },
+        )
+        build_descriptor = {
+            "schema": "mc2-level1-castle-build-footprint/v1",
+            "source_asset_id":
+                "owner_data:DATA/BUILD0-0.DAT#footprint-1",
+            "build_index": CASTLE_STAGE_ONE_BUILD_INDEX,
+            "vga_resolution_selector": vga_selector,
+            "dimensions": {
+                "raw_tab": {
+                    "width": raw_width,
+                    "height": raw_height,
+                    "tab_record_sha256": sha256_bytes(build_tab_record),
+                },
+                "loader_runtime": {
+                    "width": runtime_width,
+                    "height": runtime_height,
+                    "rule":
+                        "CreateIndexes doubles when resolution bit 0 is set",
+                },
+                "castle_consumer_effective": {
+                    "width": effective_width,
+                    "height": effective_height,
+                    "rule":
+                        "SetShiftByCastle and terrain consumers halve when selector is 1",
+                },
+            },
+            "cells": {
+                "path": build_cells_output["path"],
+                "sha256": build_cells_output["sha256"],
+                "bytes": build_cells_output["bytes"],
+                "stride_bytes": 2,
+                "cell_0": "terrain_or_shading_control",
+                "cell_1":
+                    "target_height_offset_from_construction_base_or_ff_sentinel",
+                "row_order": "source_BUILD_consumer_order",
+            },
+            "building_parameters": {
+                "source_asset_id": "owner_data:DATA/BLDGPRM.DAT",
+                "record_index": CASTLE_STAGE_ONE_BUILD_INDEX,
+                "record_sha256": sha256_bytes(parameter_record),
+                "word_0": parameter_word,
+                "flags": parameter_flags,
+                "byte_3": parameter_byte_3,
+            },
+            "root_altitude": {
+                "rule":
+                    "construction origin is 32 * the minimum of the exact source perimeter walk",
+                "walk":
+                    "top x=start..start+7 at y=start; bottom at y=start+8; right x=start+8 y=start..start+7; left x=start y=start..start+7",
+                "source":
+                    "sub_48E60/sub_48F20 called by sub_4AA40",
+            },
+            "construction": {
+                "source":
+                    "AddTerrainMod0A_2A_37BC0 action 44",
+                "initial_countdown": 19,
+                "action_calls": 20,
+                "height_mutation_remaining_counts":
+                    list(range(18, 0, -1)),
+                "material_mutation_remaining_counts": [14, 7, 1],
+                "completion":
+                    "call19 changes 1 to -1 without mutation; call20 changes -1 to 0, signals parent state2, and disables child",
+                "height_rule":
+                    "current += trunc_toward_zero((cell1 + construction_base_byte - current) / remaining_count)",
+            },
+        }
+        build_descriptor_output = write_output(
+            stage,
+            outputs,
+            "build/castle-stage-1.json",
+            canonical_json(build_descriptor),
+            kind="canonical_json_Level1_Castle_BUILD_descriptor",
+            source_asset_ids=[
+                "owner_data:DATA/BUILD0-0.DAT#footprint-1",
+                "owner_data:DATA/BLDGPRM.DAT",
+            ],
+        )
         sound_container = source_bytes["SOUND/SOUND.DAT"]
         music_container = source_bytes["SOUND/MUSIC.DAT"]
         if (
@@ -1804,19 +2603,40 @@ def build_cache(
         sound_semantics = {
             1: ("ocean", "loop", 70, "local_ambient"),
             2: ("cricket2", "loop", 70, "local_ambient"),
+            3: ("explod3", "one_shot", 127, "original_stereo_positional"),
+            4: ("gainmana", "one_shot", 127, "original_stereo_positional"),
             5: ("fire", "loop", 120, "local_ambient"),
+            8: ("dragroar", "one_shot", 127, "original_stereo_positional"),
+            9: ("fireball", "one_shot", 127, "original_stereo_positional"),
+            10: ("quake4", "one_shot", 127, "original_stereo_positional"),
             12: ("null", "explicit_null", 0, "explicit_null"),
+            15: ("firebal2", "one_shot", 127, "original_stereo_positional"),
+            16: ("die", "one_shot", 127, "original_stereo_positional"),
+            18: ("getspell", "one_shot", 127, "original_stereo_positional"),
+            19: ("speedup", "one_shot", 127, "original_stereo_positional"),
+            27: ("splash2", "one_shot", 127, "original_stereo_positional"),
             29: ("cantuse", "one_shot", 127, "local_feedback"),
+            30: ("meteorex", "one_shot", 127, "original_stereo_positional"),
             31: ("market", "loop", 85, "local_ambient"),
+            33: ("arrow1", "one_shot", 127, "original_stereo_positional"),
+            34: ("arrow2", "one_shot", 127, "original_stereo_positional"),
             37: ("cymerian", "one_shot", 127, "original_stereo_positional"),
             39: ("wyvern", "one_shot", 127, "original_stereo_positional"),
+            40: ("manashot", "one_shot", 127, "original_stereo_positional"),
+            41: ("switch", "one_shot", 127, "original_stereo_positional"),
             43: ("firefly1", "one_shot", 127, "original_stereo_positional"),
+            44: ("firefly2", "one_shot", 127, "original_stereo_positional"),
             46: (
                 "goat",
                 "one_shot",
                 127,
-                "typed_goat_positional_request_pitch_deferred",
+                "original_stereo_positional",
             ),
+            54: ("hit1", "one_shot", 127, "original_stereo_positional"),
+            55: ("hit2", "one_shot", 127, "original_stereo_positional"),
+            56: ("hit3", "one_shot", 127, "original_stereo_positional"),
+            57: ("hit4", "one_shot", 127, "original_stereo_positional"),
+            63: ("spellup", "one_shot", 127, "original_stereo_positional"),
         }
         sound_assets = []
         for sound_id in LEVEL1_SOUND_IDS:
@@ -1878,14 +2698,35 @@ def build_cache(
         expected_sound_names = {
             1: "OCEAN.WAV",
             2: "CRICKET2.WAV",
+            3: "EXPLOD3.WAV",
+            4: "GAINMANA.WAV",
             5: "FIRE.WAV",
+            8: "DRAGROAR.WAV",
+            9: "FIREBAL1.WAV",
+            10: "QUAKE4.WAV",
             12: "NULL.WAV",
+            15: "FIREBAL2.WAV",
+            16: "DIE.WAV",
+            18: "GETSPELL.WAV",
+            19: "SPEEDUP.WAV",
+            27: "SPLASH2.WAV",
             29: "CANTUSE.WAV",
+            30: "METEOREX.WAV",
             31: "MARKET.WAV",
+            33: "ARROW1.WAV",
+            34: "ARROW2.WAV",
             37: "CYMERIAN.WAV",
             39: "WYVERN.WAV",
+            40: "MANASHOT.WAV",
+            41: "SWITCH.WAV",
             43: "FIREFLY1.WAV",
+            44: "FIREFLY2.WAV",
             46: "GOAT.WAV",
+            54: "HIT1.WAV",
+            55: "HIT2.WAV",
+            56: "HIT3.WAV",
+            57: "HIT4.WAV",
+            63: "SPELLUP.WAV",
         }
         if {
             row["sound_id"]: row["filename"] for row in sound_assets
@@ -2119,10 +2960,22 @@ def build_cache(
             "bank": 1,
             "quality": 822,
             "consume_event_kinds": [
-                "PrepareSound", "EndLoop", "UpdateMusic", "GoatSoundRequest"
+                "PrepareSound",
+                "EndLoop",
+                "UpdateMusic",
+                "StartMusic",
+                "GoatSoundRequest",
+                "ArcherArrowSound",
+                "FireflyChargeSound",
+                "FireballImpacted",
+                "WaterSplashed",
+                "CastleProjectileSpawned",
+                "CastleConstructionSound",
+                "ManaSphereClaimed",
+                "MissionSound",
             ],
             "request_spell_activation_audio_status":
-                "NoMapping; must not infer Fireball audio",
+                "NoDirectRequestMapping; successful Fireball spawn emits MissionSound9",
             "prepare_sound_ids": {
                 "ambient_loops": [1, 2, 5, 31],
                 "periodic": {
@@ -2132,6 +2985,7 @@ def build_cache(
                     "effect_0x19": 37,
                 },
                 "insufficient_mana": 29,
+                "speed_activation": 19,
             },
             "cave_ids": {
                 "exact_range": [65, 69],
@@ -2151,17 +3005,34 @@ def build_cache(
                 "mode_2_target": 127,
                 "volume_step_per_callback": 1,
                 "track_start_event_status":
-                    "Absent_from_current_ABI; presentation adaptation",
+                    "SourceOrderQualified_after_second_DrawAndEvents",
             },
             "positional_surfaces": {
                 "status":
                     "Ready_via_typed_McAudioCommandV2_original_integer_stereo",
-                "command_required_sound_ids": [37, 39, 43],
+                "command_required_sound_ids": [
+                    3, 4, 8, 9, 10, 15, 16, 18, 19, 27, 30, 33, 34, 37,
+                    39, 40, 41, 43, 44, 46, 54, 55, 56, 57, 63,
+                ],
                 "missing_command_reason": "missing_positional_command",
                 "attenuation_axis": "XY_only_original_helper_despite_XYZ_name",
                 "unity_spatial_blend": 0,
                 "unity_doppler": 0,
                 "unity_default_rolloff": "Disabled",
+            },
+            "mission_event_sounds": {
+                "ArcherArrowSound": [33, 34],
+                "FireflyChargeSound": [43, 44],
+                "CastleProjectileSpawned": [15],
+                "CastleConstructionSound": [10],
+                "ManaSphereClaimed": [4],
+                "FireballImpacted": [3],
+                "WaterSplashed": [27],
+                "MissionSound": [
+                    8, 9, 16, 18, 19, 30, 40, 41, 54, 55, 56, 57, 63,
+                ],
+                "position_status":
+                    "Ready_typed_source_slot_XYZ_integer_stereo_sidecar",
             },
             "goat_sound_request": {
                 "sound_id": 46,
@@ -2170,9 +3041,9 @@ def build_cache(
                 "position_source": "Rust_owned_live_Goat_snapshot",
                 "play_type": "if_not_already_playing",
                 "numeric_pitch_status":
-                    "Deferred_until_source_ordered_global_rng_is_qualified",
+                    "Ready_source_ordered_global_rng_and_action_branch",
                 "presentation_policy":
-                    "Do_not_play_as_exact_without_numeric_pitch",
+                    "Play_only_from_authoritative_audio_sidecar",
             },
             "unknown_policy":
                 "structured_deterministic_suppressed_log_no_fallback_clip",
@@ -2385,9 +3256,11 @@ def build_cache(
                 raise CacheError(f"decoded TMAP dimensions disagree at index {index}")
             animated = (header_word & 1) != 0
             if animated:
-                if len(decoded) <= first_frame_end or decoded[first_frame_end] == 0:
+                if len(decoded) < first_frame_end + 2:
                     raise CacheError(f"animated TMAP has no frame stream at index {index}")
-                frame_count = decoded[first_frame_end]
+                frame_count = struct.unpack_from("<H", decoded, first_frame_end)[0]
+                if frame_count == 0:
+                    raise CacheError(f"animated TMAP has zero frames at index {index}")
             else:
                 if len(decoded) != first_frame_end:
                     raise CacheError(f"static TMAP has trailing data at index {index}")
@@ -2423,25 +3296,67 @@ def build_cache(
                     "palette_asset_id": "owner_data:DATA/PALN-0.DAT",
                 },
             )
-            tmap_rows.append(
-                {
-                    "index": index,
-                    "inclusion": inclusion,
-                    "status": "decoded_indexed_texture",
-                    "header_word": header_word,
-                    "width": width,
-                    "height": height,
-                    "animated": animated,
-                    "frame_count": frame_count,
-                    "animation_or_allocation_group": group,
-                    "indices_path": pixel_output["path"],
-                    "decoded_payload_path": decoded_output["path"],
-                    "source_asset_id": asset_id,
-                    "row_order": "top_to_bottom",
-                    "origin": "top_left",
-                    "palette_asset_id": "owner_data:DATA/PALN-0.DAT",
-                }
-            )
+            tmap_row = {
+                "index": index,
+                "inclusion": inclusion,
+                "status": "decoded_indexed_texture",
+                "header_word": header_word,
+                "width": width,
+                "height": height,
+                "animated": animated,
+                "frame_count": frame_count,
+                "animation_or_allocation_group": group,
+                "indices_path": pixel_output["path"],
+                "decoded_payload_path": decoded_output["path"],
+                "source_asset_id": asset_id,
+                "row_order": "top_to_bottom",
+                "origin": "top_left",
+                "palette_asset_id": "owner_data:DATA/PALN-0.DAT",
+                "animation_materialization":
+                    "base_frame_only; unsupported stream formats fail closed",
+            }
+            if index in GOAT_TMAP_SELECTORS:
+                states = materialize_goat_tmap_animation(index, decoded)
+                qualify_goat_tmap_states(index, states, goat_tmap_golden)
+                state_paths = {"reset-base": pixel_output["path"]}
+                for state in states[1:5]:
+                    frame_output = write_output(
+                        stage,
+                        outputs,
+                        f"terrain/tmaps1/{index:03d}.{state['state']}.indices.u8",
+                        state["pixels"],
+                        kind="indexed_image_u8_exact_remc2_mutable_tmap_state",
+                        source_asset_ids=[asset_id],
+                        extra={
+                            "index": index,
+                            "state": state["state"],
+                            "width": width,
+                            "height": height,
+                            "stream_cursor": state["stream_cursor"],
+                            "frame_index": state["frame_index"],
+                            "palette_asset_id": "owner_data:DATA/PALN-0.DAT",
+                        },
+                    )
+                    state_paths[state["state"]] = frame_output["path"]
+                state_paths["closure-frame-01"] = state_paths["frame-01"]
+                tmap_row["animation_materialization"] = (
+                    "exact_qualified_Goat_SS2_four_transition_states; "
+                    "selector_global_shared_TMAP_state_not_per_entity"
+                )
+                tmap_row["animation_states"] = [
+                    {
+                        "state": state["state"],
+                        "stream_cursor": state["stream_cursor"],
+                        "frame_index": state["frame_index"],
+                        "width": state["width"],
+                        "height": state["height"],
+                        "bytes": len(state["pixels"]),
+                        "sha256": sha256_bytes(state["pixels"]),
+                        "indices_path": state_paths[state["state"]],
+                    }
+                    for state in states
+                ]
+            tmap_rows.append(tmap_row)
 
         material_descriptor = {
             "schema": "mc2-level1-night-materials/v1",
@@ -2509,7 +3424,17 @@ def build_cache(
                 "scene_reachable_selectors": sorted(scene_tmaps),
                 "textures": tmap_rows,
                 "animation_semantics":
-                    "TAB_group_preserved; equal group values identify source allocation/animation families",
+                    "TAB groups preserved; exact mutable SS2 states materialized only "
+                    "for Goat selectors 152-154; all other animated selectors remain "
+                    "base-frame-only",
+                "goat_animation_golden": {
+                    "path": str(GOAT_TMAP_GOLDEN.relative_to(REPO)),
+                    "file_sha256": EXPECTED_GOAT_TMAP_GOLDEN,
+                    "source_oracle_manifest_sha256":
+                        EXPECTED_GOAT_TMAP_ORACLE_MANIFEST,
+                    "selector_state_scope":
+                        "selector_global_shared_TMAP_state_not_per_entity",
+                },
             },
             "rendering_scope": {
                 "qualified":
@@ -2573,17 +3498,17 @@ def build_cache(
         shutil.rmtree(rnc_work)
 
         proven_decode = load_proven_decoder()
-        mspr_dat = source_bytes["DATA/MSPRN0-0.DAT"]
-        mspr_records = bitmap_records(source_bytes["DATA/MSPRN0-0.TAB"])
+        hspr_dat = source_bytes["DATA/HSPRN0-0.DAT"]
+        hspr_records = bitmap_records(source_bytes["DATA/HSPRN0-0.TAB"])
         sprite_rows: list[dict[str, Any]] = []
         sprite_materialized: dict[int, tuple[bytes, bytes, int, int]] = {}
-        for index in sorted(set(FRAME_MSPRN + DYNAMIC_MSPRN)):
-            offset, width, height = mspr_records[index]
+        for index in sorted(set(FRAME_HSPRN + DYNAMIC_HSPRN)):
+            offset, width, height = hspr_records[index]
             pixels, mask, encoded_length = materialize_indexed_rle(
-                mspr_dat, offset, width, height
+                hspr_dat, offset, width, height
             )
-            proven = proven_decode(mspr_dat, offset, width, height)
-            catalog_entry = entry_rows[f"owner_data:DATA/MSPRN0-0.DAT#{index}"]
+            proven = proven_decode(hspr_dat, offset, width, height)
+            catalog_entry = entry_rows[f"owner_data:DATA/HSPRN0-0.DAT#{index}"]
             if (
                 proven["status"] != "decoded_indexed_rle"
                 or proven["indexed_pixels_sha256"] != sha256_bytes(pixels)
@@ -2592,16 +3517,28 @@ def build_cache(
                 or catalog_entry["transparency_mask_sha256"] != sha256_bytes(mask)
                 or proven["encoded_length"] != encoded_length
             ):
-                raise CacheError(f"MSPRN decoder/catalog disagreement at index {index}")
+                raise CacheError(f"HSPRN decoder/catalog disagreement at index {index}")
             reason = (
                 "qualified_frame_used"
-                if index in FRAME_MSPRN
-                else "qualified_dynamic_spell_menu_dependency"
+                if index in RESET_FRAME_HSPRN
+                else (
+                    "source_mapped_live_spell_hud_dependency"
+                    if index in (2, 125, 126)
+                    else (
+                        "source_mapped_Level1_minimap_entity_dependency"
+                        if index in (58, 66, 83, 84)
+                        else (
+                            "source_mapped_live_top_bar_dependency"
+                            if 44 <= index <= 55
+                            else "qualified_dynamic_spell_menu_dependency"
+                        )
+                    )
+                )
             )
             index_row = write_output(
                 stage,
                 outputs,
-                f"sprites/msprn/{index:03d}.indices.u8",
+                f"sprites/hsprn/{index:03d}.indices.u8",
                 pixels,
                 kind="indexed_image_u8",
                 source_asset_ids=[catalog_entry["asset_id"]],
@@ -2610,7 +3547,7 @@ def build_cache(
             mask_row = write_output(
                 stage,
                 outputs,
-                f"sprites/msprn/{index:03d}.mask.u8",
+                f"sprites/hsprn/{index:03d}.mask.u8",
                 mask,
                 kind="visibility_mask_u8_0_or_1",
                 source_asset_ids=[catalog_entry["asset_id"]],
@@ -2632,16 +3569,16 @@ def build_cache(
                     ],
                     "palette_status": "PALN_materialized_fade_variant_unresolved_not_cached",
                     "stored_dimensions": {"width": width, "height": height},
-                    "logical_scale": 2,
-                    "runtime_dimensions": {"width": width * 2, "height": height * 2},
+                    "logical_scale": 1,
+                    "runtime_dimensions": {"width": width, "height": height},
                     "row_order": "top_to_bottom",
                     "origin": "top_left",
                     "mask_semantics": "one_visible_zero_transparent",
                 }
             )
 
-        font_dat = source_bytes["DATA/FONT1.DAT"]
-        font_records = bitmap_records(source_bytes["DATA/FONT1.TAB"])
+        font_dat = source_bytes["DATA/HFONT3.DAT"]
+        font_records = bitmap_records(source_bytes["DATA/HFONT3.TAB"])
         font_blob = bytearray()
         glyph_rows: list[dict[str, Any]] = []
         for index, (offset, width, height) in enumerate(font_records):
@@ -2649,14 +3586,14 @@ def build_cache(
                 font_dat, offset, width, height
             )
             proven = proven_decode(font_dat, offset, width, height)
-            catalog_entry = entry_rows[f"owner_data:DATA/FONT1.DAT#{index}"]
+            catalog_entry = entry_rows[f"owner_data:DATA/HFONT3.DAT#{index}"]
             if (
                 proven["indexed_pixels_sha256"] != sha256_bytes(pixels)
                 or proven["transparency_mask_sha256"] != sha256_bytes(mask)
                 or catalog_entry["transparency_mask_sha256"] != sha256_bytes(mask)
                 or proven["encoded_length"] != encoded_length
             ):
-                raise CacheError(f"FONT1 decoder/catalog disagreement at glyph {index}")
+                raise CacheError(f"HFONT3 decoder/catalog disagreement at glyph {index}")
             blob_offset = len(font_blob)
             font_blob.extend(mask)
             glyph_rows.append(
@@ -2675,10 +3612,13 @@ def build_cache(
         font_output = write_output(
             stage,
             outputs,
-            "font/font1.masks.u8",
+            "font/hfont3.masks.u8",
             bytes(font_blob),
             kind="concatenated_visibility_masks_u8_0_or_1",
-            source_asset_ids=["owner_data:DATA/FONT1.DAT", "owner_data:DATA/FONT1.TAB"],
+            source_asset_ids=[
+                "owner_data:DATA/HFONT3.DAT",
+                "owner_data:DATA/HFONT3.TAB",
+            ],
             extra={"glyph_count": len(glyph_rows)},
         )
 
@@ -2730,7 +3670,7 @@ def build_cache(
         minimap_mask_output = write_output(
             stage,
             outputs,
-            "hud/minimap-aperture-64.mask.u8",
+            "hud/minimap-aperture-128.mask.u8",
             minimap_mask,
             kind="u8_TABLESN_scanline_aperture_mask",
             source_asset_ids=["owner_data:DATA/TABLESN.DAT"],
@@ -2781,44 +3721,91 @@ def build_cache(
             252, 36, 36
         ):
             raise CacheError("qualified Night objective tint no longer matches PALN red")
-        objective_rgba, badge_rgba, objective_render = build_objective_rasters(
-            expected_objective,
-            glyph_rows,
-            bytes(font_blob),
-            sprite_materialized,
-            paln_rgb8,
-            objective_text_index,
-        )
-        objective_output = write_output(
-            stage,
-            outputs,
-            "hud/objective-reset.rgba8",
-            objective_rgba,
-            kind="rgba8_frozen_reset_objective_frame_and_FONT1_text",
-            source_asset_ids=[
-                "owner_data:LANGUAGE/L1.TXT",
-                "owner_data:DATA/FONT1.DAT",
-                "owner_data:DATA/MSPRN0-0.DAT#171",
-                "owner_data:DATA/MSPRN0-0.DAT#172",
-                "owner_data:DATA/MSPRN0-0.DAT#173",
-                "owner_data:DATA/CLRN-0.DAT",
-                "owner_data:DATA/PALN-0.DAT",
-            ],
-            extra={
-                "width": objective_render["objective_width"],
-                "height": objective_render["objective_height"],
-                "authority": "FrozenObserved",
-                "selector": LEVEL1_OBJECTIVE_SELECTOR,
-            },
-        )
+        objective_rows = []
+        badge_rgba = b""
+        objective_render = {}
+        objective_output = {}
+        for selector in LEVEL1_OBJECTIVE_IDS:
+            objective_foreground, current_badge, current_render = build_objective_rasters(
+                language_l1[selector],
+                glyph_rows,
+                bytes(font_blob),
+                sprite_materialized,
+                paln_rgb8,
+                objective_text_index,
+                1,
+            )
+            current_output = write_output(
+                stage,
+                outputs,
+                f"hud/objective-{selector:03d}.indexed-mask.u8",
+                objective_foreground,
+                kind=(
+                    "u8x2_source_mapped_Level1_objective_foreground_"
+                    "indices_then_mask"
+                ),
+                source_asset_ids=[
+                    "owner_data:LANGUAGE/L1.TXT",
+                    "owner_data:DATA/HFONT3.DAT",
+                    "owner_data:DATA/HSPRN0-0.DAT#171",
+                    "owner_data:DATA/HSPRN0-0.DAT#172",
+                    "owner_data:DATA/HSPRN0-0.DAT#173",
+                    "owner_data:DATA/CLRN-0.DAT",
+                    "owner_data:DATA/PALN-0.DAT",
+                    "owner_data:DATA/TABLESN.DAT",
+                ],
+                extra={
+                    "width": current_render["objective_width"],
+                    "height": current_render["objective_height"],
+                    "plane_bytes":
+                        current_render["objective_foreground_plane_bytes"],
+                    "plane_order": ["indices", "mask"],
+                    "authority": "SourceMappedLive",
+                    "selector": selector,
+                },
+            )
+            objective_rows.append({
+                "selector": selector,
+                "text_bytes_path": f"hud/objective-text-{selector:03d}.bytes",
+                "text_sha256": sha256_bytes(language_l1[selector]),
+                "glyph_indices": current_render["objective_glyph_indices"],
+                "lines_ascii": current_render["objective_lines_ascii"],
+                "text_advances": current_render["objective_text_advances"],
+                "raster_path": current_output["path"],
+                "raster_plane_bytes":
+                    current_render["objective_foreground_plane_bytes"],
+                "foreground_indices_sha256":
+                    current_render["objective_foreground_indices_sha256"],
+                "foreground_mask_sha256":
+                    current_render["objective_foreground_mask_sha256"],
+                "foreground_opaque_pixels":
+                    current_render["objective_foreground_opaque_pixels"],
+                "render_width": current_render["objective_width"],
+                "render_height": current_render["objective_height"],
+                "reference_x": current_render["objective_x"],
+                "reference_y": current_render["objective_y"],
+                "text_x": current_render["objective_text_origin"]["x"],
+                "text_y": current_render["objective_text_origin"]["y"],
+                "blend_x": current_render["objective_blend_rect"]["x"],
+                "blend_y": current_render["objective_blend_rect"]["y"],
+                "blend_width":
+                    current_render["objective_blend_rect"]["width"],
+                "blend_height":
+                    current_render["objective_blend_rect"]["height"],
+                "authority": "SourceMappedLiveIndexedFramebuffer",
+            })
+            if selector == LEVEL1_OBJECTIVE_SELECTOR:
+                badge_rgba = current_badge
+                objective_render = current_render
+                objective_output = current_output
         badge_output = write_output(
             stage,
             outputs,
             "hud/frozen-observed.rgba8",
             badge_rgba,
-            kind="rgba8_FONT1_authority_badge",
+            kind="rgba8_HFONT3_authority_badge",
             source_asset_ids=[
-                "owner_data:DATA/FONT1.DAT",
+                "owner_data:DATA/HFONT3.DAT",
                 "owner_data:DATA/CLRN-0.DAT",
                 "owner_data:DATA/PALN-0.DAT",
             ],
@@ -2837,16 +3824,59 @@ def build_cache(
             }
             for selector in LEVEL1_OBJECTIVE_IDS
         ]
-        hud_bitmap_selectors = (1, 40, 41, 42, 43, 54, 123, 124, 171, 172, 173)
+        spell_tier_rows = []
+        for tier, tier_text in enumerate((b"I", b"II", b"III", b"IV", b"V")):
+            tier_rgba, tier_width, tier_height, tier_glyphs = (
+                build_hud_text_raster(
+                    tier_text,
+                    glyph_rows,
+                    bytes(font_blob),
+                    paln_rgb8,
+                    objective_background_index,
+                )
+            )
+            tier_output = write_output(
+                stage,
+                outputs,
+                f"hud/spell-tier-{tier}.rgba8",
+                tier_rgba,
+                kind="rgba8_source_mapped_HFONT3_spell_tier",
+                source_asset_ids=[
+                    "owner_data:DATA/HFONT3.DAT",
+                    "owner_data:DATA/CLRN-0.DAT",
+                    "owner_data:DATA/PALN-0.DAT",
+                ],
+                extra={
+                    "tier": tier,
+                    "text": tier_text.decode("ascii"),
+                    "width": tier_width,
+                    "height": tier_height,
+                    "palette_index": objective_background_index,
+                },
+            )
+            spell_tier_rows.append({
+                "tier": tier,
+                "text": tier_text.decode("ascii"),
+                "render_path": tier_output["path"],
+                "render_width": tier_width,
+                "render_height": tier_height,
+                "glyph_indices": tier_glyphs,
+                "palette_index": objective_background_index,
+            })
+        hud_bitmap_selectors = (
+            1, 2, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+            51, 52, 53, 54, 55, 58, 66, 83, 84, 123, 124, 125, 126,
+            171, 172, 173,
+        )
         sprite_by_index = {row["index"]: row for row in sprite_rows}
         hud_bitmap_assets = []
         for selector in hud_bitmap_selectors:
             row = sprite_by_index[selector]
             hud_bitmap_assets.append({
                 "selector": selector,
-                "bank": "MSPRN0-0",
+                "bank": "HSPRN0-0",
                 "source_asset_id":
-                    f"owner_data:DATA/MSPRN0-0.DAT#{selector}",
+                    f"owner_data:DATA/HSPRN0-0.DAT#{selector}",
                 "indices_path": row["indices_path"],
                 "mask_path": row["mask_path"],
                 "indices_sha256": row["indices_sha256"],
@@ -2857,7 +3887,8 @@ def build_cache(
                 "runtime_height": row["runtime_dimensions"]["height"],
                 "source_scale": row["logical_scale"],
                 "palette": "PALN-0",
-                "palette_effects": "base_palette_only; transient variants Deferred",
+                "palette_effects":
+                    "SourceMappedLive; native hit/speed/objective/exit RGB6 state",
                 "filter": "nearest",
                 "authority": "FrozenObserved",
             })
@@ -2870,12 +3901,12 @@ def build_cache(
                 "uniform_scale_expression":
                     "min(Screen.width / 640, Screen.height / 480)",
                 "filter": "nearest",
-                "resolution_bank": "MSPRN0-0",
-                "source_scale": HUD_SOURCE_SCALE,
+                "resolution_bank": "HSPRN0-0",
+                "source_scale": 1,
                 "bank_status":
-                    "trace_qualified_Night_low_resolution_bank_scaled_2x",
+                    "source_mapped_Night_high_resolution_bank_native",
                 "high_resolution_bank_status":
-                    "Deferred; no HSPRN parity claim in this cache",
+                    "Qualified through remc2 LoadSpr_47160 high-resolution branch",
             },
             "top_bar": {
                 "source_function": "DrawTopStatusBar_2D710@0x20e710",
@@ -2883,49 +3914,50 @@ def build_cache(
                     {
                         "semantic_role": "minimap_panel",
                         "selector": 40,
-                        "x": 4,
-                        "y": 4,
-                        "authority": "FrozenObserved",
+                        "x": 2,
+                        "y": 2,
+                        "authority": "SourceMappedLive",
                     },
                     {
                         "semantic_role": "castle_empty_panel",
                         "selector": 54,
-                        "x": 128,
-                        "y": 4,
-                        "authority": "FrozenObserved",
+                        "x": 126,
+                        "y": 2,
+                        "authority": "SourceMappedLive",
                     },
                     {
                         "semantic_role": "balloon_empty_panel",
                         "selector": 54,
-                        "x": 256,
-                        "y": 4,
-                        "authority": "FrozenObserved",
+                        "x": 254,
+                        "y": 2,
+                        "authority": "SourceMappedLive",
                     },
                     {
                         "semantic_role": "player_health_mana_panel",
                         "selector": 41,
-                        "x": 384,
-                        "y": 4,
-                        "authority": "FrozenObserved",
+                        "x": 382,
+                        "y": 2,
+                        "authority": "SourceMappedLive",
                     },
                     {
                         "semantic_role": "player_icon",
                         "selector": 43,
-                        "x": 388,
-                        "y": 4,
-                        "authority": "FrozenObserved",
+                        "x": 384,
+                        "y": 2,
+                        "authority": "SourceMappedLive",
                     },
                     {
                         "semantic_role": "player_health_mana_icons",
                         "selector": 42,
-                        "x": 460,
-                        "y": 4,
-                        "authority": "FrozenObserved",
+                        "x": 420,
+                        "y": 2,
+                        "authority": "SourceMappedLive",
                     },
                 ],
                 "health_mana_bars": {
-                    "authority": "Deferred",
-                    "reason": "ABI v2 exposes no live player health or general mana",
+                    "authority": "MissionStateLiveSourceMapped",
+                    "formula":
+                        "DrawBar_2D190 integer widths over global mana denominator; no background or inset",
                 },
             },
             "spells": {
@@ -2935,38 +3967,43 @@ def build_cache(
                     {
                         "semantic_role": "left_fireball",
                         "x": 510,
-                        "y": 4,
+                        "y": 2,
                         "holder_entity": 153,
                         "model": 0,
                         "icon_selector": 123,
-                        "authority": "FrozenObserved",
+                        "authority": "MissionStateLive",
                         "activation_authority": "SpellActivationLive",
                     },
                     {
                         "semantic_role": "right_possess",
                         "x": 574,
-                        "y": 4,
+                        "y": 2,
                         "holder_entity": 154,
                         "model": 1,
                         "icon_selector": 124,
-                        "authority": "FrozenObserved",
-                        "activation_authority": "Deferred",
+                        "authority": "MissionStateLive",
+                        "activation_authority": "SpellActivationLive",
                     },
                 ],
+                "live_icon_selectors": [123, 124, 125, 126],
+                "live_selector_authority":
+                    "MissionStateLive; Fireball, Possession, Castle, Speed",
+                "tier_rows": spell_tier_rows,
                 "glow_tier_charge": {
-                    "authority": "Deferred",
+                    "authority": "MissionStateLiveSourceMapped",
                     "reason":
-                        "holder timer, tier and charge fields are absent from ABI v2",
+                        "additive Level1 HUD ABI exposes holder timer, tier, charge divisor and caster mana",
                 },
             },
             "objective": {
                 "source_function": "DrawCurrentObjectiveTextbox_30630@0x211630",
-                "selector_expression": "IndexLevelText_DB4EE[0](48) + textSelector(0)",
+                "selector_expression":
+                    "IndexLevelText_DB4EE[0](48) + live ObjectiveText, or LevelEndText[0](53)",
                 "selector": LEVEL1_OBJECTIVE_SELECTOR,
                 "text_bytes_path": "hud/objective-text-048.bytes",
                 "text_sha256": sha256_bytes(expected_objective),
                 "text_encoding": "owner_bytes_ascii_subset_preserved",
-                "font_bank": "FONT1",
+                "font_bank": "HFONT3",
                 "glyph_expression": "byte + 1; space advances glyph 33 width",
                 "glyph_indices": objective_render["objective_glyph_indices"],
                 "tint": {
@@ -2977,15 +4014,36 @@ def build_cache(
                     "historical_pointer_name":
                         "xadataclrd0dat; PaletteChanges_47760 installs CLRN for Night",
                 },
+                "background_blend": {
+                    "source_table_path": tablesn_output["path"],
+                    "table_offset": 0x4000,
+                    "clrn_selector": 0,
+                    "blend_selector": objective_background_index,
+                    "expression":
+                        "TABLESN[0x4000 + (CLRN[0] << 8) + live_destination_index]",
+                    "underlay_scope":
+                        "world_only_for_Level1_rows; all boxes begin below y=128 prior HUD extent",
+                    "display_adaptation":
+                        "pixel-centre nearest sample from qualified 320x200 indexed world "
+                        "into 640x480 corrected 4:3 reference layout",
+                },
+                "draw_order": [
+                    "TABLESN_background_blend",
+                    "HFONT3_text_palette_119",
+                    "HSPRN_frame_171_172_173",
+                ],
                 "frame_selectors": [171, 172, 173],
-                "render_path": objective_output["path"],
+                "raster_path": objective_output["path"],
+                "raster_plane_bytes":
+                    objective_render["objective_foreground_plane_bytes"],
                 "render_width": objective_render["objective_width"],
                 "render_height": objective_render["objective_height"],
-                "reference_x": 192,
-                "reference_y": 126,
-                "authority": "FrozenObserved",
+                "reference_x": objective_render["objective_x"],
+                "reference_y": objective_render["objective_y"],
+                "authority": "SourceMappedLiveIndexedFramebuffer",
                 "objective_textbox_ticks": 33,
                 "localization_records": localization_rows,
+                "rows": objective_rows,
             },
             "authority_badge": {
                 "text": objective_render["badge_text_ascii"],
@@ -3010,8 +4068,8 @@ def build_cache(
                 "presentation_scale": HUD_SOURCE_SCALE,
                 "map_mode":
                     "player_centered_yaw_rotated_TABLESN_scanline_aperture",
-                "low_resolution_branch":
-                    "MSPRN_effective_64x64_scaling512_then_nearest_2x",
+                "resolution_branch":
+                    "HSPRN_native_128x128_scaling256",
                 "sampling": {
                     "source_units_per_pixel": LEVEL1_MINIMAP_SOURCE_SCALE,
                     "transform":
@@ -3044,39 +4102,38 @@ def build_cache(
                     "cardinal_direction_samples": minimap_direction_samples,
                     "octant_probe_samples": minimap_octant_probe,
                 },
-                "terrain_authority": "FrozenObserved",
-                "entity_positions_authority": "FrozenObserved",
+                "terrain_authority": "OwnerLevelStaticLiveSampling",
+                "entity_positions_authority": "SourceArenaLive",
                 "entity_overlay_mode":
-                    "non_original_FrozenObserved_reset_reference_overlay",
+                    "Rust_source_slot_ordered_DrawMinimapEntities_commands",
                 "player_pose_authority": "PlayerFlightLive",
                 "entity_colour_filter_status":
-                    "Deferred; exact DrawMinimapEntities filter/colour pass not claimed",
+                    "SourceMappedLive; Night class/model/action/control/owner/phase filters, castle rope, sprites, direct dots, and single-blend centre cross",
                 "objective_marks_status":
-                    "Deferred; objective progression and mark pass absent from ABI v2",
+                    "SourceMappedLive; Rust target/order/blink/arrow geometry plus indexed Unity raster",
             },
             "deferred": [
-                "HSPRN high-resolution bank parity",
-                "paletteMod and paletteSubMod transient fade/hit/flash palettes",
-                "live health, mana, castle, balloon, tier and charge progression",
-                "exact minimap entity colours, filtering, reveal and objective marks",
+                "balloon ownership and per-balloon life/mana rows",
                 "minimap TABLESN framebuffer blend against the live 3D view",
                 "textbox background TABLESN blend against the live framebuffer",
             ],
         }
-        objective_text_output = write_output(
-            stage,
-            outputs,
-            "hud/objective-text-048.bytes",
-            expected_objective,
-            kind="owner_localization_record_bytes",
-            source_asset_ids=["owner_data:LANGUAGE/L1.TXT"],
-            extra={
-                "selector": LEVEL1_OBJECTIVE_SELECTOR,
-                "authority": "FrozenObserved",
-            },
-        )
-        if objective_text_output["path"] != hud_descriptor["objective"]["text_bytes_path"]:
-            raise CacheError("objective descriptor output path mismatch")
+        for row in objective_rows:
+            selector = row["selector"]
+            objective_text_output = write_output(
+                stage,
+                outputs,
+                row["text_bytes_path"],
+                language_l1[selector],
+                kind="owner_localization_record_bytes",
+                source_asset_ids=["owner_data:LANGUAGE/L1.TXT"],
+                extra={
+                    "selector": selector,
+                    "authority": row["authority"],
+                },
+            )
+            if objective_text_output["path"] != row["text_bytes_path"]:
+                raise CacheError("objective descriptor output path mismatch")
         hud_output = write_output(
             stage,
             outputs,
@@ -3084,8 +4141,8 @@ def build_cache(
             canonical_json(hud_descriptor),
             kind="canonical_json_Level1_HUD_descriptor",
             source_asset_ids=[
-                "owner_data:DATA/MSPRN0-0.DAT",
-                "owner_data:DATA/FONT1.DAT",
+                "owner_data:DATA/HSPRN0-0.DAT",
+                "owner_data:DATA/HFONT3.DAT",
                 "owner_data:LANGUAGE/L1.TXT",
                 "owner_data:DATA/CLRN-0.DAT",
                 "owner_data:DATA/PALN-0.DAT",
@@ -3121,8 +4178,9 @@ def build_cache(
             })
         spell_indices = {
             "schema": "mc2-spell-icon-indices/v1",
-            "bank": "MSPRN0-0",
-            "status": "family_mapping_with_Level1_reset_big_icons_materialized",
+            "bank": "HSPRN0-0",
+            "status":
+                "family_mapping_with_Level1_high_resolution_big_icons_materialized",
             "source_asset_id": "owner_data:DATA/SPELLS.DAT",
             "provenance": {
                 "family_indices": "code-derived qualified family mapping",
@@ -3159,6 +4217,9 @@ def build_cache(
                 "level_export_package_sha256": EXPECTED_PACKAGE,
                 "level_asset_closure_sha256": EXPECTED_CLOSURE,
                 "owner_catalog_sha256": catalog_binding,
+                "goat_tmap_golden_file_sha256": EXPECTED_GOAT_TMAP_GOLDEN,
+                "goat_tmap_oracle_manifest_sha256":
+                    EXPECTED_GOAT_TMAP_ORACLE_MANIFEST,
             },
             "generator": {
                 "id": "remc2-unity-asset-cache",
@@ -3200,9 +4261,11 @@ def build_cache(
                         sum(row["status"] == "raw_single_byte_placeholder_nondecoded" for row in tmap_rows),
                     "palette_status":
                         "exact_night_TABLESN_static_shade_then_PALN_indexed_runtime_lookup",
-                    "animation_status": "TAB_group_semantics_preserved_in_descriptor",
+                    "animation_status":
+                        "exact_Goat_152_154_mutable_states_materialized; "
+                        "other_animated_TMAPs_base_frame_only",
                 },
-                "msprn": sprite_rows,
+                "hsprn": sprite_rows,
                 "entity_presentations": {
                     "path": entity_output["path"],
                     "status": "qualified_Level1_owner_actor_billboards",
@@ -3226,17 +4289,27 @@ def build_cache(
                     "off_chain_active_count":
                         entity_descriptor["off_chain_active_count"],
                 },
-                "font1": {
+                "hfont3": {
                     "mask_blob_path": font_output["path"],
                     "glyph_count": len(glyph_rows),
                     "glyphs": glyph_rows,
                     "palette_status":
-                        "mask_exact_runtime_tint_callsite_dynamic; Level1 objective CLRN3840 qualified",
+                        "mask_exact_runtime_tint_callsite_dynamic; "
+                        "Level1 objective CLRN3840 qualified",
                 },
                 "spell_icon_indices": {
                     "path": spell_output["path"],
                     "status":
-                        "family_mapping_with_Level1_reset_big_icons_materialized",
+                        "family_mapping_with_Level1_high_resolution_big_icons_materialized",
+                },
+                "level1_castle_stage": {
+                    "path": build_descriptor_output["path"],
+                    "cells_path": build_cells_output["path"],
+                    "build_index": CASTLE_STAGE_ONE_BUILD_INDEX,
+                    "effective_width": effective_width,
+                    "effective_height": effective_height,
+                    "status":
+                        "exact_owner_BUILD_index_1_with_loader_and_consumer_scaling",
                 },
                 "level1_hud": {
                     "path": hud_output["path"],

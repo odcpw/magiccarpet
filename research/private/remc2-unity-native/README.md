@@ -1,8 +1,11 @@
-# Native Unity Level 1 diagnostic viewer
+# Native Unity Level 1 playable preservation slice
 
 Owner-local Track P presentation harness for Unity `6000.3.20f1`. This is the
-first truthful Level 1 viewer over the package-backed `sim_capi` ABI v2. It is
-not a final asset-fidelity or gameplay-qualified Unity port.
+playable Level 1 client over the package-backed `sim_capi` ABI v2. The final
+readiness verdict, qualification matrix, artifact pins, and explicit
+fidelity-gap register are in [`LEVEL1-READINESS.md`](LEVEL1-READINESS.md).
+It is not a claim that the complete MC2 engine or original renderer is
+finished.
 
 ## What is exact
 
@@ -10,7 +13,7 @@ not a final asset-fidelity or gameplay-qualified Unity port.
 - World `1/0`, Night/outdoor profile, counts `1000/177/8`, package and
   closure hashes, reset state hash `9da4bc91af58f3ce`, preserved package-reset
   conformance hash `77b96b82492d6f4b`, and additive playable-session effects
-  conformance hash `00cc7b799d6917fc`.
+  conformance hash `e7ec6bc18b5fe775`.
 - All six 65,536-cell terrain planes.
 - The 257×257 ground mesh heights (`ground byte * 32` source units), wrapped
   row/column zero duplication, and alternating source diagonals.
@@ -36,46 +39,56 @@ not a final asset-fidelity or gameplay-qualified Unity port.
   every index through the exact ordered PALN palette before opaque diagnostic
   objects. Coverage remains diagnostic because uncovered pixels are the exact
   sky seed required by mode 26.
-- All 129 scene-reachable `TMAPS1-0` selectors are cache-locked: 118 exact RNC
-  decoded payloads and 11 verified one-byte placeholders. The four frame-observed
-  selectors are `40`, `41`, `54`, and `63`; complete decoded animation streams
-  are preserved alongside first-frame indexed images.
+- All 163 Level 1 scene/live-mission `TMAPS1-0` selectors are cache-locked:
+  152 exact RNC decoded payloads and 11 verified one-byte placeholders. The
+  four frame-observed selectors are `40`, `41`, `54`, and `63`; complete
+  decoded animation streams are preserved alongside first-frame indexed
+  images.
 - The package-derived presentation catalog assigns all 177 active reset rows
   to 17 exact class/model/action/parameter/particle groups. It proves 130
   terrain-chain heads: 83 pass the reset-state renderer gate, 47 are suppressed,
   and 47 further active rows are off-chain.
-- Normal owner-cache mode renders exactly 64 stable actor billboards: 33
-  `GoatLive` goats plus 31 `FrozenObserved` dolmen/villager sprites. Every
-  Goat transform, yaw sector, active state, action, phase, and lifecycle comes
-  from one generation/tick/hash-bound 33-row Rust bulk snapshot. Selector
-  choice, 16-sector mode-20 yaw lookup, rear-sector mirroring,
-  PALN binding, source-unit scale, and aspect ratio come from the descriptor and
-  exact TMAP payloads. The viewer uses an explicit camera-facing,
-  bottom-center-at-entity-xyz pivot to avoid terrain clipping. That pivot is a
-  presentation approximation: original `DrawSprite_41BD3` anchoring also
-  applies a camera sin/cos-dependent offset and remains deferred.
+- Normal owner-cache mode registers exactly 64 stable managed actor fallbacks:
+  33 `GoatLive` goats plus 31 reset-frozen dolmen/villager sprites. In the
+  qualified view all 64 are suppressed by native compositor capabilities.
+  Rust draws their exact TMAPs inside the indexed world frame using source
+  map-cell order, facing/mirror selection, projection anchors, clipping,
+  reflection-before-primary order, and terrain-projected shadows. Goat
+  transforms and lifecycle come from the generation/tick/hash-bound 33-row
+  native snapshot; the 31 `FrozenObserved` actors retain their qualified reset
+  poses while their 12 selector-global villager clocks advance from actual
+  native draw admission.
 - Atomic flight snapshots, exact integer simulation, live player row, ordered
   event journal, and eight immutable objective records.
-- With the owner cache supplied, the normal qualified view now uses a
-  uniformly scaled 640×480 owner HUD reference: Night MSPRN panels at
-  nearest-neighbour 2×, empty castle/balloon reset panels, the player panel and
-  icons without invented bars, reset Fireball/Possess big icons 123/124, the
-  exact selector-48 English objective in FONT1 and owner frame tiles 171–173,
-  and an owner-font `FROZEN OBSERVED` badge.
-- Its minimap follows the qualified MSPRN path: native 64×64, exact TABLESN
-  scanline aperture, exact fixed-point remc2 rotation, and nearest 2× display
-  to 128×128. It is player-centered and yaw-rotated. Frozen terrain uses the
-  exact minimap TABLESN two-step lookup and PALN; only `FrozenObserved` reset
-  entities remain in the white reference overlay, while Goat dots are omitted
-  until the original live mark pass is qualified. The center/player pose moves
-  from the live ABI. Exact original entity colors, filtering, reveal, and mark
-  passes remain deferred.
-- With the qualified cache, the native world appends exactly eleven
-  descriptor-backed audio references (asset-ref count 87 rather than the
-  frame-only 76) and typed `PrepareSound`, `EndLoop`, and `UpdateMusic` events
+- With the owner cache supplied, the normal qualified view uses a uniformly
+  scaled 640×480 owner HUD reference: Night MSPRN panels, live life/mana
+  bars, live Fireball/Possess/Castle/Speed icons 123–126, source-mapped
+  objective selectors 48–53 using HFONT3 and HSPRN 171/172/173, task
+  guidance, player-death/restart, departure, fade, and completion state.
+  Each objective box uses its exact source layout and 33-turn clock, blends
+  the live indexed world through TABLESN selector 61, then overwrites text
+  and frame indices before final palette resolution. The qualified 320×200
+  world is pixel-centre-nearest sampled into the 640×480 corrected 4:3
+  layout. Unity composes these from native mission snapshots; it does not own
+  the progression.
+- Its minimap follows the qualified high-resolution HSPRN path: native
+  128×128, exact TABLESN scanline aperture, 256 source units per pixel, and
+  exact fixed-point remc2 rotation. Rust emits castle-rope pixels first, then
+  exact source-slot-ordered entity commands with the Level 1
+  class/model/action/control/ownership filters, colors, phase rules, sprite
+  anchors, direct/blended writes, objective marks, and one 41-pixel center
+  cross. Unity only rasterizes that ordered command stream through the owner
+  palette. Multiplayer remote-player reveal remains outside this single-player
+  Level 1 claim.
+- With the qualified cache, the native world appends exactly twenty-nine
+  descriptor-backed audio references (asset-ref count 105 rather than the
+  frame-only 76): 28 effect references, including the explicit silent sound
+  12 contract, plus the Level 1 music stream. Typed `PrepareSound`, `EndLoop`,
+  and `UpdateMusic` events
   carry those indices. Unity loads the exact owner Night bank 1 / quality 822
-  WAV records for IDs 1, 2, 5, 29, 31, 37, 39, 43, and 46; ID 12 is an
-  explicit silent mapping, and the final reference is the Level 1 music track.
+  WAV records for IDs 1, 2, 3, 4, 5, 8, 10, 15, 16, 18, 19, 27, 29, 31, 33,
+  34, 37, 39, 41, 43, 44, 46, 54, 55, 56, 57, and 63; ID 12 is an explicit
+  silent mapping, and the final reference is the Level 1 music track.
   Local ambient loops 1/2/5/31, player-local feedback 29, and positional IDs
   37/39/43 all use the original shared ten-effect-voice pool.
   Positional commands arrive in a separate 88-byte sidecar; a missing or
@@ -96,12 +109,17 @@ not a final asset-fidelity or gameplay-qualified Unity port.
 
 ## What is diagnostic
 
-The exact indexed layer is deliberately narrower than the complete original
-world frame. It contains sky and terrain only. Terrain-linked sprites and
-particles, other entity billboards, the carpet, spell effects, and HUD are not
-interleaved into the native software framebuffer yet. The returned flags make
-that omission machine-readable; the viewer never calls this a complete
-original frame.
+The indexed layer is deliberately narrower than the complete original world
+frame. It contains sky and terrain plus source-derived Goats, Archers,
+Fireflies, Fireballs, Archer arrows, the castle projectile, Possession,
+both spell jars, the authored exit target, Fireball impacts, and water
+splashes in one source-slot-ordered native compositor. Supported sprites also
+use the shared remc2 reflection-before-primary pass and terrain-projected
+shadow pass. Other terrain-linked sprites and particles, unsupported entity
+families, the carpet, remaining spell effects, and HUD are not interleaved
+into it yet.
+Capability flags make the supported families machine-readable; the viewer
+never calls this a complete original frame.
 
 The source mode-5 software-raster contract now has a renderer-independent Rust
 CPU reference under `sim-core::mode5_raster`. It preserves the original
@@ -138,11 +156,41 @@ not claims about original MC2 art, projectile simulation, or final asset
 fidelity. All objective rows are `FrozenObserved`. Of the 177 active entity
 rows, exactly 142 are `FrozenObserved`, 33 are `GoatLive`, entity 152 is
 `PlayerFlightLive`, and entity 153 is `SpellActivationLive`; the latter's
-changing holder fields are not exposed by ABI v2. Of the 64 qualified actor
-sprites, 33 are live Goats and 31 remain frozen.
+changing holder fields are not exposed by ABI v2. All 64 qualified reset
+actor records are drawn by the native indexed compositor: 33 live Goats, 28
+reset-frozen villagers, and three reset-frozen dolmens. Live Archers are also
+native-composited from the mission registry.
 
 Unity owns no gameplay physics. The viewer creates no `Rigidbody`, gameplay
 `Collider`, Unity `Terrain`, or PhysX simulation authority.
+
+The additive live mission registry carries 19 authored Level 1 actors,
+including four class-3/model-3 multipart heads, six Fireflies, and the
+group-34 scroll, plus player Fireballs, Fireball impacts, and Archer arrows
+from Rust. Each multipart head owns a source-slot-linked chain of 16 segments.
+Archer normal and
+attack poses use remc2 particle rows 0, 1, and 206. Normal selectors 8–10
+advance on their source-style selector-global clocks; attack selectors
+11–13 and 121–123 remain static. Goats and Archers share the same 1,000-slot
+map chain as terrain submission, including cross-family same-cell order.
+Arrows use particle 195, TMAP facings 105–109, render mode 19, and logical
+height 60; their visual remains a Unity presentation adaptation. The 96-byte
+mission snapshot exposes fidelity-gap flags. The current qualified build
+reports `0x00`: the unified-source-pool, exact Castle-placement, exact
+Level 1 Castle-construction-timing, and exact Level 1 mana-sphere lifecycle
+bits are cleared. The mana-carrier bit is also cleared after source-slot
+identity, scheduler, motion, collection/deposit, damage/death, overflow, and
+direct-absorption qualification. The exit bit is cleared after exact
+source-slot triggering, action-12 movement and timers, stored-history FOV,
+integer RGB6 entry palette, framebuffer-wide black fade, input suppression,
+result 10, reset, and ordinary-input qualification. The secondary groups
+33/34 bit is cleared after qualification of their authored allocation order,
+activation switches, four multipart heads and linked segment chains, six
+Fireflies, scroll, combat/death/mana paths, exact sounds 8/63, rendering, and
+reset. The mission-sound bit is cleared after every reachable event on the
+complete ordinary-input route acquired its exact emitter, listener-relative
+command, pitch family, play type, and shared-voice arbitration. The registered
+Level 1 simulation gap mask is therefore zero.
 
 The unchanged 72-byte event ABI is accompanied by an additive 88-byte effect
 sidecar carrying wrapped relative coordinates, raw volume/pan, playback rate,
@@ -173,11 +221,12 @@ frame. Debug mode may show their exact frozen capture-site state. The qualified
 first-presented-frame trace instead observes `TMAP40×10`, `41×14`, `54×8`,
 and `63×23`; live transient animation/link/lifetime parity is not claimed.
 
-Goat and villager TMAPs retain their complete four-frame delta streams. Their
-animation clock is selector-global in remc2, not per entity. Live Goats still
-use the exact base frame only, and typed sound-46 requests stay silent until
-the source numeric pitch is qualified. Shared used-TMAP clock reconstruction
-and pitch-exact Goat playback remain explicitly deferred rather than guessed.
+Goat and villager TMAPs retain their complete four-frame delta streams. Rust
+owns the three Goat and twelve villager selector-global clocks, mutable
+indexed pixels, preceding-draw latches, wrap, reset, and unpaused service
+order. Native CPU draw admission supplies the feedback; unseen selectors
+freeze. Typed sound-46 requests still stay silent until the source numeric
+pitch is qualified. No presentation behavior is guessed.
 
 Owner packages are never copied into `Assets`, `StreamingAssets`, or the built
 player. A player must receive paths explicitly:
@@ -199,9 +248,14 @@ optional only for the explicit `-mc-debug` fallback. Pass
 bindings, every size and SHA-256, and its aggregate content identity before
 accepting it. The cache remains external; raw DAT/TAB files are never loaded.
 
-TMAP actor selection and base-frame presentation are qualified and loaded.
-TMAP animation groups and complete delta streams are preserved rather than
-guessed or flattened.
+TMAP actor selection and native indexed presentation are qualified and loaded.
+The cache preserves all TMAP animation groups and complete delta streams and
+now materializes the exact four mutable Goat states for selectors 152–154
+against the pinned remc2 oracle. Rust owns the exact independent
+selector-global latches, frame indices, cursors, mutable pixels, wrap, reset,
+and unpaused service order for the qualified Goat, villager, Archer, Firefly,
+combat, and castle clocks. Families without a qualified native clock remain
+visibly static or absent.
 Records 426–436 are one-byte `b'0'` placeholders, not decoded textures and not
 the TAB record-504 offset sentinel.
 
@@ -248,7 +302,7 @@ floor/rejection boundaries, and strict object depth `>64`. The Unity
 not presented as an equivalent of any of those original projection rules.
 The test also locks the complete HUD selector/dimension/authority contract.
 With the cache supplied it also locks
-the 87-ref native bridge, known-only typed audio vector, descriptor parsing,
+the 108-ref native bridge, known-only typed audio vector, descriptor parsing,
 streaming music extent, zero/ramp/repeated-prepare/fade loop envelope, the
 managed 40/96-byte terrain-frame ABI layouts, exact reset index/coverage
 hashes, same-tick equality, independent-session equality, row-flip
@@ -290,6 +344,47 @@ Controls: `W/S` speed, `A/D` strafe, persistent absolute mouse steering,
 mouse to request fire, `Esc` release capture, click recapture, `R` reset,
 `F11` fullscreen, and `F10` quit.
 
+## Full Level 1 input-only playback
+
+The Level 1 acceptance driver uses the ordinary player command path and a
+sanitized, player-visible observation contract. It cannot read enemy health,
+actions, targets, RNG, cooldowns, pending damage, or AI state. The optional
+fast flag pumps multiple ordinary fixed ticks between rendered frames; it does
+not change simulation ordering or command generation.
+
+```bash
+xvfb-run -a -s "-screen 0 1600x900x24" \
+  Builds/Linux/MagicCarpetNative.x86_64 \
+  -mc-qualified \
+  -screen-fullscreen 0 -screen-width 640 -screen-height 480 \
+  -mc-level1-autoplay -mc-level1-autoplay-fast \
+  -mc-level1-autoplay-quit \
+  -mc-package /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-export-m \
+  -mc-closure /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-asset-closure.json \
+  -mc-asset-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache \
+  -logFile /tmp/magiccarpet-level1-built-player.log
+```
+
+The current accepted route completes at tick 21,586, enters Stage 5, and
+receives exit result 10. Omitting `-mc-level1-autoplay-fast` runs the identical
+controller at normal presentation speed. The fresh-session conformance test
+currently records command digest `2049cc8884402efa`, 146,637 events with
+digest `65e04fe1a55d2cf6`, and state-sequence digest `6b2bc40c9842d8ba`.
+
+Add `-mc-level1-autoplay-postgame` to delay entering the exit and exercise the
+optional source-authored post-completion encounter. The controller activates
+group 4 through the row-305 world trigger, fights the visible group-33
+Firefly, the first multipart creature, and all three visible group-34
+multipart creatures, then exits. It still receives only player-visible
+observations and issues ordinary player commands; it cannot inspect the
+row-308 dying-chain state, enemy health, AI actions, targets, RNG, cooldowns,
+or pending damage. The accepted two-session route completes alive at tick
+41,509 and separately binds command, event, state, source-arena, multipart,
+projectile/impact, mana, audio, and terminal-state digests. Negative controls
+also prove that skipping the row-305 overlap, leaving the first multipart
+creature alive, or leaving any group-34 creature alive cannot complete the
+optional route.
+
 ## Graphical autoplay and captures
 
 ```bash
@@ -329,11 +424,10 @@ result. The durable reference registry and executable verifier live in
 `qualification/`; they explicitly separate pinned remc2 evidence from the
 synthetic native/Unity route.
 The post-fire captures at ticks 163 and 303 retain the input-latch and typed
-kind-4 event evidence. Qualified mode deliberately renders no placeholder
-projectile: it logs `visual_suppressed
-reason=projectile-presentation-not-qualified`. Explicit `-mc-debug` mode may
-still show the moving sphere/trail as a diagnostic event marker;
-`-mc-debug-entities` additionally exposes unresolved entity diagnostics.
+kind-4 event evidence. Qualified mode renders Rust-owned Fireball, arrow,
+castle-projectile, Possession, and impact snapshots inside the native indexed
+frame. It never substitutes the explicit debug sphere/trail marker; that
+marker remains available only in `-mc-debug`.
 Water is represented by the exact terrain-type plane coloring; there is no
 coplanar presentation-only water sheet.
 
@@ -386,14 +480,13 @@ native session tick, the source-projection hashes are the original
 `0e4547b42a98c976`/`13f7f355fcf6738f`. Both contracts remain visible so a
 lifecycle clock is never mistaken for a 1995 state field.
 
-Both typed fire requests remain observable, but qualified mode emits
-`visual_suppressed reason=projectile-presentation-not-qualified` and creates
-no placeholder sphere. The diagnostic visual remains available only with
-explicit `-mc-debug`; `-mc-debug-entities` additionally shows unresolved
-entity diagnostics.
+Both typed fire requests remain observable and feed the Rust-owned Level 1
+projectile simulation and owner-TMAP presentation. The diagnostic
+sphere/trail remains available only with explicit `-mc-debug`;
+`-mc-debug-entities` additionally shows unresolved entity diagnostics.
 
 The runtime-supplied owner-data boundary is now an executable gate:
-`qualification/verify_unity_lifecycle_privacy.py`. It requires exact 5/5
+`qualification/verify_unity_lifecycle_privacy.py`. It requires exact 26/26
 EditMode and 1/1 graphics-backed PlayMode results; pins the launcher, runtime
 assembly, global managers, plug-in, and build GUID; checks Unity build
 metadata; rejects StreamingAssets, symlinks, owner container/audio extensions,
@@ -408,10 +501,11 @@ around tick 80. The retained presentation route now turns from its first tick;
 the exact simulation and camera are not changed or cheated. Whether remc2
 applies a missing forward-probe/collision response on the straight route
 remains an explicit later qualification question.
-Semantic prefab replacement, resolved tagged-channel dynamic music,
-high-resolution HSPRN parity, complete live HUD progression,
-exact minimap mark/filter parity, and wider-map qualification remain later
-work.
+Semantic prefab replacement, resolved tagged-channel dynamic music, exact
+remaining source sprite anchors and animation clocks, multiplayer minimap
+reveal, and wider-map qualification remain later work. The source-mapped
+Level 1 HSPRN HUD, indexed objective-textbox blend, minimap entity/mark pass,
+transient palette, and live progression are qualified now.
 
 ## Owner-audio mixer qualification
 
@@ -623,9 +717,10 @@ python3 verify_owner_hud.py "$capture_dir/hud.png" \
 
 The verifier checks the 640×480 uniform reference transform; exact palette
 samples from the minimap/health/blank/player/icon panels and both spell frames
-plus Fireball/Possess icons; the exact Night red FONT1 objective and frozen
-badge; owner minimap diversity; centered live player marker; fixed opaque
-objective/top-bar pixels across moving captures; a changed
+plus Fireball/Possess icons; the exact Night red HFONT3 objective, live
+TABLESN-blended indexed underlay, HSPRN frame, and frozen badge; owner minimap
+diversity; centered live player marker; stable foreground objective/top-bar
+pixels across moving captures; a changed
 player-centered/yaw-rotated minimap; no magenta shader failure; and no
 bottom-right Unity/default-font overlay. The specific autoplay capture tick is
 reported by the runtime and can change if the presentation capture cadence is

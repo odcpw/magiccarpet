@@ -33,14 +33,87 @@ fn main() -> ExitCode {
         Some("inspect-regression") => inspect_regression(),
         Some("inspect-forward") => inspect_forward(),
         Some("inspect-idle-diff") => inspect_idle_diff(),
+        Some("find-castle-site") => find_castle_site(),
         Some("trace") => trace(),
         _ => {
             eprintln!(
-                "usage: sim-cli <atlas-check|inspect-forward|inspect-idle-diff|inspect-recording|inspect-regression|trace> ..."
+                "usage: sim-cli <atlas-check|find-castle-site|inspect-forward|inspect-idle-diff|inspect-recording|inspect-regression|trace> ..."
             );
             ExitCode::from(2)
         }
     }
+}
+
+fn find_castle_site() -> ExitCode {
+    let arguments = std::env::args().collect::<Vec<_>>();
+    if arguments.len() != 6 {
+        eprintln!("usage: sim-cli find-castle-site <package> <closure> <center-x> <center-y>");
+        return ExitCode::from(2);
+    }
+    let world = match NativeWorld::load(&arguments[2], &arguments[3]) {
+        Ok(world) => world,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let parse = |value: &str| {
+        value.parse::<u16>().map_err(|error| {
+            eprintln!("invalid coordinate {value}: {error}");
+        })
+    };
+    let (center_x, center_y) = match (parse(&arguments[4]), parse(&arguments[5])) {
+        (Ok(x), Ok(y)) => (x, y),
+        _ => return ExitCode::from(2),
+    };
+    let center_tile_x = center_x.to_be_bytes()[0];
+    let center_tile_y = center_y.to_be_bytes()[0];
+    let mut best = None;
+    for dy in -32_i16..=32 {
+        for dx in -32_i16..=32 {
+            let tile_x =
+                center_tile_x.wrapping_add_signed(i8::try_from(dx).expect("scan delta fits i8"));
+            let tile_y =
+                center_tile_y.wrapping_add_signed(i8::try_from(dy).expect("scan delta fits i8"));
+            let valid = (0..8_u8).all(|row| {
+                (0..8_u8).all(|column| {
+                    world
+                        .angle_flags(Tile {
+                            x: tile_x.wrapping_sub(8).wrapping_add(column),
+                            y: tile_y.wrapping_sub(8).wrapping_add(row),
+                        })
+                        .cast_signed()
+                        >= 0
+                })
+            });
+            if !valid {
+                continue;
+            }
+            let distance = i32::from(dx) * i32::from(dx) + i32::from(dy) * i32::from(dy);
+            if best.is_some_and(|(best_distance, _, _)| distance >= best_distance) {
+                continue;
+            }
+            best = Some((distance, tile_x, tile_y));
+        }
+    }
+    let Some((_, tile_x, tile_y)) = best else {
+        eprintln!("no valid castle footprint within 32 tiles");
+        return ExitCode::FAILURE;
+    };
+    let position = Position {
+        x: u16::from(tile_x) * 256 + 128,
+        y: u16::from(tile_y) * 256 + 128,
+        z: 0,
+    };
+    println!(
+        "{{\"x\":{},\"y\":{},\"z\":{},\"tile_x\":{},\"tile_y\":{}}}",
+        position.x,
+        position.y,
+        world.ground_height(position),
+        tile_x,
+        tile_y
+    );
+    ExitCode::SUCCESS
 }
 
 fn inspect_idle_diff() -> ExitCode {

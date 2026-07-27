@@ -1,0 +1,30 @@
+{
+  "schema": "mc2-private-goat-tmap-golden/v1",
+  "source_manifest_sha256": "cad16d830ece1f6422ec4f3f6a0a5ab4954fe6c20344e2e03c6ce1f0bc41e73b",
+  "selectors": {
+    "152": [
+      ["reset-base", "cd5e773ab7c4e4e88536c5a690a8a1794a1b67361b402ab8365e9df3e59a1e9d", 490, 1, 22, 22, 484],
+      ["frame-01", "502c7e18c327f09578c7ebcd31c351cd2c537bae9482c3f7630a7035be130190", 818, 2, 22, 22, 484],
+      ["frame-02", "b22359a1aebc1f7afea7e5aa7a4e8c5bdfc5b238ca9a7f162e110470b3350103", 1146, 3, 22, 22, 484],
+      ["frame-03", "2011b3fb136f072ca7dcdae7199b2e8b9dbbdb71bdaa812b1bd659b695c51d12", 1472, 4, 22, 22, 484],
+      ["frame-04", "cd5e773ab7c4e4e88536c5a690a8a1794a1b67361b402ab8365e9df3e59a1e9d", 1812, 5, 22, 22, 484],
+      ["closure-frame-01", "502c7e18c327f09578c7ebcd31c351cd2c537bae9482c3f7630a7035be130190", 818, 2, 22, 22, 484]
+    ],
+    "153": [
+      ["reset-base", "acea2351981a1fd9aefaf7a2713bc00c4c2b2461dd087b9a2621e7fa3fb819a3", 710, 1, 32, 22, 704],
+      ["frame-01", "4068c077eb4f66e39ae3bd13202462b477a418aa7781822d09f0feb3337765c7", 1196, 2, 32, 22, 704],
+      ["frame-02", "d5d9ccc838119171cb7ac06315e6e6994e72c058cf40b3b9a9b6fb6709e8931f", 1700, 3, 32, 22, 704],
+      ["frame-03", "f0f656d86c51628b5f0aac90932b79b448f64ef1ef38b41fcffc9d275df71fb1", 2202, 4, 32, 22, 704],
+      ["frame-04", "acea2351981a1fd9aefaf7a2713bc00c4c2b2461dd087b9a2621e7fa3fb819a3", 2724, 5, 32, 22, 704],
+      ["closure-frame-01", "4068c077eb4f66e39ae3bd13202462b477a418aa7781822d09f0feb3337765c7", 1196, 2, 32, 22, 704]
+    ],
+    "154": [
+      ["reset-base", "7d081998c98ba0aa2bb57d4956926f3b8c80b31ae6ee481f8c9174551d6db722", 490, 1, 22, 22, 484],
+      ["frame-01", "897331a6a567a6f64be563755ba33a5ab1e75e0a1d77d5a1fc9a67ca8657d44a", 822, 2, 22, 22, 484],
+      ["frame-02", "22d9b6b2bad1a7fef49afcb05284c513f14200852c5cbaad097f684a0197f940", 1152, 3, 22, 22, 484],
+      ["frame-03", "752525ceb8c9a097f0676def3bdeb58258bd093ce7efacf3fe170dc7ec4cbc84", 1482, 4, 22, 22, 484],
+      ["frame-04", "7d081998c98ba0aa2bb57d4956926f3b8c80b31ae6ee481f8c9174551d6db722", 1816, 5, 22, 22, 484],
+      ["closure-frame-01", "897331a6a567a6f64be563755ba33a5ab1e75e0a1d77d5a1fc9a67ca8657d44a", 822, 2, 22, 22, 484]
+    ]
+  }
+}

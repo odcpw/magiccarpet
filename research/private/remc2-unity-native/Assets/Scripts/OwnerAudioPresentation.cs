@@ -14,10 +14,14 @@ namespace MagicCarpet.Native
     internal sealed class OwnerAudioPresentation : IDisposable
     {
         private const uint FirstAudioAssetRef = 76;
-        private const uint MusicAssetRef = 86;
+        private const uint MusicAssetRef = 107;
         private const int MusicIdleMode = 1;
         private const int MusicCombatMode = 2;
-        private static readonly int[] ExactSoundOrder = { 1, 2, 5, 12, 29, 31, 37, 39, 43, 46 };
+        private static readonly int[] ExactSoundOrder =
+        {
+            1, 2, 3, 4, 5, 8, 9, 10, 12, 15, 16, 18, 19, 27, 29, 30, 31,
+            33, 34, 37, 39, 40, 41, 43, 44, 46, 54, 55, 56, 57, 63
+        };
 
         [Serializable]
         private sealed class SoundDescriptor
@@ -391,11 +395,13 @@ namespace MagicCarpet.Native
             NativeSim.AudioCommand? audioCommand = null,
             bool reportCompletion = true)
         {
+            if (EventPreparesSound(nativeEvent.kind))
+            {
+                PrepareSound(nativeEvent, audioCommand, reportCompletion);
+                return;
+            }
             switch (nativeEvent.kind)
             {
-                case NativeSim.EventPrepareSound:
-                    PrepareSound(nativeEvent, audioCommand, reportCompletion);
-                    break;
                 case NativeSim.EventEndLoop:
                     EndLoop(nativeEvent, audioCommand);
                     break;
@@ -421,6 +427,29 @@ namespace MagicCarpet.Native
                     StartMusicFromSourceEvent();
                     break;
             }
+        }
+
+        internal static bool EventPreparesSound(uint kind)
+        {
+            return kind == NativeSim.EventPrepareSound ||
+                kind == NativeSim.EventGoatSoundRequest ||
+                kind == NativeSim.EventLevel1ArcherArrowSound ||
+                kind == NativeSim.EventLevel1FireflyChargeSound ||
+                kind == NativeSim.EventLevel1FireballImpacted ||
+                kind == NativeSim.EventLevel1CastleProjectileSpawned ||
+                kind == NativeSim.EventLevel1CastleConstructionSound ||
+                kind == NativeSim.EventLevel1ManaSphereClaimed ||
+                kind == NativeSim.EventLevel1WaterSplashed;
+        }
+
+        internal static int EventSoundId(uint kind, uint code)
+        {
+            // FireballImpacted keeps the authored impact entity ID in `code`;
+            // its attached remc2 PrepareSound sidecar always names sound 3.
+            // All other PrepareSound-family events carry the sound ID directly.
+            return kind == NativeSim.EventLevel1FireballImpacted
+                ? 3
+                : checked((int)code);
         }
 
         internal void Reset(bool restartMusic = false)
@@ -664,7 +693,7 @@ namespace MagicCarpet.Native
             NativeSim.AudioCommand? audioCommand,
             bool reportCompletion)
         {
-            var soundId = (int)nativeEvent.code;
+            var soundId = EventSoundId(nativeEvent.kind, nativeEvent.code);
             if (!rows.TryGetValue(soundId, out var row))
             {
                 Suppress(nativeEvent, "unknown_prepare_sound");
@@ -682,7 +711,7 @@ namespace MagicCarpet.Native
                 return;
             }
             var command = audioCommand.Value;
-            ValidateAudioCommand(nativeEvent, command, row.play_class);
+            ValidateAudioCommand(nativeEvent, command, row.play_class, soundId);
             if (row.play_class == "loop")
             {
                 PrepareLoop(nativeEvent, command, row);
@@ -700,20 +729,24 @@ namespace MagicCarpet.Native
             NativeSim.AudioCommand command,
             bool reportCompletion)
         {
+            var minimumRateDelta = command.soundId == 46 ? -10 :
+                command.soundId >= 42 && command.soundId <= 44 ? -15 : 0;
+            var maximumRateDelta = command.soundId == 46 ? 29 :
+                command.soundId >= 42 && command.soundId <= 44 ? 14 : 0;
             Require(
                 command.volumeQ15 <= 0x7fff &&
-                command.rateDeltaPercent >= -15 &&
-                command.rateDeltaPercent <= 14,
-                $"sound ID {nativeEvent.code} bounded positional values");
+                command.rateDeltaPercent >= minimumRateDelta &&
+                command.rateDeltaPercent <= maximumRateDelta,
+                $"sound ID {command.soundId} bounded positional values");
 
             if (command.action == NativeSim.AudioActionSuppressExisting)
             {
                 Require(command.voiceIndex < positionalVoices.Length,
-                    $"sound ID {nativeEvent.code} existing voice index");
+                    $"sound ID {command.soundId} existing voice index");
                 positionalVoices[command.voiceIndex].SuppressedExisting++;
                 Debug.Log(
                     $"MC_AUDIO_POSITIONAL_SUPPRESS generation={nativeEvent.generation} " +
-                    $"sequence={nativeEvent.sequence} id={nativeEvent.code} " +
+                    $"sequence={nativeEvent.sequence} id={command.soundId} " +
                     $"action={command.action} volumeQ15={command.volumeQ15} " +
                     $"panQ16={command.panQ16}");
                 return;
@@ -723,10 +756,10 @@ namespace MagicCarpet.Native
                 command.action == NativeSim.AudioActionSuppressPendingReplaced)
             {
                 Require(command.voiceIndex == NativeSim.AudioVoiceNone,
-                    $"sound ID {nativeEvent.code} suppressed command has no voice");
+                    $"sound ID {command.soundId} suppressed command has no voice");
                 Debug.Log(
                     $"MC_AUDIO_POSITIONAL_SUPPRESS generation={nativeEvent.generation} " +
-                    $"sequence={nativeEvent.sequence} id={nativeEvent.code} " +
+                    $"sequence={nativeEvent.sequence} id={command.soundId} " +
                     $"action={command.action} volumeQ15={command.volumeQ15} " +
                     $"panQ16={command.panQ16}");
                 return;
@@ -734,20 +767,20 @@ namespace MagicCarpet.Native
             Require(
                 command.action == NativeSim.AudioActionStart ||
                 command.action == NativeSim.AudioActionRestart,
-                $"sound ID {nativeEvent.code} known positional action");
+                $"sound ID {command.soundId} known positional action");
             Require(command.voiceIndex < positionalVoices.Length,
-                $"sound ID {nativeEvent.code} assigned voice index");
+                $"sound ID {command.soundId} assigned voice index");
             var expectedRate = 22050 *
                 (100 + command.rateDeltaPercent) / 100;
             Require(
                 command.playbackRateHz == expectedRate &&
                 command.playbackRateHz > 0,
-                $"sound ID {nativeEvent.code} exact playback rate");
+                $"sound ID {command.soundId} exact playback rate");
 
             var state = positionalVoices[command.voiceIndex];
             if (command.action == NativeSim.AudioActionStart)
                 Require(!state.Source.isPlaying && !state.WasPlaying,
-                    $"sound ID {nativeEvent.code} start owns an idle native voice");
+                    $"sound ID {command.soundId} start owns an idle native voice");
             if (command.action == NativeSim.AudioActionRestart)
             {
                 state.Source.Stop();
@@ -784,7 +817,7 @@ namespace MagicCarpet.Native
             state.PlayStarts++;
             Debug.Log(
                 $"MC_AUDIO_POSITIONAL_PLAY generation={nativeEvent.generation} " +
-                $"sequence={nativeEvent.sequence} id={nativeEvent.code} " +
+                $"sequence={nativeEvent.sequence} id={command.soundId} " +
                 $"relative={command.relativeX},{command.relativeY},{command.relativeZ} " +
                 $"volumeQ15={command.volumeQ15} volumeUnits={volumeUnits} " +
                 $"panQ16={command.panQ16} panUnits={panUnits} " +
@@ -859,7 +892,8 @@ namespace MagicCarpet.Native
         private static void ValidateAudioCommand(
             NativeSim.NativeEvent nativeEvent,
             NativeSim.AudioCommand command,
-            string playClass)
+            string playClass,
+            int expectedSoundId)
         {
             var expectedLoopCount = playClass == "loop" ? (sbyte)-1 : (sbyte)0;
             Require(
@@ -869,16 +903,17 @@ namespace MagicCarpet.Native
                 command.eventSequence == nativeEvent.sequence &&
                 command.stateHash == nativeEvent.stateHash &&
                 command.assetRefIndex == nativeEvent.assetRefIndex &&
-                command.soundId == nativeEvent.code &&
+                command.soundId == expectedSoundId &&
                 command.entityIndex == nativeEvent.entityIndex &&
                 command.playerIndex == nativeEvent.playerIndex &&
-                (command.playType == NativeSim.AudioPlayIfNotPlaying ||
-                 command.playType == 3) &&
+                (command.playType == NativeSim.AudioEntitySoundRestartOrStart ||
+                 command.playType == NativeSim.AudioPlayIfNotPlaying ||
+                 command.playType == NativeSim.AudioEntitySoundIfNotPlaying) &&
                 command.loopCount == expectedLoopCount &&
                 command.reserved0 == 0 &&
                 command.reserved != null &&
                 Array.TrueForAll(command.reserved, value => value == 0),
-                $"sound ID {nativeEvent.code} complete shared-voice sidecar identity");
+                $"sound ID {expectedSoundId} complete shared-voice sidecar identity");
         }
 
         private void PollPositionalCompletions()
@@ -933,7 +968,7 @@ namespace MagicCarpet.Native
                 return;
             }
             var command = audioCommand.Value;
-            ValidateAudioCommand(nativeEvent, command, row.play_class);
+            ValidateAudioCommand(nativeEvent, command, row.play_class, soundId);
             if (command.action == NativeSim.AudioActionSuppressNoExisting)
                 return;
             var found = loops.TryGetValue(soundId, out var state);
@@ -970,14 +1005,35 @@ namespace MagicCarpet.Native
             return soundId switch {
                 1 => "local_ambient",
                 2 => "local_ambient",
+                3 => "original_stereo_positional",
+                4 => "original_stereo_positional",
                 5 => "local_ambient",
+                8 => "original_stereo_positional",
+                9 => "original_stereo_positional",
+                10 => "original_stereo_positional",
                 12 => "explicit_null",
+                15 => "original_stereo_positional",
+                16 => "original_stereo_positional",
+                18 => "original_stereo_positional",
+                19 => "original_stereo_positional",
+                27 => "original_stereo_positional",
                 29 => "local_feedback",
+                30 => "original_stereo_positional",
                 31 => "local_ambient",
+                33 => "original_stereo_positional",
+                34 => "original_stereo_positional",
                 37 => "original_stereo_positional",
                 39 => "original_stereo_positional",
+                40 => "original_stereo_positional",
+                41 => "original_stereo_positional",
                 43 => "original_stereo_positional",
-                46 => "typed_goat_positional_request_pitch_deferred",
+                44 => "original_stereo_positional",
+                46 => "original_stereo_positional",
+                54 => "original_stereo_positional",
+                55 => "original_stereo_positional",
+                56 => "original_stereo_positional",
+                57 => "original_stereo_positional",
+                63 => "original_stereo_positional",
                 _ => null
             };
         }

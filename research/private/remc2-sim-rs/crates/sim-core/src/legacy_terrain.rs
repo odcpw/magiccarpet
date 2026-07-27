@@ -154,7 +154,7 @@ fn sample(values: &[u8], x: u8, y: u8) -> i32 {
 }
 
 #[allow(clippy::many_single_char_names)]
-fn interpolate_ground(values: &[u8], x: u16, y: u16) -> i32 {
+pub(crate) fn interpolate_ground(values: &[u8], x: u16, y: u16) -> i32 {
     let [x_fraction, tile_x] = x.to_le_bytes();
     let [y_fraction, tile_y] = y.to_le_bytes();
     let odd_diagonal = tile_x.wrapping_add(tile_y) & 1 != 0;
@@ -195,7 +195,7 @@ fn interpolate_ground(values: &[u8], x: u16, y: u16) -> i32 {
 }
 
 #[allow(clippy::many_single_char_names)]
-fn interpolate_cave(values: &[u8], x: u16, y: u16) -> i32 {
+pub(crate) fn interpolate_cave(values: &[u8], x: u16, y: u16) -> i32 {
     let [x_fraction, tile_x] = x.to_le_bytes();
     let [y_fraction, tile_y] = y.to_le_bytes();
     let odd_diagonal = tile_x.wrapping_add(tile_y) & 1 != 0;
@@ -235,7 +235,7 @@ fn interpolate_cave(values: &[u8], x: u16, y: u16) -> i32 {
     (delta >> 3) + 32 * point
 }
 
-fn material_mask(tile_type: u8) -> u32 {
+pub(crate) fn material_mask(tile_type: u8) -> u32 {
     match tile_type {
         0 => 1,
         1 => 2,
