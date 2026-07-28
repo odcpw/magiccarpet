@@ -7,7 +7,8 @@ milestone.
 
 ## Verdict
 
-Level 1 is a complete playable mission slice. The ordinary-input desktop
+Level 1 is a playable mission slice, but it is not yet a complete remc2
+conformance slice. The ordinary-input desktop
 route starts from a fresh session, flies through all six source-mapped
 objectives, collects and casts Fireball, Possession, Castle, and Speed, fights
 Archers and Fireflies, builds castle stage 1, possesses and deposits mana
@@ -17,7 +18,13 @@ chain is implemented in the simulation and presentation, but the current
 ordinary-input completion route does not claim to fight that optional chain.
 
 That is a playable-readiness claim, not a frame-perfect-completion claim.
-The registered Level 1 simulation fidelity mask is now zero. Every reachable
+The registered eight-bit Level 1 mission-simulation fidelity mask is now zero;
+it does not cover input, HUD, renderer, other presentation fidelity, or the
+newer house-spawned resident action-body register. House action 53 now removes
+terrain, allocates exact resident constructors and source slots, and renders
+qualified Archer/Villager families, but the four resident AI action bodies
+remain explicitly frozen with `dynamic_resident_behavior_gap_mask = 0x0f`.
+Every reachable
 mission sound on the ordinary-input completion route is tied to its remc2
 emitter, listener-relative command, pitch family, play type, and shared
 ten-voice arbitration. The effective Level 1 transient palette, objective
@@ -41,9 +48,13 @@ cd /home/oliver/Projects/odcpw/magiccarpet/research/private/remc2-unity-native
 ./run-level1.sh
 ```
 
-Controls: `W/S` speed, `A/D` strafe, mouse or `I/J/K/L` steering, `C` or
-middle mouse centre, `Space` or left mouse fire, `Esc` release capture, click
-recapture, `R` restart, `F11` fullscreen, and `F10` quit.
+Controls: `W/S` speed, `A/D` strafe, mouse or `I/J/K/L` steering, and `C` or
+middle mouse centre. Hold `Control` for the source 2×13 spell menu; left click
+chooses the left hand and right click chooses the right hand. Keep that button
+held, move across the tier submenu, and release to assign. Outside the menu,
+left mouse casts the left-hand spell, right mouse casts the right-hand spell,
+and `Space` also casts the left hand. `Esc` releases capture, click recaptures,
+`R` restarts, `F11` toggles fullscreen, and `F10` quits.
 
 ## Working systems
 
@@ -53,6 +64,10 @@ recapture, `R` restart, `F11` fullscreen, and `F10` quit.
 - Rust-owned objective switches, pickups, Fireball, Possession, Speed,
   castle placement/construction/teardown, mana spheres and carrier, enemy AI,
   damage/death, group-33/34 activation, the authored exit, and result 10.
+- House action 53 uses the qualified BUILD footprints, row-major terrain/RNG
+  order, real source allocations, exact Archer/Builder/Villager/Trader
+  constructor pairs, and exact initial damage-mailbox dispatch. Their
+  subsequent AI bodies remain the explicit resident gap described below.
 - Four class-3/model-3 multipart heads, each with a source-slot-linked chain
   of 16 segments, plus six Fireflies and the group-34 scroll are allocated in
   authored order and participate in activation, AI, combat, death, mana
@@ -88,26 +103,32 @@ recapture, `R` restart, `F11` fullscreen, and `F10` quit.
 
 | Gate | Result |
 |---|---|
-| Rust workspace | 378 passed: atlas 4, C ABI 49, sim core 321, WASM proof 4 |
-| Owner cache | 17/17 passed; 447 outputs from 19 source files; deterministic rebuild and corruption negatives |
-| Unity EditMode | 26/26 passed, including ordinary-input complete and post-completion combat routes, natural hostile Firefly damage, atomic native palette identity, native frozen-actor fallback gating, and live indexed objective composition |
+| Rust workspace | 429 passed: atlas 4, C ABI 56, sim core 365, WASM proof 4 |
+| Owner cache | 17/17 passed; 570 outputs from 23 source files; deterministic rebuild and corruption negatives |
+| Unity EditMode | 29/29 passed |
 | Unity PlayMode | 1/1 passed |
-| Built-player route | Stage 5, result 10, alive with life 10000 at tick 21,586 |
-| Built-player post-completion route | Group 33, first multipart, and all three group-34 creatures fought through ordinary inputs; Stage 5, result 10, alive with life 10000 at tick 41,509 |
+| Built-player route | Stage 5, result 10 at tick 14,720 in the rebuilt desktop player |
+| Built-player post-completion route | Stage 5, result 10 at tick 21,039 after group 33, first multipart, and group 34 |
 | Native self-test | Five checkpoints, two sessions, reset replay, stale-generation rejection, and `fidelity_gap_flags=0x00` |
 | Lifecycle/privacy | Zero bulk managed allocations; seven negative launches; no embedded owner payload |
 | Full-frame presentation | Five 1600x900 checkpoints; two byte-identical runs; zero magenta |
 | Presentation correspondence | 3 registered original indexed captures, 5 registered Unity captures, 23 typed layers, 8 gallery records, no missing references, placeholders, or false cross-timeline pixel/clock claims |
 | Reference corpus | Idle 3, active-forward 8, supporting 24, Unity regression 5 |
 
-The ordinary-input determinism run completed at tick 21,586 with:
+The ordinary-input determinism run completed at tick 14,720 with:
 
-- command digest `2049cc8884402efa`;
-- 146,637 events, digest `65e04fe1a55d2cf6`;
-- state-sequence digest `6b2bc40c9842d8ba`.
+- command digest `f651ed14282a0377`;
+- 94,764 events, digest `85863abfeb25633c`;
+- state-sequence digest `b4be8a3d743430ad`.
 
-The optional post-completion ordinary-input route completed alive at tick
-41,509 after observing and fighting group 33, the first multipart creature,
+The same built-player route records all 301 active Speed ticks, including the
+240 launch impulse, 160 sustain, and up to nine simultaneous class-10/model-2
+source trails. Its first 16 active ticks overlap the already-running Stage 4
+objective fade; the remaining active ticks use palette submode zero. Speed
+itself never submits a palette request.
+
+The latest focused post-completion ordinary-input route completed alive at
+tick 21,039 after observing and fighting group 33, the first multipart creature,
 and group 34 before entering the exit. Two fresh sessions produced identical
 command, event, state, source-arena, multipart, projectile/impact, mana, audio,
 and terminal-state digests. The driver never observes enemy health or actions,
@@ -116,41 +137,45 @@ and waits for the row-308 transition through visible world state only.
 The focused natural Firefly-retaliation observer uses only ordinary commands
 and visible sanitized actor positions. It cannot inspect enemy actions,
 health, targets, RNG, projectiles, or pending damage to steer. Its repeated
-run observed one hostile spawn and impact, nine contacts, and player life
-falling to 9,215 with identical command, event, and state digests.
+run observed one hostile spawn, one completed impact and visible impact
+object, one source charge contact, and player life falling to 9,410
+with identical command, event, and state digests.
 
 Current local artifact identities:
 
 - player launcher SHA-256:
   `8027f7d1f9ae7dacfc826fb218adcc1ae7464af098a8a59397e7531c0f7ec0bc`;
 - native plug-in SHA-256:
-  `be69fcff460fd8cb0f05f633a2decc0ddbe97a314ff2325b5f7bc7e137368ccf`;
+  `3dbde36981b66d7b37e0a946f55ad1707ac357b4f8ee8bca1c0f53baca82589b`;
 - managed runtime SHA-256:
-  `97d230ceac0b3ec1b72482eb8c79242bbd2e62dbda0cd9f23cd74a1a0d834621`;
+  `724d3a38d8cb8935680d302d9b20f11e8785be9ea5dee86ad43b9148a05e5175`;
 - `globalgamemanagers` SHA-256:
-  `5057e7f305a81c99040222c0ec501a7b23f3a97552e84f1662efac1ec4dfb8e5`;
-- Unity build GUID: `5e6775fe01d848dc8b1d6d4dd22b5d0a`;
+  `8abee05c17b175ff5f5b089ac2fd131f61041b1f320e47891678e07c829ae1d6`;
+- Unity build GUID: `ca97e2bdb3044fcf8514f2ad7db0fdf8`;
 - owner-cache content SHA-256:
-  `addc1cc1b43173f41f208082237f38b9519fdc64374ec0b20f8b2d9b04049cdb`;
+  `d299990e300117d065eb3a75008f6a69911b1ba356e4e06452c0a826450a01e5`;
 - owner-cache manifest SHA-256:
-  `6e8557e06c6a1b9f1cc39c80564c58af24ff804ce1b75859ba2d0ea363c5e09a`.
+  `e3aaf1cf03e390850c5da44ed4b3880352b425bd063657e3cdbbcb8086a4d7ee`.
 
 Current evidence from the final rebuilt player:
 
-- self-test: `/tmp/magiccarpet-selftest-objective.log`;
-- built-player route: `/tmp/magiccarpet-level1-built-player-objective.log`;
-- EditMode: `/tmp/magiccarpet-editmode-objective-results.xml`;
-- PlayMode: `/tmp/magiccarpet-playmode-objective-results.xml`;
-- graphical runs: `/tmp/magiccarpet-objective-visual/autoplay` and
-  `/tmp/magiccarpet-objective-visual-b`;
+- self-test: `/tmp/magiccarpet-native-selftest-v41.log`;
+- built-player route: `/tmp/magiccarpet-level1-autoplay-v41.log`;
+- built-player post-completion route:
+  `/tmp/magiccarpet-level1-autoplay-postgame-v41.log`;
+- EditMode: `/tmp/magiccarpet-unity-editmode-v30.xml`;
+- PlayMode: `/tmp/magiccarpet-unity-playmode-v41.xml`;
+- graphical runs: `/tmp/magiccarpet-fullframe-v41-a.fRvg7j` and
+  `/tmp/magiccarpet-fullframe-v41-b.36xW3a`;
 - objective HUD capture: `/tmp/magiccarpet-objective-visual/hud.png`;
 - presentation materialization:
-  `/tmp/magiccarpet-presentation-objective`.
+  `/tmp/magiccarpet-presentation-spell-final-v8`.
 
-## Simulation gap status and remaining presentation work
+## Simulation gap status and remaining work
 
-The native mission snapshot reports `fidelity_gap_flags = 0x00`. Every
-registered Level 1 simulation bit is cleared:
+The native mission snapshot reports `fidelity_gap_flags = 0x00`. This is a
+legacy bounded mission-simulation register, not a blanket fidelity
+percentage. Every bit registered in that older mask is cleared:
 
 - `0x01`: unified source-slot arena;
 - `0x02`: exact reachable Castle placement;
@@ -163,14 +188,28 @@ registered Level 1 simulation bit is cleared:
   completion sequence;
 - `0x80`: secondary groups 33/34 and their reachable creature chain.
 
+The separate resident register currently reports `0x0f` after each frozen
+family reaches its unported body:
+
+- `0x01`: house-spawned Archer actions 33–37;
+- `0x02`: Builder actions 97–103 and construction action 96;
+- `0x04`: Villager actions 105 and 108–110;
+- `0x08`: Trader actions 113–119.
+
+Constructors, source-slot ownership, initial action-53 mailbox dispatch, source
+projection, collision participation, supported rendering, hashing, cleanup and
+reset are implemented. The subsequent action bodies must be ported before this
+record may claim complete Level 1 simulation parity.
+
 The owner cache exposes 30 materialized effect records, the explicit silent
 sound-12 contract, and the Level 1 music stream. The complete ordinary-input
 route reaches Stage 5 without an unknown or unsupported audio command.
 
-Presentation fidelity remains a separate, visible register after the
+Input and presentation fidelity remain separate, visible registers after the
 simulation mask reaches zero: multiplayer-only minimap reveal, exact sprite
 hotspots and remaining animation clocks, and complete original whole-frame
-depth/interleaving. The native hit, Speed, objective, exit, fade-back, and
+depth/interleaving, including exact high-speed whole-frame blur. The native
+hit, slowing/impairment, objective, exit, fade-back, and
 black-fade palette states, the single-player source-ordered minimap pass,
 high-resolution HSPRN HUD, live indexed objective textbox, and the shared 4:3
 output rectangle are no longer in that deferred register.

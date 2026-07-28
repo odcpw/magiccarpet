@@ -404,9 +404,13 @@ pub fn level1_minimap_project(
 }
 
 pub const FIREBALL_SPEED: i16 = 384;
+pub const FIREBALL_SPELL_FAMILY: u8 = 0;
 pub const FIREBALL_LIFETIME_TICKS: i16 = 0x2000 / FIREBALL_SPEED;
 pub const FIREBALL_PAYLOAD: i32 = 250;
 pub const FIREBALL_MANA_COST: i32 = 100;
+/// Qualified owner-data values from `DATA/SPELLS.DAT`, as loaded by remc2
+/// before `sub_6D9C0` evaluates single-player progression.
+pub const FIREBALL_TIER_THRESHOLDS_SINGLE_PLAYER: [i32; 3] = [0, 400, 12_000];
 pub const FIREBALL_LAUNCH_SOUND: u16 = 9;
 pub const FIREBALL_IMPACT_RADIUS: u16 = 128;
 pub const FIREBALL_RENDER_INDEX: u16 = 340;
@@ -419,6 +423,15 @@ pub const FIREBALL_IMPACT_RENDER_MODE: u8 = 36;
 pub const FIREBALL_IMPACT_LOGICAL_HEIGHT: u16 = 250;
 pub const FIREBALL_PROJECTILE_CLASS: u8 = 9;
 pub const FIREBALL_PROJECTILE_MODEL: u8 = 0;
+/// `sub_67CB0` / `sub_68490`: ordinary Fireball acquisition is bounded to
+/// 0x71 source-angle units on both axes and 5,120 source world units.
+pub const PROJECTILE_ACQUISITION_ANGLE: i16 = 0x71;
+pub const PROJECTILE_ACQUISITION_RANGE: u32 = 5_120;
+/// `sub_65C20` applies a larger one-time yaw correction after acquisition;
+/// subsequent `sub_65610` turns use descriptor 64's yaw/pitch limits.
+pub const FIREBALL_INITIAL_YAW_TURN_LIMIT: i16 = 34;
+pub const FIREBALL_HOMING_YAW_TURN_LIMIT: i16 = 5;
+pub const FIREBALL_HOMING_PITCH_TURN_LIMIT: i16 = 22;
 pub const FIREBALL_IMPACT_CLASS: u8 = 10;
 pub const FIREBALL_IMPACT_MODEL: u8 = 0;
 pub const FIREBALL_IMPACT_COLLISION_HALF_WIDTH: i16 = 128;
@@ -443,11 +456,34 @@ pub const POSSESSION_PROJECTILE_LIFETIME_TICKS: i16 = 4_096 / POSSESSION_PROJECT
 pub const POSSESSION_PROJECTILE_RENDER_INDEX: u16 = 209;
 pub const POSSESSION_PROJECTILE_BASE_TMAP: u16 = 144;
 pub const POSSESSION_PROJECTILE_RENDER_MODE: u8 = 21;
+pub const POSSESSION_IMPACT_CLASS: u8 = 10;
+pub const POSSESSION_IMPACT_MODEL: u8 = 12;
+pub const POSSESSION_IMPACT_ACTION: u8 = 12;
+pub const POSSESSION_IMPACT_LIFE: i16 = 8;
+pub const POSSESSION_IMPACT_RENDER_INDEX: u16 = 41;
+pub const POSSESSION_IMPACT_BASE_TMAP: u16 = 54;
+pub const POSSESSION_IMPACT_RENDER_MODE: u8 = 21;
+pub const POSSESSION_IMPACT_LOGICAL_HEIGHT: u16 = 250;
+/// `NewAdd0A0C_4E8C0` installs a 512×512 source collision/search volume for
+/// the nine live model-12 ownership-mailbox updates.
+pub const POSSESSION_IMPACT_COLLISION_HALF_WIDTH: i16 = 512;
+pub const POSSESSION_IMPACT_COLLISION_VERTICAL_OFFSET: i16 = 0;
+pub const POSSESSION_IMPACT_COLLISION_HALF_HEIGHT: i16 = 512;
+pub const POSSESSED_BUILDING_RENDER_INDEX: u16 = 177;
+pub const POSSESSED_BUILDING_BASE_TMAP: u16 = 96;
+pub const POSSESSED_BUILDING_RENDER_MODE: u8 = 0;
+pub const POSSESSED_BUILDING_LOGICAL_HEIGHT: u16 = 400;
+pub const POSSESSION_TIER_THRESHOLDS_SINGLE_PLAYER: [i32; 3] = [0, 600, 4_800];
 pub const POSSESSION_PROJECTILE_LOGICAL_HEIGHT: u16 = 150;
+pub const POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH: i16 = 180;
+pub const POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET: i16 = 75;
+pub const POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT: i16 = 187;
+pub const POSSESSION_CREATED_MANA: i32 = 512;
 pub const POSSESSION_SOUND: u16 = 4;
 
 pub const CASTLE_SPELL_FAMILY: u8 = 2;
 pub const CASTLE_INITIAL_MANA_COST: i32 = 1_000;
+pub const CASTLE_TIER_THRESHOLDS_SINGLE_PLAYER: [i32; 3] = [0, 40, 80];
 pub const CASTLE_HOLDER_ACTIVATION_TICKS: i16 = 101;
 pub const CASTLE_PROJECTILE_CLASS: u8 = 9;
 pub const CASTLE_PROJECTILE_MODEL: u8 = 10;
@@ -489,6 +525,7 @@ pub const CASTLE_CONSTRUCTION_ACTION: u8 = 44;
 pub const CASTLE_CONSTRUCTION_INITIAL_TIMER: i16 = 19;
 pub const PLAYER_OUTDOOR_MANA_REGEN: i32 = 100;
 pub const PLAYER_OUTDOOR_LIFE_REGEN: i32 = 5;
+pub const PLAYER_RECHARGE_MINIMUM_MANA_REGEN: i32 = 1_000;
 pub const PLAYER_HIT_FRAME_TICKS: u8 = 4;
 pub const PLAYER_REGEN_BLOCK_TICKS: u16 = 16;
 pub const PLAYER_HIT_AUX_TICKS: u16 = 64;
@@ -531,6 +568,10 @@ const MANA_SPHERE_SEARCH_OFFSETS: [(i8, i8); 16] = [
     (1, 2),
     (2, 2),
 ];
+/// Fireball constructor row 340 carries `speed=97`; integer halving in
+/// `SetEntityIndexAndRot_49CD0` gives a 48-unit horizontal radius.
+/// `sub_10780` therefore visits SEARCH.DAT classes zero and one.
+const FIREBALL_COLLISION_SEARCH_OFFSETS: [(i8, i8); 16] = MANA_SPHERE_SEARCH_OFFSETS;
 pub const DEATH_BURST_CLASS: u8 = 10;
 pub const DEATH_BURST_MODEL: u8 = 1;
 pub const DEATH_BURST_ACTION: u8 = 1;
@@ -679,9 +720,52 @@ pub const EXPERIENCE_SCROLL_BASE_TMAP: u16 = 259;
 pub const EXPERIENCE_SCROLL_RENDER_MODE: u8 = 1;
 pub const EXPERIENCE_SCROLL_LOGICAL_HEIGHT: u16 = 75;
 pub const EXPERIENCE_SCROLL_COLLISION_HALF_WIDTH: i16 = 768;
-pub const EXPERIENCE_SCROLL_COLLISION_VERTICAL_OFFSET: i16 = 640;
+pub const EXPERIENCE_SCROLL_COLLISION_VERTICAL_OFFSET: i16 = 37;
 pub const EXPERIENCE_SCROLL_COLLISION_HALF_HEIGHT: i16 = 1_280;
 pub const EXPERIENCE_SCROLL_SOUND: u16 = 63;
+pub const EXPERIENCE_SCROLL_AWARD: i32 = 4;
+pub const TREE_CLASS: u8 = 2;
+pub const TREE_MODEL: u8 = 0;
+pub const TREE_LIVE_ACTION: u8 = 0;
+pub const TREE_DYING_ACTION: u8 = 1;
+pub const TREE_DEAD_ACTION: u8 = 2;
+pub const TREE_RENDER_INDEX_A: u16 = 83;
+pub const TREE_RENDER_INDEX_B: u16 = 84;
+pub const TREE_BASE_TMAP_A: u16 = 75;
+pub const TREE_BASE_TMAP_B: u16 = 87;
+pub const TREE_DEAD_RENDER_INDEX_A: u16 = 226;
+pub const TREE_DEAD_RENDER_INDEX_B: u16 = 227;
+pub const TREE_DEAD_BASE_TMAP_A: u16 = 178;
+pub const TREE_DEAD_BASE_TMAP_B: u16 = 179;
+pub const TREE_RENDER_MODE: u8 = 0;
+pub const TREE_LOGICAL_HEIGHT: u16 = 400;
+pub const TREE_COLLISION_HALF_WIDTH: i16 = 426;
+pub const TREE_COLLISION_VERTICAL_OFFSET: i16 = 400;
+pub const TREE_COLLISION_HALF_HEIGHT: i16 = 400;
+pub const TREE_LIFE: i32 = 300;
+pub const TREE_DISCARDED_LIFE_RANGE: u16 = 5_000;
+pub const STONE_CLASS: u8 = 2;
+pub const STONE_MODEL: u8 = 1;
+pub const STONE_ACTION: u8 = 3;
+pub const STONE_RENDER_INDEX: u16 = 79;
+pub const STONE_BASE_TMAP: u16 = 78;
+pub const STONE_RENDER_MODE: u8 = 0;
+pub const STONE_LOGICAL_HEIGHT: u16 = 250;
+pub const STONE_COLLISION_HALF_WIDTH: i16 = 121;
+pub const STONE_COLLISION_VERTICAL_OFFSET: i16 = 250;
+pub const STONE_COLLISION_HALF_HEIGHT: i16 = 250;
+pub const CHECKPOINT_EMITTER_CLASS: u8 = 10;
+pub const CHECKPOINT_EMITTER_MODEL: u8 = 59;
+pub const CHECKPOINT_EMITTER_ACTION: u8 = 64;
+pub const CHECKPOINT_EMITTER_MIN_LIFE: i32 = 800;
+pub const CHECKPOINT_SMOKE_CLASS: u8 = 10;
+pub const CHECKPOINT_SMOKE_MODEL: u8 = 13;
+pub const CHECKPOINT_SMOKE_ACTION: u8 = 13;
+pub const CHECKPOINT_SMOKE_LIFE: i16 = 32;
+pub const CHECKPOINT_SMOKE_BASE_TMAP: u16 = 57;
+pub const CHECKPOINT_SMOKE_FIRST_RENDER_INDEX: u16 = 67;
+pub const CHECKPOINT_SMOKE_LAST_RENDER_INDEX: u16 = 74;
+pub const CHECKPOINT_SMOKE_RENDER_MODE: u8 = 21;
 pub const SPELL_JAR_RENDER_INDEX: u16 = 77;
 pub const SPELL_JAR_BASE_TMAP: u16 = 59;
 pub const SPELL_JAR_RENDER_MODE: u8 = 1;
@@ -691,10 +775,18 @@ pub const EXIT_TARGET_BASE_TMAP: u16 = 461;
 /// Runtime mode is copied from TMAP 461's `02 00` header by `sub_71410`.
 pub const EXIT_TARGET_RENDER_MODE: u8 = 0;
 pub const EXIT_TARGET_LOGICAL_HEIGHT: u16 = 700;
+pub const EXIT_TARGET_COLLISION_HALF_WIDTH: i16 = 266;
+pub const EXIT_TARGET_COLLISION_VERTICAL_OFFSET: i16 = 350;
+pub const EXIT_TARGET_COLLISION_HALF_HEIGHT: i16 = 350;
 pub const SPEED_SPELL_FAMILY: u8 = 3;
 pub const SPEED_SPELL_MANA_COST: i32 = 1_000;
+pub const SPEED_TIER_THRESHOLDS_SINGLE_PLAYER: [i32; 3] = [0, 400, 1_200];
 pub const SPEED_SPELL_ACTIVATION_TICKS: u16 = 301;
 pub const SPEED_SPELL_TIER_MULTIPLIER: i16 = 2;
+pub const SPEED_TRAIL_CLASS: u8 = 10;
+pub const SPEED_TRAIL_MODEL: u8 = 2;
+pub const SPEED_TRAIL_ACTION: u8 = 2;
+pub const SPEED_TRAIL_LIFE: i16 = 32;
 pub const SPEED_PICKUP_SOUND: u16 = 18;
 pub const EXIT_SWITCH_SOUND: u16 = 41;
 pub const EXIT_ACCELERATION_SOUND: u16 = 19;
@@ -705,7 +797,7 @@ const SPEED_JAR_FEATURE: u16 = 100;
 const PLAYER_COLLISION_HALF_WIDTH: i16 = 121;
 const PLAYER_COLLISION_VERTICAL_OFFSET: i16 = 100;
 const PLAYER_COLLISION_HALF_HEIGHT: i16 = 100;
-const FIREBALL_COLLISION_HALF_WIDTH: i16 = 0;
+const FIREBALL_COLLISION_HALF_WIDTH: i16 = 48;
 const FIREBALL_COLLISION_VERTICAL_OFFSET: i16 = 50;
 const FIREBALL_COLLISION_HALF_HEIGHT: i16 = 50;
 const ENTITY_POOL_SIZE: usize = 1_000;
@@ -747,7 +839,7 @@ const EXIT_TARGET_MODEL_ALTERNATE: u8 = 4;
 const EXIT_PALETTE_NONE: u8 = 0;
 const EXIT_PALETTE_FADE_BACK: u8 = 1;
 const LEVEL1_PALETTE_HIT_REQUEST: u8 = 2;
-const LEVEL1_PALETTE_SPEED_REQUEST: u8 = 3;
+const LEVEL1_PALETTE_SLOWING_REQUEST: u8 = 3;
 const EXIT_PALETTE_FADE_TO_BLACK: u8 = 10;
 const EXIT_PALETTE_ENTRY_FLASH_REQUEST: u8 = 6;
 const EXIT_PALETTE_BLACK_REQUEST: u8 = 5;
@@ -757,7 +849,7 @@ const EXIT_PALETTE_EFFECT_NONE: u8 = 0;
 const EXIT_PALETTE_EFFECT_ENTRY_FLASH: u8 = 1;
 const EXIT_PALETTE_EFFECT_BLACK: u8 = 2;
 const LEVEL1_PALETTE_EFFECT_HIT: u8 = 3;
-const LEVEL1_PALETTE_EFFECT_SPEED: u8 = 4;
+const LEVEL1_PALETTE_EFFECT_SLOWING: u8 = 4;
 const LEVEL1_PALETTE_EFFECT_OBJECTIVE: u8 = 5;
 const EXIT_MOVEMENT_NOT_ATTEMPTED: u8 = 0;
 const EXIT_MOVEMENT_ACCEPTED: u8 = 1;
@@ -803,6 +895,51 @@ pub enum Level1ActorKind {
     ExitSwitch = 6,
     MultipartHead = 7,
     ExperienceScroll = 8,
+    Tree = 9,
+    Stone = 10,
+    CheckpointSmokeEmitter = 11,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum DynamicResidentKind {
+    Archer = 1,
+    Builder = 2,
+    Villager = 3,
+    Trader = 4,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DynamicResidentState {
+    pub source_entity_index: u16,
+    pub kind: DynamicResidentKind,
+    pub class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub position: Position,
+    pub max_life: i32,
+    pub life: i32,
+    pub pending_damage: i32,
+    pub pending_attacker: u16,
+    pub current_attacker: u16,
+    pub entity_rng: u16,
+    pub yaw: i16,
+    pub desired_heading: i16,
+    pub minimum_speed: i16,
+    pub actual_speed: i16,
+    pub maximum_speed: i16,
+    pub target_entity_index: u16,
+    pub reset_counter: i32,
+    pub phase: u8,
+    pub collision_half_width: i16,
+    pub collision_vertical_offset: i16,
+    pub collision_half_height: i16,
+    pub render_parameter_index: u16,
+    pub base_tmap: u16,
+    pub render_mode: u8,
+    pub logical_height: u16,
+    pub active: bool,
+    pub visible: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -902,6 +1039,95 @@ pub struct Level1CollisionTarget {
     pub active: bool,
 }
 
+/// Reset-time collision-enabled row retained from the complete source map.
+///
+/// This is intentionally broader than the renderable or Possession target
+/// projections: remc2's `sub_10780` can stop a Fireball on any map-linked row
+/// whose collision bit is set, including hidden buildings and pickups.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level1SourceCollisionTarget {
+    pub target: Level1CollisionTarget,
+    /// Original `id_0x1A`, which projectile collision compares with the
+    /// caster identity. It is not always the same as the arena slot.
+    pub source_id: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProjectileGuidanceTarget {
+    entity_index: u16,
+    top_position: Position,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProjectileCollisionKind {
+    Player,
+    Actor,
+    MultipartSegment,
+    External,
+    Reset,
+    Building,
+    ManaSphere,
+    Castle,
+    ManaCarrier,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProjectileCollisionHit {
+    entity_index: u16,
+    position: Position,
+    kind: ProjectileCollisionKind,
+    vertical_offset: i16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProjectileCollisionCandidate {
+    entity_index: u16,
+    source_id: u16,
+    position: Position,
+    collision_half_width: i16,
+    collision_vertical_offset: i16,
+    collision_half_height: i16,
+    kind: ProjectileCollisionKind,
+}
+
+/// Mutable projection of the mailbox consumed by `AddHouse0A_2D_38330`.
+///
+/// The reset building remains the collision target.  Once action 12 writes
+/// its caster into the mailbox, the building consumes it on the same source
+/// turn and switches to particle parameter 177 / TMAP 96 plus player colour.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level1PossessedBuilding {
+    pub entity_index: u16,
+    pub position: Position,
+    pub owner_entity_index: u16,
+    pub player_color_index: u8,
+    pub render_parameter_index: u16,
+    pub base_tmap: u16,
+    pub render_mode: u8,
+    pub logical_height: u16,
+    pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level1SpeedTrail {
+    pub id: u32,
+    pub source_entity_index: u16,
+    pub position: Position,
+    pub owner_entity_index: u16,
+    pub class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub life: i16,
+    pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Level1BuildingMailbox {
+    target_entity_index: u16,
+    owner_entity_index: u16,
+    payload: u16,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AuthoredAllocationState {
     Dormant,
@@ -922,12 +1148,20 @@ enum SourceOccupant {
     CastleRoot(u32),
     CastleConstruction(u32),
     Possession(u32),
+    PossessionImpact(u32),
     FireballImpact(u32),
     WaterSplash(u32),
     ManaSphere(u32),
     ManaCarrier(u32),
     DeathBurst(u32),
+    SpeedTrail(u32),
+    CheckpointSmoke(u32),
     MultipartSegment(u16),
+    Resident {
+        source_entity_index: u16,
+        model: u8,
+        action: u8,
+    },
 }
 
 impl SourceOccupant {
@@ -957,6 +1191,11 @@ impl SourceOccupant {
                 POSSESSION_PROJECTILE_MODEL,
                 POSSESSION_PROJECTILE_ACTION,
             )),
+            Self::PossessionImpact(_) => Some((
+                POSSESSION_IMPACT_CLASS,
+                POSSESSION_IMPACT_MODEL,
+                POSSESSION_IMPACT_ACTION,
+            )),
             Self::FireballImpact(_) => Some((FIREBALL_IMPACT_CLASS, FIREBALL_IMPACT_MODEL, 0)),
             Self::WaterSplash(_) => Some((FIREBALL_IMPACT_CLASS, WATER_SPLASH_MODEL, 5)),
             Self::ManaSphere(_) => Some((MANA_SPHERE_CLASS, MANA_SPHERE_MODEL, MANA_SPHERE_ACTION)),
@@ -964,11 +1203,18 @@ impl SourceOccupant {
                 Some((MANA_CARRIER_CLASS, MANA_CARRIER_MODEL, MANA_CARRIER_ACTION))
             }
             Self::DeathBurst(_) => Some((DEATH_BURST_CLASS, DEATH_BURST_MODEL, DEATH_BURST_ACTION)),
+            Self::SpeedTrail(_) => Some((SPEED_TRAIL_CLASS, SPEED_TRAIL_MODEL, SPEED_TRAIL_ACTION)),
+            Self::CheckpointSmoke(_) => Some((
+                CHECKPOINT_SMOKE_CLASS,
+                CHECKPOINT_SMOKE_MODEL,
+                CHECKPOINT_SMOKE_ACTION,
+            )),
             Self::MultipartSegment(_) => Some((
                 MISSION_ACTOR_CLASS,
                 MULTIPART_MODEL,
                 MULTIPART_SEGMENT_ACTION,
             )),
+            Self::Resident { model, action, .. } => Some((MISSION_ACTOR_CLASS, model, action)),
             Self::Reserved | Self::ImportedLive | Self::Authored(_) => None,
         }
     }
@@ -1279,6 +1525,10 @@ pub struct FireballProjectile {
     pub speed: i16,
     pub life_ticks: i16,
     pub payload: i32,
+    /// Source `word_0x96`: zero when no target was acquired.
+    pub target_entity_index: u16,
+    /// Source `struct_byte_0xc_12_15.byte[0] & 2`: acquisition runs once.
+    pub acquisition_initialized: bool,
     pub active: bool,
 }
 
@@ -1367,6 +1617,10 @@ pub struct PossessionProjectile {
     pub pitch: i16,
     pub speed: i16,
     pub life_ticks: i16,
+    /// Source `word_0x96`: zero when no target was acquired.
+    pub target_entity_index: u16,
+    /// Source `struct_byte_0xc_12_15.byte[0] & 2`: acquisition runs once.
+    pub acquisition_initialized: bool,
     pub active: bool,
 }
 
@@ -1537,6 +1791,10 @@ impl FireballImpact {
     const fn source_occupant(self) -> SourceOccupant {
         if self.model == WATER_SPLASH_MODEL {
             SourceOccupant::WaterSplash(self.id)
+        } else if self.model == POSSESSION_IMPACT_MODEL {
+            SourceOccupant::PossessionImpact(self.id)
+        } else if self.model == CHECKPOINT_SMOKE_MODEL {
+            SourceOccupant::CheckpointSmoke(self.id)
         } else {
             SourceOccupant::FireballImpact(self.id)
         }
@@ -1621,6 +1879,9 @@ pub enum Level1MissionEvent {
     CastleProjectileSpawned {
         projectile_id: u32,
         sound_id: u16,
+        source_entity_index: u16,
+        position: Position,
+        random_state: u32,
     },
     CastlePlacementRejected {
         projectile_id: u32,
@@ -1735,6 +1996,8 @@ pub struct Level1MissionTemplate {
     initial_source_slots: Box<[Level1ResetSourceSlot]>,
     initial_castle_blockers: Box<[Level1CastlePlacementBlocker]>,
     initial_building_blockers: Box<[Level1CastlePlacementBlocker]>,
+    initial_possession_targets: Box<[Level1CollisionTarget]>,
+    initial_source_collision_targets: Box<[Level1SourceCollisionTarget]>,
     castle_stage_one_footprint: Option<CastleBuildFootprint>,
 }
 
@@ -1841,6 +2104,8 @@ impl Level1MissionTemplate {
             initial_source_slots,
             &[],
             &[],
+            &[],
+            &[],
             None,
         )
     }
@@ -1856,6 +2121,8 @@ impl Level1MissionTemplate {
         initial_source_slots: &[Level1ResetSourceSlot],
         initial_castle_blockers: &[Level1CastlePlacementBlocker],
         initial_building_blockers: &[Level1CastlePlacementBlocker],
+        initial_possession_targets: &[Level1CollisionTarget],
+        initial_source_collision_targets: &[Level1SourceCollisionTarget],
         castle_stage_one_footprint: Option<CastleBuildFootprint>,
     ) -> Result<Self, String> {
         if global_mana_denominator <= 0 {
@@ -1863,7 +2130,8 @@ impl Level1MissionTemplate {
         }
         Level1SourcePool::from_reset_slots(initial_source_slots)?;
         let features = parse_authored_features(bytes)?;
-        let mut actors = Vec::with_capacity(19);
+        crate::level1_parity::validate_authored_features(&features)?;
+        let mut actors = Vec::with_capacity(45);
         let mut authored_allocations = Vec::with_capacity(55);
 
         for feature in features {
@@ -1920,12 +2188,25 @@ impl Level1MissionTemplate {
                     MULTIPART_LIFE,
                     world,
                 )),
-                (14, 5, 4, 304) => Some(actor_from_feature(
+                // All five reachable class-14/model-5 records use remc2's
+                // `sub_51610` constructor and `UpdateScroll_59C80` action.
+                // Their positions come directly from the owner-data feature
+                // table; none may be silently dropped.
+                (14, 5, 4, _) => Some(actor_from_feature(
                     feature,
                     Level1ActorKind::ExperienceScroll,
                     14,
                     5,
                     10,
+                    0,
+                    world,
+                )),
+                (10, 59, 4 | 12, _) => Some(actor_from_feature(
+                    feature,
+                    Level1ActorKind::CheckpointSmokeEmitter,
+                    CHECKPOINT_EMITTER_CLASS,
+                    CHECKPOINT_EMITTER_MODEL,
+                    CHECKPOINT_EMITTER_ACTION,
                     0,
                     world,
                 )),
@@ -1963,6 +2244,24 @@ impl Level1MissionTemplate {
                     12,
                     12,
                     0,
+                    world,
+                )),
+                (2, 0, 1, _) => Some(actor_from_feature(
+                    feature,
+                    Level1ActorKind::Tree,
+                    TREE_CLASS,
+                    TREE_MODEL,
+                    TREE_LIVE_ACTION,
+                    0,
+                    world,
+                )),
+                (2, 1, 6, _) => Some(actor_from_feature(
+                    feature,
+                    Level1ActorKind::Stone,
+                    STONE_CLASS,
+                    STONE_MODEL,
+                    STONE_ACTION,
+                    300,
                     world,
                 )),
                 _ => None,
@@ -2004,6 +2303,18 @@ impl Level1MissionTemplate {
             .iter()
             .filter(|actor| actor.kind == Level1ActorKind::ExperienceScroll)
             .count();
+        let trees = actors
+            .iter()
+            .filter(|actor| actor.kind == Level1ActorKind::Tree)
+            .count();
+        let stones = actors
+            .iter()
+            .filter(|actor| actor.kind == Level1ActorKind::Stone)
+            .count();
+        let checkpoint_smoke_emitters = actors
+            .iter()
+            .filter(|actor| actor.kind == Level1ActorKind::CheckpointSmokeEmitter)
+            .count();
         if (
             archers,
             fireflies,
@@ -2013,10 +2324,13 @@ impl Level1MissionTemplate {
             exit_switches,
             multipart_heads,
             experience_scrolls,
-        ) != (4, 6, 1, 1, 1, 1, 4, 1)
+            trees,
+            stones,
+            checkpoint_smoke_emitters,
+        ) != (4, 6, 1, 1, 1, 1, 4, 5, 18, 1, 3)
         {
             return Err(format!(
-                "Level 1 mission content mismatch: {archers} Archers, {fireflies} Fireflies, {castle_jars} Castle jars, {speed_jars} Speed jars, {exit_targets} exit targets, {exit_switches} exit switches, {multipart_heads} multipart heads, {experience_scrolls} experience scrolls"
+                "Level 1 mission content mismatch: {archers} Archers, {fireflies} Fireflies, {castle_jars} Castle jars, {speed_jars} Speed jars, {exit_targets} exit targets, {exit_switches} exit switches, {multipart_heads} multipart heads, {experience_scrolls} experience scrolls, {trees} trees, {stones} stones, {checkpoint_smoke_emitters} checkpoint smoke emitters"
             ));
         }
         actors.sort_by_key(|actor| actor.authored_index);
@@ -2039,6 +2353,10 @@ impl Level1MissionTemplate {
             initial_source_slots: initial_source_slots.to_vec().into_boxed_slice(),
             initial_castle_blockers: initial_castle_blockers.to_vec().into_boxed_slice(),
             initial_building_blockers: initial_building_blockers.to_vec().into_boxed_slice(),
+            initial_possession_targets: initial_possession_targets.to_vec().into_boxed_slice(),
+            initial_source_collision_targets: initial_source_collision_targets
+                .to_vec()
+                .into_boxed_slice(),
             castle_stage_one_footprint,
         })
     }
@@ -2082,6 +2400,7 @@ impl Level1MissionTemplate {
             first_waypoint_switch_active: true,
             first_waypoint_switch_phase: LEVEL1_FIRST_WAYPOINT_SWITCH_PHASE,
             completion_switch_active: true,
+            group_7_villager_release_pending: false,
             pending_source_slot_releases: Vec::new(),
             reclaimed_imported_source_slots: Vec::new(),
             player_life,
@@ -2089,6 +2408,9 @@ impl Level1MissionTemplate {
             player_pending_damage: 0,
             player_pending_attacker: 0,
             player_life_regen_cooldown: 0,
+            player_mana_regen: PLAYER_OUTDOOR_MANA_REGEN,
+            player_life_regen: PLAYER_OUTDOOR_LIFE_REGEN,
+            dolmen_recharge_contact: false,
             player_hit_frame_ticks: 0,
             player_hit_aux_ticks: 0,
             player_survived_feedback: 0,
@@ -2101,8 +2423,16 @@ impl Level1MissionTemplate {
             player_dead: false,
             has_fireball: true,
             has_possession: true,
+            fireball_experience: 0,
+            fireball_tier: 0,
+            possession_experience: 0,
+            possession_tier: 0,
             has_castle_spell: false,
+            castle_experience: 0,
+            castle_tier: 0,
             has_speed_spell: false,
+            speed_experience: 0,
+            speed_tier: 0,
             castle_exists: false,
             castle_source_entity_index: 0,
             castle_presentation_id: 0,
@@ -2124,7 +2454,14 @@ impl Level1MissionTemplate {
             global_mana_denominator: self.global_mana_denominator,
             initial_castle_blockers: self.initial_castle_blockers.to_vec(),
             initial_building_blockers: self.initial_building_blockers.to_vec(),
+            initial_possession_targets: self.initial_possession_targets.to_vec(),
+            initial_source_collision_targets: self.initial_source_collision_targets.to_vec(),
+            possessed_buildings: Vec::new(),
+            speed_trails: Vec::new(),
+            building_mailboxes: Vec::new(),
             actors,
+            dynamic_residents: vec![None; ENTITY_POOL_SIZE].into_boxed_slice(),
+            dynamic_resident_behavior_gap_mask: 0,
             multipart_segments: Vec::new(),
             external_collision_targets: Vec::new(),
             authored_allocations: self.authored_allocations.to_vec(),
@@ -2132,6 +2469,7 @@ impl Level1MissionTemplate {
             impacts: Vec::new(),
             mana_spheres: Vec::new(),
             mana_sphere_map_chains: RenderableMapChains::empty(),
+            source_map_chains: RenderableMapChains::empty(),
             mana_carrier: None,
             death_bursts: Vec::new(),
             castle_construction: None,
@@ -2172,6 +2510,11 @@ impl Level1MissionTemplate {
     pub fn castle_stage_one_footprint(&self) -> Option<&CastleBuildFootprint> {
         self.castle_stage_one_footprint.as_ref()
     }
+
+    #[must_use]
+    pub fn possession_targets(&self) -> &[Level1CollisionTarget] {
+        &self.initial_possession_targets
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2208,6 +2551,7 @@ pub struct Level1MissionState {
     first_waypoint_switch_active: bool,
     first_waypoint_switch_phase: u8,
     completion_switch_active: bool,
+    group_7_villager_release_pending: bool,
     pending_source_slot_releases: Vec<u16>,
     reclaimed_imported_source_slots: Vec<u16>,
     pub player_life: i32,
@@ -2215,6 +2559,9 @@ pub struct Level1MissionState {
     player_pending_damage: i32,
     player_pending_attacker: u16,
     player_life_regen_cooldown: u16,
+    player_mana_regen: i32,
+    player_life_regen: i32,
+    dolmen_recharge_contact: bool,
     player_hit_frame_ticks: u8,
     player_hit_aux_ticks: u16,
     player_survived_feedback: u16,
@@ -2227,8 +2574,16 @@ pub struct Level1MissionState {
     pub player_dead: bool,
     pub has_fireball: bool,
     pub has_possession: bool,
+    pub fireball_experience: i32,
+    pub fireball_tier: i8,
+    pub possession_experience: i32,
+    pub possession_tier: i8,
     pub has_castle_spell: bool,
+    pub castle_experience: i32,
+    pub castle_tier: i8,
     pub has_speed_spell: bool,
+    pub speed_experience: i32,
+    pub speed_tier: i8,
     pub castle_exists: bool,
     pub castle_source_entity_index: u16,
     pub castle_presentation_id: u32,
@@ -2250,8 +2605,15 @@ pub struct Level1MissionState {
     pub global_mana_denominator: i32,
     initial_castle_blockers: Vec<Level1CastlePlacementBlocker>,
     initial_building_blockers: Vec<Level1CastlePlacementBlocker>,
+    initial_possession_targets: Vec<Level1CollisionTarget>,
+    initial_source_collision_targets: Vec<Level1SourceCollisionTarget>,
+    possessed_buildings: Vec<Level1PossessedBuilding>,
+    speed_trails: Vec<Level1SpeedTrail>,
+    building_mailboxes: Vec<Level1BuildingMailbox>,
     castle_stage_one_footprint: Option<CastleBuildFootprint>,
     actors: Vec<Level1Actor>,
+    dynamic_residents: Box<[Option<DynamicResidentState>]>,
+    dynamic_resident_behavior_gap_mask: u8,
     multipart_segments: Vec<Level1MultipartSegment>,
     external_collision_targets: Vec<Level1CollisionTarget>,
     authored_allocations: Vec<AuthoredAllocation>,
@@ -2259,6 +2621,8 @@ pub struct Level1MissionState {
     impacts: Vec<FireballImpact>,
     mana_spheres: Vec<ManaSphere>,
     mana_sphere_map_chains: RenderableMapChains,
+    /// Source map-cell order used by `sub_10780`/`sub_108B0`.
+    source_map_chains: RenderableMapChains,
     mana_carrier: Option<ManaCarrier>,
     death_bursts: Vec<DeathBurst>,
     castle_construction: Option<CastleConstruction>,
@@ -2278,6 +2642,129 @@ impl Level1MissionState {
     #[must_use]
     pub fn actors(&self) -> &[Level1Actor] {
         &self.actors
+    }
+
+    #[must_use]
+    pub fn dynamic_residents(&self) -> impl Iterator<Item = &DynamicResidentState> {
+        self.dynamic_residents.iter().filter_map(Option::as_ref)
+    }
+
+    #[must_use]
+    pub const fn dynamic_resident_behavior_gap_mask(&self) -> u8 {
+        self.dynamic_resident_behavior_gap_mask
+    }
+
+    /// Allocate one resident requested by the exact row-major house-removal
+    /// trace. The four accepted model/action pairs are the literal remc2
+    /// constructors used by action 53; unknown pairs remain an error rather
+    /// than being coerced to a nearby creature.
+    pub fn spawn_house_resident(
+        &mut self,
+        position: Position,
+        model: u8,
+        action: u8,
+        attacker_entity_index: u16,
+    ) -> Result<Option<u16>, String> {
+        let kind = match (model, action) {
+            (4, 33) => DynamicResidentKind::Archer,
+            (12, 97) => DynamicResidentKind::Builder,
+            (13, 105) => DynamicResidentKind::Villager,
+            (14, 113) => DynamicResidentKind::Trader,
+            _ => {
+                return Err(format!(
+                    "unsupported house resident model/action {model}/{action}"
+                ));
+            }
+        };
+        let placeholder = SourceOccupant::Resident {
+            source_entity_index: 0,
+            model,
+            action,
+        };
+        let Some(source_entity_index) = self.source_pool.allocate(placeholder) else {
+            return Ok(None);
+        };
+        let occupant = SourceOccupant::Resident {
+            source_entity_index,
+            model,
+            action,
+        };
+        self.source_pool
+            .replace_occupant(source_entity_index, occupant);
+        bind_dynamic_source_record(
+            &mut self.source_slots,
+            source_entity_index,
+            occupant,
+            self.global_rng,
+        );
+
+        let mut entity_rng =
+            next_rng16(self.source_slots[usize::from(source_entity_index)].entity_rng);
+        let yaw = i16::try_from(entity_rng & 0x07ff)
+            .expect("11-bit heading fits i16")
+            .wrapping_sub(1);
+        let (minimum_speed, actual_speed, maximum_speed, reset_counter) = match kind {
+            DynamicResidentKind::Archer => (30, 30, 0, i32::from(source_entity_index % 100)),
+            DynamicResidentKind::Builder => (54, 24, 24, 2),
+            DynamicResidentKind::Villager | DynamicResidentKind::Trader => (54, 18, 18, 2),
+        };
+        let (render_parameter_index, base_tmap, logical_height) = match kind {
+            DynamicResidentKind::Archer => (0, 8, 250),
+            DynamicResidentKind::Builder => (221, 141, 250),
+            DynamicResidentKind::Trader => (219, 138, 250),
+            DynamicResidentKind::Villager => {
+                entity_rng = next_rng16(entity_rng);
+                match entity_rng % 9 {
+                    0..=2 => (242, 183, 250),
+                    3..=5 => (271, 199, 300),
+                    6..=7 => (241, 180, 250),
+                    8 => (239, 155, 200),
+                    _ => unreachable!("modulo-nine branch"),
+                }
+            }
+        };
+        let phase = self.model_phase_counters[usize::from(model)];
+        self.model_phase_counters[usize::from(model)] = phase.wrapping_add(1);
+        let collision_half_height = if kind == DynamicResidentKind::Archer {
+            256
+        } else {
+            128
+        };
+        let resident = DynamicResidentState {
+            source_entity_index,
+            kind,
+            class: MISSION_ACTOR_CLASS,
+            model,
+            action,
+            position,
+            max_life: 1_000,
+            life: 1_000,
+            pending_damage: 1,
+            pending_attacker: attacker_entity_index,
+            current_attacker: 0,
+            entity_rng,
+            yaw,
+            desired_heading: yaw,
+            minimum_speed,
+            actual_speed,
+            maximum_speed,
+            target_entity_index: 0,
+            reset_counter,
+            phase,
+            collision_half_width: 128,
+            collision_vertical_offset: 0,
+            collision_half_height,
+            render_parameter_index,
+            base_tmap,
+            render_mode: 20,
+            logical_height,
+            active: true,
+            visible: true,
+        };
+        self.source_slots[usize::from(source_entity_index)].phase = phase;
+        self.source_slots[usize::from(source_entity_index)].entity_rng = entity_rng;
+        self.dynamic_residents[usize::from(source_entity_index)] = Some(resident);
+        Ok(Some(source_entity_index))
     }
 
     /// Reproduce the Level 1 branch of `DrawMinimapMarks_64A10` at the
@@ -2430,6 +2917,49 @@ impl Level1MissionState {
         self.external_collision_targets.extend(targets);
     }
 
+    /// Install the current remc2 terrain-cell chains before source dispatch.
+    ///
+    /// The owner-data native session updates this projection after each source
+    /// entity moves, then passes it back before the next entity acts. This
+    /// makes projectile collision choose the same first eligible map-chain
+    /// row as `sub_10780` and `sub_108B0`.
+    pub fn set_source_map_chains(&mut self, map_chains: RenderableMapChains) {
+        self.source_map_chains = map_chains;
+    }
+
+    #[must_use]
+    pub fn possession_collision_targets(&self) -> &[Level1CollisionTarget] {
+        &self.initial_possession_targets
+    }
+
+    /// Apply remc2 action 6 (`AddDolmen02_02_65080`) for one source slot.
+    ///
+    /// The dolmen acts before the local player in the Level 1 source arena,
+    /// latching the player status bit that selects the high recharge rates at
+    /// the end of the player's subsequent action.
+    pub fn step_dolmen_source_slot(
+        &mut self,
+        player: &FlightState,
+        source_slot: u16,
+        dolmen: Level1CollisionTarget,
+    ) {
+        if source_slot != dolmen.entity_index || !dolmen.active || self.player_dead {
+            return;
+        }
+        if source_entities_overlap(
+            player.position,
+            PLAYER_COLLISION_HALF_WIDTH,
+            PLAYER_COLLISION_VERTICAL_OFFSET,
+            PLAYER_COLLISION_HALF_HEIGHT,
+            dolmen.position,
+            dolmen.collision_half_width,
+            dolmen.collision_vertical_offset,
+            dolmen.collision_half_height,
+        ) {
+            self.dolmen_recharge_contact = true;
+        }
+    }
+
     pub fn update_external_collision_target(&mut self, target: Level1CollisionTarget) {
         if let Some(existing) = self
             .external_collision_targets
@@ -2450,6 +2980,16 @@ impl Level1MissionState {
     #[must_use]
     pub fn impacts(&self) -> &[FireballImpact] {
         &self.impacts
+    }
+
+    #[must_use]
+    pub fn possessed_buildings(&self) -> &[Level1PossessedBuilding] {
+        &self.possessed_buildings
+    }
+
+    #[must_use]
+    pub fn speed_trails(&self) -> &[Level1SpeedTrail] {
+        &self.speed_trails
     }
 
     #[must_use]
@@ -2520,6 +3060,24 @@ impl Level1MissionState {
         disabled
     }
 
+    pub fn remove_imported_building(&mut self, source_slot: u16) {
+        if let Some(target) = self
+            .initial_possession_targets
+            .iter_mut()
+            .find(|target| target.entity_index == source_slot)
+        {
+            target.active = false;
+        }
+        if let Some(building) = self
+            .possessed_buildings
+            .iter_mut()
+            .find(|building| building.entity_index == source_slot)
+        {
+            building.active = false;
+        }
+        let _ = self.disable_imported_source_slot(source_slot);
+    }
+
     /// Drain imported source slots reclaimed by the arena's single ascending
     /// deletion pass. Runtime-owned typed projections (currently Goats) use
     /// this to retire their payload without independently mutating free-stack
@@ -2576,7 +3134,9 @@ impl Level1MissionState {
     ///
     /// Typed gameplay payloads have their own hashes; this digest pins the
     /// shared ownership, allocation, disable/reclaim, and source-row state
-    /// that determines dispatch order and constructor identity.
+    /// that determines dispatch order and constructor identity. The Speed
+    /// trail is source-arena-owned but has no other gameplay digest, so its
+    /// complete dispatch payload is included here as well.
     #[must_use]
     pub fn source_arena_hash_v1(&self) -> u64 {
         let mut hash = Level1Fnv1a64::new();
@@ -2616,6 +3176,7 @@ impl Level1MissionState {
         for slot in &self.source_pool.replaced_imported_slots {
             hash.u16(*slot);
         }
+        hash.u8(u8::from(self.group_7_villager_release_pending));
         hash.u32(
             u32::try_from(self.pending_source_slot_releases.len())
                 .expect("pending release queue length fits u32"),
@@ -2645,6 +3206,58 @@ impl Level1MissionState {
             });
             hash.u8(allocation.phase);
         }
+        hash.u8(self.dynamic_resident_behavior_gap_mask);
+        hash.u32(
+            u32::try_from(self.dynamic_residents().count())
+                .expect("dynamic resident count fits u32"),
+        );
+        for resident in self.dynamic_residents() {
+            hash.u16(resident.source_entity_index);
+            hash.u8(resident.kind as u8);
+            hash.u8(resident.class);
+            hash.u8(resident.model);
+            hash.u8(resident.action);
+            hash.u16(resident.position.x);
+            hash.u16(resident.position.y);
+            hash.u16(resident.position.z.cast_unsigned());
+            hash.u32(resident.max_life.cast_unsigned());
+            hash.u32(resident.life.cast_unsigned());
+            hash.u32(resident.pending_damage.cast_unsigned());
+            hash.u16(resident.pending_attacker);
+            hash.u16(resident.current_attacker);
+            hash.u16(resident.entity_rng);
+            hash.u16(resident.yaw.cast_unsigned());
+            hash.u16(resident.desired_heading.cast_unsigned());
+            hash.u16(resident.minimum_speed.cast_unsigned());
+            hash.u16(resident.actual_speed.cast_unsigned());
+            hash.u16(resident.maximum_speed.cast_unsigned());
+            hash.u16(resident.target_entity_index);
+            hash.u32(resident.reset_counter.cast_unsigned());
+            hash.u8(resident.phase);
+            hash.u16(resident.collision_half_width.cast_unsigned());
+            hash.u16(resident.collision_vertical_offset.cast_unsigned());
+            hash.u16(resident.collision_half_height.cast_unsigned());
+            hash.u16(resident.render_parameter_index);
+            hash.u16(resident.base_tmap);
+            hash.u8(resident.render_mode);
+            hash.u16(resident.logical_height);
+            hash.u8(u8::from(resident.active));
+            hash.u8(u8::from(resident.visible));
+        }
+        hash.u32(u32::try_from(self.speed_trails.len()).expect("Speed trail count fits u32"));
+        for trail in &self.speed_trails {
+            hash.u32(trail.id);
+            hash.u16(trail.source_entity_index);
+            hash.u16(trail.position.x);
+            hash.u16(trail.position.y);
+            hash.u16(trail.position.z.cast_unsigned());
+            hash.u16(trail.owner_entity_index);
+            hash.u8(trail.class);
+            hash.u8(trail.model);
+            hash.u8(trail.action);
+            hash.u16(trail.life.cast_unsigned());
+            hash.u8(u8::from(trail.active));
+        }
         hash.u32(self.global_rng);
         hash.u32(self.next_effect_id);
         hash.bytes(&self.model_phase_counters);
@@ -2652,6 +3265,15 @@ impl Level1MissionState {
     }
 
     pub fn spawn_fireball(&mut self, player: &FlightState) -> bool {
+        self.spawn_fireball_with_look(player, 0, 0)
+    }
+
+    pub fn spawn_fireball_with_look(
+        &mut self,
+        player: &FlightState,
+        camera_look_yaw: i16,
+        camera_look_pitch: i16,
+    ) -> bool {
         if self.player_dead || !self.has_fireball || self.player_mana < FIREBALL_MANA_COST {
             return false;
         }
@@ -2669,11 +3291,15 @@ impl Level1MissionState {
                 source_entity_index,
                 owner_entity_index: player.entity_index,
                 position,
-                yaw: player.yaw,
-                pitch: player.effective_pitch,
-                speed: FIREBALL_SPEED,
+                yaw: player.yaw.wrapping_add(camera_look_yaw) & 0x07ff,
+                pitch: player.effective_pitch.wrapping_add(camera_look_pitch) & 0x07ff,
+                speed: FIREBALL_SPEED
+                    .wrapping_add(player.actual_speed)
+                    .clamp(FIREBALL_SPEED, 0x2000),
                 life_ticks: FIREBALL_LIFETIME_TICKS,
                 payload: FIREBALL_PAYLOAD,
+                target_entity_index: 0,
+                acquisition_initialized: false,
                 active: true,
             }));
         self.events
@@ -2688,6 +3314,15 @@ impl Level1MissionState {
     }
 
     pub fn spawn_possession(&mut self, player: &FlightState) -> bool {
+        self.spawn_possession_with_look(player, 0, 0)
+    }
+
+    pub fn spawn_possession_with_look(
+        &mut self,
+        player: &FlightState,
+        camera_look_yaw: i16,
+        camera_look_pitch: i16,
+    ) -> bool {
         if self.player_dead || !self.has_possession || self.player_mana < POSSESSION_MANA_COST {
             return false;
         }
@@ -2705,10 +3340,14 @@ impl Level1MissionState {
                 source_entity_index,
                 owner_entity_index: player.entity_index,
                 position,
-                yaw: player.yaw,
-                pitch: player.effective_pitch,
-                speed: POSSESSION_PROJECTILE_SPEED,
+                yaw: player.yaw.wrapping_add(camera_look_yaw) & 0x07ff,
+                pitch: player.effective_pitch.wrapping_add(camera_look_pitch) & 0x07ff,
+                // Possession's dedicated caster adds the carpet's speed after
+                // construction without Fireball's 384..8192 clamp.
+                speed: POSSESSION_PROJECTILE_SPEED.wrapping_add(player.actual_speed),
                 life_ticks: POSSESSION_PROJECTILE_LIFETIME_TICKS,
+                target_entity_index: 0,
+                acquisition_initialized: false,
                 active: true,
             }));
         self.events
@@ -2913,6 +3552,9 @@ impl Level1MissionState {
             .push(Level1MissionEvent::CastleProjectileSpawned {
                 projectile_id: id,
                 sound_id: CASTLE_PROJECTILE_SOUND,
+                source_entity_index: player.entity_index,
+                position,
+                random_state: self.global_rng,
             });
         true
     }
@@ -2960,15 +3602,40 @@ impl Level1MissionState {
                 actor.state_value = i32::from(holder.active_value);
             }
         }
-        if let Some(speed) = context.speed_spell_holder
-            && let Some(actor) = self.actors.iter_mut().find(|actor| {
-                actor.kind == Level1ActorKind::SpeedSpellJar
-                    && actor.collected
-                    && actor.source_entity_index == speed.entity_index
-            })
-        {
-            actor.state_value = i32::from(speed.active_value);
+    }
+
+    fn award_spell_experience(&mut self, family: u8, amount: i32) {
+        if amount <= 0 {
+            return;
         }
+        let (experience, tier, thresholds) = match family {
+            FIREBALL_SPELL_FAMILY => (
+                &mut self.fireball_experience,
+                &mut self.fireball_tier,
+                &FIREBALL_TIER_THRESHOLDS_SINGLE_PLAYER,
+            ),
+            POSSESSION_SPELL_FAMILY => (
+                &mut self.possession_experience,
+                &mut self.possession_tier,
+                &POSSESSION_TIER_THRESHOLDS_SINGLE_PLAYER,
+            ),
+            CASTLE_SPELL_FAMILY => (
+                &mut self.castle_experience,
+                &mut self.castle_tier,
+                &CASTLE_TIER_THRESHOLDS_SINGLE_PLAYER,
+            ),
+            SPEED_SPELL_FAMILY => (
+                &mut self.speed_experience,
+                &mut self.speed_tier,
+                &SPEED_TIER_THRESHOLDS_SINGLE_PLAYER,
+            ),
+            _ => return,
+        };
+        *experience = experience.saturating_add(amount);
+        *tier = thresholds
+            .iter()
+            .rposition(|threshold| *experience >= *threshold)
+            .unwrap_or(0) as i8;
     }
 
     /// Project collected mission-owned spell jars into the live player spell
@@ -2978,6 +3645,27 @@ impl Level1MissionState {
             return;
         };
         fire.caster.mana = self.player_mana;
+        fire.spell_experience[usize::from(FIREBALL_SPELL_FAMILY)] = self.fireball_experience;
+        fire.spell_levels[usize::from(FIREBALL_SPELL_FAMILY)] = self.fireball_tier;
+        fire.spell_experience[usize::from(POSSESSION_SPELL_FAMILY)] = self.possession_experience;
+        fire.spell_levels[usize::from(POSSESSION_SPELL_FAMILY)] = self.possession_tier;
+        fire.spell_experience[usize::from(CASTLE_SPELL_FAMILY)] = self.castle_experience;
+        fire.spell_levels[usize::from(CASTLE_SPELL_FAMILY)] = self.castle_tier;
+        fire.spell_experience[usize::from(SPEED_SPELL_FAMILY)] = self.speed_experience;
+        fire.spell_levels[usize::from(SPEED_SPELL_FAMILY)] = self.speed_tier;
+        for holder in &mut fire.holders {
+            let available_tier = match holder.model {
+                FIREBALL_SPELL_FAMILY => self.fireball_tier,
+                POSSESSION_SPELL_FAMILY => self.possession_tier,
+                CASTLE_SPELL_FAMILY => self.castle_tier,
+                SPEED_SPELL_FAMILY => self.speed_tier,
+                _ => holder.level_gate,
+            };
+            // `SpellLevels` is the unlocked ceiling. The current family tier
+            // lives in `array_0x437` and is changed by SetSpell; gaining
+            // experience does not silently select the newly unlocked tier.
+            holder.level_gate = holder.level_gate.clamp(0, available_tier.max(0));
+        }
         for actor in self
             .actors
             .iter()
@@ -2999,7 +3687,10 @@ impl Level1MissionState {
                 | Level1ActorKind::ExitTarget
                 | Level1ActorKind::ExitSwitch
                 | Level1ActorKind::MultipartHead
-                | Level1ActorKind::ExperienceScroll => continue,
+                | Level1ActorKind::ExperienceScroll
+                | Level1ActorKind::Tree
+                | Level1ActorKind::Stone
+                | Level1ActorKind::CheckpointSmokeEmitter => continue,
             };
             let holder_index = actor.source_entity_index;
             let existing = fire
@@ -3024,13 +3715,17 @@ impl Level1MissionState {
                 // occupied, each collected teaching jar replaces the left.
                 if fire.left_holder_index == 0 {
                     fire.left_holder_index = holder_index;
+                    fire.left_subspell_index = 0;
                 } else if fire.right_holder_index == 0 {
                     fire.right_holder_index = holder_index;
+                    fire.right_subspell_index = 0;
                 } else {
                     fire.left_holder_index = holder_index;
+                    fire.left_subspell_index = 0;
                 }
                 fire.selected_holder_index = holder_index;
                 fire.selected_spell_ui_index = family;
+                fire.selected_subspell_index = 0;
             }
             fire.enabled_holder_indices[usize::from(family)] = holder_index;
         }
@@ -3059,17 +3754,23 @@ impl Level1MissionState {
         });
     }
 
-    /// Dispatch the collected tier-zero Speed holder (`GetScroll_69DB0`).
+    /// Dispatch the collected tier-zero Speed holder (`GetScroll_69DB0`) at
+    /// its own source-entity cursor.
     ///
     /// The source writes both requested and actual speed, uses a one-tick
     /// three-times launch impulse, then sustains twice the normal minimum
     /// speed until the 301-tick holder counter expires.
-    pub fn advance_speed_spell(&mut self, state: &mut FlightState, context: &mut FlightContext) {
-        let Some(actor) = self.actors.iter_mut().find(|actor| {
+    pub fn dispatch_speed_holder_slot(
+        &mut self,
+        source_slot: u16,
+        state: &mut FlightState,
+        context: &mut FlightContext,
+    ) {
+        let Some(actor_index) = self.actors.iter().position(|actor| {
             actor.kind == Level1ActorKind::SpeedSpellJar
                 && actor.active
                 && actor.collected
-                && actor.source_entity_index != 0
+                && actor.source_entity_index == source_slot
         }) else {
             return;
         };
@@ -3079,19 +3780,24 @@ impl Level1MissionState {
         let Some(holder) = fire
             .holders
             .iter_mut()
-            .find(|holder| holder.entity_index == actor.source_entity_index)
+            .find(|holder| holder.entity_index == self.actors[actor_index].source_entity_index)
         else {
             return;
         };
-        actor.state_value = i32::from(holder.active_value);
-        if actor.state_value <= 0 {
+        self.actors[actor_index].state_value = i32::from(holder.active_value);
+        if self.actors[actor_index].state_value <= 0 {
             return;
         }
         if state.speed_changed_flag != 0 {
-            actor.state_value = 1;
+            // The source takes this branch instead of the normal Speed branch,
+            // so manual cancellation never creates an action-2 trail.
+            self.actors[actor_index].state_value = 1;
         } else {
             let direction = if state.target_speed < 0 { -1 } else { 1 };
-            let multiplier = if actor.state_value == i32::from(SPEED_SPELL_ACTIVATION_TICKS) {
+            let multiplier = if self.actors[actor_index].state_value
+                == i32::from(SPEED_SPELL_ACTIVATION_TICKS)
+            {
+                self.award_spell_experience(SPEED_SPELL_FAMILY, 1);
                 context.events.push(crate::FlightEvent::PrepareSound {
                     entity_index: state.entity_index,
                     player_index: i16::from(state.player_color_index),
@@ -3103,23 +3809,41 @@ impl Level1MissionState {
             };
             state.target_speed = direction * crate::PLAYER_MIN_SPEED * multiplier;
             state.actual_speed = state.target_speed;
+            if self.actors[actor_index].phase & 3 == 0 {
+                // `GetScroll_69DB0` allocates a class-10/model-2 source
+                // entity here, before decrementing the holder. Allocation
+                // failure does not skip the later countdown/reset.
+                if let Some((id, source_entity_index)) =
+                    self.allocate_effect_source(SourceOccupant::SpeedTrail)
+                {
+                    // `NewEvent_4A050` seeds byte 0x3E from the allocated
+                    // source index before the class-10/model-2 constructor.
+                    self.source_slots[usize::from(source_entity_index)].phase =
+                        source_entity_index.to_le_bytes()[0];
+                    self.speed_trails.push(Level1SpeedTrail {
+                        id,
+                        source_entity_index,
+                        position: state.position,
+                        owner_entity_index: state.entity_index,
+                        class: SPEED_TRAIL_CLASS,
+                        model: SPEED_TRAIL_MODEL,
+                        action: SPEED_TRAIL_ACTION,
+                        life: SPEED_TRAIL_LIFE,
+                        active: true,
+                    });
+                }
+            }
         }
-        actor.state_value -= 1;
-        if actor.state_value == 0 {
+        self.actors[actor_index].state_value -= 1;
+        if self.actors[actor_index].state_value == 0 {
             let direction = if state.target_speed < 0 { -1 } else { 1 };
             state.target_speed = direction * crate::PLAYER_MIN_SPEED;
             state.actual_speed = state.target_speed;
         }
-        holder.active_value =
-            i16::try_from(actor.state_value).expect("Speed holder countdown fits i16");
+        holder.active_value = i16::try_from(self.actors[actor_index].state_value)
+            .expect("Speed holder countdown fits i16");
         if let Some(projected) = context.speed_spell_holder.as_mut() {
             projected.active_value = holder.active_value;
-        }
-        if actor.state_value > 0 && !self.exit_sequence_owns_player_action() {
-            self.exit_palette_submode = LEVEL1_PALETTE_SPEED_REQUEST;
-            // Level 1 owns the tier-one source speed state:
-            // 171 * 1 / 3 + 85.
-            self.exit_palette_count = 142;
         }
     }
 
@@ -3210,12 +3934,21 @@ impl Level1MissionState {
         }
         self.actors
             .iter()
-            .find(|actor| actor.source_entity_index == entity_index && actor.active)
+            // Damage mailboxes are consumed after source dispatch. An
+            // attacker can therefore die or deactivate later in the same
+            // turn while its position is still required for recoil.
+            .find(|actor| actor.source_entity_index == entity_index)
             .map(|actor| actor.position)
+            .or_else(|| {
+                self.dynamic_residents
+                    .get(usize::from(entity_index))
+                    .and_then(Option::as_ref)
+                    .map(|resident| resident.position)
+            })
             .or_else(|| {
                 self.external_collision_targets
                     .iter()
-                    .find(|target| target.entity_index == entity_index && target.active)
+                    .find(|target| target.entity_index == entity_index)
                     .map(|target| target.position)
             })
     }
@@ -3369,9 +4102,34 @@ impl Level1MissionState {
         spawn_possession: bool,
         castle_cast_yaw: Option<i16>,
     ) {
+        self.dispatch_source_slot_with_look(
+            world,
+            player,
+            source_slot,
+            spawn_fireball,
+            spawn_possession,
+            castle_cast_yaw,
+            0,
+            0,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn dispatch_source_slot_with_look<W: FlightWorld>(
+        &mut self,
+        world: &W,
+        player: &FlightState,
+        source_slot: u16,
+        spawn_fireball: bool,
+        spawn_possession: bool,
+        castle_cast_yaw: Option<i16>,
+        camera_look_yaw: i16,
+        camera_look_pitch: i16,
+    ) {
         if !self.source_turn_active {
             return;
         }
+        self.consume_building_possession_mailbox(player, source_slot);
         if source_slot == player.entity_index {
             if self.imported_source_slot_is_live(source_slot) {
                 let record = &mut self.source_slots[usize::from(source_slot)];
@@ -3384,7 +4142,9 @@ impl Level1MissionState {
             if !self.exit_sequence_owns_player_action() {
                 // Shelter is sampled before `sub_5F380` moves the player, then
                 // mailbox forwarding/clearing happens after flight.
-                if self.player_inside_stage_one_castle(self.source_turn_player_start_position) {
+                let sheltered =
+                    self.player_inside_stage_one_castle(self.source_turn_player_start_position);
+                if sheltered {
                     self.forward_sheltered_player_damage_to_castle();
                 }
                 if self.player_damage_suppression != 0 {
@@ -3396,24 +4156,34 @@ impl Level1MissionState {
                 }
                 self.player_mana = self
                     .player_mana
-                    .saturating_add(PLAYER_OUTDOOR_MANA_REGEN)
+                    .saturating_add(self.player_mana_regen)
                     .min(self.player_max_mana);
                 if self.player_life_regen_cooldown != 0 {
                     self.player_life_regen_cooldown -= 1;
                 } else {
                     self.player_life = self
                         .player_life
-                        .saturating_add(PLAYER_OUTDOOR_LIFE_REGEN)
+                        .saturating_add(self.player_life_regen)
                         .min(self.player_max_life);
+                }
+                if sheltered || self.dolmen_recharge_contact {
+                    self.player_mana_regen =
+                        (self.player_max_mana / 200).max(PLAYER_RECHARGE_MINIMUM_MANA_REGEN);
+                    self.player_life_regen = self.player_max_life / 250;
+                    self.dolmen_recharge_contact = false;
+                } else {
+                    self.player_mana_regen =
+                        (self.player_max_mana / 2_000).max(PLAYER_OUTDOOR_MANA_REGEN);
+                    self.player_life_regen = self.player_max_life / 2_000;
                 }
                 if self.player_hit_aux_ticks != 0 {
                     self.player_hit_aux_ticks -= 1;
                 }
                 if spawn_fireball {
-                    self.spawn_fireball(player);
+                    self.spawn_fireball_with_look(player, camera_look_yaw, camera_look_pitch);
                 }
                 if spawn_possession {
-                    self.spawn_possession(player);
+                    self.spawn_possession_with_look(player, camera_look_yaw, camera_look_pitch);
                 }
                 if let Some(combined_yaw) = castle_cast_yaw {
                     self.cast_accepted_initial_castle(world, player, combined_yaw);
@@ -3439,7 +4209,12 @@ impl Level1MissionState {
                 self.step_projectile_slot(world, player, source_slot);
                 true
             }
-            Some(SourceOccupant::FireballImpact(_) | SourceOccupant::WaterSplash(_)) => {
+            Some(
+                SourceOccupant::PossessionImpact(_)
+                | SourceOccupant::FireballImpact(_)
+                | SourceOccupant::WaterSplash(_)
+                | SourceOccupant::CheckpointSmoke(_),
+            ) => {
                 self.step_impact_slot(world, player, source_slot);
                 true
             }
@@ -3455,6 +4230,10 @@ impl Level1MissionState {
                 self.step_death_burst_slot(source_slot);
                 true
             }
+            Some(SourceOccupant::SpeedTrail(_)) => {
+                self.step_speed_trail_slot(source_slot);
+                true
+            }
             Some(SourceOccupant::MultipartSegment(_)) => {
                 self.step_multipart_segment_slot(world, source_slot);
                 true
@@ -3465,6 +4244,10 @@ impl Level1MissionState {
             }
             Some(SourceOccupant::CastleConstruction(_)) => {
                 self.step_castle_construction_slot(source_slot);
+                true
+            }
+            Some(SourceOccupant::Resident { .. }) => {
+                self.step_dynamic_resident_slot(source_slot);
                 true
             }
             Some(SourceOccupant::Reserved | SourceOccupant::ImportedLive) | None => false,
@@ -3495,6 +4278,16 @@ impl Level1MissionState {
                 if !segment.active {
                     record.control_flags |= SOURCE_DISABLED_FLAG;
                 }
+            } else if let Some(SourceOccupant::Resident { .. }) = occupant
+                && let Some(resident) = self.dynamic_residents[usize::from(source_slot)]
+            {
+                let record = &mut self.source_slots[usize::from(source_slot)];
+                record.action = resident.action;
+                record.phase = resident.phase;
+                record.entity_rng = resident.entity_rng;
+                if !resident.active {
+                    record.control_flags |= SOURCE_DISABLED_FLAG;
+                }
             } else {
                 self.source_slots[usize::from(source_slot)].phase = self.source_slots
                     [usize::from(source_slot)]
@@ -3502,6 +4295,88 @@ impl Level1MissionState {
                 .wrapping_add(1);
             }
         }
+    }
+
+    fn consume_building_possession_mailbox(&mut self, player: &FlightState, source_slot: u16) {
+        let Some((owner_entity_index, payload)) =
+            self.take_building_possession_mailbox(source_slot)
+        else {
+            return;
+        };
+        self.apply_building_possession(player, source_slot, owner_entity_index, payload);
+    }
+
+    pub fn take_building_possession_mailbox(&mut self, source_slot: u16) -> Option<(u16, u32)> {
+        let mailbox_index = self
+            .building_mailboxes
+            .iter()
+            .position(|mailbox| mailbox.target_entity_index == source_slot)?;
+        let mailbox = self.building_mailboxes.remove(mailbox_index);
+        Some((mailbox.owner_entity_index, u32::from(mailbox.payload)))
+    }
+
+    pub fn apply_building_possession(
+        &mut self,
+        player: &FlightState,
+        source_slot: u16,
+        owner_entity_index: u16,
+        payload: u32,
+    ) {
+        let Some(target) = self
+            .initial_possession_targets
+            .iter()
+            .find(|target| target.entity_index == source_slot)
+            .copied()
+        else {
+            return;
+        };
+        let owner_changed = self
+            .possessed_buildings
+            .iter()
+            .find(|building| building.entity_index == source_slot)
+            .is_none_or(|building| building.owner_entity_index != owner_entity_index);
+        let player_color_index = if owner_entity_index == player.entity_index {
+            player.player_color_index
+        } else {
+            0
+        };
+        if let Some(building) = self
+            .possessed_buildings
+            .iter_mut()
+            .find(|building| building.entity_index == source_slot)
+        {
+            building.owner_entity_index = owner_entity_index;
+            building.player_color_index = player_color_index;
+            building.render_parameter_index =
+                POSSESSED_BUILDING_RENDER_INDEX + u16::from(player_color_index);
+            building.base_tmap = POSSESSED_BUILDING_BASE_TMAP + u16::from(player_color_index);
+            building.active = true;
+        } else {
+            self.possessed_buildings.push(Level1PossessedBuilding {
+                entity_index: source_slot,
+                position: target.position,
+                owner_entity_index,
+                player_color_index,
+                render_parameter_index: POSSESSED_BUILDING_RENDER_INDEX
+                    + u16::from(player_color_index),
+                base_tmap: POSSESSED_BUILDING_BASE_TMAP + u16::from(player_color_index),
+                render_mode: POSSESSED_BUILDING_RENDER_MODE,
+                logical_height: POSSESSED_BUILDING_LOGICAL_HEIGHT,
+                active: true,
+            });
+        }
+        if let Some(source) = self.source_slots.get_mut(usize::from(source_slot)) {
+            source.control_flags = (source.control_flags & 0xffdf_fffe) | 0x0020_0000;
+        }
+        if owner_changed {
+            self.events.push(Level1MissionEvent::MissionSound {
+                sound_id: POSSESSION_SOUND,
+                source_entity_index: owner_entity_index,
+                position: player.position,
+                random_state: self.global_rng,
+            });
+        }
+        debug_assert_eq!(payload, 0);
     }
 
     pub fn finish_source_turn(&mut self, player: &FlightState) {
@@ -3526,8 +4401,8 @@ impl Level1MissionState {
             LEVEL1_PALETTE_HIT_REQUEST => {
                 self.begin_palette_fade_back(LEVEL1_PALETTE_EFFECT_HIT);
             }
-            LEVEL1_PALETTE_SPEED_REQUEST => {
-                self.begin_palette_fade_back(LEVEL1_PALETTE_EFFECT_SPEED);
+            LEVEL1_PALETTE_SLOWING_REQUEST => {
+                self.begin_palette_fade_back(LEVEL1_PALETTE_EFFECT_SLOWING);
             }
             EXIT_PALETTE_ENTRY_FLASH_REQUEST => {
                 self.begin_palette_fade_back(EXIT_PALETTE_EFFECT_ENTRY_FLASH);
@@ -3635,7 +4510,7 @@ impl Level1MissionState {
                 ),
                 EXIT_PALETTE_EFFECT_BLACK => (0, 0, 0),
                 LEVEL1_PALETTE_EFFECT_HIT => ((red + 40).clamp(0, 63), green, blue),
-                LEVEL1_PALETTE_EFFECT_SPEED => {
+                LEVEL1_PALETTE_EFFECT_SLOWING => {
                     let offset = (-56_i32 * i32::from(self.exit_palette_count)) >> 8;
                     (
                         (red + offset).clamp(0, 63),
@@ -4011,7 +4886,10 @@ impl Level1MissionState {
                 | Level1ActorKind::ExitTarget
                 | Level1ActorKind::ExitSwitch
                 | Level1ActorKind::MultipartHead
-                | Level1ActorKind::ExperienceScroll => continue,
+                | Level1ActorKind::ExperienceScroll
+                | Level1ActorKind::Tree
+                | Level1ActorKind::Stone
+                | Level1ActorKind::CheckpointSmokeEmitter => continue,
             };
             actor.collected = true;
             actor.visible = false;
@@ -4062,6 +4940,18 @@ impl Level1MissionState {
         ) {
             return;
         }
+        if self.has_fireball {
+            self.award_spell_experience(FIREBALL_SPELL_FAMILY, EXPERIENCE_SCROLL_AWARD);
+        }
+        if self.has_possession {
+            self.award_spell_experience(POSSESSION_SPELL_FAMILY, EXPERIENCE_SCROLL_AWARD);
+        }
+        if self.has_castle_spell {
+            self.award_spell_experience(CASTLE_SPELL_FAMILY, EXPERIENCE_SCROLL_AWARD);
+        }
+        if self.has_speed_spell {
+            self.award_spell_experience(SPEED_SPELL_FAMILY, EXPERIENCE_SCROLL_AWARD);
+        }
         self.actors[index].collected = true;
         self.actors[index].active = false;
         self.actors[index].visible = false;
@@ -4078,6 +4968,66 @@ impl Level1MissionState {
         self.mark_allocation_pending_delete(actor.authored_index);
     }
 
+    fn step_dynamic_resident_slot(&mut self, source_slot: u16) {
+        let Some(mut resident) = self.dynamic_residents[usize::from(source_slot)] else {
+            return;
+        };
+        if !resident.active {
+            return;
+        }
+        if resident.pending_attacker != 0 {
+            if resident.kind == DynamicResidentKind::Archer && resident.action == ARCHER_ACTION {
+                resident.reset_counter = 0;
+            }
+            resident.life = resident.life.wrapping_sub(resident.pending_damage);
+            resident.current_attacker = resident.pending_attacker;
+            resident.pending_damage = 0;
+            resident.pending_attacker = 0;
+            resident.target_entity_index = resident.current_attacker;
+            resident.action = if resident.life < 0 {
+                match resident.kind {
+                    DynamicResidentKind::Archer => 36,
+                    DynamicResidentKind::Builder => 100,
+                    DynamicResidentKind::Villager => 108,
+                    DynamicResidentKind::Trader => 116,
+                }
+            } else {
+                match resident.kind {
+                    DynamicResidentKind::Archer => 34,
+                    DynamicResidentKind::Builder => 102,
+                    DynamicResidentKind::Villager => 110,
+                    DynamicResidentKind::Trader => 118,
+                }
+            };
+            if resident.kind == DynamicResidentKind::Archer && resident.life >= 0 {
+                resident.entity_rng = next_rng16(resident.entity_rng);
+                resident.actual_speed = 0;
+                if resident.entity_rng % 20 <= 10 {
+                    resident.render_parameter_index = ARCHER_ATTACK_RENDER_INDEX_B;
+                    resident.base_tmap = ARCHER_ATTACK_BASE_TMAP_B;
+                    resident.logical_height = ARCHER_ATTACK_LOGICAL_HEIGHT_B;
+                } else {
+                    resident.render_parameter_index = ARCHER_ATTACK_RENDER_INDEX_A;
+                    resident.base_tmap = ARCHER_ATTACK_BASE_TMAP_A;
+                    resident.logical_height = ARCHER_LOGICAL_HEIGHT;
+                }
+            }
+            resident.phase = resident.phase.wrapping_add(1);
+        } else {
+            // Constructor, source-slot ownership, mailbox ordering and hit
+            // dispatch are exact. The resident action bodies are deliberately
+            // frozen until their remc2 handlers are ported; expose one bit per
+            // family so this cannot be mistaken for completed behavior.
+            self.dynamic_resident_behavior_gap_mask |= match resident.kind {
+                DynamicResidentKind::Archer => 0x01,
+                DynamicResidentKind::Builder => 0x02,
+                DynamicResidentKind::Villager => 0x04,
+                DynamicResidentKind::Trader => 0x08,
+            };
+        }
+        self.dynamic_residents[usize::from(source_slot)] = Some(resident);
+    }
+
     fn step_actor_slot<W: FlightWorld>(
         &mut self,
         world: &W,
@@ -4086,8 +5036,10 @@ impl Level1MissionState {
     ) {
         let mut spawned_arrows = Vec::new();
         let mut spawned_firefly_fireballs = Vec::new();
+        let mut checkpoint_smoke_spawns = Vec::new();
         let mut player_contact_damage = None;
         let mut killed_allocations = Vec::new();
+        let mut disabled_scenery_allocations = Vec::new();
         let mut multipart_pre_kill_heads = Vec::new();
         let mut actor_views = self.actors.clone();
         let mut dispatch_order = (0..self.actors.len()).collect::<Vec<_>>();
@@ -4137,28 +5089,84 @@ impl Level1MissionState {
                 actor_views[peer_index] = *peer;
             }
 
-            if self.actors[actor_index].kind == Level1ActorKind::MultipartHead
-                && let Some(child) = self
-                    .multipart_segments
-                    .iter()
-                    .filter(|segment| {
-                        segment.head_authored_index == self.actors[actor_index].authored_index
-                            && segment.active
-                    })
-                    .min_by_key(|segment| segment.life)
-                    .copied()
-                && child.life < self.actors[actor_index].life
-            {
-                self.actors[actor_index].life = child.life;
-                self.actors[actor_index].pending_attacker = child.pending_attacker;
-                if child.life >= 0 && child.pending_attacker == player.entity_index {
-                    self.actors[actor_index].target_entity_index = player.entity_index;
-                    self.actors[actor_index].linked_entity_index = 0;
-                    self.actors[actor_index].action = MULTIPART_ATTACK_ACTION;
-                }
-            }
-
             let actor = &mut self.actors[actor_index];
+            if actor.active && actor.kind == Level1ActorKind::CheckpointSmokeEmitter {
+                // `AddParticleSmoke0A_3D_32420`: the parent lives invisibly
+                // for its constructor-selected lifetime and attempts one
+                // model-13 particle allocation per source dispatch.
+                let old_life = actor.life;
+                actor.life = actor.life.wrapping_sub(1);
+                if old_life < 0 {
+                    actor.active = false;
+                    disabled_scenery_allocations
+                        .push((actor.authored_index, actor.source_entity_index));
+                } else {
+                    let mut position = actor.position;
+                    actor.entity_rng = next_rng16(actor.entity_rng);
+                    position.x = position.x.wrapping_add(actor.entity_rng % 0x00a0);
+                    actor.entity_rng = next_rng16(actor.entity_rng);
+                    // remc2's horizontal axes are x/z; Rust exposes them as
+                    // x/y while `Position::z` is source altitude.
+                    position.y = position.y.wrapping_add(actor.entity_rng % 0x00a0);
+                    checkpoint_smoke_spawns.push((
+                        actor_index,
+                        actor.source_entity_index,
+                        position,
+                        actor.actual_speed,
+                    ));
+                }
+                actor_views[actor_index] = *actor;
+                continue;
+            }
+            if actor.active && actor.kind == Level1ActorKind::Tree {
+                if actor.action == TREE_LIVE_ACTION && actor.pending_damage != 0 {
+                    let damage = actor.pending_damage;
+                    actor.pending_damage = 0;
+                    actor.life = actor.life.saturating_sub(damage);
+                    self.events.push(Level1MissionEvent::ActorDamaged {
+                        authored_index: actor.authored_index,
+                        damage,
+                        life: actor.life,
+                    });
+                    if actor.life < 0 {
+                        actor.entity_rng = next_rng16(actor.entity_rng);
+                        actor.life = i32::from(actor.entity_rng % 60) + 130;
+                        actor.action = TREE_DYING_ACTION;
+                    }
+                    actor.pending_attacker = 0;
+                } else if actor.action == TREE_DYING_ACTION {
+                    actor.life = actor.life.saturating_sub(1);
+                    if actor.life < 60 {
+                        actor.action = TREE_DEAD_ACTION;
+                        if actor.render_parameter_index == Some(TREE_RENDER_INDEX_A) {
+                            actor.render_parameter_index = Some(TREE_DEAD_RENDER_INDEX_A);
+                            actor.base_tmap = Some(TREE_DEAD_BASE_TMAP_A);
+                        } else {
+                            actor.render_parameter_index = Some(TREE_DEAD_RENDER_INDEX_B);
+                            actor.base_tmap = Some(TREE_DEAD_BASE_TMAP_B);
+                        }
+                    }
+                }
+                actor.position.z = world.ground_height(actor.position);
+                if world.material_mask(actor.position) == 1 {
+                    actor.active = false;
+                    actor.visible = false;
+                    disabled_scenery_allocations
+                        .push((actor.authored_index, actor.source_entity_index));
+                }
+                actor.phase = actor.phase.wrapping_add(1);
+                actor_views[actor_index] = *actor;
+                continue;
+            }
+            if actor.active && actor.kind == Level1ActorKind::Stone {
+                // `AddStatue02_01_65040` has no rising or interpolation
+                // branch: it marks the entity for drawing and snaps it to
+                // the current terrain altitude every source dispatch.
+                actor.position.z = world.ground_height(actor.position);
+                actor.phase = actor.phase.wrapping_add(1);
+                actor_views[actor_index] = *actor;
+                continue;
+            }
             if !actor.active
                 || !matches!(
                     actor.kind,
@@ -4170,6 +5178,51 @@ impl Level1MissionState {
                 continue;
             }
 
+            if actor.kind == Level1ActorKind::MultipartHead {
+                // remc2's model-3 handlers consume the head mailbox first,
+                // then walk the linked body in source order and stop at the
+                // first child whose life is lower than the updated head.
+                // A surviving hit selects base action 24 + 2.
+                let mut hit_attacker = None;
+                if actor.pending_damage != 0 {
+                    let damage = actor.pending_damage;
+                    actor.pending_damage = 0;
+                    actor.life = actor.life.saturating_sub(damage);
+                    hit_attacker = Some(actor.pending_attacker);
+                    self.events.push(Level1MissionEvent::ActorDamaged {
+                        authored_index: actor.authored_index,
+                        damage,
+                        life: actor.life,
+                    });
+                }
+                let head_authored_index = actor.authored_index;
+                let head_life = actor.life;
+                let _ = actor;
+                if let Some(child) = self.multipart_segments.iter().find(|segment| {
+                    segment.head_authored_index == head_authored_index
+                        && segment.active
+                        && segment.life < head_life
+                }) {
+                    self.actors[actor_index].life = child.life;
+                    hit_attacker = Some(child.pending_attacker);
+                }
+                if let Some(attacker) = hit_attacker {
+                    let actor = &mut self.actors[actor_index];
+                    actor.linked_entity_index = 0;
+                    if actor.life < 0 {
+                        actor.action = MULTIPART_PRE_KILL_ACTION;
+                    } else {
+                        actor.target_entity_index = attacker;
+                        actor.action = MULTIPART_ATTACK_ACTION;
+                    }
+                    actor.pending_attacker = 0;
+                    actor.phase = actor.phase.wrapping_add(1);
+                    actor_views[actor_index] = *actor;
+                    continue;
+                }
+            }
+
+            let actor = &mut self.actors[actor_index];
             if actor.pending_damage != 0 {
                 let damage = actor.pending_damage;
                 actor.pending_damage = 0;
@@ -4193,6 +5246,11 @@ impl Level1MissionState {
                         Level1ActorKind::MultipartHead => MULTIPART_PRE_KILL_ACTION,
                         Level1ActorKind::ExperienceScroll => {
                             unreachable!("experience scroll was filtered above")
+                        }
+                        Level1ActorKind::Tree
+                        | Level1ActorKind::Stone
+                        | Level1ActorKind::CheckpointSmokeEmitter => {
+                            unreachable!("scenery actors were filtered above")
                         }
                     };
                 } else if actor.kind == Level1ActorKind::Archer
@@ -4236,6 +5294,11 @@ impl Level1MissionState {
                 Level1ActorKind::MultipartHead => MULTIPART_PRE_KILL_ACTION,
                 Level1ActorKind::ExperienceScroll => {
                     unreachable!("experience scroll was filtered above")
+                }
+                Level1ActorKind::Tree
+                | Level1ActorKind::Stone
+                | Level1ActorKind::CheckpointSmokeEmitter => {
+                    unreachable!("scenery actors were filtered above")
                 }
             };
             let final_kill_action = pre_kill_action + 1;
@@ -4422,6 +5485,68 @@ impl Level1MissionState {
                 .into_iter()
                 .map(Level1Projectile::FireflyFireball),
         );
+        for (parent_index, parent_source_entity_index, position, parent_speed) in
+            checkpoint_smoke_spawns
+        {
+            // `SetParticleSmoke3B_4E9E0` advances the shared generator before
+            // `NewEvent_4A050`; the advance survives allocation exhaustion.
+            self.global_rng = next_rng32(self.global_rng);
+            let smoke_id = self.next_effect_id;
+            let Some(source_entity_index) = self
+                .source_pool
+                .allocate(SourceOccupant::CheckpointSmoke(smoke_id))
+            else {
+                continue;
+            };
+            let occupant = SourceOccupant::CheckpointSmoke(smoke_id);
+            bind_dynamic_source_record(
+                &mut self.source_slots,
+                source_entity_index,
+                occupant,
+                self.global_rng,
+            );
+            let child_rng =
+                next_rng16(self.source_slots[usize::from(source_entity_index)].entity_rng);
+            self.source_slots[usize::from(source_entity_index)].entity_rng = child_rng;
+
+            // The parent's third entity-RNG advance is conditional on child
+            // allocation and contributes the final 0..76 speed term.
+            let parent = &mut self.actors[parent_index];
+            debug_assert_eq!(parent.source_entity_index, parent_source_entity_index);
+            parent.entity_rng = next_rng16(parent.entity_rng);
+            let actual_speed = i16::try_from(child_rng % 0x35 + 51)
+                .expect("checkpoint smoke base speed fits i16")
+                .wrapping_add(parent_speed)
+                .wrapping_add(
+                    i16::try_from(parent.entity_rng % 0x4d)
+                        .expect("checkpoint smoke parent speed term fits i16"),
+                );
+            self.source_slots[usize::from(parent_source_entity_index)].entity_rng =
+                parent.entity_rng;
+
+            self.impacts.push(FireballImpact {
+                id: smoke_id,
+                source_entity_index,
+                source_projectile_id: u32::from(parent_source_entity_index),
+                owner_entity_index: parent_source_entity_index,
+                // Reuse this otherwise inert field as the source dword_0x10
+                // phase for class-10/model-13 smoke.
+                external_target_entity_index: 0,
+                model: CHECKPOINT_SMOKE_MODEL,
+                position,
+                // Reuse payload as source maxSpeed; checkpoint smoke never
+                // enters the damage path.
+                payload: 30,
+                life_ticks: CHECKPOINT_SMOKE_LIFE,
+                entity_rng: child_rng,
+                vertical_velocity: actual_speed,
+                animation_frame: u8::try_from(CHECKPOINT_SMOKE_FIRST_RENDER_INDEX)
+                    .expect("checkpoint render row fits u8"),
+                damage_submitted: true,
+                active: true,
+            });
+            self.next_effect_id = self.next_effect_id.wrapping_add(1).max(1);
+        }
         for head_authored_index in multipart_pre_kill_heads {
             for segment in self.multipart_segments.iter_mut().filter(|segment| {
                 segment.head_authored_index == head_authored_index && segment.active
@@ -4445,7 +5570,10 @@ impl Level1MissionState {
                 Level1ActorKind::CastleSpellJar | Level1ActorKind::SpeedSpellJar => 0,
                 Level1ActorKind::ExitTarget
                 | Level1ActorKind::ExitSwitch
-                | Level1ActorKind::ExperienceScroll => 0,
+                | Level1ActorKind::ExperienceScroll
+                | Level1ActorKind::Tree
+                | Level1ActorKind::Stone
+                | Level1ActorKind::CheckpointSmokeEmitter => 0,
             };
             // remc2 GetManaSphereColorIndexFromEntityId_369F0 treats the
             // source field as an entity relation, not as a player/color
@@ -4464,6 +5592,12 @@ impl Level1MissionState {
                 owner_entity_index,
             );
             self.spawn_death_burst_from_death(source_entity_index, position);
+            self.mark_allocation_pending_delete(authored_index);
+        }
+        for (authored_index, source_entity_index) in disabled_scenery_allocations {
+            self.source_pool.disable_slot(source_entity_index);
+            self.source_slots[usize::from(source_entity_index)].control_flags |=
+                SOURCE_DISABLED_FLAG;
             self.mark_allocation_pending_delete(authored_index);
         }
     }
@@ -4594,23 +5728,333 @@ impl Level1MissionState {
         }
     }
 
+    fn fireball_guidance_targets(&self) -> Vec<ProjectileGuidanceTarget> {
+        let mut targets = Vec::new();
+        // `sub_67CB0` model zero walks creature model lists 0..28 (except
+        // model 22) after the player list. `UpdateEntities_57730` rebuilds
+        // every model list by scanning arena rows 1..999 on each source turn.
+        for model in 0_u8..29 {
+            if model == 22 {
+                continue;
+            }
+            let mut model_targets =
+                self.actors
+                    .iter()
+                    .filter_map(|actor| {
+                        (actor.alive()
+                            && actor.model == model
+                            && matches!(
+                                actor.kind,
+                                Level1ActorKind::Archer
+                                    | Level1ActorKind::Firefly
+                                    | Level1ActorKind::MultipartHead
+                            ))
+                        .then_some(ProjectileGuidanceTarget {
+                            entity_index: actor.source_entity_index,
+                            top_position: collision_target_top(
+                                actor.position,
+                                actor.collision_vertical_offset,
+                            ),
+                        })
+                    })
+                    .chain(self.dynamic_residents().filter_map(|resident| {
+                        (resident.active && resident.life >= 0 && resident.model == model)
+                            .then_some(ProjectileGuidanceTarget {
+                                entity_index: resident.source_entity_index,
+                                top_position: collision_target_top(
+                                    resident.position,
+                                    resident.collision_vertical_offset,
+                                ),
+                            })
+                    }))
+                    .chain(self.external_collision_targets.iter().filter_map(|target| {
+                        (target.active
+                            && level1_reset_creature_model(target.entity_index) == Some(model))
+                        .then_some(ProjectileGuidanceTarget {
+                            entity_index: target.entity_index,
+                            top_position: collision_target_top(
+                                target.position,
+                                target.collision_vertical_offset,
+                            ),
+                        })
+                    }))
+                    .collect::<Vec<_>>();
+            model_targets.sort_unstable_by_key(|target| target.entity_index);
+            targets.extend(model_targets);
+        }
+        targets
+    }
+
+    fn possession_guidance_targets(
+        &self,
+        owner_entity_index: u16,
+    ) -> Vec<ProjectileGuidanceTarget> {
+        // `UpdateEntities_57730` also rebuilds the mana and model-45
+        // building lists in ascending arena order. `sub_67CB0` traverses all
+        // mana rows first, then all eligible buildings.
+        let mut mana_targets = self
+            .mana_spheres
+            .iter()
+            .filter(|sphere| sphere.active && sphere.owner_entity_index != owner_entity_index)
+            .map(|sphere| {
+                let dimension = mana_sphere_collision_dimension(sphere.mana);
+                ProjectileGuidanceTarget {
+                    entity_index: sphere.source_entity_index,
+                    top_position: collision_target_top(sphere.position, dimension),
+                }
+            })
+            .collect::<Vec<_>>();
+        mana_targets.sort_unstable_by_key(|target| target.entity_index);
+
+        let mut building_targets = self
+            .initial_possession_targets
+            .iter()
+            .filter(|target| {
+                target.active
+                    && self
+                        .possessed_buildings
+                        .iter()
+                        .find(|building| building.entity_index == target.entity_index)
+                        .map_or(0, |building| building.owner_entity_index)
+                        != owner_entity_index
+            })
+            .map(|target| ProjectileGuidanceTarget {
+                entity_index: target.entity_index,
+                top_position: collision_target_top(
+                    target.position,
+                    target.collision_vertical_offset,
+                ),
+            })
+            .collect::<Vec<_>>();
+        building_targets.sort_unstable_by_key(|target| target.entity_index);
+
+        mana_targets.into_iter().chain(building_targets).collect()
+    }
+
+    fn fireball_collision_candidates(
+        &self,
+        player: &FlightState,
+    ) -> Vec<ProjectileCollisionCandidate> {
+        let mut candidates = self
+            .initial_source_collision_targets
+            .iter()
+            .filter(|candidate| {
+                self.imported_source_slot_is_live(candidate.target.entity_index)
+                    && candidate.target.active
+            })
+            .map(|candidate| ProjectileCollisionCandidate {
+                entity_index: candidate.target.entity_index,
+                source_id: candidate.source_id,
+                position: candidate.target.position,
+                collision_half_width: candidate.target.collision_half_width,
+                collision_vertical_offset: candidate.target.collision_vertical_offset,
+                collision_half_height: candidate.target.collision_half_height,
+                kind: ProjectileCollisionKind::Reset,
+            })
+            .collect::<Vec<_>>();
+        let mut upsert = |candidate: ProjectileCollisionCandidate| {
+            if let Some(existing) = candidates
+                .iter_mut()
+                .find(|existing| existing.entity_index == candidate.entity_index)
+            {
+                *existing = candidate;
+            } else {
+                candidates.push(candidate);
+            }
+        };
+
+        upsert(ProjectileCollisionCandidate {
+            entity_index: player.entity_index,
+            source_id: player.entity_index,
+            position: player.position,
+            collision_half_width: PLAYER_COLLISION_HALF_WIDTH,
+            collision_vertical_offset: PLAYER_COLLISION_VERTICAL_OFFSET,
+            collision_half_height: PLAYER_COLLISION_HALF_HEIGHT,
+            kind: ProjectileCollisionKind::Player,
+        });
+        for target in self
+            .external_collision_targets
+            .iter()
+            .filter(|target| target.active)
+        {
+            upsert(ProjectileCollisionCandidate {
+                entity_index: target.entity_index,
+                source_id: target.entity_index,
+                position: target.position,
+                collision_half_width: target.collision_half_width,
+                collision_vertical_offset: target.collision_vertical_offset,
+                collision_half_height: target.collision_half_height,
+                kind: ProjectileCollisionKind::External,
+            });
+        }
+        for actor in self.actors.iter().filter(|actor| {
+            actor.active
+                && actor.source_entity_index != 0
+                && !actor.collected
+                && matches!(
+                    actor.kind,
+                    Level1ActorKind::Archer
+                        | Level1ActorKind::Firefly
+                        | Level1ActorKind::MultipartHead
+                        | Level1ActorKind::ExperienceScroll
+                        | Level1ActorKind::ExitTarget
+                        | Level1ActorKind::Tree
+                        | Level1ActorKind::Stone
+                )
+        }) {
+            upsert(ProjectileCollisionCandidate {
+                entity_index: actor.source_entity_index,
+                source_id: actor.source_entity_index,
+                position: actor.position,
+                collision_half_width: actor.collision_half_width,
+                collision_vertical_offset: actor.collision_vertical_offset,
+                collision_half_height: actor.collision_half_height,
+                kind: ProjectileCollisionKind::Actor,
+            });
+        }
+        for resident in self
+            .dynamic_residents()
+            .filter(|resident| resident.active && resident.life >= 0)
+        {
+            upsert(ProjectileCollisionCandidate {
+                entity_index: resident.source_entity_index,
+                source_id: resident.source_entity_index,
+                position: resident.position,
+                collision_half_width: resident.collision_half_width,
+                collision_vertical_offset: resident.collision_vertical_offset,
+                collision_half_height: resident.collision_half_height,
+                kind: ProjectileCollisionKind::Actor,
+            });
+        }
+        for segment in self
+            .multipart_segments
+            .iter()
+            .filter(|segment| segment.active)
+        {
+            upsert(ProjectileCollisionCandidate {
+                entity_index: segment.source_entity_index,
+                source_id: segment.owner_id.cast_unsigned(),
+                position: segment.position,
+                collision_half_width: segment.collision_half_width,
+                collision_vertical_offset: 0,
+                collision_half_height: segment.collision_half_height,
+                kind: ProjectileCollisionKind::MultipartSegment,
+            });
+        }
+        for sphere in self.mana_spheres.iter().filter(|sphere| sphere.active) {
+            let dimension = mana_sphere_collision_dimension(sphere.mana);
+            upsert(ProjectileCollisionCandidate {
+                entity_index: sphere.source_entity_index,
+                source_id: sphere.source_entity_index,
+                position: sphere.position,
+                collision_half_width: dimension,
+                collision_vertical_offset: dimension,
+                collision_half_height: dimension,
+                kind: ProjectileCollisionKind::ManaSphere,
+            });
+        }
+        if self.castle_exists && self.castle_source_entity_index != 0 {
+            upsert(ProjectileCollisionCandidate {
+                entity_index: self.castle_source_entity_index,
+                source_id: self.castle_owner_entity_index,
+                position: self.castle_position,
+                collision_half_width: CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH,
+                collision_vertical_offset: CASTLE_STAGE_ONE_COLLISION_VERTICAL_OFFSET,
+                collision_half_height: CASTLE_STAGE_ONE_COLLISION_HALF_HEIGHT,
+                kind: ProjectileCollisionKind::Castle,
+            });
+        }
+        if let Some(carrier) = self.mana_carrier.filter(|carrier| carrier.active) {
+            upsert(ProjectileCollisionCandidate {
+                entity_index: carrier.source_entity_index,
+                source_id: carrier.owner_entity_index,
+                position: carrier.position,
+                collision_half_width: MANA_CARRIER_COLLISION_HALF_WIDTH,
+                collision_vertical_offset: MANA_CARRIER_COLLISION_VERTICAL_OFFSET,
+                collision_half_height: MANA_CARRIER_COLLISION_HALF_HEIGHT,
+                kind: ProjectileCollisionKind::ManaCarrier,
+            });
+        }
+        candidates
+    }
+
     fn step_projectile_slot<W: FlightWorld>(
         &mut self,
         world: &W,
         player: &FlightState,
         source_slot: u16,
     ) {
-        let actors = &self.actors;
-        let multipart_segments = &self.multipart_segments;
-        let external_collision_targets = &self.external_collision_targets;
+        // Owner-data sessions arrive with the exact reset chains. Rows
+        // allocated after reset are inserted at the source head in allocation
+        // order; this also gives focused synthetic tests the same deterministic
+        // topology without a presentation session.
+        let fireball_collision_candidates = self.fireball_collision_candidates(player);
+        let mut collision_rows = fireball_collision_candidates
+            .iter()
+            .map(|candidate| RenderableMapSeed {
+                entity_index: candidate.entity_index,
+                active: true,
+                x: candidate.position.x,
+                y: candidate.position.y,
+            })
+            .collect::<Vec<_>>();
+        // Synthetic templates do not have the complete reset collision
+        // projection, but focused Possession tests still need their supplied
+        // building rows in the same source-map traversal.
+        collision_rows.extend(self.initial_possession_targets.iter().filter_map(|target| {
+            target.active.then_some(RenderableMapSeed {
+                entity_index: target.entity_index,
+                active: true,
+                x: target.position.x,
+                y: target.position.y,
+            })
+        }));
+        collision_rows.sort_unstable_by_key(|seed| seed.entity_index);
+        collision_rows.dedup_by_key(|seed| seed.entity_index);
+        for seed in collision_rows {
+            self.source_map_chains
+                .sync_entity(seed)
+                .expect("Level 1 collision source slot fits the source map");
+        }
+        let fireball_guidance_targets = self.fireball_guidance_targets();
+        let possession_owner_entity_index = self
+            .projectiles
+            .iter()
+            .find(|projectile| projectile.source_entity_index() == source_slot)
+            .and_then(|projectile| match projectile {
+                Level1Projectile::Possession(projectile) => Some(projectile.owner_entity_index),
+                _ => None,
+            });
+        let possession_guidance_targets = possession_owner_entity_index
+            .map(|owner| self.possession_guidance_targets(owner))
+            .unwrap_or_default();
+        let possession_collision_targets = possession_owner_entity_index
+            .map(|owner| {
+                self.initial_possession_targets
+                    .iter()
+                    .copied()
+                    .filter(|target| {
+                        self.possessed_buildings
+                            .iter()
+                            .find(|building| building.entity_index == target.entity_index)
+                            .map_or(0, |building| building.owner_entity_index)
+                            != owner
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let source_map_chains = &self.source_map_chains;
         let impacts = &mut self.impacts;
         let mana_spheres = &mut self.mana_spheres;
         let events = &mut self.events;
         let source_pool = &mut self.source_pool;
         let source_slots = &mut self.source_slots;
         let mut next_effect_id = self.next_effect_id;
+        let mut fireball_experience_awards = 0_i32;
+        let mut possession_experience_awards = 0_i32;
         let mut player_damage = Vec::new();
         let mut castle_root_request = None;
+        let mut possession_impact_request = None;
         let mut castle_rejected = false;
         for projectile in &mut self.projectiles {
             if projectile.source_entity_index() != source_slot {
@@ -4621,6 +6065,48 @@ impl Level1MissionState {
                     if !projectile.active {
                         continue;
                     }
+                    if !projectile.acquisition_initialized {
+                        projectile.acquisition_initialized = true;
+                        if let Some(target) = best_projectile_guidance_target(
+                            projectile.position,
+                            projectile.yaw,
+                            projectile.pitch,
+                            fireball_guidance_targets.iter().copied().filter(|target| {
+                                target.entity_index != projectile.owner_entity_index
+                            }),
+                        ) {
+                            projectile.target_entity_index = target.entity_index;
+                            let (desired_yaw, desired_pitch) = projectile_guidance_angles(
+                                projectile.position,
+                                target.top_position,
+                            );
+                            projectile.yaw = projectile.yaw.wrapping_add(turn_toward(
+                                projectile.yaw,
+                                desired_yaw,
+                                FIREBALL_INITIAL_YAW_TURN_LIMIT,
+                            )) & 0x07ff;
+                            // `sub_65C20` copies the acquired vertical aim
+                            // directly on the first update.
+                            projectile.pitch = desired_pitch;
+                        }
+                    } else if projectile.target_entity_index != 0
+                        && let Some(target) = fireball_guidance_targets
+                            .iter()
+                            .find(|target| target.entity_index == projectile.target_entity_index)
+                    {
+                        let (desired_yaw, desired_pitch) =
+                            projectile_guidance_angles(projectile.position, target.top_position);
+                        projectile.yaw = projectile.yaw.wrapping_add(turn_toward(
+                            projectile.yaw,
+                            desired_yaw,
+                            FIREBALL_HOMING_YAW_TURN_LIMIT,
+                        )) & 0x07ff;
+                        projectile.pitch = projectile.pitch.wrapping_add(turn_toward(
+                            projectile.pitch,
+                            desired_pitch,
+                            FIREBALL_HOMING_PITCH_TURN_LIMIT,
+                        )) & 0x07ff;
+                    }
                     let previous = projectile.position;
                     move_entity(
                         &mut projectile.position,
@@ -4628,48 +6114,14 @@ impl Level1MissionState {
                         projectile.pitch,
                         projectile.speed,
                     );
-                    let actor_hit = actors.iter().find(|actor| {
-                        actor.alive()
-                            && matches!(
-                                actor.kind,
-                                Level1ActorKind::Archer
-                                    | Level1ActorKind::Firefly
-                                    | Level1ActorKind::MultipartHead
-                            )
-                            && overlaps_projectile(projectile.position, actor)
-                    });
-                    let segment_hit = multipart_segments.iter().find(|segment| {
-                        segment.active
-                            && segment.life >= 0
-                            && overlaps_source_entities(
-                                projectile.position,
-                                FIREBALL_COLLISION_HALF_WIDTH,
-                                FIREBALL_COLLISION_VERTICAL_OFFSET,
-                                FIREBALL_COLLISION_HALF_HEIGHT,
-                                segment.position,
-                                segment.collision_half_width,
-                                0,
-                                segment.collision_half_height,
-                            )
-                    });
-                    let external_hit = external_collision_targets.iter().find(|target| {
-                        target.active
-                            && target.entity_index != projectile.owner_entity_index
-                            && overlaps_source_entities(
-                                projectile.position,
-                                FIREBALL_COLLISION_HALF_WIDTH,
-                                FIREBALL_COLLISION_VERTICAL_OFFSET,
-                                FIREBALL_COLLISION_HALF_HEIGHT,
-                                target.position,
-                                target.collision_half_width,
-                                target.collision_vertical_offset,
-                                target.collision_half_height,
-                            )
-                    });
-                    let hit_position = actor_hit
-                        .map(|actor| actor.position)
-                        .or_else(|| segment_hit.map(|segment| segment.position))
-                        .or_else(|| external_hit.map(|target| target.position));
+                    let collision_hit = first_fireball_source_map_hit(
+                        source_map_chains,
+                        projectile.position,
+                        projectile.owner_entity_index,
+                        &fireball_collision_candidates,
+                    );
+                    let hit_position = collision_hit.map(|hit| hit.position);
+                    let hit_entity = hit_position.is_some();
                     let ground = world.ground_height(projectile.position);
                     let terrain_hit = projectile.position.z < ground;
                     let old_life = projectile.life_ticks;
@@ -4737,8 +6189,9 @@ impl Level1MissionState {
                                 source_entity_index,
                                 source_projectile_id: projectile.id,
                                 owner_entity_index: projectile.owner_entity_index,
-                                external_target_entity_index: external_hit
-                                    .map_or(0, |target| target.entity_index),
+                                external_target_entity_index: collision_hit
+                                    .filter(|hit| hit.kind == ProjectileCollisionKind::External)
+                                    .map_or(0, |hit| hit.entity_index),
                                 model: FIREBALL_IMPACT_MODEL,
                                 position: projectile.position,
                                 payload: projectile.payload,
@@ -4751,6 +6204,10 @@ impl Level1MissionState {
                                 active: true,
                             });
                             projectile.active = false;
+                            if hit_entity {
+                                fireball_experience_awards =
+                                    fireball_experience_awards.saturating_add(1);
+                            }
                         }
                     }
                 }
@@ -4827,48 +6284,13 @@ impl Level1MissionState {
                         projectile.pitch,
                         projectile.speed,
                     );
-                    let collided_with_player = overlaps_source_entities(
+                    let collision_hit = first_fireball_source_map_hit(
+                        source_map_chains,
                         projectile.position,
-                        FIREBALL_COLLISION_HALF_WIDTH,
-                        FIREBALL_COLLISION_VERTICAL_OFFSET,
-                        FIREBALL_COLLISION_HALF_HEIGHT,
-                        player.position,
-                        PLAYER_COLLISION_HALF_WIDTH,
-                        PLAYER_COLLISION_VERTICAL_OFFSET,
-                        PLAYER_COLLISION_HALF_HEIGHT,
+                        projectile.owner_entity_index,
+                        &fireball_collision_candidates,
                     );
-                    let actor_hit = actors.iter().find(|actor| {
-                        actor.alive()
-                            && actor.source_entity_index != projectile.owner_entity_index
-                            && overlaps_source_entities(
-                                projectile.position,
-                                FIREBALL_COLLISION_HALF_WIDTH,
-                                FIREBALL_COLLISION_VERTICAL_OFFSET,
-                                FIREBALL_COLLISION_HALF_HEIGHT,
-                                actor.position,
-                                actor.collision_half_width,
-                                actor.collision_vertical_offset,
-                                actor.collision_half_height,
-                            )
-                    });
-                    let external_hit = external_collision_targets.iter().find(|target| {
-                        target.active
-                            && target.entity_index != projectile.owner_entity_index
-                            && overlaps_source_entities(
-                                projectile.position,
-                                FIREBALL_COLLISION_HALF_WIDTH,
-                                FIREBALL_COLLISION_VERTICAL_OFFSET,
-                                FIREBALL_COLLISION_HALF_HEIGHT,
-                                target.position,
-                                target.collision_half_width,
-                                target.collision_vertical_offset,
-                                target.collision_half_height,
-                            )
-                    });
-                    let hit_position = collided_with_player
-                        .then_some(player.position)
-                        .or_else(|| actor_hit.map(|actor| actor.position))
-                        .or_else(|| external_hit.map(|target| target.position));
+                    let hit_position = collision_hit.map(|hit| hit.position);
                     let ground = world.ground_height(projectile.position);
                     let terrain_hit = projectile.position.z < ground;
                     let old_life = projectile.life_ticks;
@@ -4933,8 +6355,9 @@ impl Level1MissionState {
                             source_entity_index,
                             source_projectile_id: projectile.id,
                             owner_entity_index: projectile.owner_entity_index,
-                            external_target_entity_index: external_hit
-                                .map_or(0, |target| target.entity_index),
+                            external_target_entity_index: collision_hit
+                                .filter(|hit| hit.kind == ProjectileCollisionKind::External)
+                                .map_or(0, |hit| hit.entity_index),
                             model: FIREBALL_IMPACT_MODEL,
                             position: projectile.position,
                             payload: projectile.payload,
@@ -5049,28 +6472,134 @@ impl Level1MissionState {
                     if !projectile.active {
                         continue;
                     }
+                    if !projectile.acquisition_initialized {
+                        projectile.acquisition_initialized = true;
+                        if let Some(target) = best_projectile_guidance_target(
+                            projectile.position,
+                            projectile.yaw,
+                            projectile.pitch,
+                            possession_guidance_targets.iter().copied(),
+                        ) {
+                            projectile.target_entity_index = target.entity_index;
+                            let (desired_yaw, desired_pitch) = projectile_guidance_angles(
+                                projectile.position,
+                                target.top_position,
+                            );
+                            // `CastPosses_65F60` copies both acquired angles
+                            // directly on the first update.
+                            projectile.yaw = desired_yaw;
+                            projectile.pitch = desired_pitch;
+                        }
+                    } else if projectile.target_entity_index != 0
+                        && let Some(target) = possession_guidance_targets
+                            .iter()
+                            .find(|target| target.entity_index == projectile.target_entity_index)
+                    {
+                        let (desired_yaw, desired_pitch) =
+                            projectile_guidance_angles(projectile.position, target.top_position);
+                        projectile.yaw = projectile.yaw.wrapping_add(turn_toward(
+                            projectile.yaw,
+                            desired_yaw,
+                            PROJECTILE_ACQUISITION_ANGLE,
+                        )) & 0x07ff;
+                        projectile.pitch = projectile.pitch.wrapping_add(turn_toward(
+                            projectile.pitch,
+                            desired_pitch,
+                            PROJECTILE_ACQUISITION_ANGLE,
+                        )) & 0x07ff;
+                    }
                     move_entity(
                         &mut projectile.position,
                         projectile.yaw,
                         projectile.pitch,
                         projectile.speed,
                     );
-                    let hit_sphere = mana_spheres.iter_mut().find(|sphere| {
-                        sphere.active
-                            && distance_3d_wrapped(projectile.position, sphere.position) < 256
-                    });
                     let ground = world.ground_height(projectile.position);
-                    let terrain_hit = ground > projectile.position.z;
-                    projectile.life_ticks = projectile.life_ticks.wrapping_sub(1);
-                    if let Some(sphere) = hit_sphere {
-                        sphere.incoming_owner_entity_index = projectile.owner_entity_index;
-                        projectile.position = sphere.position;
-                        projectile.active = false;
-                    } else if terrain_hit || projectile.life_ticks < 0 {
+                    if ground > projectile.position.z {
                         projectile.position.z = ground;
-                        projectile.active = false;
+                    }
+                    if let Some(ceiling) = world.ceiling_height(projectile.position) {
+                        let ceiling_limit =
+                            ceiling.wrapping_sub(POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT);
+                        if ceiling_limit < projectile.position.z {
+                            projectile.position.z = ceiling_limit;
+                        }
+                    }
+                    let collision_hit = first_possession_source_map_hit(
+                        source_map_chains,
+                        *projectile,
+                        &possession_collision_targets,
+                        mana_spheres,
+                    );
+                    projectile.life_ticks = projectile.life_ticks.wrapping_sub(1);
+                    if let Some(hit) = collision_hit {
+                        // `CastPosses_65F60` temporarily raises the struck
+                        // entity by its collision-axis yaw (`sub_65580`),
+                        // copies that position into the projectile, and asks
+                        // the 10/12 factory for the short-lived action-12
+                        // marker. The marker's live action later writes the
+                        // ownership mailbox; the target consumes it only when
+                        // its own source slot dispatches.
+                        projectile.position = hit.position;
+                        projectile.position.z =
+                            projectile.position.z.wrapping_add(hit.vertical_offset);
+                        possession_impact_request = Some((
+                            projectile.id,
+                            hit.entity_index,
+                            projectile.position,
+                            projectile.yaw,
+                            projectile.owner_entity_index,
+                        ));
+                    } else if projectile.life_ticks < 0 {
+                        possession_impact_request = Some((
+                            projectile.id,
+                            0,
+                            projectile.position,
+                            projectile.yaw,
+                            projectile.owner_entity_index,
+                        ));
                     }
                 }
+            }
+        }
+        if let Some((projectile_id, target_entity_index, position, _yaw, owner_entity_index)) =
+            possession_impact_request
+            && let Some(impact_slot) =
+                source_pool.allocate(SourceOccupant::PossessionImpact(next_effect_id))
+        {
+            let impact_id = next_effect_id;
+            next_effect_id = next_effect_id.wrapping_add(1).max(1);
+            let impact_occupant = SourceOccupant::PossessionImpact(impact_id);
+            source_pool.replace_occupant(impact_slot, impact_occupant);
+            bind_dynamic_source_record(source_slots, impact_slot, impact_occupant, self.global_rng);
+            impacts.push(FireballImpact {
+                id: impact_id,
+                source_entity_index: impact_slot,
+                source_projectile_id: projectile_id,
+                owner_entity_index,
+                external_target_entity_index: target_entity_index,
+                model: POSSESSION_IMPACT_MODEL,
+                position,
+                payload: 0,
+                life_ticks: POSSESSION_IMPACT_LIFE,
+                entity_rng: source_slots[usize::from(impact_slot)].entity_rng,
+                vertical_velocity: 0,
+                animation_frame: 0,
+                damage_submitted: true,
+                active: true,
+            });
+            // The projectile's second factory success calls
+            // `sub_6D8B0(player, Possession, +1)`, then single-player
+            // `sub_6D9C0` compares the qualified SPELLS.DAT thresholds.
+            if target_entity_index != 0 {
+                possession_experience_awards = possession_experience_awards.saturating_add(1);
+            }
+            if let Some(Level1Projectile::Possession(projectile)) = self
+                .projectiles
+                .iter_mut()
+                .find(|projectile| projectile.id() == projectile_id)
+            {
+                projectile.active = false;
             }
         }
         if let Some((projectile_id, position, owner_entity_index)) = castle_root_request
@@ -5129,6 +6658,8 @@ impl Level1MissionState {
         if castle_rejected {
             self.set_castle_holder_active_value(0);
         }
+        self.award_spell_experience(FIREBALL_SPELL_FAMILY, fireball_experience_awards);
+        self.award_spell_experience(POSSESSION_SPELL_FAMILY, possession_experience_awards);
         for (damage, attacker) in player_damage {
             self.submit_player_damage(damage, attacker);
         }
@@ -5191,10 +6722,19 @@ impl Level1MissionState {
                         level: self.castle_level,
                     });
                 }
-                4 => {}
+                4 => {
+                    // The construction child mutates the heightfield before
+                    // the root's next source dispatch. remc2 re-samples the
+                    // root altitude in build state 4 so the visible castle
+                    // rises with its terrain rather than remaining embedded.
+                    self.castle_position.z = world.ground_height(self.castle_position);
+                }
                 _ => {}
             },
             4 => {
+                // Stable stage-one roots continue to track later terrain
+                // mutations before damage, shelter, and mana work.
+                self.castle_position.z = world.ground_height(self.castle_position);
                 self.consume_castle_damage_mailbox();
                 if self.castle_life < 0 {
                     self.castle_action = 6;
@@ -5532,44 +7072,48 @@ impl Level1MissionState {
     }
 
     fn step_castle_construction_slot(&mut self, source_slot: u16) {
-        let Some(child) = self
-            .castle_construction
-            .as_mut()
-            .filter(|child| child.active && child.source_entity_index == source_slot)
-        else {
-            return;
-        };
-        if !child.initialized {
-            child.initialized = true;
-            child.timer = CASTLE_CONSTRUCTION_INITIAL_TIMER;
-        }
-        if child.timer > 0 {
-            child.timer -= 1;
-            if child.timer == 0 {
-                // `sub_60480` clears byte_0x3B, selecting the short -1 tail.
-                child.timer = -1;
-            } else {
-                self.castle_terrain_updates
-                    .push(CastleTerrainUpdate::ConstructionPass {
-                        position: child.position,
-                        remaining: child.timer,
-                    });
+        let (child_id, child_position) = {
+            let Some(child) = self
+                .castle_construction
+                .as_mut()
+                .filter(|child| child.active && child.source_entity_index == source_slot)
+            else {
+                return;
+            };
+            if !child.initialized {
+                child.initialized = true;
+                child.timer = CASTLE_CONSTRUCTION_INITIAL_TIMER;
             }
-            return;
-        }
-        child.timer += 1;
-        if child.timer != 0 {
-            return;
-        }
-        child.active = false;
+            if child.timer > 0 {
+                child.timer -= 1;
+                if child.timer == 0 {
+                    // `sub_60480` clears byte_0x3B, selecting the short -1 tail.
+                    child.timer = -1;
+                } else {
+                    self.castle_terrain_updates
+                        .push(CastleTerrainUpdate::ConstructionPass {
+                            position: child.position,
+                            remaining: child.timer,
+                        });
+                }
+                return;
+            }
+            child.timer += 1;
+            if child.timer != 0 {
+                return;
+            }
+            child.active = false;
+            (child.id, child.position)
+        };
         self.castle_build_state = 2;
         self.castle_terrain_updates
             .push(CastleTerrainUpdate::ConstructionCompleted {
-                position: child.position,
+                position: child_position,
             });
         self.source_pool
-            .disable_occupant(SourceOccupant::CastleConstruction(child.id));
+            .disable_occupant(SourceOccupant::CastleConstruction(child_id));
         self.source_slots[usize::from(source_slot)].control_flags |= SOURCE_DISABLED_FLAG;
+        self.award_spell_experience(CASTLE_SPELL_FAMILY, 1);
     }
 
     /// Test-only stable fixture for systems whose subject is shelter, damage,
@@ -5869,6 +7413,28 @@ impl Level1MissionState {
         self.death_bursts.retain(|burst| burst.active);
     }
 
+    /// Dispatch the class-10/model-2 entity created by `GetScroll_69DB0`.
+    ///
+    /// Its signed life is decremented by the normal source action and deletion
+    /// is requested only after it has crossed below -1. The shared arena then
+    /// reclaims the disabled slot at the start of the next source turn.
+    fn step_speed_trail_slot(&mut self, source_slot: u16) {
+        let Some(trail) = self
+            .speed_trails
+            .iter_mut()
+            .find(|trail| trail.active && trail.source_entity_index == source_slot)
+        else {
+            return;
+        };
+        trail.life -= 1;
+        if trail.life < -1 {
+            trail.active = false;
+            self.source_pool
+                .disable_occupant(SourceOccupant::SpeedTrail(trail.id));
+            self.source_slots[usize::from(source_slot)].control_flags |= SOURCE_DISABLED_FLAG;
+        }
+    }
+
     #[cfg(test)]
     fn step_mana_carrier<W: FlightWorld>(&mut self, world: &W) {
         let Some(source_slot) = self
@@ -6028,6 +7594,21 @@ impl Level1MissionState {
         let mut player_damage = Vec::new();
         let mut castle_damage = Vec::new();
         let mut carrier_damage = Vec::new();
+        let possession_building_targets = self.initial_possession_targets.clone();
+        let possession_sphere_targets = self
+            .mana_spheres
+            .iter()
+            .filter(|sphere| sphere.active)
+            .map(|sphere| {
+                (
+                    sphere.source_entity_index,
+                    sphere.position,
+                    mana_sphere_collision_dimension(sphere.mana),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut possession_building_mailboxes = Vec::new();
+        let mut possession_sphere_mailboxes = Vec::new();
         let castle_collision = self
             .castle_exists
             .then_some((self.castle_source_entity_index, self.castle_position));
@@ -6046,6 +7627,84 @@ impl Level1MissionState {
             impact.life_ticks = impact.life_ticks.wrapping_sub(1);
             if impact.life_ticks < -1 {
                 impact.active = false;
+                continue;
+            }
+            if impact.model == CHECKPOINT_SMOKE_MODEL {
+                // `sub_32160`: rise at a clamped 64..128 rate, drift for the
+                // first fifteen phases, grow through parameter rows 67..74,
+                // then contract during the final six life ticks.
+                impact.vertical_velocity = impact.vertical_velocity.wrapping_sub(4).clamp(64, 128);
+                impact.position.z = impact.position.z.wrapping_add(impact.vertical_velocity);
+                let ground = world.ground_height(impact.position);
+                if impact.position.z < ground {
+                    impact.position.z = ground;
+                }
+                let phase = impact.external_target_entity_index.wrapping_add(1);
+                impact.external_target_entity_index = phase;
+                if phase < 16 {
+                    move_entity(
+                        &mut impact.position,
+                        0,
+                        0,
+                        i16::try_from(impact.payload).expect("checkpoint smoke speed fits i16"),
+                    );
+                    impact.payload = impact.payload.wrapping_sub(52).clamp(30, 1_024);
+                    if phase & 1 == 0
+                        && u16::from(impact.animation_frame) < CHECKPOINT_SMOKE_LAST_RENDER_INDEX
+                    {
+                        impact.animation_frame = impact.animation_frame.wrapping_add(1);
+                    }
+                }
+                if impact.life_ticks < 6
+                    && u16::from(impact.animation_frame) > CHECKPOINT_SMOKE_FIRST_RENDER_INDEX
+                {
+                    impact.animation_frame = impact.animation_frame.wrapping_sub(1);
+                }
+                continue;
+            }
+            if impact.model == POSSESSION_IMPACT_MODEL {
+                // `PossesHitMana_320E0` increments the phase and uses the
+                // source `life-- < 0` condition. Starting at 8, the particle
+                // update therefore runs for phases 1 through 9.  Every live
+                // update executes `sub_112D0(entity, 0)`; the target consumes
+                // this mailbox only when its own source slot dispatches.
+                for target in possession_building_targets.iter().filter(|target| {
+                    target.active
+                        && overlaps_source_entities(
+                            impact.position,
+                            POSSESSION_IMPACT_COLLISION_HALF_WIDTH,
+                            POSSESSION_IMPACT_COLLISION_VERTICAL_OFFSET,
+                            POSSESSION_IMPACT_COLLISION_HALF_HEIGHT,
+                            target.position,
+                            target.collision_half_width,
+                            target.collision_vertical_offset,
+                            target.collision_half_height,
+                        )
+                }) {
+                    possession_building_mailboxes
+                        .push((target.entity_index, impact.owner_entity_index));
+                }
+                for (sphere_entity_index, _, _) in
+                    possession_sphere_targets
+                        .iter()
+                        .copied()
+                        .filter(|(_, position, dimension)| {
+                            overlaps_source_entities(
+                                impact.position,
+                                POSSESSION_IMPACT_COLLISION_HALF_WIDTH,
+                                POSSESSION_IMPACT_COLLISION_VERTICAL_OFFSET,
+                                POSSESSION_IMPACT_COLLISION_HALF_HEIGHT,
+                                *position,
+                                *dimension,
+                                *dimension,
+                                *dimension,
+                            )
+                        })
+                {
+                    possession_sphere_mailboxes
+                        .push((sphere_entity_index, impact.owner_entity_index));
+                }
+                impact.animation_frame = impact.animation_frame.wrapping_add(1);
                 continue;
             }
             if impact.model == WATER_SPLASH_MODEL {
@@ -6116,6 +7775,7 @@ impl Level1MissionState {
                             Level1ActorKind::Archer
                                 | Level1ActorKind::Firefly
                                 | Level1ActorKind::MultipartHead
+                                | Level1ActorKind::Tree
                         )
                         && overlaps_source_entities(
                             impact.position,
@@ -6130,6 +7790,26 @@ impl Level1MissionState {
                     {
                         actor.pending_damage = actor.pending_damage.saturating_add(impact.payload);
                         actor.pending_attacker = impact.owner_entity_index;
+                    }
+                }
+                for resident in self.dynamic_residents.iter_mut().filter_map(Option::as_mut) {
+                    if resident.active
+                        && resident.life >= 0
+                        && resident.source_entity_index != impact.owner_entity_index
+                        && overlaps_source_entities(
+                            impact.position,
+                            FIREBALL_IMPACT_COLLISION_HALF_WIDTH,
+                            FIREBALL_IMPACT_COLLISION_VERTICAL_OFFSET,
+                            FIREBALL_IMPACT_COLLISION_HALF_HEIGHT,
+                            resident.position,
+                            resident.collision_half_width,
+                            resident.collision_vertical_offset,
+                            resident.collision_half_height,
+                        )
+                    {
+                        resident.pending_damage =
+                            resident.pending_damage.saturating_add(impact.payload);
+                        resident.pending_attacker = impact.owner_entity_index;
                     }
                 }
                 for segment in &mut self.multipart_segments {
@@ -6184,6 +7864,31 @@ impl Level1MissionState {
             if let Some(carrier) = self.mana_carrier.as_mut().filter(|carrier| carrier.active) {
                 carrier.pending_damage = carrier.pending_damage.wrapping_add(damage);
                 carrier.pending_attacker_entity_index = attacker;
+            }
+        }
+        for (target_entity_index, owner_entity_index) in possession_building_mailboxes {
+            let mailbox = Level1BuildingMailbox {
+                target_entity_index,
+                owner_entity_index,
+                payload: 0,
+            };
+            if let Some(existing) = self
+                .building_mailboxes
+                .iter_mut()
+                .find(|existing| existing.target_entity_index == target_entity_index)
+            {
+                *existing = mailbox;
+            } else {
+                self.building_mailboxes.push(mailbox);
+            }
+        }
+        for (target_entity_index, owner_entity_index) in possession_sphere_mailboxes {
+            if let Some(sphere) = self
+                .mana_spheres
+                .iter_mut()
+                .find(|sphere| sphere.active && sphere.source_entity_index == target_entity_index)
+            {
+                sphere.incoming_owner_entity_index = owner_entity_index;
             }
         }
         for impact in self.impacts.iter().filter(|impact| !impact.active) {
@@ -6480,6 +8185,11 @@ impl Level1MissionState {
         // the free stack, then scan authored records in ascending index order.
         self.cleanup_pending_allocations();
         self.source_pool.rebuild_free_stack();
+        if group == 7 {
+            // remc2's kind-7 activation flag is serviced by the class-5
+            // stage pre-pass before the following ascending source turn.
+            self.group_7_villager_release_pending = true;
+        }
         let activating = self
             .authored_allocations
             .iter()
@@ -6562,6 +8272,58 @@ impl Level1MissionState {
                     actor.attack_substate = 0;
                     actor.state_value = 0;
                 }
+            } else if actor.kind == Level1ActorKind::Tree {
+                // `AddTree_4AC40`: the newly allocated slot seeds four
+                // consecutive entity-RNG advances. They determine life, the
+                // two signed 6-bit placement jitters, and parameter 83/84.
+                actor.state_value = i32::from(source_entity_index % 11);
+                let mut rng = next_rng16(source_entity_index.wrapping_add(self.global_rng as u16));
+                // The constructor writes 2,500..7,499 into `life`, but
+                // `CopyMaxLifeToLife_49A20` immediately overwrites it with
+                // NewEvent's default max-life value, 300. Keep the RNG
+                // consumption even though the intermediate value is dead.
+                let _discarded_life = i32::from(rng % TREE_DISCARDED_LIFE_RANGE) + 2_500;
+                actor.max_life = TREE_LIFE;
+                actor.life = TREE_LIFE;
+                rng = next_rng16(rng);
+                let jitter_x = i16::try_from(rng & 0x3f).expect("tree jitter fits i16") - 32;
+                actor.position.x = actor.position.x.wrapping_add_signed(jitter_x);
+                rng = next_rng16(rng);
+                let jitter_y = i16::try_from(rng & 0x3f).expect("tree jitter fits i16") - 32;
+                actor.position.y = actor.position.y.wrapping_add_signed(jitter_y);
+                rng = next_rng16(rng);
+                actor.entity_rng = rng;
+                if rng & 1 == 0 {
+                    actor.render_parameter_index = Some(TREE_RENDER_INDEX_A);
+                    actor.base_tmap = Some(TREE_BASE_TMAP_A);
+                } else {
+                    actor.render_parameter_index = Some(TREE_RENDER_INDEX_B);
+                    actor.base_tmap = Some(TREE_BASE_TMAP_B);
+                }
+            } else if actor.kind == Level1ActorKind::Stone {
+                // `AddStone_4AD70` keeps NewEvent's 300 life and stores the
+                // slot-modulo-eleven phase counter before selecting row 79.
+                actor.state_value = i32::from(source_entity_index % 11);
+                actor.max_life = 300;
+                actor.life = 300;
+                actor.render_parameter_index = Some(STONE_RENDER_INDEX);
+                actor.base_tmap = Some(STONE_BASE_TMAP);
+            } else if actor.kind == Level1ActorKind::CheckpointSmokeEmitter {
+                // `ArriveCheckpoint_4EB50`: two entity-local RNG advances
+                // select the 800..899 lifetime and 0..16 inherited speed.
+                let mut rng = next_rng16(source_entity_index.wrapping_add(self.global_rng as u16));
+                actor.max_life = i32::from(rng % 0x64).wrapping_add(CHECKPOINT_EMITTER_MIN_LIFE);
+                actor.life = actor.max_life;
+                rng = next_rng16(rng);
+                actor.entity_rng = rng;
+                actor.actual_speed =
+                    i16::try_from(rng % 0x11).expect("checkpoint emitter speed fits i16");
+                actor.visible = false;
+            } else if actor.kind == Level1ActorKind::SpeedSpellJar {
+                // `NewEvent_4A050` initializes byte_0x3E from the allocated
+                // source slot. This holder does not run a creature
+                // constructor that replaces that phase.
+                actor.phase = source_entity_index.to_le_bytes()[0];
             }
             let record = &mut self.source_slots[usize::from(source_entity_index)];
             record.action = actor.action;
@@ -6573,6 +8335,14 @@ impl Level1MissionState {
                 self.construct_multipart_segments(head_authored_index, head_source_entity_index);
             }
         }
+    }
+
+    /// Consume the source kind-7 class-5 stage broadcast. Activations that
+    /// occur inside the entity loop remain pending until the next turn's
+    /// pre-pass.
+    #[must_use]
+    pub fn take_group_7_villager_release(&mut self) -> bool {
+        std::mem::take(&mut self.group_7_villager_release_pending)
     }
 
     fn construct_multipart_segments(
@@ -6748,9 +8518,11 @@ impl Level1MissionState {
         );
         let reclaimed = self.source_pool.reclaim_disabled_ascending();
         for source_slot in reclaimed {
+            self.dynamic_residents[usize::from(source_slot)] = None;
             clear_source_record(&mut self.source_slots[usize::from(source_slot)]);
         }
         self.multipart_segments.retain(|segment| segment.active);
+        self.speed_trails.retain(|trail| trail.active);
         let active_sphere_slots = self
             .mana_spheres
             .iter()
@@ -6879,6 +8651,19 @@ fn actor_from_feature<W: FlightWorld>(
             Some(EXPERIENCE_SCROLL_RENDER_MODE),
             Some(EXPERIENCE_SCROLL_LOGICAL_HEIGHT),
         ),
+        Level1ActorKind::Tree => (
+            Some(TREE_RENDER_INDEX_A),
+            Some(TREE_BASE_TMAP_A),
+            Some(TREE_RENDER_MODE),
+            Some(TREE_LOGICAL_HEIGHT),
+        ),
+        Level1ActorKind::Stone => (
+            Some(STONE_RENDER_INDEX),
+            Some(STONE_BASE_TMAP),
+            Some(STONE_RENDER_MODE),
+            Some(STONE_LOGICAL_HEIGHT),
+        ),
+        Level1ActorKind::CheckpointSmokeEmitter => (None, None, None, None),
     };
     Level1Actor {
         authored_index: feature.index,
@@ -6906,7 +8691,10 @@ fn actor_from_feature<W: FlightWorld>(
             Level1ActorKind::CastleSpellJar | Level1ActorKind::SpeedSpellJar => 0,
             Level1ActorKind::ExitTarget
             | Level1ActorKind::ExitSwitch
-            | Level1ActorKind::ExperienceScroll => 0,
+            | Level1ActorKind::ExperienceScroll
+            | Level1ActorKind::Tree
+            | Level1ActorKind::Stone
+            | Level1ActorKind::CheckpointSmokeEmitter => 0,
         },
         actual_speed: 0,
         max_speed: match kind {
@@ -6938,8 +8726,11 @@ fn actor_from_feature<W: FlightWorld>(
             Level1ActorKind::Firefly => 85,
             Level1ActorKind::MultipartHead => MULTIPART_HEAD_COLLISION_HALF_WIDTH,
             Level1ActorKind::ExperienceScroll => EXPERIENCE_SCROLL_COLLISION_HALF_WIDTH,
+            Level1ActorKind::Tree => TREE_COLLISION_HALF_WIDTH,
+            Level1ActorKind::Stone => STONE_COLLISION_HALF_WIDTH,
             Level1ActorKind::CastleSpellJar | Level1ActorKind::SpeedSpellJar => 768,
-            Level1ActorKind::ExitTarget => 0,
+            Level1ActorKind::ExitTarget => EXIT_TARGET_COLLISION_HALF_WIDTH,
+            Level1ActorKind::CheckpointSmokeEmitter => 0,
             Level1ActorKind::ExitSwitch => {
                 i16::try_from(feature.word_10 << 8).expect("switch extent fits i16")
             }
@@ -6949,16 +8740,22 @@ fn actor_from_feature<W: FlightWorld>(
             Level1ActorKind::Firefly => 100,
             Level1ActorKind::MultipartHead => MULTIPART_HEAD_COLLISION_VERTICAL_OFFSET,
             Level1ActorKind::ExperienceScroll => EXPERIENCE_SCROLL_COLLISION_VERTICAL_OFFSET,
+            Level1ActorKind::Tree => TREE_COLLISION_VERTICAL_OFFSET,
+            Level1ActorKind::Stone => STONE_COLLISION_VERTICAL_OFFSET,
             Level1ActorKind::CastleSpellJar | Level1ActorKind::SpeedSpellJar => 75,
-            Level1ActorKind::ExitTarget | Level1ActorKind::ExitSwitch => 0,
+            Level1ActorKind::ExitTarget => EXIT_TARGET_COLLISION_VERTICAL_OFFSET,
+            Level1ActorKind::ExitSwitch | Level1ActorKind::CheckpointSmokeEmitter => 0,
         },
         collision_half_height: match kind {
             Level1ActorKind::Archer => ARCHER_COLLISION_HALF_HEIGHT,
             Level1ActorKind::Firefly => 51,
             Level1ActorKind::MultipartHead => MULTIPART_HEAD_COLLISION_HALF_HEIGHT,
             Level1ActorKind::ExperienceScroll => EXPERIENCE_SCROLL_COLLISION_HALF_HEIGHT,
+            Level1ActorKind::Tree => TREE_COLLISION_HALF_HEIGHT,
+            Level1ActorKind::Stone => STONE_COLLISION_HALF_HEIGHT,
             Level1ActorKind::CastleSpellJar | Level1ActorKind::SpeedSpellJar => 1_280,
-            Level1ActorKind::ExitTarget | Level1ActorKind::ExitSwitch => 0,
+            Level1ActorKind::ExitTarget => EXIT_TARGET_COLLISION_HALF_HEIGHT,
+            Level1ActorKind::ExitSwitch | Level1ActorKind::CheckpointSmokeEmitter => 0,
         },
         render_parameter_index,
         base_tmap,
@@ -6968,7 +8765,9 @@ fn actor_from_feature<W: FlightWorld>(
         collected: false,
         visible: !matches!(
             kind,
-            Level1ActorKind::ExitTarget | Level1ActorKind::ExitSwitch
+            Level1ActorKind::ExitTarget
+                | Level1ActorKind::ExitSwitch
+                | Level1ActorKind::CheckpointSmokeEmitter
         ),
     }
 }
@@ -8142,6 +9941,84 @@ fn distance_3d_wrapped(left: Position, right: Position) -> u32 {
     )
 }
 
+fn collision_target_top(position: Position, vertical_offset: i16) -> Position {
+    Position {
+        z: position.z.wrapping_add(vertical_offset),
+        ..position
+    }
+}
+
+fn projectile_guidance_angles(from: Position, target_top: Position) -> (i16, i16) {
+    let yaw =
+        i16::try_from(heading_for_positions(from, target_top)).expect("projectile yaw is 11-bit");
+    let horizontal = wrapping_xy_distance(from, target_top);
+    let pitch = pitch_for_delta(
+        i32::try_from(horizontal).expect("projectile target distance fits i32"),
+        i32::from(target_top.z.wrapping_sub(from.z)),
+    );
+    (yaw, pitch)
+}
+
+/// Source-shaped `sub_68490` score used by `sub_67CB0`.
+///
+/// The score deliberately uses unsigned yaw/pitch separations rather than
+/// signed steering deltas. Candidates outside the 0x71×0x71 cone or 5,120
+/// source-unit radius are rejected before the weighted squared score.
+fn projectile_target_score(
+    from: Position,
+    yaw: i16,
+    pitch: i16,
+    target_top: Position,
+) -> Option<u32> {
+    let (target_yaw, target_pitch) = projectile_guidance_angles(from, target_top);
+    let yaw_distance = angle_distance(i32::from(yaw), i32::from(target_yaw));
+    if yaw_distance > PROJECTILE_ACQUISITION_ANGLE {
+        return None;
+    }
+    let pitch_distance = angle_distance(i32::from(pitch), i32::from(target_pitch));
+    if pitch_distance > PROJECTILE_ACQUISITION_ANGLE {
+        return None;
+    }
+    let distance = distance_3d_wrapped(from, target_top);
+    if distance > PROJECTILE_ACQUISITION_RANGE {
+        return None;
+    }
+
+    let distance = i64::from(distance);
+    let yaw_distance = usize::from(yaw_distance.cast_unsigned());
+    let pitch_distance = usize::from(pitch_distance.cast_unsigned());
+    let yaw_forward = (distance * i64::from(SIN_16_16[yaw_distance + 512])) >> 16;
+    let yaw_side = (4 * distance * i64::from(SIN_16_16[yaw_distance])) >> 16;
+    let pitch_forward = (distance * i64::from(SIN_16_16[pitch_distance + 512])) >> 16;
+    let pitch_side = (4 * distance * i64::from(SIN_16_16[pitch_distance])) >> 16;
+    let score = pitch_forward
+        .wrapping_mul(pitch_forward)
+        .wrapping_add(yaw_forward.wrapping_mul(yaw_forward))
+        .wrapping_add(yaw_side.wrapping_mul(yaw_side))
+        .wrapping_add(pitch_side.wrapping_mul(pitch_side));
+    Some(score.cast_unsigned() as u32)
+}
+
+fn best_projectile_guidance_target(
+    from: Position,
+    yaw: i16,
+    pitch: i16,
+    targets: impl IntoIterator<Item = ProjectileGuidanceTarget>,
+) -> Option<ProjectileGuidanceTarget> {
+    let mut best = None;
+    let mut best_score = u32::MAX;
+    for target in targets {
+        let Some(score) = projectile_target_score(from, yaw, pitch, target.top_position) else {
+            continue;
+        };
+        if score < best_score {
+            best = Some(target);
+            best_score = score;
+        }
+    }
+    best
+}
+
 fn relax_to_terrain<W: FlightWorld>(
     position: &mut Position,
     world: &W,
@@ -8186,17 +10063,134 @@ fn parse_authored_features(bytes: &[u8]) -> Result<Vec<AuthoredFeature>, String>
     Ok(features)
 }
 
-fn overlaps_projectile(projectile: Position, actor: &Level1Actor) -> bool {
-    overlaps_source_entities(
-        projectile,
-        FIREBALL_COLLISION_HALF_WIDTH,
-        FIREBALL_COLLISION_VERTICAL_OFFSET,
-        FIREBALL_COLLISION_HALF_HEIGHT,
-        actor.position,
-        actor.collision_half_width,
-        actor.collision_vertical_offset,
-        actor.collision_half_height,
-    )
+fn source_map_search_slots(
+    map_chains: &RenderableMapChains,
+    position: Position,
+    offsets: &[(i8, i8)],
+) -> Vec<u16> {
+    // `sub_10780` and `sub_108B0` promote the addition, shift, then narrow the
+    // terrain lookup to one byte.
+    let tile_x = ((u32::from(position.x) + 128) >> 8) as u8;
+    let tile_y = ((u32::from(position.y) + 128) >> 8) as u8;
+    let mut slots = Vec::new();
+    for &(delta_x, delta_y) in offsets {
+        slots.extend(map_chains.entity_chain(
+            tile_x.wrapping_add_signed(delta_x),
+            tile_y.wrapping_add_signed(delta_y),
+        ));
+    }
+    slots
+}
+
+const fn level1_reset_creature_model(entity_index: u16) -> Option<u8> {
+    match entity_index {
+        50 | 79 | 81..=111 => Some(1),
+        51..=78 => Some(13),
+        _ => None,
+    }
+}
+
+fn first_fireball_source_map_hit(
+    map_chains: &RenderableMapChains,
+    projectile_position: Position,
+    owner_entity_index: u16,
+    candidates: &[ProjectileCollisionCandidate],
+) -> Option<ProjectileCollisionHit> {
+    for entity_index in source_map_search_slots(
+        map_chains,
+        projectile_position,
+        &FIREBALL_COLLISION_SEARCH_OFFSETS,
+    ) {
+        let Some(candidate) = candidates
+            .iter()
+            .find(|candidate| candidate.entity_index == entity_index)
+        else {
+            continue;
+        };
+        if candidate.source_id != owner_entity_index
+            && overlaps_source_entities(
+                projectile_position,
+                FIREBALL_COLLISION_HALF_WIDTH,
+                FIREBALL_COLLISION_VERTICAL_OFFSET,
+                FIREBALL_COLLISION_HALF_HEIGHT,
+                candidate.position,
+                candidate.collision_half_width,
+                candidate.collision_vertical_offset,
+                candidate.collision_half_height,
+            )
+        {
+            return Some(ProjectileCollisionHit {
+                entity_index,
+                position: candidate.position,
+                kind: candidate.kind,
+                vertical_offset: candidate.collision_vertical_offset,
+            });
+        }
+    }
+    None
+}
+
+fn first_possession_source_map_hit(
+    map_chains: &RenderableMapChains,
+    projectile: PossessionProjectile,
+    building_targets: &[Level1CollisionTarget],
+    mana_spheres: &[ManaSphere],
+) -> Option<ProjectileCollisionHit> {
+    for entity_index in
+        source_map_search_slots(map_chains, projectile.position, &MANA_SPHERE_SEARCH_OFFSETS)
+    {
+        if entity_index == projectile.owner_entity_index {
+            continue;
+        }
+        if let Some(target) = building_targets.iter().find(|target| {
+            target.entity_index == entity_index
+                && target.active
+                && overlaps_source_entities(
+                    projectile.position,
+                    POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
+                    POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET,
+                    POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT,
+                    target.position,
+                    target.collision_half_width,
+                    target.collision_vertical_offset,
+                    target.collision_half_height,
+                )
+        }) {
+            return Some(ProjectileCollisionHit {
+                entity_index,
+                position: target.position,
+                kind: ProjectileCollisionKind::Building,
+                vertical_offset: target.collision_vertical_offset,
+            });
+        }
+        if let Some(sphere) = mana_spheres.iter().find(|sphere| {
+            if sphere.source_entity_index != entity_index
+                || !sphere.active
+                || sphere.owner_entity_index == projectile.owner_entity_index
+            {
+                return false;
+            }
+            let dimension = mana_sphere_collision_dimension(sphere.mana);
+            overlaps_source_entities(
+                projectile.position,
+                POSSESSION_PROJECTILE_COLLISION_HALF_WIDTH,
+                POSSESSION_PROJECTILE_COLLISION_VERTICAL_OFFSET,
+                POSSESSION_PROJECTILE_COLLISION_HALF_HEIGHT,
+                sphere.position,
+                dimension,
+                dimension,
+                dimension,
+            )
+        }) {
+            return Some(ProjectileCollisionHit {
+                entity_index,
+                position: sphere.position,
+                kind: ProjectileCollisionKind::ManaSphere,
+                vertical_offset: mana_sphere_collision_dimension(sphere.mana),
+            });
+        }
+    }
+    None
 }
 
 fn overlaps_source_entities(
@@ -8249,6 +10243,24 @@ pub fn source_entities_overlap(
         right_vertical_offset,
         right_half_height,
     )
+}
+
+/// Source `CompareAxisWithShift_106F0`: strict wrapping overlap in the two
+/// horizontal axes. Houses use different pitch/roll extents and fireball
+/// damage deliberately ignores Z.
+#[must_use]
+pub fn source_entities_overlap_xy(
+    left: Position,
+    left_half_width: i16,
+    left_half_depth: i16,
+    right: Position,
+    right_half_width: i16,
+    right_half_depth: i16,
+) -> bool {
+    let dx = i32::from(right.x.wrapping_sub(left.x).cast_signed()).abs();
+    let dy = i32::from(right.y.wrapping_sub(left.y).cast_signed()).abs();
+    dx < i32::from(left_half_width) + i32::from(right_half_width)
+        && dy < i32::from(left_half_depth) + i32::from(right_half_depth)
 }
 
 fn inside_switch_bounds(
@@ -8317,6 +10329,19 @@ impl Level1Fnv1a64 {
             Some(SourceOccupant::ManaCarrier(id)) => (14, id),
             Some(SourceOccupant::DeathBurst(id)) => (15, id),
             Some(SourceOccupant::MultipartSegment(id)) => (16, u32::from(id)),
+            Some(SourceOccupant::PossessionImpact(id)) => (17, id),
+            Some(SourceOccupant::SpeedTrail(id)) => (18, id),
+            Some(SourceOccupant::CheckpointSmoke(id)) => (19, id),
+            Some(SourceOccupant::Resident {
+                source_entity_index,
+                model,
+                action,
+            }) => (
+                20,
+                u32::from(source_entity_index)
+                    | (u32::from(model) << 16)
+                    | (u32::from(action) << 24),
+            ),
         };
         self.u8(kind);
         self.u32(id);
@@ -8670,7 +10695,7 @@ mod tests {
         let mut bytes =
             vec![0_u8; AUTHORED_FEATURE_OFFSET + AUTHORED_FEATURE_COUNT * AUTHORED_FEATURE_BYTES];
         for (index, kind, subtype, x, y, group, tag) in [
-            (21, 14, 5, 0, 0, 4, 4),
+            (21, 14, 5, 216, 213, 4, 4),
             (31, 15, 2, 194, 213, 1, 1),
             (99, 11, 32, 0, 0, 1, 2),
             (104, 11, 0, 0, 0, 1, 7),
@@ -8686,10 +10711,10 @@ mod tests {
             (134, 5, 19, 213, 125, 6, 6),
             (135, 5, 19, 211, 132, 6, 6),
             (137, 11, 12, 75, 218, 4, 10),
-            (138, 10, 59, 0, 0, 4, 4),
-            (139, 10, 59, 0, 0, 4, 4),
-            (140, 14, 5, 0, 0, 4, 4),
-            (141, 14, 5, 0, 0, 4, 4),
+            (138, 10, 59, 97, 220, 4, 4),
+            (139, 10, 59, 97, 222, 4, 4),
+            (140, 14, 5, 214, 215, 4, 4),
+            (141, 14, 5, 214, 211, 4, 4),
             (153, 11, 32, 0, 0, 3, 5),
             (154, 2, 1, 0, 0, 6, 0),
             (155, 2, 0, 0, 0, 1, 0),
@@ -8715,8 +10740,8 @@ mod tests {
             (193, 5, 19, 215, 129, 6, 6),
             (231, 11, 1, 0, 0, 2, 8),
             (232, 11, 0, 0, 0, 8, 9),
-            (233, 14, 5, 0, 0, 4, 4),
-            (253, 10, 59, 0, 0, 12, 12),
+            (233, 14, 5, 218, 211, 4, 4),
+            (253, 10, 59, 114, 212, 12, 12),
             (304, 14, 5, 218, 215, 4, 4),
             (305, 11, 0, 217, 213, 4, 33),
             (306, 5, 19, 217, 210, 33, 33),
@@ -8804,6 +10829,156 @@ mod tests {
                 None,
             );
         }
+    }
+
+    #[test]
+    fn house_resident_constructors_own_exact_source_slots_and_hit_actions() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 1_000);
+        mission.source_pool = Level1SourcePool::from_free_stack(&[503, 502, 501, 500]).unwrap();
+        let position = Position {
+            x: 12_345,
+            y: 23_456,
+            z: 640,
+        };
+        let baseline_hash = mission.source_arena_hash_v1();
+        for (slot, model, action, kind, speeds, reset_counter) in [
+            (500, 4, 33, DynamicResidentKind::Archer, (30, 30, 0), 0),
+            (501, 12, 97, DynamicResidentKind::Builder, (54, 24, 24), 2),
+            (502, 13, 105, DynamicResidentKind::Villager, (54, 18, 18), 2),
+            (503, 14, 113, DynamicResidentKind::Trader, (54, 18, 18), 2),
+        ] {
+            assert_eq!(
+                mission
+                    .spawn_house_resident(position, model, action, 152)
+                    .unwrap(),
+                Some(slot)
+            );
+            let resident = mission.dynamic_residents[usize::from(slot)].unwrap();
+            assert_eq!(resident.kind, kind);
+            assert_eq!(resident.position, position);
+            assert_eq!(
+                (
+                    resident.minimum_speed,
+                    resident.actual_speed,
+                    resident.maximum_speed
+                ),
+                speeds
+            );
+            assert_eq!(resident.reset_counter, reset_counter);
+            let constructor_seed = next_rng16(slot.wrapping_add(mission.global_rng as u16));
+            assert_eq!(
+                resident.yaw,
+                i16::try_from(constructor_seed & 0x07ff).unwrap() - 1
+            );
+            assert_eq!(resident.desired_heading, resident.yaw);
+            assert_eq!(resident.life, 1_000);
+            assert_eq!(resident.pending_damage, 1);
+            assert_eq!(resident.pending_attacker, 152);
+            assert_eq!(
+                mission.source_pool.occupant(slot),
+                Some(SourceOccupant::Resident {
+                    source_entity_index: slot,
+                    model,
+                    action,
+                })
+            );
+        }
+        assert_ne!(mission.source_arena_hash_v1(), baseline_hash);
+
+        let player = FlightState {
+            entity_index: 152,
+            ..FlightState::default()
+        };
+        for slot in 500_u16..=503 {
+            assert_eq!(
+                mission.source_entity_position(slot, &player),
+                Some(position),
+                "house residents remain typed damage-mailbox attackers"
+            );
+        }
+        mission.dynamic_residents[500].as_mut().unwrap().active = false;
+        assert_eq!(
+            mission.source_entity_position(500, &player),
+            Some(position),
+            "same-turn deactivation cannot erase a pending attacker's recoil origin"
+        );
+        mission.dynamic_residents[500].as_mut().unwrap().active = true;
+        let archer_constructor_rng = mission.dynamic_residents[500].unwrap().entity_rng;
+        dispatch_isolated_source_turn(&mut mission, &player);
+        for (slot, expected_action) in [
+            (500_u16, 34),
+            (501_u16, 102),
+            (502_u16, 110),
+            (503_u16, 118),
+        ] {
+            let resident = mission.dynamic_residents[usize::from(slot)].unwrap();
+            assert_eq!(resident.life, 999);
+            assert_eq!(resident.action, expected_action);
+            assert_eq!(resident.pending_damage, 0);
+            assert_eq!(resident.pending_attacker, 0);
+            assert_eq!(resident.current_attacker, 152);
+            assert_eq!(
+                mission.source_slots[usize::from(slot)].action,
+                expected_action
+            );
+        }
+        let archer = mission.dynamic_residents[500].unwrap();
+        let archer_hit_rng = next_rng16(archer_constructor_rng);
+        assert_eq!(archer.reset_counter, 0);
+        assert_eq!(archer.actual_speed, 0);
+        assert_eq!(archer.entity_rng, archer_hit_rng);
+        if archer_hit_rng % 20 <= 10 {
+            assert_eq!(
+                (
+                    archer.render_parameter_index,
+                    archer.base_tmap,
+                    archer.logical_height,
+                ),
+                (
+                    ARCHER_ATTACK_RENDER_INDEX_B,
+                    ARCHER_ATTACK_BASE_TMAP_B,
+                    ARCHER_ATTACK_LOGICAL_HEIGHT_B,
+                )
+            );
+        } else {
+            assert_eq!(
+                (
+                    archer.render_parameter_index,
+                    archer.base_tmap,
+                    archer.logical_height,
+                ),
+                (
+                    ARCHER_ATTACK_RENDER_INDEX_A,
+                    ARCHER_ATTACK_BASE_TMAP_A,
+                    ARCHER_LOGICAL_HEIGHT,
+                )
+            );
+        }
+        assert_eq!(mission.dynamic_resident_behavior_gap_mask(), 0);
+        dispatch_isolated_source_turn(&mut mission, &player);
+        assert_eq!(mission.dynamic_resident_behavior_gap_mask(), 0x0f);
+    }
+
+    #[test]
+    fn house_resident_allocation_exhaustion_and_unknown_pairs_are_explicit() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 1_000);
+        mission.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        let before = mission.source_arena_hash_v1();
+        assert_eq!(
+            mission
+                .spawn_house_resident(Position::default(), 4, 33, 152)
+                .unwrap(),
+            None
+        );
+        assert_eq!(mission.source_arena_hash_v1(), before);
+        assert!(
+            mission
+                .spawn_house_resident(Position::default(), 99, 99, 152)
+                .unwrap_err()
+                .contains("unsupported house resident")
+        );
     }
 
     #[test]
@@ -9420,7 +11595,7 @@ mod tests {
     #[test]
     fn exact_level1_actor_manifest_is_decoded() {
         let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
-        assert_eq!(template.actors().len(), 19);
+        assert_eq!(template.actors().len(), 45);
         let first_archer = template
             .actors()
             .iter()
@@ -9464,7 +11639,335 @@ mod tests {
                 .iter()
                 .filter(|actor| actor.kind == Level1ActorKind::ExperienceScroll)
                 .count(),
+            5
+        );
+        assert_eq!(
+            template
+                .actors()
+                .iter()
+                .filter(|actor| actor.kind == Level1ActorKind::Tree)
+                .count(),
+            18
+        );
+        assert_eq!(
+            template
+                .actors()
+                .iter()
+                .filter(|actor| actor.kind == Level1ActorKind::Stone)
+                .count(),
             1
+        );
+        assert_eq!(
+            template
+                .actors()
+                .iter()
+                .filter(|actor| actor.kind == Level1ActorKind::CheckpointSmokeEmitter)
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn checkpoint_emitters_and_model_thirteen_smoke_follow_source_rng_and_lifecycle() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 1_000);
+        let constructor_global_rng = mission.global_rng;
+        mission.activate_group(4);
+
+        let emitter = mission
+            .actors()
+            .iter()
+            .find(|actor| {
+                actor.kind == Level1ActorKind::CheckpointSmokeEmitter && actor.authored_index == 138
+            })
+            .copied()
+            .unwrap();
+        let constructor_rng_1 = next_rng16(
+            emitter
+                .source_entity_index
+                .wrapping_add(constructor_global_rng as u16),
+        );
+        let constructor_rng_2 = next_rng16(constructor_rng_1);
+        assert_eq!(
+            (
+                emitter.class,
+                emitter.model,
+                emitter.action,
+                emitter.max_life,
+                emitter.life,
+                emitter.actual_speed,
+                emitter.entity_rng,
+                emitter.visible,
+            ),
+            (
+                CHECKPOINT_EMITTER_CLASS,
+                CHECKPOINT_EMITTER_MODEL,
+                CHECKPOINT_EMITTER_ACTION,
+                i32::from(constructor_rng_1 % 100) + CHECKPOINT_EMITTER_MIN_LIFE,
+                i32::from(constructor_rng_1 % 100) + CHECKPOINT_EMITTER_MIN_LIFE,
+                i16::try_from(constructor_rng_2 % 17).unwrap(),
+                constructor_rng_2,
+                false,
+            )
+        );
+
+        let player = FlightState {
+            entity_index: 152,
+            ..FlightState::default()
+        };
+        mission.begin_source_turn();
+        let global_before_emission = mission.global_rng;
+        mission.dispatch_source_slot(
+            &FlatWorld,
+            &player,
+            emitter.source_entity_index,
+            false,
+            false,
+            None,
+        );
+
+        let emitted = mission
+            .impacts()
+            .iter()
+            .find(|impact| impact.model == CHECKPOINT_SMOKE_MODEL)
+            .copied()
+            .unwrap();
+        let parent_rng_3 = next_rng16(constructor_rng_2);
+        let parent_rng_4 = next_rng16(parent_rng_3);
+        let parent_rng_5 = next_rng16(parent_rng_4);
+        let emission_global_rng = next_rng32(global_before_emission);
+        let child_rng = next_rng16(
+            emitted
+                .source_entity_index
+                .wrapping_add(emission_global_rng as u16),
+        );
+        assert_eq!(
+            emitted.position,
+            Position {
+                x: emitter.position.x.wrapping_add(parent_rng_3 % 160),
+                y: emitter.position.y.wrapping_add(parent_rng_4 % 160),
+                z: emitter.position.z,
+            }
+        );
+        assert_eq!(emitted.life_ticks, CHECKPOINT_SMOKE_LIFE);
+        assert_eq!(
+            emitted.vertical_velocity,
+            i16::try_from(child_rng % 53 + 51).unwrap()
+                + emitter.actual_speed
+                + i16::try_from(parent_rng_5 % 77).unwrap()
+        );
+        assert_eq!(
+            emitted.animation_frame,
+            u8::try_from(CHECKPOINT_SMOKE_FIRST_RENDER_INDEX).unwrap()
+        );
+
+        let emitted_start = emitted;
+        mission.dispatch_source_slot(
+            &FlatWorld,
+            &player,
+            emitted.source_entity_index,
+            false,
+            false,
+            None,
+        );
+        let first_update = mission
+            .impacts()
+            .iter()
+            .find(|impact| impact.id == emitted.id)
+            .copied()
+            .unwrap();
+        let expected_vertical_speed = emitted_start
+            .vertical_velocity
+            .wrapping_sub(4)
+            .clamp(64, 128);
+        let mut expected_position = emitted_start.position;
+        expected_position.z = expected_position.z.wrapping_add(expected_vertical_speed);
+        move_entity(&mut expected_position, 0, 0, 30);
+        assert_eq!(
+            (
+                first_update.position,
+                first_update.vertical_velocity,
+                first_update.life_ticks,
+                first_update.external_target_entity_index,
+                first_update.animation_frame,
+            ),
+            (
+                expected_position,
+                expected_vertical_speed,
+                31,
+                1,
+                u8::try_from(CHECKPOINT_SMOKE_FIRST_RENDER_INDEX).unwrap(),
+            )
+        );
+
+        for _ in 0..33 {
+            mission.dispatch_source_slot(
+                &FlatWorld,
+                &player,
+                emitted.source_entity_index,
+                false,
+                false,
+                None,
+            );
+        }
+        let finished = mission
+            .impacts()
+            .iter()
+            .find(|impact| impact.id == emitted.id)
+            .copied()
+            .unwrap();
+        assert!(!finished.active);
+        assert_eq!(
+            finished.animation_frame,
+            u8::try_from(CHECKPOINT_SMOKE_FIRST_RENDER_INDEX).unwrap()
+        );
+    }
+
+    #[test]
+    fn group_one_trees_preserve_constructor_rng_jitter_life_and_render_variant() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 1_000);
+        let dormant = mission
+            .actors()
+            .iter()
+            .filter(|actor| actor.kind == Level1ActorKind::Tree)
+            .map(|actor| (actor.authored_index, actor.position))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let constructor_global_rng = mission.global_rng;
+
+        mission.activate_group(1);
+        let trees = mission
+            .actors()
+            .iter()
+            .filter(|actor| actor.kind == Level1ActorKind::Tree)
+            .collect::<Vec<_>>();
+        assert_eq!(trees.len(), 18);
+        for tree in trees {
+            assert!(tree.active);
+            assert_eq!(
+                (tree.class, tree.model, tree.action),
+                (TREE_CLASS, TREE_MODEL, TREE_LIVE_ACTION)
+            );
+            assert_eq!((tree.max_life, tree.life), (TREE_LIFE, TREE_LIFE));
+            assert_eq!(tree.state_value, i32::from(tree.source_entity_index % 11));
+            let mut rng = next_rng16(
+                tree.source_entity_index
+                    .wrapping_add(constructor_global_rng as u16),
+            );
+            let _discarded_life = rng % TREE_DISCARDED_LIFE_RANGE;
+            rng = next_rng16(rng);
+            let jitter_x = i16::try_from(rng & 0x3f).unwrap() - 32;
+            rng = next_rng16(rng);
+            let jitter_y = i16::try_from(rng & 0x3f).unwrap() - 32;
+            rng = next_rng16(rng);
+            let center = dormant[&tree.authored_index];
+            assert_eq!(tree.position.x, center.x.wrapping_add_signed(jitter_x));
+            assert_eq!(tree.position.y, center.y.wrapping_add_signed(jitter_y));
+            assert_eq!(tree.entity_rng, rng);
+            let expected = if rng & 1 == 0 {
+                (
+                    Some(TREE_RENDER_INDEX_A),
+                    Some(TREE_BASE_TMAP_A),
+                    Some(TREE_RENDER_MODE),
+                    Some(TREE_LOGICAL_HEIGHT),
+                )
+            } else {
+                (
+                    Some(TREE_RENDER_INDEX_B),
+                    Some(TREE_BASE_TMAP_B),
+                    Some(TREE_RENDER_MODE),
+                    Some(TREE_LOGICAL_HEIGHT),
+                )
+            };
+            assert_eq!(
+                (
+                    tree.render_parameter_index,
+                    tree.base_tmap,
+                    tree.render_mode,
+                    tree.logical_height,
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn group_six_stone_uses_the_source_constructor_and_ground_clamp() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 1_000);
+        mission.activate_group(6);
+        let stone = mission
+            .actors()
+            .iter()
+            .find(|actor| actor.kind == Level1ActorKind::Stone)
+            .copied()
+            .expect("Level 1 stone");
+        assert!(stone.active);
+        assert_eq!(
+            (stone.class, stone.model, stone.action),
+            (STONE_CLASS, STONE_MODEL, STONE_ACTION)
+        );
+        assert_eq!((stone.max_life, stone.life), (300, 300));
+        assert_eq!(
+            (
+                stone.render_parameter_index,
+                stone.base_tmap,
+                stone.render_mode,
+                stone.logical_height,
+            ),
+            (
+                Some(STONE_RENDER_INDEX),
+                Some(STONE_BASE_TMAP),
+                Some(STONE_RENDER_MODE),
+                Some(STONE_LOGICAL_HEIGHT),
+            )
+        );
+        assert_eq!(
+            (
+                stone.collision_half_width,
+                stone.collision_vertical_offset,
+                stone.collision_half_height,
+            ),
+            (
+                STONE_COLLISION_HALF_WIDTH,
+                STONE_COLLISION_VERTICAL_OFFSET,
+                STONE_COLLISION_HALF_HEIGHT,
+            )
+        );
+        assert_eq!(stone.state_value, i32::from(stone.source_entity_index % 11));
+    }
+
+    #[test]
+    fn tree_damage_dying_and_stump_threshold_follow_class_two_actions() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 1_000);
+        mission.activate_group(1);
+        let tree_index = mission
+            .actors()
+            .iter()
+            .position(|actor| actor.kind == Level1ActorKind::Tree)
+            .unwrap();
+        let source_slot = mission.actors[tree_index].source_entity_index;
+        let live_parameter = mission.actors[tree_index].render_parameter_index;
+        mission.actors[tree_index].pending_damage = TREE_LIFE + 1;
+        mission.step_actor_slot(&FlatWorld, &FlightState::default(), source_slot);
+        let dying = mission.actors[tree_index];
+        assert_eq!(dying.action, TREE_DYING_ACTION);
+        assert!((130..=189).contains(&dying.life));
+        assert_eq!(dying.render_parameter_index, live_parameter);
+
+        mission.actors[tree_index].life = 60;
+        mission.step_actor_slot(&FlatWorld, &FlightState::default(), source_slot);
+        let stump = mission.actors[tree_index];
+        assert_eq!((stump.action, stump.life), (TREE_DEAD_ACTION, 59));
+        let expected_dead = if live_parameter == Some(TREE_RENDER_INDEX_A) {
+            (Some(TREE_DEAD_RENDER_INDEX_A), Some(TREE_DEAD_BASE_TMAP_A))
+        } else {
+            (Some(TREE_DEAD_RENDER_INDEX_B), Some(TREE_DEAD_BASE_TMAP_B))
+        };
+        assert_eq!(
+            (stump.render_parameter_index, stump.base_tmap),
+            expected_dead
         );
     }
 
@@ -9602,6 +12105,8 @@ mod tests {
             .unwrap();
         let target_index = target.authored_index;
         assert_eq!(target.life, -250);
+        assert_eq!(mission.fireball_experience, 5);
+        assert_eq!(mission.fireball_tier, 0);
         assert!(target.active);
         assert_eq!(target.action, 36);
 
@@ -9615,6 +12120,211 @@ mod tests {
             .unwrap();
         assert!(!target.active);
         assert_eq!(target.action, 37);
+    }
+
+    #[test]
+    fn fireball_spawn_and_guidance_use_source_look_speed_and_turn_limits() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 1_000);
+        for actor in &mut mission.actors {
+            actor.active = false;
+        }
+        mission.initial_possession_targets.clear();
+        let target = Level1CollisionTarget {
+            entity_index: 77,
+            position: Position {
+                x: 20_000,
+                y: 18_000,
+                z: 100,
+            },
+            collision_half_width: 64,
+            collision_vertical_offset: 0,
+            collision_half_height: 64,
+            active: true,
+        };
+        mission.set_external_collision_targets([target]);
+        let player = FlightState {
+            entity_index: 152,
+            position: Position {
+                x: 20_000,
+                y: 20_000,
+                z: 0,
+            },
+            yaw: 50,
+            effective_pitch: 0,
+            actual_speed: 200,
+            ..FlightState::default()
+        };
+
+        assert!(mission.spawn_fireball_with_look(&player, 0, 0));
+        let source_slot = mission.projectiles[0].source_entity_index();
+        mission.step_projectile_slot(&FlatWorld, &player, source_slot);
+        let Level1Projectile::PlayerFireball(first) = mission.projectiles[0] else {
+            panic!("Fireball constructor must retain its projectile family");
+        };
+        assert!(first.acquisition_initialized);
+        assert_eq!(first.target_entity_index, target.entity_index);
+        assert_eq!(first.yaw, 16);
+        assert_eq!(first.pitch, 0);
+        assert_eq!(first.speed, FIREBALL_SPEED + player.actual_speed);
+
+        mission.step_projectile_slot(&FlatWorld, &player, source_slot);
+        let Level1Projectile::PlayerFireball(second) = mission.projectiles[0] else {
+            panic!("Fireball remains a Fireball while homing");
+        };
+        assert_eq!(second.target_entity_index, target.entity_index);
+        assert_eq!(second.yaw, 11);
+
+        let mut clamped = template.session(10_000, 1_000);
+        let fast_player = FlightState {
+            actual_speed: 10_000,
+            yaw: 100,
+            effective_pitch: 200,
+            ..player
+        };
+        assert!(clamped.spawn_fireball_with_look(&fast_player, 25, -50));
+        let Level1Projectile::PlayerFireball(clamped_fireball) = clamped.projectiles[0] else {
+            panic!("Fireball constructor");
+        };
+        assert_eq!(clamped_fireball.yaw, 125);
+        assert_eq!(clamped_fireball.pitch, 150);
+        assert_eq!(clamped_fireball.speed, 0x2000);
+    }
+
+    #[test]
+    fn fireball_acquisition_rejects_targets_outside_source_cone_and_range() {
+        let origin = Position {
+            x: 20_000,
+            y: 20_000,
+            z: 100,
+        };
+        let side = ProjectileGuidanceTarget {
+            entity_index: 1,
+            top_position: Position {
+                x: 21_000,
+                ..origin
+            },
+        };
+        let distant = ProjectileGuidanceTarget {
+            entity_index: 2,
+            top_position: Position {
+                y: 14_000,
+                ..origin
+            },
+        };
+        assert_eq!(
+            projectile_target_score(origin, 0, 0, side.top_position),
+            None
+        );
+        assert_eq!(
+            projectile_target_score(origin, 0, 0, distant.top_position),
+            None
+        );
+        assert_eq!(
+            best_projectile_guidance_target(origin, 0, 0, [side, distant]),
+            None
+        );
+    }
+
+    #[test]
+    fn source_guidance_lists_use_model_then_ascending_slot_and_exclude_class_two() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 1_000);
+        for actor in &mut mission.actors {
+            actor.active = false;
+        }
+        let mut archers = mission
+            .actors
+            .iter_mut()
+            .filter(|actor| actor.kind == Level1ActorKind::Archer);
+        let first = archers.next().unwrap();
+        first.active = true;
+        first.source_entity_index = 20;
+        let second = archers.next().unwrap();
+        second.active = true;
+        second.source_entity_index = 10;
+        drop(archers);
+        let tree = mission
+            .actors
+            .iter_mut()
+            .find(|actor| actor.kind == Level1ActorKind::Tree)
+            .unwrap();
+        tree.active = true;
+        tree.source_entity_index = 2;
+        let stone = mission
+            .actors
+            .iter_mut()
+            .find(|actor| actor.kind == Level1ActorKind::Stone)
+            .unwrap();
+        stone.active = true;
+        stone.source_entity_index = 3;
+
+        assert_eq!(
+            mission
+                .fireball_guidance_targets()
+                .iter()
+                .map(|target| target.entity_index)
+                .collect::<Vec<_>>(),
+            vec![10, 20]
+        );
+    }
+
+    #[test]
+    fn generic_fireball_collision_uses_map_chain_order_and_source_id_skip() {
+        let position = Position {
+            x: 20_000,
+            y: 20_000,
+            z: 100,
+        };
+        let mut map = RenderableMapChains::empty();
+        // Head insertion means the second sync is examined first.
+        map.sync_entity(RenderableMapSeed {
+            entity_index: 22,
+            active: true,
+            x: position.x,
+            y: position.y,
+        })
+        .unwrap();
+        map.sync_entity(RenderableMapSeed {
+            entity_index: 11,
+            active: true,
+            x: position.x,
+            y: position.y,
+        })
+        .unwrap();
+        let mut candidates = vec![
+            ProjectileCollisionCandidate {
+                entity_index: 11,
+                source_id: 11,
+                position,
+                collision_half_width: 64,
+                collision_vertical_offset: 0,
+                collision_half_height: 64,
+                kind: ProjectileCollisionKind::ManaSphere,
+            },
+            ProjectileCollisionCandidate {
+                entity_index: 22,
+                source_id: 22,
+                position,
+                collision_half_width: 64,
+                collision_vertical_offset: 0,
+                collision_half_height: 64,
+                kind: ProjectileCollisionKind::Reset,
+            },
+        ];
+        assert_eq!(
+            first_fireball_source_map_hit(&map, position, 99, &candidates)
+                .unwrap()
+                .entity_index,
+            11
+        );
+        candidates[0].source_id = 99;
+        assert_eq!(
+            first_fireball_source_map_hit(&map, position, 99, &candidates)
+                .unwrap()
+                .entity_index,
+            22
+        );
     }
 
     #[test]
@@ -9981,6 +12691,17 @@ mod tests {
     }
 
     #[test]
+    fn group_7_activation_arms_one_next_turn_villager_stage_broadcast() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 1_000);
+
+        assert!(!mission.take_group_7_villager_release());
+        mission.activate_group(7);
+        assert!(mission.take_group_7_villager_release());
+        assert!(!mission.take_group_7_villager_release());
+    }
+
+    #[test]
     fn archer_absence_drives_group5_immediately_and_speed_jar_after_source_delay() {
         let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
         let mut mission = template.session(10_000, 4_000);
@@ -10284,16 +13005,18 @@ mod tests {
     }
 
     #[test]
-    fn firefly_fireball_uses_zero_width_and_strict_source_collision_boundaries() {
+    fn firefly_fireball_uses_row_340_radius_and_strict_source_collision_boundaries() {
         let projectile = Position {
             x: 20_000,
             y: 20_000,
             z: 1_050,
         };
         let touching_player = Position {
-            x: projectile
-                .x
-                .wrapping_add(PLAYER_COLLISION_HALF_WIDTH.cast_unsigned()),
+            x: projectile.x.wrapping_add(
+                FIREBALL_COLLISION_HALF_WIDTH
+                    .wrapping_add(PLAYER_COLLISION_HALF_WIDTH)
+                    .cast_unsigned(),
+            ),
             y: projectile.y,
             z: 1_000,
         };
@@ -10477,6 +13200,8 @@ mod tests {
                 speed: 0,
                 life_ticks: FIREBALL_LIFETIME_TICKS,
                 payload: FIREBALL_PAYLOAD,
+                target_entity_index: 0,
+                acquisition_initialized: false,
                 active: true,
             }));
         let player = FlightState {
@@ -11222,6 +13947,40 @@ mod tests {
     }
 
     #[test]
+    fn castle_root_resamples_deformed_ground_during_and_after_construction() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 1_000);
+        mission.castle_exists = true;
+        mission.castle_source_entity_index = 50;
+        mission.castle_position = Position {
+            x: 20_000,
+            y: 20_000,
+            z: 0,
+        };
+        mission.castle_action = CASTLE_ROOT_ACTION;
+        mission.castle_build_state = 4;
+        mission.step_castle_root_slot(
+            &RaisedMaterialWorld {
+                ground_height: 640,
+                material_mask: 0,
+            },
+            50,
+        );
+        assert_eq!(mission.castle_position.z, 640);
+
+        mission.castle_action = 4;
+        mission.castle_level = 0;
+        mission.step_castle_root_slot(
+            &RaisedMaterialWorld {
+                ground_height: 896,
+                material_mask: 0,
+            },
+            50,
+        );
+        assert_eq!(mission.castle_position.z, 896);
+    }
+
+    #[test]
     fn carrier_motion_advances_across_the_wrapped_half_world_boundary() {
         let mut position = Position {
             x: 42_988,
@@ -11738,7 +14497,7 @@ mod tests {
     }
 
     #[test]
-    fn level_one_hit_speed_and_objective_palettes_preserve_rgb6_integer_rules() {
+    fn level_one_hit_slowing_and_objective_palettes_preserve_rgb6_integer_rules() {
         let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
         let mut mission = template.session(10_000, 2_000);
         let mut original = [0_u8; 768];
@@ -11759,7 +14518,7 @@ mod tests {
             &[0, 0, 0, 41, 2, 3]
         );
 
-        mission.exit_palette_submode = LEVEL1_PALETTE_SPEED_REQUEST;
+        mission.exit_palette_submode = LEVEL1_PALETTE_SLOWING_REQUEST;
         mission.exit_palette_count = 142;
         mission.advance_exit_palette_frame();
         assert_eq!(
@@ -11791,6 +14550,408 @@ mod tests {
         assert_eq!(mission.exit_palette_weight, 16);
         mission.advance_exit_palette_frame();
         assert_eq!(mission.exit_palette_weight, 15);
+    }
+
+    #[test]
+    fn speed_spell_uses_exact_countdown_speeds_sound_trail_and_manual_cancel() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 2_000);
+        let actor = mission
+            .actors
+            .iter_mut()
+            .find(|actor| actor.kind == Level1ActorKind::SpeedSpellJar)
+            .expect("Level 1 Speed jar");
+        actor.active = true;
+        actor.collected = true;
+        actor.source_entity_index = 900;
+        actor.phase = 0;
+        actor.state_value = i32::from(SPEED_SPELL_ACTIVATION_TICKS);
+        let mut context = FlightContext {
+            spell_fire: Some(crate::SpellFireContext {
+                holders: vec![SpellActivationHolder {
+                    entity_index: 900,
+                    model: SPEED_SPELL_FAMILY,
+                    active_value: SPEED_SPELL_ACTIVATION_TICKS.cast_signed(),
+                    activation_value: SPEED_SPELL_ACTIVATION_TICKS,
+                    ..SpellActivationHolder::default()
+                }],
+                ..crate::SpellFireContext::default()
+            }),
+            speed_spell_holder: Some(SpellHolder {
+                entity_index: 900,
+                active_value: SPEED_SPELL_ACTIVATION_TICKS.cast_signed(),
+            }),
+            ..FlightContext::default()
+        };
+        let mut state = FlightState {
+            entity_index: 152,
+            target_speed: crate::PLAYER_MIN_SPEED,
+            actual_speed: crate::PLAYER_MIN_SPEED,
+            tick: 0,
+            ..FlightState::default()
+        };
+
+        mission.dispatch_speed_holder_slot(900, &mut state, &mut context);
+        assert_eq!(state.target_speed, 240);
+        assert_eq!(state.actual_speed, 240);
+        assert_eq!(mission.speed_holder_active_value(), 300);
+        assert_eq!(mission.speed_experience, 1);
+        assert_eq!(mission.speed_tier, 0);
+        assert_eq!(mission.exit_palette_submode, EXIT_PALETTE_NONE);
+        assert_eq!(
+            context.events,
+            [crate::FlightEvent::PrepareSound {
+                entity_index: 152,
+                player_index: 0,
+                sound_id: EXIT_ACCELERATION_SOUND,
+            }]
+        );
+        assert_eq!(mission.speed_trails().len(), 1);
+        let trail = mission.speed_trails()[0];
+        assert_ne!(trail.id, 0);
+        assert_ne!(trail.source_entity_index, 0);
+        assert_eq!(trail.position, state.position);
+        assert_eq!(trail.owner_entity_index, 152);
+        assert_eq!(trail.class, SPEED_TRAIL_CLASS);
+        assert_eq!(trail.model, SPEED_TRAIL_MODEL);
+        assert_eq!(trail.action, SPEED_TRAIL_ACTION);
+        assert_eq!(trail.life, SPEED_TRAIL_LIFE);
+        assert!(trail.active);
+        assert_eq!(
+            mission.source_pool.occupant(trail.source_entity_index),
+            Some(SourceOccupant::SpeedTrail(trail.id))
+        );
+        let source_record = mission.source_slots[usize::from(trail.source_entity_index)];
+        assert!(source_record.active);
+        assert_eq!(source_record.class, SPEED_TRAIL_CLASS);
+        assert_eq!(source_record.model, SPEED_TRAIL_MODEL);
+        assert_eq!(source_record.action, SPEED_TRAIL_ACTION);
+        assert_eq!(
+            source_record.phase,
+            trail.source_entity_index.to_le_bytes()[0]
+        );
+
+        mission.step_speed_trail_slot(trail.source_entity_index);
+        assert_eq!(mission.speed_trails()[0].life, 31);
+
+        context.events.clear();
+        mission
+            .actors
+            .iter_mut()
+            .find(|actor| actor.kind == Level1ActorKind::SpeedSpellJar)
+            .expect("Level 1 Speed jar")
+            .phase = 1;
+        state.tick = 1;
+        mission.dispatch_speed_holder_slot(900, &mut state, &mut context);
+        assert_eq!(state.target_speed, 160);
+        assert_eq!(state.actual_speed, 160);
+        assert_eq!(mission.speed_holder_active_value(), 299);
+        assert!(context.events.is_empty());
+        mission.step_speed_trail_slot(trail.source_entity_index);
+
+        mission
+            .actors
+            .iter_mut()
+            .find(|actor| actor.kind == Level1ActorKind::SpeedSpellJar)
+            .expect("Level 1 Speed jar")
+            .phase = 0;
+        state.speed_changed_flag = 1;
+        let trails_before_cancel = mission.speed_trails().len();
+        mission.dispatch_speed_holder_slot(900, &mut state, &mut context);
+        assert_eq!(state.target_speed, 80);
+        assert_eq!(state.actual_speed, 80);
+        assert_eq!(mission.speed_holder_active_value(), 0);
+        assert_eq!(mission.exit_palette_submode, EXIT_PALETTE_NONE);
+        assert_eq!(
+            mission.speed_trails().len(),
+            trails_before_cancel,
+            "manual cancellation skips the normal action-2 trail branch"
+        );
+        assert_eq!(mission.speed_trails()[0].life, 30);
+        for _ in 0..32 {
+            mission.step_speed_trail_slot(trail.source_entity_index);
+        }
+        assert_eq!(mission.speed_trails()[0].life, -2);
+        assert!(
+            !mission.speed_trails()[0].active,
+            "class-10/model-2 keeps aging after manual Speed cancellation"
+        );
+        assert!(mission.source_pool.disabled[usize::from(trail.source_entity_index)]);
+        assert_ne!(
+            mission.source_slots[usize::from(trail.source_entity_index)].control_flags
+                & SOURCE_DISABLED_FLAG,
+            0
+        );
+        mission.cleanup_pending_allocations();
+        assert!(mission.speed_trails().is_empty());
+        assert_eq!(
+            mission.source_pool.occupant(trail.source_entity_index),
+            None
+        );
+        assert!(!mission.source_slots[usize::from(trail.source_entity_index)].active);
+    }
+
+    #[test]
+    fn experience_scroll_awards_every_enabled_level_one_spell_and_recomputes_tiers() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 2_000);
+        mission.activate_group(4);
+        mission.has_castle_spell = true;
+        mission.has_speed_spell = true;
+        mission.fireball_experience = 398;
+        mission.possession_experience = 598;
+        mission.castle_experience = 38;
+        mission.speed_experience = 398;
+        let scroll = mission
+            .actors
+            .iter()
+            .find(|actor| actor.kind == Level1ActorKind::ExperienceScroll && actor.active)
+            .copied()
+            .expect("group four creates the Level 1 experience scroll");
+        let player = FlightState {
+            entity_index: 152,
+            position: Position {
+                z: 0,
+                ..scroll.position
+            },
+            ..FlightState::default()
+        };
+
+        mission.update_experience_scroll_slot(&FlatWorld, &player, scroll.source_entity_index);
+
+        assert_eq!(
+            (
+                mission.fireball_experience,
+                mission.possession_experience,
+                mission.castle_experience,
+                mission.speed_experience,
+            ),
+            (402, 602, 42, 402)
+        );
+        assert_eq!(
+            (
+                mission.fireball_tier,
+                mission.possession_tier,
+                mission.castle_tier,
+                mission.speed_tier,
+            ),
+            (1, 1, 1, 1)
+        );
+        assert!(mission.events.iter().any(|event| matches!(
+            event,
+            Level1MissionEvent::MissionSound {
+                sound_id: EXPERIENCE_SCROLL_SOUND,
+                source_entity_index: 0,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn level_one_spell_tiers_use_qualified_owned_spells_dat_thresholds() {
+        assert_eq!(FIREBALL_TIER_THRESHOLDS_SINGLE_PLAYER, [0, 400, 12_000]);
+        assert_eq!(POSSESSION_TIER_THRESHOLDS_SINGLE_PLAYER, [0, 600, 4_800]);
+        assert_eq!(CASTLE_TIER_THRESHOLDS_SINGLE_PLAYER, [0, 40, 80]);
+        assert_eq!(SPEED_TIER_THRESHOLDS_SINGLE_PLAYER, [0, 400, 1_200]);
+    }
+
+    #[test]
+    fn speed_final_active_phase_spawns_trail_before_natural_expiry() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 2_000);
+        let actor = mission
+            .actors
+            .iter_mut()
+            .find(|actor| actor.kind == Level1ActorKind::SpeedSpellJar)
+            .expect("Level 1 Speed jar");
+        actor.active = true;
+        actor.collected = true;
+        actor.source_entity_index = 900;
+        actor.phase = 0;
+        actor.state_value = 1;
+        let mut context = FlightContext {
+            spell_fire: Some(crate::SpellFireContext {
+                holders: vec![SpellActivationHolder {
+                    entity_index: 900,
+                    model: SPEED_SPELL_FAMILY,
+                    active_value: 1,
+                    activation_value: SPEED_SPELL_ACTIVATION_TICKS,
+                    ..SpellActivationHolder::default()
+                }],
+                ..crate::SpellFireContext::default()
+            }),
+            speed_spell_holder: Some(SpellHolder {
+                entity_index: 900,
+                active_value: 1,
+            }),
+            ..FlightContext::default()
+        };
+        let mut state = FlightState {
+            entity_index: 152,
+            target_speed: 160,
+            actual_speed: 160,
+            ..FlightState::default()
+        };
+
+        mission.dispatch_speed_holder_slot(900, &mut state, &mut context);
+
+        assert_eq!(state.target_speed, crate::PLAYER_MIN_SPEED);
+        assert_eq!(state.actual_speed, crate::PLAYER_MIN_SPEED);
+        assert_eq!(mission.speed_holder_active_value(), 0);
+        assert_eq!(mission.speed_trails().len(), 1);
+        let trail = mission.speed_trails()[0];
+        assert_eq!(trail.life, SPEED_TRAIL_LIFE);
+        assert_eq!(
+            mission.source_slots[usize::from(trail.source_entity_index)].phase,
+            trail.source_entity_index.to_le_bytes()[0]
+        );
+    }
+
+    #[test]
+    fn speed_holder_and_trail_follow_source_cursor_order_on_both_sides_of_player() {
+        fn configured_case(
+            holder_slot: u16,
+            trail_slot: u16,
+        ) -> (Level1MissionState, FlightState, FlightContext) {
+            let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+            let mut mission = template.session(10_000, 2_000);
+            mission.source_pool = Level1SourcePool::from_free_stack(&[trail_slot]).unwrap();
+            let (authored_index, class, model, action, phase) = {
+                let actor = mission
+                    .actors
+                    .iter_mut()
+                    .find(|actor| actor.kind == Level1ActorKind::SpeedSpellJar)
+                    .expect("Level 1 Speed jar");
+                actor.active = true;
+                actor.collected = true;
+                actor.source_entity_index = holder_slot;
+                actor.phase = holder_slot.to_le_bytes()[0];
+                actor.state_value = 0;
+                (
+                    actor.authored_index,
+                    actor.class,
+                    actor.model,
+                    actor.action,
+                    actor.phase,
+                )
+            };
+            mission.source_pool.occupants[usize::from(holder_slot)] =
+                Some(SourceOccupant::Authored(authored_index));
+            let record = &mut mission.source_slots[usize::from(holder_slot)];
+            record.active = true;
+            record.class = class;
+            record.model = model;
+            record.action = action;
+            record.phase = phase;
+            let context = FlightContext {
+                spell_fire: Some(crate::SpellFireContext {
+                    holders: vec![SpellActivationHolder {
+                        entity_index: holder_slot,
+                        model: SPEED_SPELL_FAMILY,
+                        active_value: 0,
+                        activation_value: SPEED_SPELL_ACTIVATION_TICKS,
+                        ..SpellActivationHolder::default()
+                    }],
+                    ..crate::SpellFireContext::default()
+                }),
+                speed_spell_holder: Some(SpellHolder {
+                    entity_index: holder_slot,
+                    active_value: 0,
+                }),
+                ..FlightContext::default()
+            };
+            let state = FlightState {
+                entity_index: 152,
+                target_speed: crate::PLAYER_MIN_SPEED,
+                actual_speed: crate::PLAYER_MIN_SPEED,
+                ..FlightState::default()
+            };
+            (mission, state, context)
+        }
+
+        fn arm_speed(
+            mission: &mut Level1MissionState,
+            context: &mut FlightContext,
+            holder_slot: u16,
+        ) {
+            context
+                .spell_fire
+                .as_mut()
+                .expect("spell context")
+                .holders
+                .iter_mut()
+                .find(|holder| holder.entity_index == holder_slot)
+                .expect("Speed holder")
+                .active_value = SPEED_SPELL_ACTIVATION_TICKS.cast_signed();
+            context
+                .speed_spell_holder
+                .as_mut()
+                .expect("Speed projection")
+                .active_value = SPEED_SPELL_ACTIVATION_TICKS.cast_signed();
+            mission.capture_spell_holder_active_values(context);
+        }
+
+        // A holder above the player cursor sees same-turn activation. Its new
+        // trail is also above the current cursor, so action 2 ages it once in
+        // that same source turn.
+        let (mut higher, mut higher_state, mut higher_context) = configured_case(200, 250);
+        higher.begin_source_turn();
+        arm_speed(&mut higher, &mut higher_context, 200);
+        higher.dispatch_speed_holder_slot(200, &mut higher_state, &mut higher_context);
+        higher.dispatch_source_slot(&FlatWorld, &higher_state, 200, false, false, None);
+        assert_eq!(higher_state.target_speed, 240);
+        assert_eq!(higher.speed_holder_active_value(), 300);
+        assert_eq!(higher.speed_trails().len(), 1);
+        assert_eq!(higher.speed_trails()[0].source_entity_index, 250);
+        assert_eq!(higher.speed_trails()[0].life, SPEED_TRAIL_LIFE);
+        assert_eq!(higher.source_slots[250].phase, 250);
+        higher.dispatch_source_slot(&FlatWorld, &higher_state, 250, false, false, None);
+        assert_eq!(higher.speed_trails()[0].life, SPEED_TRAIL_LIFE - 1);
+        assert_eq!(higher.source_slots[250].phase, 251);
+        higher.finish_source_turn(&higher_state);
+
+        // A holder below the player cursor cannot observe this turn's player
+        // activation. It begins next turn. Its slot-derived phase does not
+        // reach the every-fourth gate until phase 104; the newly allocated
+        // trail slot 50 has already passed and therefore remains at life 32
+        // until the following turn.
+        let (mut lower, mut lower_state, mut lower_context) = configured_case(100, 50);
+        lower.begin_source_turn();
+        lower.dispatch_speed_holder_slot(100, &mut lower_state, &mut lower_context);
+        lower.dispatch_source_slot(&FlatWorld, &lower_state, 100, false, false, None);
+        arm_speed(&mut lower, &mut lower_context, 100);
+        lower.finish_source_turn(&lower_state);
+        assert_eq!(lower_state.target_speed, crate::PLAYER_MIN_SPEED);
+        assert_eq!(
+            lower.speed_holder_active_value(),
+            SPEED_SPELL_ACTIVATION_TICKS.cast_signed()
+        );
+
+        for expected_phase in [101_u8, 102, 103, 104] {
+            lower.begin_source_turn();
+            lower.dispatch_source_slot(&FlatWorld, &lower_state, 50, false, false, None);
+            assert_eq!(
+                lower
+                    .actors
+                    .iter()
+                    .find(|actor| actor.kind == Level1ActorKind::SpeedSpellJar)
+                    .expect("Speed holder")
+                    .phase,
+                expected_phase
+            );
+            lower.dispatch_speed_holder_slot(100, &mut lower_state, &mut lower_context);
+            lower.dispatch_source_slot(&FlatWorld, &lower_state, 100, false, false, None);
+            lower.finish_source_turn(&lower_state);
+        }
+        assert_eq!(lower.speed_trails().len(), 1);
+        assert_eq!(lower.speed_trails()[0].source_entity_index, 50);
+        assert_eq!(lower.speed_trails()[0].life, SPEED_TRAIL_LIFE);
+        assert_eq!(lower.source_slots[50].phase, 50);
+
+        lower.begin_source_turn();
+        lower.dispatch_source_slot(&FlatWorld, &lower_state, 50, false, false, None);
+        assert_eq!(lower.speed_trails()[0].life, SPEED_TRAIL_LIFE - 1);
+        assert_eq!(lower.source_slots[50].phase, 51);
     }
 
     #[test]
@@ -12198,6 +15359,15 @@ mod tests {
             assert!(mission.spawn_possession(&player));
             for _ in 0..8 {
                 mission.step_projectiles(&FlatWorld, &player);
+                let impact_slots = mission
+                    .impacts
+                    .iter()
+                    .filter(|impact| impact.active && impact.model == POSSESSION_IMPACT_MODEL)
+                    .map(|impact| impact.source_entity_index)
+                    .collect::<Vec<_>>();
+                for impact_slot in impact_slots {
+                    mission.step_impact_slot(&FlatWorld, &player, impact_slot);
+                }
                 mission.step_mana_spheres(&FlatWorld, player.entity_index);
                 if mission
                     .mana_spheres
@@ -12483,6 +15653,8 @@ mod tests {
         assert_eq!(mission.castle_life, CASTLE_STAGE_ONE_LIFE);
         assert_eq!(mission.castle_max_life, CASTLE_STAGE_ONE_LIFE);
         assert_eq!(mission.castle_mana_capacity, CASTLE_STAGE_ONE_MANA_CAPACITY);
+        assert_eq!(mission.castle_experience, 1);
+        assert_eq!(mission.castle_tier, 0);
         assert_eq!(mission.castle_position.x & 0x00ff, 0);
         assert_eq!(mission.castle_position.y & 0x00ff, 0);
         assert_eq!(
@@ -12693,6 +15865,13 @@ mod tests {
         assert!(mission.spawn_possession(&player));
         assert_eq!(mission.player_mana, 900);
         mission.step_projectiles(&FlatWorld, &player);
+        let impact_slot = mission
+            .impacts
+            .iter()
+            .find(|impact| impact.active && impact.model == POSSESSION_IMPACT_MODEL)
+            .expect("Possession creates its source model-12 ownership pulse")
+            .source_entity_index;
+        mission.step_impact_slot(&FlatWorld, &player, impact_slot);
         assert_eq!(
             mission.mana_spheres[0].incoming_owner_entity_index,
             player.entity_index
@@ -12710,6 +15889,253 @@ mod tests {
                 sound_id: POSSESSION_SOUND,
             } if *id == sphere_id
         )));
+    }
+
+    #[test]
+    fn possession_collision_skips_owned_sphere_and_reaches_next_map_row() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 1_000);
+        let owner = 152;
+        let position = Position {
+            x: 20_000,
+            y: 20_000,
+            z: 100,
+        };
+        mission
+            .spawn_mana_sphere_from_death(&FlatWorld, 50, position, 0, 1, 300, owner)
+            .unwrap();
+        let sphere = mission.mana_spheres[0];
+        let building = Level1CollisionTarget {
+            entity_index: 23,
+            position,
+            collision_half_width: 128,
+            collision_vertical_offset: 0,
+            collision_half_height: 128,
+            active: true,
+        };
+        let mut map = RenderableMapChains::empty();
+        map.sync_entity(RenderableMapSeed {
+            entity_index: building.entity_index,
+            active: true,
+            x: position.x,
+            y: position.y,
+        })
+        .unwrap();
+        map.sync_entity(RenderableMapSeed {
+            entity_index: sphere.source_entity_index,
+            active: true,
+            x: position.x,
+            y: position.y,
+        })
+        .unwrap();
+        let projectile = PossessionProjectile {
+            id: 1,
+            source_entity_index: 200,
+            owner_entity_index: owner,
+            position,
+            yaw: 0,
+            pitch: 0,
+            speed: 384,
+            life_ticks: 21,
+            target_entity_index: 0,
+            acquisition_initialized: true,
+            active: true,
+        };
+
+        let hit =
+            first_possession_source_map_hit(&map, projectile, &[building], &mission.mana_spheres)
+                .unwrap();
+        assert_eq!(hit.entity_index, building.entity_index);
+        assert_eq!(hit.kind, ProjectileCollisionKind::Building);
+    }
+
+    #[test]
+    fn possession_striking_building_spawns_exact_short_lived_top_marker() {
+        let mut template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        template.initial_possession_targets = vec![Level1CollisionTarget {
+            entity_index: 23,
+            position: Position {
+                x: 20_000,
+                y: 19_616,
+                z: 50,
+            },
+            collision_half_width: 128,
+            collision_vertical_offset: 200,
+            collision_half_height: 256,
+            active: true,
+        }]
+        .into_boxed_slice();
+        let mut mission = template.session(10_000, 1_000);
+        let player = FlightState {
+            entity_index: 152,
+            player_color_index: 3,
+            position: Position {
+                x: 20_000,
+                y: 20_000,
+                z: 0,
+            },
+            yaw: 0,
+            ..FlightState::default()
+        };
+
+        assert!(mission.spawn_possession(&player));
+        mission.step_projectiles(&FlatWorld, &player);
+
+        assert!(mission.mana_spheres.is_empty());
+        assert_eq!(mission.impacts.len(), 1);
+        let impact = mission.impacts[0];
+        assert_eq!(impact.model, POSSESSION_IMPACT_MODEL);
+        assert_eq!(impact.life_ticks, POSSESSION_IMPACT_LIFE);
+        assert_eq!(impact.owner_entity_index, player.entity_index);
+        assert_eq!(impact.external_target_entity_index, 23);
+        assert_eq!(
+            impact.position,
+            Position {
+                x: 20_000,
+                y: 19_616,
+                z: 250,
+            }
+        );
+        assert_eq!(impact.vertical_velocity, 0);
+        assert!(
+            mission
+                .projectiles
+                .iter()
+                .all(|projectile| !projectile.active())
+        );
+        assert!(
+            !mission
+                .events
+                .iter()
+                .any(|event| matches!(event, Level1MissionEvent::ManaSphereSpawned { .. }))
+        );
+        assert_eq!(mission.possession_experience, 1);
+        assert_eq!(mission.possession_tier, 0);
+        assert!(mission.possessed_buildings().is_empty());
+        assert!(!mission.events.iter().any(|event| matches!(
+            event,
+            Level1MissionEvent::MissionSound {
+                sound_id: POSSESSION_SOUND,
+                ..
+            }
+        )));
+        let source_slot = impact.source_entity_index;
+        mission.step_impact_slot(&FlatWorld, &player, source_slot);
+        assert!(mission.possessed_buildings().is_empty());
+        mission.begin_source_turn();
+        mission.dispatch_source_slot(&FlatWorld, &player, 23, false, false, None);
+        assert_eq!(
+            mission.possessed_buildings(),
+            &[Level1PossessedBuilding {
+                entity_index: 23,
+                position: Position {
+                    x: 20_000,
+                    y: 19_616,
+                    z: 50,
+                },
+                owner_entity_index: 152,
+                player_color_index: 3,
+                render_parameter_index: 180,
+                base_tmap: 99,
+                render_mode: 0,
+                logical_height: 400,
+                active: true,
+            }]
+        );
+        assert!(mission.events.iter().any(|event| matches!(
+            event,
+            Level1MissionEvent::MissionSound {
+                sound_id: POSSESSION_SOUND,
+                source_entity_index: 152,
+                position,
+                ..
+            } if *position == player.position
+        )));
+        for expected_phase in 2..=9 {
+            mission.step_impact_slot(&FlatWorld, &player, source_slot);
+            assert_eq!(mission.impacts[0].animation_frame, expected_phase);
+            assert!(mission.impacts[0].active);
+        }
+        mission.step_impact_slot(&FlatWorld, &player, source_slot);
+        assert!(!mission.impacts[0].active);
+    }
+
+    #[test]
+    fn possession_climbs_rising_terrain_without_terminating() {
+        let mut template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        template.initial_possession_targets = Vec::new().into_boxed_slice();
+        let mut mission = template.session(10_000, 1_000);
+        let player = FlightState {
+            entity_index: 152,
+            position: Position {
+                x: 20_000,
+                y: 20_000,
+                z: 0,
+            },
+            yaw: 0,
+            ..FlightState::default()
+        };
+        assert!(mission.spawn_possession(&player));
+        let source_slot = mission.projectiles[0].source_entity_index();
+
+        mission.step_projectile_slot(
+            &RaisedMaterialWorld {
+                ground_height: 500,
+                material_mask: 0,
+            },
+            &player,
+            source_slot,
+        );
+
+        let Level1Projectile::Possession(projectile) = mission.projectiles[0] else {
+            panic!("Possession remains a possession projectile");
+        };
+        assert!(projectile.active);
+        assert!(projectile.acquisition_initialized);
+        assert_eq!(projectile.target_entity_index, 0);
+        assert_eq!(projectile.position.z, 500);
+        assert_eq!(
+            projectile.life_ticks,
+            POSSESSION_PROJECTILE_LIFETIME_TICKS - 1
+        );
+        assert!(mission.impacts.is_empty());
+    }
+
+    #[test]
+    fn expired_possession_spawns_model_twelve_without_mailbox_or_experience() {
+        let mut template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        template.initial_possession_targets = Vec::new().into_boxed_slice();
+        let mut mission = template.session(10_000, 1_000);
+        let player = FlightState {
+            entity_index: 152,
+            position: Position {
+                x: 20_000,
+                y: 20_000,
+                z: 500,
+            },
+            yaw: 0,
+            ..FlightState::default()
+        };
+
+        assert!(mission.spawn_possession(&player));
+        let Level1Projectile::Possession(projectile) = mission.projectiles.last_mut().unwrap()
+        else {
+            panic!("spawned possession projectile");
+        };
+        projectile.life_ticks = 0;
+        mission.step_projectiles(&FlatWorld, &player);
+
+        assert_eq!(mission.possession_experience, 0);
+        assert_eq!(mission.possession_tier, 0);
+        assert_eq!(mission.impacts.len(), 1);
+        let impact = mission.impacts[0];
+        assert_eq!(impact.model, POSSESSION_IMPACT_MODEL);
+        assert_eq!(impact.external_target_entity_index, 0);
+        assert_eq!(impact.life_ticks, POSSESSION_IMPACT_LIFE);
+        assert!(!mission.projectiles.last().unwrap().active());
+        mission.step_impact_slot(&FlatWorld, &player, impact.source_entity_index);
+        assert!(mission.building_mailboxes.is_empty());
+        assert!(mission.possessed_buildings().is_empty());
     }
 
     #[test]
@@ -13195,6 +16621,63 @@ mod tests {
                 ))
             );
         }
+    }
+
+    #[test]
+    fn multipart_head_consumes_its_mailbox_before_linked_life_sync() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 1_000);
+        mission.activate_group(4);
+        let head_index = mission
+            .actors
+            .iter()
+            .position(|actor| actor.authored_index == 307)
+            .unwrap();
+        let head_slot = mission.actors[head_index].source_entity_index;
+        mission.actors[head_index].life = 9_000;
+        mission.actors[head_index].pending_damage = 3_000;
+        mission.actors[head_index].pending_attacker = 777;
+        mission.multipart_segments[0].life = 8_000;
+        mission.multipart_segments[0].pending_attacker = 111;
+        mission.multipart_segments[1].life = 7_000;
+        mission.multipart_segments[1].pending_attacker = 222;
+
+        mission.step_actor_slot(&FlatWorld, &FlightState::default(), head_slot);
+
+        let head = mission.actors[head_index];
+        assert_eq!(
+            head.life, 6_000,
+            "the direct mailbox lowers the head before either linked child is compared"
+        );
+        assert_eq!(head.target_entity_index, 777);
+        assert_eq!(head.action, MULTIPART_ATTACK_ACTION);
+        assert_eq!(head.pending_damage, 0);
+        assert_eq!(head.pending_attacker, 0);
+    }
+
+    #[test]
+    fn multipart_head_uses_the_first_lower_linked_child_not_the_global_minimum() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 1_000);
+        mission.activate_group(4);
+        let head_index = mission
+            .actors
+            .iter()
+            .position(|actor| actor.authored_index == 307)
+            .unwrap();
+        let head_slot = mission.actors[head_index].source_entity_index;
+        mission.actors[head_index].life = 9_000;
+        mission.multipart_segments[0].life = 8_000;
+        mission.multipart_segments[0].pending_attacker = 111;
+        mission.multipart_segments[1].life = 7_000;
+        mission.multipart_segments[1].pending_attacker = 222;
+
+        mission.step_actor_slot(&FlatWorld, &FlightState::default(), head_slot);
+
+        let head = mission.actors[head_index];
+        assert_eq!(head.life, 8_000);
+        assert_eq!(head.target_entity_index, 111);
+        assert_eq!(head.action, MULTIPART_ATTACK_ACTION);
     }
 
     #[test]

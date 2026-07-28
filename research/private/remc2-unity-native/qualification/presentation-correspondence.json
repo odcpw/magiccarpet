@@ -44,7 +44,7 @@
     "qualified_view": false,
     "png_sha256": "d9d2d19e105a765045dc5e5c1f5eef2d3577f9373ed6c93c914bc92c695b9aa8",
     "source_player_sha256": "8027f7d1f9ae7dacfc826fb218adcc1ae7464af098a8a59397e7531c0f7ec0bc",
-    "owner_cache_content_sha256": "addc1cc1b43173f41f208082237f38b9519fdc64374ec0b20f8b2d9b04049cdb",
+    "owner_cache_content_sha256": "d299990e300117d065eb3a75008f6a69911b1ba356e4e06452c0a826450a01e5",
     "selectors": [79, 152, 154, 154, 155, 180, 183, 199],
     "views": 8,
     "claim_limit": "controlled cache-bound geometry and owner-raster evidence; not an original or qualified simulation view"
@@ -309,7 +309,7 @@
       "classification": "adapted",
       "present": true,
       "authority_domain": "unity-synthetic-route",
-      "transform": "Rust materializes source-ordered hit, Speed, objective, entry, fade-back, and black-fade RGB6 palettes from owner PALN and Unity atomically applies the returned RGB8 bytes",
+      "transform": "Rust materializes source-ordered hit, slowing/impairment, objective, entry, fade-back, and black-fade RGB6 palettes from owner PALN and Unity atomically applies the returned RGB8 bytes; Speed Up does not request a tint",
       "not_equivalent_to": ["captured original DAC bytes for the registered remc2 idle frames", "unsupported multiplayer monochrome paths"],
       "evidence": ["native palette ABI tests", "Unity atomic palette test", "two registered graphical runs"],
       "comparison_policy": "structural-correspondence",
@@ -400,7 +400,7 @@
       ],
       "adapted": [
         "base-PALN decoding of original indexed fixtures for human inspection",
-        "Rust-owned hit, Speed, objective, entry, fade-back, and black-fade palettes atomically applied by Unity"
+        "Rust-owned hit, slowing/impairment, objective, entry, fade-back, and black-fade palettes atomically applied by Unity"
       ],
       "omitted": [],
       "deferred": [

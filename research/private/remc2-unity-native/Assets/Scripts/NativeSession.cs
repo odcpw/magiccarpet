@@ -544,16 +544,16 @@ namespace MagicCarpet.Native
                 mission.currentStage > 5 ||
                 mission.textSelector < 48 ||
                 mission.textSelector > 53 ||
-                mission.actorCount != 19 ||
+                mission.actorCount != 45 ||
                 mission.exitSequenceActive > 1 ||
                 mission.exitSequenceComplete > 1 ||
                 mission.exitSequencePhase > 12 ||
                 mission.fidelityGapFlags != NativeSim.Level1CurrentFidelityGaps ||
-                !AllZero(mission.reserved))
+                mission.possessionTier > 2)
             {
                 throw new InvalidOperationException(
                     "native Level 1 mission returned invalid layout, authority, " +
-                    "stage, authored actor extent, or reserved state");
+                    "stage, authored actor extent, or possession tier");
             }
             return mission;
         }
@@ -578,6 +578,65 @@ namespace MagicCarpet.Native
                     "generation, or tick");
             }
             return hud;
+        }
+
+        internal NativeSim.Level1SpellMenuSnapshot Level1SpellMenu(
+            NativeSim.Level1MissionSnapshot mission)
+        {
+            var status = NativeSim.mc_native_level1_spell_menu_snapshot(
+                Handle,
+                out var spellMenu,
+                64);
+            Check(status, "read live Level 1 spell menu");
+            var validFamilies =
+                spellMenu.familyEnabled != null &&
+                spellMenu.familyEnabled.Length == 4 &&
+                spellMenu.familyUnlockedTier != null &&
+                spellMenu.familyUnlockedTier.Length == 4 &&
+                spellMenu.familySelectedTier != null &&
+                spellMenu.familySelectedTier.Length == 4 &&
+                spellMenu.holderEntityIndex != null &&
+                spellMenu.holderEntityIndex.Length == 4;
+            if (validFamilies)
+            {
+                for (var family = 0; family < 4; family++)
+                {
+                    var enabled = spellMenu.familyEnabled[family];
+                    var unlocked = spellMenu.familyUnlockedTier[family];
+                    var selected = spellMenu.familySelectedTier[family];
+                    validFamilies &=
+                        enabled <= 1 &&
+                        unlocked is >= 0 and <= 2 &&
+                        selected is >= 0 and <= 2 &&
+                        selected <= unlocked &&
+                        (enabled != 0) ==
+                            (spellMenu.holderEntityIndex[family] != 0);
+                }
+            }
+            if (
+                spellMenu.abiVersion != NativeSim.AbiVersion ||
+                spellMenu.structSize != 64 ||
+                spellMenu.authority != NativeSim.Level1MissionLive ||
+                spellMenu.generation != mission.generation ||
+                spellMenu.tick != mission.tick ||
+                spellMenu.selectedUiIndex >= 4 ||
+                spellMenu.selectedTier is < 0 or > 2 ||
+                spellMenu.leftFamily >= 4 ||
+                spellMenu.leftTier is < 0 or > 2 ||
+                spellMenu.rightFamily >= 4 ||
+                spellMenu.rightTier is < 0 or > 2 ||
+                spellMenu.reserved0 != 0 ||
+                !validFamilies ||
+                spellMenu.reserved1 == null ||
+                Array.Exists(spellMenu.reserved1, value => value != 0) ||
+                spellMenu.reserved == null ||
+                Array.Exists(spellMenu.reserved, value => value != 0))
+            {
+                throw new InvalidOperationException(
+                    "native Level 1 spell menu returned invalid layout, authority, " +
+                    "generation, tick, family state, tier, or reserved bytes");
+            }
+            return spellMenu;
         }
 
         internal NativeSim.Level1MinimapMarks Level1MinimapMarks(
@@ -853,17 +912,40 @@ namespace MagicCarpet.Native
                     actor.renderParameterIndex == 280 &&
                     actor.baseTmap == 259 &&
                     actor.renderMode == 1 &&
-                    actor.logicalHeight == 75;
+                    actor.logicalHeight == 75 ||
+                    actor.kind == 9 &&
+                    actor.renderMode == 0 &&
+                    actor.logicalHeight == 400 &&
+                    (
+                        actor.renderParameterIndex == 83 &&
+                        actor.baseTmap == 75 ||
+                        actor.renderParameterIndex == 84 &&
+                        actor.baseTmap == 87 ||
+                        actor.renderParameterIndex == 226 &&
+                        actor.baseTmap == 178 ||
+                        actor.renderParameterIndex == 227 &&
+                        actor.baseTmap == 179
+                    ) ||
+                    actor.kind == 10 &&
+                    actor.renderParameterIndex == 79 &&
+                    actor.baseTmap == 78 &&
+                    actor.renderMode == 0 &&
+                    actor.logicalHeight == 250 ||
+                    actor.kind == 11 &&
+                    actor.renderParameterIndex == ushort.MaxValue &&
+                    actor.baseTmap == ushort.MaxValue &&
+                    actor.renderMode == 0 &&
+                    actor.logicalHeight == 0;
                 if (
                     actor.abiVersion != NativeSim.AbiVersion ||
                     actor.structSize != 56 ||
                     actor.authority != NativeSim.Level1MissionLive ||
                     actor.kind < 1 ||
-                    actor.kind > 8 ||
+                    actor.kind > 11 ||
                     !exactRenderMapping ||
                     actor.animationFrame != 0 ||
                     actor.visible > 1 ||
-                    !AllZero(actor.reserved))
+                    actor.reserved != 0)
                 {
                     throw new InvalidOperationException(
                         $"native Level 1 actor {actor.authoredIndex} returned " +
@@ -1226,6 +1308,22 @@ namespace MagicCarpet.Native
                         impact.baseTmap == 186 &&
                         impact.logicalHeight == 300 &&
                         impact.renderMode == 11
+                    ) ||
+                    (
+                        impact.model == 12 &&
+                        impact.renderParameterIndex == 41 &&
+                        impact.baseTmap == 54 &&
+                        impact.logicalHeight == 250 &&
+                        impact.renderMode == 21
+                    ) ||
+                    (
+                        impact.model == 13 &&
+                        impact.renderParameterIndex >= 67 &&
+                        impact.renderParameterIndex <= 74 &&
+                        impact.baseTmap == 57 &&
+                        impact.logicalHeight ==
+                            (impact.renderParameterIndex - 66) * 50 &&
+                        impact.renderMode == 21
                     );
                 if (
                     impact.abiVersion != NativeSim.AbiVersion ||
@@ -1233,7 +1331,11 @@ namespace MagicCarpet.Native
                     impact.authority != NativeSim.Level1MissionLive ||
                     !exactRenderMapping ||
                     impact.animationFrame < 0 ||
-                    impact.animationFrame > 9 ||
+                    (
+                        impact.model == 13
+                            ? impact.animationFrame < 67 || impact.animationFrame > 74
+                            : impact.animationFrame > 9
+                    ) ||
                     impact.reserved0 != 0 ||
                     impact.reserved1 != 0 ||
                     impact.reserved == null ||

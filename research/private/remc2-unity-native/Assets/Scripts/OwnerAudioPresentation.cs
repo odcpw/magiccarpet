@@ -14,12 +14,12 @@ namespace MagicCarpet.Native
     internal sealed class OwnerAudioPresentation : IDisposable
     {
         private const uint FirstAudioAssetRef = 76;
-        private const uint MusicAssetRef = 107;
+        private const uint MusicAssetRef = 108;
         private const int MusicIdleMode = 1;
         private const int MusicCombatMode = 2;
         private static readonly int[] ExactSoundOrder =
         {
-            1, 2, 3, 4, 5, 8, 9, 10, 12, 15, 16, 18, 19, 27, 29, 30, 31,
+            1, 2, 3, 4, 5, 8, 9, 10, 12, 14, 15, 16, 18, 19, 27, 29, 30, 31,
             33, 34, 37, 39, 40, 41, 43, 44, 46, 54, 55, 56, 57, 63
         };
 
@@ -1012,6 +1012,7 @@ namespace MagicCarpet.Native
                 9 => "original_stereo_positional",
                 10 => "original_stereo_positional",
                 12 => "explicit_null",
+                14 => "local_feedback",
                 15 => "original_stereo_positional",
                 16 => "original_stereo_positional",
                 18 => "original_stereo_positional",

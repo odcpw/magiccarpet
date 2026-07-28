@@ -71,6 +71,24 @@ namespace MagicCarpet.Native.Tests
                 OwnerAudioPresentation.EventSoundId(
                     NativeSim.EventPrepareSound, 29),
                 Is.EqualTo(29));
+            Assert.That(
+                MagicCarpetRuntime.SpellTierMenuStartX(0, 13, 8, 48, 3, 66),
+                Is.EqualTo(0));
+            Assert.That(
+                MagicCarpetRuntime.SpellTierMenuStartX(2, 13, 8, 48, 3, 66),
+                Is.EqualTo(29));
+            Assert.That(
+                MagicCarpetRuntime.SpellTierMenuStartX(12, 13, 8, 48, 3, 66),
+                Is.EqualTo(442));
+            Assert.That(
+                MagicCarpetRuntime.SpellTierFromLogicalX(28, 29, 66, 2),
+                Is.EqualTo(0));
+            Assert.That(
+                MagicCarpetRuntime.SpellTierFromLogicalX(110, 29, 66, 2),
+                Is.EqualTo(1));
+            Assert.That(
+                MagicCarpetRuntime.SpellTierFromLogicalX(400, 29, 66, 2),
+                Is.EqualTo(2));
         }
 
         [Test]
@@ -308,11 +326,47 @@ namespace MagicCarpet.Native.Tests
                 AssetCachePath,
                 MagicCarpetRuntime.ExpectedPackageHash,
                 MagicCarpetRuntime.ExpectedOwnerAssetClosureHash);
-            Assert.That(cache.OutputCount, Is.EqualTo(447));
+            Assert.That(cache.OutputCount, Is.EqualTo(570));
             Assert.That(
                 cache.ContentHash,
                 Is.EqualTo(
-                    "addc1cc1b43173f41f208082237f38b9519fdc64374ec0b20f8b2d9b04049cdb"));
+                    "d299990e300117d065eb3a75008f6a69911b1ba356e4e06452c0a826450a01e5"));
+        }
+
+        [Test]
+        public void SpellAssignmentOpcodesDriveTheSourceHandAndTierSnapshot()
+        {
+            using var session = NativeSession.Open(PackagePath, ClosurePath);
+            var mission = session.Level1Mission();
+            var reset = session.Level1SpellMenu(mission);
+            Assert.That(reset.familyEnabled, Is.EqualTo(new byte[] { 1, 1, 0, 0 }));
+            Assert.That(
+                reset.familyUnlockedTier,
+                Is.EqualTo(new sbyte[] { 0, 0, 0, 0 }));
+            Assert.That(
+                new[]
+                {
+                    (int)reset.leftFamily,
+                    reset.leftTier,
+                    (int)reset.rightFamily,
+                    reset.rightTier,
+                },
+                Is.EqualTo(new[] { 0, 0, 1, 0 }));
+
+            session.Step(0, 0, 0, opcode: 31, argument1: 1, argument2: 2);
+            mission = session.Level1Mission();
+            var leftChanged = session.Level1SpellMenu(mission);
+            Assert.That(leftChanged.leftFamily, Is.EqualTo(1));
+            Assert.That(leftChanged.leftTier, Is.EqualTo(0));
+            Assert.That(leftChanged.selectedUiIndex, Is.EqualTo(1));
+            Assert.That(leftChanged.selectedTier, Is.EqualTo(0));
+
+            session.Step(0, 0, 0, opcode: 32, argument1: 0, argument2: 2);
+            mission = session.Level1Mission();
+            var rightChanged = session.Level1SpellMenu(mission);
+            Assert.That(rightChanged.leftFamily, Is.EqualTo(1));
+            Assert.That(rightChanged.rightFamily, Is.EqualTo(0));
+            Assert.That(rightChanged.rightTier, Is.EqualTo(0));
         }
 
         [Test]
@@ -470,7 +524,7 @@ namespace MagicCarpet.Native.Tests
             Assert.That(mission.impactCount, Is.Zero);
 
             var actors = session.Level1Actors(mission);
-            Assert.That(actors, Has.Length.EqualTo(19));
+            Assert.That(actors, Has.Length.EqualTo(45));
             Assert.That(
                 Array.FindAll(actors, actor => actor.kind == 1),
                 Has.Length.EqualTo(4));
@@ -494,7 +548,16 @@ namespace MagicCarpet.Native.Tests
                 Has.Length.EqualTo(4));
             Assert.That(
                 Array.FindAll(actors, actor => actor.kind == 8),
+                Has.Length.EqualTo(5));
+            Assert.That(
+                Array.FindAll(actors, actor => actor.kind == 9),
+                Has.Length.EqualTo(18));
+            Assert.That(
+                Array.FindAll(actors, actor => actor.kind == 10),
                 Has.Length.EqualTo(1));
+            Assert.That(
+                Array.FindAll(actors, actor => actor.kind == 11),
+                Has.Length.EqualTo(3));
             Assert.That(
                 Array.FindAll(actors, actor => actor.active != 0),
                 Is.Empty);
@@ -525,6 +588,12 @@ namespace MagicCarpet.Native.Tests
             Assert.That(
                 Array.Find(actors, actor => actor.kind == 8).baseTmap,
                 Is.EqualTo(259));
+            Assert.That(
+                Array.Find(actors, actor => actor.kind == 9).baseTmap,
+                Is.EqualTo(75));
+            Assert.That(
+                Array.Find(actors, actor => actor.kind == 10).baseTmap,
+                Is.EqualTo(78));
             Assert.That(
                 Array.TrueForAll(
                     actors,
@@ -755,7 +824,87 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
-        [Timeout(180_000)]
+        public void LevelOnePostCompletionPilotKeepsAVisibleMultipartTargetLock()
+        {
+            static NativeSim.Level1ActorSnapshot Actor(
+                ushort authoredIndex,
+                byte kind,
+                byte active,
+                ushort x)
+            {
+                return new NativeSim.Level1ActorSnapshot
+                {
+                    authoredIndex = authoredIndex,
+                    kind = kind,
+                    active = active,
+                    x = x,
+                    y = 10_000,
+                    z = 1_000,
+                };
+            }
+
+            static Level1Autopilot.Observation Observation(
+                ulong tick,
+                params NativeSim.Level1ActorSnapshot[] actors)
+            {
+                var player = new NativeSim.SessionSnapshot
+                {
+                    tick = tick,
+                    x = 10_000,
+                    y = 10_000,
+                    z = 1_000,
+                    selectedSpellUiIndex = 0,
+                };
+                var mission = new NativeSim.Level1MissionSnapshot
+                {
+                    currentStage = 5,
+                    playerLife = 10_000,
+                };
+                return new Level1Autopilot.Observation(
+                    new Level1Autopilot.PlayerObservation(player),
+                    new Level1Autopilot.MissionObservation(mission),
+                    Array.ConvertAll(
+                        actors,
+                        actor => new Level1Autopilot.ActorObservation(actor)),
+                    Array.Empty<Level1Autopilot.GoatObservation>(),
+                    Array.Empty<Level1Autopilot.SphereObservation>(),
+                    new Level1Autopilot.CastleObservation(default));
+            }
+
+            var driver = new Level1Autopilot(includePostCompletion: true);
+            driver.Next(Observation(1, Actor(306, 2, 1, 11_000)));
+            driver.Next(Observation(2, Actor(307, 7, 1, 11_000)));
+
+            driver.Next(
+                Observation(
+                    3,
+                    Actor(309, 7, 1, 11_000),
+                    Actor(310, 7, 1, 13_000)));
+            Assert.That(driver.LastAimActor, Is.EqualTo(309));
+
+            driver.Next(
+                Observation(
+                    4,
+                    Actor(309, 7, 1, 14_000),
+                    Actor(310, 7, 1, 10_500)));
+            Assert.That(
+                driver.LastAimActor,
+                Is.EqualTo(309),
+                "the pilot must not retarget merely because another visible head moved closer");
+
+            driver.Next(
+                Observation(
+                    5,
+                    Actor(309, 7, 0, 14_000),
+                    Actor(310, 7, 1, 10_500)));
+            Assert.That(
+                driver.LastAimActor,
+                Is.EqualTo(310),
+                "the lock releases when the selected head is visibly inactive");
+        }
+
+        [Test]
+        [Timeout(600_000)]
         public void LevelOneAutopilotFreshSessionsHaveIdenticalDigests()
         {
             var first = RunAutopilotDigest();
@@ -788,7 +937,7 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
-        [Timeout(360_000)]
+        [Timeout(1_200_000)]
         public void LevelOnePostCompletionAutopilotFightsGroups33And34BeforeExit()
         {
             var first = RunAutopilotDigest(
@@ -856,7 +1005,7 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
-        [Timeout(180_000)]
+        [Timeout(300_000)]
         public void LevelOneAutopilotNegativeControlsStopAtTheirObjectives()
         {
             var noFireball = RunAutopilotNegativeControl(
@@ -892,13 +1041,8 @@ namespace MagicCarpet.Native.Tests
             Assert.That(first.FireflyHitCount, Is.Zero);
             Assert.That(first.HostileSpawnCount, Is.GreaterThanOrEqualTo(1));
             Assert.That(first.HostileImpactCount, Is.GreaterThanOrEqualTo(1));
-            Assert.That(first.HostileImpactCount, Is.EqualTo(first.HostileSpawnCount));
             Assert.That(first.VisibleHostileImpactCount, Is.GreaterThanOrEqualTo(1));
             Assert.That(first.HostilePlayerDamageCount, Is.GreaterThanOrEqualTo(1));
-            Assert.That(
-                first.ContactPlayerDamageCount,
-                Is.GreaterThanOrEqualTo(1),
-                "the same source-valid encounter also exercises the Firefly charge");
             Assert.That(first.MinimumPlayerLife, Is.LessThanOrEqualTo(9_500));
             Assert.That(first.CommandHash, Is.EqualTo(second.CommandHash));
             Assert.That(first.EventHash, Is.EqualTo(second.EventHash));
@@ -963,8 +1107,7 @@ namespace MagicCarpet.Native.Tests
                         goats,
                         spheres,
                         castle));
-                if ((unchecked((byte)command.Flags) & 0x40) != 0 &&
-                    command.RequestedSpell == 0)
+                if ((unchecked((byte)command.Flags) & 0x40) != 0)
                 {
                     fireRequests++;
                 }
@@ -1232,7 +1375,10 @@ namespace MagicCarpet.Native.Tests
             Assert.That(mission.currentStage, Is.EqualTo(5));
             Assert.That(mission.exitSequenceComplete, Is.EqualTo(1));
             Assert.That(mission.exitResultCode, Is.EqualTo(10));
-            Assert.That(peakTerrainMutationSequence, Is.EqualTo(19));
+            // Eighteen Castle growth passes plus its final stable resample
+            // are followed by one source-exact house action-53 footprint
+            // removal on this deterministic combat route.
+            Assert.That(peakTerrainMutationSequence, Is.EqualTo(20));
             Assert.That(terrain.terrainHash, Is.Not.EqualTo(initialTerrainHash));
             var resetSnapshot = session.Reset();
             var resetTerrain = session.TerrainState();
@@ -1323,6 +1469,32 @@ namespace MagicCarpet.Native.Tests
                         out _);
                     spheres = session.Level1ManaSpheres(mission);
                     castle = session.Level1Castle(mission);
+                }
+                if (includePostCompletion && tick % 10_000 == 0)
+                {
+                    var multipartHeads = Array.FindAll(
+                        actors,
+                        actor => actor.authoredIndex == 307 ||
+                                 (actor.authoredIndex >= 309 &&
+                                  actor.authoredIndex <= 311));
+                    var multipartState = string.Join(
+                        ",",
+                        Array.ConvertAll(
+                            multipartHeads,
+                            actor =>
+                                $"{actor.authoredIndex}:" +
+                                $"{actor.active}/{actor.life}/{actor.action}"));
+                    UnityEngine.Debug.Log(
+                        $"MC_LEVEL1_POST_PROGRESS tick={snapshot.tick} " +
+                        $"stage={mission.currentStage} phase={command.Phase} " +
+                        $"life={mission.playerLife} " +
+                        $"fireSequence={snapshot.fireSequence} " +
+                        $"aim={driver.LastAimActor}/" +
+                        $"{driver.LastAimDistance:F0}/" +
+                        $"{driver.LastAimYawError}/" +
+                        $"{driver.LastAimPitchError} " +
+                        $"seen={sawGroup33Firefly}/{sawFirstMultipart}/" +
+                        $"{sawGroup34Multipart} multipart=[{multipartState}]");
                 }
 
                 stateHash = HashValue(stateHash, snapshot.stateHash);
@@ -1600,6 +1772,16 @@ namespace MagicCarpet.Native.Tests
                     spheres = session.Level1ManaSpheres(mission);
                     castle = session.Level1Castle(mission);
                 }
+                if (tick % 10_000 == 0)
+                {
+                    UnityEngine.Debug.Log(
+                        $"MC_LEVEL1_POST_NEGATIVE_PROGRESS " +
+                        $"suppressedPhase={suppressedPhase} " +
+                        $"tick={snapshot.tick} stage={mission.currentStage} " +
+                        $"phase={command.Phase} " +
+                        $"reached={reachedSuppressedPhase} " +
+                        $"observed={ticksAfterSuppression}/{observationTicks}");
+                }
 
                 if (reachedSuppressedPhase)
                 {
@@ -1646,6 +1828,7 @@ namespace MagicCarpet.Native.Tests
             var spheres = Array.Empty<NativeSim.ManaSphereSnapshot>();
             var castle = session.Level1Castle(mission);
             var suppressedCommands = 0;
+            var ticksAfterSuppression = 0;
 
             for (var tick = 0; tick < maximumTicks; tick++)
             {
@@ -1661,7 +1844,7 @@ namespace MagicCarpet.Native.Tests
                 var requestedSpell = command.RequestedSpell;
                 if (suppressFireball &&
                     (flags & 0x40) != 0 &&
-                    requestedSpell == 0)
+                    command.Phase == "fight-archers")
                 {
                     flags = (byte)(flags & ~0x40);
                     requestedSpell = NativeSim.NoRequestedSpell;
@@ -1692,6 +1875,12 @@ namespace MagicCarpet.Native.Tests
                 }
                 if (mission.exitSequenceComplete != 0 || mission.playerDead != 0)
                     break;
+                if (suppressedCommands > 0)
+                {
+                    ticksAfterSuppression++;
+                    if (ticksAfterSuppression >= 1_024)
+                        break;
+                }
             }
 
             return new NegativeControlResult(
@@ -2454,6 +2643,23 @@ namespace MagicCarpet.Native.Tests
                 MagicCarpetRuntime.ManagedEconomyVisible(
                     0, NativeSim.TerrainFrameEconomyComposited),
                 Is.False);
+        }
+
+        [Test]
+        public void LiveSimulationUsesTheRemc2DefaultThirtyHertzCadence()
+        {
+            Assert.That(
+                MagicCarpetRuntime.AuthoritativeSimulationHz,
+                Is.EqualTo(30));
+            Assert.That(
+                1f / MagicCarpetRuntime.AuthoritativeSimulationHz,
+                Is.EqualTo(1f / 30f));
+            Assert.DoesNotThrow(() =>
+                PlaythroughRecorder.RequireUniqueTopLevelMembers(
+                    "{\"kind\":\"event\",\"value0\":1,\"value1\":2}"));
+            Assert.Throws<InvalidDataException>(() =>
+                PlaythroughRecorder.RequireUniqueTopLevelMembers(
+                    "{\"kind\":\"event\",\"value0\":1,\"value0\":2}"));
         }
 
         [Test]

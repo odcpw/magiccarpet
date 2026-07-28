@@ -538,11 +538,11 @@ def verify_runtime_logs(
     ]
     expected_structural_lines = [
         (
-            "MC_ASSET_CACHE VERIFIED outputs=447 "
+            "MC_ASSET_CACHE VERIFIED outputs=570 "
             f"content={corpus['runtime_pins']['owner_cache_content_sha256']}"
         ),
         (
-            "MC_HUD_DESCRIPTOR VERIFIED bitmaps=29 bank=HSPRN-native "
+            "MC_HUD_DESCRIPTOR VERIFIED bitmaps=80 bank=HSPRN-native "
             "objectives=48-53/indexed-live-framebuffer "
             "blend=TABLESN:0x4000+61x256+dst"
         ),
@@ -552,11 +552,11 @@ def verify_runtime_logs(
         ),
         (
             "MC_ENTITY_PRESENTATION VERIFIED registry=177 qualifiedSprites=64 "
-            "goatLive=33 frozenOwnerSprites=31 resetEffectDebug=0 "
+            "goatLive=33 villagerLive=28 frozenOwnerSprites=31 resetEffectDebug=0 "
             "unresolvedDebug=0 mode=qualified"
         ),
         (
-            "MC_OWNER_HUD READY textures=26 "
+            "MC_OWNER_HUD READY textures=80 "
             "objectives=selectors48-53/indexed-live-TABLESN-blend"
         ),
         (

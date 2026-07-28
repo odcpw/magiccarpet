@@ -13,7 +13,7 @@ finished.
 - World `1/0`, Night/outdoor profile, counts `1000/177/8`, package and
   closure hashes, reset state hash `9da4bc91af58f3ce`, preserved package-reset
   conformance hash `77b96b82492d6f4b`, and additive playable-session effects
-  conformance hash `e7ec6bc18b5fe775`.
+  live v2 conformance hash `36bd7f1ddf0537b5`.
 - All six 65,536-cell terrain planes.
 - The 257×257 ground mesh heights (`ground byte * 32` source units), wrapped
   row/column zero duplication, and alternating source diagonals.
@@ -39,8 +39,8 @@ finished.
   every index through the exact ordered PALN palette before opaque diagnostic
   objects. Coverage remains diagnostic because uncovered pixels are the exact
   sky seed required by mode 26.
-- All 163 Level 1 scene/live-mission `TMAPS1-0` selectors are cache-locked:
-  152 exact RNC decoded payloads and 11 verified one-byte placeholders. The
+- All 172 Level 1 scene/live-mission `TMAPS1-0` selectors are cache-locked:
+  161 exact RNC decoded payloads and 11 verified one-byte placeholders. The
   four frame-observed selectors are `40`, `41`, `54`, and `63`; complete
   decoded animation streams are preserved alongside first-frame indexed
   images.
@@ -60,9 +60,21 @@ finished.
   native draw admission.
 - Atomic flight snapshots, exact integer simulation, live player row, ordered
   event journal, and eight immutable objective records.
+- The source spell-control route is explicit end to end. Menu assignment
+  opcodes 31/32 independently bind left and right hands with tier clamping.
+  Possession's moving class-10/model-12 marker writes the target building's
+  mailbox; the building consumes it in source-slot order and installs the
+  persistent player-coloured HSPRN/TMAP marker while advancing Possession
+  experience through thresholds 0/600/4800. Terrain or lifetime expiry still
+  emits model 12 but cannot possess a building or grant experience. Speed Up
+  follows the 240 activation, 160 sustain, 80 restore countdown sequence,
+  emits sound 19 only on activation, and creates the no-draw
+  class-10/model-2 trail every fourth phase. It does not request a palette
+  tint; the green palette belongs to the separate slowing/impairment path.
 - With the owner cache supplied, the normal qualified view uses a uniformly
   scaled 640×480 owner HUD reference: Night MSPRN panels, live life/mana
-  bars, live Fireball/Possess/Castle/Speed icons 123–126, source-mapped
+  bars, live Fireball/Possess/Castle/Speed icons 123–126, the source 2×13
+  Control-held hand-assignment menu, source-mapped
   objective selectors 48–53 using HFONT3 and HSPRN 171/172/173, task
   guidance, player-death/restart, departure, fade, and completion state.
   Each objective box uses its exact source layout and 33-turn clock, blends
@@ -175,7 +187,9 @@ advance on their source-style selector-global clocks; attack selectors
 map chain as terrain submission, including cross-family same-cell order.
 Arrows use particle 195, TMAP facings 105–109, render mode 19, and logical
 height 60; their visual remains a Unity presentation adaptation. The 96-byte
-mission snapshot exposes fidelity-gap flags. The current qualified build
+mission snapshot exposes a bounded eight-bit mission-simulation fidelity-gap
+register; it does not cover input, HUD, renderer, or other presentation
+fidelity. The current qualified build
 reports `0x00`: the unified-source-pool, exact Castle-placement, exact
 Level 1 Castle-construction-timing, and exact Level 1 mana-sphere lifecycle
 bits are cleared. The mana-carrier bit is also cleared after source-slot
@@ -302,7 +316,7 @@ floor/rejection boundaries, and strict object depth `>64`. The Unity
 not presented as an equivalent of any of those original projection rules.
 The test also locks the complete HUD selector/dimension/authority contract.
 With the cache supplied it also locks
-the 108-ref native bridge, known-only typed audio vector, descriptor parsing,
+the 109-ref native bridge, known-only typed audio vector, descriptor parsing,
 streaming music extent, zero/ramp/repeated-prepare/fade loop envelope, the
 managed 40/96-byte terrain-frame ABI layouts, exact reset index/coverage
 hashes, same-tick equality, independent-session equality, row-flip
@@ -339,10 +353,18 @@ shows the owner HUD plus only the 64 evidence-backed dolmen, goat, and villager
 sprites. Its player-origin registry marker remains hidden, and no substitute
 carpet is rendered. Debug mode retains the temporary foreground carpet aid.
 
-Controls: `W/S` speed, `A/D` strafe, persistent absolute mouse steering,
-`I/J/K/L` keyboard steering, `C` or middle mouse to centre, `Space` or left
-mouse to request fire, `Esc` release capture, click recapture, `R` reset,
-`F11` fullscreen, and `F10` quit.
+Controls: held `W/S` state is sampled once per authoritative 30 Hz simulation
+turn; every sampled turn changes the speed target by one source step. `A/D`
+strafes, the mouse steers persistently, `I/J/K/L` provides keyboard steering,
+and `C` or middle mouse centres. Holding `Control` opens remc2's 2×13 bottom
+spell menu and releases pointer capture: left click chooses the left hand and
+right click chooses the right hand. Keep that button held, move horizontally
+across the three-tier submenu, and release to send opcode 31/32; locked
+families and tiers cannot be assigned. Releasing `Control` restores capture.
+Outside the menu, `Space` or left mouse casts the left-hand spell and right
+mouse casts the right-hand spell.
+`Esc` releases capture, click recaptures, `R` resets, `F11` toggles fullscreen,
+and `F10` quits.
 
 ## Full Level 1 input-only playback
 
@@ -365,11 +387,15 @@ xvfb-run -a -s "-screen 0 1600x900x24" \
   -logFile /tmp/magiccarpet-level1-built-player.log
 ```
 
-The current accepted route completes at tick 21,586, enters Stage 5, and
+The current accepted route completes at tick 14,720, enters Stage 5, and
 receives exit result 10. Omitting `-mc-level1-autoplay-fast` runs the identical
 controller at normal presentation speed. The fresh-session conformance test
-currently records command digest `2049cc8884402efa`, 146,637 events with
-digest `65e04fe1a55d2cf6`, and state-sequence digest `6b2bc40c9842d8ba`.
+currently records command digest `f651ed14282a0377`, 94,764 events with
+digest `85863abfeb25633c`, and state-sequence digest `b4be8a3d743430ad`.
+The route also records the complete 301-tick Speed holder lifecycle: 240
+launch speed, 160 sustain, and up to nine simultaneous class-10/model-2
+source trails. It suppresses forward/reverse input while Speed owns the target
+because remc2 treats either as an explicit cancellation request.
 
 Add `-mc-level1-autoplay-postgame` to delay entering the exit and exercise the
 optional source-authored post-completion encounter. The controller activates
@@ -378,8 +404,8 @@ Firefly, the first multipart creature, and all three visible group-34
 multipart creatures, then exits. It still receives only player-visible
 observations and issues ordinary player commands; it cannot inspect the
 row-308 dying-chain state, enemy health, AI actions, targets, RNG, cooldowns,
-or pending damage. The accepted two-session route completes alive at tick
-41,509 and separately binds command, event, state, source-arena, multipart,
+or pending damage. The accepted two-session route completes at tick
+21,039 and separately binds command, event, state, source-arena, multipart,
 projectile/impact, mana, audio, and terminal-state digests. Negative controls
 also prove that skipping the row-305 overlap, leaving the first multipart
 creature alive, or leaving any group-34 creature alive cannot complete the
@@ -486,7 +512,7 @@ sphere/trail remains available only with explicit `-mc-debug`;
 `-mc-debug-entities` additionally shows unresolved entity diagnostics.
 
 The runtime-supplied owner-data boundary is now an executable gate:
-`qualification/verify_unity_lifecycle_privacy.py`. It requires exact 26/26
+`qualification/verify_unity_lifecycle_privacy.py`. It requires exact 29/29
 EditMode and 1/1 graphics-backed PlayMode results; pins the launcher, runtime
 assembly, global managers, plug-in, and build GUID; checks Unity build
 metadata; rejects StreamingAssets, symlinks, owner container/audio extensions,

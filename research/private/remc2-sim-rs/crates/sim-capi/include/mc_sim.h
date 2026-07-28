@@ -53,6 +53,7 @@ extern "C" {
 #define MC_AUTHORITY_SELECTOR_FRAME_LIVE 5u
 #define MC_AUTHORITY_LEVEL1_MISSION_LIVE 6u
 #define MC_AUTHORITY_SESSION_TERRAIN_LIVE 7u
+#define MC_AUTHORITY_VILLAGER_LIVE 8u
 #define MC_LEVEL1_EXIT_FLAG_PALETTE_VISUAL_CURRENT 0x01u
 #define MC_LEVEL1_EXIT_FLAG_FOV_POST_ACTION_NEXT_HISTORY 0x02u
 #define MC_LEVEL1_EXIT_FLAG_END_SEQUENCE 0x04u
@@ -381,7 +382,12 @@ typedef struct McLevel1MissionSnapshotV2 {
     uint32_t impact_count;
     uint32_t exit_sequence_phase;
     int32_t exit_sequence_timer;
-    uint32_t reserved[2];
+    int32_t possession_experience;
+    uint16_t last_possessed_building_entity;
+    uint16_t last_possessed_building_owner;
+    uint16_t possessed_building_count;
+    uint8_t possession_tier;
+    uint8_t speed_trail_count;
 } McLevel1MissionSnapshotV2;
 
 typedef struct McLevel1HudSpellSlotV2 {
@@ -420,8 +426,34 @@ typedef struct McLevel1HudSnapshotV2 {
     uint32_t player_status_flags;
     McLevel1HudSpellSlotV2 left;
     McLevel1HudSpellSlotV2 right;
-    uint32_t reserved[2];
+    uint16_t selected_holder_entity_index;
+    uint16_t selected_icon_selector;
+    uint8_t selected_model;
+    int8_t selected_tier;
+    uint8_t selected_enabled_flags;
+    uint8_t selected_frame_selector;
 } McLevel1HudSnapshotV2;
+
+typedef struct McLevel1SpellMenuSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint8_t authority;
+    uint8_t selected_ui_index;
+    int8_t selected_tier;
+    uint8_t left_family;
+    int8_t left_tier;
+    uint8_t right_family;
+    int8_t right_tier;
+    uint8_t reserved_0;
+    uint8_t family_enabled[4];
+    int8_t family_unlocked_tier[4];
+    int8_t family_selected_tier[4];
+    uint8_t reserved_1[4];
+    uint16_t holder_entity_index[4];
+    uint32_t reserved[2];
+} McLevel1SpellMenuSnapshotV2;
 
 typedef struct McLevel1MinimapMarksV2 {
     uint32_t abi_version;
@@ -685,7 +717,8 @@ typedef struct McLevel1ActorSnapshotV2 {
     int16_t yaw;
     int8_t animation_frame;
     uint8_t visible;
-    uint32_t reserved[2];
+    int32_t state_value;
+    uint32_t reserved;
 } McLevel1ActorSnapshotV2;
 
 typedef struct McLevel1MultipartSegmentSnapshotV2 {
@@ -1152,6 +1185,9 @@ int32_t mc_native_level1_mission_snapshot(
     uint32_t out_snapshot_size);
 int32_t mc_native_level1_hud_snapshot(
     uint64_t handle, McLevel1HudSnapshotV2 *out_snapshot,
+    uint32_t out_snapshot_size);
+int32_t mc_native_level1_spell_menu_snapshot(
+    uint64_t handle, McLevel1SpellMenuSnapshotV2 *out_snapshot,
     uint32_t out_snapshot_size);
 int32_t mc_native_level1_minimap_marks(
     uint64_t handle, McLevel1MinimapMarksV2 *out_state,

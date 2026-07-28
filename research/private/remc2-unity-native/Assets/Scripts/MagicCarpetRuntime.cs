@@ -11,6 +11,7 @@ namespace MagicCarpet.Native
 {
     public sealed class MagicCarpetRuntime : MonoBehaviour
     {
+        internal const int AuthoritativeSimulationHz = 30;
         private const float SourceUnitsPerUnityUnit = 64f;
         private const int TerrainCells = 256;
         private const int TerrainSourceStep = 256;
@@ -21,15 +22,18 @@ namespace MagicCarpet.Native
         private const byte Level1ExitSwitchActorKind = 6;
         private const byte Level1MultipartHeadActorKind = 7;
         private const byte Level1ExperienceScrollActorKind = 8;
+        private const byte Level1TreeActorKind = 9;
+        private const byte Level1StoneActorKind = 10;
+        private const byte Level1CheckpointSmokeEmitterActorKind = 11;
         private const int AutoplayFinalTick = 440;
         private static readonly int[] AutoplayCaptureTicks = { 145, 163, 220, 303, 400 };
         private static readonly ulong[] AutoplayTerrainIndexHashes =
         {
             0x0a49c01e798aa855,
-            0x02e0640cb428a25b,
+            0xae4de9caf41d5473,
             0xba9873861a554bcf,
-            0xf2a9d22a315d76cc,
-            0xa8bdd2d0941251d3
+            0xced66d18ef029888,
+            0xad8add439ca3f97e
         };
         private static readonly ulong[] AutoplayTerrainCoverageHashes =
         {
@@ -42,18 +46,18 @@ namespace MagicCarpet.Native
         private static readonly ulong[] AutoplayTerrainReadbackBottomUpHashes =
         {
             0x6116176f23d78261,
-            0xb245ef2b4a212b99,
+            0x513fbc1f0ce27501,
             0x9d5154f952c93735,
-            0x27a1f7c896646a2d,
-            0x4efa2d8019069801
+            0xbf6fa51c101089b5,
+            0x42a6120608fd3c75
         };
         private static readonly ulong[] AutoplayTerrainLogicalTopDownHashes =
         {
             0x6d2584eb3f5e1d21,
-            0x5264da2e29ef24f9,
+            0x24a3ce628a9b18e1,
             0x42e55c4ea9e59855,
-            0xbd7ebbb1ff33991d,
-            0x5e407e2f551c0381
+            0x5dde721e6b801ec5,
+            0x501e861d317ae825
         };
         private static readonly uint[] AutoplayTerrainReflected =
             { 0, 0, 0, 0, 924 };
@@ -73,11 +77,11 @@ namespace MagicCarpet.Native
         };
         private static readonly ulong[] AutoplayConformanceHashes =
         {
-            0x4815130636a26ec8,
-            0xcc4504bc54cb99c4,
-            0xbe93dd782bd49559,
-            0x3680ffc8e2362696,
-            0xea2f94497d970ab8
+            0xa6e0c8caeacf73f8,
+            0x4bc2312004a14bd6,
+            0x7f05e39bbd5b680d,
+            0x902cdb8f4d06504c,
+            0x263fb33a7683a4da
         };
         private static readonly ulong[] AutoplayEventHeads =
             { 938, 1058, 1419, 1954, 2585 };
@@ -95,23 +99,23 @@ namespace MagicCarpet.Native
         };
         private static readonly string[] AutoplayEventLifecycleHashes =
         {
-            "a2f8b7e0dfdf877703e0c9cadad157527f4ddc2996289528538106ae197dc3af",
-            "a457a1b2afcd97f36f5a87e648b3f4edd27f1a7ec5f45520777e93cb53c4c1b9",
-            "c30dc421454ab112e5063810573d167967b4a21f71bb198137f11f03be76bf1d",
-            "4b1dcba6fc302388f48abbb53f5579c8daa3ac8a1c45415bfba9e2f88a173cf4",
-            "00df8fc7d9659e5607d4da359be5d2ed19a669a09a18541ae1c429fbc7a7d29d"
+            "90632175992f769fa5e6e3cd64fe1fe5728a497ddc8f586587aaef608c10e123",
+            "6cbb0fef221e1ee6a1561a9f2da165cee2fb668305635e866f515537d19d0cb5",
+            "c2f31241f2a0ca5877fbde80e2981f8c702003258600d564db7a1647873e32cf",
+            "4a05cfd2d3ffbfc8dd89b58c2df1dc3026ebd2455f28b3375e91ca0646b90e09",
+            "c957352ea08fb3fb585e8afdd678222c975326455da121e4716d796a198f8f0e"
         };
         private static readonly string[] AutoplayEventContentHashes =
         {
-            "491c5f782e185390aa0b7a30eb558b572d6d409c86aa7fc95b00686776f1bd0f",
-            "9a387bd605da30129cd735d18355136c490b85a5067cffd965e42b7ab7f8e57c",
-            "a0512208935d98a5116414f29fa0167c0016a786ad4de375b29d040a93ea789e",
-            "105b23978a5681c5c709b481d4b2fa8cb49f9af0b7e5b6fef49a59cb32aef96c",
-            "188b97402e2d14ebc89b24e56186e406ac1b76a4a3c99cea318d1bb3c1899e46"
+            "d9806caaa514ffe50ed13bff879b0e98d076d0352bd7c98689d72500b1c4174c",
+            "db178afab1ce47c89bdcfbcd13c81cebb0909a13128dd2d70cd94f8c65ac63f1",
+            "f3f18602095c38e3104d4a60acef7f233f1fb78690a8b1c6af85d23452536312",
+            "80b65f57d8e5e3b4f937522eb373284cd242e1b190bb8d185313b88987204607",
+            "29b7564fe6abef75b0dcaaed952736ef03717f80f6e69042c0a9537b8cbc2085"
         };
         private const ulong ExpectedResetHash = 0x9da4bc91af58f3ce;
         private const ulong ExpectedResetConformanceHash = 0x77b96b82492d6f4b;
-        private const ulong ExpectedSessionConformanceHash = 0xe7ec6bc18b5fe775;
+        private const ulong ExpectedSessionConformanceHash = 0x36bd7f1ddf0537b5;
         private static readonly byte[] ExpectedLevel1TerrainSelectors =
         {
             0, 1, 2, 4, 5, 9, 22, 23, 24, 25, 26, 27, 36, 37, 38, 39, 44, 45,
@@ -132,9 +136,10 @@ namespace MagicCarpet.Native
         internal const string ExpectedOwnerAssetClosureHash =
             "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719";
         internal const string ExpectedNativePluginHash =
-            "be69fcff460fd8cb0f05f633a2decc0ddbe97a314ff2325b5f7bc7e137368ccf";
+            "3dbde36981b66d7b37e0a946f55ad1707ac357b4f8ee8bca1c0f53baca82589b";
 
         private NativeSession session;
+        private PlaythroughRecorder playthroughRecorder;
         private OwnerAssetCache ownerAssetCache;
         private OwnerAudioPresentation ownerAudio;
         private AudioQualificationCapture audioCapture;
@@ -150,6 +155,7 @@ namespace MagicCarpet.Native
         private NativeSim.GoatSnapshot[] goats;
         private NativeSim.Level1MissionSnapshot mission;
         private NativeSim.Level1HudSnapshot level1Hud;
+        private NativeSim.Level1SpellMenuSnapshot level1SpellMenu;
         private NativeSim.Level1MinimapMarks level1MinimapMarks;
         private NativeSim.Level1MinimapEntityCommand[] level1MinimapEntities =
             Array.Empty<NativeSim.Level1MinimapEntityCommand>();
@@ -285,6 +291,16 @@ namespace MagicCarpet.Native
         private bool rightSpellRequested;
         private bool selectedSpellRequested;
         private short requestedSpell = NativeSim.NoRequestedSpell;
+        private bool spellMenuOpen;
+        private int spellMenuHoverUiIndex = -1;
+        private int spellMenuSelectedUiIndex = -1;
+        private int spellMenuHoverTier = -1;
+        private int spellMenuPressedMouseButton = -1;
+        private sbyte spellMenuPressedOpcode;
+        private bool spellAssignmentPending;
+        private sbyte spellAssignmentOpcode;
+        private sbyte spellAssignmentUiIndex;
+        private sbyte spellAssignmentTier;
         private bool autoplay;
         private bool autoplayQuit;
         private bool level1Autoplay;
@@ -1049,8 +1065,36 @@ namespace MagicCarpet.Native
             public string source_function;
             public int frame_selector;
             public HudSpellSlotDescriptor[] slots;
+            public HudSpellMenuDescriptor menu;
             public HudSpellTierRowDescriptor[] tier_rows;
             public HudDeferredField glow_tier_charge;
+        }
+
+        [Serializable]
+        private sealed class HudSpellMenuDescriptor
+        {
+            public string source_function;
+            public int rows;
+            public int columns;
+            public int reference_y;
+            public int edge_selector;
+            public int panel_selector;
+            public int selection_frame_selector;
+            public int disabled_panel_selector;
+            public int small_icon_base_selector;
+            public int left_assignment_corner_selector;
+            public int right_assignment_corner_selector;
+            public int tier_panel_selector;
+            public int tier_dark_panel_selector;
+            public int tier_locked_panel_selector;
+            public int tier_selection_frame_selector;
+            public int tier_number_base_selector;
+            public int tier_icon_base_selector;
+            public int tier_count;
+            public int panel_width;
+            public int panel_height;
+            public int edge_width;
+            public string authority;
         }
 
         [Serializable]
@@ -1329,6 +1373,27 @@ namespace MagicCarpet.Native
                     $"MC_PRESENTATION_MODE mode={(qualifiedMode ? "qualified" : "debug")} " +
                     $"ownerCache={(ownerAssetCache != null)}");
 
+                var playthroughDisabled =
+                    Environment.GetEnvironmentVariable("MC_PLAYTHROUGH_DISABLE") == "1";
+                var playthroughRequested =
+                    HasArgument(arguments, "-mc-record-playthrough");
+                var normalHumanPlay =
+                    !Application.isBatchMode &&
+                    !AutomatedInput &&
+                    !localAudioQualificationMode &&
+                    !positionalAudioQualificationMode &&
+                    !entityGallery;
+                if (!playthroughDisabled && (playthroughRequested || normalHumanPlay))
+                {
+                    playthroughRecorder = PlaythroughRecorder.Start(
+                        packagePath,
+                        closurePath,
+                        snapshot,
+                        mission);
+                    Debug.Log(
+                        $"MC_PLAYTHROUGH_RECORD path={playthroughRecorder.DirectoryPath}");
+                }
+
                 if (HasArgument(arguments, "-mc-self-test"))
                 {
                     RunHeadlessSelfTest();
@@ -1336,7 +1401,10 @@ namespace MagicCarpet.Native
                 }
 
                 Application.targetFrameRate = 120;
-                Time.fixedDeltaTime = 1f / 50f;
+                // remc2's default outer game-frame cadence. Every simulation
+                // turn, creature update, spell lifetime and movement step is
+                // measured against this clock.
+                Time.fixedDeltaTime = 1f / AuthoritativeSimulationHz;
                 hudCaptureRequested = !string.IsNullOrWhiteSpace(
                     Environment.GetEnvironmentVariable("MC_HUD_CAPTURE_PATH"));
                 ConfigureWorld();
@@ -1406,6 +1474,7 @@ namespace MagicCarpet.Native
             catch (Exception exception)
             {
                 fatalError = exception.ToString();
+                playthroughRecorder?.RecordFatal(exception);
                 enabled = false;
                 Debug.LogError("MC_FATAL " + fatalError);
                 // A player that cannot establish the explicit owner-data and
@@ -1429,6 +1498,7 @@ namespace MagicCarpet.Native
             {
                 runtimeExitRequested = true;
                 fatalError = exception.ToString();
+                playthroughRecorder?.RecordFatal(exception);
                 Debug.LogError("MC_RUNTIME_FATAL " + fatalError);
                 if (AutomatedInput || Application.isBatchMode)
                 {
@@ -1450,6 +1520,7 @@ namespace MagicCarpet.Native
             short selectedSpell;
             sbyte opcode = 0;
             sbyte argument1 = 0;
+            sbyte argument2 = 0;
             if (level1Autoplay)
             {
                 var command = level1AutopilotDriver.Next(
@@ -1466,6 +1537,7 @@ namespace MagicCarpet.Native
                 selectedSpell = command.RequestedSpell;
                 opcode = command.Opcode;
                 argument1 = command.Argument1;
+                argument2 = command.Argument2;
                 if (command.Phase != level1AutoplayPhase)
                 {
                     level1AutoplayPhase = command.Phase;
@@ -1501,7 +1573,7 @@ namespace MagicCarpet.Native
             }
             else
             {
-                flags = ReadLiveMovementFlags();
+                flags = spellMenuOpen ? 0 : ReadLiveMovementFlags();
                 appliedRoll = Cursor.lockState == CursorLockMode.Locked
                     ? ClampToSByte(steeringRoll)
                     : (sbyte)0;
@@ -1510,6 +1582,13 @@ namespace MagicCarpet.Native
                     : (sbyte)0;
                 selectedSpell = requestedSpell;
                 requestedSpell = NativeSim.NoRequestedSpell;
+            }
+            if (!level1Autoplay && !autoplay && spellAssignmentPending)
+            {
+                opcode = spellAssignmentOpcode;
+                argument1 = spellAssignmentUiIndex;
+                argument2 = spellAssignmentTier;
+                spellAssignmentPending = false;
             }
 
             if ((flags & 0x10) != 0)
@@ -1529,10 +1608,30 @@ namespace MagicCarpet.Native
                 unchecked((sbyte)flags),
                 opcode: opcode,
                 argument1: argument1,
+                argument2: argument2,
                 requestedSpell: selectedSpell);
             RefreshLiveTerrain();
             RefreshLiveGoats();
+            RefreshLiveVillagers();
             RefreshLiveMission();
+            playthroughRecorder?.RecordTick(
+                simTick,
+                opcode,
+                argument1,
+                argument2,
+                appliedRoll,
+                appliedPitch,
+                unchecked((sbyte)flags),
+                selectedSpell,
+                snapshot,
+                mission,
+                level1SpellMenu,
+                level1Palette,
+                castleLifecycle,
+                spellMenuOpen,
+                CurrentSpeedSpellTicks(),
+                goats?.Length ?? 0,
+                manaSpheres?.Length ?? 0);
             if (updatePresentation)
             {
                 RefreshFastForwardPresentation();
@@ -1639,13 +1738,48 @@ namespace MagicCarpet.Native
                 {
                     runtimeExitRequested = true;
                     fatalError = exception.ToString();
+                    playthroughRecorder?.RecordFatal(exception);
                     Debug.LogError("MC_RUNTIME_FATAL " + fatalError);
                     DisposeSession();
                     Application.Quit(3);
                 }
                 return;
             }
-            if (!AutomatedInput && Cursor.lockState == CursorLockMode.Locked)
+            var controlHeld =
+                Input.GetKey(KeyCode.LeftControl) ||
+                Input.GetKey(KeyCode.RightControl);
+            if (!AutomatedInput && !spellMenuOpen &&
+                (Input.GetKeyDown(KeyCode.LeftControl) ||
+                 Input.GetKeyDown(KeyCode.RightControl)))
+            {
+                OpenSpellMenu();
+            }
+            if (!AutomatedInput && spellMenuOpen)
+            {
+                UpdateSpellMenuHover();
+                if (spellMenuSelectedUiIndex < 0 &&
+                    Input.GetMouseButtonDown(0))
+                {
+                    BeginSpellAssignment(31, 0);
+                }
+                else if (spellMenuSelectedUiIndex < 0 &&
+                         Input.GetMouseButtonDown(1))
+                {
+                    BeginSpellAssignment(32, 1);
+                }
+                else if (spellMenuSelectedUiIndex >= 0 &&
+                         spellMenuPressedMouseButton >= 0 &&
+                         Input.GetMouseButtonUp(spellMenuPressedMouseButton))
+                {
+                    QueueSpellAssignment();
+                    EndSpellAssignmentChoice();
+                }
+                if (!controlHeld)
+                {
+                    CloseSpellMenu(true);
+                }
+            }
+            else if (!AutomatedInput && Cursor.lockState == CursorLockMode.Locked)
             {
                 steeringRoll = Mathf.Clamp(
                     steeringRoll + Input.GetAxisRaw("Mouse X") * MouseDeflectionGain,
@@ -1682,38 +1816,29 @@ namespace MagicCarpet.Native
                     CenterSteering();
                 }
             }
-            if (!AutomatedInput && Input.GetKeyDown(KeyCode.Space))
+            if (!AutomatedInput && !spellMenuOpen && Input.GetKeyDown(KeyCode.Space))
             {
                 // Keyboard fire remains available while the mouse is released;
                 // cursor capture is a presentation concern, not simulation input.
-                fireRequested = true;
-                fireInputLatchedCount++;
-                Debug.Log($"MC_FIRE input_latched source=space count={fireInputLatchedCount}");
-            }
-            if (!AutomatedInput && Input.GetKeyDown(KeyCode.Q))
-            {
                 selectedSpellRequested = true;
                 fireInputLatchedCount++;
                 Debug.Log(
-                    $"MC_FIRE input_latched source=selected-key count={fireInputLatchedCount}");
+                    $"MC_FIRE input_latched source=selected-space " +
+                    $"count={fireInputLatchedCount}");
             }
-            if (!AutomatedInput && Input.GetKeyDown(KeyCode.Alpha1))
+            if (!AutomatedInput && Input.GetKeyDown(KeyCode.Escape))
             {
-                requestedSpell = 0;
-                selectedSpellRequested = true;
+                if (spellMenuOpen)
+                {
+                    CloseSpellMenu(false);
+                }
+                else
+                {
+                    ReleaseMouse();
+                }
             }
-            if (!AutomatedInput && Input.GetKeyDown(KeyCode.Alpha2))
-            {
-                requestedSpell = 1;
-                selectedSpellRequested = true;
-            }
-            if (!AutomatedInput && Input.GetKeyDown(KeyCode.Alpha3))
-            {
-                requestedSpell = 2;
-                selectedSpellRequested = true;
-            }
-            if (!AutomatedInput && Input.GetKeyDown(KeyCode.Escape)) ReleaseMouse();
             if (!AutomatedInput && Input.GetMouseButtonDown(0) &&
+                !spellMenuOpen &&
                 Cursor.lockState != CursorLockMode.Locked) CaptureMouse();
             if (Input.GetKeyDown(KeyCode.F11)) Screen.fullScreen = !Screen.fullScreen;
             if (Input.GetKeyDown(KeyCode.F10)) Application.Quit();
@@ -2348,8 +2473,8 @@ namespace MagicCarpet.Native
             Require(worldInfo.activeEntityCount == 177, "177 active entities");
             Require(worldInfo.playerCount == 8, "8 players");
             Require(
-                worldInfo.assetRefCount == (ownerAssetCache == null ? 76u : 108u),
-                "76 frame refs plus optional 32 descriptor-backed audio refs");
+                worldInfo.assetRefCount == (ownerAssetCache == null ? 76u : 109u),
+                "76 frame refs plus 32 sound and one music owner-cache refs");
             Require(worldInfo.terrainWidth == 256 && worldInfo.terrainHeight == 256, "256x256 terrain");
             Require(worldInfo.resetStateHash == ExpectedResetHash, "reset state hash");
             Require(
@@ -2472,8 +2597,13 @@ namespace MagicCarpet.Native
             var expectedSelectors = new[]
             {
                 1, 2, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
-                51, 52, 53, 54, 55, 58, 66, 83, 84, 123, 124, 125, 126,
-                171, 172, 173,
+                51, 52, 53, 54, 55, 58, 66, 83, 84, 88, 89, 90, 91,
+                97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107,
+                108, 109, 110, 111, 112, 113, 114, 115, 116, 117,
+                118, 119, 120, 121, 122, 123, 124, 125, 126, 149, 150,
+                161, 162, 163, 164, 165, 166, 167, 171, 172, 173,
+                179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189,
+                190,
             };
             Require(
                 hudDescriptor.bitmap_assets != null &&
@@ -2541,6 +2671,30 @@ namespace MagicCarpet.Native
             Require(
                 hudDescriptor.spells != null &&
                 hudDescriptor.spells.frame_selector == 1 &&
+                hudDescriptor.spells.menu != null &&
+                hudDescriptor.spells.menu.source_function ==
+                    "DrawBottomSpellsMenu_2ECC0@0x20fcc0" &&
+                hudDescriptor.spells.menu.rows == 2 &&
+                hudDescriptor.spells.menu.columns == 13 &&
+                hudDescriptor.spells.menu.reference_y == 408 &&
+                hudDescriptor.spells.menu.edge_selector == 88 &&
+                hudDescriptor.spells.menu.panel_selector == 89 &&
+                hudDescriptor.spells.menu.selection_frame_selector == 90 &&
+                hudDescriptor.spells.menu.disabled_panel_selector == 91 &&
+                hudDescriptor.spells.menu.small_icon_base_selector == 97 &&
+                hudDescriptor.spells.menu.left_assignment_corner_selector == 149 &&
+                hudDescriptor.spells.menu.right_assignment_corner_selector == 150 &&
+                hudDescriptor.spells.menu.tier_panel_selector == 161 &&
+                hudDescriptor.spells.menu.tier_dark_panel_selector == 162 &&
+                hudDescriptor.spells.menu.tier_locked_panel_selector == 163 &&
+                hudDescriptor.spells.menu.tier_selection_frame_selector == 164 &&
+                hudDescriptor.spells.menu.tier_number_base_selector == 165 &&
+                hudDescriptor.spells.menu.tier_icon_base_selector == 179 &&
+                hudDescriptor.spells.menu.tier_count == 3 &&
+                hudDescriptor.spells.menu.panel_width == 48 &&
+                hudDescriptor.spells.menu.panel_height == 36 &&
+                hudDescriptor.spells.menu.edge_width == 8 &&
+                hudDescriptor.spells.menu.authority == "SourceMappedLive" &&
                 hudDescriptor.spells.slots != null &&
                 hudDescriptor.spells.slots.Length == 2 &&
                 hudDescriptor.spells.slots[0].semantic_role == "left_fireball" &&
@@ -2697,7 +2851,7 @@ namespace MagicCarpet.Native
                     "SourceMappedLive", StringComparison.Ordinal),
                 "qualified live mixed-authority minimap descriptor");
             Debug.Log(
-                "MC_HUD_DESCRIPTOR VERIFIED bitmaps=29 bank=HSPRN-native " +
+                "MC_HUD_DESCRIPTOR VERIFIED bitmaps=80 bank=HSPRN-native " +
                 "objectives=48-53/indexed-live-framebuffer " +
                 "blend=TABLESN:0x4000+61x256+dst tint=CLRN3840:119:252,36,36 " +
                 "spells=123-126/MissionStateLive+activationLive " +
@@ -3900,9 +4054,9 @@ namespace MagicCarpet.Native
                 descriptor.tmaps1.frame_used_selectors[2] == 54 &&
                 descriptor.tmaps1.frame_used_selectors[3] == 63 &&
                 descriptor.tmaps1.scene_reachable_selectors != null &&
-                descriptor.tmaps1.scene_reachable_selectors.Length == 163 &&
+                descriptor.tmaps1.scene_reachable_selectors.Length == 172 &&
                 descriptor.tmaps1.textures != null &&
-                descriptor.tmaps1.textures.Length == 163,
+                descriptor.tmaps1.textures.Length == 172,
                 "qualified Level 1 TMAP selector closure");
             terrainMaterialDescriptor = descriptor;
             tmapDescriptors.Clear();
@@ -4021,7 +4175,7 @@ namespace MagicCarpet.Native
             Debug.Log(
                 "MC_MATERIAL_BRIDGE VERIFIED bl32=152 selectors_used=65 " +
                 "palette=PALN shade=TABLESN-live-pnt5 uv=UVTable-D4 " +
-                "tmaps_frame=40,41,54,63 sceneTmaps=163 decoded=152 placeholders=11 " +
+                "tmaps_frame=40,41,54,63 sceneTmaps=172 decoded=161 placeholders=11 " +
                 "grid=40x21 water=source-order fog=source-distance " +
                 "deferred=screen-linear-mode5-raster");
             return material;
@@ -4394,6 +4548,7 @@ namespace MagicCarpet.Native
 
             var qualifiedSpriteCount = 0;
             var liveGoatSpriteCount = 0;
+            var liveVillagerSpriteCount = 0;
             var qualifiedFrozenActorCount = 0;
             var resetEffectDebugCount = 0;
             var unresolvedDebugCount = 0;
@@ -4438,7 +4593,8 @@ namespace MagicCarpet.Native
                 var ownerSprite = qualifiedSprite || resetEffectDebug;
                 var qualifiedFrozenActor =
                     qualifiedSprite &&
-                    entity.authority == NativeSim.FrozenObserved;
+                    (entity.authority == NativeSim.FrozenObserved ||
+                     entity.authority == NativeSim.VillagerLive);
                 if (qualifiedFrozenActor)
                     qualifiedFrozenActorCount++;
                 if (visible)
@@ -4452,6 +4608,8 @@ namespace MagicCarpet.Native
                             qualifiedSpriteCount++;
                             if (entity.authority == NativeSim.GoatLive)
                                 liveGoatSpriteCount++;
+                            else if (entity.authority == NativeSim.VillagerLive)
+                                liveVillagerSpriteCount++;
                         }
                         else resetEffectDebugCount++;
                     }
@@ -4493,9 +4651,11 @@ namespace MagicCarpet.Native
                         "qualified viewer has exactly 64 stable actor sprites");
                     Require(
                         liveGoatSpriteCount == 33 &&
-                        qualifiedSpriteCount - liveGoatSpriteCount == 31 &&
+                        liveVillagerSpriteCount == 28 &&
+                        qualifiedSpriteCount - liveGoatSpriteCount -
+                            liveVillagerSpriteCount == 3 &&
                         qualifiedFrozenActorCount == 31,
-                        "qualified owner sprites split 33 GoatLive and 31 FrozenObserved");
+                        "qualified owner sprites split 33 GoatLive, 28 VillagerLive, and 3 FrozenObserved");
                     Require(resetEffectDebugCount == 0 && unresolvedDebugCount == 0,
                         "qualified viewer has no transient/control diagnostic proxies");
                 }
@@ -4503,11 +4663,12 @@ namespace MagicCarpet.Native
             Debug.Log(
                 $"MC_ENTITY_PRESENTATION VERIFIED registry=177 qualifiedSprites=" +
                 $"{qualifiedSpriteCount} goatLive={liveGoatSpriteCount} " +
+                $"villagerLive={liveVillagerSpriteCount} " +
                 $"frozenOwnerSprites={qualifiedFrozenActorCount} " +
                 $"resetEffectDebug={resetEffectDebugCount} " +
                 $"unresolvedDebug={unresolvedDebugCount} " +
                 $"mode={(qualifiedMode ? "qualified" : "debug")} " +
-                "qualifiedSpriteAuthority=33-GoatLive+31-FrozenObserved " +
+                "qualifiedSpriteAuthority=33-GoatLive+28-VillagerLive+3-FrozenObserved " +
                 "managedFallbacks=native-capability-gated " +
                 "nativeAnimatedFamilies=Goat,Archer,Villager nativeStaticFamilies=Dolmen " +
                 "pivot=source-indexed-compositor noPhysics=true");
@@ -4525,7 +4686,7 @@ namespace MagicCarpet.Native
                     "MC_LEVEL1_PRESENTATION absent reason=owner-cache-not-supplied");
                 return;
             }
-            Require(missionActors.Length == 19, "19 live Level 1 mission actors");
+            Require(missionActors.Length == 45, "45 live Level 1 mission actors");
             foreach (var actor in missionActors)
             {
                 Require(
@@ -4538,10 +4699,10 @@ namespace MagicCarpet.Native
                         actor.authoredIndex));
             }
             Require(
-                missionActorRegistry.Count == 19,
-                "19 separate live mission presentation nodes");
+                missionActorRegistry.Count == 45,
+                "45 separate live mission presentation nodes");
             Debug.Log(
-                "MC_LEVEL1_PRESENTATION CREATED actors=19 multipart=dynamic " +
+                "MC_LEVEL1_PRESENTATION CREATED actors=45 multipart=dynamic " +
                 "effects=snapshot-owned ownerTmaps=true noPhysics=true");
         }
 
@@ -4574,12 +4735,12 @@ namespace MagicCarpet.Native
                     missionActorRegistry.TryGetValue(
                         actor.authoredIndex, out var marker),
                     $"live mission actor presentation {actor.authoredIndex}");
-                if (actor.kind == Level1ExitSwitchActorKind)
+                if (
+                    actor.kind == Level1ExitSwitchActorKind ||
+                    actor.kind == Level1CheckpointSmokeEmitterActorKind)
                 {
-                    // Feature 137 is an authored collision trigger with no
-                    // sprite/render tuple. It is exposed only by the adapted
-                    // live minimap marker until the exact remc2 mark pass is
-                    // ported.
+                    // Exit switches and checkpoint-smoke parents are authored
+                    // source entities with no sprite of their own.
                     marker.Renderer.enabled = false;
                     continue;
                 }
@@ -4775,18 +4936,34 @@ namespace MagicCarpet.Native
                     impact.model == 5 &&
                     impact.renderMode == 11 &&
                     impact.baseTmap == 186 &&
-                    impact.logicalHeight == 300;
+                    impact.logicalHeight == 300 ||
+                    impact.model == 12 &&
+                    impact.renderMode == 21 &&
+                    impact.baseTmap == 54 &&
+                    impact.renderParameterIndex == 41 &&
+                    impact.logicalHeight == 250 ||
+                    impact.model == 13 &&
+                    impact.renderMode == 21 &&
+                    impact.baseTmap == 57 &&
+                    impact.renderParameterIndex >= 67 &&
+                    impact.renderParameterIndex <= 74 &&
+                    impact.logicalHeight ==
+                        (impact.renderParameterIndex - 66) * 50;
                 Require(
                     supportedImpact &&
                     impact.animationFrame >= 0 &&
-                    impact.animationFrame <= 9,
+                    (impact.model == 13
+                        ? impact.animationFrame >= 67 && impact.animationFrame <= 74
+                        : impact.animationFrame <= 9),
                     $"class-10 effect presentation {impact.impactId}");
                 UpdateMissionMarker(
                     marker,
                     impact.x,
                     impact.y,
                     impact.z,
-                    impact.baseTmap + impact.animationFrame,
+                    impact.model == 12 || impact.model == 13
+                        ? impact.baseTmap
+                        : impact.baseTmap + impact.animationFrame,
                     impact.logicalHeight,
                     false,
                     ManagedMissionImpactVisible(
@@ -4807,7 +4984,9 @@ namespace MagicCarpet.Native
             {
                 Require(
                     actor.kind == 3 || actor.kind == 4 || actor.kind == 5 ||
-                    actor.kind == Level1ExperienceScrollActorKind,
+                    actor.kind == Level1ExperienceScrollActorKind ||
+                    actor.kind == Level1TreeActorKind ||
+                    actor.kind == Level1StoneActorKind,
                     $"fixed-selector mission actor {actor.authoredIndex}");
                 return;
             }
@@ -4854,6 +5033,8 @@ namespace MagicCarpet.Native
                 Level1MultipartHeadActorKind => (worldFrameFlags &
                     NativeSim.TerrainFrameFirefliesComposited) == 0,
                 Level1ExperienceScrollActorKind => (worldFrameFlags &
+                    NativeSim.TerrainFrameObjectivePropsComposited) == 0,
+                Level1TreeActorKind or Level1StoneActorKind => (worldFrameFlags &
                     NativeSim.TerrainFrameObjectivePropsComposited) == 0,
                 _ => true
             };
@@ -5608,7 +5789,7 @@ namespace MagicCarpet.Native
             appliedExitPaletteDenominator = byte.MaxValue;
             ApplyExitPalettePresentation();
             Debug.Log(
-                "MC_OWNER_HUD READY textures=26 " +
+                "MC_OWNER_HUD READY textures=80 " +
                 "objectives=selectors48-53/indexed-live-TABLESN-blend " +
                 "minimap=128-native/TABLESN-aperture/fixed-rotation " +
                 "terrain/OwnerLevelStatic,entities/MissionStateLive," +
@@ -6478,7 +6659,8 @@ namespace MagicCarpet.Native
                             liveGoat
                                 ? entity.authority == NativeSim.GoatLive &&
                                   marker.Group.group_id == "reset-050"
-                                : entity.authority == NativeSim.FrozenObserved,
+                                : entity.authority == NativeSim.FrozenObserved ||
+                                  entity.authority == NativeSim.VillagerLive,
                             $"owner sprite authority {marker.Index}");
                         if (flightCamera != null)
                         {
@@ -6548,10 +6730,27 @@ namespace MagicCarpet.Native
             }
         }
 
+        private void RefreshLiveVillagers()
+        {
+            if (entities == null || entities.Length <= 78) return;
+            for (ushort entityIndex = 51; entityIndex <= 78; entityIndex++)
+            {
+                var villager = session.EntityAt(entityIndex);
+                Require(
+                    villager.entityIndex == entityIndex &&
+                    villager.classId == 5 &&
+                    villager.model == 13 &&
+                    villager.authority == NativeSim.VillagerLive,
+                    $"exact live Villager row {entityIndex}");
+                entities[entityIndex] = villager;
+            }
+        }
+
         private void RefreshLiveMission()
         {
             var nextMission = session.Level1Mission();
             var nextHud = session.Level1Hud(nextMission);
+            var nextSpellMenu = session.Level1SpellMenu(nextMission);
             var nextMinimapMarks = session.Level1MinimapMarks(nextMission);
             var nextMinimapEntities = session.Level1MinimapEntities(
                 nextMission, out var nextMinimapEntitiesInfo);
@@ -6566,6 +6765,8 @@ namespace MagicCarpet.Native
                 nextMission.tick == snapshot.tick &&
                 nextHud.generation == snapshot.generation &&
                 nextHud.tick == snapshot.tick &&
+                nextSpellMenu.generation == snapshot.generation &&
+                nextSpellMenu.tick == snapshot.tick &&
                 nextMinimapMarks.generation == snapshot.generation &&
                 nextMinimapMarks.tick == snapshot.tick &&
                 nextMinimapEntitiesInfo.generation == snapshot.generation &&
@@ -6594,7 +6795,7 @@ namespace MagicCarpet.Native
             var nextImpacts = session.FireballImpacts(nextMission);
             Require(
                 nextActors.Length == nextMission.actorCount &&
-                nextActors.Length == 19 &&
+                nextActors.Length == 45 &&
                 nextMultipartSegments.Length <= 48 &&
                 nextProjectiles.Length == nextMission.projectileCount &&
                 nextImpacts.Length == nextMission.impactCount &&
@@ -6611,6 +6812,7 @@ namespace MagicCarpet.Native
             }
             mission = nextMission;
             level1Hud = nextHud;
+            level1SpellMenu = nextSpellMenu;
             level1MinimapMarks = nextMinimapMarks;
             level1MinimapEntities = nextMinimapEntities;
             level1MinimapEntitiesInfo = nextMinimapEntitiesInfo;
@@ -6646,6 +6848,7 @@ namespace MagicCarpet.Native
                 for (var index = 0; index < batch.written; index++)
                 {
                     var nativeEvent = buffer[index];
+                    playthroughRecorder?.RecordEvent(nativeEvent);
                     if (autoplay)
                     {
                         AppendCanonicalEvent(
@@ -6785,6 +6988,7 @@ namespace MagicCarpet.Native
         private void ResetSession()
         {
             snapshot = session.Reset();
+            playthroughRecorder?.RecordReset(snapshot);
             ownerAudio?.Reset();
             eventCursor = 0;
             qualificationGoatEvents.Clear();
@@ -6794,6 +6998,16 @@ namespace MagicCarpet.Native
             rightSpellRequested = false;
             selectedSpellRequested = false;
             requestedSpell = NativeSim.NoRequestedSpell;
+            spellMenuOpen = false;
+            spellMenuHoverUiIndex = -1;
+            spellMenuSelectedUiIndex = -1;
+            spellMenuHoverTier = -1;
+            spellMenuPressedMouseButton = -1;
+            spellMenuPressedOpcode = 0;
+            spellAssignmentPending = false;
+            spellAssignmentOpcode = 0;
+            spellAssignmentUiIndex = 0;
+            spellAssignmentTier = 0;
             terrainFrameGpuValidated = false;
             terrainFrameRouteGpuValidated = false;
             qualifiedTerrainRouteTicks.Clear();
@@ -6806,6 +7020,7 @@ namespace MagicCarpet.Native
             RefreshLiveTerrain();
             RefreshLivePlayerRow();
             RefreshLiveGoats();
+            RefreshLiveVillagers();
             RefreshLiveMission();
             ReadAuthoritativePose(true);
             UpdateExactTerrainGrid();
@@ -7051,7 +7266,7 @@ namespace MagicCarpet.Native
                     hudDescriptor.spells.slots[0].activation_authority ==
                         "SpellActivationLive",
                     "headless owner HUD descriptor authority");
-                Require(ownerAudio != null && worldInfo.assetRefCount == 108,
+                Require(ownerAudio != null && worldInfo.assetRefCount == 109,
                     "headless descriptor-backed owner audio");
                 var cleanupBefore =
                     OwnerAudioPresentation.QualificationTransactionalCleanupCount;
@@ -7307,7 +7522,7 @@ namespace MagicCarpet.Native
                         Require(
                             ownerAssetCache != null
                                 ? eventBuffer[index].assetRefIndex >= 76 &&
-                                  eventBuffer[index].assetRefIndex <= 107
+                                  eventBuffer[index].assetRefIndex <= 108
                                 : eventBuffer[index].assetRefIndex == uint.MaxValue,
                             ownerAssetCache != null
                                 ? "typed audio event descriptor-backed asset reference"
@@ -7367,7 +7582,7 @@ namespace MagicCarpet.Native
                     code = 1,
                     value0 = 0,
                     value1 = 1,
-                    assetRefIndex = 107
+                    assetRefIndex = 108
                 };
                 ownerAudio.Consume(musicStartEvent);
                 Require(
@@ -7380,7 +7595,7 @@ namespace MagicCarpet.Native
                     kind = NativeSim.EventUpdateMusic,
                     code = 2,
                     value0 = 3,
-                    assetRefIndex = 107
+                    assetRefIndex = 108
                 };
                 ownerAudio.Consume(combatMusicEvent);
                 Require(
@@ -7413,7 +7628,7 @@ namespace MagicCarpet.Native
                     "proven local feedback one-shot is playable");
                 oneShotEvent.sequence++;
                 oneShotEvent.code = 37;
-                oneShotEvent.assetRefIndex = 95;
+                oneShotEvent.assetRefIndex = 96;
                 ownerAudio.Consume(oneShotEvent);
                 Require(
                     ownerAudio.HadSuppressedUnsupportedPositional &&
@@ -7577,6 +7792,8 @@ namespace MagicCarpet.Native
         private int ReadLiveMovementFlags()
         {
             var flags = 0;
+            // remc2 samples held arrow state once per outer game turn. This
+            // method is called exactly once by the authoritative 30 Hz step.
             if (Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.UpArrow)) flags |= 0x01;
             if (Input.GetKey(KeyCode.S) || Input.GetKey(KeyCode.DownArrow)) flags |= 0x02;
             if (Input.GetKey(KeyCode.A)) flags |= 0x04;
@@ -7597,6 +7814,18 @@ namespace MagicCarpet.Native
                 selectedSpellRequested = false;
             }
             return flags;
+        }
+
+        private int CurrentSpeedSpellTicks()
+        {
+            foreach (var actor in missionActors)
+            {
+                if (actor.kind == 4 && actor.collected != 0)
+                {
+                    return actor.stateValue;
+                }
+            }
+            return 0;
         }
 
         private static bool RejectsAudioCapturePath(string path)
@@ -7669,6 +7898,10 @@ namespace MagicCarpet.Native
                         ScaleMode.StretchToFill,
                         true);
                 }
+                if (spellMenuOpen)
+                {
+                    DrawOwnerSpellMenu();
+                }
             }
             finally
             {
@@ -7677,12 +7910,103 @@ namespace MagicCarpet.Native
             }
         }
 
+        private void DrawOwnerSpellMenu()
+        {
+            var menu = hudDescriptor.spells.menu;
+            DrawOwnerHudBitmap(menu.edge_selector, 0, menu.reference_y);
+            DrawOwnerHudBitmap(
+                menu.edge_selector,
+                640 - menu.edge_width,
+                menu.reference_y);
+            for (var uiIndex = 0; uiIndex < menu.rows * menu.columns; uiIndex++)
+            {
+                var x =
+                    menu.edge_width +
+                    (uiIndex % menu.columns) * menu.panel_width;
+                var y =
+                    menu.reference_y +
+                    (uiIndex / menu.columns) * menu.panel_height;
+                var enabled = SpellEnabledForUiIndex(uiIndex);
+                DrawOwnerHudBitmap(
+                    enabled
+                        ? menu.panel_selector
+                        : menu.disabled_panel_selector,
+                    x,
+                    y);
+                if (enabled)
+                {
+                    DrawOwnerHudBitmap(
+                        menu.small_icon_base_selector + uiIndex,
+                        x,
+                        y);
+                    if (level1SpellMenu.leftFamily == uiIndex)
+                    {
+                        DrawOwnerHudBitmap(
+                            menu.left_assignment_corner_selector,
+                            x,
+                            y);
+                    }
+                    if (level1SpellMenu.rightFamily == uiIndex)
+                    {
+                        DrawOwnerHudBitmap(
+                            menu.right_assignment_corner_selector,
+                            x + menu.panel_width - 12,
+                            y);
+                    }
+                }
+                if (spellMenuHoverUiIndex == uiIndex)
+                {
+                    DrawOwnerHudBitmap(menu.selection_frame_selector, x, y);
+                }
+            }
+            if (spellMenuSelectedUiIndex >= 0)
+            {
+                DrawOwnerSpellTierMenu();
+            }
+        }
+
+        private void DrawOwnerSpellTierMenu()
+        {
+            var menu = hudDescriptor.spells.menu;
+            var tierPanel = hudBitmapDescriptors[menu.tier_locked_panel_selector];
+            var startX = SpellTierMenuStartX(
+                spellMenuSelectedUiIndex,
+                menu.columns,
+                menu.edge_width,
+                menu.panel_width,
+                menu.tier_count,
+                tierPanel.runtime_width);
+            var y = menu.reference_y - tierPanel.runtime_height;
+            var unlockedTier = SpellUnlockedTier(spellMenuSelectedUiIndex);
+            for (var tier = 0; tier < menu.tier_count; tier++)
+            {
+                var x = startX + tier * tierPanel.runtime_width;
+                if (tier > unlockedTier)
+                {
+                    DrawOwnerHudBitmap(menu.tier_locked_panel_selector, x, y);
+                    continue;
+                }
+                DrawOwnerHudBitmap(menu.tier_panel_selector, x, y);
+                DrawOwnerHudBitmap(menu.tier_number_base_selector + tier, x + 6, y + 10);
+                DrawOwnerHudBitmap(
+                    menu.tier_icon_base_selector +
+                    3 * spellMenuSelectedUiIndex +
+                    tier,
+                    x + 18,
+                    y + 6);
+                if (spellMenuHoverTier == tier)
+                {
+                    DrawOwnerHudBitmap(menu.tier_selection_frame_selector, x, y);
+                }
+            }
+        }
+
         private void DrawOwnerTopBar()
         {
             DrawOwnerHudBitmap(40, 2, 2);
 
             const int castlePanelX = 126;
-            if (level1Castle.active != 0)
+            if (level1Castle.active != 0 && level1Castle.level > 0)
             {
                 DrawOwnerHudBitmap(
                     level1Hud.castleHitFrameTicks > 0 &&
@@ -8024,6 +8348,7 @@ namespace MagicCarpet.Native
             if (entity.authority == NativeSim.SpellActivationLive)
                 return "SpellActivationLive; holder fields unavailable";
             if (entity.authority == NativeSim.GoatLive) return "GoatLive";
+            if (entity.authority == NativeSim.VillagerLive) return "VillagerLive";
             return "FrozenObserved";
         }
 
@@ -8242,6 +8567,165 @@ namespace MagicCarpet.Native
             appliedPitch = 0;
         }
 
+        private void OpenSpellMenu()
+        {
+            spellMenuOpen = true;
+            spellMenuHoverUiIndex = -1;
+            EndSpellAssignmentChoice();
+            ReleaseMouse();
+            UpdateSpellMenuHover();
+        }
+
+        private void CloseSpellMenu(bool captureMouse)
+        {
+            spellMenuOpen = false;
+            spellMenuHoverUiIndex = -1;
+            EndSpellAssignmentChoice();
+            if (captureMouse)
+            {
+                CaptureMouse();
+            }
+        }
+
+        private void UpdateSpellMenuHover()
+        {
+            if (!spellMenuOpen || hudDescriptor?.spells?.menu == null)
+            {
+                spellMenuHoverUiIndex = -1;
+                return;
+            }
+            var menu = hudDescriptor.spells.menu;
+            var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+            var offsetX = (Screen.width - 640f * scale) * 0.5f;
+            var offsetY = (Screen.height - 480f * scale) * 0.5f;
+            var logicalX = (Input.mousePosition.x - offsetX) / scale;
+            var logicalY =
+                (Screen.height - Input.mousePosition.y - offsetY) / scale;
+            if (spellMenuSelectedUiIndex >= 0)
+            {
+                var tierPanel = hudBitmapDescriptors[menu.tier_locked_panel_selector];
+                var startX = SpellTierMenuStartX(
+                    spellMenuSelectedUiIndex,
+                    menu.columns,
+                    menu.edge_width,
+                    menu.panel_width,
+                    menu.tier_count,
+                    tierPanel.runtime_width);
+                spellMenuHoverTier = SpellTierFromLogicalX(
+                    logicalX,
+                    startX,
+                    tierPanel.runtime_width,
+                    SpellUnlockedTier(spellMenuSelectedUiIndex));
+                spellMenuHoverUiIndex = spellMenuSelectedUiIndex;
+                return;
+            }
+            var column = Mathf.FloorToInt(
+                (logicalX - menu.edge_width) / menu.panel_width);
+            var row = Mathf.FloorToInt(
+                (logicalY - menu.reference_y) / menu.panel_height);
+            if (column < 0 || column >= menu.columns ||
+                row < 0 || row >= menu.rows)
+            {
+                spellMenuHoverUiIndex = -1;
+                return;
+            }
+            var uiIndex = row * menu.columns + column;
+            spellMenuHoverUiIndex =
+                SpellEnabledForUiIndex(uiIndex) ? uiIndex : -1;
+            spellMenuHoverTier = -1;
+        }
+
+        private bool SpellEnabledForUiIndex(int uiIndex)
+        {
+            return uiIndex >= 0 &&
+                   level1SpellMenu.familyEnabled != null &&
+                   uiIndex < level1SpellMenu.familyEnabled.Length &&
+                   level1SpellMenu.familyEnabled[uiIndex] != 0;
+        }
+
+        private int SpellUnlockedTier(int uiIndex)
+        {
+            if (!SpellEnabledForUiIndex(uiIndex))
+            {
+                return 0;
+            }
+            return Mathf.Clamp(
+                level1SpellMenu.familyUnlockedTier[uiIndex],
+                0,
+                hudDescriptor.spells.menu.tier_count - 1);
+        }
+
+        internal static int SpellTierMenuStartX(
+            int uiIndex,
+            int columns,
+            int edgeWidth,
+            int familyPanelWidth,
+            int tierCount,
+            int tierPanelWidth)
+        {
+            var totalWidth = tierCount * tierPanelWidth;
+            var familyCentre =
+                edgeWidth +
+                (uiIndex % columns) * familyPanelWidth +
+                familyPanelWidth / 2;
+            return Mathf.Clamp(
+                familyCentre - totalWidth / 2,
+                0,
+                640 - totalWidth);
+        }
+
+        internal static int SpellTierFromLogicalX(
+            float logicalX,
+            int startX,
+            int tierPanelWidth,
+            int unlockedTier)
+        {
+            var tier = Mathf.FloorToInt((logicalX - startX) / tierPanelWidth);
+            return Mathf.Clamp(tier, 0, unlockedTier);
+        }
+
+        private void BeginSpellAssignment(sbyte opcode, int mouseButton)
+        {
+            if (spellMenuHoverUiIndex < 0 ||
+                !SpellEnabledForUiIndex(spellMenuHoverUiIndex))
+            {
+                return;
+            }
+            spellMenuSelectedUiIndex = spellMenuHoverUiIndex;
+            spellMenuHoverTier = Mathf.Clamp(
+                level1SpellMenu.familySelectedTier[spellMenuSelectedUiIndex],
+                0,
+                SpellUnlockedTier(spellMenuSelectedUiIndex));
+            spellMenuPressedOpcode = opcode;
+            spellMenuPressedMouseButton = mouseButton;
+            UpdateSpellMenuHover();
+        }
+
+        private void EndSpellAssignmentChoice()
+        {
+            spellMenuSelectedUiIndex = -1;
+            spellMenuHoverTier = -1;
+            spellMenuPressedMouseButton = -1;
+            spellMenuPressedOpcode = 0;
+        }
+
+        private void QueueSpellAssignment()
+        {
+            if (spellMenuSelectedUiIndex < 0 ||
+                spellMenuHoverTier < 0 ||
+                !SpellEnabledForUiIndex(spellMenuSelectedUiIndex))
+            {
+                return;
+            }
+            spellAssignmentPending = true;
+            spellAssignmentOpcode = spellMenuPressedOpcode;
+            spellAssignmentUiIndex = checked((sbyte)spellMenuSelectedUiIndex);
+            spellAssignmentTier = checked((sbyte)spellMenuHoverTier);
+            Debug.Log(
+                $"MC_SPELL_MENU assign={(spellAssignmentOpcode == 31 ? "left" : "right")} " +
+                $"ui={spellAssignmentUiIndex} tier={spellAssignmentTier}");
+        }
+
         private static void CaptureMouse()
         {
             Cursor.lockState = CursorLockMode.Locked;
@@ -8290,6 +8774,9 @@ namespace MagicCarpet.Native
             terrainFrameIndexTexture = null;
             terrainFrameCoverageTexture = null;
             audioCapture?.Finish();
+            playthroughRecorder?.Finish(fatalError);
+            playthroughRecorder?.Dispose();
+            playthroughRecorder = null;
             ownerAudio?.Dispose();
             ownerAudio = null;
             session?.Dispose();

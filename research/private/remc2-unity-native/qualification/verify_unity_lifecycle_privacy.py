@@ -95,6 +95,7 @@ def verify_test_evidence(args: argparse.Namespace) -> int:
             + "LiveTerrainAndCastleLifecycleAreTypedHashedResettableAndSessionLocal",
             edit_prefix + "OpenResetDisposeAndTwoSessionsRemainIndependent",
             edit_prefix + "OwnerCacheUsesItsSemanticClosureIdentity",
+            edit_prefix + "SpellAssignmentOpcodesDriveTheSourceHandAndTierSnapshot",
             edit_prefix
             + "ObjectiveTextboxBlendsAllPaletteInputsThenOverwritesWithForeground",
             edit_prefix
@@ -106,6 +107,8 @@ def verify_test_evidence(args: argparse.Namespace) -> int:
             edit_prefix + "LevelOneAutopilotNegativeControlsStopAtTheirObjectives",
             edit_prefix + "LevelOneAutopilotObservationExcludesHiddenEnemyState",
             edit_prefix
+            + "LevelOnePostCompletionPilotKeepsAVisibleMultipartTargetLock",
+            edit_prefix
             + "LevelOnePostCompletionAutopilotFightsGroups33And34BeforeExit",
             edit_prefix
             + "LevelOneNaturalFireflyRetaliationUsesOnlyOrdinaryPlayerInputs",
@@ -115,6 +118,7 @@ def verify_test_evidence(args: argparse.Namespace) -> int:
             + "WorldFrameCompositesSupportedFamiliesWithoutChangingTerrainOnlyContract",
             edit_prefix
             + "FrozenActorManagedFallbackIsSuppressedOnlyForTheQualifiedThirtyOne",
+            edit_prefix + "LiveSimulationUsesTheRemc2DefaultThirtyHertzCadence",
             edit_prefix + "MissionActorManagedFallbackIsSuppressedOnlyByItsNativeCapability",
             edit_prefix + "NativePaletteIsAtomicAndMatchesQualifiedPalnAtReset",
         },
@@ -141,7 +145,7 @@ def verify_test_evidence(args: argparse.Namespace) -> int:
     allocated = int(match.group(1))
     require(allocated <= 64 * 1024, "bulk ABI managed allocation budget exceeded")
     require(
-        "MC_ASSET_CACHE VERIFIED outputs=447 " in play_log
+        "MC_ASSET_CACHE VERIFIED outputs=570 " in play_log
         and "MC_PRESENTATION_MODE mode=qualified ownerCache=True" in play_log
         and "MC_OBJECTIVE_INDEXED_BLEND LIVE selector=48 ticks=33 " in play_log
         and "GfxDevice: creating device client;" in play_log
@@ -364,7 +368,7 @@ def verify_positive_player() -> None:
         log_path.unlink(missing_ok=True)
     require(result.returncode == 0, "qualified built-player self-test failed")
     for marker in (
-        "MC_ASSET_CACHE VERIFIED outputs=447 ",
+        "MC_ASSET_CACHE VERIFIED outputs=570 ",
         "MC_IDLE_QUAL PASS ",
         "MC_ROUTE_QUAL PASS checkpoints=5 steps=440 ",
         "MC_SELF_TEST PASS abi=2 ",
@@ -449,7 +453,7 @@ def main() -> None:
     negative_cases = verify_negative_player_paths()
     print(
         "MC_UNITY_LIFECYCLE_PRIVACY PASS "
-        "editMode=26/26 playMode=1/1 "
+        "editMode=29/29 playMode=1/1 "
         f"bulkAllocatedBytes={allocated} "
         f"surfaceFiles={surface_files} "
         f"registeredOwnerHashes={registered_hashes} "

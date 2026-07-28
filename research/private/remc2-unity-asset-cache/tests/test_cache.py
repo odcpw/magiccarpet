@@ -143,6 +143,46 @@ class OwnerCacheTests(unittest.TestCase):
                 "word_0": 2,
             },
         )
+        houses = manifest["assets"]["level1_house_footprints"]
+        self.assertEqual(
+            houses["build_indices"],
+            list(cache.LEVEL1_HOUSE_BUILD_INDICES),
+        )
+        house_descriptor = json.loads(
+            (self.first / houses["path"]).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            house_descriptor["schema"],
+            "mc2-level1-house-build-footprints/v1",
+        )
+        house_cells = (
+            self.first / house_descriptor["cells"]["path"]
+        ).read_bytes()
+        self.assertEqual(len(house_cells), 7858)
+        self.assertEqual(
+            hashlib.sha256(house_cells).hexdigest(),
+            "902f81508af1d7b8c8a65658a114aefeec79c94c5cb350fc5b5544ac42c06784",
+        )
+        self.assertEqual(
+            [
+                (row["build_index"], row["width"], row["height"])
+                for row in house_descriptor["footprints"]
+            ],
+            [
+                (17, 48, 48),
+                (26, 9, 11),
+                (29, 13, 11),
+                (30, 13, 15),
+                (31, 23, 11),
+                (34, 22, 22),
+                (42, 11, 11),
+                (47, 11, 11),
+                (50, 7, 7),
+                (51, 4, 12),
+                (52, 12, 4),
+                (53, 8, 8),
+            ],
+        )
         entity_asset = manifest["assets"]["entity_presentations"]
         self.assertEqual(entity_asset["qualified_actor_count"], 64)
         self.assertEqual(entity_asset["mapped_reset_effect_count"], 19)
@@ -327,11 +367,16 @@ class OwnerCacheTests(unittest.TestCase):
             [row["selector"] for row in bitmap_assets],
             [
                 1, 2, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
-                51, 52, 53, 54, 55, 58, 66, 83, 84, 123, 124, 125, 126,
-                171, 172, 173,
+                51, 52, 53, 54, 55, 58, 66, 83, 84, 88, 89, 90, 91,
+                97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107,
+                108, 109, 110, 111, 112, 113, 114, 115, 116, 117,
+                118, 119, 120, 121, 122, 123, 124, 125, 126, 149, 150,
+                161, 162, 163, 164, 165, 166, 167, 171, 172, 173,
+                179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189,
+                190,
             ],
         )
-        self.assertEqual(len({row["selector"] for row in bitmap_assets}), 29)
+        self.assertEqual(len({row["selector"] for row in bitmap_assets}), 80)
         self.assertTrue(
             all(
                 row["bank"] == "HSPRN0-0"
@@ -372,13 +417,64 @@ class OwnerCacheTests(unittest.TestCase):
                 66: (18, 23),
                 83: (5, 5),
                 84: (9, 9),
+                88: (8, 72),
+                89: (48, 36),
+                90: (48, 36),
+                91: (48, 36),
+                97: (41, 23),
+                98: (41, 23),
+                99: (41, 23),
+                100: (41, 23),
+                101: (41, 23),
+                102: (41, 23),
+                103: (41, 23),
+                104: (41, 23),
+                105: (41, 23),
+                106: (41, 23),
+                107: (41, 23),
+                108: (41, 23),
+                109: (41, 23),
+                110: (41, 23),
+                111: (41, 23),
+                112: (41, 23),
+                113: (41, 23),
+                114: (41, 23),
+                115: (41, 23),
+                116: (41, 23),
+                117: (41, 23),
+                118: (41, 23),
+                119: (41, 23),
+                120: (41, 23),
+                121: (41, 23),
+                122: (41, 23),
                 123: (62, 34),
                 124: (62, 34),
                 125: (62, 34),
                 126: (62, 34),
+                149: (12, 12),
+                150: (12, 12),
+                161: (66, 34),
+                162: (66, 34),
+                163: (66, 34),
+                164: (66, 34),
+                165: (6, 12),
+                166: (10, 12),
+                167: (14, 12),
                 171: (16, 12),
                 172: (16, 14),
                 173: (32, 10),
+                179: (40, 22),
+                180: (40, 22),
+                181: (40, 22),
+                182: (40, 22),
+                183: (40, 22),
+                184: (40, 22),
+                185: (40, 22),
+                186: (40, 22),
+                187: (40, 22),
+                188: (40, 22),
+                189: (40, 22),
+                190: (40, 22),
             },
         )
         self.assertEqual(
@@ -677,8 +773,8 @@ class OwnerCacheTests(unittest.TestCase):
         self.assertEqual(
             sound["materialized_sound_ids"],
             [
-                1, 2, 3, 4, 5, 8, 9, 10, 15, 16, 18, 19, 27, 29, 30, 31,
-                33, 34, 37, 39, 40, 41, 43, 44, 46, 54, 55, 56, 57, 63,
+                1, 2, 3, 4, 5, 8, 9, 10, 14, 15, 16, 18, 19, 27, 29, 30,
+                31, 33, 34, 37, 39, 40, 41, 43, 44, 46, 54, 55, 56, 57, 63,
             ],
         )
         self.assertEqual(sound["explicit_null_sound_ids"], [12])
@@ -697,6 +793,7 @@ class OwnerCacheTests(unittest.TestCase):
                 9: "original_stereo_positional",
                 10: "original_stereo_positional",
                 12: "explicit_null",
+                14: "local_feedback",
                 15: "original_stereo_positional",
                 16: "original_stereo_positional",
                 18: "original_stereo_positional",
@@ -740,6 +837,8 @@ class OwnerCacheTests(unittest.TestCase):
                  "1629b0015e5eba8f1c8b9d0504ae9c67280efa9bb5f742a450b346f38ca6bd53"),
             12: ("NULL.WAV", 64, 16,
                  "3a1a42d64f3295fa6bfa7cd321ebe66db702ec398fc958c16c5f9fe46bc325c4"),
+            14: ("SELECT.WAV", 17264, 17217,
+                 "3323d19462e645fae51ecefafdee7f256c76acb62bd1d6497833e1120f73fef6"),
             15: ("FIREBAL2.WAV", 34032, 33984,
                  "69122af4883939c44437cd5fbf6aac4696f97e238adc2c091f2b97a3deb1a0f2"),
             16: ("DIE.WAV", 34416, 34368,
@@ -1058,8 +1157,8 @@ class OwnerCacheTests(unittest.TestCase):
         materials = manifest["assets"]["terrain_materials"]
         self.assertEqual(materials["bl32_tile_count"], 152)
         self.assertEqual(materials["tmap_frame_used_selectors"], [40, 41, 54, 63])
-        self.assertEqual(materials["tmap_scene_reachable_selector_count"], 163)
-        self.assertEqual(materials["tmap_decoded_texture_count"], 152)
+        self.assertEqual(materials["tmap_scene_reachable_selector_count"], 172)
+        self.assertEqual(materials["tmap_decoded_texture_count"], 161)
         self.assertEqual(materials["tmap_raw_placeholder_count"], 11)
         descriptor = json.loads((self.first / materials["path"]).read_text())
         self.assertEqual(
@@ -1086,7 +1185,7 @@ class OwnerCacheTests(unittest.TestCase):
         self.assertEqual(max(rgb6), 63)
         self.assertEqual(max(rgb8), 252)
         self.assertEqual(descriptor["tmaps1"]["frame_used_selectors"], [40, 41, 54, 63])
-        self.assertEqual(len(descriptor["tmaps1"]["scene_reachable_selectors"]), 163)
+        self.assertEqual(len(descriptor["tmaps1"]["scene_reachable_selectors"]), 172)
         self.assertTrue(
             set(cache.LEVEL1_LIVE_MISSION_TMAPS)
             <= set(descriptor["tmaps1"]["scene_reachable_selectors"])

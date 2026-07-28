@@ -14,8 +14,10 @@ pub mod goat_draw_admission;
 pub mod goat_map_chain;
 pub mod goat_sprite_raster;
 pub mod goat_tmap;
+pub mod house;
 pub mod legacy_terrain;
 pub mod level1_mission;
+pub mod level1_parity;
 pub mod mode26_raster;
 pub mod mode5_raster;
 pub mod music;
@@ -31,6 +33,7 @@ pub mod terrain_frame;
 pub mod terrain_grid;
 pub mod terrain_presentation;
 pub mod terrain_reflection;
+pub mod villager;
 
 include!(concat!(env!("OUT_DIR"), "/trig_table.rs"));
 
@@ -518,8 +521,18 @@ pub struct SpellFireContext {
     pub left_holder_index: u16,
     pub right_holder_index: u16,
     pub selected_holder_index: u16,
+    /// Source `SubSpellIndexLeft_1109`.
+    pub left_subspell_index: i8,
+    /// Source `SubSpellIndexRight_1110`.
+    pub right_subspell_index: i8,
     pub selected_spell_ui_index: u8,
+    /// Source spell-menu cursor `subSpellIndex_0x459_1113`.
+    pub selected_subspell_index: i8,
     pub enabled_holder_indices: [u16; 26],
+    /// Single-player `spellsExperience_0x2CB_715x`.
+    pub spell_experience: [i32; 26],
+    /// Recomputed `SpellLevels_0x41D_1053z`.
+    pub spell_levels: [i8; 26],
     pub caster: SpellCasterState,
     /// One registry preserves source aliasing when multiple fire selections
     /// resolve to the same holder entity.
@@ -633,17 +646,57 @@ pub fn latch_command_with_context(
     if let Some(fire) = context.spell_fire.as_mut() {
         fire.accepted_models.clear();
     }
-    if command.opcode == 6 && command.flags.cast_unsigned() & 0x40 != 0 {
-        let fire = context
-            .spell_fire
-            .as_mut()
-            .expect("selected-spell movement command requires spell-fire context");
+    if command.opcode == 6
+        && command.flags & 0x40 != 0
+        && let Some(fire) = context.spell_fire.as_mut()
+    {
         fire.selected_spell_ui_index = command.argument_1.cast_unsigned();
         let spell_index = SOURCE_SPELL_INDEX_MAP
             .get(usize::from(fire.selected_spell_ui_index))
             .copied()
             .expect("source-valid selected-spell UI index");
         fire.selected_holder_index = fire.enabled_holder_indices[usize::from(spell_index)];
+        fire.selected_subspell_index = fire
+            .holders
+            .iter()
+            .find(|holder| holder.entity_index == fire.selected_holder_index)
+            .map_or(0, |holder| holder.level_gate);
+    }
+    if matches!(command.opcode, 31 | 32)
+        && let Some(fire) = context.spell_fire.as_mut()
+    {
+        let ui_index = command.argument_1.cast_unsigned();
+        let spell_index = SOURCE_SPELL_INDEX_MAP
+            .get(usize::from(ui_index))
+            .copied()
+            .expect("source-valid spell-menu UI index");
+        let holder_index = fire.enabled_holder_indices[usize::from(spell_index)];
+        if holder_index != 0 {
+            let requested_tier = command.argument_2.max(0);
+            let available_tier = fire.spell_levels[usize::from(spell_index)].max(0);
+            let tier = requested_tier.min(available_tier);
+            let holder = fire
+                .holders
+                .iter_mut()
+                .find(|holder| holder.entity_index == holder_index)
+                .expect("enabled spell family has a projected holder");
+            holder.level_gate = tier;
+            if command.opcode == 31 {
+                fire.left_holder_index = holder_index;
+                fire.left_subspell_index = tier;
+            } else {
+                fire.right_holder_index = holder_index;
+                fire.right_subspell_index = tier;
+            }
+            fire.selected_spell_ui_index = ui_index;
+            fire.selected_holder_index = holder_index;
+            fire.selected_subspell_index = tier;
+            context.events.push(FlightEvent::PrepareSound {
+                entity_index: 0,
+                player_index: i16::from(fire.caster.player_color_index),
+                sound_id: 14,
+            });
+        }
     }
     if command.opcode == 0x27 {
         command.roll = 0;
@@ -652,12 +705,23 @@ pub fn latch_command_with_context(
             state.actual_speed = 0;
             state.target_speed = 0;
             if state.speed_spell_holder_index != 0 {
+                let holder_index = state.speed_spell_holder_index;
                 let holder = context
                     .speed_spell_holder
                     .as_mut()
-                    .filter(|holder| holder.entity_index == state.speed_spell_holder_index)
+                    .filter(|holder| holder.entity_index == holder_index)
                     .expect("source-valid speed-spell holder is projected");
                 holder.active_value = 0;
+                let fire_holder = context
+                    .spell_fire
+                    .as_mut()
+                    .and_then(|fire| {
+                        fire.holders
+                            .iter_mut()
+                            .find(|holder| holder.entity_index == holder_index)
+                    })
+                    .expect("source-valid speed-spell holder is in the spell registry");
+                fire_holder.active_value = 0;
             }
         }
     }
@@ -866,12 +930,23 @@ fn reject_step<W: FlightWorld>(
     if stop_target {
         state.target_speed = 0;
         if state.speed_spell_holder_index != 0 {
+            let holder_index = state.speed_spell_holder_index;
             let holder = context
                 .speed_spell_holder
                 .as_mut()
-                .filter(|holder| holder.entity_index == state.speed_spell_holder_index)
+                .filter(|holder| holder.entity_index == holder_index)
                 .expect("source-valid speed-spell holder is projected");
             holder.active_value = 0;
+            let fire_holder = context
+                .spell_fire
+                .as_mut()
+                .and_then(|fire| {
+                    fire.holders
+                        .iter_mut()
+                        .find(|holder| holder.entity_index == holder_index)
+                })
+                .expect("source-valid speed-spell holder is in the spell registry");
+            fire_holder.active_value = 0;
         }
     }
     let recover = world.material_mask(before) == MOVEMENT_REDIRECT_MASK
@@ -1028,27 +1103,48 @@ fn activate_selected_spell(
         holder_entity_index,
         direction_mask,
     });
-    let fire = context
-        .spell_fire
-        .as_mut()
-        .expect("spell-fire context remains present during dispatch");
-    let holder = if holder_entity_index == 0 {
-        None
-    } else {
-        fire.holders
-            .iter_mut()
+    let (accepted, holder_model, holder_active_value) = {
+        let fire = context
+            .spell_fire
+            .as_mut()
+            .expect("spell-fire context remains present during dispatch");
+        let holder = if holder_entity_index == 0 {
+            None
+        } else {
+            fire.holders
+                .iter_mut()
+                .find(|holder| holder.entity_index == holder_entity_index)
+        };
+        let holder_model = holder.as_ref().map(|holder| holder.model);
+        let accepted = activate_spell(
+            &mut fire.caster,
+            holder,
+            direction_mask,
+            fire.help_enabled,
+            &mut context.events,
+        );
+        let holder_active_value = fire
+            .holders
+            .iter()
             .find(|holder| holder.entity_index == holder_entity_index)
+            .map(|holder| holder.active_value);
+        if accepted && let Some(model) = holder_model {
+            fire.accepted_models.push(model);
+        }
+        (accepted, holder_model, holder_active_value)
     };
-    let holder_model = holder.as_ref().map(|holder| holder.model);
-    let accepted = activate_spell(
-        &mut fire.caster,
-        holder,
-        direction_mask,
-        fire.help_enabled,
-        &mut context.events,
-    );
-    if accepted && let Some(model) = holder_model {
-        fire.accepted_models.push(model);
+    if accepted
+        && holder_model == Some(level1_mission::SPEED_SPELL_FAMILY)
+        && let Some(active_value) = holder_active_value
+        && let Some(projected) = context
+            .speed_spell_holder
+            .as_mut()
+            .filter(|holder| holder.entity_index == holder_entity_index)
+    {
+        // The source registry and movement path point at the same holder
+        // entity. Keep the two typed Rust projections aliased at mutation
+        // time rather than reconciling one stale copy over the other later.
+        projected.active_value = active_value;
     }
 }
 
@@ -1410,6 +1506,22 @@ pub fn source_projection_hash(state: &FlightState) -> u64 {
 /// other entities that the flight pass can observe or mutate.
 #[must_use]
 pub fn conformance_hash(state: &FlightState, context: &FlightContext) -> u64 {
+    conformance_hash_with_spell_tiers(state, context, false)
+}
+
+/// Versioned live-session conformance projection. This extends the immutable
+/// owner-export v1 reset contract with per-hand spell tiers and unlocked
+/// family levels without rewriting the preserved package manifest.
+#[must_use]
+pub fn conformance_hash_v2(state: &FlightState, context: &FlightContext) -> u64 {
+    conformance_hash_with_spell_tiers(state, context, true)
+}
+
+fn conformance_hash_with_spell_tiers(
+    state: &FlightState,
+    context: &FlightContext,
+    include_spell_tiers: bool,
+) -> u64 {
     let mut hash = state_hash(state);
     let mut feed = |bytes: &[u8]| {
         for byte in bytes {
@@ -1468,7 +1580,7 @@ pub fn conformance_hash(state: &FlightState, context: &FlightContext) -> u64 {
     match &context.spell_fire {
         Some(fire) => {
             feed(&[1]);
-            feed_spell_fire(&mut feed, fire);
+            feed_spell_fire(&mut feed, fire, include_spell_tiers);
         }
         None => feed(&[0]),
     }
@@ -1483,13 +1595,29 @@ pub fn conformance_hash(state: &FlightState, context: &FlightContext) -> u64 {
     hash
 }
 
-fn feed_spell_fire(feed: &mut impl FnMut(&[u8]), fire: &SpellFireContext) {
+fn feed_spell_fire(
+    feed: &mut impl FnMut(&[u8]),
+    fire: &SpellFireContext,
+    include_spell_tiers: bool,
+) {
     feed(&fire.left_holder_index.to_le_bytes());
     feed(&fire.right_holder_index.to_le_bytes());
     feed(&fire.selected_holder_index.to_le_bytes());
     feed(&[fire.selected_spell_ui_index]);
+    if include_spell_tiers {
+        feed(&[
+            fire.left_subspell_index.cast_unsigned(),
+            fire.right_subspell_index.cast_unsigned(),
+            fire.selected_subspell_index.cast_unsigned(),
+        ]);
+    }
     for holder_index in fire.enabled_holder_indices {
         feed(&holder_index.to_le_bytes());
+    }
+    if include_spell_tiers {
+        for level in fire.spell_levels {
+            feed(&[level.cast_unsigned()]);
+        }
     }
     feed(&fire.caster.entity_index.to_le_bytes());
     feed(&[fire.caster.model]);
@@ -2096,6 +2224,15 @@ mod tests {
             ..FlightState::default()
         };
         let mut context = FlightContext {
+            spell_fire: Some(SpellFireContext {
+                holders: vec![SpellActivationHolder {
+                    entity_index: 42,
+                    model: level1_mission::SPEED_SPELL_FAMILY,
+                    active_value: 9,
+                    ..SpellActivationHolder::default()
+                }],
+                ..SpellFireContext::default()
+            }),
             speed_spell_holder: Some(SpellHolder {
                 entity_index: 42,
                 active_value: 9,
@@ -2125,6 +2262,11 @@ mod tests {
             0,
             "opcode 0x27 writes entity word_0x2E_46"
         );
+        assert_eq!(
+            context.spell_fire.unwrap().holders[0].active_value,
+            0,
+            "the spell registry and movement projection alias the source entity"
+        );
     }
 
     #[test]
@@ -2138,6 +2280,15 @@ mod tests {
             ..FlightState::default()
         };
         let mut context = FlightContext {
+            spell_fire: Some(SpellFireContext {
+                holders: vec![SpellActivationHolder {
+                    entity_index: 42,
+                    model: level1_mission::SPEED_SPELL_FAMILY,
+                    active_value: 9,
+                    ..SpellActivationHolder::default()
+                }],
+                ..SpellFireContext::default()
+            }),
             speed_spell_holder: Some(SpellHolder {
                 entity_index: 42,
                 active_value: 9,
@@ -2160,6 +2311,7 @@ mod tests {
         assert_eq!(state.roll_delta, -3);
         assert_eq!(state.pitch_delta, 3);
         assert_eq!(context.speed_spell_holder.unwrap().active_value, 9);
+        assert_eq!(context.spell_fire.unwrap().holders[0].active_value, 9);
     }
 
     #[test]
@@ -2926,6 +3078,143 @@ mod tests {
     }
 
     #[test]
+    fn speed_spell_activation_updates_the_aliased_movement_projection() {
+        let mut state = FlightState {
+            speed_spell_holder_index: 42,
+            ..FlightState::default()
+        };
+        let mut context = FlightContext {
+            spell_fire: Some(SpellFireContext {
+                selected_holder_index: 42,
+                caster: SpellCasterState {
+                    mana: 1_000,
+                    ..SpellCasterState::default()
+                },
+                holders: vec![SpellActivationHolder {
+                    entity_index: 42,
+                    model: level1_mission::SPEED_SPELL_FAMILY,
+                    activation_value: level1_mission::SPEED_SPELL_ACTIVATION_TICKS,
+                    mana_cost: level1_mission::SPEED_SPELL_MANA_COST,
+                    ..SpellActivationHolder::default()
+                }],
+                ..SpellFireContext::default()
+            }),
+            speed_spell_holder: Some(SpellHolder {
+                entity_index: 42,
+                active_value: 0,
+            }),
+            ..FlightContext::default()
+        };
+
+        step_turn_with_context(
+            &mut state,
+            PlayerCommand {
+                flags: 0x40,
+                ..PlayerCommand::default()
+            },
+            FlightProfile::OUTDOOR,
+            &FLAT,
+            &mut context,
+        );
+
+        let fire = context.spell_fire.as_ref().expect("spell registry");
+        assert_eq!(
+            fire.holders[0].active_value,
+            level1_mission::SPEED_SPELL_ACTIVATION_TICKS.cast_signed()
+        );
+        assert_eq!(
+            context
+                .speed_spell_holder
+                .expect("movement projection")
+                .active_value,
+            fire.holders[0].active_value
+        );
+        assert_eq!(fire.accepted_models, [level1_mission::SPEED_SPELL_FAMILY]);
+    }
+
+    #[test]
+    fn speed_holder_alias_preserves_full_stop_and_cave_rejection_order() {
+        fn context() -> FlightContext {
+            FlightContext {
+                spell_fire: Some(SpellFireContext {
+                    selected_holder_index: 42,
+                    caster: SpellCasterState {
+                        mana: 1_000,
+                        ..SpellCasterState::default()
+                    },
+                    holders: vec![SpellActivationHolder {
+                        entity_index: 42,
+                        model: level1_mission::SPEED_SPELL_FAMILY,
+                        activation_value: level1_mission::SPEED_SPELL_ACTIVATION_TICKS,
+                        mana_cost: level1_mission::SPEED_SPELL_MANA_COST,
+                        ..SpellActivationHolder::default()
+                    }],
+                    ..SpellFireContext::default()
+                }),
+                speed_spell_holder: Some(SpellHolder {
+                    entity_index: 42,
+                    active_value: 0,
+                }),
+                ..FlightContext::default()
+            }
+        }
+
+        let mut full_stop_state = FlightState {
+            speed_spell_holder_index: 42,
+            target_speed: 80,
+            actual_speed: 80,
+            ..FlightState::default()
+        };
+        let mut full_stop_context = context();
+        step_turn_with_context(
+            &mut full_stop_state,
+            PlayerCommand {
+                opcode: 0x27,
+                argument_1: 1,
+                flags: 0x40,
+                ..PlayerCommand::default()
+            },
+            FlightProfile::OUTDOOR,
+            &FLAT,
+            &mut full_stop_context,
+        );
+        let expected = level1_mission::SPEED_SPELL_ACTIVATION_TICKS.cast_signed();
+        assert_eq!(
+            full_stop_context.spell_fire.as_ref().unwrap().holders[0].active_value,
+            expected,
+            "full-stop precedes the synchronous selected-spell cast"
+        );
+        assert_eq!(
+            full_stop_context.speed_spell_holder.unwrap().active_value,
+            expected
+        );
+
+        let mut cave_state = FlightState {
+            speed_spell_holder_index: 42,
+            target_speed: 64,
+            actual_speed: 64,
+            ..FlightState::default()
+        };
+        let mut cave_context = context();
+        step_turn_with_context(
+            &mut cave_state,
+            PlayerCommand {
+                flags: 0x40,
+                ..PlayerCommand::default()
+            },
+            FlightProfile::CAVE,
+            &BlockedCaveWorld,
+            &mut cave_context,
+        );
+        assert_eq!(
+            cave_context.spell_fire.as_ref().unwrap().holders[0].active_value,
+            0,
+            "the later rejected movement clears the source holder"
+        );
+        assert_eq!(cave_context.speed_spell_holder.unwrap().active_value, 0);
+    }
+
+    #[test]
     fn repeated_low_tier_fireball_activation_is_not_lost_when_reset_value_matches() {
         let mut state = FlightState::default();
         let mut context = FlightContext {
@@ -3015,6 +3304,180 @@ mod tests {
                 direction_mask: 256,
             })
         );
+    }
+
+    #[test]
+    fn spell_menu_assignment_opcodes_bind_independent_hands_and_clamp_tier() {
+        let mut state = FlightState::default();
+        let mut enabled_holder_indices = [0_u16; 26];
+        enabled_holder_indices[0] = 21;
+        enabled_holder_indices[1] = 22;
+        let mut spell_levels = [0_i8; 26];
+        spell_levels[1] = 2;
+        let mut context = FlightContext {
+            spell_fire: Some(SpellFireContext {
+                left_holder_index: 21,
+                right_holder_index: 22,
+                selected_holder_index: 21,
+                enabled_holder_indices,
+                spell_levels,
+                holders: vec![
+                    SpellActivationHolder {
+                        entity_index: 21,
+                        ..SpellActivationHolder::default()
+                    },
+                    SpellActivationHolder {
+                        entity_index: 22,
+                        ..SpellActivationHolder::default()
+                    },
+                ],
+                ..SpellFireContext::default()
+            }),
+            ..FlightContext::default()
+        };
+
+        latch_command_with_context(
+            &mut state,
+            PlayerCommand {
+                opcode: 31,
+                argument_1: 1,
+                argument_2: 7,
+                ..PlayerCommand::default()
+            },
+            &mut context,
+        );
+        let fire = context.spell_fire.as_ref().unwrap();
+        assert_eq!(fire.left_holder_index, 22);
+        assert_eq!(fire.right_holder_index, 22);
+        assert_eq!(fire.left_subspell_index, 2);
+        assert_eq!(fire.right_subspell_index, 0);
+        assert_eq!(fire.selected_holder_index, 22);
+        assert_eq!(fire.selected_spell_ui_index, 1);
+        assert_eq!(fire.selected_subspell_index, 2);
+        assert_eq!(fire.holders[1].level_gate, 2);
+        assert_eq!(
+            context.events,
+            vec![FlightEvent::PrepareSound {
+                entity_index: 0,
+                player_index: 0,
+                sound_id: 14,
+            }]
+        );
+
+        latch_command_with_context(
+            &mut state,
+            PlayerCommand {
+                opcode: 32,
+                argument_1: 0,
+                argument_2: 0,
+                ..PlayerCommand::default()
+            },
+            &mut context,
+        );
+        let fire = context.spell_fire.as_ref().unwrap();
+        assert_eq!(fire.left_holder_index, 22);
+        assert_eq!(fire.right_holder_index, 21);
+        assert_eq!(fire.left_subspell_index, 2);
+        assert_eq!(fire.right_subspell_index, 0);
+        assert_eq!(fire.selected_holder_index, 21);
+        assert_eq!(fire.selected_spell_ui_index, 0);
+        assert_eq!(fire.selected_subspell_index, 0);
+        assert_eq!(context.events.len(), 2);
+    }
+
+    #[test]
+    fn same_family_assignments_keep_hand_tiers_but_reconfigure_shared_holder() {
+        let mut state = FlightState::default();
+        let mut enabled_holder_indices = [0_u16; 26];
+        enabled_holder_indices[1] = 22;
+        let mut spell_levels = [0_i8; 26];
+        spell_levels[1] = 2;
+        let mut context = FlightContext {
+            spell_fire: Some(SpellFireContext {
+                left_holder_index: 22,
+                right_holder_index: 22,
+                enabled_holder_indices,
+                spell_levels,
+                holders: vec![SpellActivationHolder {
+                    entity_index: 22,
+                    model: 1,
+                    ..SpellActivationHolder::default()
+                }],
+                ..SpellFireContext::default()
+            }),
+            ..FlightContext::default()
+        };
+
+        latch_command_with_context(
+            &mut state,
+            PlayerCommand {
+                opcode: 31,
+                argument_1: 1,
+                argument_2: 2,
+                ..PlayerCommand::default()
+            },
+            &mut context,
+        );
+        latch_command_with_context(
+            &mut state,
+            PlayerCommand {
+                opcode: 32,
+                argument_1: 1,
+                argument_2: 1,
+                ..PlayerCommand::default()
+            },
+            &mut context,
+        );
+
+        let fire = context.spell_fire.as_ref().unwrap();
+        assert_eq!(fire.left_subspell_index, 2);
+        assert_eq!(fire.right_subspell_index, 1);
+        assert_eq!(fire.selected_subspell_index, 1);
+        assert_eq!(fire.holders[0].level_gate, 1);
+    }
+
+    #[test]
+    fn movement_opcode_preserves_selection_when_selected_fire_flag_is_clear() {
+        let mut state = FlightState::default();
+        let mut enabled_holder_indices = [0_u16; 26];
+        enabled_holder_indices[3] = 33;
+        let mut context = FlightContext {
+            spell_fire: Some(SpellFireContext {
+                selected_holder_index: 99,
+                enabled_holder_indices,
+                caster: SpellCasterState {
+                    mana: 100,
+                    ..SpellCasterState::default()
+                },
+                holders: vec![SpellActivationHolder {
+                    entity_index: 33,
+                    activation_value: 7,
+                    mana_cost: 50,
+                    ..SpellActivationHolder::default()
+                }],
+                ..SpellFireContext::default()
+            }),
+            ..FlightContext::default()
+        };
+
+        step_turn_with_context(
+            &mut state,
+            PlayerCommand {
+                opcode: 6,
+                argument_1: 27,
+                flags: 0,
+                ..PlayerCommand::default()
+            },
+            FlightProfile::OUTDOOR,
+            &FLAT,
+            &mut context,
+        );
+
+        let fire = context.spell_fire.as_ref().unwrap();
+        assert_eq!(fire.selected_spell_ui_index, 0);
+        assert_eq!(fire.selected_holder_index, 99);
+        assert_eq!(fire.holders[0].active_value, 0);
+        assert!(context.events.is_empty());
     }
 
     #[test]
@@ -3216,6 +3679,15 @@ mod tests {
             ..FlightState::default()
         };
         let mut context = FlightContext {
+            spell_fire: Some(SpellFireContext {
+                holders: vec![SpellActivationHolder {
+                    entity_index: 42,
+                    model: level1_mission::SPEED_SPELL_FAMILY,
+                    active_value: 17,
+                    ..SpellActivationHolder::default()
+                }],
+                ..SpellFireContext::default()
+            }),
             speed_spell_holder: Some(SpellHolder {
                 entity_index: 42,
                 active_value: 17,
@@ -3239,6 +3711,7 @@ mod tests {
                 .active_value,
             0
         );
+        assert_eq!(context.spell_fire.unwrap().holders[0].active_value, 0);
     }
 
     #[test]

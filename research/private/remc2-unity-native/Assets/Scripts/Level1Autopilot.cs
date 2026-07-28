@@ -51,6 +51,7 @@ namespace MagicCarpet.Native
             internal readonly short effectivePitch;
             internal readonly short rollAccumulator;
             internal readonly short targetSpeed;
+            internal readonly byte selectedSpellUiIndex;
 
             internal PlayerObservation(NativeSim.SessionSnapshot source)
             {
@@ -62,6 +63,7 @@ namespace MagicCarpet.Native
                 effectivePitch = source.effectivePitch;
                 rollAccumulator = source.rollAccumulator;
                 targetSpeed = source.targetSpeed;
+                selectedSpellUiIndex = source.selectedSpellUiIndex;
             }
         }
 
@@ -180,6 +182,7 @@ namespace MagicCarpet.Native
             internal readonly short RequestedSpell;
             internal readonly sbyte Opcode;
             internal readonly sbyte Argument1;
+            internal readonly sbyte Argument2;
             internal readonly string Phase;
 
             internal Command(
@@ -189,7 +192,8 @@ namespace MagicCarpet.Native
                 short requestedSpell,
                 string phase,
                 sbyte opcode = 0,
-                sbyte argument1 = 0)
+                sbyte argument1 = 0,
+                sbyte argument2 = 0)
             {
                 Roll = roll;
                 Pitch = pitch;
@@ -197,6 +201,7 @@ namespace MagicCarpet.Native
                 RequestedSpell = requestedSpell;
                 Opcode = opcode;
                 Argument1 = argument1;
+                Argument2 = argument2;
                 Phase = phase;
             }
         }
@@ -238,6 +243,7 @@ namespace MagicCarpet.Native
         private byte lockedActorKind;
         private bool recoveringFromArchers;
         private bool recoveringFromFireflies;
+        private bool approachingArcherStandoff = true;
         private bool speedSpellRequested;
         private bool hasLockedSpherePosition;
         private uint lockedSphereId;
@@ -247,6 +253,7 @@ namespace MagicCarpet.Native
         private bool group33FireflyObserved;
         private bool firstMultipartObserved;
         private bool group34MultipartObserved;
+        private ushort? lockedGroup34MultipartIndex;
         private bool recoveringFromPostCompletion;
         private string priorPhase = string.Empty;
 
@@ -341,7 +348,7 @@ namespace MagicCarpet.Native
                     ? Navigate(player, ActorTarget(jar.Value, 80, "collect-castle"), 420, true)
                     : Brake(player, "wait-castle-jar");
             }
-            if (mission.playerLife < 8_500 && !recoveringFromArchers)
+            if (mission.playerLife < 4_000 && !recoveringFromArchers)
             {
                 recoveringFromArchers = true;
             }
@@ -357,9 +364,69 @@ namespace MagicCarpet.Native
                 return FleeVisibleActor(player, actors, ArcherKind);
             }
             var archer = LockedOrNearestActor(player, actors, ArcherKind);
-            return archer.HasValue
-                ? AttackActor(player, archer.Value, "fight-archers")
-                : Brake(player, "wait-archer-deaths");
+            if (!archer.HasValue)
+            {
+                approachingArcherStandoff = true;
+                return Brake(player, "wait-archer-deaths");
+            }
+            var archerDistance = HorizontalDistance(
+                player.x,
+                player.y,
+                archer.Value.x,
+                archer.Value.y);
+            if (!approachingArcherStandoff && archerDistance > 5_500)
+            {
+                approachingArcherStandoff = true;
+            }
+            if (approachingArcherStandoff)
+            {
+                // The first town's terrain ridge and BUILD rows stop low
+                // Fireballs exactly as the source collision map requires.
+                // Fly ordinary controls to a learned east-side airborne
+                // standoff using only the visible target pose.
+                var climbTarget = new Target(
+                    archer.Value.x + 1_400,
+                    archer.Value.y,
+                    archer.Value.z + 900,
+                    "climb-over-archers");
+                var standoffDistance = HorizontalDistance(
+                    player.x,
+                    player.y,
+                    climbTarget.X,
+                    climbTarget.Y);
+                if (player.z >= 800 &&
+                    archerDistance <= 2_500 &&
+                    standoffDistance <= 500)
+                {
+                    approachingArcherStandoff = false;
+                }
+                else
+                {
+                    // MC2's outdoor pitch shaper keeps the carpet near its
+                    // terrain-relative reference height; an arbitrary
+                    // world-space altitude is not reachable through ordinary
+                    // flight input. Approach at that visible carpet-height
+                    // envelope, then fire down from the unobstructed side.
+                    var climbAim = DirectAim(
+                        player,
+                        climbTarget,
+                        player.z < 800
+                            ? SeekSpeedFlags(player, 80)
+                            : NavigationSpeedFlags(
+                                player,
+                                standoffDistance,
+                                600));
+                    return player.z < 800
+                        ? new Command(
+                            climbAim.Roll,
+                            sbyte.MinValue,
+                            climbAim.Flags,
+                            -1,
+                            climbTarget.Name)
+                        : climbAim;
+                }
+            }
+            return AttackActor(player, archer.Value, "fight-archers");
         }
 
         private Command StageThree(
@@ -395,11 +462,23 @@ namespace MagicCarpet.Native
                     return Navigate(player, CastleBuildSite, 560, true);
                 }
                 var aimed = Aim(player, CastleBuildSite, 0);
+                if (player.selectedSpellUiIndex != CastleSpellFamily)
+                {
+                    return new Command(
+                        aimed.Roll,
+                        aimed.Pitch,
+                        0,
+                        -1,
+                        "select-castle",
+                        31,
+                        checked((sbyte)CastleSpellFamily),
+                        0);
+                }
                 return new Command(
                     aimed.Roll,
                     aimed.Pitch,
                     SelectedSpellFlag,
-                    CastleSpellFamily,
+                    -1,
                     "build-castle");
             }
 
@@ -459,13 +538,41 @@ namespace MagicCarpet.Native
             var attack = AttackActor(player, firefly.Value, "fight-fireflies");
             if (mission.hasSpeedSpell != 0 && !speedSpellRequested)
             {
+                if (player.selectedSpellUiIndex != SpeedSpellFamily)
+                {
+                    return new Command(
+                        attack.Roll,
+                        attack.Pitch,
+                        unchecked((byte)attack.Flags) & ~0x70,
+                        -1,
+                        "select-speed",
+                        31,
+                        checked((sbyte)SpeedSpellFamily),
+                        0);
+                }
                 speedSpellRequested = true;
                 return new Command(
                     attack.Roll,
                     attack.Pitch,
-                    unchecked((byte)attack.Flags) | SelectedSpellFlag,
-                    SpeedSpellFamily,
+                    SelectedSpellFlag,
+                    -1,
                     "speed-combat");
+            }
+            if (Math.Abs(player.targetSpeed) > 80)
+            {
+                // Speed owns the target while it is above the ordinary
+                // +/-80 flight range. Keep steering and spell fire, but do
+                // not submit the forward/back input that remc2 treats as an
+                // explicit Speed cancellation request.
+                return new Command(
+                    attack.Roll,
+                    attack.Pitch,
+                    unchecked((byte)attack.Flags) & ~0x03,
+                    attack.RequestedSpell,
+                    "speed-combat-sustain",
+                    attack.Opcode,
+                    attack.Argument1,
+                    attack.Argument2);
             }
             return attack;
         }
@@ -483,7 +590,7 @@ namespace MagicCarpet.Native
                 actors,
                 FirstMultipartAuthoredIndex,
                 activeOnly: true);
-            var group34Multipart = NearestAuthoredRangeActor(
+            var group34Multipart = LockedOrNearestAuthoredRangeActor(
                 player,
                 actors,
                 FirstGroup34MultipartAuthoredIndex,
@@ -652,10 +759,28 @@ namespace MagicCarpet.Native
             LastAimDistance = currentDistance;
             LastAimActor = actor.authoredIndex;
             var flags = aimed.Flags;
-            short requestedSpell = -1;
-            const int yawTolerance = 32;
-            const int pitchTolerance = 32;
-            if (distance < 7_200 &&
+            if (player.selectedSpellUiIndex != 0)
+            {
+                return new Command(
+                    aimed.Roll,
+                    aimed.Pitch,
+                    unchecked((byte)flags) & ~0x70,
+                    -1,
+                    phase + "-select-fireball",
+                    31,
+                    0,
+                    0);
+            }
+            // Multipart heads and their sixteen linked body segments form a
+            // much larger guided/explosive target than an Archer or
+            // Firefly. The outdoor pitch shaper can hold the carpet outside
+            // the tiny direct-hit gate indefinitely, so release Fireball
+            // inside its acquisition cone while leaving ordinary actor aim
+            // strict.
+            var yawTolerance = actor.kind == MultipartHeadKind ? 64 : 32;
+            var pitchTolerance = actor.kind == MultipartHeadKind ? 128 : 32;
+            var firingRange = actor.kind == MultipartHeadKind ? 5_000 : 7_200;
+            if (distance < firingRange &&
                 IsFiringWindow(player.tick) &&
                 IsDirectlyAimed(
                     player,
@@ -665,9 +790,8 @@ namespace MagicCarpet.Native
                 player.tick % 2 == 0)
             {
                 flags |= SelectedSpellFlag;
-                requestedSpell = 0;
             }
-            return new Command(aimed.Roll, aimed.Pitch, flags, requestedSpell, phase);
+            return new Command(aimed.Roll, aimed.Pitch, flags, -1, phase);
         }
 
         private Command AttackGoat(
@@ -704,19 +828,29 @@ namespace MagicCarpet.Native
             LastAimDistance = distance;
             LastAimActor = ushort.MaxValue;
             var flags = aimed.Flags;
-            short requestedSpell = -1;
+            if (player.selectedSpellUiIndex != 0)
+            {
+                return new Command(
+                    aimed.Roll,
+                    aimed.Pitch,
+                    unchecked((byte)flags) & ~0x70,
+                    -1,
+                    "harvest-goat-mana-select-fireball",
+                    31,
+                    0,
+                    0);
+            }
             if (distance < 6_800 &&
                 IsDirectlyAimed(player, target, 128, 256) &&
                 player.tick % 2 == 0)
             {
                 flags |= SelectedSpellFlag;
-                requestedSpell = 0;
             }
             return new Command(
                 aimed.Roll,
                 aimed.Pitch,
                 flags,
-                requestedSpell,
+                -1,
                 target.Name);
         }
 
@@ -771,8 +905,13 @@ namespace MagicCarpet.Native
             LastAimDistance = sphereDistance;
             LastAimActor = ushort.MaxValue;
             var flags = aimed.Flags;
+            // The carpet's outdoor pitch shaper can hold a stable
+            // terrain-relative error around 70..120 source angle units at
+            // this range. Possession is itself guided and ground-following,
+            // so the bot should release inside that acquisition cone instead
+            // of demanding an artificial pixel-perfect launch attitude.
             if (sphereDistance < 2_200 &&
-                IsDirectlyAimed(player, target, 64, 32) &&
+                IsDirectlyAimed(player, target, 64, 128) &&
                 player.tick % 2 == 0)
             {
                 flags |= PossessionFlag;
@@ -1052,13 +1191,27 @@ namespace MagicCarpet.Native
             return null;
         }
 
-        private static ActorObservation? NearestAuthoredRangeActor(
+        private ActorObservation? LockedOrNearestAuthoredRangeActor(
             PlayerObservation player,
             ActorObservation[] actors,
             ushort firstAuthoredIndex,
             ushort lastAuthoredIndex,
             byte kind)
         {
+            if (lockedGroup34MultipartIndex.HasValue)
+            {
+                foreach (var actor in actors)
+                {
+                    if (actor.active != 0 &&
+                        actor.kind == kind &&
+                        actor.authoredIndex == lockedGroup34MultipartIndex.Value)
+                    {
+                        return actor;
+                    }
+                }
+                lockedGroup34MultipartIndex = null;
+            }
+
             ActorObservation? nearest = null;
             var nearestDistance = double.MaxValue;
             foreach (var actor in actors)
@@ -1079,6 +1232,7 @@ namespace MagicCarpet.Native
                 nearest = actor;
                 nearestDistance = distance;
             }
+            lockedGroup34MultipartIndex = nearest?.authoredIndex;
             return nearest;
         }
 
@@ -1246,10 +1400,11 @@ namespace MagicCarpet.Native
             double distance)
         {
             // The multipart creature is large and durable. Keep an ordinary
-            // visible firing line near the far edge of Fireball range rather
-            // than stopping inside its body-chain contact envelope.
-            if (distance > 6_200) return SeekSpeedFlags(player, 64);
-            if (distance < 5_200) return SeekSpeedFlags(player, -96);
+            // visible firing line inside remc2's 5,120-unit Fireball
+            // acquisition radius while retaining space from its body-chain
+            // contact envelope.
+            if (distance > 4_700) return SeekSpeedFlags(player, 64);
+            if (distance < 3_500) return SeekSpeedFlags(player, -96);
             return HoldSpeedFlags(player);
         }
 

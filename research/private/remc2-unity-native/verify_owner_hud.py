@@ -157,8 +157,9 @@ def main() -> int:
     }
     if sorted(bitmap_rows) != [
         1, 2, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
-        51, 52, 53, 54, 55, 58, 66, 83, 84,
-        123, 124, 125, 126, 171, 172, 173
+        51, 52, 53, 54, 55, 58, 66, 83, 84, 88, 89, 90, 91,
+        *range(97, 127), 149, 150, *range(161, 168), 171, 172, 173,
+        *range(179, 191)
     ]:
         raise SystemExit("wrong/duplicate HUD bitmap selector set")
     palette = (args.cache / "palette/paln.rgb8").read_bytes()

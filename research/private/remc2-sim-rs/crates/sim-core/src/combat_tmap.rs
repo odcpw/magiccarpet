@@ -9,11 +9,11 @@ pub const FIREBALL_SELECTOR: u16 = 463;
 pub const FIREBALL_STATE_COUNT: usize = 5;
 pub const POSSESSION_SELECTOR: u16 = 144;
 pub const POSSESSION_STATE_COUNT: usize = 9;
-pub const COMBAT_STATIC_SELECTORS: [u16; 26] = [
+pub const COMBAT_STATIC_SELECTORS: [u16; 35] = [
     61, 105, 106, 107, 108, 109, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 186, 187, 188, 189, 190,
-    191, 192, 193, 194, 195,
+    191, 192, 193, 194, 195, 54, 96, 97, 98, 99, 100, 101, 102, 103,
 ];
-pub const COMBAT_STATIC_EXTENTS: [(u16, u16); 26] = [
+pub const COMBAT_STATIC_EXTENTS: [(u16, u16); 35] = [
     (32, 31),
     (18, 24),
     (35, 14),
@@ -40,8 +40,17 @@ pub const COMBAT_STATIC_EXTENTS: [(u16, u16); 26] = [
     (28, 29),
     (28, 29),
     (28, 29),
+    (36, 34),
+    (36, 39),
+    (36, 39),
+    (36, 39),
+    (36, 39),
+    (36, 39),
+    (36, 39),
+    (36, 39),
+    (36, 39),
 ];
-pub const COMBAT_STATIC_SHA256: [&str; 26] = [
+pub const COMBAT_STATIC_SHA256: [&str; 35] = [
     "c4ab0a77ef7d7813cbafd46e39fe38dfa7106cfe0fae7e367ac76dff38143cc8",
     "53d228896686b080487f4b4c5535ac3181d5d29d26216eeb340ae4bad97d8832",
     "cf196e0ddbf8729f72a47cf2528aea639fe1feaa8ab8f11fac24da34c4f583f9",
@@ -68,6 +77,15 @@ pub const COMBAT_STATIC_SHA256: [&str; 26] = [
     "21697e30753676503136215415b234bca3d592945977bd5f1ec5f14c9292830f",
     "92d4fd0c565ded09bae1f521ae0f773345eb81e6b0b82e2dfe2f4f596ee326db",
     "da72e2efcc793d8f78582e34b0719c78b5bbd3b522a2b5135ee1e7f65fbb04c4",
+    "601e0703adf89d54d07c0e0dac2293e4a961e7b8d772300d1274b5d964b71e1f",
+    "a743ae0be3456600f88fedadbf6462b9d5d808a1ac004e2be41e543a685d3d5c",
+    "af8c3d1957907ad7577b2ce60fe774d820efd2f308cf073833d197753b663b22",
+    "2c7f0e84962713229317adf0a22c7762c3c1b177b181203279788e326f3dca3c",
+    "b0ab9f5b1e2f1a6d6e0e50e30f993fce2287e60d4113b61c3a679906b9922b47",
+    "fa1cab2587daf3b5147f1736f151eb34a40d1201b21eb9afcc64dd061b0cc777",
+    "266d7a0b496215e356d42e61c15a992b5750ac5920f30f4f09ca3d8d6491776d",
+    "32688bcf566b98cf2f8d8fc4d6dbc02508d0befbd37070a00886e2a93fe6a60e",
+    "68936134230e17e15f27e2e4e4075caaf9e48de28f13ac07cfd7bd39a0c9bdeb",
 ];
 pub const FIREBALL_PAYLOAD_SHA256: &str =
     "cf185f7e35f9103be4b4ecfa2573fc9332ac8ade346b564be3971cbe73fb35ec";

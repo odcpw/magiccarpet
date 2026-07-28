@@ -8,6 +8,7 @@ use crate::ss2_tmap::{read_u16, require_hash};
 pub const SPELL_JAR_SELECTOR: u16 = 59;
 pub const EXIT_TARGET_SELECTOR: u16 = 461;
 pub const LEVEL1_SECONDARY_SELECTORS: [u16; 10] = [30, 31, 32, 33, 34, 35, 36, 37, 66, 259];
+pub const LEVEL1_SCENERY_SELECTORS: [u16; 6] = [57, 75, 78, 87, 178, 179];
 
 pub const SPELL_JAR_PAYLOAD_BYTES: usize = 838;
 pub const EXIT_TARGET_PAYLOAD_BYTES: usize = 6_516;
@@ -112,6 +113,53 @@ impl StaticWorldTmapBank {
                 selector,
                 header,
                 mode,
+                width,
+                height,
+                PAYLOAD_BYTES[ordinal],
+                PAYLOAD_SHA256[ordinal],
+            )?);
+        }
+        Ok(bank)
+    }
+
+    /// Add the exact static frames selected by Level 1's authored tree and
+    /// stone constructors, including the two persistent stump selectors.
+    pub fn decode_with_level1_secondary_and_scenery(
+        spell_jar_payload: &[u8],
+        exit_target_payload: &[u8],
+        secondary_payloads: [&[u8]; LEVEL1_SECONDARY_SELECTORS.len()],
+        scenery_payloads: [&[u8]; LEVEL1_SCENERY_SELECTORS.len()],
+    ) -> Result<Self, String> {
+        let mut bank = Self::decode_with_level1_secondary(
+            spell_jar_payload,
+            exit_target_payload,
+            secondary_payloads,
+        )?;
+        const EXTENTS: [(u16, u16); LEVEL1_SCENERY_SELECTORS.len()] =
+            [(64, 53), (80, 75), (50, 144), (80, 75), (80, 75), (80, 75)];
+        const PAYLOAD_BYTES: [usize; LEVEL1_SCENERY_SELECTORS.len()] =
+            [3_398, 6_006, 7_206, 6_006, 6_006, 6_006];
+        const PAYLOAD_SHA256: [&str; LEVEL1_SCENERY_SELECTORS.len()] = [
+            "d2d90a67c3d2be88d61835c25bff8fd0a655bc133987873337440843b1d626dc",
+            "eb71fccffbca8a5fb4195f013ad4374b3e245e7c5941d73b9fe60824cd62b2a6",
+            "263d77437976605dbb797c03ab59591e77fae2e93fce0be32861989982d3adde",
+            "eb71fccffbca8a5fb4195f013ad4374b3e245e7c5941d73b9fe60824cd62b2a6",
+            "9d68fd94c343efbe9656dddcbfa2ff726d2a9625779c8889876efc138b52b8ca",
+            "9d68fd94c343efbe9656dddcbfa2ff726d2a9625779c8889876efc138b52b8ca",
+        ];
+        for ordinal in 0..LEVEL1_SCENERY_SELECTORS.len() {
+            let selector = LEVEL1_SCENERY_SELECTORS[ordinal];
+            let (width, height) = EXTENTS[ordinal];
+            let (header, render_mode) = if selector == 57 {
+                (0x1502, 21)
+            } else {
+                (0x0002, 0)
+            };
+            bank.frames.push(decode_base_frame(
+                scenery_payloads[ordinal],
+                selector,
+                header,
+                render_mode,
                 width,
                 height,
                 PAYLOAD_BYTES[ordinal],
@@ -263,5 +311,40 @@ mod tests {
         let exit = std::fs::read(root.join("461.decoded.bin")).expect("exit owner payload");
         jars[1] = 0;
         assert!(StaticWorldTmapBank::decode_qualified(&jars, &exit).is_err());
+    }
+
+    #[test]
+    fn qualified_level_one_scenery_payloads_pin_every_tree_stone_and_stump_frame() {
+        let root = owner_cache();
+        let jars = std::fs::read(root.join("059.decoded.bin")).expect("jar owner payload");
+        let exit = std::fs::read(root.join("461.decoded.bin")).expect("exit owner payload");
+        let secondary = LEVEL1_SECONDARY_SELECTORS.map(|selector| {
+            std::fs::read(root.join(format!("{selector:03}.decoded.bin")))
+                .expect("secondary payload")
+        });
+        let scenery = LEVEL1_SCENERY_SELECTORS.map(|selector| {
+            std::fs::read(root.join(format!("{selector:03}.decoded.bin"))).expect("scenery payload")
+        });
+        let bank = StaticWorldTmapBank::decode_with_level1_secondary_and_scenery(
+            &jars,
+            &exit,
+            std::array::from_fn(|ordinal| secondary[ordinal].as_slice()),
+            std::array::from_fn(|ordinal| scenery[ordinal].as_slice()),
+        )
+        .expect("qualified scenery bank");
+        assert_eq!(
+            LEVEL1_SCENERY_SELECTORS.map(|selector| {
+                let frame = bank.frame(selector).expect("scenery frame");
+                (frame.selector, frame.render_mode, frame.width, frame.height)
+            }),
+            [
+                (57, 21, 64, 53),
+                (75, 0, 80, 75),
+                (78, 0, 50, 144),
+                (87, 0, 80, 75),
+                (178, 0, 80, 75),
+                (179, 0, 80, 75),
+            ]
+        );
     }
 }

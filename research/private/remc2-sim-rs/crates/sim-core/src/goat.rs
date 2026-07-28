@@ -8,9 +8,13 @@
 use crate::{
     FlightWorld, Position, angle_distance, distance_3d_wrapped,
     goat_map_chain::{GoatMapChains, GoatMapSeed},
-    heading_for_positions, move_entity,
+    heading_for_positions,
+    house::{HouseFamily, HouseState, HouseStepEvent},
+    move_entity,
     native_world::EntitySnapshot,
-    turn_toward, wrapping_i16,
+    turn_toward,
+    villager::{VillagerBehaviorConfig, VillagerFamily, VillagerState},
+    wrapping_i16,
 };
 
 pub const LEVEL_ONE_GOAT_INDICES: [u16; 33] = [
@@ -966,6 +970,8 @@ enum DamageResult {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LiveWorldState {
     goats: GoatFamily,
+    houses: HouseFamily,
+    villagers: VillagerFamily,
     goat_map_chains: GoatMapChains,
 }
 
@@ -981,9 +987,13 @@ impl LiveWorldState {
         config: GoatBehaviorConfig,
     ) -> Result<Self, String> {
         let goats = GoatFamily::from_entities(entities, stage_point, config)?;
+        let houses = HouseFamily::from_entities(entities)?;
+        let villagers = VillagerFamily::from_entities(entities, VillagerBehaviorConfig::LEVEL_ONE)?;
         let goat_map_chains = GoatMapChains::from_positions(&goat_map_seeds(goats.goats()))?;
         Ok(Self {
             goats,
+            houses,
+            villagers,
             goat_map_chains,
         })
     }
@@ -1001,6 +1011,8 @@ impl LiveWorldState {
         config: GoatBehaviorConfig,
     ) -> Result<Self, String> {
         let goats = GoatFamily::from_entities(entities, stage_point, config)?;
+        let houses = HouseFamily::from_entities(entities)?;
+        let villagers = VillagerFamily::from_entities(entities, VillagerBehaviorConfig::LEVEL_ONE)?;
         let goat_map_chains = GoatMapChains::from_reset(
             &goat_map_seeds(goats.goats()),
             terrain_entity_indices,
@@ -1012,6 +1024,8 @@ impl LiveWorldState {
         )?;
         Ok(Self {
             goats,
+            houses,
+            villagers,
             goat_map_chains,
         })
     }
@@ -1027,6 +1041,16 @@ impl LiveWorldState {
     }
 
     #[must_use]
+    pub fn houses(&self) -> &[HouseState] {
+        self.houses.houses()
+    }
+
+    #[must_use]
+    pub fn villagers(&self) -> &[VillagerState] {
+        self.villagers.villagers()
+    }
+
+    #[must_use]
     pub const fn goat_map_chains(&self) -> &GoatMapChains {
         &self.goat_map_chains
     }
@@ -1038,6 +1062,9 @@ impl LiveWorldState {
         config: GoatBehaviorConfig,
     ) -> Result<(), String> {
         self.goats = GoatFamily::from_entities(entities, stage_point, config)?;
+        self.houses = HouseFamily::from_entities(entities)?;
+        self.villagers =
+            VillagerFamily::from_entities(entities, VillagerBehaviorConfig::LEVEL_ONE)?;
         self.goat_map_chains = GoatMapChains::from_positions(&goat_map_seeds(self.goats()))?;
         Ok(())
     }
@@ -1059,7 +1086,12 @@ impl LiveWorldState {
     }
 
     pub fn begin_source_turn(&mut self, players: &[GoatPlayerTarget]) -> Vec<GoatStepEvent> {
+        self.villagers.sync_houses(self.houses.houses());
         self.goats.begin_source_turn(players)
+    }
+
+    pub fn release_villager_stage_group_7(&mut self) -> usize {
+        self.villagers.release_stage_group_7()
     }
 
     pub fn step_source_slot<W: FlightWorld>(
@@ -1069,6 +1101,49 @@ impl LiveWorldState {
         players: &[GoatPlayerTarget],
     ) -> Vec<GoatStepEvent> {
         self.goats.step_source_slot(source_slot, world, players)
+    }
+
+    pub fn step_villager_source_slot<W: FlightWorld>(&mut self, source_slot: u16, world: &W) {
+        if let Some(building_entity_index) = self.villagers.step_source_slot(source_slot, world) {
+            self.houses
+                .add_occupant(building_entity_index)
+                .expect("villager selected a live Level 1 house");
+        }
+    }
+
+    #[must_use]
+    pub fn step_house_source_slot<W: FlightWorld>(
+        &mut self,
+        source_slot: u16,
+        world: &W,
+    ) -> Vec<HouseStepEvent> {
+        let events = self.houses.step_source_slot(source_slot, world);
+        if !events.is_empty() {
+            self.villagers.sync_houses(self.houses.houses());
+        }
+        events
+    }
+
+    pub fn submit_house_possession(
+        &mut self,
+        entity_index: u16,
+        owner_entity_index: u16,
+        payload: u32,
+    ) -> Result<(), String> {
+        self.houses
+            .submit_possession(entity_index, owner_entity_index, payload)
+    }
+
+    pub fn commit_house_removal_state(
+        &mut self,
+        entity_index: u16,
+        final_rng: u16,
+        final_occupants: i32,
+    ) -> Result<(), String> {
+        self.houses
+            .commit_removal_state(entity_index, final_rng, final_occupants)?;
+        self.villagers.sync_houses(self.houses.houses());
+        Ok(())
     }
 
     pub fn finish_source_turn(&mut self) {
@@ -1088,7 +1163,23 @@ impl LiveWorldState {
         damage: i32,
         attacker: i16,
     ) -> Result<(), String> {
-        self.goats.inject_damage(entity_index, damage, attacker)
+        if self
+            .houses
+            .houses()
+            .iter()
+            .any(|house| house.entity_index == entity_index && house.active)
+        {
+            self.houses.inject_damage(entity_index, damage, attacker)
+        } else if self
+            .villagers
+            .villagers()
+            .iter()
+            .any(|villager| villager.entity_index == entity_index)
+        {
+            self.villagers.inject_damage(entity_index, damage, attacker)
+        } else {
+            self.goats.inject_damage(entity_index, damage, attacker)
+        }
     }
 
     #[must_use]
@@ -1130,6 +1221,75 @@ impl LiveWorldState {
             hash.i16(goat.maximum_speed);
             hash.i32(goat.mana);
             match goat.target_entity_index {
+                Some(index) => {
+                    hash.u8(1);
+                    hash.u16(index);
+                }
+                None => hash.u8(0),
+            }
+        }
+        hash.u32(u32::try_from(self.houses().len()).expect("house count fits u32"));
+        for house in self.houses() {
+            hash.u16(house.entity_index);
+            hash.u16(house.source_id);
+            hash.u8(u8::from(house.active));
+            hash.u32(house.control_flags);
+            hash.i32(house.max_life);
+            hash.i32(house.life);
+            hash.i32(house.occupants);
+            hash.u16(house.rng);
+            hash.u16(house.position.x);
+            hash.u16(house.position.y);
+            hash.i16(house.position.z);
+            hash.i16(house.collision_vertical_offset);
+            hash.i16(house.collision_half_width);
+            hash.i16(house.collision_half_depth);
+            hash.i16(house.collision_half_height);
+            hash.u8(house.action);
+            hash.u8(house.phase);
+            hash.u8(house.building_index);
+            hash.i16(house.capacity);
+            hash.u16(house.owner_entity_index);
+            hash.i32(house.pending_damage);
+            hash.i16(house.pending_attacker);
+            hash.u16(house.pending_possession_owner);
+            hash.u32(house.pending_possession_payload);
+            hash.u16(house.parameter.life_mana_scalar);
+            hash.u8(house.parameter.flags);
+            hash.u8(house.parameter.destruction_successor);
+        }
+        hash.u32(u32::try_from(self.villagers().len()).expect("Villager count fits u32"));
+        for villager in self.villagers() {
+            hash.u16(villager.entity_index);
+            hash.u16(villager.source_id);
+            hash.u8(u8::from(villager.active));
+            hash.u32(villager.control_flags);
+            hash.i32(villager.reset_counter);
+            hash.i32(villager.max_life);
+            hash.i32(villager.life);
+            hash.i32(villager.pending_damage);
+            hash.i16(villager.pending_attacker);
+            hash.i16(villager.current_attacker);
+            hash.u16(villager.rng);
+            hash.i16(villager.yaw);
+            hash.i16(villager.pitch);
+            hash.i16(villager.roll);
+            hash.u16(villager.position.x);
+            hash.u16(villager.position.y);
+            hash.i16(villager.position.z);
+            hash.i16(villager.collision_half_width);
+            hash.i16(villager.collision_vertical_offset);
+            hash.i16(villager.collision_half_height);
+            hash.u16(villager.render_parameter_index);
+            hash.i8(villager.animation_frame);
+            hash.u8(villager.action);
+            hash.u8(villager.phase);
+            hash.i8(villager.stage_var_1);
+            hash.i8(villager.stage_var_2);
+            hash.i16(villager.actual_speed);
+            hash.i16(villager.minimum_speed);
+            hash.i16(villager.maximum_speed);
+            match villager.target_entity_index {
                 Some(index) => {
                     hash.u8(1);
                     hash.u16(index);

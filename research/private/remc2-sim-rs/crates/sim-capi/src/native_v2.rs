@@ -16,14 +16,14 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use sim_core::{
-    FlightContext, FlightEvent, FlightState, POSITIONAL_SOUND_PLAY_IF_NOT_PLAYING, PlayerCommand,
-    Position, PositionalSoundCommand, StepEvidence,
+    FlightContext, FlightEvent, FlightState, FlightWorld, POSITIONAL_SOUND_PLAY_IF_NOT_PLAYING,
+    PlayerCommand, Position, PositionalSoundCommand, StepEvidence,
     archer_tmap::{ArcherTmapBank, ArcherTmapClocks},
     combat_tmap::{
         COMBAT_STATIC_EXTENTS, COMBAT_STATIC_SELECTORS, COMBAT_STATIC_SHA256, CombatTmapBank,
         FIREBALL_PAYLOAD_SHA256, FireballTmapClock, POSSESSION_PAYLOAD_SHA256, PossessionTmapClock,
     },
-    conformance_hash,
+    conformance_hash, conformance_hash_v2,
     economy_tmap::{
         CASTLE_ROOT_PAYLOAD_BYTES, CASTLE_ROOT_PAYLOAD_SHA256, CastleTmapClock, EconomyTmapBank,
         MANA_CARRIER_PAYLOAD_BYTES, MANA_CARRIER_PAYLOAD_SHA256, MANA_SPHERE_NEUTRAL_PAYLOAD_BYTES,
@@ -48,13 +48,16 @@ use sim_core::{
     goat_tmap::{
         GOAT_TMAP_DRAW_MASK, GOAT_TMAP_SELECTORS, GoatTmapBank, GoatTmapClock, GoatTmapClocks,
     },
+    house::{HouseState, HouseStepEvent},
     level1_mission::{
         ARCHER_ARROW_BASE_TMAP, ARCHER_ARROW_LOGICAL_HEIGHT, ARCHER_ARROW_PROJECTILE_CLASS,
         ARCHER_ARROW_PROJECTILE_MODEL, ARCHER_ARROW_RENDER_INDEX, ARCHER_ARROW_RENDER_MODE,
         CASTLE_PROJECTILE_BASE_TMAP, CASTLE_PROJECTILE_CLASS, CASTLE_PROJECTILE_LOGICAL_HEIGHT,
         CASTLE_PROJECTILE_MODEL, CASTLE_PROJECTILE_RENDER_INDEX, CASTLE_PROJECTILE_RENDER_MODE,
         CASTLE_ROOT_ACTION, CASTLE_ROOT_BASE_TMAP, CASTLE_ROOT_CLASS, CASTLE_ROOT_LOGICAL_HEIGHT,
-        CASTLE_ROOT_MODEL, CASTLE_ROOT_RENDER_INDEX, CASTLE_SPELL_FAMILY, FIREBALL_BASE_TMAP,
+        CASTLE_ROOT_MODEL, CASTLE_ROOT_RENDER_INDEX, CASTLE_SPELL_FAMILY,
+        CHECKPOINT_SMOKE_BASE_TMAP, CHECKPOINT_SMOKE_CLASS, CHECKPOINT_SMOKE_FIRST_RENDER_INDEX,
+        CHECKPOINT_SMOKE_MODEL, CHECKPOINT_SMOKE_RENDER_MODE, FIREBALL_BASE_TMAP,
         FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_CLASS, FIREBALL_IMPACT_LOGICAL_HEIGHT,
         FIREBALL_IMPACT_RENDER_INDEX, FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LOGICAL_HEIGHT,
         FIREBALL_PROJECTILE_CLASS, FIREBALL_PROJECTILE_MODEL, FIREBALL_RENDER_INDEX,
@@ -67,12 +70,15 @@ use sim_core::{
         MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_SPEED, MANA_SPHERE_ACTION, MANA_SPHERE_CLASS,
         MANA_SPHERE_MODEL, MANA_SPHERE_NEUTRAL_BASE_TMAP, MANA_SPHERE_NEUTRAL_RENDER_BASE,
         MANA_SPHERE_PLAYER_ONE_BASE_TMAP, MANA_SPHERE_PLAYER_ONE_RENDER_BASE, ManaCarrier,
-        ManaSphere, POSSESSION_PROJECTILE_BASE_TMAP, POSSESSION_PROJECTILE_CLASS,
-        POSSESSION_PROJECTILE_LOGICAL_HEIGHT, POSSESSION_PROJECTILE_MODEL,
-        POSSESSION_PROJECTILE_RENDER_INDEX, POSSESSION_PROJECTILE_RENDER_MODE, PlayerHitReaction,
-        WATER_SPLASH_BASE_TMAP, WATER_SPLASH_LOGICAL_HEIGHT, WATER_SPLASH_MODEL,
-        WATER_SPLASH_RENDER_INDEX, WATER_SPLASH_RENDER_MODE, level1_minimap_castle_rope_pixels,
-        level1_minimap_entity_command, mana_sphere_size_ordinal,
+        ManaSphere, POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_CLASS,
+        POSSESSION_IMPACT_LOGICAL_HEIGHT, POSSESSION_IMPACT_MODEL, POSSESSION_IMPACT_RENDER_INDEX,
+        POSSESSION_IMPACT_RENDER_MODE, POSSESSION_PROJECTILE_BASE_TMAP,
+        POSSESSION_PROJECTILE_CLASS, POSSESSION_PROJECTILE_LOGICAL_HEIGHT,
+        POSSESSION_PROJECTILE_MODEL, POSSESSION_PROJECTILE_RENDER_INDEX,
+        POSSESSION_PROJECTILE_RENDER_MODE, PlayerHitReaction, WATER_SPLASH_BASE_TMAP,
+        WATER_SPLASH_LOGICAL_HEIGHT, WATER_SPLASH_MODEL, WATER_SPLASH_RENDER_INDEX,
+        WATER_SPLASH_RENDER_MODE, level1_minimap_castle_rope_pixels, level1_minimap_entity_command,
+        mana_sphere_size_ordinal,
     },
     native_world::{
         AssetRef, EntityAuthority, EntitySnapshot, NativeWorld, ParticleParameter, SessionTerrain,
@@ -83,8 +89,8 @@ use sim_core::{
     renderable_map_chain::{RenderableMapChains, RenderableMapSeed},
     source_projection_hash, state_hash,
     static_world_tmap::{
-        EXIT_TARGET_PAYLOAD_BYTES, EXIT_TARGET_PAYLOAD_SHA256, SPELL_JAR_PAYLOAD_BYTES,
-        SPELL_JAR_PAYLOAD_SHA256, StaticWorldTmapBank,
+        EXIT_TARGET_PAYLOAD_BYTES, EXIT_TARGET_PAYLOAD_SHA256, LEVEL1_SCENERY_SELECTORS,
+        SPELL_JAR_PAYLOAD_BYTES, SPELL_JAR_PAYLOAD_SHA256, StaticWorldTmapBank,
     },
     step_outer_turn_with_context,
     terrain_frame::{
@@ -95,7 +101,14 @@ use sim_core::{
     },
     terrain_grid::{OUTDOOR_GRID_VERTICES, OutdoorGridInput, outdoor_grid},
     terrain_presentation::outdoor_terrain_pnt5,
+    villager::VillagerState,
 };
+
+#[cfg(test)]
+use sim_core::level1_mission::FIREBALL_IMPACT_MODEL;
+
+#[cfg(test)]
+use sim_core::level1_mission::CASTLE_PROJECTILE_SOUND;
 
 pub const MC_NATIVE_ABI_VERSION: u32 = 2;
 
@@ -127,6 +140,7 @@ pub const MC_AUTHORITY_GOAT_LIVE: u8 = 4;
 pub const MC_AUTHORITY_SELECTOR_FRAME_LIVE: u8 = 5;
 pub const MC_AUTHORITY_LEVEL1_MISSION_LIVE: u8 = 6;
 pub const MC_AUTHORITY_SESSION_TERRAIN_LIVE: u8 = 7;
+pub const MC_AUTHORITY_VILLAGER_LIVE: u8 = 8;
 pub const MC_LEVEL1_EXIT_FLAG_PALETTE_VISUAL_CURRENT: u8 = 1 << 0;
 pub const MC_LEVEL1_EXIT_FLAG_FOV_POST_ACTION_NEXT_HISTORY: u8 = 1 << 1;
 pub const MC_LEVEL1_EXIT_FLAG_END_SEQUENCE: u8 = 1 << 2;
@@ -513,7 +527,12 @@ pub struct McLevel1MissionSnapshotV2 {
     pub impact_count: u32,
     pub exit_sequence_phase: u32,
     pub exit_sequence_timer: i32,
-    pub reserved: [u32; 2],
+    pub possession_experience: i32,
+    pub last_possessed_building_entity: u16,
+    pub last_possessed_building_owner: u16,
+    pub possessed_building_count: u16,
+    pub possession_tier: u8,
+    pub speed_trail_count: u8,
 }
 
 /// One selected spell-holder row consumed by `DrawSpellIcon_2E260`.
@@ -561,6 +580,39 @@ pub struct McLevel1HudSnapshotV2 {
     pub player_status_flags: u32,
     pub left: McLevel1HudSpellSlotV2,
     pub right: McLevel1HudSpellSlotV2,
+    pub selected_holder_entity_index: u16,
+    pub selected_icon_selector: u16,
+    pub selected_model: u8,
+    pub selected_tier: i8,
+    pub selected_enabled_flags: u8,
+    pub selected_frame_selector: u8,
+}
+
+/// Source spell-menu state for the four families reachable in Level 1.
+///
+/// This remains separate from the draw-oriented HUD row because
+/// `SpellLevels` (unlocked ceiling), `array_0x437` (current family tier), and
+/// the two hand subspell fields are distinct source state.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McLevel1SpellMenuSnapshotV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub tick: u64,
+    pub authority: u8,
+    pub selected_ui_index: u8,
+    pub selected_tier: i8,
+    pub left_family: u8,
+    pub left_tier: i8,
+    pub right_family: u8,
+    pub right_tier: i8,
+    pub reserved_0: u8,
+    pub family_enabled: [u8; 4],
+    pub family_unlocked_tier: [i8; 4],
+    pub family_selected_tier: [i8; 4],
+    pub reserved_1: [u8; 4],
+    pub holder_entity_index: [u16; 4],
     pub reserved: [u32; 2],
 }
 
@@ -846,7 +898,8 @@ pub struct McLevel1ActorSnapshotV2 {
     pub yaw: i16,
     pub animation_frame: i8,
     pub visible: u8,
-    pub reserved: [u32; 2],
+    pub state_value: i32,
+    pub reserved: u32,
 }
 
 /// Source-slot keyed body node emitted by the model-3 multipart constructor.
@@ -1359,6 +1412,7 @@ struct SessionRecord {
     camera_slope: TerrainSlopeCamera,
     camera_slope_sample: TerrainSlopeCameraSample,
     terrain_frame_assets: Option<Arc<TerrainFrameAssets>>,
+    pending_house_effects: Vec<HouseStepEvent>,
 }
 
 fn goat_collision_target(goat: &GoatState) -> Level1CollisionTarget {
@@ -1369,6 +1423,28 @@ fn goat_collision_target(goat: &GoatState) -> Level1CollisionTarget {
         collision_vertical_offset: goat.collision_vertical_offset,
         collision_half_height: goat.collision_half_height,
         active: goat.active,
+    }
+}
+
+fn villager_collision_target(villager: &VillagerState) -> Level1CollisionTarget {
+    Level1CollisionTarget {
+        entity_index: villager.entity_index,
+        position: villager.position,
+        collision_half_width: villager.collision_half_width,
+        collision_vertical_offset: villager.collision_vertical_offset,
+        collision_half_height: villager.collision_half_height,
+        active: villager.active,
+    }
+}
+
+fn house_collision_target(house: &HouseState) -> Level1CollisionTarget {
+    Level1CollisionTarget {
+        entity_index: house.entity_index,
+        position: house.position,
+        collision_half_width: house.collision_half_width,
+        collision_vertical_offset: house.collision_vertical_offset,
+        collision_half_height: house.collision_half_height,
+        active: house.active,
     }
 }
 
@@ -1395,7 +1471,8 @@ fn level1_frozen_actor_renders(world: &NativeWorld) -> AbiResult<Box<[Level1Froz
             };
         let expected_flags = if entity_index >= 130 { 4 } else { 12 };
         if !entity.active
-            || entity.authority != EntityAuthority::FrozenObserved
+            || (entity_index < 130 && entity.authority != EntityAuthority::VillagerLive)
+            || (entity_index >= 130 && entity.authority != EntityAuthority::FrozenObserved)
             || entity.class != expected_class
             || entity.model != expected_model
             || entity.action != expected_action
@@ -1508,23 +1585,44 @@ fn reset_renderable_map_chains(
     world: &NativeWorld,
     frozen_actors: &[Level1FrozenActorRender],
 ) -> AbiResult<RenderableMapChains> {
+    // The same source map is used for painter ordering and gameplay
+    // collision. Preserve every reset row whose collision bit is set; the
+    // compositor can still skip unsupported draw families without removing
+    // the intervening source-order links.
     let mut seeds = world
-        .reset_live_world()
-        .goats()
+        .entities()
         .iter()
-        .map(|goat| RenderableMapSeed {
-            entity_index: goat.entity_index,
-            active: goat.active,
-            x: goat.position.x,
-            y: goat.position.y,
+        .filter(|entity| entity.active && entity.control_flags & 8 != 0)
+        .map(|entity| RenderableMapSeed {
+            entity_index: entity.index,
+            // Some live reset rows are deliberately absent from map chains
+            // behind source no-map/no-draw gates. Track them for later
+            // insertion without requiring reset membership.
+            active: false,
+            x: entity.position.x,
+            y: entity.position.y,
         })
         .collect::<Vec<_>>();
+    seeds.extend(
+        world
+            .reset_live_world()
+            .goats()
+            .iter()
+            .map(|goat| RenderableMapSeed {
+                entity_index: goat.entity_index,
+                active: false,
+                x: goat.position.x,
+                y: goat.position.y,
+            }),
+    );
     seeds.extend(frozen_actors.iter().map(|actor| RenderableMapSeed {
         entity_index: actor.source_entity_index,
-        active: true,
+        active: false,
         x: actor.position.x,
         y: actor.position.y,
     }));
+    seeds.sort_unstable_by_key(|seed| seed.entity_index);
+    seeds.dedup_by_key(|seed| seed.entity_index);
     RenderableMapChains::from_reset(
         &seeds,
         &world.terrain_planes().entity_indices,
@@ -1548,6 +1646,8 @@ fn native_composited_actor_kind(kind: Level1ActorKind) -> bool {
             | Level1ActorKind::ExitTarget
             | Level1ActorKind::MultipartHead
             | Level1ActorKind::ExperienceScroll
+            | Level1ActorKind::Tree
+            | Level1ActorKind::Stone
     )
 }
 
@@ -1641,6 +1741,7 @@ impl SessionRecord {
             camera_slope,
             camera_slope_sample,
             terrain_frame_assets,
+            pending_house_effects: Vec::new(),
         })
     }
 
@@ -1678,6 +1779,8 @@ impl SessionRecord {
             .terrain_frame_assets
             .as_ref()
             .map(|assets| CastleTmapClock::from_bank(&assets.economy_tmap_bank));
+        self.frozen_actors = level1_frozen_actor_renders(self.world.as_ref())
+            .expect("validated world reset actor renders remain valid");
         self.renderable_map_chains =
             reset_renderable_map_chains(self.world.as_ref(), self.frozen_actors.as_ref())
                 .expect("validated world reset renderable chains remain valid");
@@ -1710,6 +1813,7 @@ impl SessionRecord {
             self.camera_history.x,
             self.camera_history.y,
         );
+        self.pending_house_effects.clear();
     }
 
     fn presentation_state(&self) -> McPresentationStateV2 {
@@ -1907,6 +2011,11 @@ impl SessionRecord {
             let camera = self.camera_history;
             let slope = self.camera_slope_sample;
             let planes = self.terrain.planes();
+            let dynamic_residents = self
+                .mission
+                .dynamic_residents()
+                .copied()
+                .collect::<Vec<_>>();
             render_level1_world_frame(
                 Level1TerrainFrameCamera {
                     render_x: camera.x.wrapping_add(slope.offset_x.cast_unsigned()),
@@ -1935,6 +2044,7 @@ impl SessionRecord {
                     frozen_actor_tmap_bank: Some(&assets.frozen_actor_tmap_bank),
                     villager_tmap_clocks: Some(villager_tmap_clocks),
                     mission_actors: self.mission.actors(),
+                    dynamic_residents: &dynamic_residents,
                     mission_segments: self.mission.multipart_segments(),
                     castle_root: self
                         .mission
@@ -1954,6 +2064,7 @@ impl SessionRecord {
                     firefly_tmap_clocks,
                     projectiles: self.mission.projectiles(),
                     impacts: self.mission.impacts(),
+                    possessed_buildings: self.mission.possessed_buildings(),
                     combat_tmap_bank: &assets.combat_tmap_bank,
                     static_world_tmap_bank: &assets.static_world_tmap_bank,
                     economy_tmap_bank: &assets.economy_tmap_bank,
@@ -2122,7 +2233,7 @@ impl SessionRecord {
             tick: self.state.tick,
             event_head: self.event_head,
             state_hash: state_hash(&self.state),
-            conformance_hash: conformance_hash(&self.state, &self.context),
+            conformance_hash: conformance_hash_v2(&self.state, &self.context),
             entity_index: self.state.entity_index,
             x: self.state.position.x,
             y: self.state.position.y,
@@ -2278,6 +2389,11 @@ impl SessionRecord {
         self.mission.sync_collected_spell_holders(&mut self.context);
         self.mission
             .sync_speed_holder_projection(&mut self.state, &mut self.context);
+        let holders_before = self
+            .context
+            .spell_fire
+            .as_ref()
+            .map_or_else(Vec::new, |fire| fire.holders.clone());
         self.context.events.clear();
         let world = Arc::clone(&self.world);
         let player_control_flags = world
@@ -2290,7 +2406,17 @@ impl SessionRecord {
             control_flags: player_control_flags,
         }];
         self.mission.set_external_collision_targets(
-            self.live_world.goats().iter().map(goat_collision_target),
+            self.live_world
+                .goats()
+                .iter()
+                .map(goat_collision_target)
+                .chain(
+                    self.live_world
+                        .villagers()
+                        .iter()
+                        .map(villager_collision_target),
+                )
+                .chain(self.live_world.houses().iter().map(house_collision_target)),
         );
         self.mission.begin_source_turn_at(self.state.position);
         let mut goat_events = self
@@ -2298,6 +2424,10 @@ impl SessionRecord {
             .into_iter()
             .map(|event| (event, self.mission.global_rng()))
             .collect::<Vec<_>>();
+        if self.mission.take_group_7_villager_release() {
+            let released = self.live_world.release_villager_stage_group_7();
+            debug_assert_eq!(released, 28);
+        }
         let begin_goat_events = self.live_world.begin_source_turn(&initial_target);
         self.apply_goat_event_side_effects(world.as_ref(), &begin_goat_events);
         goat_events.extend(
@@ -2307,6 +2437,17 @@ impl SessionRecord {
         );
         let mut evidence = Vec::new();
         for source_slot in 1_u16..1_000 {
+            if let Some((owner_entity_index, payload)) =
+                self.mission.take_building_possession_mailbox(source_slot)
+            {
+                self.live_world
+                    .submit_house_possession(source_slot, owner_entity_index, payload)
+                    .expect("possession mailbox targets a live eligible house");
+            }
+            let house_events = self
+                .live_world
+                .step_house_source_slot(source_slot, &self.terrain);
+            self.apply_house_event_side_effects(&house_events);
             let player_target = [GoatPlayerTarget {
                 entity_index: self.state.entity_index,
                 position: self.state.position,
@@ -2315,13 +2456,31 @@ impl SessionRecord {
             let slot_goat_events =
                 self.live_world
                     .step_source_slot(source_slot, &self.terrain, &player_target);
+            self.live_world
+                .step_villager_source_slot(source_slot, &self.terrain);
             self.apply_goat_event_side_effects(world.as_ref(), &slot_goat_events);
             goat_events.extend(
                 slot_goat_events
                     .into_iter()
                     .map(|event| (event, self.mission.global_rng())),
             );
-            if let Some(goat) = self
+            if let Some(house) = self
+                .live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == source_slot)
+            {
+                self.mission
+                    .update_external_collision_target(house_collision_target(house));
+                self.mission.sync_imported_source_slot(
+                    house.entity_index,
+                    house.active,
+                    house.action,
+                    house.phase,
+                    house.rng,
+                    house.control_flags,
+                );
+            } else if let Some(goat) = self
                 .live_world
                 .goats()
                 .iter()
@@ -2336,6 +2495,35 @@ impl SessionRecord {
                     goat.phase,
                     goat.rng,
                     goat.control_flags,
+                );
+            } else if let Some(villager) = self
+                .live_world
+                .villagers()
+                .iter()
+                .find(|villager| villager.entity_index == source_slot)
+            {
+                self.mission
+                    .update_external_collision_target(villager_collision_target(villager));
+                self.mission.sync_imported_source_slot(
+                    villager.entity_index,
+                    villager.active,
+                    villager.action,
+                    villager.phase,
+                    villager.rng,
+                    villager.control_flags,
+                );
+            }
+            if let Some(dolmen) = world
+                .entities()
+                .get(usize::from(source_slot))
+                .filter(|entity| {
+                    entity.active && entity.class == 2 && entity.model == 2 && entity.action == 6
+                })
+            {
+                self.mission.step_dolmen_source_slot(
+                    &self.state,
+                    source_slot,
+                    dolmen.collision_target(),
                 );
             }
 
@@ -2357,21 +2545,27 @@ impl SessionRecord {
                         &mut self.context,
                     )
                 };
+                // A multi-pass outer turn clears `accepted_models` when each
+                // pass latches the command. Detect the source-visible holder
+                // transition instead, matching the direct Rust session.
                 let activated_model = |model| {
-                    self.context
-                        .spell_fire
-                        .as_ref()
-                        .is_some_and(|fire| fire.accepted_models.contains(&model))
+                    self.context.spell_fire.as_ref().is_some_and(|fire| {
+                        fire.holders.iter().any(|holder| {
+                            holder.model == model
+                                && holder.activation_value != 0
+                                && holder.active_value == holder.activation_value.cast_signed()
+                                && holders_before
+                                    .iter()
+                                    .find(|before| before.entity_index == holder.entity_index)
+                                    .is_none_or(|before| before.active_value != holder.active_value)
+                        })
+                    })
                 };
                 let fireball = activated_model(0);
                 let possession = activated_model(1);
                 let castle = activated_model(CASTLE_SPELL_FAMILY);
                 self.mission
                     .capture_spell_holder_active_values(&self.context);
-                if !self.mission.exit_sequence_owns_player_action() && !self.mission.player_dead {
-                    self.mission
-                        .advance_speed_spell(&mut self.state, &mut self.context);
-                }
                 (
                     fireball,
                     possession,
@@ -2380,14 +2574,32 @@ impl SessionRecord {
             } else {
                 (false, false, None)
             };
+            // remc2 updates a moving entity's terrain-cell link during that
+            // entity's source action. Goats/villagers have already acted
+            // above, so expose their current chain positions before the Rust
+            // mission dispatches the same source slot. Mission-owned rows are
+            // synchronized again after their action below.
+            self.sync_source_slot_renderable_records(source_slot)
+                .expect("validated pre-dispatch source map update");
+            self.mission
+                .set_source_map_chains(self.renderable_map_chains.clone());
             let mission_event_start = self.mission.events().len();
-            self.mission.dispatch_source_slot(
+            if !self.mission.exit_sequence_owns_player_action() && !self.mission.player_dead {
+                self.mission.dispatch_speed_holder_slot(
+                    source_slot,
+                    &mut self.state,
+                    &mut self.context,
+                );
+            }
+            self.mission.dispatch_source_slot_with_look(
                 &self.terrain,
                 &self.state,
                 source_slot,
                 fireball_activated,
                 possession_activated,
                 castle_cast_yaw,
+                self.camera_look_yaw,
+                self.camera_look_pitch,
             );
             if source_slot == self.state.entity_index && self.mission.exit_sequence_active {
                 self.mission.advance_exit_sequence(
@@ -2420,11 +2632,12 @@ impl SessionRecord {
         self.finalize_supported_renderable_records()
             .expect("validated source renderable active set");
         if let Some(fire) = self.context.spell_fire.as_mut() {
-            // Class-15/model-0 `sub_693F0` consumes one active tick after its
-            // same-turn projectile factory. This makes held low-tier
-            // Fireball input retriggerable and lets an unheld timer expire.
+            // The class-15 handlers consume one active tick after their
+            // same-turn projectile factories: model 0 in `sub_693F0` and
+            // model 1 in `sub_69640`. This lets Fireball and Possession return
+            // to their inactive, retriggerable state on the source clock.
             for holder in &mut fire.holders {
-                if holder.model == 0 && holder.active_value > 0 {
+                if matches!(holder.model, 0 | 1) && holder.active_value > 0 {
                     holder.active_value -= 1;
                 }
             }
@@ -2512,6 +2725,96 @@ impl SessionRecord {
         }
     }
 
+    fn apply_house_event_side_effects(&mut self, events: &[HouseStepEvent]) {
+        for event in events {
+            match *event {
+                HouseStepEvent::Possessed {
+                    entity_index,
+                    owner_entity_index,
+                    payload,
+                } => self.mission.apply_building_possession(
+                    &self.state,
+                    entity_index,
+                    owner_entity_index,
+                    payload,
+                ),
+                HouseStepEvent::RemoveFootprint {
+                    entity_index,
+                    attacker_entity_index,
+                    position,
+                    building_index,
+                    occupants,
+                    rng,
+                    ..
+                } => {
+                    let produces_residents = self
+                        .live_world
+                        .houses()
+                        .iter()
+                        .find(|house| house.entity_index == entity_index)
+                        .is_some_and(|house| house.parameter.produces_villagers());
+                    let footprint = self
+                        .world
+                        .house_build_footprint(building_index)
+                        .cloned()
+                        .expect("Level 1 action-53 house BUILD footprint");
+                    let outcome = self
+                        .terrain
+                        .apply_house_removal(
+                            position,
+                            rng,
+                            occupants,
+                            produces_residents,
+                            &footprint,
+                        )
+                        .expect("qualified Level 1 house terrain removal");
+                    self.live_world
+                        .commit_house_removal_state(
+                            entity_index,
+                            outcome.final_rng,
+                            outcome.final_occupants,
+                        )
+                        .expect("commit action-53 house state");
+                    for resident in outcome.residents {
+                        self.mission
+                            .spawn_house_resident(
+                                resident.position,
+                                resident.model,
+                                resident.action,
+                                attacker_entity_index,
+                            )
+                            .expect("qualified action-53 resident constructor");
+                        self.pending_house_effects
+                            .push(HouseStepEvent::ResidentRequested {
+                                entity_index,
+                                attacker_entity_index,
+                                position: resident.position,
+                                model: resident.model,
+                                action: resident.action,
+                            });
+                    }
+                    self.mission.remove_imported_building(entity_index);
+                    self.pending_house_effects.push(*event);
+                }
+                HouseStepEvent::ResidentRequested {
+                    attacker_entity_index,
+                    position,
+                    model,
+                    action,
+                    ..
+                } => {
+                    self.mission
+                        .spawn_house_resident(position, model, action, attacker_entity_index)
+                        .expect("qualified action-52 resident constructor");
+                    self.pending_house_effects.push(*event);
+                }
+                HouseStepEvent::Damaged { .. } | HouseStepEvent::DestructionStarted { .. } => {
+                    self.pending_house_effects.push(*event);
+                }
+            }
+        }
+    }
+
     fn reclaim_imported_source_slots(&mut self) -> Vec<GoatStepEvent> {
         self.mission
             .take_reclaimed_imported_source_slots()
@@ -2521,12 +2824,33 @@ impl SessionRecord {
     }
 
     fn sync_supported_renderable_records(&mut self) -> Result<(), String> {
+        for actor in &mut self.frozen_actors {
+            if let Some(villager) = self
+                .live_world
+                .villagers()
+                .iter()
+                .find(|villager| villager.entity_index == actor.source_entity_index)
+            {
+                actor.position = villager.position;
+                actor.yaw = villager.yaw;
+            } else if (130..=132).contains(&actor.source_entity_index) {
+                actor.position.z = self.terrain.ground_height(actor.position);
+            }
+        }
         for goat in self.live_world.goats() {
             self.renderable_map_chains.sync_entity(RenderableMapSeed {
                 entity_index: goat.entity_index,
                 active: goat.active,
                 x: goat.position.x,
                 y: goat.position.y,
+            })?;
+        }
+        for villager in self.live_world.villagers() {
+            self.renderable_map_chains.sync_entity(RenderableMapSeed {
+                entity_index: villager.entity_index,
+                active: villager.active,
+                x: villager.position.x,
+                y: villager.position.y,
             })?;
         }
         for actor in self.mission.actors().iter().filter(|actor| {
@@ -2537,6 +2861,14 @@ impl SessionRecord {
                 active: actor.active,
                 x: actor.position.x,
                 y: actor.position.y,
+            })?;
+        }
+        for resident in self.mission.dynamic_residents() {
+            self.renderable_map_chains.sync_entity(RenderableMapSeed {
+                entity_index: resident.source_entity_index,
+                active: resident.active,
+                x: resident.position.x,
+                y: resident.position.y,
             })?;
         }
         for segment in self.mission.multipart_segments() {
@@ -2573,6 +2905,14 @@ impl SessionRecord {
                 active: impact.active,
                 x: impact.position.x,
                 y: impact.position.y,
+            })?;
+        }
+        for building in self.mission.possessed_buildings() {
+            self.renderable_map_chains.sync_entity(RenderableMapSeed {
+                entity_index: building.entity_index,
+                active: building.active,
+                x: building.position.x,
+                y: building.position.y,
             })?;
         }
         if self.mission.castle_exists && self.mission.castle_source_entity_index != 0 {
@@ -2625,6 +2965,26 @@ impl SessionRecord {
                     x: goat.position.x,
                     y: goat.position.y,
                 })?;
+            } else if let Some(villager) = self
+                .live_world
+                .villagers()
+                .iter()
+                .find(|villager| villager.entity_index == source_slot)
+            {
+                if let Some(actor) = self
+                    .frozen_actors
+                    .iter_mut()
+                    .find(|actor| actor.source_entity_index == source_slot)
+                {
+                    actor.position = villager.position;
+                    actor.yaw = villager.yaw;
+                }
+                self.renderable_map_chains.sync_entity(RenderableMapSeed {
+                    entity_index: villager.entity_index,
+                    active: villager.active,
+                    x: villager.position.x,
+                    y: villager.position.y,
+                })?;
             } else if let Some(actor) = self.mission.actors().iter().find(|actor| {
                 native_composited_actor_kind(actor.kind) && actor.source_entity_index == source_slot
             }) {
@@ -2633,6 +2993,17 @@ impl SessionRecord {
                     active: actor.active,
                     x: actor.position.x,
                     y: actor.position.y,
+                })?;
+            } else if let Some(resident) = self
+                .mission
+                .dynamic_residents()
+                .find(|resident| resident.source_entity_index == source_slot)
+            {
+                self.renderable_map_chains.sync_entity(RenderableMapSeed {
+                    entity_index: resident.source_entity_index,
+                    active: resident.active,
+                    x: resident.position.x,
+                    y: resident.position.y,
                 })?;
             } else if let Some(segment) = self
                 .mission
@@ -2645,6 +3016,18 @@ impl SessionRecord {
                     active: segment.active,
                     x: segment.position.x,
                     y: segment.position.y,
+                })?;
+            } else if let Some(building) = self
+                .mission
+                .possessed_buildings()
+                .iter()
+                .find(|building| building.entity_index == source_slot)
+            {
+                self.renderable_map_chains.sync_entity(RenderableMapSeed {
+                    entity_index: building.entity_index,
+                    active: building.active,
+                    x: building.position.x,
+                    y: building.position.y,
                 })?;
             } else if self.mission.castle_exists
                 && self.mission.castle_source_entity_index == source_slot
@@ -2680,11 +3063,11 @@ impl SessionRecord {
                 })?;
             }
         }
-        // Group activation can allocate several Archer or Firefly slots while dispatching
-        // a switch with a different source identity. Constructor order is the
-        // stable authored order, and each new entity is head-inserted here in
-        // that same order before any later source slot can move it.
-        let mut newly_tracked = self
+        // Replay each constructor's AddEventToMap order. Ordinary actors map
+        // immediately after allocation. The multipart constructor is the
+        // exception: it maps segment 1..16 first and its already-allocated
+        // head last, yielding head -> segment16 -> ... -> segment1.
+        let mut new_actors = self
             .mission
             .actors()
             .iter()
@@ -2693,34 +3076,79 @@ impl SessionRecord {
                     && actor.source_entity_index != 0
                     && !self.renderable_map_chains.tracks(actor.source_entity_index)
             })
-            .map(|actor| RenderableMapSeed {
+            .collect::<Vec<_>>();
+        new_actors.sort_unstable_by_key(|actor| actor.source_entity_index);
+        let mut newly_tracked = Vec::new();
+        for actor in new_actors {
+            if actor.kind == Level1ActorKind::MultipartHead {
+                let mut segments = self
+                    .mission
+                    .multipart_segments()
+                    .iter()
+                    .filter(|segment| {
+                        segment.head_source_entity_index == actor.source_entity_index
+                            && !self
+                                .renderable_map_chains
+                                .tracks(segment.source_entity_index)
+                    })
+                    .collect::<Vec<_>>();
+                segments.sort_unstable_by_key(|segment| segment.ordinal);
+                newly_tracked.extend(segments.into_iter().map(|segment| RenderableMapSeed {
+                    entity_index: segment.source_entity_index,
+                    active: segment.active,
+                    x: segment.position.x,
+                    y: segment.position.y,
+                }));
+            }
+            newly_tracked.push(RenderableMapSeed {
                 entity_index: actor.source_entity_index,
                 active: actor.active,
                 x: actor.position.x,
                 y: actor.position.y,
+            });
+        }
+        // Preserve partial-construction prefixes if the source arena filled
+        // before all children could be allocated.
+        let orphan_segments = self
+            .mission
+            .multipart_segments()
+            .iter()
+            .filter(|segment| {
+                !self
+                    .renderable_map_chains
+                    .tracks(segment.source_entity_index)
+                    && !newly_tracked
+                        .iter()
+                        .any(|seed| seed.entity_index == segment.source_entity_index)
+            })
+            .map(|segment| RenderableMapSeed {
+                entity_index: segment.source_entity_index,
+                active: segment.active,
+                x: segment.position.x,
+                y: segment.position.y,
             })
             .collect::<Vec<_>>();
-        newly_tracked.extend(
-            self.mission
-                .multipart_segments()
-                .iter()
-                .filter_map(|segment| {
-                    (!self
-                        .renderable_map_chains
-                        .tracks(segment.source_entity_index))
-                    .then_some(RenderableMapSeed {
-                        entity_index: segment.source_entity_index,
-                        active: segment.active,
-                        x: segment.position.x,
-                        y: segment.position.y,
-                    })
-                }),
-        );
-        // Constructor allocations consume the first available source slots;
-        // sorting restores the head/segment/head/segment allocation order
-        // before head insertion into each terrain-cell chain.
-        newly_tracked.sort_unstable_by_key(|seed| seed.entity_index);
+        newly_tracked.extend(orphan_segments);
         for seed in newly_tracked {
+            self.renderable_map_chains.sync_entity(seed)?;
+        }
+        let newly_tracked_residents = self
+            .mission
+            .dynamic_residents()
+            .filter(|resident| {
+                resident.source_entity_index != 0
+                    && !self
+                        .renderable_map_chains
+                        .tracks(resident.source_entity_index)
+            })
+            .map(|resident| RenderableMapSeed {
+                entity_index: resident.source_entity_index,
+                active: resident.active,
+                x: resident.position.x,
+                y: resident.position.y,
+            })
+            .collect::<Vec<_>>();
+        for seed in newly_tracked_residents {
             self.renderable_map_chains.sync_entity(seed)?;
         }
         if self.mission.castle_exists
@@ -2774,18 +3202,38 @@ impl SessionRecord {
 
     fn finalize_supported_renderable_records(&mut self) -> Result<(), String> {
         let mut active = self
-            .live_world
-            .goats()
+            .world
+            .entities()
             .iter()
-            .filter(|goat| goat.active)
-            .map(|goat| goat.entity_index)
+            .filter(|entity| {
+                entity.active
+                    && entity.control_flags & 8 != 0
+                    && self.mission.imported_source_slot_is_live(entity.index)
+            })
+            .map(|entity| entity.index)
             .collect::<Vec<_>>();
+        active.extend(
+            self.live_world
+                .goats()
+                .iter()
+                .filter(|goat| goat.active)
+                .map(|goat| goat.entity_index),
+        );
+        active.extend(
+            self.live_world
+                .villagers()
+                .iter()
+                .filter(|villager| villager.active)
+                .map(|villager| villager.entity_index),
+        );
         active.extend(
             self.frozen_actors
                 .iter()
                 .filter(|actor| {
-                    self.mission
-                        .imported_source_slot_is_live(actor.source_entity_index)
+                    actor.source_entity_index >= 130
+                        && self
+                            .mission
+                            .imported_source_slot_is_live(actor.source_entity_index)
                 })
                 .map(|actor| actor.source_entity_index),
         );
@@ -2799,6 +3247,12 @@ impl SessionRecord {
                         && actor.active
                 })
                 .map(|actor| actor.source_entity_index),
+        );
+        active.extend(
+            self.mission
+                .dynamic_residents()
+                .filter(|resident| resident.active)
+                .map(|resident| resident.source_entity_index),
         );
         active.extend(
             self.mission
@@ -2821,6 +3275,13 @@ impl SessionRecord {
                 .filter(|impact| impact.active)
                 .map(|impact| impact.source_entity_index),
         );
+        active.extend(
+            self.mission
+                .possessed_buildings()
+                .iter()
+                .filter(|building| building.active)
+                .map(|building| building.entity_index),
+        );
         if self.mission.castle_exists && self.mission.castle_source_entity_index != 0 {
             active.push(self.mission.castle_source_entity_index);
         }
@@ -2840,6 +3301,18 @@ impl SessionRecord {
         {
             active.push(carrier.source_entity_index);
         }
+        // Hidden class-10/model-45 houses remain live collision rows even
+        // before Possession reveals their coloured marker. Keeping them in
+        // the filtered chain preserves their source painter/collision order.
+        active.extend(
+            self.mission
+                .possession_collision_targets()
+                .iter()
+                .filter(|target| target.active)
+                .map(|target| target.entity_index),
+        );
+        active.sort_unstable();
+        active.dedup();
         self.renderable_map_chains.retain_entities(&active)
     }
 
@@ -2891,6 +3364,46 @@ impl SessionRecord {
                             ))
                 })
                 .map(|goat| goat.entity_index)
+                .chain(
+                    self.live_world
+                        .villagers()
+                        .iter()
+                        .filter(|villager| {
+                            villager.active
+                                && villager.entity_index != owner_entity_index
+                                && (villager.entity_index == direct_target_entity_index
+                                    || sim_core::level1_mission::source_entities_overlap(
+                                        position,
+                                        sim_core::level1_mission::FIREBALL_IMPACT_COLLISION_HALF_WIDTH,
+                                        sim_core::level1_mission::FIREBALL_IMPACT_COLLISION_VERTICAL_OFFSET,
+                                        sim_core::level1_mission::FIREBALL_IMPACT_COLLISION_HALF_HEIGHT,
+                                        villager.position,
+                                        villager.collision_half_width,
+                                        villager.collision_vertical_offset,
+                                        villager.collision_half_height,
+                                    ))
+                        })
+                        .map(|villager| villager.entity_index),
+                )
+                .chain(
+                    self.live_world
+                        .houses()
+                        .iter()
+                        .filter(|house| {
+                            house.active
+                                && house.entity_index != owner_entity_index
+                                && (house.entity_index == direct_target_entity_index
+                                    || sim_core::level1_mission::source_entities_overlap_xy(
+                                        position,
+                                        sim_core::level1_mission::FIREBALL_IMPACT_COLLISION_HALF_WIDTH,
+                                        sim_core::level1_mission::FIREBALL_IMPACT_COLLISION_HALF_WIDTH,
+                                        house.position,
+                                        house.collision_half_width,
+                                        house.collision_half_depth,
+                                    ))
+                        })
+                        .map(|house| house.entity_index),
+                )
                 .collect::<Vec<_>>();
             for target in targets {
                 let _ = self.live_world.inject_damage(
@@ -3397,27 +3910,22 @@ impl SessionRecord {
             Level1MissionEvent::CastleProjectileSpawned {
                 projectile_id,
                 sound_id,
+                source_entity_index,
+                position,
+                random_state,
             } => {
                 let mut record =
                     self.next_event_base(MC_EVENT_LEVEL1_CASTLE_PROJECTILE_SPAWNED, hash);
                 record.code = u32::from(sound_id);
                 record.value_0 = i32::try_from(projectile_id).unwrap_or(i32::MAX);
-                if let Some(projectile) = self
-                    .mission
-                    .projectiles()
-                    .iter()
-                    .copied()
-                    .find(|projectile| projectile.id() == projectile_id)
-                {
-                    self.attach_mission_sound(
-                        &mut record,
-                        sound_id,
-                        projectile.source_entity_index(),
-                        projectile.position(),
-                        20,
-                        self.mission.global_rng(),
-                    );
-                }
+                self.attach_mission_sound(
+                    &mut record,
+                    sound_id,
+                    source_entity_index,
+                    position,
+                    20,
+                    random_state,
+                );
                 record
             }
             Level1MissionEvent::CastlePlacementRejected { projectile_id } => {
@@ -3557,7 +4065,7 @@ impl SessionRecord {
                 POSITIONAL_SOUND_PLAY_IF_NOT_PLAYING,
             ));
         }
-        if sound_id == 29 {
+        if matches!(sound_id, 14 | 29) {
             return Some(local_audio_command_record(event, sound_id, 0, 3));
         }
         let source = self.world.entities().get(usize::from(event.entity_index))?;
@@ -3670,7 +4178,11 @@ fn local_audio_command_record(
         entity_index: event.entity_index,
         player_index: event.player_index,
         sound_flags,
-        volume_q15: if sound_id == 29 { 0x7fff } else { 0 },
+        volume_q15: if matches!(sound_id, 14 | 29) {
+            0x7fff
+        } else {
+            0
+        },
         pan_q16: 0x7fff,
         voice_index: MC_AUDIO_VOICE_NONE,
         play_type,
@@ -4680,6 +5192,17 @@ pub extern "C" fn mc_native_level1_hud_snapshot(
 ) -> i32 {
     boundary_value(out_snapshot, out_snapshot_size, || {
         with_session(handle, |session| Ok(level1_hud_snapshot(session)))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_level1_spell_menu_snapshot(
+    handle: u64,
+    out_snapshot: *mut McLevel1SpellMenuSnapshotV2,
+    out_snapshot_size: u32,
+) -> i32 {
+    boundary_value(out_snapshot, out_snapshot_size, || {
+        with_session(handle, |session| Ok(level1_spell_menu_snapshot(session)))
     })
 }
 
@@ -5730,6 +6253,7 @@ fn entity_snapshot(
             EntityAuthority::PlayerFlightLive => MC_AUTHORITY_PLAYER_FLIGHT_LIVE,
             EntityAuthority::SpellActivationLive => MC_AUTHORITY_SPELL_ACTIVATION_LIVE,
             EntityAuthority::GoatLive => MC_AUTHORITY_GOAT_LIVE,
+            EntityAuthority::VillagerLive => MC_AUTHORITY_VILLAGER_LIVE,
         },
         active: u8::from(entity.active),
         class_id: entity.class,
@@ -5776,6 +6300,46 @@ fn entity_snapshot(
         snapshot.yaw = goat.yaw;
         snapshot.pitch = goat.pitch;
         snapshot.actual_speed = goat.actual_speed;
+    } else if entity.authority == EntityAuthority::VillagerLive
+        && let Some(villager) = live_world
+            .villagers()
+            .iter()
+            .find(|villager| villager.entity_index == entity.index)
+    {
+        snapshot.authority = MC_AUTHORITY_VILLAGER_LIVE;
+        snapshot.active = u8::from(villager.active);
+        snapshot.action = villager.action;
+        snapshot.phase = villager.phase;
+        snapshot.x = villager.position.x;
+        snapshot.y = villager.position.y;
+        snapshot.z = villager.position.z;
+        snapshot.yaw = villager.yaw;
+        snapshot.pitch = villager.pitch;
+        snapshot.actual_speed = villager.actual_speed;
+    }
+    if let Some(resident) = mission
+        .dynamic_residents()
+        .find(|resident| resident.source_entity_index == entity.index)
+    {
+        snapshot.authority = MC_AUTHORITY_LEVEL1_MISSION_LIVE;
+        snapshot.active = u8::from(resident.active);
+        snapshot.class_id = resident.class;
+        snapshot.model = resident.model;
+        snapshot.action = resident.action;
+        snapshot.phase = resident.phase;
+        snapshot.has_parameter_record = 1;
+        snapshot.parameter_record_index = match resident.kind {
+            sim_core::level1_mission::DynamicResidentKind::Archer => 75,
+            sim_core::level1_mission::DynamicResidentKind::Builder => 101,
+            sim_core::level1_mission::DynamicResidentKind::Villager
+            | sim_core::level1_mission::DynamicResidentKind::Trader => 100,
+        };
+        snapshot.x = resident.position.x;
+        snapshot.y = resident.position.y;
+        snapshot.z = resident.position.z;
+        snapshot.yaw = resident.yaw;
+        snapshot.pitch = 0;
+        snapshot.actual_speed = resident.actual_speed;
     }
     snapshot
 }
@@ -5855,7 +6419,20 @@ fn level1_mission_snapshot(session: &SessionRecord) -> McLevel1MissionSnapshotV2
             .expect("Level 1 impact count fits u32"),
         exit_sequence_phase: u32::from(mission.exit_sequence_phase),
         exit_sequence_timer: i32::from(mission.exit_sequence_timer),
-        reserved: [0; 2],
+        possession_experience: mission.possession_experience,
+        last_possessed_building_entity: mission
+            .possessed_buildings()
+            .last()
+            .map_or(0, |building| building.entity_index),
+        last_possessed_building_owner: mission
+            .possessed_buildings()
+            .last()
+            .map_or(0, |building| building.owner_entity_index),
+        possessed_building_count: u16::try_from(mission.possessed_buildings().len())
+            .expect("Level 1 possessed building count fits u16"),
+        possession_tier: u8::try_from(mission.possession_tier)
+            .expect("Level 1 possession tier is non-negative"),
+        speed_trail_count: u8::try_from(mission.speed_trails().len()).unwrap_or(u8::MAX),
     }
 }
 
@@ -5879,6 +6456,8 @@ fn level1_hud_spell_slot(session: &SessionRecord, holder_index: u16) -> McLevel1
         holder_entity_index: holder.entity_index,
         parent_entity_index: fire.caster.entity_index,
         model: holder.model,
+        // DrawSpellIcon_2E260 reads the shared holder level gate, not the
+        // selected tier stored independently for each hand.
         tier: holder.level_gate,
         enabled_flags,
         action_marker: holder.action_marker,
@@ -5899,6 +6478,8 @@ fn level1_hud_snapshot(session: &SessionRecord) -> McLevel1HudSnapshotV2 {
     let fire = session.context.spell_fire.as_ref();
     let left_index = fire.map_or(0, |fire| fire.left_holder_index);
     let right_index = fire.map_or(0, |fire| fire.right_holder_index);
+    let selected_index = fire.map_or(0, |fire| fire.selected_holder_index);
+    let selected = level1_hud_spell_slot(session, selected_index);
     let player_color = usize::from(session.state.player_color_index.min(7));
     const NIGHT_COLORS: [[u8; 2]; 8] = [
         [0xA4, 0xAA],
@@ -5933,6 +6514,59 @@ fn level1_hud_snapshot(session: &SessionRecord) -> McLevel1HudSnapshotV2 {
             .map_or(0, |fire| fire.caster.control_flags),
         left: level1_hud_spell_slot(session, left_index),
         right: level1_hud_spell_slot(session, right_index),
+        selected_holder_entity_index: selected.holder_entity_index,
+        selected_icon_selector: selected.icon_selector,
+        selected_model: selected.model,
+        selected_tier: selected.tier,
+        selected_enabled_flags: selected.enabled_flags,
+        selected_frame_selector: u8::try_from(selected.frame_selector)
+            .expect("spell frame selector is 1 or 2"),
+    }
+}
+
+fn level1_spell_menu_snapshot(session: &SessionRecord) -> McLevel1SpellMenuSnapshotV2 {
+    let Some(fire) = session.context.spell_fire.as_ref() else {
+        return McLevel1SpellMenuSnapshotV2::default();
+    };
+    let holder_model = |holder_index| {
+        fire.holders
+            .iter()
+            .find(|holder| holder.entity_index == holder_index)
+            .map_or(0, |holder| holder.model)
+    };
+    let mut family_enabled = [0_u8; 4];
+    let mut family_unlocked_tier = [0_i8; 4];
+    let mut family_selected_tier = [0_i8; 4];
+    let mut holder_entity_index = [0_u16; 4];
+    for family in 0..4 {
+        let holder_index = fire.enabled_holder_indices[family];
+        holder_entity_index[family] = holder_index;
+        family_enabled[family] = u8::from(holder_index != 0);
+        family_unlocked_tier[family] = fire.spell_levels[family].clamp(0, 2);
+        family_selected_tier[family] = fire
+            .holders
+            .iter()
+            .find(|holder| holder.entity_index == holder_index)
+            .map_or(0, |holder| holder.level_gate);
+    }
+    McLevel1SpellMenuSnapshotV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McLevel1SpellMenuSnapshotV2>(),
+        generation: session.generation,
+        tick: session.state.tick,
+        authority: MC_AUTHORITY_LEVEL1_MISSION_LIVE,
+        selected_ui_index: fire.selected_spell_ui_index,
+        selected_tier: fire.selected_subspell_index,
+        left_family: holder_model(fire.left_holder_index),
+        left_tier: fire.left_subspell_index,
+        right_family: holder_model(fire.right_holder_index),
+        right_tier: fire.right_subspell_index,
+        reserved_0: 0,
+        family_enabled,
+        family_unlocked_tier,
+        family_selected_tier,
+        reserved_1: [0; 4],
+        holder_entity_index,
         reserved: [0; 2],
     }
 }
@@ -6509,7 +7143,8 @@ fn level1_actor_snapshot(actor: &Level1Actor) -> McLevel1ActorSnapshotV2 {
         yaw: actor.yaw,
         animation_frame: actor.animation_frame,
         visible: u8::from(actor.visible),
-        reserved: [0; 2],
+        state_value: actor.state_value,
+        reserved: 0,
     }
 }
 
@@ -6706,6 +7341,24 @@ fn fireball_impact_snapshot(impact: &FireballImpact) -> McFireballImpactSnapshot
                 WATER_SPLASH_RENDER_MODE,
                 WATER_SPLASH_LOGICAL_HEIGHT,
             )
+        } else if impact.model == POSSESSION_IMPACT_MODEL {
+            (
+                POSSESSION_IMPACT_BASE_TMAP,
+                POSSESSION_IMPACT_RENDER_INDEX,
+                POSSESSION_IMPACT_RENDER_MODE,
+                POSSESSION_IMPACT_LOGICAL_HEIGHT,
+            )
+        } else if impact.model == CHECKPOINT_SMOKE_MODEL {
+            let render_parameter_index = u16::from(impact.animation_frame);
+            (
+                CHECKPOINT_SMOKE_BASE_TMAP,
+                render_parameter_index,
+                CHECKPOINT_SMOKE_RENDER_MODE,
+                render_parameter_index
+                    .saturating_sub(CHECKPOINT_SMOKE_FIRST_RENDER_INDEX)
+                    .saturating_add(1)
+                    * 50,
+            )
         } else {
             (
                 FIREBALL_IMPACT_BASE_TMAP,
@@ -6722,7 +7375,13 @@ fn fireball_impact_snapshot(impact: &FireballImpact) -> McFireballImpactSnapshot
         authority: MC_AUTHORITY_LEVEL1_MISSION_LIVE,
         active: u8::from(impact.active),
         damage_submitted: u8::from(impact.damage_submitted),
-        class_id: FIREBALL_IMPACT_CLASS,
+        class_id: if impact.model == POSSESSION_IMPACT_MODEL {
+            POSSESSION_IMPACT_CLASS
+        } else if impact.model == CHECKPOINT_SMOKE_MODEL {
+            CHECKPOINT_SMOKE_CLASS
+        } else {
+            FIREBALL_IMPACT_CLASS
+        },
         model: impact.model,
         render_mode,
         animation_frame: i8::try_from(impact.animation_frame).unwrap_or(i8::MAX),
@@ -7009,10 +7668,23 @@ fn load_qualified_static_world_tmap_bank(root: &Path) -> AbiResult<StaticWorldTm
         })
         .into_iter()
         .collect::<AbiResult<Vec<_>>>()?;
-    StaticWorldTmapBank::decode_with_level1_secondary(
+    let scenery = LEVEL1_SCENERY_SELECTORS
+        .map(|selector| {
+            let path = root.join(format!("terrain/tmaps1/{selector:03}.decoded.bin"));
+            fs::read(&path).map_err(|error| {
+                AbiError::new(
+                    MC_STATUS_IO_ERROR,
+                    format!("failed reading {}: {error}", path.display()),
+                )
+            })
+        })
+        .into_iter()
+        .collect::<AbiResult<Vec<_>>>()?;
+    StaticWorldTmapBank::decode_with_level1_secondary_and_scenery(
         &spell_jar,
         &exit_target,
         std::array::from_fn(|index| secondary[index].as_slice()),
+        std::array::from_fn(|index| scenery[index].as_slice()),
     )
     .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))
 }
@@ -7509,6 +8181,39 @@ mod tests {
         open_paths(&package, &closure).expect("package M opens")
     }
 
+    #[test]
+    fn dynamic_house_resident_overlays_the_source_entity_projection() {
+        let (package, closure) = fixture_paths();
+        let world = NativeWorld::load(package, closure).expect("package M loads");
+        let mut session = SessionRecord::new(world).expect("fixture session constructs");
+        let position = Position {
+            x: 12_345,
+            y: 23_456,
+            z: 640,
+        };
+        let source_slot = session
+            .mission
+            .spawn_house_resident(position, 4, 33, session.state.entity_index)
+            .expect("qualified Archer resident constructor")
+            .expect("fixture source pool has one allocatable row");
+        let entity = &session.world.entities()[usize::from(source_slot)];
+        let snapshot = entity_snapshot(
+            entity,
+            &session.state,
+            &session.live_world,
+            &session.mission,
+        );
+        assert_eq!(snapshot.entity_index, source_slot);
+        assert_eq!(snapshot.authority, MC_AUTHORITY_LEVEL1_MISSION_LIVE);
+        assert_eq!(snapshot.active, 1);
+        assert_eq!(
+            (snapshot.class_id, snapshot.model, snapshot.action),
+            (5, 4, 33)
+        );
+        assert_eq!((snapshot.x, snapshot.y, snapshot.z), (12_345, 23_456, 640));
+        assert_eq!(snapshot.parameter_record_index, 75);
+    }
+
     fn open_fixture_with_terrain_frame_assets() -> u64 {
         let (package, closure) = fixture_paths();
         let world = NativeWorld::load(package, closure).expect("package M loads");
@@ -7573,6 +8278,35 @@ mod tests {
         let session = SessionRecord::new(world).expect("owner-cache fixture session constructs");
         with_registry_mut(|registry| registry.insert(session))
             .expect("owner-cache fixture session registers")
+    }
+
+    fn open_fixture_with_owner_cache_and_terrain_frame_assets() -> u64 {
+        let (package, closure) = fixture_paths();
+        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let world = NativeWorld::load_with_owner_cache(
+            package,
+            closure,
+            private.join("generated/level1-unity-asset-cache"),
+        )
+        .expect("package M and qualified owner cache load");
+        let mut session =
+            SessionRecord::new(world).expect("owner-cache fixture session constructs");
+        let assets = Arc::new(terrain_frame_assets_fixture());
+        session.archer_selector_frames =
+            Some(ArcherTmapClocks::from_bank(&assets.archer_tmap_bank));
+        session.firefly_selector_frames =
+            Some(FireflyTmapClocks::from_bank(&assets.firefly_tmap_bank));
+        session.villager_selector_frames = Some(VillagerTmapClocks::from_bank(
+            &assets.frozen_actor_tmap_bank,
+        ));
+        session.fireball_selector_frame =
+            Some(FireballTmapClock::from_bank(&assets.combat_tmap_bank));
+        session.possession_selector_frame =
+            Some(PossessionTmapClock::from_bank(&assets.combat_tmap_bank));
+        session.castle_selector_frame = Some(CastleTmapClock::from_bank(&assets.economy_tmap_bank));
+        session.terrain_frame_assets = Some(assets);
+        with_registry_mut(|registry| registry.insert(session))
+            .expect("complete owner-cache fixture session registers")
     }
 
     fn open_fixture_with_world_frame_assets() -> u64 {
@@ -7653,6 +8387,7 @@ mod tests {
         assert_eq!(size_of::<McLevel1MissionSnapshotV2>(), 96);
         assert_eq!(size_of::<McLevel1HudSpellSlotV2>(), 36);
         assert_eq!(size_of::<McLevel1HudSnapshotV2>(), 128);
+        assert_eq!(size_of::<McLevel1SpellMenuSnapshotV2>(), 64);
         assert_eq!(size_of::<McLevel1MinimapMarksV2>(), 168);
         assert_eq!(size_of::<McLevel1MinimapEntityCommandV2>(), 24);
         assert_eq!(size_of::<McLevel1MinimapEntitiesInfoV2>(), 64);
@@ -7719,8 +8454,20 @@ mod tests {
             64
         );
         assert_eq!(
-            std::mem::offset_of!(McLevel1MissionSnapshotV2, reserved),
+            std::mem::offset_of!(McLevel1MissionSnapshotV2, possession_experience),
             84
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1MissionSnapshotV2, last_possessed_building_entity),
+            88
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1MissionSnapshotV2, possessed_building_count),
+            92
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1MissionSnapshotV2, speed_trail_count),
+            95
         );
         assert_eq!(std::mem::offset_of!(McLevel1HudSpellSlotV2, max_mana), 12);
         assert_eq!(
@@ -7729,7 +8476,18 @@ mod tests {
         );
         assert_eq!(std::mem::offset_of!(McLevel1HudSnapshotV2, left), 48);
         assert_eq!(std::mem::offset_of!(McLevel1HudSnapshotV2, right), 84);
-        assert_eq!(std::mem::offset_of!(McLevel1HudSnapshotV2, reserved), 120);
+        assert_eq!(
+            std::mem::offset_of!(McLevel1HudSnapshotV2, selected_holder_entity_index),
+            120
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1SpellMenuSnapshotV2, family_enabled),
+            32
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1SpellMenuSnapshotV2, holder_entity_index),
+            48
+        );
         assert_eq!(std::mem::offset_of!(McLevel1MinimapMarksV2, mark_x), 28);
         assert_eq!(std::mem::offset_of!(McLevel1MinimapMarksV2, arrow_xy), 124);
         assert_eq!(std::mem::offset_of!(McLevel1MinimapMarksV2, reserved), 152);
@@ -7793,7 +8551,11 @@ mod tests {
         assert_eq!(std::mem::offset_of!(McLevel1ActorSnapshotV2, max_life), 28);
         assert_eq!(std::mem::offset_of!(McLevel1ActorSnapshotV2, base_tmap), 40);
         assert_eq!(std::mem::offset_of!(McLevel1ActorSnapshotV2, yaw), 44);
-        assert_eq!(std::mem::offset_of!(McLevel1ActorSnapshotV2, reserved), 48);
+        assert_eq!(
+            std::mem::offset_of!(McLevel1ActorSnapshotV2, state_value),
+            48
+        );
+        assert_eq!(std::mem::offset_of!(McLevel1ActorSnapshotV2, reserved), 52);
         assert_eq!(
             std::mem::offset_of!(McLevel1MultipartSegmentSnapshotV2, x),
             26
@@ -8319,6 +9081,7 @@ _Static_assert(sizeof(McGoatBatchV2) == 64, "McGoatBatchV2 size");
 _Static_assert(sizeof(McLevel1MissionSnapshotV2) == 96, "McLevel1MissionSnapshotV2 size");
 _Static_assert(sizeof(McLevel1HudSpellSlotV2) == 36, "McLevel1HudSpellSlotV2 size");
 _Static_assert(sizeof(McLevel1HudSnapshotV2) == 128, "McLevel1HudSnapshotV2 size");
+_Static_assert(sizeof(McLevel1SpellMenuSnapshotV2) == 64, "McLevel1SpellMenuSnapshotV2 size");
 _Static_assert(sizeof(McLevel1MinimapMarksV2) == 168, "McLevel1MinimapMarksV2 size");
 _Static_assert(sizeof(McLevel1MinimapEntityCommandV2) == 24, "McLevel1MinimapEntityCommandV2 size");
 _Static_assert(sizeof(McLevel1MinimapEntitiesInfoV2) == 64, "McLevel1MinimapEntitiesInfoV2 size");
@@ -8367,12 +9130,17 @@ _Static_assert(offsetof(McLevel1MissionSnapshotV2, player_life) == 40, "Level 1 
 _Static_assert(offsetof(McLevel1MissionSnapshotV2, actor_count) == 64, "Level 1 mission actor count offset");
 _Static_assert(offsetof(McLevel1MissionSnapshotV2, exit_sequence_phase) == 76, "Level 1 mission exit phase offset");
 _Static_assert(offsetof(McLevel1MissionSnapshotV2, exit_sequence_timer) == 80, "Level 1 mission exit timer offset");
-_Static_assert(offsetof(McLevel1MissionSnapshotV2, reserved) == 84, "Level 1 mission reserved offset");
+_Static_assert(offsetof(McLevel1MissionSnapshotV2, possession_experience) == 84, "Level 1 possession experience offset");
+_Static_assert(offsetof(McLevel1MissionSnapshotV2, last_possessed_building_entity) == 88, "Level 1 last possessed building offset");
+_Static_assert(offsetof(McLevel1MissionSnapshotV2, possessed_building_count) == 92, "Level 1 possessed building count offset");
+_Static_assert(offsetof(McLevel1MissionSnapshotV2, speed_trail_count) == 95, "Level 1 speed trail count offset");
 _Static_assert(offsetof(McLevel1HudSpellSlotV2, max_mana) == 12, "Level 1 HUD spell max mana offset");
 _Static_assert(offsetof(McLevel1HudSnapshotV2, global_mana_denominator) == 32, "Level 1 HUD denominator offset");
 _Static_assert(offsetof(McLevel1HudSnapshotV2, left) == 48, "Level 1 HUD left offset");
 _Static_assert(offsetof(McLevel1HudSnapshotV2, right) == 84, "Level 1 HUD right offset");
-_Static_assert(offsetof(McLevel1HudSnapshotV2, reserved) == 120, "Level 1 HUD reserved offset");
+_Static_assert(offsetof(McLevel1HudSnapshotV2, selected_holder_entity_index) == 120, "Level 1 HUD selected holder offset");
+_Static_assert(offsetof(McLevel1SpellMenuSnapshotV2, family_enabled) == 32, "Level 1 spell menu families offset");
+_Static_assert(offsetof(McLevel1SpellMenuSnapshotV2, holder_entity_index) == 48, "Level 1 spell menu holders offset");
 _Static_assert(offsetof(McLevel1MinimapMarksV2, mark_x) == 28, "Level 1 minimap mark X offset");
 _Static_assert(offsetof(McLevel1MinimapMarksV2, arrow_xy) == 124, "Level 1 minimap arrow offset");
 _Static_assert(offsetof(McLevel1MinimapMarksV2, reserved) == 152, "Level 1 minimap reserved offset");
@@ -8399,7 +9167,8 @@ _Static_assert(offsetof(McManaCarrierSnapshotV2, reserved) == 64, "mana carrier 
 _Static_assert(offsetof(McLevel1ActorSnapshotV2, max_life) == 28, "Level 1 actor life offset");
 _Static_assert(offsetof(McLevel1ActorSnapshotV2, base_tmap) == 40, "Level 1 actor base TMAP offset");
 _Static_assert(offsetof(McLevel1ActorSnapshotV2, yaw) == 44, "Level 1 actor yaw offset");
-_Static_assert(offsetof(McLevel1ActorSnapshotV2, reserved) == 48, "Level 1 actor reserved offset");
+_Static_assert(offsetof(McLevel1ActorSnapshotV2, state_value) == 48, "Level 1 actor state value offset");
+_Static_assert(offsetof(McLevel1ActorSnapshotV2, reserved) == 52, "Level 1 actor reserved offset");
 _Static_assert(offsetof(McLevel1MultipartSegmentSnapshotV2, x) == 26, "multipart segment x offset");
 _Static_assert(offsetof(McLevel1MultipartSegmentSnapshotV2, life) == 40, "multipart segment life offset");
 _Static_assert(offsetof(McLevel1MultipartSegmentSnapshotV2, base_tmap) == 50, "multipart segment TMAP offset");
@@ -8759,6 +9528,37 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
             Ok(())
         })
         .expect("qualified reset renderable chain");
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn reset_restores_live_villager_draw_records_before_rebuilding_map_chains() {
+        let handle = open_fixture_with_world_frame_assets();
+        with_session_mut(handle, |session| {
+            let reset_actors = level1_frozen_actor_renders(session.world.as_ref())?;
+            for _ in 0..16 {
+                session.step(PlayerCommand::default());
+            }
+            assert!(
+                session
+                    .frozen_actors
+                    .iter()
+                    .zip(reset_actors.iter())
+                    .any(|(live, reset)| {
+                        live.source_entity_index < 130 && live.position != reset.position
+                    }),
+                "at least one live Villager moved before reset"
+            );
+
+            session.reset();
+
+            assert_eq!(session.frozen_actors, reset_actors);
+            let expected =
+                reset_renderable_map_chains(session.world.as_ref(), reset_actors.as_ref())?;
+            assert_eq!(session.renderable_map_chains, expected);
+            Ok(())
+        })
+        .expect("stepped live Villager reset");
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 
@@ -10005,7 +10805,7 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
         assert_eq!(mission.authority, MC_AUTHORITY_LEVEL1_MISSION_LIVE);
         assert_eq!((mission.current_stage, mission.text_selector), (0, 48));
         assert_eq!((mission.player_life, mission.player_mana), (10_000, 1_000));
-        assert_eq!(mission.actor_count, 19);
+        assert_eq!(mission.actor_count, 45);
         assert_eq!((mission.projectile_count, mission.impact_count), (0, 0));
         assert_eq!(mission.tasks_completed, 0);
         assert_eq!(mission.exit_sequence_active, 0);
@@ -10037,6 +10837,36 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
             ),
             (0xA4, 0xAA, 0x7B, 0, 0)
         );
+        let mut spell_menu = McLevel1SpellMenuSnapshotV2::default();
+        assert_eq!(
+            mc_native_level1_spell_menu_snapshot(
+                handle,
+                &raw mut spell_menu,
+                struct_size::<McLevel1SpellMenuSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            (spell_menu.generation, spell_menu.tick),
+            (mission.generation, mission.tick)
+        );
+        assert_eq!(spell_menu.authority, MC_AUTHORITY_LEVEL1_MISSION_LIVE);
+        assert_eq!(
+            (
+                spell_menu.selected_ui_index,
+                spell_menu.selected_tier,
+                spell_menu.left_family,
+                spell_menu.left_tier,
+                spell_menu.right_family,
+                spell_menu.right_tier,
+            ),
+            (0, 0, 0, 0, 1, 0)
+        );
+        assert_eq!(spell_menu.family_enabled, [1, 1, 0, 0]);
+        assert_eq!(spell_menu.family_unlocked_tier, [0; 4]);
+        assert_eq!(spell_menu.family_selected_tier, [0; 4]);
+        assert_ne!(spell_menu.holder_entity_index[0], 0);
+        assert_ne!(spell_menu.holder_entity_index[1], 0);
         assert!(hud.global_mana_denominator > 0);
         assert_eq!((hud.secured_mana_component, hud.goal_percent), (0, 0));
         assert_eq!(
@@ -10063,6 +10893,16 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
                 hud.right.icon_selector,
             ),
             (154, 1, 0, 100, 1, 124)
+        );
+        assert_eq!(
+            (
+                hud.selected_holder_entity_index,
+                hud.selected_model,
+                hud.selected_tier,
+                hud.selected_frame_selector,
+                hud.selected_icon_selector,
+            ),
+            (153, 0, 0, 1, 123)
         );
         let mut minimap = McLevel1MinimapMarksV2::default();
         assert_eq!(
@@ -10174,7 +11014,7 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
         );
         assert_eq!(mission.fidelity_gap_flags, 0);
 
-        let mut actors = [McLevel1ActorSnapshotV2::default(); 19];
+        let mut actors = [McLevel1ActorSnapshotV2::default(); 45];
         let mut written = 0;
         assert_eq!(
             mc_native_level1_actors_copy(
@@ -10189,7 +11029,7 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
             ),
             MC_STATUS_OK
         );
-        assert_eq!(written, 19);
+        assert_eq!(written, 45);
         assert_eq!(
             actors
                 .iter()
@@ -10224,7 +11064,43 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
                     actor.kind == sim_core::level1_mission::Level1ActorKind::ExperienceScroll as u8
                 })
                 .count(),
+            5
+        );
+        assert_eq!(
+            actors
+                .iter()
+                .filter(|actor| {
+                    actor.kind == sim_core::level1_mission::Level1ActorKind::Tree as u8
+                        && actor.render_parameter_index
+                            == sim_core::level1_mission::TREE_RENDER_INDEX_A
+                        && actor.base_tmap == sim_core::level1_mission::TREE_BASE_TMAP_A
+                })
+                .count(),
+            18
+        );
+        assert_eq!(
+            actors
+                .iter()
+                .filter(|actor| {
+                    actor.kind == sim_core::level1_mission::Level1ActorKind::Stone as u8
+                        && actor.render_parameter_index
+                            == sim_core::level1_mission::STONE_RENDER_INDEX
+                        && actor.base_tmap == sim_core::level1_mission::STONE_BASE_TMAP
+                })
+                .count(),
             1
+        );
+        assert_eq!(
+            actors
+                .iter()
+                .filter(|actor| {
+                    actor.kind
+                        == sim_core::level1_mission::Level1ActorKind::CheckpointSmokeEmitter as u8
+                        && actor.visible == 0
+                        && actor.render_parameter_index == u16::MAX
+                })
+                .count(),
+            3
         );
         assert_eq!(
             actors
@@ -10338,6 +11214,60 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
     }
 
     #[test]
+    fn top_hud_uses_shared_holder_tier_while_menu_preserves_per_hand_tiers() {
+        let handle = open_fixture();
+        with_session_mut(handle, |session| {
+            let fire =
+                session.context.spell_fire.as_mut().ok_or_else(|| {
+                    AbiError::new(MC_STATUS_VALIDATION_FAILED, "spell state absent")
+                })?;
+            fire.left_holder_index = 154;
+            fire.right_holder_index = 154;
+            fire.selected_holder_index = 154;
+            fire.selected_spell_ui_index = 1;
+            fire.left_subspell_index = 2;
+            fire.right_subspell_index = 1;
+            fire.selected_subspell_index = 1;
+            fire.spell_levels[1] = 2;
+            fire.holders
+                .iter_mut()
+                .find(|holder| holder.entity_index == 154)
+                .ok_or_else(|| {
+                    AbiError::new(MC_STATUS_VALIDATION_FAILED, "possession holder absent")
+                })?
+                .level_gate = 1;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut hud = McLevel1HudSnapshotV2::default();
+        let mut menu = McLevel1SpellMenuSnapshotV2::default();
+        assert_eq!(
+            mc_native_level1_hud_snapshot(
+                handle,
+                &raw mut hud,
+                struct_size::<McLevel1HudSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_native_level1_spell_menu_snapshot(
+                handle,
+                &raw mut menu,
+                struct_size::<McLevel1SpellMenuSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!((hud.left.model, hud.left.tier), (1, 1));
+        assert_eq!((hud.right.model, hud.right.tier), (1, 1));
+        assert_eq!((hud.selected_model, hud.selected_tier), (1, 1));
+        assert_eq!((menu.left_family, menu.left_tier), (1, 2));
+        assert_eq!((menu.right_family, menu.right_tier), (1, 1));
+        assert_eq!(menu.family_selected_tier[1], 1);
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
     fn selected_fireball_retriggers_through_the_public_command_path() {
         let handle = open_fixture();
         let mut snapshot = McSessionSnapshotV2::default();
@@ -10354,15 +11284,22 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
             ),
             MC_STATUS_OK
         );
-        let first_count = with_session(handle, |session| {
-            Ok(session
+        let fireball_launch_count = |session: &SessionRecord| {
+            session
                 .mission
                 .projectiles()
                 .iter()
                 .filter(|projectile| matches!(projectile, Level1Projectile::PlayerFireball(_)))
-                .count())
-        })
-        .unwrap();
+                .count()
+                + session
+                    .mission
+                    .impacts()
+                    .iter()
+                    .filter(|impact| impact.model == FIREBALL_IMPACT_MODEL)
+                    .count()
+        };
+        let first_count =
+            with_session(handle, |session| Ok(fireball_launch_count(session))).unwrap();
         assert_eq!(first_count, 1);
 
         let selected_fire = McCommandV2 {
@@ -10379,17 +11316,367 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
             ),
             MC_STATUS_OK
         );
-        let second_count = with_session(handle, |session| {
-            Ok(session
-                .mission
-                .projectiles()
-                .iter()
-                .filter(|projectile| matches!(projectile, Level1Projectile::PlayerFireball(_)))
-                .count())
-        })
-        .unwrap();
+        let second_count =
+            with_session(handle, |session| Ok(fireball_launch_count(session))).unwrap();
         assert_eq!(second_count, 2);
         assert_eq!(snapshot.selected_spell_ui_index, 0);
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn right_hand_possession_countdown_retriggers_through_the_public_command_path() {
+        let handle = open_fixture();
+        let mut snapshot = McSessionSnapshotV2::default();
+        let right_possession = McCommandV2 {
+            flags: 0x20,
+            ..valid_command()
+        };
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const right_possession,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let holder_active = |expected| {
+            with_session(handle, |session| {
+                let holder = session
+                    .context
+                    .spell_fire
+                    .as_ref()
+                    .and_then(|fire| {
+                        fire.holders
+                            .iter()
+                            .find(|holder| holder.entity_index == 154)
+                    })
+                    .ok_or_else(|| {
+                        AbiError::new(
+                            MC_STATUS_VALIDATION_FAILED,
+                            "Possession holder 154 is absent",
+                        )
+                    })?;
+                Ok(holder.active_value == expected)
+            })
+            .unwrap()
+        };
+        assert!(
+            holder_active(2),
+            "sub_69640 consumes the activation turn from 3 to 2"
+        );
+
+        let idle = valid_command();
+        for expected in [1, 0] {
+            assert_eq!(
+                mc_native_session_step(
+                    handle,
+                    &raw const idle,
+                    &raw mut snapshot,
+                    struct_size::<McSessionSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+            assert!(holder_active(expected));
+        }
+
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const right_possession,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert!(
+            holder_active(2),
+            "the second right-hand cast starts and consumes a fresh activation"
+        );
+
+        let query = McEventQueryV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McEventQueryV2>(),
+            generation: snapshot.generation,
+            cursor: 0,
+            reserved: [0; 4],
+        };
+        let mut events = vec![McEventV2::default(); 256];
+        let mut batch = McEventBatchV2::default();
+        assert_eq!(
+            mc_native_events_copy_since(
+                handle,
+                &raw const query,
+                events.as_mut_ptr(),
+                u32::try_from(events.len()).unwrap(),
+                struct_size::<McEventV2>(),
+                &raw mut batch,
+                struct_size::<McEventBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        events.truncate(usize::try_from(batch.written).unwrap());
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == MC_EVENT_LEVEL1_POSSESSION_SPAWNED)
+                .count(),
+            2,
+            "both public right-hand casts reach the Possession projectile factory"
+        );
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn real_level_one_right_hand_possession_claims_and_composites_a_building() {
+        let handle = open_fixture_with_owner_cache_and_terrain_frame_assets();
+        let target = with_session_mut(handle, |session| {
+            let target = *session
+                .world
+                .level1_mission()
+                .possession_targets()
+                .first()
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        "qualified Level 1 has no possession target",
+                    )
+                })?;
+            session.state.position = Position {
+                x: target.position.x,
+                y: target.position.y.wrapping_add(384),
+                z: target.position.z.wrapping_sub(50),
+            };
+            session.state.yaw = 0;
+            session.state.pitch_accumulator = 0;
+            session.state.effective_pitch = 0;
+            session.state.target_speed = 0;
+            session.state.actual_speed = 0;
+            session.state.strafe_speed = 0;
+            session.camera_history = CameraHistory::capture(
+                &session.state,
+                session.source_turn,
+                session.camera_fov,
+                0,
+                0,
+            );
+            Ok(target)
+        })
+        .unwrap();
+
+        let mut snapshot = McSessionSnapshotV2::default();
+        let right_possession = McCommandV2 {
+            flags: 0x20,
+            ..valid_command()
+        };
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const right_possession,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let idle = valid_command();
+        let mut mission = McLevel1MissionSnapshotV2::default();
+        for _ in 0..12 {
+            assert_eq!(
+                mc_native_level1_mission_snapshot(
+                    handle,
+                    &raw mut mission,
+                    struct_size::<McLevel1MissionSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+            if mission.possessed_building_count != 0 {
+                break;
+            }
+            assert_eq!(
+                mc_native_session_step(
+                    handle,
+                    &raw const idle,
+                    &raw mut snapshot,
+                    struct_size::<McSessionSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+        }
+        assert_eq!(mission.possessed_building_count, 1);
+        assert_eq!(mission.last_possessed_building_entity, target.entity_index);
+        assert_eq!(mission.last_possessed_building_owner, snapshot.entity_index);
+        assert_eq!(mission.possession_experience, 1);
+        assert_eq!(mission.possession_tier, 0);
+        with_session(handle, |session| {
+            let house = session
+                .live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == target.entity_index)
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        "possessed house is absent from the canonical house family",
+                    )
+                })?;
+            assert_eq!(house.owner_entity_index, snapshot.entity_index);
+            assert_eq!(house.pending_possession_owner, 0);
+            assert_eq!(house.pending_possession_payload, 0);
+            Ok(())
+        })
+        .unwrap();
+
+        // Let the temporary model-12 impact finish so any combat raster writes
+        // below can only come from the persistent parameter-177 building.
+        for _ in 0..12 {
+            assert_eq!(
+                mc_native_session_step(
+                    handle,
+                    &raw const idle,
+                    &raw mut snapshot,
+                    struct_size::<McSessionSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+        }
+        let writes = with_session_mut(handle, |session| {
+            assert!(
+                session
+                    .mission
+                    .projectiles()
+                    .iter()
+                    .all(|projectile| !projectile.active())
+            );
+            assert!(
+                session
+                    .mission
+                    .impacts()
+                    .iter()
+                    .all(|impact| !impact.active)
+            );
+            let building = session
+                .mission
+                .possessed_buildings()
+                .iter()
+                .find(|building| building.entity_index == target.entity_index)
+                .copied()
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        "possessed Level 1 building disappeared",
+                    )
+                })?;
+            assert_eq!(building.owner_entity_index, snapshot.entity_index);
+            assert_eq!(building.render_parameter_index, 177);
+            assert_eq!(building.base_tmap, 96);
+            assert_eq!(building.render_mode, 0);
+            assert_eq!(building.logical_height, 400);
+
+            session.state.position = Position {
+                x: target.position.x,
+                y: target.position.y.wrapping_add(1_000),
+                z: target.position.z,
+            };
+            session.state.yaw = 0;
+            session.state.pitch_accumulator = 0;
+            session.state.effective_pitch = 0;
+            session.camera_history = CameraHistory::capture(
+                &session.state,
+                session.source_turn,
+                session.camera_fov,
+                0,
+                0,
+            );
+            session
+                .sync_supported_renderable_records()
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+            let frame = session.world_frame()?;
+            Ok(frame.combat_raster_stats.framebuffer_writes)
+        })
+        .unwrap();
+        assert!(
+            writes > 0,
+            "the persistent remc2 parameter-177/TMAP-96 building reaches the indexed compositor"
+        );
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn requested_spell_without_cast_flag_preserves_selection_and_spawns_no_projectile() {
+        let handle = open_fixture();
+        let mut snapshot = McSessionSnapshotV2::default();
+        let select_possession = McCommandV2 {
+            flags: 0,
+            requested_spell: 1,
+            ..valid_command()
+        };
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const select_possession,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(snapshot.selected_spell_ui_index, 0);
+        assert_eq!(snapshot.selected_spell_holder, 153);
+        let projectile_count =
+            with_session(handle, |session| Ok(session.mission.projectiles().len())).unwrap();
+        assert_eq!(projectile_count, 0);
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn selected_castle_sound_event_and_sidecar_share_the_owner_asset_reference() {
+        let handle = open_fixture_with_owner_cache();
+        with_session_mut(handle, |session| {
+            let position = session.state.position;
+            let source_entity_index = session.state.entity_index;
+            let random_state = session.mission.global_rng();
+            // The projectile may already be gone when the end-of-turn event
+            // journal is encoded (for example, an immediate blocked
+            // placement). The spawn event must therefore carry its complete
+            // audio source rather than looking the projectile up again.
+            assert!(session.mission.projectiles().is_empty());
+            let event = session.encode_mission_event(
+                Level1MissionEvent::CastleProjectileSpawned {
+                    projectile_id: 1,
+                    sound_id: CASTLE_PROJECTILE_SOUND,
+                    source_entity_index,
+                    position,
+                    random_state,
+                },
+                state_hash(&session.state),
+            );
+            let expected_asset_ref = session
+                .world
+                .sound_asset_ref(CASTLE_PROJECTILE_SOUND)
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        "Castle sound has no owner asset reference",
+                    )
+                })?;
+            assert_eq!(event.code, u32::from(CASTLE_PROJECTILE_SOUND));
+            assert_eq!(expected_asset_ref, 86);
+            assert_eq!(event.asset_ref_index, expected_asset_ref);
+            let command = session
+                .audio_commands
+                .get(&event.sequence)
+                .copied()
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        "Castle sound event has no audio sidecar",
+                    )
+                })?;
+            assert_eq!(command.sound_id, CASTLE_PROJECTILE_SOUND);
+            assert_eq!(command.asset_ref_index, expected_asset_ref);
+            assert_eq!(command.event_sequence, event.sequence);
+            Ok(())
+        })
+        .expect("selected Castle audio contract");
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 
@@ -10423,8 +11710,8 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
         );
         assert_eq!(snapshot.state_hash, info.reset_state_hash);
         assert_eq!(
-            snapshot.conformance_hash, 0xe7ec_6bc1_8b5f_e775,
-            "session conformance includes the additive Level 1 effects journal"
+            snapshot.conformance_hash, 0x36bd_7f1d_df05_37b5,
+            "live v2 conformance includes spell tiers and the additive Level 1 effects journal"
         );
         assert_ne!(snapshot.conformance_hash, info.reset_conformance_hash);
         assert_eq!(
@@ -10537,12 +11824,15 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
                 MC_AUTHORITY_GOAT_LIVE
             );
         }
+        for index in 51_usize..=78 {
+            assert_eq!(entities[index].authority, MC_AUTHORITY_VILLAGER_LIVE);
+        }
         assert_eq!(
             entities
                 .iter()
                 .filter(|entity| entity.authority == MC_AUTHORITY_FROZEN_OBSERVED)
                 .count(),
-            142
+            114
         );
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }

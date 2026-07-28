@@ -73,6 +73,7 @@ namespace MagicCarpet.Native
         internal const byte SelectorFrameLive = 5;
         internal const byte Level1MissionLive = 6;
         internal const byte SessionTerrainLive = 7;
+        internal const byte VillagerLive = 8;
         internal const byte Level1ExitPaletteNone = 0;
         internal const byte Level1ExitPaletteEntryFlash = 1;
         internal const byte Level1ExitPaletteBlack = 2;
@@ -384,8 +385,12 @@ namespace MagicCarpet.Native
             internal uint impactCount;
             internal uint exitSequencePhase;
             internal int exitSequenceTimer;
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
-            internal uint[] reserved;
+            internal int possessionExperience;
+            internal ushort lastPossessedBuildingEntity;
+            internal ushort lastPossessedBuildingOwner;
+            internal ushort possessedBuildingCount;
+            internal byte possessionTier;
+            internal byte speedTrailCount;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -429,6 +434,39 @@ namespace MagicCarpet.Native
             internal uint playerStatusFlags;
             internal Level1HudSpellSlot left;
             internal Level1HudSpellSlot right;
+            internal ushort selectedHolderEntityIndex;
+            internal ushort selectedIconSelector;
+            internal byte selectedModel;
+            internal sbyte selectedTier;
+            internal byte selectedEnabledFlags;
+            internal byte selectedFrameSelector;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct Level1SpellMenuSnapshot
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal ulong tick;
+            internal byte authority;
+            internal byte selectedUiIndex;
+            internal sbyte selectedTier;
+            internal byte leftFamily;
+            internal sbyte leftTier;
+            internal byte rightFamily;
+            internal sbyte rightTier;
+            internal byte reserved0;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal byte[] familyEnabled;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal sbyte[] familyUnlockedTier;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal sbyte[] familySelectedTier;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal byte[] reserved1;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal ushort[] holderEntityIndex;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
             internal uint[] reserved;
         }
@@ -726,8 +764,8 @@ namespace MagicCarpet.Native
             internal short yaw;
             internal sbyte animationFrame;
             internal byte visible;
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
-            internal uint[] reserved;
+            internal int stateValue;
+            internal uint reserved;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -1361,6 +1399,12 @@ namespace MagicCarpet.Native
             uint snapshotSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_level1_spell_menu_snapshot(
+            ulong handle,
+            out Level1SpellMenuSnapshot snapshot,
+            uint snapshotSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_level1_minimap_marks(
             ulong handle,
             out Level1MinimapMarks state,
@@ -1580,6 +1624,7 @@ namespace MagicCarpet.Native
             RequireSize<Level1MissionSnapshot>(96);
             RequireSize<Level1HudSpellSlot>(36);
             RequireSize<Level1HudSnapshot>(128);
+            RequireSize<Level1SpellMenuSnapshot>(64);
             RequireSize<Level1MinimapMarks>(168);
             RequireSize<Level1MinimapEntityCommand>(24);
             RequireSize<Level1MinimapEntitiesInfo>(64);
@@ -1633,7 +1678,13 @@ namespace MagicCarpet.Native
             RequireOffset<Level1MissionSnapshot>(
                 nameof(Level1MissionSnapshot.exitSequenceTimer), 80);
             RequireOffset<Level1MissionSnapshot>(
-                nameof(Level1MissionSnapshot.reserved), 84);
+                nameof(Level1MissionSnapshot.possessionExperience), 84);
+            RequireOffset<Level1MissionSnapshot>(
+                nameof(Level1MissionSnapshot.lastPossessedBuildingEntity), 88);
+            RequireOffset<Level1MissionSnapshot>(
+                nameof(Level1MissionSnapshot.possessedBuildingCount), 92);
+            RequireOffset<Level1MissionSnapshot>(
+                nameof(Level1MissionSnapshot.speedTrailCount), 95);
             RequireOffset<Level1HudSpellSlot>(
                 nameof(Level1HudSpellSlot.maxMana), 12);
             RequireOffset<Level1HudSnapshot>(
@@ -1643,7 +1694,11 @@ namespace MagicCarpet.Native
             RequireOffset<Level1HudSnapshot>(
                 nameof(Level1HudSnapshot.right), 84);
             RequireOffset<Level1HudSnapshot>(
-                nameof(Level1HudSnapshot.reserved), 120);
+                nameof(Level1HudSnapshot.selectedHolderEntityIndex), 120);
+            RequireOffset<Level1SpellMenuSnapshot>(
+                nameof(Level1SpellMenuSnapshot.familyEnabled), 32);
+            RequireOffset<Level1SpellMenuSnapshot>(
+                nameof(Level1SpellMenuSnapshot.holderEntityIndex), 48);
             RequireOffset<Level1MinimapMarks>(
                 nameof(Level1MinimapMarks.markX), 28);
             RequireOffset<Level1MinimapMarks>(
@@ -1697,7 +1752,9 @@ namespace MagicCarpet.Native
             RequireOffset<Level1ActorSnapshot>(
                 nameof(Level1ActorSnapshot.yaw), 44);
             RequireOffset<Level1ActorSnapshot>(
-                nameof(Level1ActorSnapshot.reserved), 48);
+                nameof(Level1ActorSnapshot.stateValue), 48);
+            RequireOffset<Level1ActorSnapshot>(
+                nameof(Level1ActorSnapshot.reserved), 52);
             RequireOffset<Level1MultipartSegmentSnapshot>(
                 nameof(Level1MultipartSegmentSnapshot.x), 26);
             RequireOffset<Level1MultipartSegmentSnapshot>(

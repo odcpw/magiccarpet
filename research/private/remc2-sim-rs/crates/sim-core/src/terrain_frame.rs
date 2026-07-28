@@ -39,23 +39,30 @@ use crate::{
         ARCHER_LOGICAL_HEIGHT, ARCHER_RENDER_INDEX, ARCHER_RENDER_MODE,
         CASTLE_PROJECTILE_BASE_TMAP, CASTLE_PROJECTILE_LOGICAL_HEIGHT,
         CASTLE_PROJECTILE_RENDER_INDEX, CASTLE_ROOT_BASE_TMAP, CASTLE_ROOT_LOGICAL_HEIGHT,
-        CASTLE_ROOT_RENDER_INDEX, EXIT_TARGET_BASE_TMAP, EXIT_TARGET_LOGICAL_HEIGHT,
-        EXIT_TARGET_RENDER_INDEX, EXIT_TARGET_RENDER_MODE, EXPERIENCE_SCROLL_BASE_TMAP,
-        EXPERIENCE_SCROLL_LOGICAL_HEIGHT, EXPERIENCE_SCROLL_RENDER_INDEX,
-        EXPERIENCE_SCROLL_RENDER_MODE, FIREBALL_BASE_TMAP, FIREBALL_IMPACT_BASE_TMAP,
-        FIREBALL_IMPACT_LOGICAL_HEIGHT, FIREBALL_IMPACT_RENDER_INDEX, FIREBALL_LOGICAL_HEIGHT,
-        FIREBALL_RENDER_INDEX, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT, FIREFLY_RENDER_INDEX,
-        FIREFLY_RENDER_MODE, FireballImpact, Level1Actor, Level1ActorKind, Level1MultipartSegment,
-        Level1Projectile, MANA_CARRIER_BASE_TMAP, MANA_CARRIER_LOGICAL_HEIGHT,
-        MANA_CARRIER_RENDER_INDEX, MANA_SPHERE_NEUTRAL_BASE_TMAP, MANA_SPHERE_NEUTRAL_RENDER_BASE,
-        MANA_SPHERE_PLAYER_ONE_BASE_TMAP, MANA_SPHERE_PLAYER_ONE_RENDER_BASE,
-        MULTIPART_HEAD_BASE_TMAP, MULTIPART_HEAD_LOGICAL_HEIGHT, MULTIPART_HEAD_RENDER_INDEX,
-        MULTIPART_HEAD_RENDER_MODE, MULTIPART_SEGMENT_BASE_TMAP, MULTIPART_SEGMENT_RENDER_MODE,
-        ManaCarrier, ManaSphere, POSSESSION_PROJECTILE_BASE_TMAP,
+        CASTLE_ROOT_RENDER_INDEX, CHECKPOINT_SMOKE_BASE_TMAP, CHECKPOINT_SMOKE_FIRST_RENDER_INDEX,
+        CHECKPOINT_SMOKE_MODEL, DynamicResidentKind, DynamicResidentState, EXIT_TARGET_BASE_TMAP,
+        EXIT_TARGET_LOGICAL_HEIGHT, EXIT_TARGET_RENDER_INDEX, EXIT_TARGET_RENDER_MODE,
+        EXPERIENCE_SCROLL_BASE_TMAP, EXPERIENCE_SCROLL_LOGICAL_HEIGHT,
+        EXPERIENCE_SCROLL_RENDER_INDEX, EXPERIENCE_SCROLL_RENDER_MODE, FIREBALL_BASE_TMAP,
+        FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_LOGICAL_HEIGHT, FIREBALL_IMPACT_RENDER_INDEX,
+        FIREBALL_LOGICAL_HEIGHT, FIREBALL_RENDER_INDEX, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT,
+        FIREFLY_RENDER_INDEX, FIREFLY_RENDER_MODE, FireballImpact, Level1Actor, Level1ActorKind,
+        Level1MultipartSegment, Level1PossessedBuilding, Level1Projectile, MANA_CARRIER_BASE_TMAP,
+        MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_RENDER_INDEX, MANA_SPHERE_NEUTRAL_BASE_TMAP,
+        MANA_SPHERE_NEUTRAL_RENDER_BASE, MANA_SPHERE_PLAYER_ONE_BASE_TMAP,
+        MANA_SPHERE_PLAYER_ONE_RENDER_BASE, MULTIPART_HEAD_BASE_TMAP,
+        MULTIPART_HEAD_LOGICAL_HEIGHT, MULTIPART_HEAD_RENDER_INDEX, MULTIPART_HEAD_RENDER_MODE,
+        MULTIPART_SEGMENT_BASE_TMAP, MULTIPART_SEGMENT_RENDER_MODE, ManaCarrier, ManaSphere,
+        POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_LOGICAL_HEIGHT, POSSESSION_IMPACT_MODEL,
+        POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_PROJECTILE_BASE_TMAP,
         POSSESSION_PROJECTILE_LOGICAL_HEIGHT, POSSESSION_PROJECTILE_RENDER_INDEX,
         SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX,
-        SPELL_JAR_RENDER_MODE, WATER_SPLASH_BASE_TMAP, WATER_SPLASH_LOGICAL_HEIGHT,
-        WATER_SPLASH_RENDER_INDEX, mana_sphere_size_ordinal,
+        SPELL_JAR_RENDER_MODE, STONE_BASE_TMAP, STONE_LOGICAL_HEIGHT, STONE_RENDER_INDEX,
+        STONE_RENDER_MODE, TREE_BASE_TMAP_A, TREE_BASE_TMAP_B, TREE_DEAD_BASE_TMAP_A,
+        TREE_DEAD_BASE_TMAP_B, TREE_DEAD_RENDER_INDEX_A, TREE_DEAD_RENDER_INDEX_B,
+        TREE_LOGICAL_HEIGHT, TREE_RENDER_INDEX_A, TREE_RENDER_INDEX_B, TREE_RENDER_MODE,
+        WATER_SPLASH_BASE_TMAP, WATER_SPLASH_LOGICAL_HEIGHT, WATER_SPLASH_RENDER_INDEX,
+        mana_sphere_size_ordinal,
     },
     mode5_raster::{Mode5Vertex, rasterize_mode5_triangle_from_atlas},
     mode26_raster::{NIGHT_TABLES_BYTES, rasterize_mode26_triangle_from_atlas_into_framebuffer},
@@ -128,6 +135,7 @@ pub struct Level1WorldFrameResources<'a> {
     pub frozen_actor_tmap_bank: Option<&'a FrozenActorTmapBank>,
     pub villager_tmap_clocks: Option<&'a VillagerTmapClocks>,
     pub mission_actors: &'a [Level1Actor],
+    pub dynamic_residents: &'a [DynamicResidentState],
     pub mission_segments: &'a [Level1MultipartSegment],
     pub castle_root: Option<Level1CastleRootRender>,
     pub mana_spheres: &'a [ManaSphere],
@@ -140,6 +148,7 @@ pub struct Level1WorldFrameResources<'a> {
     pub firefly_tmap_clocks: &'a FireflyTmapClocks,
     pub projectiles: &'a [Level1Projectile],
     pub impacts: &'a [FireballImpact],
+    pub possessed_buildings: &'a [Level1PossessedBuilding],
     pub combat_tmap_bank: &'a CombatTmapBank,
     pub static_world_tmap_bank: &'a StaticWorldTmapBank,
     pub economy_tmap_bank: &'a EconomyTmapBank,
@@ -616,6 +625,91 @@ fn raster_world_chain(
         if control_flags & 0x21 != 0 {
             continue;
         }
+        if let Some(building) = world_resources
+            .possessed_buildings
+            .iter()
+            .find(|building| building.entity_index == entity_index && building.active)
+        {
+            let frame = world_resources
+                .combat_tmap_bank
+                .static_frame(building.base_tmap)
+                .ok_or_else(|| {
+                    TerrainFrameError(format!(
+                        "possessed-building selector {} has no qualified frame",
+                        building.base_tmap
+                    ))
+                })?;
+            let parameter = world_resources
+                .particle_parameters
+                .get(usize::from(building.render_parameter_index))
+                .ok_or_else(|| {
+                    TerrainFrameError(format!(
+                        "possessed-building parameter {} is absent",
+                        building.render_parameter_index
+                    ))
+                })?;
+            if parameter.base_tmap != building.base_tmap
+                || parameter.render_mode != building.render_mode
+                || parameter.rotation_speed != building.logical_height
+            {
+                return Err(TerrainFrameError(format!(
+                    "possessed-building render tuple changed: {parameter:?}"
+                )));
+            }
+            let sprite_camera = Mode20SpriteCamera {
+                render_x: camera.render_x,
+                render_y: camera.render_y,
+                eye_z: camera.eye_z,
+                yaw: camera.yaw,
+                projection,
+            };
+            let placement = project_fixed_sprite_with_definition(
+                Mode20SpriteDefinition {
+                    base_selector: building.base_tmap,
+                    logical_height: i32::from(building.logical_height),
+                },
+                None,
+                false,
+                sprite_camera,
+                Mode20SpriteEntity {
+                    x: building.position.x,
+                    y: building.position.y,
+                    z: building.position.z,
+                    yaw: 0,
+                },
+                frame.width,
+                frame.height,
+            );
+            let Ok(placement) = placement else { continue };
+            raster_world_sprite_pass(
+                pass,
+                indices,
+                placement,
+                sprite_camera,
+                building.position,
+                building.render_parameter_index,
+                interpolate_ground(
+                    resources.ground_heights,
+                    building.position.x,
+                    building.position.y,
+                ),
+                frame.width,
+                frame.height,
+                &frame.pixels,
+                resources.tablesn,
+                camera.roll,
+                control_flags,
+                shadow_surface,
+                world_resources.night,
+                false,
+                world_resources.particle_parameters,
+                combat_aggregate,
+                reflected_aggregate,
+                shadow_aggregate,
+            )
+            .map_err(TerrainFrameError)?;
+            continue;
+        }
         if let Some(goat) = world_resources
             .goats
             .iter()
@@ -695,6 +789,245 @@ fn raster_world_chain(
             continue;
         }
 
+        if let Some(resident) = world_resources
+            .dynamic_residents
+            .iter()
+            .find(|resident| resident.source_entity_index == entity_index)
+        {
+            if !resident.active || !resident.visible || resident.life < 0 {
+                continue;
+            }
+            match resident.kind {
+                DynamicResidentKind::Archer => {
+                    let exact_pose = matches!(
+                        (
+                            resident.render_parameter_index,
+                            resident.base_tmap,
+                            resident.render_mode,
+                            resident.logical_height,
+                        ),
+                        (
+                            ARCHER_RENDER_INDEX,
+                            ARCHER_BASE_TMAP,
+                            ARCHER_RENDER_MODE,
+                            ARCHER_LOGICAL_HEIGHT
+                        ) | (
+                            ARCHER_ATTACK_RENDER_INDEX_A,
+                            ARCHER_ATTACK_BASE_TMAP_A,
+                            ARCHER_RENDER_MODE,
+                            ARCHER_LOGICAL_HEIGHT
+                        ) | (
+                            ARCHER_ATTACK_RENDER_INDEX_B,
+                            ARCHER_ATTACK_BASE_TMAP_B,
+                            ARCHER_RENDER_MODE,
+                            ARCHER_ATTACK_LOGICAL_HEIGHT_B
+                        )
+                    );
+                    if !exact_pose {
+                        return Err(TerrainFrameError(format!(
+                            "house Archer entity {entity_index} has unsupported render tuple {}/{}/{}/{}",
+                            resident.render_parameter_index,
+                            resident.base_tmap,
+                            resident.render_mode,
+                            resident.logical_height,
+                        )));
+                    }
+                    let (_, selector, _) =
+                        mode20_selector_for_base(resident.base_tmap, resident.yaw, camera.yaw);
+                    let (width, height, pixels) = if let Some(clock) =
+                        world_resources.archer_tmap_clocks.animated_frame(selector)
+                    {
+                        (clock.width(), clock.height(), clock.pixels())
+                    } else if let Some(frame) =
+                        world_resources.archer_tmap_bank.static_frame(selector)
+                    {
+                        (frame.width, frame.height, frame.pixels.as_ref())
+                    } else {
+                        return Err(TerrainFrameError(format!(
+                            "house Archer selector {selector} has no qualified TMAP frame"
+                        )));
+                    };
+                    let sprite_camera = Mode20SpriteCamera {
+                        render_x: camera.render_x,
+                        render_y: camera.render_y,
+                        eye_z: camera.eye_z,
+                        yaw: camera.yaw,
+                        projection,
+                    };
+                    let placement = project_mode20_sprite_with_definition(
+                        Mode20SpriteDefinition {
+                            base_selector: resident.base_tmap,
+                            logical_height: i32::from(resident.logical_height),
+                        },
+                        sprite_camera,
+                        Mode20SpriteEntity {
+                            x: resident.position.x,
+                            y: resident.position.y,
+                            z: resident.position.z,
+                            yaw: resident.yaw,
+                        },
+                        width,
+                        height,
+                    );
+                    if placement.is_ok()
+                        || matches!(
+                            placement,
+                            Err(crate::goat_sprite_raster::Mode20SpriteReject::NonPositiveProjection)
+                        )
+                    {
+                        if selector >= ARCHER_BASE_TMAP && selector <= ARCHER_BASE_TMAP + 2 {
+                            *archer_selector_mask |= 1 << (selector - ARCHER_BASE_TMAP);
+                        }
+                    }
+                    let Ok(placement) = placement else { continue };
+                    raster_world_sprite_pass(
+                        pass,
+                        indices,
+                        placement,
+                        sprite_camera,
+                        resident.position,
+                        resident.render_parameter_index,
+                        interpolate_ground(
+                            resources.ground_heights,
+                            resident.position.x,
+                            resident.position.y,
+                        ),
+                        width,
+                        height,
+                        pixels,
+                        resources.tablesn,
+                        camera.roll,
+                        control_flags,
+                        shadow_surface,
+                        world_resources.night,
+                        false,
+                        world_resources.particle_parameters,
+                        archer_aggregate,
+                        reflected_aggregate,
+                        shadow_aggregate,
+                    )
+                    .map_err(TerrainFrameError)?;
+                }
+                DynamicResidentKind::Villager => {
+                    let bank = world_resources.frozen_actor_tmap_bank.ok_or_else(|| {
+                        TerrainFrameError(
+                            "house villagers have no qualified owner TMAP bank".to_owned(),
+                        )
+                    })?;
+                    let parameter = world_resources
+                        .particle_parameters
+                        .get(usize::from(resident.render_parameter_index))
+                        .ok_or_else(|| {
+                            TerrainFrameError(format!(
+                                "house villager {entity_index} render parameter {} is absent",
+                                resident.render_parameter_index
+                            ))
+                        })?;
+                    if parameter.base_tmap != resident.base_tmap
+                        || parameter.render_mode != resident.render_mode
+                        || parameter.rotation_speed != resident.logical_height
+                    {
+                        return Err(TerrainFrameError(format!(
+                            "house villager entity {entity_index} render tuple changed: {parameter:?}"
+                        )));
+                    }
+                    let (_, selector, _) =
+                        mode20_selector_for_base(resident.base_tmap, resident.yaw, camera.yaw);
+                    let clocks = world_resources.villager_tmap_clocks.ok_or_else(|| {
+                        TerrainFrameError("house villagers have no live selector clocks".to_owned())
+                    })?;
+                    let clock = clocks.frame(selector).ok_or_else(|| {
+                        TerrainFrameError(format!(
+                            "house villager entity {entity_index} selector {selector} has no qualified clock"
+                        ))
+                    })?;
+                    // The qualified villager bank owns every selector used by
+                    // the four source render rows. Keep the lookup explicit so
+                    // a cache regression cannot silently fall through to a
+                    // generic billboard.
+                    if !bank
+                        .villagers()
+                        .iter()
+                        .any(|selector_bank| selector_bank.selector == selector)
+                    {
+                        return Err(TerrainFrameError(format!(
+                            "house villager selector {selector} is absent from the qualified bank"
+                        )));
+                    }
+                    let sprite_camera = Mode20SpriteCamera {
+                        render_x: camera.render_x,
+                        render_y: camera.render_y,
+                        eye_z: camera.eye_z,
+                        yaw: camera.yaw,
+                        projection,
+                    };
+                    let placement = project_mode20_sprite_with_definition(
+                        Mode20SpriteDefinition {
+                            base_selector: resident.base_tmap,
+                            logical_height: i32::from(resident.logical_height),
+                        },
+                        sprite_camera,
+                        Mode20SpriteEntity {
+                            x: resident.position.x,
+                            y: resident.position.y,
+                            z: resident.position.z,
+                            yaw: resident.yaw,
+                        },
+                        clock.width(),
+                        clock.height(),
+                    );
+                    if placement.is_ok()
+                        || matches!(
+                            placement,
+                            Err(crate::goat_sprite_raster::Mode20SpriteReject::NonPositiveProjection)
+                        )
+                    {
+                        *frozen_actor_selector_mask |=
+                            villager_selector_mask(selector).ok_or_else(|| {
+                                TerrainFrameError(format!(
+                                    "house villager selector {selector} is outside the qualified Level 1 set"
+                                ))
+                            })?;
+                    }
+                    let Ok(placement) = placement else { continue };
+                    raster_world_sprite_pass(
+                        pass,
+                        indices,
+                        placement,
+                        sprite_camera,
+                        resident.position,
+                        resident.render_parameter_index,
+                        interpolate_ground(
+                            resources.ground_heights,
+                            resident.position.x,
+                            resident.position.y,
+                        ),
+                        clock.width(),
+                        clock.height(),
+                        clock.pixels(),
+                        resources.tablesn,
+                        camera.roll,
+                        control_flags,
+                        shadow_surface,
+                        world_resources.night,
+                        false,
+                        world_resources.particle_parameters,
+                        frozen_actor_aggregate,
+                        reflected_aggregate,
+                        shadow_aggregate,
+                    )
+                    .map_err(TerrainFrameError)?;
+                }
+                DynamicResidentKind::Builder | DynamicResidentKind::Trader => {
+                    // Their exact constructor/state rows are live, collision
+                    // capable and source ordered, but owner TMAP selectors
+                    // 138..143 are not in the current qualified cache. Keep
+                    // them absent instead of substituting a wrong sprite.
+                }
+            }
+            continue;
+        }
+
         if let Some(actor) = world_resources
             .frozen_actors
             .iter()
@@ -706,10 +1039,7 @@ fn raster_world_chain(
                         && source_slot.model == 2
                         && source_slot.action == 6
                 } else {
-                    source_slot.active
-                        && source_slot.class == 5
-                        && source_slot.model == 13
-                        && source_slot.action == 111
+                    source_slot.active && source_slot.class == 5 && source_slot.model == 13
                 }
             })
         {
@@ -1028,11 +1358,38 @@ fn raster_world_chain(
                 continue;
             }
             let splash = impact.model == crate::level1_mission::WATER_SPLASH_MODEL;
-            let (render_index, base, logical_height, quarter_anchor) = if splash {
+            let possession = impact.model == POSSESSION_IMPACT_MODEL;
+            let checkpoint_smoke = impact.model == CHECKPOINT_SMOKE_MODEL;
+            let (render_index, base, logical_height, quarter_anchor, animate) = if splash {
                 (
                     WATER_SPLASH_RENDER_INDEX,
                     WATER_SPLASH_BASE_TMAP,
                     WATER_SPLASH_LOGICAL_HEIGHT,
+                    false,
+                    true,
+                )
+            } else if possession {
+                // Parameter 41 is render mode 21: GameRenderOriginal selects
+                // fixed base TMAP 54 while enabling its special primary
+                // quarter-sum pivot. The internal animation counter advances,
+                // but only render modes 22..36 add it to the selector.
+                (
+                    POSSESSION_IMPACT_RENDER_INDEX,
+                    POSSESSION_IMPACT_BASE_TMAP,
+                    POSSESSION_IMPACT_LOGICAL_HEIGHT,
+                    true,
+                    false,
+                )
+            } else if checkpoint_smoke {
+                let render_index = u16::from(impact.animation_frame);
+                (
+                    render_index,
+                    CHECKPOINT_SMOKE_BASE_TMAP,
+                    render_index
+                        .saturating_sub(CHECKPOINT_SMOKE_FIRST_RENDER_INDEX)
+                        .saturating_add(1)
+                        * 50,
+                    true,
                     false,
                 )
             } else {
@@ -1041,17 +1398,35 @@ fn raster_world_chain(
                     FIREBALL_IMPACT_BASE_TMAP,
                     FIREBALL_IMPACT_LOGICAL_HEIGHT,
                     true,
+                    true,
                 )
             };
-            let selector = base + u16::from(impact.animation_frame);
-            let value = world_resources
-                .combat_tmap_bank
-                .static_frame(selector)
-                .ok_or_else(|| {
-                    TerrainFrameError(format!(
-                        "combat impact selector {selector} has no qualified frame"
-                    ))
-                })?;
+            let selector = if animate {
+                base + u16::from(impact.animation_frame)
+            } else {
+                base
+            };
+            let (value_width, value_height, value_pixels) = if checkpoint_smoke {
+                let value = world_resources
+                    .static_world_tmap_bank
+                    .frame(selector)
+                    .ok_or_else(|| {
+                        TerrainFrameError(format!(
+                            "checkpoint smoke selector {selector} has no qualified frame"
+                        ))
+                    })?;
+                (value.width, value.height, value.pixels.as_ref())
+            } else {
+                let value = world_resources
+                    .combat_tmap_bank
+                    .static_frame(selector)
+                    .ok_or_else(|| {
+                        TerrainFrameError(format!(
+                            "combat impact selector {selector} has no qualified frame"
+                        ))
+                    })?;
+                (value.width, value.height, value.pixels.as_ref())
+            };
             let sprite_camera = Mode20SpriteCamera {
                 render_x: camera.render_x,
                 render_y: camera.render_y,
@@ -1064,7 +1439,7 @@ fn raster_world_chain(
                     base_selector: base,
                     logical_height: i32::from(logical_height),
                 },
-                Some(impact.animation_frame),
+                animate.then_some(impact.animation_frame),
                 quarter_anchor,
                 sprite_camera,
                 Mode20SpriteEntity {
@@ -1073,8 +1448,8 @@ fn raster_world_chain(
                     z: impact.position.z,
                     yaw: 0,
                 },
-                value.width,
-                value.height,
+                value_width,
+                value_height,
             );
             let Ok(placement) = placement else { continue };
             raster_world_sprite_pass(
@@ -1089,9 +1464,9 @@ fn raster_world_chain(
                     impact.position.x,
                     impact.position.y,
                 ),
-                value.width,
-                value.height,
-                &value.pixels,
+                value_width,
+                value_height,
+                value_pixels,
                 resources.tablesn,
                 camera.roll,
                 control_flags,
@@ -1362,6 +1737,8 @@ fn raster_world_chain(
                 | Level1ActorKind::SpeedSpellJar
                 | Level1ActorKind::ExitTarget
                 | Level1ActorKind::ExperienceScroll
+                | Level1ActorKind::Tree
+                | Level1ActorKind::Stone
         ) {
             let (expected_render_index, expected_selector, expected_mode, expected_height) =
                 match actor.kind {
@@ -1382,6 +1759,46 @@ fn raster_world_chain(
                         EXPERIENCE_SCROLL_BASE_TMAP,
                         EXPERIENCE_SCROLL_RENDER_MODE,
                         EXPERIENCE_SCROLL_LOGICAL_HEIGHT,
+                    ),
+                    Level1ActorKind::Tree => {
+                        match (actor.render_parameter_index, actor.base_tmap) {
+                            (Some(TREE_RENDER_INDEX_A), Some(TREE_BASE_TMAP_A)) => (
+                                TREE_RENDER_INDEX_A,
+                                TREE_BASE_TMAP_A,
+                                TREE_RENDER_MODE,
+                                TREE_LOGICAL_HEIGHT,
+                            ),
+                            (Some(TREE_RENDER_INDEX_B), Some(TREE_BASE_TMAP_B)) => (
+                                TREE_RENDER_INDEX_B,
+                                TREE_BASE_TMAP_B,
+                                TREE_RENDER_MODE,
+                                TREE_LOGICAL_HEIGHT,
+                            ),
+                            (Some(TREE_DEAD_RENDER_INDEX_A), Some(TREE_DEAD_BASE_TMAP_A)) => (
+                                TREE_DEAD_RENDER_INDEX_A,
+                                TREE_DEAD_BASE_TMAP_A,
+                                TREE_RENDER_MODE,
+                                TREE_LOGICAL_HEIGHT,
+                            ),
+                            (Some(TREE_DEAD_RENDER_INDEX_B), Some(TREE_DEAD_BASE_TMAP_B)) => (
+                                TREE_DEAD_RENDER_INDEX_B,
+                                TREE_DEAD_BASE_TMAP_B,
+                                TREE_RENDER_MODE,
+                                TREE_LOGICAL_HEIGHT,
+                            ),
+                            _ => {
+                                return Err(TerrainFrameError(format!(
+                                    "tree entity {entity_index} has unsupported render tuple {:?}/{:?}",
+                                    actor.render_parameter_index, actor.base_tmap,
+                                )));
+                            }
+                        }
+                    }
+                    Level1ActorKind::Stone => (
+                        STONE_RENDER_INDEX,
+                        STONE_BASE_TMAP,
+                        STONE_RENDER_MODE,
+                        STONE_LOGICAL_HEIGHT,
                     ),
                     _ => unreachable!("fixed objective-prop branch filtered actor kind"),
                 };
@@ -2675,6 +3092,7 @@ mod tests {
                     frozen_actor_tmap_bank: Some(&frozen_actor_bank),
                     villager_tmap_clocks: Some(&villager_clocks),
                     mission_actors: &[],
+                    dynamic_residents: &[],
                     mission_segments: &[],
                     castle_root: None,
                     mana_spheres: &[],
@@ -2687,6 +3105,7 @@ mod tests {
                     firefly_tmap_clocks: &firefly_clocks,
                     projectiles: &[],
                     impacts: &[],
+                    possessed_buildings: &[],
                     combat_tmap_bank: &combat_bank,
                     static_world_tmap_bank: &static_world_bank,
                     economy_tmap_bank: &economy_bank,
@@ -2718,6 +3137,7 @@ mod tests {
                 frozen_actor_tmap_bank: Some(&frozen_actor_bank),
                 villager_tmap_clocks: Some(&villager_clocks),
                 mission_actors: &[],
+                dynamic_residents: &[],
                 mission_segments: &[],
                 castle_root: None,
                 mana_spheres: &[],
@@ -2730,6 +3150,7 @@ mod tests {
                 firefly_tmap_clocks: &firefly_clocks,
                 projectiles: &[],
                 impacts: &[],
+                possessed_buildings: &[],
                 combat_tmap_bank: &combat_bank,
                 static_world_tmap_bank: &static_world_bank,
                 economy_tmap_bank: &economy_bank,
@@ -2761,6 +3182,7 @@ mod tests {
                     frozen_actor_tmap_bank: None,
                     villager_tmap_clocks: None,
                     mission_actors: &[],
+                    dynamic_residents: &[],
                     mission_segments: &[],
                     castle_root: None,
                     mana_spheres: &[],
@@ -2773,6 +3195,7 @@ mod tests {
                     firefly_tmap_clocks: &firefly_clocks,
                     projectiles: &[],
                     impacts: &[],
+                    possessed_buildings: &[],
                     combat_tmap_bank: &combat_bank,
                     static_world_tmap_bank: &static_world_bank,
                     economy_tmap_bank: &economy_bank,
@@ -2818,6 +3241,7 @@ mod tests {
                 frozen_actor_tmap_bank: None,
                 villager_tmap_clocks: None,
                 mission_actors: &[],
+                dynamic_residents: &[],
                 mission_segments: &[],
                 castle_root: None,
                 mana_spheres: &[],
@@ -2830,6 +3254,7 @@ mod tests {
                 firefly_tmap_clocks: &firefly_clocks,
                 projectiles: &[],
                 impacts: &[],
+                possessed_buildings: &[],
                 combat_tmap_bank: &combat_bank,
                 static_world_tmap_bank: &static_world_bank,
                 economy_tmap_bank: &economy_bank,
@@ -2917,6 +3342,7 @@ mod tests {
                     frozen_actor_tmap_bank: None,
                     villager_tmap_clocks: None,
                     mission_actors: std::slice::from_ref(&archer),
+                    dynamic_residents: &[],
                     mission_segments: &[],
                     castle_root: None,
                     mana_spheres: &[],
@@ -2929,6 +3355,7 @@ mod tests {
                     firefly_tmap_clocks: &firefly_clocks,
                     projectiles: &[],
                     impacts: &[],
+                    possessed_buildings: &[],
                     combat_tmap_bank: &combat_bank,
                     static_world_tmap_bank: &static_world_bank,
                     economy_tmap_bank: &economy_bank,
@@ -2952,6 +3379,90 @@ mod tests {
             pose_hashes.len(),
             3,
             "all Archer poses alter the indexed frame"
+        );
+
+        let mut resident_mission = mission.clone();
+        let resident_source_slot = resident_mission
+            .spawn_house_resident(goat.position, 4, 33, 0)
+            .expect("qualified house Archer constructor")
+            .expect("qualified source arena has a resident slot");
+        let mut resident = resident_mission
+            .dynamic_residents()
+            .copied()
+            .find(|resident| resident.source_entity_index == resident_source_slot)
+            .expect("constructed house Archer is registered");
+        let mut resident_chains = map_chains.clone();
+        resident_chains
+            .sync_entity(crate::renderable_map_chain::RenderableMapSeed {
+                entity_index: resident.source_entity_index,
+                active: resident.active,
+                x: resident.position.x,
+                y: resident.position.y,
+            })
+            .expect("house Archer source-map insertion");
+        let mut resident_pose_hashes = Vec::new();
+        for (render_index, base_tmap, logical_height) in [
+            (ARCHER_RENDER_INDEX, ARCHER_BASE_TMAP, ARCHER_LOGICAL_HEIGHT),
+            (
+                ARCHER_ATTACK_RENDER_INDEX_A,
+                ARCHER_ATTACK_BASE_TMAP_A,
+                ARCHER_LOGICAL_HEIGHT,
+            ),
+            (
+                ARCHER_ATTACK_RENDER_INDEX_B,
+                ARCHER_ATTACK_BASE_TMAP_B,
+                ARCHER_ATTACK_LOGICAL_HEIGHT_B,
+            ),
+        ] {
+            resident.render_parameter_index = render_index;
+            resident.base_tmap = base_tmap;
+            resident.logical_height = logical_height;
+            let resident_frame = render_level1_world_frame(
+                archer_camera,
+                render_resources(),
+                Level1WorldFrameResources {
+                    local_player_entity_index: world.reset_state().entity_index,
+                    goats: world.reset_live_world().goats(),
+                    frozen_actors: &[],
+                    frozen_actor_tmap_bank: Some(&frozen_actor_bank),
+                    villager_tmap_clocks: Some(&villager_clocks),
+                    mission_actors: &[],
+                    dynamic_residents: std::slice::from_ref(&resident),
+                    mission_segments: &[],
+                    castle_root: None,
+                    mana_spheres: &[],
+                    mana_carrier: None,
+                    map_chains: &resident_chains,
+                    goat_tmap_clocks: &clocks,
+                    archer_tmap_bank: &archer_bank,
+                    archer_tmap_clocks: &archer_clocks,
+                    firefly_tmap_bank: &firefly_bank,
+                    firefly_tmap_clocks: &firefly_clocks,
+                    projectiles: &[],
+                    impacts: &[],
+                    possessed_buildings: &[],
+                    combat_tmap_bank: &combat_bank,
+                    static_world_tmap_bank: &static_world_bank,
+                    economy_tmap_bank: &economy_bank,
+                    fireball_tmap_clock: &fireball_clock,
+                    possession_tmap_clock: &possession_clock,
+                    castle_tmap_clock: &castle_clock,
+                    particle_parameters: &world.presentation().particles,
+                    source_slots: resident_mission.source_slots(),
+                    night: true,
+                },
+            )
+            .expect("every qualified house Archer pose reaches the source compositor");
+            assert!(resident_frame.archers_composited);
+            assert!(resident_frame.archer_raster_stats.framebuffer_writes > 0);
+            resident_pose_hashes.push(resident_frame.index_hash);
+        }
+        resident_pose_hashes.sort_unstable();
+        resident_pose_hashes.dedup();
+        assert_eq!(
+            resident_pose_hashes.len(),
+            3,
+            "all house Archer poses alter the indexed frame"
         );
 
         let mut firefly = mission
@@ -2986,6 +3497,7 @@ mod tests {
                     frozen_actor_tmap_bank: None,
                     villager_tmap_clocks: None,
                     mission_actors: std::slice::from_ref(&firefly),
+                    dynamic_residents: &[],
                     mission_segments: &[],
                     castle_root: None,
                     mana_spheres: &[],
@@ -2998,6 +3510,7 @@ mod tests {
                     firefly_tmap_clocks: &firefly_clocks,
                     projectiles: &[],
                     impacts: &[],
+                    possessed_buildings: &[],
                     combat_tmap_bank: &combat_bank,
                     static_world_tmap_bank: &static_world_bank,
                     economy_tmap_bank: &economy_bank,
@@ -3054,6 +3567,7 @@ mod tests {
                     frozen_actor_tmap_bank: None,
                     villager_tmap_clocks: None,
                     mission_actors: std::slice::from_ref(&prop),
+                    dynamic_residents: &[],
                     mission_segments: &[],
                     castle_root: None,
                     mana_spheres: &[],
@@ -3066,6 +3580,7 @@ mod tests {
                     firefly_tmap_clocks: &firefly_clocks,
                     projectiles: &[],
                     impacts: &[],
+                    possessed_buildings: &[],
                     combat_tmap_bank: &combat_bank,
                     static_world_tmap_bank: &static_world_bank,
                     economy_tmap_bank: &economy_bank,
@@ -3095,6 +3610,7 @@ mod tests {
                     frozen_actor_tmap_bank: None,
                     villager_tmap_clocks: None,
                     mission_actors: std::slice::from_ref(&prop),
+                    dynamic_residents: &[],
                     mission_segments: &[],
                     castle_root: None,
                     mana_spheres: &[],
@@ -3107,6 +3623,7 @@ mod tests {
                     firefly_tmap_clocks: &firefly_clocks,
                     projectiles: &[],
                     impacts: &[],
+                    possessed_buildings: &[],
                     combat_tmap_bank: &combat_bank,
                     static_world_tmap_bank: &static_world_bank,
                     economy_tmap_bank: &economy_bank,
@@ -3136,6 +3653,7 @@ mod tests {
                     frozen_actor_tmap_bank: None,
                     villager_tmap_clocks: None,
                     mission_actors: std::slice::from_ref(&prop),
+                    dynamic_residents: &[],
                     mission_segments: &[],
                     castle_root: None,
                     mana_spheres: &[],
@@ -3148,6 +3666,7 @@ mod tests {
                     firefly_tmap_clocks: &firefly_clocks,
                     projectiles: &[],
                     impacts: &[],
+                    possessed_buildings: &[],
                     combat_tmap_bank: &combat_bank,
                     static_world_tmap_bank: &static_world_bank,
                     economy_tmap_bank: &economy_bank,
@@ -3248,6 +3767,7 @@ mod tests {
                     frozen_actor_tmap_bank: None,
                     villager_tmap_clocks: None,
                     mission_actors: &[],
+                    dynamic_residents: &[],
                     mission_segments: &[],
                     castle_root,
                     mana_spheres: spheres,
@@ -3260,6 +3780,7 @@ mod tests {
                     firefly_tmap_clocks: &firefly_clocks,
                     projectiles: &[],
                     impacts: &[],
+                    possessed_buildings: &[],
                     combat_tmap_bank: &combat_bank,
                     static_world_tmap_bank: &static_world_bank,
                     economy_tmap_bank: &economy_bank,
@@ -3300,6 +3821,7 @@ mod tests {
                 frozen_actor_tmap_bank: None,
                 villager_tmap_clocks: None,
                 mission_actors: &[],
+                dynamic_residents: &[],
                 mission_segments: &[],
                 castle_root: None,
                 mana_spheres: std::slice::from_ref(&hostile_sphere),
@@ -3312,6 +3834,7 @@ mod tests {
                 firefly_tmap_clocks: &firefly_clocks,
                 projectiles: &[],
                 impacts: &[],
+                possessed_buildings: &[],
                 combat_tmap_bank: &combat_bank,
                 static_world_tmap_bank: &static_world_bank,
                 economy_tmap_bank: &economy_bank,

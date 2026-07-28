@@ -168,7 +168,7 @@ The production scripts compile into `MagicCarpet.Native.Runtime.dll`; test
 code remains in separate EditMode and PlayMode assemblies and is not included
 in the player. The focused suite is:
 
-- twenty-six Linux EditMode native-integration tests for ABI/layout, exact input and
+- twenty-eight Linux EditMode native-integration tests for ABI/layout, exact input and
   camera routing, reset/generation behavior, two-session isolation,
   idempotent disposal, bad owner inputs, preallocated bulk copying, and the
   qualified selector-clock seam, live Level 1 actor/exit exposure,
@@ -219,7 +219,7 @@ python3 qualification/verify_unity_lifecycle_privacy.py \
   --play-log /tmp/magiccarpet-unity-playmode.log
 ```
 
-It requires exactly 26/26 and 1/1 tests; pins the rebuilt launcher, runtime
+It requires exactly 29/29 and 1/1 tests; pins the rebuilt launcher, runtime
 assembly, global managers, plug-in, and build GUID; inspects Unity build
 metadata; rejects StreamingAssets, symlinks, owner container/audio
 extensions, and registered owner-payload hash intersections; reruns the full

@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     FlightContext, FlightEffectsContext, FlightProfile, FlightState, FlightWorld, PlayerCommand,
-    Position, SpellFireContext, conformance_hash,
+    Position, SOURCE_SPELL_INDEX_MAP, SpellFireContext, conformance_hash,
     goat::{
         GOAT_BASE_TMAP, GOAT_CLASS, GOAT_MODEL, GOAT_RENDER_PARAMETER_INDEX, GOAT_STAGE_POINT,
         GoatBehaviorConfig, GoatPlayerTarget, GoatState, GoatStepEvent, LEVEL_ONE_GOAT_INDICES,
@@ -26,6 +26,7 @@ use crate::{
         GOAT_TMAP_SELECTORS, GOAT_TMAP_STATE_COUNT, GoatTmapBank, GoatTmapClocks, GoatTmapFrame,
         GoatTmapSelectorBank,
     },
+    house::{HouseState, HouseStepEvent},
     legacy_terrain::{
         LEGACY_MAP_CELLS, LegacyTerrain, interpolate_cave, interpolate_ground, material_mask,
     },
@@ -36,22 +37,26 @@ use crate::{
         FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LOGICAL_HEIGHT, FIREBALL_RENDER_INDEX,
         FIREBALL_RENDER_MODE, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT, FIREFLY_RENDER_INDEX,
         FIREFLY_RENDER_MODE, Level1CastlePlacementBlocker, Level1CollisionTarget,
-        Level1MissionState, Level1MissionTemplate, Level1ResetSourceSlot, MANA_CARRIER_BASE_TMAP,
-        MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_RENDER_MODE,
-        SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX,
-        SPELL_JAR_RENDER_MODE,
+        Level1MissionState, Level1MissionTemplate, Level1ResetSourceSlot,
+        Level1SourceCollisionTarget, MANA_CARRIER_BASE_TMAP, MANA_CARRIER_LOGICAL_HEIGHT,
+        MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_RENDER_MODE, SPELL_JAR_BASE_TMAP,
+        SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE,
     },
     spell_activation::{SpellActivationHolder, SpellCasterState},
     state_hash, step_outer_turn_with_context,
+    villager::{
+        LEVEL_ONE_VILLAGER_INDICES, VILLAGER_CLASS, VILLAGER_MODEL, VillagerBehaviorConfig,
+        VillagerState,
+    },
 };
 
 const MANIFEST_SCHEMA: &str = "mc2-owner-level-export/v2";
 const CLOSURE_SCHEMA: &str = "mc2-level-asset-closure/v2";
 const AUDIO_CACHE_SCHEMA: &str = "mc2-owner-unity-asset-cache/v1";
 const AUDIO_CACHE_MANIFEST_SHA256: &str =
-    "6e8557e06c6a1b9f1cc39c80564c58af24ff804ce1b75859ba2d0ea363c5e09a";
+    "e3aaf1cf03e390850c5da44ed4b3880352b425bd063657e3cdbbcb8086a4d7ee";
 const AUDIO_CACHE_CONTENT_SHA256: &str =
-    "addc1cc1b43173f41f208082237f38b9519fdc64374ec0b20f8b2d9b04049cdb";
+    "d299990e300117d065eb3a75008f6a69911b1ba356e4e06452c0a826450a01e5";
 const RESET_SCHEMA: &str = "mc2-flight-reset-projection/v1";
 const ENTITY_COUNT: usize = 1_000;
 const ENTITY_COUNT_U32: u32 = 1_000;
@@ -161,6 +166,7 @@ pub enum EntityAuthority {
     PlayerFlightLive,
     SpellActivationLive,
     GoatLive,
+    VillagerLive,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -230,6 +236,18 @@ impl EntitySnapshot {
             half_y: i16::from_le_bytes([self.record[90], self.record[91]]),
         }
     }
+
+    #[must_use]
+    pub fn collision_target(&self) -> Level1CollisionTarget {
+        Level1CollisionTarget {
+            entity_index: self.index,
+            position: self.position,
+            collision_vertical_offset: i16::from_le_bytes([self.record[86], self.record[87]]),
+            collision_half_width: i16::from_le_bytes([self.record[88], self.record[89]]),
+            collision_half_height: i16::from_le_bytes([self.record[92], self.record[93]]),
+            active: self.active,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -248,6 +266,10 @@ pub struct PlayerSnapshot {
     pub turn: i32,
     pub left_spell_slot: u8,
     pub right_spell_slot: u8,
+    pub left_subspell_index: i8,
+    pub right_subspell_index: i8,
+    pub selected_spell_ui_index: u8,
+    pub selected_subspell_index: i8,
     pub enabled_spell_holders: [u16; PLAYER_SPELL_COUNT],
     record: Box<[u8]>,
 }
@@ -280,6 +302,20 @@ pub struct SessionTerrain {
     planes: TerrainPlanes,
     terrain_rng: u16,
     mutation_sequence: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HouseRemovalResident {
+    pub position: Position,
+    pub model: u8,
+    pub action: u8,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HouseRemovalOutcome {
+    pub final_rng: u16,
+    pub final_occupants: i32,
+    pub residents: Vec<HouseRemovalResident>,
 }
 
 impl SessionTerrain {
@@ -361,6 +397,139 @@ impl SessionTerrain {
         staged.mutation_sequence = staged.mutation_sequence.wrapping_add(1);
         *self = staged;
         Ok(())
+    }
+
+    /// Remove one source action-53 house BUILD footprint.
+    ///
+    /// Resident selection and height restoration share the house RNG and must
+    /// therefore run in the same row-major loop. Terrain topology retains its
+    /// independent session RNG. The returned resident requests are already in
+    /// exact allocation order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed footprint. Mutation is transactional.
+    pub fn apply_house_removal(
+        &mut self,
+        position: Position,
+        mut house_rng: u16,
+        mut occupants: i32,
+        produces_residents: bool,
+        footprint: &CastleBuildFootprint,
+    ) -> std::result::Result<HouseRemovalOutcome, String> {
+        let expected = usize::from(footprint.width) * usize::from(footprint.height);
+        if footprint.cells().len() != expected {
+            return Err(format!(
+                "house BUILD {} has {} cells, expected {expected}",
+                footprint.index,
+                footprint.cells().len()
+            ));
+        }
+        let mut staged = self.clone();
+        let center_x = position.x.wrapping_add(128).to_be_bytes()[0];
+        let center_y = position.y.wrapping_add(128).to_be_bytes()[0];
+        let start_x = center_x.wrapping_sub(footprint.width / 2);
+        let start_y = center_y.wrapping_sub(footprint.height / 2);
+        let corner_height =
+            |x: u8, y: u8| i16::from(staged.planes.ground_heights[terrain_index(x, y)]);
+        let z_coefficient = (corner_height(start_x, start_y)
+            + corner_height(start_x.wrapping_add(footprint.width), start_y)
+            + corner_height(
+                start_x.wrapping_add(footprint.width),
+                start_y.wrapping_add(footprint.height),
+            )
+            + corner_height(start_x, start_y.wrapping_add(footprint.height)))
+            >> 2;
+        let mut residents = Vec::new();
+        let mut nonempty_ordinal = 0_u32;
+        for row in 0..footprint.height {
+            for column in 0..footprint.width {
+                let cell = footprint.cells()
+                    [usize::from(row) * usize::from(footprint.width) + usize::from(column)];
+                if cell == [0xff, 0xff] {
+                    continue;
+                }
+                let x = start_x.wrapping_add(column);
+                let y = start_y.wrapping_add(row);
+                nonempty_ordinal = nonempty_ordinal.wrapping_add(1);
+                let resident_z = if nonempty_ordinal & 7 == 0 {
+                    z_coefficient.wrapping_sub(10).wrapping_mul(32)
+                } else {
+                    z_coefficient.wrapping_mul(32)
+                };
+                if occupants > 0 {
+                    occupants -= 1;
+                    if produces_residents {
+                        let (model, action) = if occupants == 0 {
+                            (12, 97)
+                        } else if occupants < 4 {
+                            (4, 33)
+                        } else {
+                            house_rng = next_house_rng(house_rng);
+                            match house_rng % 12 {
+                                0 | 1 => (4, 33),
+                                2 | 3 => (14, 113),
+                                4..=8 => (13, 105),
+                                9..=11 => (12, 97),
+                                _ => unreachable!("modulo twelve"),
+                            }
+                        };
+                        residents.push(HouseRemovalResident {
+                            position: Position {
+                                x: u16::from(x) << 8,
+                                y: u16::from(y) << 8,
+                                z: resident_z,
+                            },
+                            model,
+                            action,
+                        });
+                    }
+                }
+                let index = terrain_index(x, y);
+                staged.planes.angles[index] = (staged.planes.angles[index] & 0x70) | 1;
+                add_building_to_terrain(
+                    &mut staged.planes,
+                    x,
+                    y,
+                    staged.map_type,
+                    &mut staged.terrain_rng,
+                );
+                if cell[1] == 0xff {
+                    continue;
+                }
+                let height = staged.planes.ground_heights[index];
+                if cell[1] >= height {
+                    staged.planes.ground_heights[index] = 0;
+                    continue;
+                }
+                house_rng = next_house_rng(house_rng);
+                staged.planes.ground_heights[index] = if house_rng % 50 <= 20 {
+                    height.wrapping_sub(cell[1])
+                } else {
+                    house_rng = next_house_rng(house_rng);
+                    height
+                        .wrapping_sub(cell[1])
+                        .wrapping_add((house_rng % 20) as u8)
+                };
+            }
+        }
+        for row in 0..footprint.height {
+            for column in 0..footprint.width {
+                smooth_building_height(
+                    &mut staged.planes,
+                    start_x.wrapping_add(column),
+                    start_y.wrapping_add(row),
+                    staged.map_type,
+                );
+            }
+        }
+        staged.mutation_sequence = staged.mutation_sequence.wrapping_add(1);
+        *self = staged;
+        Ok(HouseRemovalOutcome {
+            final_rng: house_rng,
+            final_occupants: occupants,
+            residents,
+        })
     }
 
     fn apply_castle_update_inner(
@@ -839,6 +1008,10 @@ fn remove_castle_stage(
     }
 }
 
+const fn next_house_rng(seed: u16) -> u16 {
+    seed.wrapping_mul(9_377).wrapping_add(9_439)
+}
+
 fn smooth_building_height(planes: &mut TerrainPlanes, x: u8, y: u8, map_type: MapType) {
     let index = terrain_index(x, y);
     let ordinary = |terrain_type: u8| terrain_type <= 5 || terrain_type > 0x22;
@@ -987,6 +1160,7 @@ pub struct NativeWorld {
     sound_asset_refs: BTreeMap<u16, u32>,
     music_asset_ref: Option<u32>,
     goat_tmap_bank: Option<GoatTmapBank>,
+    house_build_footprints: BTreeMap<u8, CastleBuildFootprint>,
     reset_state: FlightState,
     reset_context: FlightContext,
     goat_stage_point: Position,
@@ -1105,6 +1279,12 @@ impl NativeWorld {
                 .ok_or_else(|| NativeWorldError::new("Level 1 Goat parameter row 98 is absent"))?,
         )
         .map_err(NativeWorldError::new)?;
+        VillagerBehaviorConfig::from_parameter_record(
+            presentation.entity_parameters.get(100).ok_or_else(|| {
+                NativeWorldError::new("Level 1 Villager parameter row 100 is absent")
+            })?,
+        )
+        .map_err(NativeWorldError::new)?;
         let goat_render = presentation
             .particles
             .get(usize::from(GOAT_RENDER_PARAMETER_INDEX))
@@ -1158,6 +1338,28 @@ impl NativeWorld {
             .filter(|entity| entity.active && entity.class == 10 && entity.model == 45)
             .map(EntitySnapshot::castle_placement_blocker)
             .collect::<Vec<_>>();
+        let initial_possession_targets = entities
+            .iter()
+            .filter(|entity| {
+                entity.active
+                    && entity.life >= 0
+                    && entity.class == 10
+                    && entity.model == 45
+                    // remc2 `sub_108B0` rejects model-45 buildings whose
+                    // BLDGPRM byte_2 has bit 8 set. In the qualified Level 1
+                    // package those are rows 17 and 51..=53.
+                    && !matches!(entity.level_gate, 17 | 51 | 52 | 53)
+            })
+            .map(EntitySnapshot::collision_target)
+            .collect::<Vec<_>>();
+        let initial_source_collision_targets = entities
+            .iter()
+            .filter(|entity| entity.active && entity.control_flags & 8 != 0)
+            .map(|entity| Level1SourceCollisionTarget {
+                target: entity.collision_target(),
+                source_id: entity.source_id,
+            })
+            .collect::<Vec<_>>();
         let (closure_sha256, mut asset_refs) =
             parse_closure(closure_path, &package_sha256, &manifest_bytes, &members)?;
         let cache_assets = match owner_cache {
@@ -1178,6 +1380,8 @@ impl NativeWorld {
                 &initial_source_slots,
                 &initial_castle_blockers,
                 &initial_building_blockers,
+                &initial_possession_targets,
+                &initial_source_collision_targets,
                 cache_assets.castle_stage_one_footprint,
             )
             .map_err(NativeWorldError::new)?;
@@ -1198,6 +1402,7 @@ impl NativeWorld {
             sound_asset_refs: cache_assets.sound_asset_refs,
             music_asset_ref: cache_assets.music_asset_ref,
             goat_tmap_bank: cache_assets.goat_tmap_bank,
+            house_build_footprints: cache_assets.house_build_footprints,
             reset_state,
             reset_context,
             goat_stage_point,
@@ -1240,6 +1445,11 @@ impl NativeWorld {
     #[must_use]
     pub fn entities(&self) -> &[EntitySnapshot] {
         &self.entities
+    }
+
+    #[must_use]
+    pub fn house_build_footprint(&self, building_index: u8) -> Option<&CastleBuildFootprint> {
+        self.house_build_footprints.get(&building_index)
     }
 
     #[must_use]
@@ -1333,8 +1543,13 @@ impl NativeWorld {
             let right_index = player.enabled_spell_holders[right_slot];
             fire.left_holder_index = left_index;
             fire.right_holder_index = right_index;
-            fire.selected_holder_index = left_index;
-            fire.selected_spell_ui_index = player.left_spell_slot;
+            fire.left_subspell_index = player.left_subspell_index;
+            fire.right_subspell_index = player.right_subspell_index;
+            fire.selected_spell_ui_index = player.selected_spell_ui_index;
+            fire.selected_subspell_index = player.selected_subspell_index;
+            let selected_family =
+                SOURCE_SPELL_INDEX_MAP[usize::from(player.selected_spell_ui_index)];
+            fire.selected_holder_index = player.enabled_spell_holders[usize::from(selected_family)];
             fire.enabled_holder_indices[left_slot] = left_index;
             fire.enabled_holder_indices[right_slot] = right_index;
             if right_index != 0
@@ -1365,6 +1580,7 @@ impl NativeWorld {
             live_world: self.reset_live_world.clone(),
             goat_tmap_clocks: self.goat_tmap_bank.as_ref().map(GoatTmapClocks::from_bank),
             camera_fov: 128,
+            pending_house_effects: Vec::new(),
             mission: self.level1_mission.session(
                 self.entities[usize::from(self.reset_state.entity_index)].life,
                 1_000,
@@ -1401,6 +1617,7 @@ pub struct NativeSession<'world> {
     pub live_world: LiveWorldState,
     pub goat_tmap_clocks: Option<GoatTmapClocks>,
     pub camera_fov: i16,
+    pub pending_house_effects: Vec<HouseStepEvent>,
     pub mission: Level1MissionState,
 }
 
@@ -1412,6 +1629,28 @@ fn goat_collision_target(goat: &GoatState) -> Level1CollisionTarget {
         collision_vertical_offset: goat.collision_vertical_offset,
         collision_half_height: goat.collision_half_height,
         active: goat.active,
+    }
+}
+
+fn villager_collision_target(villager: &VillagerState) -> Level1CollisionTarget {
+    Level1CollisionTarget {
+        entity_index: villager.entity_index,
+        position: villager.position,
+        collision_half_width: villager.collision_half_width,
+        collision_vertical_offset: villager.collision_vertical_offset,
+        collision_half_height: villager.collision_half_height,
+        active: villager.active,
+    }
+}
+
+fn house_collision_target(house: &HouseState) -> Level1CollisionTarget {
+    Level1CollisionTarget {
+        entity_index: house.entity_index,
+        position: house.position,
+        collision_half_width: house.collision_half_width,
+        collision_vertical_offset: house.collision_vertical_offset,
+        collision_half_height: house.collision_half_height,
+        active: house.active,
     }
 }
 
@@ -1427,6 +1666,7 @@ impl NativeSession<'_> {
             .as_ref()
             .map(GoatTmapClocks::from_bank);
         self.camera_fov = 128;
+        self.pending_house_effects.clear();
         self.mission = self.world.level1_mission.session(
             self.world.entities[usize::from(self.world.reset_state.entity_index)].life,
             1_000,
@@ -1457,15 +1697,39 @@ impl NativeSession<'_> {
             control_flags: 0,
         }];
         self.mission.set_external_collision_targets(
-            self.live_world.goats().iter().map(goat_collision_target),
+            self.live_world
+                .goats()
+                .iter()
+                .map(goat_collision_target)
+                .chain(
+                    self.live_world
+                        .villagers()
+                        .iter()
+                        .map(villager_collision_target),
+                ),
         );
         self.mission.begin_source_turn();
         self.reclaim_imported_source_slots();
+        if self.mission.take_group_7_villager_release() {
+            let released = self.live_world.release_villager_stage_group_7();
+            debug_assert_eq!(released, 28);
+        }
         let begin_goat_events = self.live_world.begin_source_turn(&initial_target);
         self.process_goat_events(&begin_goat_events);
         let mut evidence = Vec::new();
         for source_slot in 1..ENTITY_COUNT {
             let source_slot = u16::try_from(source_slot).expect("source cursor fits u16");
+            if let Some((owner_entity_index, payload)) =
+                self.mission.take_building_possession_mailbox(source_slot)
+            {
+                self.live_world
+                    .submit_house_possession(source_slot, owner_entity_index, payload)
+                    .expect("possession mailbox targets a live eligible house");
+            }
+            let house_events = self
+                .live_world
+                .step_house_source_slot(source_slot, &self.terrain);
+            self.process_house_events(&house_events);
             let player_target = [GoatPlayerTarget {
                 entity_index: self.state.entity_index,
                 position: self.state.position,
@@ -1474,8 +1738,26 @@ impl NativeSession<'_> {
             let goat_events =
                 self.live_world
                     .step_source_slot(source_slot, &self.terrain, &player_target);
+            self.live_world
+                .step_villager_source_slot(source_slot, &self.terrain);
             self.process_goat_events(&goat_events);
-            if let Some(goat) = self
+            if let Some(house) = self
+                .live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == source_slot)
+            {
+                self.mission
+                    .update_external_collision_target(house_collision_target(house));
+                self.mission.sync_imported_source_slot(
+                    house.entity_index,
+                    house.active,
+                    house.action,
+                    house.phase,
+                    house.rng,
+                    house.control_flags,
+                );
+            } else if let Some(goat) = self
                 .live_world
                 .goats()
                 .iter()
@@ -1490,6 +1772,39 @@ impl NativeSession<'_> {
                     goat.phase,
                     goat.rng,
                     goat.control_flags,
+                );
+            } else if let Some(villager) = self
+                .live_world
+                .villagers()
+                .iter()
+                .find(|villager| villager.entity_index == source_slot)
+            {
+                self.mission
+                    .update_external_collision_target(villager_collision_target(villager));
+                self.mission.sync_imported_source_slot(
+                    villager.entity_index,
+                    villager.active,
+                    villager.action,
+                    villager.phase,
+                    villager.rng,
+                    villager.control_flags,
+                );
+            }
+            if let Some(dolmen) =
+                self.world
+                    .entities
+                    .get(usize::from(source_slot))
+                    .filter(|entity| {
+                        entity.active
+                            && entity.class == 2
+                            && entity.model == 2
+                            && entity.action == 6
+                    })
+            {
+                self.mission.step_dolmen_source_slot(
+                    &self.state,
+                    source_slot,
+                    dolmen.collision_target(),
                 );
             }
 
@@ -1527,15 +1842,18 @@ impl NativeSession<'_> {
                 let castle = activated_model(CASTLE_SPELL_FAMILY);
                 self.mission
                     .capture_spell_holder_active_values(&self.context);
-                if !self.mission.exit_sequence_owns_player_action() {
-                    self.mission
-                        .advance_speed_spell(&mut self.state, &mut self.context);
-                }
                 (fireball, possession, castle.then_some(self.state.yaw))
             } else {
                 (false, false, None)
             };
             let mission_event_start = self.mission.events().len();
+            if !self.mission.exit_sequence_owns_player_action() {
+                self.mission.dispatch_speed_holder_slot(
+                    source_slot,
+                    &mut self.state,
+                    &mut self.context,
+                );
+            }
             self.mission.dispatch_source_slot(
                 &self.terrain,
                 &self.state,
@@ -1559,11 +1877,13 @@ impl NativeSession<'_> {
         self.live_world.finish_source_turn();
         self.mission.finish_source_turn(&self.state);
         if let Some(fire) = self.context.spell_fire.as_mut() {
-            // Class-15/model-0 consumes one active tick after the same-turn
-            // projectile factory. Keep the direct Rust session in lockstep
-            // with the C ABI production session for repeated Fireball input.
+            // The class-15 handlers consume one active tick after their
+            // same-turn projectile factories: model 0 in `sub_693F0` and
+            // model 1 in `sub_69640`. Keep the direct Rust session in
+            // lockstep with the C ABI production session so both spells can
+            // return to their inactive, retriggerable state.
             for holder in &mut fire.holders {
-                if holder.model == 0 && holder.active_value > 0 {
+                if matches!(holder.model, 0 | 1) && holder.active_value > 0 {
                     holder.active_value -= 1;
                 }
             }
@@ -1635,6 +1955,96 @@ impl NativeSession<'_> {
         }
     }
 
+    fn process_house_events(&mut self, events: &[HouseStepEvent]) {
+        for event in events {
+            match *event {
+                HouseStepEvent::Possessed {
+                    entity_index,
+                    owner_entity_index,
+                    payload,
+                } => self.mission.apply_building_possession(
+                    &self.state,
+                    entity_index,
+                    owner_entity_index,
+                    payload,
+                ),
+                HouseStepEvent::RemoveFootprint {
+                    entity_index,
+                    attacker_entity_index,
+                    position,
+                    building_index,
+                    occupants,
+                    rng,
+                    ..
+                } => {
+                    let produces_residents = self
+                        .live_world
+                        .houses()
+                        .iter()
+                        .find(|house| house.entity_index == entity_index)
+                        .is_some_and(|house| house.parameter.produces_villagers());
+                    let footprint = self
+                        .world
+                        .house_build_footprint(building_index)
+                        .cloned()
+                        .expect("Level 1 action-53 house BUILD footprint");
+                    let outcome = self
+                        .terrain
+                        .apply_house_removal(
+                            position,
+                            rng,
+                            occupants,
+                            produces_residents,
+                            &footprint,
+                        )
+                        .expect("qualified Level 1 house terrain removal");
+                    self.live_world
+                        .commit_house_removal_state(
+                            entity_index,
+                            outcome.final_rng,
+                            outcome.final_occupants,
+                        )
+                        .expect("commit action-53 house state");
+                    for resident in outcome.residents {
+                        self.mission
+                            .spawn_house_resident(
+                                resident.position,
+                                resident.model,
+                                resident.action,
+                                attacker_entity_index,
+                            )
+                            .expect("qualified action-53 resident constructor");
+                        self.pending_house_effects
+                            .push(HouseStepEvent::ResidentRequested {
+                                entity_index,
+                                attacker_entity_index,
+                                position: resident.position,
+                                model: resident.model,
+                                action: resident.action,
+                            });
+                    }
+                    self.mission.remove_imported_building(entity_index);
+                    self.pending_house_effects.push(*event);
+                }
+                HouseStepEvent::ResidentRequested {
+                    attacker_entity_index,
+                    position,
+                    model,
+                    action,
+                    ..
+                } => {
+                    self.mission
+                        .spawn_house_resident(position, model, action, attacker_entity_index)
+                        .expect("qualified action-52 resident constructor");
+                    self.pending_house_effects.push(*event);
+                }
+                HouseStepEvent::Damaged { .. } | HouseStepEvent::DestructionStarted { .. } => {
+                    self.pending_house_effects.push(*event);
+                }
+            }
+        }
+    }
+
     fn reclaim_imported_source_slots(&mut self) {
         for source_slot in self.mission.take_reclaimed_imported_source_slots() {
             let _ = self.live_world.reclaim_source_slot(source_slot);
@@ -1689,6 +2099,46 @@ impl NativeSession<'_> {
                             ))
                 })
                 .map(|goat| goat.entity_index)
+                .chain(
+                    self.live_world
+                        .villagers()
+                        .iter()
+                        .filter(|villager| {
+                            villager.active
+                                && villager.entity_index != owner_entity_index
+                                && (villager.entity_index == direct_target_entity_index
+                                    || crate::level1_mission::source_entities_overlap(
+                                        position,
+                                        crate::level1_mission::FIREBALL_IMPACT_COLLISION_HALF_WIDTH,
+                                        crate::level1_mission::FIREBALL_IMPACT_COLLISION_VERTICAL_OFFSET,
+                                        crate::level1_mission::FIREBALL_IMPACT_COLLISION_HALF_HEIGHT,
+                                        villager.position,
+                                        villager.collision_half_width,
+                                        villager.collision_vertical_offset,
+                                        villager.collision_half_height,
+                                    ))
+                        })
+                        .map(|villager| villager.entity_index),
+                )
+                .chain(
+                    self.live_world
+                        .houses()
+                        .iter()
+                        .filter(|house| {
+                            house.active
+                                && house.entity_index != owner_entity_index
+                                && (house.entity_index == direct_target_entity_index
+                                    || crate::level1_mission::source_entities_overlap_xy(
+                                        position,
+                                        crate::level1_mission::FIREBALL_IMPACT_COLLISION_HALF_WIDTH,
+                                        crate::level1_mission::FIREBALL_IMPACT_COLLISION_HALF_WIDTH,
+                                        house.position,
+                                        house.collision_half_width,
+                                        house.collision_half_depth,
+                                    ))
+                        })
+                        .map(|house| house.entity_index),
+                )
                 .collect::<Vec<_>>();
             for target in targets {
                 let _ = self.live_world.inject_damage(
@@ -2174,6 +2624,20 @@ fn parse_players(bytes: &[u8]) -> Result<Vec<PlayerSnapshot>> {
                 "player {slot} spell selection is out of bounds"
             )));
         }
+        let left_subspell_index = read_u8(record, 558, "left subspell index")?.cast_signed();
+        let right_subspell_index = read_u8(record, 559, "right subspell index")?.cast_signed();
+        let selected_spell_ui_index = read_u8(record, 561, "selected spell UI index")?;
+        let selected_subspell_index =
+            read_u8(record, 562, "selected subspell index")?.cast_signed();
+        if !(0..=2).contains(&left_subspell_index)
+            || !(0..=2).contains(&right_subspell_index)
+            || usize::from(selected_spell_ui_index) >= SOURCE_SPELL_INDEX_MAP.len()
+            || !(0..=2).contains(&selected_subspell_index)
+        {
+            return Err(NativeWorldError::new(format!(
+                "player {slot} subspell/menu selection is out of bounds"
+            )));
+        }
         let mut holders = [0_u16; PLAYER_SPELL_COUNT];
         for (index, holder) in holders.iter_mut().enumerate() {
             *holder = read_u16(record, 268 + index * 2, "enabled spell holder")?;
@@ -2191,6 +2655,10 @@ fn parse_players(bytes: &[u8]) -> Result<Vec<PlayerSnapshot>> {
             turn: read_i32(record, 8, "player turn")?,
             left_spell_slot: u8::try_from(left).expect("validated spell slot"),
             right_spell_slot: u8::try_from(right).expect("validated spell slot"),
+            left_subspell_index,
+            right_subspell_index,
+            selected_spell_ui_index,
+            selected_subspell_index,
             enabled_spell_holders: holders,
             record: record.to_vec().into_boxed_slice(),
         });
@@ -2705,6 +3173,10 @@ fn build_level_one_context(
         effects: None,
         spell_fire: Some(SpellFireContext {
             left_holder_index: holder_index,
+            left_subspell_index: player.left_subspell_index,
+            right_subspell_index: player.right_subspell_index,
+            selected_spell_ui_index: player.selected_spell_ui_index,
+            selected_subspell_index: player.selected_subspell_index,
             caster: SpellCasterState {
                 entity_index: caster.index,
                 model: caster.model,
@@ -2826,8 +3298,11 @@ fn validate_reset_contract(
         "hex",
         "reset conformance_hash",
     )?)?;
-    if conformance_hash(state, context) != expected_conformance {
-        return Err(NativeWorldError::new("reset conformance hash mismatch"));
+    let actual_conformance = conformance_hash(state, context);
+    if actual_conformance != expected_conformance {
+        return Err(NativeWorldError::new(format!(
+            "reset conformance hash mismatch: expected {expected_conformance:016x}, got {actual_conformance:016x}"
+        )));
     }
     Ok(())
 }
@@ -2870,6 +3345,18 @@ fn apply_authority(
             )));
         }
         goat.authority = EntityAuthority::GoatLive;
+    }
+    for index in LEVEL_ONE_VILLAGER_INDICES {
+        let villager = entities.get_mut(usize::from(index)).ok_or_else(|| {
+            NativeWorldError::new(format!("Villager entity {index} is out of bounds"))
+        })?;
+        if !villager.active || villager.class != VILLAGER_CLASS || villager.model != VILLAGER_MODEL
+        {
+            return Err(NativeWorldError::new(format!(
+                "Villager authority row {index} is not active class {VILLAGER_CLASS}/model {VILLAGER_MODEL}"
+            )));
+        }
+        villager.authority = EntityAuthority::VillagerLive;
     }
     Ok(())
 }
@@ -3116,6 +3603,7 @@ struct LevelOneCacheAssets {
     music_asset_ref: Option<u32>,
     goat_tmap_bank: Option<GoatTmapBank>,
     castle_stage_one_footprint: Option<CastleBuildFootprint>,
+    house_build_footprints: BTreeMap<u8, CastleBuildFootprint>,
 }
 
 fn append_level_one_cache_assets(
@@ -3180,6 +3668,9 @@ fn append_level_one_cache_assets(
     require_exact_u64(castle_asset, "effective_height", 8, "Castle cache asset")?;
     let castle_descriptor_path = require_string(castle_asset, "path", "Castle cache asset")?;
     let castle_cells_path = require_string(castle_asset, "cells_path", "Castle cache asset")?;
+    let house_assets = require_object(assets, "level1_house_footprints", "owner cache assets")?;
+    let house_descriptor_path = require_string(house_assets, "path", "house BUILD cache asset")?;
+    let house_cells_path = require_string(house_assets, "cells_path", "house BUILD cache asset")?;
     let audio = require_object(assets, "level1_audio", "audio cache assets")?;
     let sound_path = require_string(audio, "sound_descriptor_path", "audio cache Level 1 assets")?;
     let music_path = require_string(audio, "music_descriptor_path", "audio cache Level 1 assets")?;
@@ -3282,6 +3773,104 @@ fn append_level_one_cache_assets(
     let castle_stage_one_footprint = CastleBuildFootprint::from_owner_cells(1, 8, 8, &castle_cells)
         .map_err(NativeWorldError::new)?;
 
+    let house_descriptor_bytes = load_output(house_descriptor_path)?;
+    let house_descriptor: Value =
+        serde_json::from_slice(&house_descriptor_bytes).map_err(|error| {
+            NativeWorldError::new(format!("invalid house BUILD descriptor: {error}"))
+        })?;
+    let house_descriptor = as_object(&house_descriptor, "house BUILD descriptor")?;
+    if require_string(house_descriptor, "schema", "house BUILD descriptor")?
+        != "mc2-level1-house-build-footprints/v1"
+    {
+        return Err(NativeWorldError::new(
+            "house BUILD descriptor schema mismatch",
+        ));
+    }
+    require_exact_u64(
+        house_descriptor,
+        "vga_resolution_selector",
+        1,
+        "house BUILD descriptor",
+    )?;
+    let house_cells_descriptor =
+        require_object(house_descriptor, "cells", "house BUILD descriptor")?;
+    if require_string(house_cells_descriptor, "path", "house BUILD cells")? != house_cells_path {
+        return Err(NativeWorldError::new(
+            "house BUILD descriptor cell path mismatch",
+        ));
+    }
+    require_exact_u64(
+        house_cells_descriptor,
+        "stride_bytes",
+        2,
+        "house BUILD cells",
+    )?;
+    let house_cells = load_output(house_cells_path)?;
+    if require_hash_string(house_cells_descriptor, "sha256", "house BUILD cells")?
+        != sha256_hex(&house_cells)
+        || require_value(house_cells_descriptor, "bytes", "house BUILD cells")?.as_u64()
+            != Some(house_cells.len() as u64)
+    {
+        return Err(NativeWorldError::new(
+            "house BUILD descriptor cell binding changed",
+        ));
+    }
+    let expected_house_indices = [17_u8, 26, 29, 30, 31, 34, 42, 47, 50, 51, 52, 53];
+    let house_rows = require_array(house_descriptor, "footprints", "house BUILD descriptor")?;
+    if house_rows.len() != expected_house_indices.len() {
+        return Err(NativeWorldError::new(
+            "house BUILD descriptor row count changed",
+        ));
+    }
+    let mut house_build_footprints = BTreeMap::new();
+    for (row, expected_index) in house_rows.iter().zip(expected_house_indices) {
+        let row = as_object(row, "house BUILD row")?;
+        let build_index = as_u8(
+            require_value(row, "build_index", "house BUILD row")?,
+            "house BUILD index",
+        )?;
+        if build_index != expected_index {
+            return Err(NativeWorldError::new(
+                "house BUILD descriptor ordering changed",
+            ));
+        }
+        let width = as_u8(
+            require_value(row, "width", "house BUILD row")?,
+            "house BUILD width",
+        )?;
+        let height = as_u8(
+            require_value(row, "height", "house BUILD row")?,
+            "house BUILD height",
+        )?;
+        let offset = usize::try_from(
+            require_value(row, "blob_offset", "house BUILD row")?
+                .as_u64()
+                .ok_or_else(|| NativeWorldError::new("house BUILD offset is not u64"))?,
+        )
+        .map_err(|_| NativeWorldError::new("house BUILD offset exceeds usize"))?;
+        let length = usize::try_from(
+            require_value(row, "bytes", "house BUILD row")?
+                .as_u64()
+                .ok_or_else(|| NativeWorldError::new("house BUILD length is not u64"))?,
+        )
+        .map_err(|_| NativeWorldError::new("house BUILD length exceeds usize"))?;
+        let end = offset
+            .checked_add(length)
+            .filter(|end| *end <= house_cells.len())
+            .ok_or_else(|| NativeWorldError::new("house BUILD row escapes cell blob"))?;
+        let payload = &house_cells[offset..end];
+        if length != usize::from(width) * usize::from(height) * 2
+            || require_hash_string(row, "sha256", "house BUILD row")? != sha256_hex(payload)
+        {
+            return Err(NativeWorldError::new(format!(
+                "house BUILD row {build_index} binding changed"
+            )));
+        }
+        let footprint = CastleBuildFootprint::from_owner_cells(build_index, width, height, payload)
+            .map_err(NativeWorldError::new)?;
+        house_build_footprints.insert(build_index, footprint);
+    }
+
     let sound_bytes = load_output(sound_path)?;
     let sound: Value = serde_json::from_slice(&sound_bytes)
         .map_err(|error| NativeWorldError::new(format!("invalid sound descriptor: {error}")))?;
@@ -3294,8 +3883,8 @@ fn append_level_one_cache_assets(
     require_exact_u64(sound, "quality_index", 3, "sound descriptor")?;
     let sound_rows = require_array(sound, "level1_assets", "sound descriptor")?;
     let expected_sound_ids = [
-        1_u16, 2, 3, 4, 5, 8, 9, 10, 12, 15, 16, 18, 19, 27, 29, 30, 31, 33, 34, 37, 39, 40, 41,
-        43, 44, 46, 54, 55, 56, 57, 63,
+        1_u16, 2, 3, 4, 5, 8, 9, 10, 12, 14, 15, 16, 18, 19, 27, 29, 30, 31, 33, 34, 37, 39, 40,
+        41, 43, 44, 46, 54, 55, 56, 57, 63,
     ];
     if sound_rows.len() != expected_sound_ids.len() {
         return Err(NativeWorldError::new(
@@ -3651,6 +4240,7 @@ fn append_level_one_cache_assets(
         music_asset_ref: Some(music_index),
         goat_tmap_bank: Some(bank),
         castle_stage_one_footprint: Some(castle_stage_one_footprint),
+        house_build_footprints,
     })
 }
 
@@ -4209,6 +4799,12 @@ mod tests {
         for (blocker, entity) in building_blockers.iter().zip(expected_buildings) {
             assert_eq!(*blocker, entity.castle_placement_blocker());
         }
+        let possession_targets = world.level1_mission.possession_targets();
+        assert_eq!(possession_targets.len(), 41);
+        assert!(possession_targets.iter().all(|target| {
+            let entity = &world.entities[usize::from(target.entity_index)];
+            !matches!(entity.level_gate, 17 | 51 | 52 | 53) && *target == entity.collision_target()
+        }));
     }
 
     #[test]
@@ -4417,6 +5013,160 @@ mod tests {
     }
 
     #[test]
+    fn qualified_level_one_house_footprints_drive_transactional_action_53_terrain() {
+        let (package, closure) = fixture_paths();
+        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let world = NativeWorld::load_with_owner_cache(
+            package,
+            closure,
+            private.join("generated/level1-unity-asset-cache"),
+        )
+        .expect("validated package M and owner cache");
+        let expected = [
+            (17, 48, 48),
+            (26, 9, 11),
+            (29, 13, 11),
+            (30, 13, 15),
+            (31, 23, 11),
+            (34, 22, 22),
+            (42, 11, 11),
+            (47, 11, 11),
+            (50, 7, 7),
+            (51, 4, 12),
+            (52, 12, 4),
+            (53, 8, 8),
+        ];
+        for (index, width, height) in expected {
+            let footprint = world
+                .house_build_footprint(index)
+                .expect("qualified Level 1 house BUILD row");
+            assert_eq!(
+                (footprint.index, footprint.width, footprint.height),
+                (index, width, height)
+            );
+            assert_eq!(
+                footprint.cells().len(),
+                usize::from(width) * usize::from(height)
+            );
+        }
+
+        let house = &world.entities()[11];
+        assert_eq!(house.level_gate, 29);
+        let footprint = world
+            .house_build_footprint(house.level_gate.cast_unsigned())
+            .expect("house 11 BUILD[29]");
+        let mut terrain = SessionTerrain::from_world(&world);
+        let before = terrain.deterministic_hash();
+        let outcome = terrain
+            .apply_house_removal(house.position, house.entity_rng, 2, true, footprint)
+            .expect("action-53 terrain mutation");
+        assert_eq!(outcome.final_occupants, 0);
+        assert_eq!(outcome.final_rng, 2);
+        assert_eq!(
+            outcome
+                .residents
+                .iter()
+                .map(|resident| (resident.model, resident.action))
+                .collect::<Vec<_>>(),
+            [(4, 33), (12, 97)]
+        );
+        assert_eq!(terrain.mutation_sequence(), 1);
+        assert_ne!(terrain.deterministic_hash(), before);
+    }
+
+    #[test]
+    fn house_action_53_interleaves_resident_and_height_rng_in_one_cell() {
+        let footprint =
+            CastleBuildFootprint::from_owner_cells(99, 1, 1, &[0xff, 10]).expect("one-cell BUILD");
+        let mut terrain = SessionTerrain {
+            map_type: MapType::Night,
+            planes: TerrainPlanes {
+                terrain_types: vec![0; 65_536].into_boxed_slice(),
+                ground_heights: vec![100; 65_536].into_boxed_slice(),
+                shading: vec![0; 65_536].into_boxed_slice(),
+                angles: vec![0; 65_536].into_boxed_slice(),
+                secondary_heights: vec![0; 65_536].into_boxed_slice(),
+                entity_indices: vec![0; 65_536].into_boxed_slice(),
+            },
+            terrain_rng: 39_663,
+            mutation_sequence: 0,
+        };
+        let outcome = terrain
+            .apply_house_removal(Position { x: 0, y: 0, z: 0 }, 2, 5, true, &footprint)
+            .expect("synthetic action-53 pass");
+        assert_eq!(outcome.final_occupants, 4);
+        assert_eq!(outcome.final_rng, 62_591);
+        assert_eq!(
+            outcome.residents,
+            [HouseRemovalResident {
+                position: Position {
+                    x: 0,
+                    y: 0,
+                    z: 3_200
+                },
+                model: 13,
+                action: 105,
+            }]
+        );
+        assert_eq!(terrain.ground_heights()[0], 100);
+        assert_eq!(terrain.mutation_sequence(), 1);
+    }
+
+    #[test]
+    fn direct_session_commits_house_action_53_trace_before_reclaim() {
+        let (package, closure) = fixture_paths();
+        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let world = NativeWorld::load_with_owner_cache(
+            package,
+            closure,
+            private.join("generated/level1-unity-asset-cache"),
+        )
+        .expect("validated package M and owner cache");
+        let mut session = world.session();
+        let initial_terrain_hash = session.terrain.deterministic_hash();
+        session
+            .live_world
+            .inject_damage(11, 28_001, session.state.entity_index.cast_signed())
+            .expect("fatal house damage");
+
+        session.step(PlayerCommand::default());
+        let dying = session
+            .live_world
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == 11)
+            .expect("house 11");
+        assert!(dying.active);
+        assert_eq!(dying.action, crate::house::HOUSE_REMOVE_ACTION);
+        assert_eq!(session.terrain.mutation_sequence(), 0);
+
+        session.step(PlayerCommand::default());
+        let removed = session
+            .live_world
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == 11)
+            .expect("house 11 retained for deterministic history");
+        assert!(!removed.active);
+        assert_eq!(removed.occupants, 0);
+        assert_eq!(removed.rng, 2);
+        assert_eq!(session.terrain.mutation_sequence(), 1);
+        assert_ne!(session.terrain.deterministic_hash(), initial_terrain_hash);
+        assert_eq!(
+            session
+                .pending_house_effects
+                .iter()
+                .filter_map(|event| match event {
+                    HouseStepEvent::ResidentRequested { model, action, .. } =>
+                        Some((*model, *action)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [(4, 33), (12, 97)]
+        );
+    }
+
+    #[test]
     fn qualified_owner_cache_adds_descriptor_backed_audio_and_goat_tmap_states() {
         let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let mut refs = Vec::new();
@@ -4435,12 +5185,12 @@ mod tests {
             .expect("qualified Castle BUILD footprint");
         assert_eq!((castle.index, castle.width, castle.height), (1, 8, 8));
         assert_eq!(castle.cells().len(), 64);
-        assert_eq!(refs.len(), 32);
+        assert_eq!(refs.len(), 33);
         assert_eq!(
             sound.keys().copied().collect::<Vec<_>>(),
             [
-                1, 2, 3, 4, 5, 8, 9, 10, 12, 15, 16, 18, 19, 27, 29, 30, 31, 33, 34, 37, 39, 40,
-                41, 43, 44, 46, 54, 55, 56, 57, 63
+                1, 2, 3, 4, 5, 8, 9, 10, 12, 14, 15, 16, 18, 19, 27, 29, 30, 31, 33, 34, 37, 39,
+                40, 41, 43, 44, 46, 54, 55, 56, 57, 63
             ]
         );
         assert_eq!(sound[&12], 8);
@@ -4448,9 +5198,9 @@ mod tests {
             refs[8].asset_id,
             "owner_cache:audio/sound-bank-1-822.json#sound_id=12"
         );
-        assert_eq!(music, Some(31));
+        assert_eq!(music, Some(32));
         assert_eq!(
-            refs[31].content_address,
+            refs[32].content_address,
             "sha256:03b3f951048504d8a6d30611d6c44a62ec1c463726b30c33c16e3cb69824605d"
         );
         let goat_tmaps = goat_tmaps.expect("qualified Goat TMAP bank");
@@ -4573,7 +5323,7 @@ mod tests {
                 .iter()
                 .filter(|entity| entity.authority == EntityAuthority::FrozenObserved)
                 .count(),
-            142
+            114
         );
         assert_eq!(
             world
@@ -4582,6 +5332,14 @@ mod tests {
                 .filter(|entity| entity.authority == EntityAuthority::GoatLive)
                 .count(),
             LEVEL_ONE_GOAT_INDICES.len()
+        );
+        assert_eq!(
+            world
+                .entities
+                .iter()
+                .filter(|entity| entity.authority == EntityAuthority::VillagerLive)
+                .count(),
+            LEVEL_ONE_VILLAGER_INDICES.len()
         );
         assert_eq!(
             world
@@ -4727,6 +5485,49 @@ mod tests {
             !session
                 .mission
                 .imported_source_slot_is_live(goat.entity_index)
+        );
+    }
+
+    #[test]
+    fn dolmen_contact_selects_high_recharge_on_the_following_player_action() {
+        let (package, closure) = fixture_paths();
+        let world = NativeWorld::load(package, closure).expect("validated package M");
+        let dolmen = world
+            .entities()
+            .iter()
+            .find(|entity| {
+                entity.active && entity.class == 2 && entity.model == 2 && entity.action == 6
+            })
+            .expect("Level 1 dolmen");
+        let mut session = world.session();
+        session.state.position = dolmen.position;
+        session.state.actual_speed = 0;
+        session.state.target_speed = 0;
+        session.mission.player_mana = 0;
+        session.mission.player_max_mana = 10_000;
+
+        session.step(PlayerCommand::default());
+        assert_eq!(
+            session.mission.player_mana,
+            crate::level1_mission::PLAYER_OUTDOOR_MANA_REGEN,
+            "the dolmen status bit changes the next regen value after this tick's regen"
+        );
+
+        session.state.position.x = session.state.position.x.wrapping_add(4_096);
+        session.step(PlayerCommand::default());
+        assert_eq!(
+            session.mission.player_mana,
+            crate::level1_mission::PLAYER_OUTDOOR_MANA_REGEN
+                + crate::level1_mission::PLAYER_RECHARGE_MINIMUM_MANA_REGEN,
+            "the latched high recharge value is consumed once after leaving"
+        );
+
+        session.step(PlayerCommand::default());
+        assert_eq!(
+            session.mission.player_mana,
+            crate::level1_mission::PLAYER_OUTDOOR_MANA_REGEN * 2
+                + crate::level1_mission::PLAYER_RECHARGE_MINIMUM_MANA_REGEN,
+            "the following out-of-range tick returns to outdoor recharge"
         );
     }
 

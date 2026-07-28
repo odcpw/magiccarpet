@@ -14,7 +14,7 @@ The cache contains:
   Unity mappings;
 - the full `TABLESN` and `CLRN-0` payloads, including the qualified 256×256
   static shade lookup `TABLESN[(brightness << 8) | source index]`;
-- all 163 Level 1 scene/live-mission `TMAPS1-0` records: 152 exact decoded
+- all 172 Level 1 scene/live-mission `TMAPS1-0` records: 161 exact decoded
   streams and 11 source-verified one-byte `b'0'` placeholders;
 - the exact four mutable indexed states for Goat selectors 152, 153, and 154,
   decoded through the qualified type-7 SS2 subset and checked against the
@@ -25,9 +25,10 @@ The cache contains:
   rows into 17 groups, locks the `83 drawable / 47 suppressed / 47 off-chain`
   reset disposition, and separates the 64 stable qualified actors from 19
   frozen transient rows that diverge before first presentation;
-- twenty-nine source-selected HSPRN bitmaps, including the objective,
-  minimap-entity, Castle, Speed, spell, and panel selectors, with their exact
-  Night dimensions and the current 640×480 reference layout;
+- eighty source-selected HSPRN bitmaps, including the objective,
+  minimap-entity, Castle, Speed, spell, panel, and complete 2×13 bottom spell
+  menu and three-tier submenu selectors, with their exact Night dimensions and the current 640×480
+  reference layout;
 - MSPRN index 9, included only because the closure proves it as a dynamic
   spell-menu dependency;
 - all 273 `FONT1` visibility masks in one offset-addressed blob;
@@ -65,11 +66,14 @@ or exact RGB8 `(252,36,36)`. The historical remc2 pointer name contains
 Level 1 screenshot confirms the resulting color. MSPRN records use base PALN.
 The native ABI v2 exposes the complete effective 768-byte Level 1 palette,
 atomically bound to generation and tick. The Rust simulation owns the
-source-ordered hit-red, Speed, objective-white, exit-entry, fade-back, and
-black-fade RGB6 transitions; Unity applies the returned palette uniformly to
+source-ordered hit-red, slowing/impairment, objective-white, exit-entry,
+fade-back, and black-fade RGB6 transitions; Unity applies the returned palette uniformly to
 the indexed world, sprites, HUD, minimap, and objective graphics. Ordinary
 single-player death does not enter the multiplayer/banishment monochrome
 path, so no unsupported grayscale effect is invented for this slice.
+Speed Up changes the source countdown speed and emits its model-2 no-draw
+trail; it does not request a palette tint. Exact high-speed whole-frame blur
+remains explicit presentation work.
 
 The HUD authority contract is deliberately mixed:
 

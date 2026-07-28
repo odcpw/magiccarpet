@@ -52,7 +52,7 @@ GOAT_TMAP_GOLDEN = (
 )
 
 SCHEMA = "mc2-owner-unity-asset-cache/v1"
-GENERATOR_VERSION = "1.10.0"
+GENERATOR_VERSION = "1.13.0"
 EXPECTED_PACKAGE = "730d2fa084265df839f3f2b55ed766ac167a8b152ca4631b5ded9d0bb9104ac8"
 EXPECTED_CLOSURE = "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719"
 EXPECTED_GOAT_TMAP_GOLDEN = (
@@ -72,7 +72,12 @@ FRAME_HSPRN = RESET_FRAME_HSPRN + (
     44, 45, 46, 47, 48, 49, 50,
     51, 52, 53, 55,
     58, 66, 83, 84,
+    88, 89, 90, 91,
+    *range(97, 123),
     125, 126,
+    149, 150,
+    *range(161, 168),
+    *range(179, 191),
 )
 DYNAMIC_HSPRN = (9,)
 FRAME_TMAPS = (40, 41, 54, 63)
@@ -151,6 +156,11 @@ YAW_LOOKUP_D4750_28 = (0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 0, 0)
 # Exact selectors reached by the live Level 1 mission kernel after the frozen
 # reset capture, including mode-19 Archer-arrow facings 105..109.
 LEVEL1_LIVE_MISSION_TMAPS = (
+    75,
+    78,
+    87,
+    178,
+    179,
     30,
     31,
     32,
@@ -172,6 +182,14 @@ LEVEL1_LIVE_MISSION_TMAPS = (
     93,
     94,
     95,
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
     105,
     106,
     107,
@@ -206,14 +224,15 @@ LEVEL1_MINIMAP_LOGICAL_SIDE = 128
 LEVEL1_MINIMAP_SOURCE_SCALE = 256
 HUD_SOURCE_SCALE = 1
 LEVEL1_SOUND_IDS = (
-    1, 2, 3, 4, 5, 8, 9, 10, 12, 15, 16, 18, 19, 27, 29, 30, 31, 33, 34,
+    1, 2, 3, 4, 5, 8, 9, 10, 12, 14, 15, 16, 18, 19, 27, 29, 30, 31, 33, 34,
     37, 39, 40, 41, 43, 44, 46, 54, 55, 56, 57, 63,
 )
 LEVEL1_MATERIALIZED_SOUND_IDS = (
-    1, 2, 3, 4, 5, 8, 9, 10, 15, 16, 18, 19, 27, 29, 30, 31, 33, 34, 37,
+    1, 2, 3, 4, 5, 8, 9, 10, 14, 15, 16, 18, 19, 27, 29, 30, 31, 33, 34, 37,
     39, 40, 41, 43, 44, 46, 54, 55, 56, 57, 63,
 )
 CASTLE_STAGE_ONE_BUILD_INDEX = 1
+LEVEL1_HOUSE_BUILD_INDICES = (17, 26, 29, 30, 31, 34, 42, 47, 50, 51, 52, 53)
 CASTLE_STAGE_ONE_BUILD_RAW_WIDTH = 8
 CASTLE_STAGE_ONE_BUILD_RAW_HEIGHT = 8
 CASTLE_STAGE_ONE_BUILD_PAYLOAD_SHA256 = (
@@ -2365,6 +2384,17 @@ def build_cache(
     if len(castle_build_assets) != 1:
         raise CacheError("qualified dynamic Castle BUILD footprint is missing")
     castle_build_closure = castle_build_assets[0]
+    house_build_closures = {
+        int(row["asset_id"].rsplit("-", 1)[1]): row
+        for row in closure["sets"]["scene_reachable"]["assets"]
+        if row["asset_id"].startswith(
+            "owner_data:DATA/BUILD0-0.DAT#footprint-"
+        )
+    }
+    if set(house_build_closures) != set(LEVEL1_HOUSE_BUILD_INDICES):
+        raise CacheError(
+            "qualified Level 1 house BUILD footprint closure changed"
+        )
 
     frame_tmaps = {
         int(asset_id.rsplit("#", 1)[1])
@@ -2382,7 +2412,7 @@ def build_cache(
     if not frame_tmaps <= scene_tmaps or len(scene_tmaps) != 129:
         raise CacheError("qualified Level 1 scene TMAP closure changed")
     scene_tmaps.update(LEVEL1_LIVE_MISSION_TMAPS)
-    if len(scene_tmaps) != 163:
+    if len(scene_tmaps) != 172:
         raise CacheError("live Level 1 mission TMAP extension changed")
 
     stage = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
@@ -2549,6 +2579,85 @@ def build_cache(
                 "owner_data:DATA/BLDGPRM.DAT",
             ],
         )
+        house_build_blob = bytearray()
+        house_build_rows = []
+        for house_build_index in LEVEL1_HOUSE_BUILD_INDICES:
+            if house_build_index + 1 >= len(build_records):
+                raise CacheError(
+                    f"qualified house BUILD index {house_build_index} "
+                    "has no following offset"
+                )
+            house_offset, house_width, house_height = build_records[
+                house_build_index
+            ]
+            house_end = build_records[house_build_index + 1][0]
+            house_cells = build_dat[house_offset:house_end]
+            closure_row = house_build_closures[house_build_index]
+            house_hash = sha256_bytes(house_cells)
+            if (
+                len(house_cells) != house_width * house_height * 2
+                or closure_row["width"] != house_width
+                or closure_row["height"] != house_height
+                or closure_row["span"]
+                != {"offset": house_offset, "length": len(house_cells)}
+                or closure_row["content_address"] != f"sha256:{house_hash}"
+            ):
+                raise CacheError(
+                    f"qualified house BUILD index {house_build_index} changed"
+                )
+            blob_offset = len(house_build_blob)
+            house_build_blob.extend(house_cells)
+            house_build_rows.append(
+                {
+                    "build_index": house_build_index,
+                    "width": house_width,
+                    "height": house_height,
+                    "blob_offset": blob_offset,
+                    "bytes": len(house_cells),
+                    "sha256": house_hash,
+                    "source_asset_id":
+                        f"owner_data:DATA/BUILD0-0.DAT#footprint-{house_build_index}",
+                }
+            )
+        house_build_cells_output = write_output(
+            stage,
+            outputs,
+            "build/level1-house-footprints.cells.u8",
+            bytes(house_build_blob),
+            kind="owner_Level1_house_BUILD_terrain_footprints_u8x2",
+            source_asset_ids=[
+                row["source_asset_id"] for row in house_build_rows
+            ],
+            extra={
+                "build_indices": list(LEVEL1_HOUSE_BUILD_INDICES),
+                "cell_stride_bytes": 2,
+                "vga_resolution_selector": vga_selector,
+            },
+        )
+        house_build_descriptor = {
+            "schema": "mc2-level1-house-build-footprints/v1",
+            "vga_resolution_selector": vga_selector,
+            "consumer_dimensions":
+                "raw TAB dimensions; CreateIndexes doubles and action 53 halves at selector 1",
+            "cells": {
+                "path": house_build_cells_output["path"],
+                "sha256": house_build_cells_output["sha256"],
+                "bytes": house_build_cells_output["bytes"],
+                "stride_bytes": 2,
+                "row_order": "source_BUILD_consumer_order",
+            },
+            "footprints": house_build_rows,
+        }
+        house_build_descriptor_output = write_output(
+            stage,
+            outputs,
+            "build/level1-house-footprints.json",
+            canonical_json(house_build_descriptor),
+            kind="canonical_json_Level1_house_BUILD_footprints",
+            source_asset_ids=[
+                row["source_asset_id"] for row in house_build_rows
+            ],
+        )
         sound_container = source_bytes["SOUND/SOUND.DAT"]
         music_container = source_bytes["SOUND/MUSIC.DAT"]
         if (
@@ -2610,6 +2719,7 @@ def build_cache(
             9: ("fireball", "one_shot", 127, "original_stereo_positional"),
             10: ("quake4", "one_shot", 127, "original_stereo_positional"),
             12: ("null", "explicit_null", 0, "explicit_null"),
+            14: ("select", "one_shot", 127, "local_feedback"),
             15: ("firebal2", "one_shot", 127, "original_stereo_positional"),
             16: ("die", "one_shot", 127, "original_stereo_positional"),
             18: ("getspell", "one_shot", 127, "original_stereo_positional"),
@@ -2705,6 +2815,7 @@ def build_cache(
             9: "FIREBAL1.WAV",
             10: "QUAKE4.WAV",
             12: "NULL.WAV",
+            14: "SELECT.WAV",
             15: "FIREBAL2.WAV",
             16: "DIE.WAV",
             18: "GETSPELL.WAV",
@@ -3866,11 +3977,15 @@ def build_cache(
         hud_bitmap_selectors = (
             1, 2, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
             51, 52, 53, 54, 55, 58, 66, 83, 84, 123, 124, 125, 126,
+            88, 89, 90, 91,
+            *range(97, 123),
+            149, 150, 161, 162, 163, 164, 165, 166, 167,
             171, 172, 173,
+            *range(179, 191),
         )
         sprite_by_index = {row["index"]: row for row in sprite_rows}
         hud_bitmap_assets = []
-        for selector in hud_bitmap_selectors:
+        for selector in sorted(hud_bitmap_selectors):
             row = sprite_by_index[selector]
             hud_bitmap_assets.append({
                 "selector": selector,
@@ -3988,6 +4103,30 @@ def build_cache(
                 "live_icon_selectors": [123, 124, 125, 126],
                 "live_selector_authority":
                     "MissionStateLive; Fireball, Possession, Castle, Speed",
+                "menu": {
+                    "source_function": "DrawBottomSpellsMenu_2ECC0@0x20fcc0",
+                    "rows": 2,
+                    "columns": 13,
+                    "reference_y": 408,
+                    "edge_selector": 88,
+                    "panel_selector": 89,
+                    "selection_frame_selector": 90,
+                    "disabled_panel_selector": 91,
+                    "small_icon_base_selector": 97,
+                    "left_assignment_corner_selector": 149,
+                    "right_assignment_corner_selector": 150,
+                    "tier_panel_selector": 161,
+                    "tier_dark_panel_selector": 162,
+                    "tier_locked_panel_selector": 163,
+                    "tier_selection_frame_selector": 164,
+                    "tier_number_base_selector": 165,
+                    "tier_icon_base_selector": 179,
+                    "tier_count": 3,
+                    "panel_width": 48,
+                    "panel_height": 36,
+                    "edge_width": 8,
+                    "authority": "SourceMappedLive",
+                },
                 "tier_rows": spell_tier_rows,
                 "glow_tier_charge": {
                     "authority": "MissionStateLiveSourceMapped",
@@ -4310,6 +4449,13 @@ def build_cache(
                     "effective_height": effective_height,
                     "status":
                         "exact_owner_BUILD_index_1_with_loader_and_consumer_scaling",
+                },
+                "level1_house_footprints": {
+                    "path": house_build_descriptor_output["path"],
+                    "cells_path": house_build_cells_output["path"],
+                    "build_indices": list(LEVEL1_HOUSE_BUILD_INDICES),
+                    "status":
+                        "exact_owner_Level1_house_BUILD_rows_for_action_53",
                 },
                 "level1_hud": {
                     "path": hud_output["path"],
