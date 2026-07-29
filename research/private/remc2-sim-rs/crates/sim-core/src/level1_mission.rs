@@ -6,8 +6,9 @@
 //! complete remc2 entity dispatcher.
 
 use crate::{
-    FlightContext, FlightProfile, FlightState, FlightWorld, MovementResolution, Position,
-    SIN_16_16, SpellActivationHolder, SpellHolder, Tile, angle_distance, heading_for_positions,
+    FlightContext, FlightEvent, FlightProfile, FlightState, FlightWorld, MovementResolution,
+    Position, SIN_16_16, SpellActivationHolder, SpellFireSource, SpellHolder, Tile, angle_distance,
+    heading_for_positions,
     house::{
         HOUSE_CLASS, HOUSE_MODEL, HOUSE_TERRAIN_TO_LIVE_ACTION, HouseParameter, HouseState,
         HouseStepEvent,
@@ -1624,6 +1625,13 @@ pub const CASTLE_PROJECTILE_LOGICAL_HEIGHT: u16 = 150;
 pub const CASTLE_PROJECTILE_TARGET_DISTANCE: i16 = 4_096;
 pub const CASTLE_PROJECTILE_TURN_LIMIT: i16 = 22;
 pub const CASTLE_PROJECTILE_SOUND: u16 = 15;
+pub const CASTLE_PROJECTILE_HAND_OFFSET: i16 = 256;
+pub const CASTLE_PROJECTILE_LAUNCH_HEIGHT: i16 = 100;
+pub const CASTLE_ASSOCIATION_CLASS: u8 = 10;
+pub const CASTLE_ASSOCIATION_MODEL: u8 = 43;
+pub const CASTLE_ASSOCIATION_ACTION: u8 = 45;
+pub const CASTLE_ASSOCIATION_LIFE: i16 = 8;
+pub const CASTLE_ASSOCIATION_COLLISION_TIMER: i16 = 10;
 pub const CASTLE_ROOT_CLASS: u8 = 3;
 pub const CASTLE_ROOT_MODEL: u8 = 2;
 pub const CASTLE_ROOT_ACTION: u8 = 5;
@@ -2584,6 +2592,7 @@ enum SourceOccupant {
     CastleConstruction(u32),
     CastleDefense(u32),
     CastleDefenseShot(u32),
+    CastleAssociation(u32),
     Possession(u32),
     PossessionImpact(u32),
     FireballImpact(u32),
@@ -2636,6 +2645,11 @@ impl SourceOccupant {
             // The generic source record remains class two; the exact family
             // and subspell live in `CastleDefenseShot`.
             Self::CastleDefenseShot(_) => Some((2, 0, 0)),
+            Self::CastleAssociation(_) => Some((
+                CASTLE_ASSOCIATION_CLASS,
+                CASTLE_ASSOCIATION_MODEL,
+                CASTLE_ASSOCIATION_ACTION,
+            )),
             Self::Possession(_) => Some((
                 POSSESSION_PROJECTILE_CLASS,
                 POSSESSION_PROJECTILE_MODEL,
@@ -3191,6 +3205,12 @@ pub struct FireflyFireballProjectile {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CastleCastHand {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CastleBuildProjectile {
     pub id: u32,
     /// Authoritative remc2 entity-arena slot. `id` remains presentation-only.
@@ -3202,9 +3222,27 @@ pub struct CastleBuildProjectile {
     pub pitch: i16,
     pub speed: i16,
     pub life_ticks: i16,
+    /// Source `word_0x96`: zero for a new Castle site, otherwise the live
+    /// Castle entity that receives the transient 10/43/45 association.
+    pub association_target_entity_index: u16,
     /// Source `struct_byte_0xc_12_15 & 2`: the initial placement check runs
     /// exactly once before the first movement tick.
     pub placement_checked: bool,
+    pub active: bool,
+}
+
+/// Real class-10/model-43/action-45 row created when a Castle projectile
+/// reaches an already-built Castle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CastleAssociationEffect {
+    pub id: u32,
+    pub source_entity_index: u16,
+    pub owner_entity_index: u16,
+    pub castle_entity_index: u16,
+    pub position: Position,
+    pub life: i16,
+    pub first_run: bool,
+    pub collision_timer: i16,
     pub active: bool,
 }
 
@@ -4265,6 +4303,7 @@ impl Level1MissionTemplate {
             castle_pending_attacker: 0,
             castle_killer_entity_index: 0,
             castle_owner_hit_feedback: 0,
+            pending_castle_cast_hand: None,
             secured_mana_component: 0,
             global_mana_denominator: self.global_mana_denominator,
             initial_castle_blockers: self.initial_castle_blockers.to_vec(),
@@ -4283,6 +4322,7 @@ impl Level1MissionTemplate {
             external_collision_targets: Vec::new(),
             authored_allocations,
             projectiles: Vec::new(),
+            castle_associations: Vec::new(),
             impacts: Vec::new(),
             mana_spheres: Vec::new(),
             temporary_mana_sphere_life: BTreeMap::new(),
@@ -4450,6 +4490,7 @@ pub struct Level1MissionState {
     castle_pending_attacker: u16,
     castle_killer_entity_index: u16,
     castle_owner_hit_feedback: u8,
+    pending_castle_cast_hand: Option<CastleCastHand>,
     pub secured_mana_component: i32,
     pub global_mana_denominator: i32,
     initial_castle_blockers: Vec<Level1CastlePlacementBlocker>,
@@ -4469,6 +4510,7 @@ pub struct Level1MissionState {
     external_collision_targets: Vec<Level1CollisionTarget>,
     authored_allocations: Vec<AuthoredAllocation>,
     projectiles: Vec<Level1Projectile>,
+    castle_associations: Vec<CastleAssociationEffect>,
     impacts: Vec<FireballImpact>,
     mana_spheres: Vec<ManaSphere>,
     /// Source `struct_byte_0xc.byte[1] & 0x20` plus `life_0x8` for the
@@ -5102,6 +5144,23 @@ impl Level1MissionState {
                 view.owner_entity_index = shot.owner_entity_index;
                 view.target_entity_index = shot.target_entity_index;
             }
+            SourceOccupant::CastleAssociation(id) => {
+                let association = self
+                    .castle_associations
+                    .iter()
+                    .copied()
+                    .find(|association| {
+                        association.id == id
+                            && association.source_entity_index == source_entity_index
+                    })?;
+                view.authority = Level1SourceEntityAuthority::AuthoredAmbient;
+                view.active = association.active;
+                view.visible = association.active;
+                view.position = association.position;
+                view.life = i32::from(association.life);
+                view.owner_entity_index = association.owner_entity_index;
+                view.target_entity_index = association.castle_entity_index;
+            }
             _ => unreachable!("castle view helper called for non-castle occupant"),
         }
         Some(view)
@@ -5185,7 +5244,8 @@ impl Level1MissionState {
             SourceOccupant::CastleRoot(_)
             | SourceOccupant::CastleConstruction(_)
             | SourceOccupant::CastleDefense(_)
-            | SourceOccupant::CastleDefenseShot(_) => {
+            | SourceOccupant::CastleDefenseShot(_)
+            | SourceOccupant::CastleAssociation(_) => {
                 self.current_castle_source_entity_view(source_entity_index, occupant, view)
             }
             SourceOccupant::MultipartSegment(_) => {
@@ -6086,6 +6146,11 @@ impl Level1MissionState {
     }
 
     #[must_use]
+    pub fn castle_associations(&self) -> &[CastleAssociationEffect] {
+        &self.castle_associations
+    }
+
+    #[must_use]
     pub fn impacts(&self) -> &[FireballImpact] {
         &self.impacts
     }
@@ -6591,6 +6656,33 @@ impl Level1MissionState {
                 hash.u32(life.cast_unsigned());
             }
         }
+        if let Some(hand) = self.pending_castle_cast_hand {
+            hash.bytes(b"pending-castle-cast-hand\0");
+            hash.u8(match hand {
+                CastleCastHand::Left => 1,
+                CastleCastHand::Right => 2,
+            });
+        }
+        if !self.castle_associations.is_empty() {
+            hash.bytes(b"castle-associations\0");
+            hash.u32(
+                u32::try_from(self.castle_associations.len())
+                    .expect("Castle association count fits u32"),
+            );
+            for association in &self.castle_associations {
+                hash.u32(association.id);
+                hash.u16(association.source_entity_index);
+                hash.u16(association.owner_entity_index);
+                hash.u16(association.castle_entity_index);
+                hash.u16(association.position.x);
+                hash.u16(association.position.y);
+                hash.u16(association.position.z.cast_unsigned());
+                hash.u16(association.life.cast_unsigned());
+                hash.u8(u8::from(association.first_run));
+                hash.u16(association.collision_timer.cast_unsigned());
+                hash.u8(u8::from(association.active));
+            }
+        }
         hash.u32(self.global_rng);
         hash.u32(self.next_effect_id);
         hash.bytes(&self.model_phase_counters);
@@ -6935,7 +7027,7 @@ impl Level1MissionState {
         player: &FlightState,
         combined_yaw: i16,
     ) -> bool {
-        self.cast_initial_castle_inner(world, player, combined_yaw, false)
+        self.cast_initial_castle_inner(world, player, combined_yaw, CastleCastHand::Left, false)
     }
 
     fn cast_accepted_initial_castle<W: FlightWorld>(
@@ -6944,7 +7036,11 @@ impl Level1MissionState {
         player: &FlightState,
         combined_yaw: i16,
     ) -> bool {
-        self.cast_initial_castle_inner(world, player, combined_yaw, true)
+        let hand = self
+            .pending_castle_cast_hand
+            .take()
+            .unwrap_or(CastleCastHand::Left);
+        self.cast_initial_castle_inner(world, player, combined_yaw, hand, true)
     }
 
     fn cast_initial_castle_inner<W: FlightWorld>(
@@ -6952,12 +7048,12 @@ impl Level1MissionState {
         world: &W,
         player: &FlightState,
         combined_yaw: i16,
+        hand: CastleCastHand,
         accepted_this_turn: bool,
     ) -> bool {
         let holder_active = self.castle_holder_active_value();
         if self.player_dead
             || !self.has_castle_spell
-            || self.castle_exists
             || self.player_mana < CASTLE_INITIAL_MANA_COST
             || holder_active > 0
                 && !(accepted_this_turn && holder_active == CASTLE_HOLDER_ACTIVATION_TICKS)
@@ -6983,18 +7079,39 @@ impl Level1MissionState {
         self.player_mana -= CASTLE_INITIAL_MANA_COST;
         self.actors[holder_index].state_value = i32::from(CASTLE_HOLDER_ACTIVATION_TICKS);
         let mut position = player.position;
-        // `sub_68E50`'s exact hand-specific launch offset remains an explicit
-        // presentation seam. The gameplay target and projectile update are
-        // source-mapped; using the caster origin avoids inventing an offset.
-        position.z = position.z.wrapping_add(100);
-        let mut target = player.position;
-        move_entity(
-            &mut target,
-            combined_yaw & 0x07ff,
-            0,
-            CASTLE_PROJECTILE_TARGET_DISTANCE,
-        );
-        target.z = world.ground_height(target);
+        let side_yaw = match hand {
+            CastleCastHand::Left => combined_yaw.wrapping_sub(512),
+            CastleCastHand::Right => combined_yaw.wrapping_add(512),
+        } & 0x07ff;
+        move_entity(&mut position, side_yaw, 0, CASTLE_PROJECTILE_HAND_OFFSET);
+        // `sub_68E50` probes the hand offset at the caster's original height.
+        // Only after an obstructed side reverts to the caster origin does the
+        // Castle projectile receive its +100 launch height.
+        if world.ground_height(position) > position.z {
+            position = player.position;
+        }
+        position.z = position.z.wrapping_add(CASTLE_PROJECTILE_LAUNCH_HEIGHT);
+        let association_target_entity_index = if self.castle_exists {
+            self.castle_source_entity_index
+        } else {
+            0
+        };
+        let mut target = if association_target_entity_index == 0 {
+            let mut target = player.position;
+            move_entity(
+                &mut target,
+                combined_yaw & 0x07ff,
+                0,
+                CASTLE_PROJECTILE_TARGET_DISTANCE,
+            );
+            target.z = world.ground_height(target);
+            target
+        } else {
+            self.castle_position
+        };
+        if association_target_entity_index != 0 {
+            target.z = self.castle_position.z;
+        }
         let horizontal = legacy_sqrt(squared_wrapping_xy_distance(position, target));
         let yaw =
             i16::try_from(heading_for_positions(position, target)).expect("11-bit Castle heading");
@@ -7013,7 +7130,8 @@ impl Level1MissionState {
                 pitch,
                 speed: CASTLE_PROJECTILE_SPEED,
                 life_ticks: CASTLE_PROJECTILE_LIFETIME_TICKS,
-                placement_checked: false,
+                association_target_entity_index,
+                placement_checked: association_target_entity_index != 0,
                 active: true,
             }));
         self.events
@@ -7061,6 +7179,30 @@ impl Level1MissionState {
         let Some(fire) = context.spell_fire.as_ref() else {
             return;
         };
+        if fire.accepted_models.contains(&CASTLE_SPELL_FAMILY)
+            && let Some(castle_holder) = self
+                .actors
+                .iter()
+                .find(|actor| is_collected_castle_holder(actor))
+            && let Some(holder) = fire
+                .holders
+                .iter()
+                .find(|holder| holder.entity_index == castle_holder.source_entity_index)
+            && i32::from(holder.active_value) != castle_holder.state_value
+            && let Some(source) = context.events.iter().find_map(|event| match event {
+                FlightEvent::RequestSpellActivation {
+                    source,
+                    holder_entity_index,
+                    ..
+                } if *holder_entity_index == castle_holder.source_entity_index => Some(*source),
+                _ => None,
+            })
+        {
+            self.pending_castle_cast_hand = Some(match source {
+                SpellFireSource::Right => CastleCastHand::Right,
+                SpellFireSource::Left | SpellFireSource::Selected => CastleCastHand::Left,
+            });
+        }
         for actor in self.actors.iter_mut().filter(|actor| actor.collected) {
             if let Some(holder) = fire
                 .holders
@@ -7759,6 +7901,10 @@ impl Level1MissionState {
                 true
             }
             Some(SourceOccupant::CastleDefenseShot(_)) => true,
+            Some(SourceOccupant::CastleAssociation(_)) => {
+                self.step_castle_association_slot(source_slot);
+                true
+            }
             Some(SourceOccupant::Resident { .. }) => {
                 source_effects = self.step_dynamic_resident_slot(
                     world,
@@ -11744,6 +11890,7 @@ impl Level1MissionState {
             .unwrap_or_default();
         let source_map_chains = &self.source_map_chains;
         let impacts = &mut self.impacts;
+        let castle_associations = &mut self.castle_associations;
         let mana_spheres = &mut self.mana_spheres;
         let events = &mut self.events;
         let source_pool = &mut self.source_pool;
@@ -11756,6 +11903,7 @@ impl Level1MissionState {
         let mut castle_root_request = None;
         let mut possession_impact_request = None;
         let mut castle_rejected = false;
+        let mut castle_holder_reset = false;
         for projectile in &mut self.projectiles {
             if projectile.source_entity_index() != source_slot {
                 continue;
@@ -12075,6 +12223,97 @@ impl Level1MissionState {
                     if !projectile.active {
                         continue;
                     }
+                    if projectile.association_target_entity_index != 0 {
+                        if !self.castle_exists
+                            || projectile.association_target_entity_index
+                                != self.castle_source_entity_index
+                        {
+                            castle_holder_reset = true;
+                            continue;
+                        }
+                        projectile.target = self.castle_position;
+                        let horizontal = legacy_sqrt(squared_wrapping_xy_distance(
+                            projectile.position,
+                            projectile.target,
+                        ));
+                        let reached_castle =
+                            horizontal <= u32::from(projectile.speed.cast_unsigned());
+                        if reached_castle {
+                            projectile.position = projectile.target;
+                        } else {
+                            let desired_yaw = i16::try_from(heading_for_positions(
+                                projectile.position,
+                                projectile.target,
+                            ))
+                            .expect("11-bit Castle heading");
+                            let desired_pitch = pitch_for_delta(
+                                i32::try_from(horizontal).expect("Castle target distance fits i32"),
+                                i32::from(projectile.target.z.wrapping_sub(projectile.position.z)),
+                            );
+                            projectile.yaw = projectile.yaw.wrapping_add(turn_toward(
+                                projectile.yaw,
+                                desired_yaw,
+                                CASTLE_PROJECTILE_TURN_LIMIT,
+                            )) & 0x07ff;
+                            projectile.pitch = projectile.pitch.wrapping_add(turn_toward(
+                                projectile.pitch,
+                                desired_pitch,
+                                CASTLE_PROJECTILE_TURN_LIMIT,
+                            )) & 0x07ff;
+                            projectile.speed =
+                                approach_i16_by(projectile.speed, CASTLE_PROJECTILE_SPEED, 2);
+                            move_entity(
+                                &mut projectile.position,
+                                projectile.yaw,
+                                projectile.pitch,
+                                projectile.speed,
+                            );
+                        }
+                        let collided = reached_castle
+                            || legacy_sqrt(squared_wrapping_xy_distance(
+                                projectile.position,
+                                projectile.target,
+                            )) <= u32::from(projectile.speed.cast_unsigned());
+                        if !collided {
+                            projectile.life_ticks = projectile.life_ticks.wrapping_sub(1);
+                            if projectile.life_ticks < 0 {
+                                castle_holder_reset = true;
+                            }
+                            continue;
+                        }
+                        projectile.position = projectile.target;
+                        let association_id = next_effect_id;
+                        if let Some(association_slot) =
+                            source_pool.allocate(SourceOccupant::CastleAssociation(association_id))
+                        {
+                            let occupant = SourceOccupant::CastleAssociation(association_id);
+                            bind_dynamic_source_record(
+                                source_slots,
+                                association_slot,
+                                occupant,
+                                self.global_rng,
+                            );
+                            next_effect_id = next_effect_id.wrapping_add(1).max(1);
+                            castle_associations.push(CastleAssociationEffect {
+                                id: association_id,
+                                source_entity_index: association_slot,
+                                owner_entity_index: projectile.owner_entity_index,
+                                castle_entity_index: projectile.association_target_entity_index,
+                                position: projectile.position,
+                                life: CASTLE_ASSOCIATION_LIFE,
+                                first_run: false,
+                                collision_timer: 0,
+                                active: true,
+                            });
+                            projectile.active = false;
+                        } else {
+                            // `CastCastleProjectile_66B30` calls
+                            // `sub_5F890(caster, 0)` but leaves the class-9
+                            // projectile live so its 10/43 allocation retries.
+                            castle_holder_reset = true;
+                        }
+                        continue;
+                    }
                     if !projectile.placement_checked {
                         projectile.placement_checked = true;
                         let placement_rejection = castle_placement_rejection(
@@ -12083,7 +12322,7 @@ impl Level1MissionState {
                             &self.initial_castle_blockers,
                             &self.initial_building_blockers,
                         );
-                        if self.castle_exists || placement_rejection.is_some() {
+                        if placement_rejection.is_some() {
                             projectile.active = false;
                             castle_rejected = true;
                             events.push(Level1MissionEvent::CastlePlacementRejected {
@@ -12131,13 +12370,12 @@ impl Level1MissionState {
                     let terrain_hit = ground > projectile.position.z;
                     projectile.life_ticks = projectile.life_ticks.wrapping_sub(1);
                     let expired = projectile.life_ticks < 0;
-                    let placement_blocked = self.castle_exists
-                        || !castle_placement_valid(
-                            world,
-                            projectile.position,
-                            &self.initial_castle_blockers,
-                            &self.initial_building_blockers,
-                        );
+                    let placement_blocked = !castle_placement_valid(
+                        world,
+                        projectile.position,
+                        &self.initial_castle_blockers,
+                        &self.initial_building_blockers,
+                    );
                     if !terrain_hit && !expired && !placement_blocked {
                         continue;
                     }
@@ -12153,19 +12391,11 @@ impl Level1MissionState {
                         );
                     }
                     projectile.position.z = world.ground_height(projectile.position);
-                    if self.castle_exists {
-                        projectile.active = false;
-                        castle_rejected = true;
-                        events.push(Level1MissionEvent::CastlePlacementRejected {
-                            projectile_id: projectile.id,
-                        });
-                    } else {
-                        castle_root_request = Some((
-                            projectile.id,
-                            projectile.position,
-                            projectile.owner_entity_index,
-                        ));
-                    }
+                    castle_root_request = Some((
+                        projectile.id,
+                        projectile.position,
+                        projectile.owner_entity_index,
+                    ));
                 }
                 Level1Projectile::Possession(projectile) => {
                     if !projectile.active {
@@ -12354,7 +12584,7 @@ impl Level1MissionState {
                 SOURCE_DISABLED_FLAG;
         }
         self.next_effect_id = next_effect_id;
-        if castle_rejected {
+        if castle_rejected || castle_holder_reset {
             self.set_castle_holder_active_value(0);
         }
         self.award_spell_experience(FIREBALL_SPELL_FAMILY, fireball_experience_awards);
@@ -13430,6 +13660,29 @@ impl Level1MissionState {
             self.source_slots[usize::from(source_slot)].control_flags |= SOURCE_DISABLED_FLAG;
         }
         self.death_bursts.retain(|burst| burst.active);
+    }
+
+    fn step_castle_association_slot(&mut self, source_slot: u16) {
+        let Some(association) = self.castle_associations.iter_mut().find(|association| {
+            association.active && association.source_entity_index == source_slot
+        }) else {
+            return;
+        };
+        association.life = association.life.wrapping_sub(1);
+        association.first_run = true;
+        if self.castle_exists
+            && association.castle_entity_index == self.castle_source_entity_index
+            && association.owner_entity_index == self.castle_owner_entity_index
+        {
+            association.collision_timer = CASTLE_ASSOCIATION_COLLISION_TIMER;
+        }
+        // Class-10 action 45 always calls DisableEntityDrawing04_57F10 after
+        // its one collision-association pass, even when the Castle link is
+        // absent or does not match.
+        association.active = false;
+        self.source_pool
+            .disable_occupant(SourceOccupant::CastleAssociation(association.id));
+        self.source_slots[usize::from(source_slot)].control_flags |= SOURCE_DISABLED_FLAG;
     }
 
     /// Dispatch the class-10/model-2 entity created by `GetScroll_69DB0`.
@@ -17424,6 +17677,7 @@ impl Level1Fnv1a64 {
             Some(SourceOccupant::CastleDefense(id)) => (22, id),
             Some(SourceOccupant::CastleDefenseShot(id)) => (23, id),
             Some(SourceOccupant::SpellPickup { family }) => (24, u32::from(family)),
+            Some(SourceOccupant::CastleAssociation(id)) => (25, id),
         };
         self.u8(kind);
         self.u32(id);
@@ -17606,6 +17860,31 @@ mod tests {
     impl FlightWorld for FlatWorld {
         fn ground_height(&self, _position: Position) -> i16 {
             0
+        }
+
+        fn ceiling_height(&self, _position: Position) -> Option<i16> {
+            None
+        }
+
+        fn material_mask(&self, _position: Position) -> u32 {
+            0
+        }
+
+        fn angle_flags(&self, _tile: crate::Tile) -> u8 {
+            0
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct CastleHandProbeWorld;
+
+    impl FlightWorld for CastleHandProbeWorld {
+        fn ground_height(&self, position: Position) -> i16 {
+            if position.x == 19_744 && position.y == 20_000 {
+                2_001
+            } else {
+                0
+            }
         }
 
         fn ceiling_height(&self, _position: Position) -> Option<i16> {
@@ -26306,10 +26585,7 @@ mod tests {
         )));
     }
 
-    #[test]
-    fn castle_cast_uses_exact_cost_holder_and_projectile_constants() {
-        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
-        let mut mission = template.session(10_000, 999);
+    fn enable_castle_holder(mission: &mut Level1MissionState) -> u16 {
         mission.has_castle_spell = true;
         let holder = mission
             .actors
@@ -26320,7 +26596,11 @@ mod tests {
         holder.collected = true;
         holder.action = 6;
         holder.state_timer = 0;
-        let player = FlightState {
+        holder.source_entity_index
+    }
+
+    fn castle_test_player() -> FlightState {
+        FlightState {
             entity_index: 152,
             position: Position {
                 x: 20_000,
@@ -26329,13 +26609,45 @@ mod tests {
             },
             yaw: 0,
             ..FlightState::default()
-        };
-        assert!(!mission.cast_initial_castle(&FlatWorld, &player, 0));
-        assert_eq!(mission.player_mana, 999);
-        assert!(mission.projectiles().is_empty());
+        }
+    }
 
-        mission.player_mana = 1_000;
-        assert!(mission.cast_initial_castle(&FlatWorld, &player, 0));
+    fn cast_castle_from_hand(
+        template: &Level1MissionTemplate,
+        player: &FlightState,
+        source: SpellFireSource,
+    ) -> CastleBuildProjectile {
+        let mut mission = template.session(10_000, 1_000);
+        let holder_entity_index = enable_castle_holder(&mut mission);
+        let context = FlightContext {
+            spell_fire: Some(crate::SpellFireContext {
+                left_holder_index: holder_entity_index,
+                right_holder_index: holder_entity_index,
+                holders: vec![SpellActivationHolder {
+                    entity_index: holder_entity_index,
+                    model: CASTLE_SPELL_FAMILY,
+                    level_gate: 0,
+                    active_value: CASTLE_HOLDER_ACTIVATION_TICKS,
+                    activation_value: CASTLE_HOLDER_ACTIVATION_TICKS.cast_unsigned(),
+                    mana_cost: CASTLE_INITIAL_MANA_COST,
+                    action_marker: 0,
+                }],
+                accepted_models: vec![CASTLE_SPELL_FAMILY],
+                ..crate::SpellFireContext::default()
+            }),
+            events: vec![FlightEvent::RequestSpellActivation {
+                source,
+                holder_entity_index,
+                direction_mask: if source == SpellFireSource::Right {
+                    512
+                } else {
+                    256
+                },
+            }],
+            ..FlightContext::default()
+        };
+        mission.capture_spell_holder_active_values(&context);
+        assert!(mission.cast_accepted_initial_castle(&FlatWorld, player, 0));
         assert_eq!(mission.player_mana, 0);
         assert_eq!(
             mission.castle_holder_active_value(),
@@ -26344,23 +26656,219 @@ mod tests {
         let Level1Projectile::CastleBuild(projectile) = mission.projectiles()[0] else {
             panic!("Castle cast must create a build projectile");
         };
-        assert_eq!(projectile.owner_entity_index, player.entity_index);
-        assert_eq!(projectile.speed, CASTLE_PROJECTILE_SPEED);
-        assert_eq!(projectile.life_ticks, CASTLE_PROJECTILE_LIFETIME_TICKS);
+        projectile
+    }
+
+    fn assert_castle_hand_launch_contract(
+        template: &Level1MissionTemplate,
+        player: &FlightState,
+    ) -> CastleBuildProjectile {
+        let left = cast_castle_from_hand(template, player, SpellFireSource::Left);
+        let right = cast_castle_from_hand(template, player, SpellFireSource::Right);
         assert_eq!(
-            legacy_sqrt(squared_wrapping_xy_distance(
-                player.position,
-                projectile.target
-            )),
+            left.position,
+            Position {
+                x: 19_744,
+                y: 20_000,
+                z: 2_100,
+            }
+        );
+        assert_eq!(
+            right.position,
+            Position {
+                x: 20_256,
+                y: 20_000,
+                z: 2_100,
+            }
+        );
+        assert_ne!(left.position, right.position);
+        assert_eq!(
+            left.target,
+            Position {
+                x: 20_000,
+                y: 15_904,
+                z: 0,
+            }
+        );
+        assert_eq!(right.target, left.target);
+        assert_eq!(left.owner_entity_index, player.entity_index);
+        assert_eq!(left.speed, CASTLE_PROJECTILE_SPEED);
+        assert_eq!(left.life_ticks, CASTLE_PROJECTILE_LIFETIME_TICKS);
+        assert_eq!(
+            legacy_sqrt(squared_wrapping_xy_distance(player.position, left.target)),
             u32::from(CASTLE_PROJECTILE_TARGET_DISTANCE.cast_unsigned())
         );
-        assert!(mission.events().iter().any(|event| matches!(
-            event,
-            Level1MissionEvent::CastleProjectileSpawned {
-                sound_id: CASTLE_PROJECTILE_SOUND,
-                ..
-            }
-        )));
+
+        let mut obstructed = template.session(10_000, 1_000);
+        enable_castle_holder(&mut obstructed);
+        assert!(obstructed.cast_initial_castle(&CastleHandProbeWorld, player, 0));
+        let Level1Projectile::CastleBuild(obstructed_projectile) = obstructed.projectiles()[0]
+        else {
+            panic!("obstructed Castle cast must create a build projectile");
+        };
+        assert_eq!(
+            obstructed_projectile.position,
+            Position {
+                x: 20_000,
+                y: 20_000,
+                z: 2_100,
+            },
+            "the side terrain probe runs before +100 and reverts the blocked hand offset"
+        );
+        left
+    }
+
+    fn existing_castle_mission(
+        template: &Level1MissionTemplate,
+        player: &FlightState,
+        castle_position: Position,
+        free_stack: &[u16],
+    ) -> Level1MissionState {
+        let mut mission = template.session(10_000, 1_000);
+        enable_castle_holder(&mut mission);
+        mission.source_pool = Level1SourcePool::from_free_stack(free_stack).unwrap();
+        mission.castle_exists = true;
+        mission.castle_source_entity_index = 500;
+        mission.castle_presentation_id = 77;
+        mission.castle_owner_entity_index = player.entity_index;
+        mission.castle_action = CASTLE_ROOT_ACTION;
+        mission.castle_build_state = 1;
+        mission.castle_level = 1;
+        mission.castle_position = castle_position;
+        mission.castle_life = CASTLE_STAGE_ONE_LIFE;
+        mission.castle_max_life = CASTLE_STAGE_ONE_LIFE;
+        mission.source_pool.occupants[500] =
+            Some(SourceOccupant::CastleRoot(mission.castle_presentation_id));
+        bind_dynamic_source_record(
+            &mut mission.source_slots,
+            mission.castle_source_entity_index,
+            SourceOccupant::CastleRoot(mission.castle_presentation_id),
+            mission.global_rng,
+        );
+        mission
+    }
+
+    fn assert_castle_association_scheduling(
+        template: &Level1MissionTemplate,
+        player: &FlightState,
+        castle_position: Position,
+    ) {
+        let mut later_slot =
+            existing_castle_mission(template, player, castle_position, &[900, 200]);
+        later_slot.step_with_spells(&FlatWorld, player, false, false, Some(0));
+        assert_eq!(later_slot.castle_associations().len(), 1);
+        let association = later_slot.castle_associations()[0];
+        assert_eq!(association.source_entity_index, 900);
+        assert_eq!(association.owner_entity_index, player.entity_index);
+        assert_eq!(
+            association.castle_entity_index,
+            later_slot.castle_source_entity_index
+        );
+        assert_eq!(association.position, later_slot.castle_position);
+        assert_eq!(association.life, CASTLE_ASSOCIATION_LIFE - 1);
+        assert!(association.first_run);
+        assert_eq!(
+            association.collision_timer,
+            CASTLE_ASSOCIATION_COLLISION_TIMER
+        );
+        assert!(!association.active);
+        assert_eq!(
+            later_slot
+                .source_pool
+                .occupant(association.source_entity_index),
+            Some(SourceOccupant::CastleAssociation(association.id))
+        );
+        assert_eq!(
+            (
+                later_slot.source_slots[usize::from(association.source_entity_index)].class,
+                later_slot.source_slots[usize::from(association.source_entity_index)].model,
+                later_slot.source_slots[usize::from(association.source_entity_index)].action,
+            ),
+            (
+                CASTLE_ASSOCIATION_CLASS,
+                CASTLE_ASSOCIATION_MODEL,
+                CASTLE_ASSOCIATION_ACTION,
+            ),
+            "the association is a real bounded source row, not a folded Castle mutation"
+        );
+        assert!(
+            later_slot.source_pool.disabled[usize::from(association.source_entity_index)],
+            "a higher association slot dispatches and despawns later in the same source turn"
+        );
+        let association_hash = later_slot.source_arena_hash_v1();
+        let mut changed_association = later_slot.clone();
+        changed_association.castle_associations[0].collision_timer -= 1;
+        assert_ne!(
+            changed_association.source_arena_hash_v1(),
+            association_hash,
+            "future-affecting typed association state participates in the hash"
+        );
+
+        let mut earlier_slot =
+            existing_castle_mission(template, player, castle_position, &[100, 900]);
+        earlier_slot.step_with_spells(&FlatWorld, player, false, false, Some(0));
+        let pending = earlier_slot.castle_associations()[0];
+        assert_eq!(pending.source_entity_index, 100);
+        assert_eq!(pending.life, CASTLE_ASSOCIATION_LIFE);
+        assert!(!pending.first_run);
+        assert_eq!(pending.collision_timer, 0);
+        assert!(pending.active);
+        assert!(
+            !earlier_slot.source_pool.disabled[usize::from(pending.source_entity_index)],
+            "an association allocated behind the ascending cursor waits for the next turn"
+        );
+        earlier_slot.step_with_spells(&FlatWorld, player, false, false, None);
+        let dispatched = earlier_slot.castle_associations()[0];
+        assert_eq!(dispatched.life, CASTLE_ASSOCIATION_LIFE - 1);
+        assert!(dispatched.first_run);
+        assert!(!dispatched.active);
+    }
+
+    fn assert_castle_association_allocation_retry(
+        template: &Level1MissionTemplate,
+        player: &FlightState,
+        castle_position: Position,
+    ) {
+        let mut exhausted = existing_castle_mission(template, player, castle_position, &[200]);
+        exhausted.step_with_spells(&FlatWorld, player, false, false, Some(0));
+        assert!(exhausted.castle_associations().is_empty());
+        assert_eq!(exhausted.castle_holder_active_value(), 0);
+        let Level1Projectile::CastleBuild(retrying) = exhausted.projectiles()[0] else {
+            panic!("existing-Castle cast remains a Castle projectile");
+        };
+        assert!(retrying.active);
+        assert_eq!(
+            retrying.association_target_entity_index,
+            exhausted.castle_source_entity_index
+        );
+        exhausted.source_pool.occupants[900] = None;
+        exhausted.source_pool.disabled[900] = false;
+        exhausted.source_pool.replaceable[900] = false;
+        exhausted.source_pool.free_stack.push(900);
+        exhausted.source_slots[900].active = false;
+        exhausted.step_with_spells(&FlatWorld, player, false, false, None);
+        assert_eq!(exhausted.castle_associations().len(), 1);
+        assert!(
+            exhausted.projectiles().is_empty(),
+            "the retried projectile is retired only after its association allocation succeeds"
+        );
+        assert_eq!(exhausted.castle_holder_active_value(), 0);
+    }
+
+    #[test]
+    fn castle_cast_uses_exact_cost_holder_and_projectile_constants() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let player = castle_test_player();
+
+        let mut insufficient = template.session(10_000, 999);
+        enable_castle_holder(&mut insufficient);
+        assert!(!insufficient.cast_initial_castle(&FlatWorld, &player, 0));
+        assert_eq!(insufficient.player_mana, 999);
+        assert!(insufficient.projectiles().is_empty());
+
+        let left = assert_castle_hand_launch_contract(&template, &player);
+        assert_castle_association_scheduling(&template, &player, left.position);
+        assert_castle_association_allocation_retry(&template, &player, left.position);
     }
 
     struct CastleDefenseFixture {
