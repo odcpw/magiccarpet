@@ -11552,13 +11552,15 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
 
     fn configure_shared_possession_holder(handle: u64) {
         with_session_mut(handle, |session| {
+            session.mission.possession_experience = 4_800;
+            session.mission.possession_tier = 2;
             let fire =
                 session.context.spell_fire.as_mut().ok_or_else(|| {
                     AbiError::new(MC_STATUS_VALIDATION_FAILED, "spell state absent")
                 })?;
-            fire.selected_holder_index = 154;
-            fire.selected_spell_ui_index = 1;
-            fire.selected_subspell_index = 2;
+            fire.selected_holder_index = 153;
+            fire.selected_spell_ui_index = 0;
+            fire.selected_subspell_index = 0;
             fire.spell_levels[1] = 2;
             fire.family_selected_tiers[1] = 2;
             fire.holders
@@ -11667,7 +11669,26 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
         assert_eq!(cursor_after_raw, cursor_before_raw);
         assert_eq!(holder_tier, 2);
 
-        let before_no_op = menu;
+        submit_spell_menu_command(handle, snapshot, 40, 1, 1);
+        let reopened = read_level1_spell_menu(handle);
+        assert_eq!(
+            (
+                reopened.selected_ui_index,
+                reopened.selected_tier,
+                reopened.family_selected_tier[1],
+            ),
+            (1, 7, 7),
+            "family press exposes the raw current tier before held selection clamps it"
+        );
+        submit_spell_menu_command(handle, snapshot, 41, 2, 0);
+        let before_no_op = read_level1_spell_menu(handle);
+        assert_eq!(
+            (
+                before_no_op.selected_tier,
+                before_no_op.family_selected_tier[1],
+            ),
+            (2, 2)
+        );
         submit_spell_menu_command(handle, snapshot, 32, -1, 7);
         let menu = read_level1_spell_menu(handle);
         assert_eq!(
@@ -11736,7 +11757,39 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
         configure_shared_possession_holder(handle);
 
         let mut snapshot = McSessionSnapshotV2::default();
+        assert_eq!(read_level1_hud(handle).selected_model, 0);
         submit_spell_menu_command(handle, &mut snapshot, 40, 1, 1);
+        let pressed_hud = read_level1_hud(handle);
+        assert_eq!(
+            (pressed_hud.selected_model, pressed_hud.selected_tier),
+            (1, 2)
+        );
+        let selected_fire = McCommandV2 {
+            flags: 0x40,
+            ..valid_command()
+        };
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const selected_fire,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let selected_route = with_session(handle, |session| {
+            let fire =
+                session.context.spell_fire.as_ref().ok_or_else(|| {
+                    AbiError::new(MC_STATUS_VALIDATION_FAILED, "spell state absent")
+                })?;
+            Ok((
+                fire.selected_holder_index,
+                fire.accepted_models.clone(),
+                fire.caster.control_flags & 0x0300,
+            ))
+        })
+        .unwrap();
+        assert_eq!(selected_route, (154, vec![1], 256));
         submit_spell_menu_command(handle, &mut snapshot, 41, 2, 0);
         submit_spell_menu_command(handle, &mut snapshot, 31, 1, 2);
         submit_spell_menu_command(handle, &mut snapshot, 40, 1, 2);

@@ -182,10 +182,7 @@ namespace MagicCarpet.Native
                 SelectedUiIndex = HoverUiIndex;
                 Stage = mouseButton + 1;
                 pressedMouseButton = mouseButton;
-                HoverTier = Mathf.Clamp(
-                    snapshot.familySelectedTier[SelectedUiIndex],
-                    0,
-                    UnlockedTier(snapshot, SelectedUiIndex, geometry));
+                HoverTier = snapshot.familySelectedTier[SelectedUiIndex];
                 var startX = SpellTierMenuStartX(
                     SelectedUiIndex,
                     geometry.Columns,
@@ -815,9 +812,11 @@ namespace MagicCarpet.Native
         internal ulong QualificationNativeTick => snapshot.tick;
         internal int QualificationSpellMenuState => spellMenuController.MenuState;
         internal int QualificationSpellMenuStage => spellMenuController.Stage;
+        internal int QualificationSpellMenuHoverTier => spellMenuController.HoverTier;
         internal int QualificationPendingSpellMenuCommands => spellMenuCommands.Count;
         internal NativeSim.Level1SpellMenuSnapshot QualificationSpellMenuSnapshot =>
             level1SpellMenu;
+        internal byte QualificationSelectedSpellModel => level1Hud.selectedModel;
         internal uint QualificationSpellDirectionMask =>
             level1Hud.playerStatusFlags & 0x0300;
         internal uint QualificationProjectileCount => mission.projectileCount;
@@ -1050,6 +1049,37 @@ namespace MagicCarpet.Native
                 qualifiedMode && session != null && !spellMenuOpen,
                 "qualified spell-cast input request");
             LatchSpellCastInput(rightHand);
+        }
+
+        internal void QualificationRequestSelectedSpellCast()
+        {
+            Require(
+                qualifiedMode && session != null && !spellMenuOpen,
+                "qualified selected-spell input request");
+            selectedSpellRequested = true;
+            fireInputLatchedCount++;
+        }
+
+        internal void QualificationQueueRawSpellAssignment(
+            bool rightHand,
+            sbyte family,
+            sbyte tier)
+        {
+            Require(
+                qualifiedMode &&
+                session != null &&
+                !spellMenuOpen &&
+                family >= 0 &&
+                level1SpellMenu.familyEnabled != null &&
+                family < level1SpellMenu.familyEnabled.Length &&
+                level1SpellMenu.familyEnabled[family] != 0 &&
+                tier >= 0,
+                "qualified raw spell assignment request");
+            spellMenuCommands.Enqueue(
+                new SpellMenuCommand(
+                    (sbyte)(rightHand ? 32 : 31),
+                    family,
+                    tier));
         }
 
         internal bool QualificationCycleSpell(bool rightHand, bool backward)

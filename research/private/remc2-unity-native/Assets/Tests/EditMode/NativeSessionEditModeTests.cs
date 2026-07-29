@@ -432,6 +432,41 @@ namespace MagicCarpet.Native.Tests
                 (rightRelease.Opcode, rightRelease.Argument1, rightRelease.Argument2),
                 Is.EqualTo(((sbyte)32, (sbyte)1, (sbyte)1)));
 
+            synthetic.familySelectedTier[1] = 7;
+            controller.UpdateFamilyHover(
+                familyOneCentreX,
+                firstRowCentreY,
+                synthetic,
+                geometry);
+            Assert.That(
+                controller.Press(
+                    0,
+                    familyOneCentreX,
+                    firstRowCentreY,
+                    synthetic,
+                    geometry,
+                    out var rawTierPress),
+                Is.True);
+            Assert.That(controller.HoverTier, Is.EqualTo(7));
+            Assert.That(
+                (rawTierPress.Opcode, rawTierPress.Argument1, rawTierPress.Argument2),
+                Is.EqualTo(((sbyte)40, (sbyte)1, (sbyte)1)));
+            Assert.That(
+                controller.Hold(
+                    0,
+                    familyOneCentreX,
+                    synthetic,
+                    geometry,
+                    out var rawTierHeld),
+                Is.True);
+            Assert.That(
+                (rawTierHeld.Opcode, rawTierHeld.Argument1),
+                Is.EqualTo(((sbyte)41, (sbyte)2)),
+                "the raw tier seeds the warp and the first held sample clamps it");
+            Assert.That(controller.Release(0, out var rawTierRelease), Is.True);
+            Assert.That(rawTierRelease.Argument2, Is.EqualTo(2));
+            synthetic.familySelectedTier[1] = 1;
+
             var commandBuffer = new MagicCarpetRuntime.SpellMenuCommandBuffer();
             commandBuffer.Enqueue(leftPress);
             commandBuffer.Enqueue(

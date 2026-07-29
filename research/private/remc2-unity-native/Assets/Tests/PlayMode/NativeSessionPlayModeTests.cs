@@ -69,6 +69,21 @@ namespace MagicCarpet.Native.Tests
                     runtime.QualificationSpellMenuSnapshot.leftFamily,
                     runtime.QualificationSpellMenuSnapshot.leftTier),
                 Is.EqualTo(((byte)1, (sbyte)0)));
+            runtime.QualificationDriveSpellMenuInput(
+                false,
+                familyOneCentreX,
+                firstSpellRowCentreY);
+            Assert.That(runtime.QualificationSpellMenuState, Is.Zero);
+            Assert.That(
+                runtime.QualificationSelectedSpellModel,
+                Is.EqualTo(1),
+                "opcode40 synchronizes the selected holder from initial family 0");
+            runtime.QualificationRequestSelectedSpellCast();
+            yield return new WaitForFixedUpdate();
+            Assert.That(
+                runtime.QualificationSpellDirectionMask,
+                Is.EqualTo(256),
+                "selected fire routes through the family chosen by opcode40");
 
             runtime.QualificationDriveSpellMenuInput(
                 true,
@@ -97,6 +112,61 @@ namespace MagicCarpet.Native.Tests
                     runtime.QualificationSpellMenuSnapshot.rightFamily,
                     runtime.QualificationSpellMenuSnapshot.rightTier),
                 Is.EqualTo(((byte)1, (sbyte)0, (byte)0, (sbyte)0)));
+            runtime.QualificationDriveSpellMenuInput(
+                false,
+                familyZeroCentreX,
+                firstSpellRowCentreY);
+            Assert.That(runtime.QualificationSpellMenuState, Is.Zero);
+
+            runtime.QualificationResetSession();
+            runtime.QualificationQueueRawSpellAssignment(false, 0, 7);
+            yield return new WaitForFixedUpdate();
+            var liveUnlockedTier =
+                runtime.QualificationSpellMenuSnapshot.familyUnlockedTier[0];
+            Assert.That(
+                liveUnlockedTier,
+                Is.InRange((sbyte)0, (sbyte)2));
+            Assert.That(
+                (
+                    runtime.QualificationSpellMenuSnapshot.leftFamily,
+                    runtime.QualificationSpellMenuSnapshot.leftTier,
+                    runtime.QualificationSpellMenuSnapshot.familySelectedTier[0]),
+                Is.EqualTo(((byte)0, (sbyte)7, (sbyte)7)));
+            runtime.QualificationDriveSpellMenuInput(
+                true,
+                familyZeroCentreX,
+                firstSpellRowCentreY,
+                leftDown: true);
+            Assert.That(runtime.QualificationSpellMenuStage, Is.EqualTo(1));
+            Assert.That(runtime.QualificationSpellMenuHoverTier, Is.EqualTo(7));
+            yield return new WaitForFixedUpdate();
+            Assert.That(
+                (
+                    runtime.QualificationSpellMenuSnapshot.selectedUiIndex,
+                    runtime.QualificationSpellMenuSnapshot.selectedTier),
+                Is.EqualTo(((byte)0, (sbyte)7)),
+                "reopen opcode40 preserves the raw current tier");
+            runtime.QualificationDriveSpellMenuInput(
+                true,
+                familyZeroCentreX,
+                firstSpellRowCentreY,
+                leftHeld: true);
+            Assert.That(
+                runtime.QualificationSpellMenuHoverTier,
+                Is.EqualTo(liveUnlockedTier));
+            yield return new WaitForFixedUpdate();
+            Assert.That(
+                (
+                    runtime.QualificationSpellMenuSnapshot.selectedTier,
+                    runtime.QualificationSpellMenuSnapshot.familySelectedTier[0]),
+                Is.EqualTo((liveUnlockedTier, liveUnlockedTier)),
+                "the first held opcode41 clamps raw tier 7 to the live unlocked tier");
+            runtime.QualificationDriveSpellMenuInput(
+                true,
+                familyZeroCentreX,
+                firstSpellRowCentreY,
+                leftUp: true);
+            yield return new WaitForFixedUpdate();
             runtime.QualificationDriveSpellMenuInput(
                 false,
                 familyZeroCentreX,

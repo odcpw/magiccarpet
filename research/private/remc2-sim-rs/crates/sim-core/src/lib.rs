@@ -533,8 +533,6 @@ pub struct SpellFireContext {
     pub enabled_holder_indices: [u16; 26],
     /// Source per-family hand eligibility `array_0x3B5_949x`: 1 left, 2 right.
     pub spell_hand_eligibility: [u8; 26],
-    /// True after live input changes the reset-projected eligibility table.
-    pub spell_hand_eligibility_dirty: bool,
     /// Source per-family current tier `array_0x437_1079x`.
     ///
     /// This is deliberately distinct from each holder's applied
@@ -733,6 +731,7 @@ fn apply_spell_menu_command(command: PlayerCommand, context: &mut FlightContext)
                 && fire.enabled_holder_indices[spell_index] != 0
             {
                 fire.selected_spell_ui_index = ui_index;
+                fire.selected_holder_index = fire.enabled_holder_indices[spell_index];
                 fire.selected_subspell_index = fire.family_selected_tiers[spell_index];
                 fire.spell_menu_stage = command.argument_2.cast_unsigned();
             }
@@ -785,7 +784,6 @@ fn apply_spell_menu_command(command: PlayerCommand, context: &mut FlightContext)
                 && spell_index < fire.spell_hand_eligibility.len()
             {
                 fire.spell_hand_eligibility[spell_index] = command.argument_2.cast_unsigned();
-                fire.spell_hand_eligibility_dirty = true;
                 context.events.push(FlightEvent::PrepareSound {
                     entity_index: 0,
                     player_index: i16::from(fire.caster.player_color_index),
@@ -1681,7 +1679,10 @@ fn feed_spell_fire(
         ]);
         if fire.spell_menu_stage != 0
             || fire.family_selected_tiers.iter().any(|tier| *tier != 0)
-            || fire.spell_hand_eligibility_dirty
+            || fire
+                .spell_hand_eligibility
+                .iter()
+                .any(|eligibility| *eligibility != 0)
         {
             // Backward-compatible v2 extension: preserve the exact reset byte
             // stream while making every future-affecting non-default menu
@@ -1690,7 +1691,6 @@ fn feed_spell_fire(
             for tier in fire.family_selected_tiers {
                 feed(&[tier.cast_unsigned()]);
             }
-            feed(&[u8::from(fire.spell_hand_eligibility_dirty)]);
             for eligibility in fire.spell_hand_eligibility {
                 feed(&[eligibility]);
             }
@@ -3436,6 +3436,50 @@ mod tests {
         (FlightState::default(), context)
     }
 
+    fn assert_family_press_routes_selected_fire() {
+        let (mut state, mut context) = spell_menu_assignment_fixture();
+        latch_command_with_context(
+            &mut state,
+            PlayerCommand {
+                opcode: 40,
+                argument_1: 1,
+                argument_2: 1,
+                ..PlayerCommand::default()
+            },
+            &mut context,
+        );
+        let fire = context.spell_fire.as_ref().unwrap();
+        assert_eq!(
+            (
+                fire.selected_spell_ui_index,
+                fire.selected_holder_index,
+                fire.selected_subspell_index,
+            ),
+            (1, 22, 1),
+            "family press synchronizes the selected holder before selected fire"
+        );
+
+        step_turn_with_context(
+            &mut state,
+            PlayerCommand {
+                flags: 0x40,
+                ..PlayerCommand::default()
+            },
+            FlightProfile::OUTDOOR,
+            &FLAT,
+            &mut context,
+        );
+        assert_eq!(
+            context.events.first(),
+            Some(&FlightEvent::RequestSpellActivation {
+                source: SpellFireSource::Selected,
+                holder_entity_index: 22,
+                direction_mask: 256,
+            })
+        );
+        assert_eq!(context.spell_fire.as_ref().unwrap().accepted_models, [1]);
+    }
+
     fn assert_left_family_stage(state: &mut FlightState, context: &mut FlightContext) {
         let before_menu_hash = conformance_hash_v2(state, context);
         latch_command_with_context(
@@ -3550,7 +3594,7 @@ mod tests {
         assert_eq!(fire.right_holder_index, 22);
         assert_eq!(fire.left_subspell_index, 2);
         assert_eq!(fire.right_subspell_index, 2);
-        assert_eq!(fire.selected_holder_index, 21);
+        assert_eq!(fire.selected_holder_index, 22);
         assert_eq!(fire.selected_spell_ui_index, 1);
         assert_eq!(fire.selected_subspell_index, 2);
         assert_eq!(context.events.len(), 2);
@@ -3618,7 +3662,6 @@ mod tests {
         );
         let fire = context.spell_fire.as_ref().unwrap();
         assert_eq!(fire.spell_hand_eligibility[1], 1);
-        assert!(fire.spell_hand_eligibility_dirty);
         assert_ne!(conformance_hash_v2(state, context), before_eligibility_hash);
         assert_eq!(
             context.events,
@@ -3627,6 +3670,26 @@ mod tests {
                 player_index: 0,
                 sound_id: 14,
             }]
+        );
+        latch_command_with_context(
+            state,
+            PlayerCommand {
+                opcode: 38,
+                argument_1: 1,
+                argument_2: 0,
+                ..PlayerCommand::default()
+            },
+            context,
+        );
+        assert_eq!(
+            context.spell_fire.as_ref().unwrap().spell_hand_eligibility[1],
+            0
+        );
+        context.events.clear();
+        assert_eq!(
+            conformance_hash_v2(state, context),
+            before_eligibility_hash,
+            "source-equivalent eligibility state restores the same hash"
         );
     }
 
@@ -3706,6 +3769,7 @@ mod tests {
 
     #[test]
     fn spell_menu_assignment_opcodes_bind_independent_hands_and_clamp_tier() {
+        assert_family_press_routes_selected_fire();
         let (mut state, mut context) = spell_menu_assignment_fixture();
         assert_left_family_stage(&mut state, &mut context);
         assert_right_family_stage(&mut state, &mut context);

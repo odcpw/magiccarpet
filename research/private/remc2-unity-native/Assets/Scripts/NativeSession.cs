@@ -623,7 +623,7 @@ namespace MagicCarpet.Native
                 spellMenu.generation != mission.generation ||
                 spellMenu.tick != mission.tick ||
                 spellMenu.selectedUiIndex >= 4 ||
-                spellMenu.selectedTier is < 0 or > 2 ||
+                spellMenu.selectedTier < 0 ||
                 spellMenu.leftFamily >= 4 ||
                 spellMenu.leftTier < 0 ||
                 spellMenu.rightFamily >= 4 ||
