@@ -336,6 +336,198 @@ namespace MagicCarpet.Native.Tests
         [Test]
         public void SpellAssignmentOpcodesDriveTheSourceHandAndTierSnapshot()
         {
+            var geometry = new MagicCarpetRuntime.SpellMenuGeometry(
+                rows: 2,
+                columns: 13,
+                referenceY: 408,
+                edgeWidth: 8,
+                panelWidth: 48,
+                panelHeight: 36,
+                tierCount: 3,
+                tierPanelWidth: 66);
+            var synthetic = new NativeSim.Level1SpellMenuSnapshot
+            {
+                familyEnabled = new byte[] { 1, 1, 0, 0 },
+                familyUnlockedTier = new sbyte[] { 2, 2, 0, 0 },
+                familySelectedTier = new sbyte[] { 2, 1, 0, 0 },
+                familyHandEligibility = new byte[] { 0, 0, 0, 0 },
+                holderEntityIndex = new ushort[] { 153, 154, 0, 0 },
+            };
+            var controller = new MagicCarpetRuntime.SpellMenuController();
+            controller.Open(-100f, -100f, synthetic, geometry);
+            Assert.That(controller.MenuState, Is.EqualTo(5));
+            Assert.That(controller.HoverUiIndex, Is.Zero);
+            Assert.That(
+                MagicCarpetRuntime.SpellMenuController.FamilyFromLogical(
+                    -100f,
+                    -100f,
+                    geometry),
+                Is.Zero,
+                "outside family coordinates clamp to the top-left family");
+
+            Assert.That(
+                controller.Press(
+                    0,
+                    -100f,
+                    -100f,
+                    synthetic,
+                    geometry,
+                    out var leftPress),
+                Is.True);
+            Assert.That(
+                (leftPress.Opcode, leftPress.Argument1, leftPress.Argument2),
+                Is.EqualTo(((sbyte)40, (sbyte)0, (sbyte)1)));
+            Assert.That(controller.HoverTier, Is.EqualTo(2));
+            Assert.That(controller.Stage, Is.EqualTo(1));
+            Assert.That(
+                controller.Hold(
+                    0,
+                    -100f,
+                    synthetic,
+                    geometry,
+                    out var leftHeld),
+                Is.True);
+            Assert.That(
+                (leftHeld.Opcode, leftHeld.Argument1, leftHeld.Argument2),
+                Is.EqualTo(((sbyte)41, (sbyte)2, (sbyte)0)),
+                "no physical delta after the virtual cursor warp stays at tier 2");
+            Assert.That(controller.Release(0, out var leftRelease), Is.True);
+            Assert.That(
+                (leftRelease.Opcode, leftRelease.Argument1, leftRelease.Argument2),
+                Is.EqualTo(((sbyte)31, (sbyte)0, (sbyte)2)));
+            Assert.That(controller.Stage, Is.Zero);
+
+            const float familyOneCentreX = 8 + 48 + 24;
+            const float firstRowCentreY = 408 + 18;
+            controller.UpdateFamilyHover(
+                familyOneCentreX,
+                firstRowCentreY,
+                synthetic,
+                geometry);
+            Assert.That(
+                controller.Press(
+                    1,
+                    familyOneCentreX,
+                    firstRowCentreY,
+                    synthetic,
+                    geometry,
+                    out var rightPress),
+                Is.True);
+            Assert.That(
+                (rightPress.Opcode, rightPress.Argument1, rightPress.Argument2),
+                Is.EqualTo(((sbyte)40, (sbyte)1, (sbyte)2)));
+            Assert.That(
+                controller.Hold(
+                    1,
+                    familyOneCentreX,
+                    synthetic,
+                    geometry,
+                    out var rightHeld),
+                Is.True);
+            Assert.That(
+                (rightHeld.Opcode, rightHeld.Argument1, rightHeld.Argument2),
+                Is.EqualTo(((sbyte)41, (sbyte)1, (sbyte)0)));
+            Assert.That(controller.Release(1, out var rightRelease), Is.True);
+            Assert.That(
+                (rightRelease.Opcode, rightRelease.Argument1, rightRelease.Argument2),
+                Is.EqualTo(((sbyte)32, (sbyte)1, (sbyte)1)));
+
+            var commandBuffer = new MagicCarpetRuntime.SpellMenuCommandBuffer();
+            commandBuffer.Enqueue(leftPress);
+            commandBuffer.Enqueue(
+                new MagicCarpetRuntime.SpellMenuCommand(41, 0, 0));
+            commandBuffer.Enqueue(
+                new MagicCarpetRuntime.SpellMenuCommand(41, 1, 0));
+            commandBuffer.Enqueue(leftHeld);
+            commandBuffer.Enqueue(leftRelease);
+            Assert.That(
+                commandBuffer.Count,
+                Is.EqualTo(3),
+                "render-side held samples coalesce before the authoritative fixed step");
+            Assert.That(commandBuffer.TryDequeue(out var bufferedPress), Is.True);
+            Assert.That(commandBuffer.TryDequeue(out var bufferedHeld), Is.True);
+            Assert.That(commandBuffer.TryDequeue(out var bufferedRelease), Is.True);
+            Assert.That(commandBuffer.TryDequeue(out _), Is.False);
+            Assert.That(bufferedPress.Opcode, Is.EqualTo(40));
+            Assert.That(
+                (bufferedHeld.Opcode, bufferedHeld.Argument1),
+                Is.EqualTo(((sbyte)41, (sbyte)2)));
+            Assert.That(bufferedRelease.Opcode, Is.EqualTo(31));
+
+            const float disabledFamilyFourCentreX = 8 + 4 * 48 + 24;
+            controller.UpdateFamilyHover(
+                disabledFamilyFourCentreX,
+                firstRowCentreY,
+                synthetic,
+                geometry);
+            Assert.That(controller.HoverUiIndex, Is.EqualTo(-1));
+            Assert.That(
+                controller.Press(
+                    0,
+                    disabledFamilyFourCentreX,
+                    firstRowCentreY,
+                    synthetic,
+                    geometry,
+                    out _),
+                Is.False,
+                "the Level 1 four-family projection makes ui_family >= 4 unreachable");
+            Assert.That(
+                controller.ConfigureEligibility(
+                    0,
+                    familyOneCentreX,
+                    firstRowCentreY,
+                    synthetic,
+                    geometry,
+                    out var configureLeft),
+                Is.True);
+            Assert.That(
+                (
+                    configureLeft.Opcode,
+                    configureLeft.Argument1,
+                    configureLeft.Argument2),
+                Is.EqualTo(((sbyte)38, (sbyte)1, (sbyte)1)));
+            Assert.That(
+                MagicCarpetRuntime.SpellMenuController.Cycle(
+                    false,
+                    false,
+                    synthetic,
+                    out _),
+                Is.False,
+                "all-zero reset eligibility produces no command after 26 misses");
+            var cycleSnapshot = synthetic;
+            cycleSnapshot.leftFamily = 0;
+            cycleSnapshot.rightFamily = 1;
+            cycleSnapshot.familyEnabled = new byte[] { 1, 1, 0, 1 };
+            cycleSnapshot.familySelectedTier = new sbyte[] { 2, 1, 0, 2 };
+            cycleSnapshot.familyHandEligibility = new byte[] { 2, 2, 0, 1 };
+            Assert.That(
+                MagicCarpetRuntime.SpellMenuController.Cycle(
+                    false,
+                    true,
+                    cycleSnapshot,
+                    out var cycleLeftBackward),
+                Is.True);
+            Assert.That(
+                (
+                    cycleLeftBackward.Opcode,
+                    cycleLeftBackward.Argument1,
+                    cycleLeftBackward.Argument2),
+                Is.EqualTo(((sbyte)31, (sbyte)3, (sbyte)2)),
+                "backward cycle wraps 0 to 25 and finds eligible family 3");
+            Assert.That(
+                MagicCarpetRuntime.SpellMenuController.Cycle(
+                    true,
+                    true,
+                    cycleSnapshot,
+                    out var cycleRightBackward),
+                Is.True);
+            Assert.That(
+                (
+                    cycleRightBackward.Opcode,
+                    cycleRightBackward.Argument1,
+                    cycleRightBackward.Argument2),
+                Is.EqualTo(((sbyte)32, (sbyte)0, (sbyte)2)));
+
             using var session = NativeSession.Open(PackagePath, ClosurePath);
             var mission = session.Level1Mission();
             var reset = session.Level1SpellMenu(mission);
@@ -343,6 +535,9 @@ namespace MagicCarpet.Native.Tests
             Assert.That(
                 reset.familyUnlockedTier,
                 Is.EqualTo(new sbyte[] { 0, 0, 0, 0 }));
+            Assert.That(
+                reset.familyHandEligibility,
+                Is.EqualTo(new byte[] { 0, 0, 0, 0 }));
             Assert.That(
                 new[]
                 {
@@ -353,7 +548,92 @@ namespace MagicCarpet.Native.Tests
                 },
                 Is.EqualTo(new[] { 0, 0, 1, 0 }));
 
-            session.Step(0, 0, 0, opcode: 31, argument1: 1, argument2: 2);
+            controller = new MagicCarpetRuntime.SpellMenuController();
+            controller.Open(
+                familyOneCentreX,
+                firstRowCentreY,
+                reset,
+                geometry);
+            Assert.That(
+                controller.ConfigureEligibility(
+                    0,
+                    familyOneCentreX,
+                    firstRowCentreY,
+                    reset,
+                    geometry,
+                    out configureLeft),
+                Is.True);
+            session.Step(
+                0,
+                0,
+                0,
+                opcode: configureLeft.Opcode,
+                argument1: configureLeft.Argument1,
+                argument2: configureLeft.Argument2);
+            mission = session.Level1Mission();
+            var configured = session.Level1SpellMenu(mission);
+            Assert.That(
+                configured.familyHandEligibility,
+                Is.EqualTo(new byte[] { 0, 1, 0, 0 }));
+            Assert.That(
+                MagicCarpetRuntime.SpellMenuController.Cycle(
+                    false,
+                    false,
+                    configured,
+                    out var cycleLeftForward),
+                Is.True);
+            Assert.That(
+                (
+                    cycleLeftForward.Opcode,
+                    cycleLeftForward.Argument1,
+                    cycleLeftForward.Argument2),
+                Is.EqualTo(((sbyte)31, (sbyte)1, (sbyte)0)));
+            session.Step(
+                0,
+                0,
+                0,
+                opcode: cycleLeftForward.Opcode,
+                argument1: cycleLeftForward.Argument1,
+                argument2: cycleLeftForward.Argument2);
+            Assert.That(
+                controller.Press(
+                    0,
+                    familyOneCentreX,
+                    firstRowCentreY,
+                    reset,
+                    geometry,
+                    out leftPress),
+                Is.True);
+            session.Step(
+                0,
+                0,
+                0,
+                opcode: leftPress.Opcode,
+                argument1: leftPress.Argument1,
+                argument2: leftPress.Argument2);
+            Assert.That(
+                controller.Hold(
+                    0,
+                    familyOneCentreX,
+                    reset,
+                    geometry,
+                    out leftHeld),
+                Is.True);
+            session.Step(
+                0,
+                0,
+                0,
+                opcode: leftHeld.Opcode,
+                argument1: leftHeld.Argument1,
+                argument2: leftHeld.Argument2);
+            Assert.That(controller.Release(0, out leftRelease), Is.True);
+            session.Step(
+                0,
+                0,
+                0,
+                opcode: leftRelease.Opcode,
+                argument1: leftRelease.Argument1,
+                argument2: leftRelease.Argument2);
             mission = session.Level1Mission();
             var leftChanged = session.Level1SpellMenu(mission);
             Assert.That(leftChanged.leftFamily, Is.EqualTo(1));
@@ -361,12 +641,54 @@ namespace MagicCarpet.Native.Tests
             Assert.That(leftChanged.selectedUiIndex, Is.EqualTo(1));
             Assert.That(leftChanged.selectedTier, Is.EqualTo(0));
 
-            session.Step(0, 0, 0, opcode: 32, argument1: 0, argument2: 2);
+            controller.UpdateFamilyHover(-100f, -100f, leftChanged, geometry);
+            Assert.That(
+                controller.Press(
+                    1,
+                    -100f,
+                    -100f,
+                    leftChanged,
+                    geometry,
+                    out rightPress),
+                Is.True);
+            session.Step(
+                0,
+                0,
+                0,
+                opcode: rightPress.Opcode,
+                argument1: rightPress.Argument1,
+                argument2: rightPress.Argument2);
+            Assert.That(
+                controller.Hold(
+                    1,
+                    -100f,
+                    leftChanged,
+                    geometry,
+                    out rightHeld),
+                Is.True);
+            session.Step(
+                0,
+                0,
+                0,
+                opcode: rightHeld.Opcode,
+                argument1: rightHeld.Argument1,
+                argument2: rightHeld.Argument2);
+            Assert.That(controller.Release(1, out rightRelease), Is.True);
+            session.Step(
+                0,
+                0,
+                0,
+                opcode: rightRelease.Opcode,
+                argument1: rightRelease.Argument1,
+                argument2: rightRelease.Argument2);
             mission = session.Level1Mission();
             var rightChanged = session.Level1SpellMenu(mission);
             Assert.That(rightChanged.leftFamily, Is.EqualTo(1));
             Assert.That(rightChanged.rightFamily, Is.EqualTo(0));
             Assert.That(rightChanged.rightTier, Is.EqualTo(0));
+            Assert.That(
+                rightChanged.familyEnabled,
+                Is.EqualTo(new byte[] { 1, 1, 0, 0 }));
         }
 
         [Test]

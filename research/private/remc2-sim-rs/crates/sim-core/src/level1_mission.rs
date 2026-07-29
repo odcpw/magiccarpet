@@ -7121,19 +7121,6 @@ impl Level1MissionState {
         fire.spell_levels[usize::from(CASTLE_SPELL_FAMILY)] = self.castle_tier;
         fire.spell_experience[usize::from(SPEED_SPELL_FAMILY)] = self.speed_experience;
         fire.spell_levels[usize::from(SPEED_SPELL_FAMILY)] = self.speed_tier;
-        for holder in &mut fire.holders {
-            let available_tier = match holder.model {
-                FIREBALL_SPELL_FAMILY => self.fireball_tier,
-                POSSESSION_SPELL_FAMILY => self.possession_tier,
-                CASTLE_SPELL_FAMILY => self.castle_tier,
-                SPEED_SPELL_FAMILY => self.speed_tier,
-                _ => holder.level_gate,
-            };
-            // `SpellLevels` is the unlocked ceiling. The current family tier
-            // lives in `array_0x437` and is changed by SetSpell; gaining
-            // experience does not silently select the newly unlocked tier.
-            holder.level_gate = holder.level_gate.clamp(0, available_tier.max(0));
-        }
         let mut ordered_holder_slots = self.spell_acquisition_order.clone();
         for source_slot in self
             .actors
@@ -7193,6 +7180,7 @@ impl Level1MissionState {
                     mana_cost,
                     action_marker: 0,
                 });
+                fire.family_selected_tiers[usize::from(family)] = 0;
                 let hand_override = self
                     .spell_acquisition_hand_overrides
                     .get(&holder_index)

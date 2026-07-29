@@ -325,6 +325,8 @@ pub struct PlayerSnapshot {
     pub selected_spell_ui_index: u8,
     pub selected_subspell_index: i8,
     pub enabled_spell_holders: [u16; PLAYER_SPELL_COUNT],
+    pub spell_hand_eligibility: [u8; PLAYER_SPELL_COUNT],
+    pub family_selected_tiers: [i8; PLAYER_SPELL_COUNT],
     record: Box<[u8]>,
 }
 
@@ -1809,6 +1811,8 @@ impl NativeWorld {
             fire.right_subspell_index = player.right_subspell_index;
             fire.selected_spell_ui_index = player.selected_spell_ui_index;
             fire.selected_subspell_index = player.selected_subspell_index;
+            fire.spell_hand_eligibility = player.spell_hand_eligibility;
+            fire.family_selected_tiers = player.family_selected_tiers;
             let selected_family =
                 SOURCE_SPELL_INDEX_MAP[usize::from(player.selected_spell_ui_index)];
             fire.selected_holder_index = player.enabled_spell_holders[usize::from(selected_family)];
@@ -3246,6 +3250,12 @@ fn parse_players(bytes: &[u8]) -> Result<Vec<PlayerSnapshot>> {
                 )));
             }
         }
+        let mut spell_hand_eligibility = [0_u8; PLAYER_SPELL_COUNT];
+        spell_hand_eligibility.copy_from_slice(&record[398..424]);
+        let mut family_selected_tiers = [0_i8; PLAYER_SPELL_COUNT];
+        for (tier, value) in family_selected_tiers.iter_mut().zip(&record[528..554]) {
+            *tier = value.cast_signed();
+        }
         players.push(PlayerSnapshot {
             slot: u8::try_from(slot).expect("eight player slots"),
             is_ai: ai == 1,
@@ -3259,6 +3269,8 @@ fn parse_players(bytes: &[u8]) -> Result<Vec<PlayerSnapshot>> {
             selected_spell_ui_index,
             selected_subspell_index,
             enabled_spell_holders: holders,
+            spell_hand_eligibility,
+            family_selected_tiers,
             record: record.to_vec().into_boxed_slice(),
         });
     }
@@ -3776,6 +3788,8 @@ fn build_level_one_context(
             right_subspell_index: player.right_subspell_index,
             selected_spell_ui_index: player.selected_spell_ui_index,
             selected_subspell_index: player.selected_subspell_index,
+            spell_hand_eligibility: player.spell_hand_eligibility,
+            family_selected_tiers: player.family_selected_tiers,
             caster: SpellCasterState {
                 entity_index: caster.index,
                 model: caster.model,

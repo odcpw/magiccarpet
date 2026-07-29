@@ -595,6 +595,8 @@ namespace MagicCarpet.Native
                 spellMenu.familyUnlockedTier.Length == 4 &&
                 spellMenu.familySelectedTier != null &&
                 spellMenu.familySelectedTier.Length == 4 &&
+                spellMenu.familyHandEligibility != null &&
+                spellMenu.familyHandEligibility.Length == 4 &&
                 spellMenu.holderEntityIndex != null &&
                 spellMenu.holderEntityIndex.Length == 4;
             if (validFamilies)
@@ -604,11 +606,12 @@ namespace MagicCarpet.Native
                     var enabled = spellMenu.familyEnabled[family];
                     var unlocked = spellMenu.familyUnlockedTier[family];
                     var selected = spellMenu.familySelectedTier[family];
+                    var eligibility = spellMenu.familyHandEligibility[family];
                     validFamilies &=
                         enabled <= 1 &&
                         unlocked is >= 0 and <= 2 &&
-                        selected is >= 0 and <= 2 &&
-                        selected <= unlocked &&
+                        selected >= 0 &&
+                        eligibility <= 2 &&
                         (enabled != 0) ==
                             (spellMenu.holderEntityIndex[family] != 0);
                 }
@@ -622,13 +625,11 @@ namespace MagicCarpet.Native
                 spellMenu.selectedUiIndex >= 4 ||
                 spellMenu.selectedTier is < 0 or > 2 ||
                 spellMenu.leftFamily >= 4 ||
-                spellMenu.leftTier is < 0 or > 2 ||
+                spellMenu.leftTier < 0 ||
                 spellMenu.rightFamily >= 4 ||
-                spellMenu.rightTier is < 0 or > 2 ||
+                spellMenu.rightTier < 0 ||
                 spellMenu.reserved0 != 0 ||
                 !validFamilies ||
-                spellMenu.reserved1 == null ||
-                Array.Exists(spellMenu.reserved1, value => value != 0) ||
                 spellMenu.reserved == null ||
                 Array.Exists(spellMenu.reserved, value => value != 0))
             {

@@ -450,7 +450,7 @@ typedef struct McLevel1SpellMenuSnapshotV2 {
     uint8_t family_enabled[4];
     int8_t family_unlocked_tier[4];
     int8_t family_selected_tier[4];
-    uint8_t reserved_1[4];
+    uint8_t family_hand_eligibility[4];
     uint16_t holder_entity_index[4];
     uint32_t reserved[2];
 } McLevel1SpellMenuSnapshotV2;

@@ -26,6 +26,140 @@ namespace MagicCarpet.Native.Tests
             Assert.That(runtime.QualificationGoatLiveSpriteCount, Is.EqualTo(33));
 
             runtime.QualificationResetSession();
+            const float familyZeroCentreX = 8 + 24;
+            const float familyOneCentreX = 8 + 48 + 24;
+            const float firstSpellRowCentreY = 408 + 18;
+            runtime.QualificationDriveSpellMenuInput(
+                true,
+                familyOneCentreX,
+                firstSpellRowCentreY,
+                leftDown: true,
+                leftHeld: true);
+            Assert.That(runtime.QualificationSpellMenuState, Is.EqualTo(5));
+            Assert.That(runtime.QualificationSpellMenuStage, Is.EqualTo(1));
+            Assert.That(runtime.QualificationPendingSpellMenuCommands, Is.EqualTo(1));
+            yield return new WaitForFixedUpdate();
+            Assert.That(
+                runtime.QualificationSpellMenuSnapshot.selectedUiIndex,
+                Is.EqualTo(1));
+            runtime.QualificationDriveSpellMenuInput(
+                true,
+                familyOneCentreX,
+                firstSpellRowCentreY,
+                leftHeld: true);
+            runtime.QualificationDriveSpellMenuInput(
+                true,
+                familyOneCentreX,
+                firstSpellRowCentreY,
+                leftHeld: true);
+            Assert.That(
+                runtime.QualificationPendingSpellMenuCommands,
+                Is.EqualTo(1),
+                "render-side held samples coalesce before FixedUpdate");
+            yield return new WaitForFixedUpdate();
+            runtime.QualificationDriveSpellMenuInput(
+                true,
+                familyOneCentreX,
+                firstSpellRowCentreY,
+                leftUp: true);
+            Assert.That(runtime.QualificationSpellMenuStage, Is.Zero);
+            yield return new WaitForFixedUpdate();
+            Assert.That(
+                (
+                    runtime.QualificationSpellMenuSnapshot.leftFamily,
+                    runtime.QualificationSpellMenuSnapshot.leftTier),
+                Is.EqualTo(((byte)1, (sbyte)0)));
+
+            runtime.QualificationDriveSpellMenuInput(
+                true,
+                familyZeroCentreX,
+                firstSpellRowCentreY,
+                rightDown: true,
+                rightHeld: true);
+            Assert.That(runtime.QualificationSpellMenuStage, Is.EqualTo(2));
+            yield return new WaitForFixedUpdate();
+            runtime.QualificationDriveSpellMenuInput(
+                true,
+                familyZeroCentreX,
+                firstSpellRowCentreY,
+                rightHeld: true);
+            yield return new WaitForFixedUpdate();
+            runtime.QualificationDriveSpellMenuInput(
+                true,
+                familyZeroCentreX,
+                firstSpellRowCentreY,
+                rightUp: true);
+            yield return new WaitForFixedUpdate();
+            Assert.That(
+                (
+                    runtime.QualificationSpellMenuSnapshot.leftFamily,
+                    runtime.QualificationSpellMenuSnapshot.leftTier,
+                    runtime.QualificationSpellMenuSnapshot.rightFamily,
+                    runtime.QualificationSpellMenuSnapshot.rightTier),
+                Is.EqualTo(((byte)1, (sbyte)0, (byte)0, (sbyte)0)));
+            runtime.QualificationDriveSpellMenuInput(
+                false,
+                familyZeroCentreX,
+                firstSpellRowCentreY);
+            Assert.That(runtime.QualificationSpellMenuState, Is.Zero);
+
+            runtime.QualificationResetSession();
+            Assert.That(
+                runtime.QualificationCycleSpell(false, false),
+                Is.False,
+                "all-zero reset eligibility is a 26-miss no-op");
+            Assert.That(runtime.QualificationPendingSpellMenuCommands, Is.Zero);
+            runtime.QualificationDriveSpellMenuInput(
+                true,
+                familyOneCentreX,
+                firstSpellRowCentreY,
+                leftDown: true,
+                configureEligibility: true);
+            yield return new WaitForFixedUpdate();
+            Assert.That(
+                runtime.QualificationSpellMenuSnapshot.familyHandEligibility,
+                Is.EqualTo(new byte[] { 0, 1, 0, 0 }));
+            runtime.QualificationDriveSpellMenuInput(
+                true,
+                familyZeroCentreX,
+                firstSpellRowCentreY,
+                rightDown: true,
+                configureEligibility: true);
+            yield return new WaitForFixedUpdate();
+            Assert.That(
+                runtime.QualificationSpellMenuSnapshot.familyHandEligibility,
+                Is.EqualTo(new byte[] { 2, 1, 0, 0 }));
+            runtime.QualificationDriveSpellMenuInput(
+                false,
+                familyZeroCentreX,
+                firstSpellRowCentreY);
+            Assert.That(runtime.QualificationSpellMenuState, Is.Zero);
+            Assert.That(runtime.QualificationCycleSpell(false, false), Is.True);
+            yield return new WaitForFixedUpdate();
+            Assert.That(
+                runtime.QualificationSpellMenuSnapshot.leftFamily,
+                Is.EqualTo(1));
+            Assert.That(runtime.QualificationCycleSpell(true, true), Is.True);
+            yield return new WaitForFixedUpdate();
+            Assert.That(
+                (
+                    runtime.QualificationSpellMenuSnapshot.leftFamily,
+                    runtime.QualificationSpellMenuSnapshot.rightFamily),
+                Is.EqualTo(((byte)1, (byte)0)));
+
+            runtime.QualificationRequestSpellCast(false);
+            yield return new WaitForFixedUpdate();
+            Assert.That(runtime.QualificationSpellDirectionMask, Is.EqualTo(256));
+            var projectilesBeforeRightCast = runtime.QualificationProjectileCount;
+            runtime.QualificationRequestSpellCast(true);
+            yield return new WaitForFixedUpdate();
+            Assert.That(runtime.QualificationSpellDirectionMask, Is.EqualTo(512));
+            Assert.That(
+                runtime.QualificationProjectileCount,
+                Is.GreaterThan(projectilesBeforeRightCast),
+                "right-hand family 0 routes to a native fireball launch");
+
+            runtime.QualificationResetSession();
             var baseline = runtime.QualificationGoatPresentation(50);
             var independentCameraX = (long)baseline.CameraX;
             var independentCameraY = (long)baseline.CameraY;

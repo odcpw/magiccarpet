@@ -11,6 +11,368 @@ namespace MagicCarpet.Native
 {
     public sealed class MagicCarpetRuntime : MonoBehaviour
     {
+        internal readonly struct SpellMenuCommand
+        {
+            internal SpellMenuCommand(sbyte opcode, sbyte argument1, sbyte argument2)
+            {
+                Opcode = opcode;
+                Argument1 = argument1;
+                Argument2 = argument2;
+            }
+
+            internal sbyte Opcode { get; }
+            internal sbyte Argument1 { get; }
+            internal sbyte Argument2 { get; }
+        }
+
+        internal sealed class SpellMenuCommandBuffer
+        {
+            private readonly Queue<SpellMenuCommand> commands = new();
+            private SpellMenuCommand pendingHeld;
+            private bool hasPendingHeld;
+
+            internal int Count => commands.Count + (hasPendingHeld ? 1 : 0);
+
+            internal void Enqueue(SpellMenuCommand command)
+            {
+                if (command.Opcode == 41)
+                {
+                    pendingHeld = command;
+                    hasPendingHeld = true;
+                    return;
+                }
+                if (command.Opcode is 31 or 32)
+                {
+                    FlushHeld();
+                }
+                commands.Enqueue(command);
+            }
+
+            internal bool TryDequeue(out SpellMenuCommand command)
+            {
+                if (commands.Count != 0)
+                {
+                    command = commands.Dequeue();
+                    return true;
+                }
+                if (hasPendingHeld)
+                {
+                    command = pendingHeld;
+                    hasPendingHeld = false;
+                    return true;
+                }
+                command = default;
+                return false;
+            }
+
+            internal void Clear()
+            {
+                commands.Clear();
+                pendingHeld = default;
+                hasPendingHeld = false;
+            }
+
+            private void FlushHeld()
+            {
+                if (!hasPendingHeld)
+                {
+                    return;
+                }
+                commands.Enqueue(pendingHeld);
+                hasPendingHeld = false;
+            }
+        }
+
+        internal readonly struct SpellMenuGeometry
+        {
+            internal SpellMenuGeometry(
+                int rows,
+                int columns,
+                int referenceY,
+                int edgeWidth,
+                int panelWidth,
+                int panelHeight,
+                int tierCount,
+                int tierPanelWidth)
+            {
+                Rows = rows;
+                Columns = columns;
+                ReferenceY = referenceY;
+                EdgeWidth = edgeWidth;
+                PanelWidth = panelWidth;
+                PanelHeight = panelHeight;
+                TierCount = tierCount;
+                TierPanelWidth = tierPanelWidth;
+            }
+
+            internal int Rows { get; }
+            internal int Columns { get; }
+            internal int ReferenceY { get; }
+            internal int EdgeWidth { get; }
+            internal int PanelWidth { get; }
+            internal int PanelHeight { get; }
+            internal int TierCount { get; }
+            internal int TierPanelWidth { get; }
+        }
+
+        internal sealed class SpellMenuController
+        {
+            internal int MenuState { get; private set; }
+            internal int HoverUiIndex { get; private set; } = -1;
+            internal int SelectedUiIndex { get; private set; } = -1;
+            internal int HoverTier { get; private set; } = -1;
+            internal int Stage { get; private set; }
+
+            private int pressedMouseButton = -1;
+            private float virtualLogicalX;
+            private float priorPhysicalLogicalX;
+
+            internal void Open(
+                float logicalX,
+                float logicalY,
+                NativeSim.Level1SpellMenuSnapshot snapshot,
+                SpellMenuGeometry geometry)
+            {
+                MenuState = 5;
+                ClearChoice();
+                UpdateFamilyHover(logicalX, logicalY, snapshot, geometry);
+            }
+
+            internal void Close()
+            {
+                MenuState = 0;
+                HoverUiIndex = -1;
+                ClearChoice();
+            }
+
+            internal void UpdateFamilyHover(
+                float logicalX,
+                float logicalY,
+                NativeSim.Level1SpellMenuSnapshot snapshot,
+                SpellMenuGeometry geometry)
+            {
+                if (MenuState != 5 || SelectedUiIndex >= 0)
+                {
+                    return;
+                }
+                var uiIndex = FamilyFromLogical(logicalX, logicalY, geometry);
+                HoverUiIndex = FamilyEnabled(snapshot, uiIndex) ? uiIndex : -1;
+                HoverTier = -1;
+            }
+
+            internal bool Press(
+                int mouseButton,
+                float logicalX,
+                float logicalY,
+                NativeSim.Level1SpellMenuSnapshot snapshot,
+                SpellMenuGeometry geometry,
+                out SpellMenuCommand command)
+            {
+                command = default;
+                UpdateFamilyHover(logicalX, logicalY, snapshot, geometry);
+                if (
+                    MenuState != 5 ||
+                    SelectedUiIndex >= 0 ||
+                    HoverUiIndex < 0 ||
+                    mouseButton is < 0 or > 1)
+                {
+                    return false;
+                }
+
+                SelectedUiIndex = HoverUiIndex;
+                Stage = mouseButton + 1;
+                pressedMouseButton = mouseButton;
+                HoverTier = Mathf.Clamp(
+                    snapshot.familySelectedTier[SelectedUiIndex],
+                    0,
+                    UnlockedTier(snapshot, SelectedUiIndex, geometry));
+                var startX = SpellTierMenuStartX(
+                    SelectedUiIndex,
+                    geometry.Columns,
+                    geometry.EdgeWidth,
+                    geometry.PanelWidth,
+                    geometry.TierCount,
+                    geometry.TierPanelWidth);
+                virtualLogicalX =
+                    startX +
+                    HoverTier * geometry.TierPanelWidth +
+                    geometry.TierPanelWidth / 2f;
+                priorPhysicalLogicalX = logicalX;
+                command = new SpellMenuCommand(
+                    40,
+                    checked((sbyte)SelectedUiIndex),
+                    checked((sbyte)Stage));
+                return true;
+            }
+
+            internal bool Hold(
+                int mouseButton,
+                float logicalX,
+                NativeSim.Level1SpellMenuSnapshot snapshot,
+                SpellMenuGeometry geometry,
+                out SpellMenuCommand command)
+            {
+                command = default;
+                if (
+                    MenuState != 5 ||
+                    SelectedUiIndex < 0 ||
+                    mouseButton != pressedMouseButton)
+                {
+                    return false;
+                }
+                virtualLogicalX += logicalX - priorPhysicalLogicalX;
+                priorPhysicalLogicalX = logicalX;
+                var startX = SpellTierMenuStartX(
+                    SelectedUiIndex,
+                    geometry.Columns,
+                    geometry.EdgeWidth,
+                    geometry.PanelWidth,
+                    geometry.TierCount,
+                    geometry.TierPanelWidth);
+                HoverTier = SpellTierFromLogicalX(
+                    virtualLogicalX,
+                    startX,
+                    geometry.TierPanelWidth,
+                    UnlockedTier(snapshot, SelectedUiIndex, geometry));
+                command = new SpellMenuCommand(
+                    41,
+                    checked((sbyte)HoverTier),
+                    0);
+                return true;
+            }
+
+            internal bool ConfigureEligibility(
+                int mouseButton,
+                float logicalX,
+                float logicalY,
+                NativeSim.Level1SpellMenuSnapshot snapshot,
+                SpellMenuGeometry geometry,
+                out SpellMenuCommand command)
+            {
+                command = default;
+                UpdateFamilyHover(logicalX, logicalY, snapshot, geometry);
+                if (
+                    MenuState != 5 ||
+                    SelectedUiIndex >= 0 ||
+                    HoverUiIndex < 0 ||
+                    mouseButton is < 0 or > 1)
+                {
+                    return false;
+                }
+                var eligibility = mouseButton + 1;
+                var nextEligibility =
+                    snapshot.familyHandEligibility[HoverUiIndex] == eligibility
+                        ? 0
+                        : eligibility;
+                command = new SpellMenuCommand(
+                    38,
+                    checked((sbyte)HoverUiIndex),
+                    checked((sbyte)nextEligibility));
+                return true;
+            }
+
+            internal static bool Cycle(
+                bool rightHand,
+                bool backward,
+                NativeSim.Level1SpellMenuSnapshot snapshot,
+                out SpellMenuCommand command)
+            {
+                command = default;
+                var candidate = (int)(rightHand
+                    ? snapshot.rightFamily
+                    : snapshot.leftFamily);
+                var direction = backward ? -1 : 1;
+                var requiredEligibility = rightHand ? 2 : 1;
+                for (var misses = 0; misses < 26; misses++)
+                {
+                    candidate = (candidate + direction + 26) % 26;
+                    if (
+                        snapshot.familyEnabled != null &&
+                        snapshot.familyHandEligibility != null &&
+                        snapshot.familySelectedTier != null &&
+                        candidate < snapshot.familyEnabled.Length &&
+                        candidate < snapshot.familyHandEligibility.Length &&
+                        candidate < snapshot.familySelectedTier.Length &&
+                        snapshot.familyEnabled[candidate] != 0 &&
+                        snapshot.familyHandEligibility[candidate] ==
+                            requiredEligibility)
+                    {
+                        command = new SpellMenuCommand(
+                            checked((sbyte)(rightHand ? 32 : 31)),
+                            checked((sbyte)candidate),
+                            snapshot.familySelectedTier[candidate]);
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            internal bool Release(int mouseButton, out SpellMenuCommand command)
+            {
+                command = default;
+                if (
+                    MenuState != 5 ||
+                    SelectedUiIndex < 0 ||
+                    mouseButton != pressedMouseButton)
+                {
+                    return false;
+                }
+                command = new SpellMenuCommand(
+                    checked((sbyte)(mouseButton == 0 ? 31 : 32)),
+                    checked((sbyte)SelectedUiIndex),
+                    checked((sbyte)HoverTier));
+                ClearChoice();
+                return true;
+            }
+
+            internal static int FamilyFromLogical(
+                float logicalX,
+                float logicalY,
+                SpellMenuGeometry geometry)
+            {
+                var column = Mathf.Clamp(
+                    Mathf.FloorToInt(
+                        (logicalX - geometry.EdgeWidth) / geometry.PanelWidth),
+                    0,
+                    geometry.Columns - 1);
+                var row = Mathf.Clamp(
+                    Mathf.FloorToInt(
+                        (logicalY - geometry.ReferenceY) / geometry.PanelHeight),
+                    0,
+                    geometry.Rows - 1);
+                return row * geometry.Columns + column;
+            }
+
+            private static bool FamilyEnabled(
+                NativeSim.Level1SpellMenuSnapshot snapshot,
+                int uiIndex)
+            {
+                return uiIndex >= 0 &&
+                       snapshot.familyEnabled != null &&
+                       uiIndex < snapshot.familyEnabled.Length &&
+                       snapshot.familyEnabled[uiIndex] != 0;
+            }
+
+            private static int UnlockedTier(
+                NativeSim.Level1SpellMenuSnapshot snapshot,
+                int uiIndex,
+                SpellMenuGeometry geometry)
+            {
+                return Mathf.Clamp(
+                    snapshot.familyUnlockedTier[uiIndex],
+                    0,
+                    geometry.TierCount - 1);
+            }
+
+            private void ClearChoice()
+            {
+                SelectedUiIndex = -1;
+                HoverTier = -1;
+                Stage = 0;
+                pressedMouseButton = -1;
+            }
+        }
+
         internal const int AuthoritativeSimulationHz = 30;
         private const float SourceUnitsPerUnityUnit = 64f;
         private const int TerrainCells = 256;
@@ -295,12 +657,8 @@ namespace MagicCarpet.Native
         private int spellMenuHoverUiIndex = -1;
         private int spellMenuSelectedUiIndex = -1;
         private int spellMenuHoverTier = -1;
-        private int spellMenuPressedMouseButton = -1;
-        private sbyte spellMenuPressedOpcode;
-        private bool spellAssignmentPending;
-        private sbyte spellAssignmentOpcode;
-        private sbyte spellAssignmentUiIndex;
-        private sbyte spellAssignmentTier;
+        private readonly SpellMenuController spellMenuController = new();
+        private readonly SpellMenuCommandBuffer spellMenuCommands = new();
         private bool autoplay;
         private bool autoplayQuit;
         private bool level1Autoplay;
@@ -455,6 +813,14 @@ namespace MagicCarpet.Native
         internal string QualificationFatalError => fatalError;
 
         internal ulong QualificationNativeTick => snapshot.tick;
+        internal int QualificationSpellMenuState => spellMenuController.MenuState;
+        internal int QualificationSpellMenuStage => spellMenuController.Stage;
+        internal int QualificationPendingSpellMenuCommands => spellMenuCommands.Count;
+        internal NativeSim.Level1SpellMenuSnapshot QualificationSpellMenuSnapshot =>
+            level1SpellMenu;
+        internal uint QualificationSpellDirectionMask =>
+            level1Hud.playerStatusFlags & 0x0300;
+        internal uint QualificationProjectileCount => mission.projectileCount;
         internal ulong QualificationGoatLiveWorldHash => goatLiveWorldHash;
         internal int QualificationGoatLiveCount => goats?.Length ?? 0;
         internal int QualificationGoatLiveSpriteCount
@@ -638,6 +1004,60 @@ namespace MagicCarpet.Native
         {
             Require(qualifiedMode && session != null, "qualified Goat reset request");
             ResetSession();
+        }
+
+        internal void QualificationDriveSpellMenuInput(
+            bool controlHeld,
+            float logicalX,
+            float logicalY,
+            bool leftDown = false,
+            bool leftHeld = false,
+            bool leftUp = false,
+            bool rightDown = false,
+            bool rightHeld = false,
+            bool rightUp = false,
+            bool configureEligibility = false)
+        {
+            Require(
+                qualifiedMode && session != null,
+                "qualified spell-menu input request");
+            if (controlHeld && !spellMenuOpen)
+            {
+                OpenSpellMenu(logicalX, logicalY);
+            }
+            if (spellMenuOpen)
+            {
+                ProcessSpellMenuInput(
+                    logicalX,
+                    logicalY,
+                    leftDown,
+                    leftHeld,
+                    leftUp,
+                    rightDown,
+                    rightHeld,
+                    rightUp,
+                    configureEligibility);
+            }
+            if (!controlHeld && !leftHeld && !rightHeld && spellMenuOpen)
+            {
+                CloseSpellMenu(false);
+            }
+        }
+
+        internal void QualificationRequestSpellCast(bool rightHand)
+        {
+            Require(
+                qualifiedMode && session != null && !spellMenuOpen,
+                "qualified spell-cast input request");
+            LatchSpellCastInput(rightHand);
+        }
+
+        internal bool QualificationCycleSpell(bool rightHand, bool backward)
+        {
+            Require(
+                qualifiedMode && session != null && !spellMenuOpen,
+                "qualified spell-cycle input request");
+            return QueueSpellCycle(rightHand, backward);
         }
         private ushort priorRawX;
         private ushort priorRawY;
@@ -1583,12 +2003,12 @@ namespace MagicCarpet.Native
                 selectedSpell = requestedSpell;
                 requestedSpell = NativeSim.NoRequestedSpell;
             }
-            if (!level1Autoplay && !autoplay && spellAssignmentPending)
+            if (!level1Autoplay && !autoplay &&
+                spellMenuCommands.TryDequeue(out var spellMenuCommand))
             {
-                opcode = spellAssignmentOpcode;
-                argument1 = spellAssignmentUiIndex;
-                argument2 = spellAssignmentTier;
-                spellAssignmentPending = false;
+                opcode = spellMenuCommand.Opcode;
+                argument1 = spellMenuCommand.Argument1;
+                argument2 = spellMenuCommand.Argument2;
             }
 
             if ((flags & 0x10) != 0)
@@ -1748,33 +2168,29 @@ namespace MagicCarpet.Native
             var controlHeld =
                 Input.GetKey(KeyCode.LeftControl) ||
                 Input.GetKey(KeyCode.RightControl);
+            var spellLogical = ScreenToSpellLogical(Input.mousePosition);
             if (!AutomatedInput && !spellMenuOpen &&
                 (Input.GetKeyDown(KeyCode.LeftControl) ||
                  Input.GetKeyDown(KeyCode.RightControl)))
             {
-                OpenSpellMenu();
+                OpenSpellMenu(spellLogical.x, spellLogical.y);
             }
             if (!AutomatedInput && spellMenuOpen)
             {
-                UpdateSpellMenuHover();
-                if (spellMenuSelectedUiIndex < 0 &&
-                    Input.GetMouseButtonDown(0))
-                {
-                    BeginSpellAssignment(31, 0);
-                }
-                else if (spellMenuSelectedUiIndex < 0 &&
-                         Input.GetMouseButtonDown(1))
-                {
-                    BeginSpellAssignment(32, 1);
-                }
-                else if (spellMenuSelectedUiIndex >= 0 &&
-                         spellMenuPressedMouseButton >= 0 &&
-                         Input.GetMouseButtonUp(spellMenuPressedMouseButton))
-                {
-                    QueueSpellAssignment();
-                    EndSpellAssignmentChoice();
-                }
-                if (!controlHeld)
+                ProcessSpellMenuInput(
+                    spellLogical.x,
+                    spellLogical.y,
+                    Input.GetMouseButtonDown(0),
+                    Input.GetMouseButton(0),
+                    Input.GetMouseButtonUp(0),
+                    Input.GetMouseButtonDown(1),
+                    Input.GetMouseButton(1),
+                    Input.GetMouseButtonUp(1),
+                    Input.GetKey(KeyCode.LeftShift) ||
+                    Input.GetKey(KeyCode.RightShift));
+                if (!controlHeld &&
+                    !Input.GetMouseButton(0) &&
+                    !Input.GetMouseButton(1))
                 {
                     CloseSpellMenu(true);
                 }
@@ -1796,20 +2212,33 @@ namespace MagicCarpet.Native
                 if (Input.GetKey(KeyCode.K)) steeringPitch += keyboardStep;
                 steeringRoll = Mathf.Clamp(steeringRoll, sbyte.MinValue, sbyte.MaxValue);
                 steeringPitch = Mathf.Clamp(steeringPitch, sbyte.MinValue, sbyte.MaxValue);
+                var cycleBackward =
+                    Input.GetKey(KeyCode.LeftAlt) ||
+                    Input.GetKey(KeyCode.RightAlt);
+                var cycleForward =
+                    Input.GetKey(KeyCode.LeftShift) ||
+                    Input.GetKey(KeyCode.RightShift);
                 if (Input.GetMouseButtonDown(0))
                 {
-                    // Latched until exactly one FixedUpdate consumes it.
-                    fireRequested = true;
-                    fireInputLatchedCount++;
-                    Debug.Log(
-                        $"MC_FIRE input_latched source=mouse count={fireInputLatchedCount}");
+                    if (cycleBackward || cycleForward)
+                    {
+                        QueueSpellCycle(false, cycleBackward);
+                    }
+                    else
+                    {
+                        LatchSpellCastInput(false);
+                    }
                 }
                 if (Input.GetMouseButtonDown(1))
                 {
-                    rightSpellRequested = true;
-                    fireInputLatchedCount++;
-                    Debug.Log(
-                        $"MC_FIRE input_latched source=right-mouse count={fireInputLatchedCount}");
+                    if (cycleBackward || cycleForward)
+                    {
+                        QueueSpellCycle(true, cycleBackward);
+                    }
+                    else
+                    {
+                        LatchSpellCastInput(true);
+                    }
                 }
                 if (Input.GetKeyDown(KeyCode.C) || Input.GetMouseButtonDown(2))
                 {
@@ -7002,12 +7431,8 @@ namespace MagicCarpet.Native
             spellMenuHoverUiIndex = -1;
             spellMenuSelectedUiIndex = -1;
             spellMenuHoverTier = -1;
-            spellMenuPressedMouseButton = -1;
-            spellMenuPressedOpcode = 0;
-            spellAssignmentPending = false;
-            spellAssignmentOpcode = 0;
-            spellAssignmentUiIndex = 0;
-            spellAssignmentTier = 0;
+            spellMenuController.Close();
+            spellMenuCommands.Clear();
             terrainFrameGpuValidated = false;
             terrainFrameRouteGpuValidated = false;
             qualifiedTerrainRouteTicks.Clear();
@@ -8582,72 +9007,197 @@ namespace MagicCarpet.Native
             appliedPitch = 0;
         }
 
-        private void OpenSpellMenu()
+        private void LatchSpellCastInput(bool rightHand)
+        {
+            // Latched until exactly one FixedUpdate consumes it.
+            if (rightHand)
+            {
+                rightSpellRequested = true;
+            }
+            else
+            {
+                fireRequested = true;
+            }
+            fireInputLatchedCount++;
+            Debug.Log(
+                $"MC_FIRE input_latched source={(rightHand ? "right-mouse" : "mouse")} " +
+                $"count={fireInputLatchedCount}");
+        }
+
+        private bool QueueSpellCycle(bool rightHand, bool backward)
+        {
+            if (!SpellMenuController.Cycle(
+                    rightHand,
+                    backward,
+                    level1SpellMenu,
+                    out var command))
+            {
+                return false;
+            }
+            spellMenuCommands.Enqueue(command);
+            Debug.Log(
+                $"MC_SPELL_CYCLE hand={(rightHand ? "right" : "left")} " +
+                $"direction={(backward ? "backward" : "forward")} " +
+                $"family={command.Argument1} tier={command.Argument2}");
+            return true;
+        }
+
+        private SpellMenuGeometry CurrentSpellMenuGeometry()
+        {
+            var menu = hudDescriptor.spells.menu;
+            var tierPanel = hudBitmapDescriptors[menu.tier_locked_panel_selector];
+            return new SpellMenuGeometry(
+                menu.rows,
+                menu.columns,
+                menu.reference_y,
+                menu.edge_width,
+                menu.panel_width,
+                menu.panel_height,
+                menu.tier_count,
+                tierPanel.runtime_width);
+        }
+
+        private static Vector2 ScreenToSpellLogical(Vector3 mousePosition)
+        {
+            var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
+            var offsetX = (Screen.width - 640f * scale) * 0.5f;
+            var offsetY = (Screen.height - 480f * scale) * 0.5f;
+            return new Vector2(
+                (mousePosition.x - offsetX) / scale,
+                (Screen.height - mousePosition.y - offsetY) / scale);
+        }
+
+        private void OpenSpellMenu(float logicalX, float logicalY)
         {
             spellMenuOpen = true;
-            spellMenuHoverUiIndex = -1;
-            EndSpellAssignmentChoice();
+            spellMenuController.Open(
+                logicalX,
+                logicalY,
+                level1SpellMenu,
+                CurrentSpellMenuGeometry());
+            SyncSpellMenuControllerState();
             ReleaseMouse();
-            UpdateSpellMenuHover();
         }
 
         private void CloseSpellMenu(bool captureMouse)
         {
             spellMenuOpen = false;
-            spellMenuHoverUiIndex = -1;
-            EndSpellAssignmentChoice();
+            spellMenuController.Close();
+            SyncSpellMenuControllerState();
             if (captureMouse)
             {
                 CaptureMouse();
             }
         }
 
-        private void UpdateSpellMenuHover()
+        private void ProcessSpellMenuInput(
+            float logicalX,
+            float logicalY,
+            bool leftDown,
+            bool leftHeld,
+            bool leftUp,
+            bool rightDown,
+            bool rightHeld,
+            bool rightUp,
+            bool configureEligibility = false)
         {
-            if (!spellMenuOpen || hudDescriptor?.spells?.menu == null)
+            if (!spellMenuOpen)
             {
-                spellMenuHoverUiIndex = -1;
                 return;
             }
-            var menu = hudDescriptor.spells.menu;
-            var scale = Mathf.Min(Screen.width / 640f, Screen.height / 480f);
-            var offsetX = (Screen.width - 640f * scale) * 0.5f;
-            var offsetY = (Screen.height - 480f * scale) * 0.5f;
-            var logicalX = (Input.mousePosition.x - offsetX) / scale;
-            var logicalY =
-                (Screen.height - Input.mousePosition.y - offsetY) / scale;
-            if (spellMenuSelectedUiIndex >= 0)
+            var geometry = CurrentSpellMenuGeometry();
+            SpellMenuCommand command;
+            var emitted = false;
+            if (configureEligibility && leftDown)
             {
-                var tierPanel = hudBitmapDescriptors[menu.tier_locked_panel_selector];
-                var startX = SpellTierMenuStartX(
-                    spellMenuSelectedUiIndex,
-                    menu.columns,
-                    menu.edge_width,
-                    menu.panel_width,
-                    menu.tier_count,
-                    tierPanel.runtime_width);
-                spellMenuHoverTier = SpellTierFromLogicalX(
+                emitted = spellMenuController.ConfigureEligibility(
+                    0,
                     logicalX,
-                    startX,
-                    tierPanel.runtime_width,
-                    SpellUnlockedTier(spellMenuSelectedUiIndex));
-                spellMenuHoverUiIndex = spellMenuSelectedUiIndex;
-                return;
+                    logicalY,
+                    level1SpellMenu,
+                    geometry,
+                    out command);
             }
-            var column = Mathf.FloorToInt(
-                (logicalX - menu.edge_width) / menu.panel_width);
-            var row = Mathf.FloorToInt(
-                (logicalY - menu.reference_y) / menu.panel_height);
-            if (column < 0 || column >= menu.columns ||
-                row < 0 || row >= menu.rows)
+            else if (configureEligibility && rightDown)
             {
-                spellMenuHoverUiIndex = -1;
-                return;
+                emitted = spellMenuController.ConfigureEligibility(
+                    1,
+                    logicalX,
+                    logicalY,
+                    level1SpellMenu,
+                    geometry,
+                    out command);
             }
-            var uiIndex = row * menu.columns + column;
-            spellMenuHoverUiIndex =
-                SpellEnabledForUiIndex(uiIndex) ? uiIndex : -1;
-            spellMenuHoverTier = -1;
+            else if (leftDown)
+            {
+                emitted = spellMenuController.Press(
+                    0,
+                    logicalX,
+                    logicalY,
+                    level1SpellMenu,
+                    geometry,
+                    out command);
+            }
+            else if (rightDown)
+            {
+                emitted = spellMenuController.Press(
+                    1,
+                    logicalX,
+                    logicalY,
+                    level1SpellMenu,
+                    geometry,
+                    out command);
+            }
+            else if (leftUp)
+            {
+                emitted = spellMenuController.Release(0, out command);
+            }
+            else if (rightUp)
+            {
+                emitted = spellMenuController.Release(1, out command);
+            }
+            else if (leftHeld)
+            {
+                emitted = spellMenuController.Hold(
+                    0,
+                    logicalX,
+                    level1SpellMenu,
+                    geometry,
+                    out command);
+            }
+            else if (rightHeld)
+            {
+                emitted = spellMenuController.Hold(
+                    1,
+                    logicalX,
+                    level1SpellMenu,
+                    geometry,
+                    out command);
+            }
+            else
+            {
+                spellMenuController.UpdateFamilyHover(
+                    logicalX,
+                    logicalY,
+                    level1SpellMenu,
+                    geometry);
+                command = default;
+            }
+            if (emitted)
+            {
+                spellMenuCommands.Enqueue(command);
+                Debug.Log(
+                    $"MC_SPELL_MENU opcode={command.Opcode} " +
+                    $"argument1={command.Argument1} argument2={command.Argument2}");
+            }
+            SyncSpellMenuControllerState();
+        }
+
+        private void SyncSpellMenuControllerState()
+        {
+            spellMenuHoverUiIndex = spellMenuController.HoverUiIndex;
+            spellMenuSelectedUiIndex = spellMenuController.SelectedUiIndex;
+            spellMenuHoverTier = spellMenuController.HoverTier;
         }
 
         private bool SpellEnabledForUiIndex(int uiIndex)
@@ -8697,48 +9247,6 @@ namespace MagicCarpet.Native
         {
             var tier = Mathf.FloorToInt((logicalX - startX) / tierPanelWidth);
             return Mathf.Clamp(tier, 0, unlockedTier);
-        }
-
-        private void BeginSpellAssignment(sbyte opcode, int mouseButton)
-        {
-            if (spellMenuHoverUiIndex < 0 ||
-                !SpellEnabledForUiIndex(spellMenuHoverUiIndex))
-            {
-                return;
-            }
-            spellMenuSelectedUiIndex = spellMenuHoverUiIndex;
-            spellMenuHoverTier = Mathf.Clamp(
-                level1SpellMenu.familySelectedTier[spellMenuSelectedUiIndex],
-                0,
-                SpellUnlockedTier(spellMenuSelectedUiIndex));
-            spellMenuPressedOpcode = opcode;
-            spellMenuPressedMouseButton = mouseButton;
-            UpdateSpellMenuHover();
-        }
-
-        private void EndSpellAssignmentChoice()
-        {
-            spellMenuSelectedUiIndex = -1;
-            spellMenuHoverTier = -1;
-            spellMenuPressedMouseButton = -1;
-            spellMenuPressedOpcode = 0;
-        }
-
-        private void QueueSpellAssignment()
-        {
-            if (spellMenuSelectedUiIndex < 0 ||
-                spellMenuHoverTier < 0 ||
-                !SpellEnabledForUiIndex(spellMenuSelectedUiIndex))
-            {
-                return;
-            }
-            spellAssignmentPending = true;
-            spellAssignmentOpcode = spellMenuPressedOpcode;
-            spellAssignmentUiIndex = checked((sbyte)spellMenuSelectedUiIndex);
-            spellAssignmentTier = checked((sbyte)spellMenuHoverTier);
-            Debug.Log(
-                $"MC_SPELL_MENU assign={(spellAssignmentOpcode == 31 ? "left" : "right")} " +
-                $"ui={spellAssignmentUiIndex} tier={spellAssignmentTier}");
         }
 
         private static void CaptureMouse()

@@ -528,7 +528,19 @@ pub struct SpellFireContext {
     pub selected_spell_ui_index: u8,
     /// Source spell-menu cursor `subSpellIndex_0x459_1113`.
     pub selected_subspell_index: i8,
+    /// Source two-stage menu state `byte_0x457_1111`: 0 idle, 1 left, 2 right.
+    pub spell_menu_stage: u8,
     pub enabled_holder_indices: [u16; 26],
+    /// Source per-family hand eligibility `array_0x3B5_949x`: 1 left, 2 right.
+    pub spell_hand_eligibility: [u8; 26],
+    /// True after live input changes the reset-projected eligibility table.
+    pub spell_hand_eligibility_dirty: bool,
+    /// Source per-family current tier `array_0x437_1079x`.
+    ///
+    /// This is deliberately distinct from each holder's applied
+    /// `byte_0x46_70`: final assignment opcodes preserve their raw tier in
+    /// player state while `SetSpell_6D5E0` clamps only the physical holder.
+    pub family_selected_tiers: [i8; 26],
     /// Single-player `spellsExperience_0x2CB_715x`.
     pub spell_experience: [i32; 26],
     /// Recomputed `SpellLevels_0x41D_1053z`.
@@ -676,42 +688,7 @@ pub fn latch_command_with_context(
             .find(|holder| holder.entity_index == fire.selected_holder_index)
             .map_or(0, |holder| holder.level_gate);
     }
-    if matches!(command.opcode, 31 | 32)
-        && let Some(fire) = context.spell_fire.as_mut()
-    {
-        let ui_index = command.argument_1.cast_unsigned();
-        let spell_index = SOURCE_SPELL_INDEX_MAP
-            .get(usize::from(ui_index))
-            .copied()
-            .expect("source-valid spell-menu UI index");
-        let holder_index = fire.enabled_holder_indices[usize::from(spell_index)];
-        if holder_index != 0 {
-            let requested_tier = command.argument_2.max(0);
-            let available_tier = fire.spell_levels[usize::from(spell_index)].max(0);
-            let tier = requested_tier.min(available_tier);
-            let holder = fire
-                .holders
-                .iter_mut()
-                .find(|holder| holder.entity_index == holder_index)
-                .expect("enabled spell family has a projected holder");
-            holder.level_gate = tier;
-            if command.opcode == 31 {
-                fire.left_holder_index = holder_index;
-                fire.left_subspell_index = tier;
-            } else {
-                fire.right_holder_index = holder_index;
-                fire.right_subspell_index = tier;
-            }
-            fire.selected_spell_ui_index = ui_index;
-            fire.selected_holder_index = holder_index;
-            fire.selected_subspell_index = tier;
-            context.events.push(FlightEvent::PrepareSound {
-                entity_index: 0,
-                player_index: i16::from(fire.caster.player_color_index),
-                sound_id: 14,
-            });
-        }
-    }
+    apply_spell_menu_command(command, context);
     if command.opcode == 0x27 {
         command.roll = 0;
         command.pitch = 0;
@@ -746,6 +723,84 @@ pub fn latch_command_with_context(
         argument_6: command.argument_6,
         argument_8: command.argument_8,
     }
+}
+
+fn apply_spell_menu_command(command: PlayerCommand, context: &mut FlightContext) {
+    match command.opcode {
+        40 => {
+            if let Some(fire) = context.spell_fire.as_mut()
+                && let Some((ui_index, spell_index)) = spell_menu_indices(command.argument_1)
+                && fire.enabled_holder_indices[spell_index] != 0
+            {
+                fire.selected_spell_ui_index = ui_index;
+                fire.selected_subspell_index = fire.family_selected_tiers[spell_index];
+                fire.spell_menu_stage = command.argument_2.cast_unsigned();
+            }
+        }
+        41 => {
+            if let Some(fire) = context.spell_fire.as_mut()
+                && let Some((_, spell_index)) =
+                    spell_menu_indices(fire.selected_spell_ui_index.cast_signed())
+                && fire.enabled_holder_indices[spell_index] != 0
+            {
+                let unlocked_tier = fire.spell_levels[spell_index].clamp(0, 2);
+                let tier = command.argument_1.clamp(0, unlocked_tier);
+                fire.selected_subspell_index = tier;
+                fire.family_selected_tiers[spell_index] = tier;
+            }
+        }
+        31 | 32 => {
+            if let Some(fire) = context.spell_fire.as_mut()
+                && let Some((_, spell_index)) = spell_menu_indices(command.argument_1)
+            {
+                let holder_index = fire.enabled_holder_indices[spell_index];
+                if holder_index != 0 {
+                    let raw_tier = command.argument_2;
+                    let holder = fire
+                        .holders
+                        .iter_mut()
+                        .find(|holder| holder.entity_index == holder_index)
+                        .expect("enabled spell family has a projected holder");
+                    holder.level_gate = raw_tier.clamp(0, 2);
+                    fire.family_selected_tiers[spell_index] = raw_tier;
+                    if command.opcode == 31 {
+                        fire.left_holder_index = holder_index;
+                        fire.left_subspell_index = raw_tier;
+                    } else {
+                        fire.right_holder_index = holder_index;
+                        fire.right_subspell_index = raw_tier;
+                    }
+                    fire.spell_menu_stage = 0;
+                    context.events.push(FlightEvent::PrepareSound {
+                        entity_index: 0,
+                        player_index: i16::from(fire.caster.player_color_index),
+                        sound_id: 14,
+                    });
+                }
+            }
+        }
+        38 => {
+            if let Some(fire) = context.spell_fire.as_mut()
+                && let Ok(spell_index) = usize::try_from(command.argument_1)
+                && spell_index < fire.spell_hand_eligibility.len()
+            {
+                fire.spell_hand_eligibility[spell_index] = command.argument_2.cast_unsigned();
+                fire.spell_hand_eligibility_dirty = true;
+                context.events.push(FlightEvent::PrepareSound {
+                    entity_index: 0,
+                    player_index: i16::from(fire.caster.player_color_index),
+                    sound_id: 14,
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+fn spell_menu_indices(argument: i8) -> Option<(u8, usize)> {
+    let ui_index = u8::try_from(argument).ok()?;
+    let spell_index = SOURCE_SPELL_INDEX_MAP.get(usize::from(ui_index)).copied()?;
+    Some((ui_index, usize::from(spell_index)))
 }
 
 pub fn decode_movement(flags: u8, state: &mut FlightState) {
@@ -1624,6 +1679,22 @@ fn feed_spell_fire(
             fire.right_subspell_index.cast_unsigned(),
             fire.selected_subspell_index.cast_unsigned(),
         ]);
+        if fire.spell_menu_stage != 0
+            || fire.family_selected_tiers.iter().any(|tier| *tier != 0)
+            || fire.spell_hand_eligibility_dirty
+        {
+            // Backward-compatible v2 extension: preserve the exact reset byte
+            // stream while making every future-affecting non-default menu
+            // state explicit and versioned.
+            feed(&[1, fire.spell_menu_stage]);
+            for tier in fire.family_selected_tiers {
+                feed(&[tier.cast_unsigned()]);
+            }
+            feed(&[u8::from(fire.spell_hand_eligibility_dirty)]);
+            for eligibility in fire.spell_hand_eligibility {
+                feed(&[eligibility]);
+            }
+        }
     }
     for holder_index in fire.enabled_holder_indices {
         feed(&holder_index.to_le_bytes());
@@ -3320,55 +3391,108 @@ mod tests {
         );
     }
 
-    #[test]
-    fn spell_menu_assignment_opcodes_bind_independent_hands_and_clamp_tier() {
-        let mut state = FlightState::default();
+    fn spell_menu_assignment_fixture() -> (FlightState, FlightContext) {
         let mut enabled_holder_indices = [0_u16; 26];
         enabled_holder_indices[0] = 21;
         enabled_holder_indices[1] = 22;
         let mut spell_levels = [0_i8; 26];
+        spell_levels[0] = 2;
         spell_levels[1] = 2;
-        let mut context = FlightContext {
+        let mut family_selected_tiers = [0_i8; 26];
+        family_selected_tiers[0] = 2;
+        family_selected_tiers[1] = 1;
+        let context = FlightContext {
             spell_fire: Some(SpellFireContext {
                 left_holder_index: 21,
                 right_holder_index: 22,
                 selected_holder_index: 21,
+                selected_subspell_index: 2,
                 enabled_holder_indices,
+                family_selected_tiers,
                 spell_levels,
                 holders: vec![
                     SpellActivationHolder {
                         entity_index: 21,
+                        activation_value: 1,
+                        mana_cost: 1,
                         ..SpellActivationHolder::default()
                     },
                     SpellActivationHolder {
                         entity_index: 22,
+                        model: 1,
+                        activation_value: 1,
+                        mana_cost: 1,
                         ..SpellActivationHolder::default()
                     },
                 ],
+                caster: SpellCasterState {
+                    mana: 100,
+                    ..SpellCasterState::default()
+                },
                 ..SpellFireContext::default()
             }),
             ..FlightContext::default()
         };
+        (FlightState::default(), context)
+    }
 
+    fn assert_left_family_stage(state: &mut FlightState, context: &mut FlightContext) {
+        let before_menu_hash = conformance_hash_v2(state, context);
         latch_command_with_context(
-            &mut state,
+            state,
             PlayerCommand {
-                opcode: 31,
-                argument_1: 1,
-                argument_2: 7,
+                opcode: 40,
+                argument_1: 0,
+                argument_2: 1,
                 ..PlayerCommand::default()
             },
-            &mut context,
+            context,
         );
         let fire = context.spell_fire.as_ref().unwrap();
-        assert_eq!(fire.left_holder_index, 22);
+        assert_eq!(
+            (
+                fire.selected_spell_ui_index,
+                fire.selected_subspell_index,
+                fire.spell_menu_stage,
+            ),
+            (0, 2, 1),
+            "family press copies its current tier and enters left stage"
+        );
+        assert_ne!(
+            conformance_hash_v2(state, context),
+            before_menu_hash,
+            "non-default menu stage/current tiers affect the live conformance hash"
+        );
+        latch_command_with_context(
+            state,
+            PlayerCommand {
+                opcode: 41,
+                argument_1: 7,
+                ..PlayerCommand::default()
+            },
+            context,
+        );
+        latch_command_with_context(
+            state,
+            PlayerCommand {
+                opcode: 31,
+                argument_1: 0,
+                argument_2: 2,
+                ..PlayerCommand::default()
+            },
+            context,
+        );
+        let fire = context.spell_fire.as_ref().unwrap();
+        assert_eq!(fire.left_holder_index, 21);
         assert_eq!(fire.right_holder_index, 22);
         assert_eq!(fire.left_subspell_index, 2);
         assert_eq!(fire.right_subspell_index, 0);
-        assert_eq!(fire.selected_holder_index, 22);
-        assert_eq!(fire.selected_spell_ui_index, 1);
+        assert_eq!(fire.selected_holder_index, 21);
+        assert_eq!(fire.selected_spell_ui_index, 0);
         assert_eq!(fire.selected_subspell_index, 2);
-        assert_eq!(fire.holders[1].level_gate, 2);
+        assert_eq!(fire.spell_menu_stage, 0);
+        assert_eq!(fire.family_selected_tiers[0], 2);
+        assert_eq!(fire.holders[0].level_gate, 2);
         assert_eq!(
             context.events,
             vec![FlightEvent::PrepareSound {
@@ -3377,26 +3501,216 @@ mod tests {
                 sound_id: 14,
             }]
         );
+    }
 
+    fn assert_right_family_stage(state: &mut FlightState, context: &mut FlightContext) {
         latch_command_with_context(
-            &mut state,
+            state,
+            PlayerCommand {
+                opcode: 40,
+                argument_1: 1,
+                argument_2: 2,
+                ..PlayerCommand::default()
+            },
+            context,
+        );
+        assert_eq!(
+            {
+                let fire = context.spell_fire.as_ref().unwrap();
+                (
+                    fire.selected_spell_ui_index,
+                    fire.selected_subspell_index,
+                    fire.spell_menu_stage,
+                )
+            },
+            (1, 1, 2),
+            "right press mirrors the current-family warp and stage"
+        );
+        latch_command_with_context(
+            state,
+            PlayerCommand {
+                opcode: 41,
+                argument_1: 2,
+                ..PlayerCommand::default()
+            },
+            context,
+        );
+        latch_command_with_context(
+            state,
+            PlayerCommand {
+                opcode: 32,
+                argument_1: 1,
+                argument_2: 2,
+                ..PlayerCommand::default()
+            },
+            context,
+        );
+        let fire = context.spell_fire.as_ref().unwrap();
+        assert_eq!(fire.left_holder_index, 21);
+        assert_eq!(fire.right_holder_index, 22);
+        assert_eq!(fire.left_subspell_index, 2);
+        assert_eq!(fire.right_subspell_index, 2);
+        assert_eq!(fire.selected_holder_index, 21);
+        assert_eq!(fire.selected_spell_ui_index, 1);
+        assert_eq!(fire.selected_subspell_index, 2);
+        assert_eq!(context.events.len(), 2);
+    }
+
+    fn assert_raw_tier_no_op_and_eligibility(state: &mut FlightState, context: &mut FlightContext) {
+        latch_command_with_context(
+            state,
+            PlayerCommand {
+                opcode: 40,
+                argument_1: 0,
+                argument_2: 1,
+                ..PlayerCommand::default()
+            },
+            context,
+        );
+        latch_command_with_context(
+            state,
+            PlayerCommand {
+                opcode: 31,
+                argument_1: 1,
+                argument_2: 7,
+                ..PlayerCommand::default()
+            },
+            context,
+        );
+        let fire = context.spell_fire.as_ref().unwrap();
+        assert_eq!(fire.family_selected_tiers[1], 7);
+        assert_eq!(fire.left_subspell_index, 7);
+        assert_eq!(fire.holders[1].level_gate, 2);
+        assert_eq!(
+            (
+                fire.selected_spell_ui_index,
+                fire.selected_subspell_index,
+                fire.selected_holder_index,
+            ),
+            (0, 2, 21),
+            "final assignment does not mutate the selected cursor"
+        );
+
+        let before_no_op = context.clone();
+        latch_command_with_context(
+            state,
+            PlayerCommand {
+                opcode: 32,
+                argument_1: -1,
+                argument_2: 7,
+                ..PlayerCommand::default()
+            },
+            context,
+        );
+        assert_eq!(&*context, &before_no_op, "family -1 is a strict no-op");
+
+        context.events.clear();
+        let before_eligibility_hash = conformance_hash_v2(state, context);
+        latch_command_with_context(
+            state,
+            PlayerCommand {
+                opcode: 38,
+                argument_1: 1,
+                argument_2: 1,
+                ..PlayerCommand::default()
+            },
+            context,
+        );
+        let fire = context.spell_fire.as_ref().unwrap();
+        assert_eq!(fire.spell_hand_eligibility[1], 1);
+        assert!(fire.spell_hand_eligibility_dirty);
+        assert_ne!(conformance_hash_v2(state, context), before_eligibility_hash);
+        assert_eq!(
+            context.events,
+            vec![FlightEvent::PrepareSound {
+                entity_index: 0,
+                player_index: 0,
+                sound_id: 14,
+            }]
+        );
+    }
+
+    fn assert_spell_menu_cast_routes(state: &mut FlightState, context: &mut FlightContext) {
+        latch_command_with_context(
+            state,
+            PlayerCommand {
+                opcode: 31,
+                argument_1: 1,
+                argument_2: 0,
+                ..PlayerCommand::default()
+            },
+            context,
+        );
+        latch_command_with_context(
+            state,
             PlayerCommand {
                 opcode: 32,
                 argument_1: 0,
                 argument_2: 0,
                 ..PlayerCommand::default()
             },
-            &mut context,
+            context,
         );
-        let fire = context.spell_fire.as_ref().unwrap();
-        assert_eq!(fire.left_holder_index, 22);
-        assert_eq!(fire.right_holder_index, 21);
-        assert_eq!(fire.left_subspell_index, 2);
-        assert_eq!(fire.right_subspell_index, 0);
-        assert_eq!(fire.selected_holder_index, 21);
-        assert_eq!(fire.selected_spell_ui_index, 0);
-        assert_eq!(fire.selected_subspell_index, 0);
-        assert_eq!(context.events.len(), 2);
+        context.events.clear();
+        step_turn_with_context(
+            state,
+            PlayerCommand {
+                flags: 0x10,
+                ..PlayerCommand::default()
+            },
+            FlightProfile::OUTDOOR,
+            &FLAT,
+            context,
+        );
+        assert_eq!(
+            context.events.first(),
+            Some(&FlightEvent::RequestSpellActivation {
+                source: SpellFireSource::Left,
+                holder_entity_index: 22,
+                direction_mask: 256,
+            })
+        );
+        assert_eq!(
+            context.spell_fire.as_ref().unwrap().caster.control_flags & 0x0300,
+            256
+        );
+        {
+            let fire = context.spell_fire.as_mut().unwrap();
+            fire.holders[0].active_value = 0;
+            fire.holders[1].active_value = 0;
+        }
+        context.events.clear();
+        step_turn_with_context(
+            state,
+            PlayerCommand {
+                flags: 0x20,
+                ..PlayerCommand::default()
+            },
+            FlightProfile::OUTDOOR,
+            &FLAT,
+            context,
+        );
+        assert_eq!(
+            context.events.first(),
+            Some(&FlightEvent::RequestSpellActivation {
+                source: SpellFireSource::Right,
+                holder_entity_index: 21,
+                direction_mask: 512,
+            })
+        );
+        assert_eq!(
+            context.spell_fire.as_ref().unwrap().caster.control_flags & 0x0300,
+            512
+        );
+    }
+
+    #[test]
+    fn spell_menu_assignment_opcodes_bind_independent_hands_and_clamp_tier() {
+        let (mut state, mut context) = spell_menu_assignment_fixture();
+        assert_left_family_stage(&mut state, &mut context);
+        assert_right_family_stage(&mut state, &mut context);
+        assert_raw_tier_no_op_and_eligibility(&mut state, &mut context);
+        assert_spell_menu_cast_routes(&mut state, &mut context);
     }
 
     #[test]
@@ -3406,11 +3720,14 @@ mod tests {
         enabled_holder_indices[1] = 22;
         let mut spell_levels = [0_i8; 26];
         spell_levels[1] = 2;
+        let mut family_selected_tiers = [0_i8; 26];
+        family_selected_tiers[1] = 2;
         let mut context = FlightContext {
             spell_fire: Some(SpellFireContext {
                 left_holder_index: 22,
                 right_holder_index: 22,
                 enabled_holder_indices,
+                family_selected_tiers,
                 spell_levels,
                 holders: vec![SpellActivationHolder {
                     entity_index: 22,
@@ -3425,9 +3742,47 @@ mod tests {
         latch_command_with_context(
             &mut state,
             PlayerCommand {
+                opcode: 40,
+                argument_1: 1,
+                argument_2: 1,
+                ..PlayerCommand::default()
+            },
+            &mut context,
+        );
+        latch_command_with_context(
+            &mut state,
+            PlayerCommand {
+                opcode: 41,
+                argument_1: 2,
+                ..PlayerCommand::default()
+            },
+            &mut context,
+        );
+        latch_command_with_context(
+            &mut state,
+            PlayerCommand {
                 opcode: 31,
                 argument_1: 1,
                 argument_2: 2,
+                ..PlayerCommand::default()
+            },
+            &mut context,
+        );
+        latch_command_with_context(
+            &mut state,
+            PlayerCommand {
+                opcode: 40,
+                argument_1: 1,
+                argument_2: 2,
+                ..PlayerCommand::default()
+            },
+            &mut context,
+        );
+        latch_command_with_context(
+            &mut state,
+            PlayerCommand {
+                opcode: 41,
+                argument_1: 1,
                 ..PlayerCommand::default()
             },
             &mut context,
@@ -3447,7 +3802,9 @@ mod tests {
         assert_eq!(fire.left_subspell_index, 2);
         assert_eq!(fire.right_subspell_index, 1);
         assert_eq!(fire.selected_subspell_index, 1);
+        assert_eq!(fire.family_selected_tiers[1], 1);
         assert_eq!(fire.holders[0].level_gate, 1);
+        assert_eq!(fire.spell_menu_stage, 0);
     }
 
     #[test]

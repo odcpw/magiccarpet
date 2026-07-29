@@ -616,7 +616,7 @@ pub struct McLevel1SpellMenuSnapshotV2 {
     pub family_enabled: [u8; 4],
     pub family_unlocked_tier: [i8; 4],
     pub family_selected_tier: [i8; 4],
-    pub reserved_1: [u8; 4],
+    pub family_hand_eligibility: [u8; 4],
     pub holder_entity_index: [u16; 4],
     pub reserved: [u32; 2],
 }
@@ -6662,11 +6662,7 @@ fn level1_spell_menu_snapshot(session: &SessionRecord) -> McLevel1SpellMenuSnaps
         holder_entity_index[family] = holder_index;
         family_enabled[family] = u8::from(holder_index != 0);
         family_unlocked_tier[family] = fire.spell_levels[family].clamp(0, 2);
-        family_selected_tier[family] = fire
-            .holders
-            .iter()
-            .find(|holder| holder.entity_index == holder_index)
-            .map_or(0, |holder| holder.level_gate);
+        family_selected_tier[family] = fire.family_selected_tiers[family];
     }
     McLevel1SpellMenuSnapshotV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
@@ -6684,7 +6680,7 @@ fn level1_spell_menu_snapshot(session: &SessionRecord) -> McLevel1SpellMenuSnaps
         family_enabled,
         family_unlocked_tier,
         family_selected_tier,
-        reserved_1: [0; 4],
+        family_hand_eligibility: std::array::from_fn(|family| fire.spell_hand_eligibility[family]),
         holder_entity_index,
         reserved: [0; 2],
     }
@@ -11205,6 +11201,7 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
         assert_eq!(spell_menu.family_enabled, [1, 1, 0, 0]);
         assert_eq!(spell_menu.family_unlocked_tier, [0; 4]);
         assert_eq!(spell_menu.family_selected_tier, [0; 4]);
+        assert_eq!(spell_menu.family_hand_eligibility, [0; 4]);
         assert_ne!(spell_menu.holder_entity_index[0], 0);
         assert_ne!(spell_menu.holder_entity_index[1], 0);
         assert!(hud.global_mana_denominator > 0);
@@ -11553,35 +11550,55 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 
-    #[test]
-    fn top_hud_uses_shared_holder_tier_while_menu_preserves_per_hand_tiers() {
-        let handle = open_fixture();
+    fn configure_shared_possession_holder(handle: u64) {
         with_session_mut(handle, |session| {
             let fire =
                 session.context.spell_fire.as_mut().ok_or_else(|| {
                     AbiError::new(MC_STATUS_VALIDATION_FAILED, "spell state absent")
                 })?;
-            fire.left_holder_index = 154;
-            fire.right_holder_index = 154;
             fire.selected_holder_index = 154;
             fire.selected_spell_ui_index = 1;
-            fire.left_subspell_index = 2;
-            fire.right_subspell_index = 1;
-            fire.selected_subspell_index = 1;
+            fire.selected_subspell_index = 2;
             fire.spell_levels[1] = 2;
+            fire.family_selected_tiers[1] = 2;
             fire.holders
                 .iter_mut()
                 .find(|holder| holder.entity_index == 154)
                 .ok_or_else(|| {
                     AbiError::new(MC_STATUS_VALIDATION_FAILED, "possession holder absent")
                 })?
-                .level_gate = 1;
+                .level_gate = 2;
             Ok(())
         })
         .unwrap();
+    }
 
+    fn submit_spell_menu_command(
+        handle: u64,
+        snapshot: &mut McSessionSnapshotV2,
+        opcode: i8,
+        argument_1: i8,
+        argument_2: i8,
+    ) {
+        let command = McCommandV2 {
+            opcode,
+            argument_1,
+            argument_2,
+            ..valid_command()
+        };
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut *snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+    }
+
+    fn read_level1_hud(handle: u64) -> McLevel1HudSnapshotV2 {
         let mut hud = McLevel1HudSnapshotV2::default();
-        let mut menu = McLevel1SpellMenuSnapshotV2::default();
         assert_eq!(
             mc_native_level1_hud_snapshot(
                 handle,
@@ -11590,6 +11607,11 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
             ),
             MC_STATUS_OK
         );
+        hud
+    }
+
+    fn read_level1_spell_menu(handle: u64) -> McLevel1SpellMenuSnapshotV2 {
+        let mut menu = McLevel1SpellMenuSnapshotV2::default();
         assert_eq!(
             mc_native_level1_spell_menu_snapshot(
                 handle,
@@ -11598,12 +11620,140 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
             ),
             MC_STATUS_OK
         );
+        menu
+    }
+
+    fn assert_raw_tier_and_family_minus_one(handle: u64, snapshot: &mut McSessionSnapshotV2) {
+        submit_spell_menu_command(handle, snapshot, 40, 0, 1);
+        let cursor_before_raw = with_session(handle, |session| {
+            let fire =
+                session.context.spell_fire.as_ref().ok_or_else(|| {
+                    AbiError::new(MC_STATUS_VALIDATION_FAILED, "spell state absent")
+                })?;
+            Ok((
+                fire.selected_spell_ui_index,
+                fire.selected_subspell_index,
+                fire.selected_holder_index,
+            ))
+        })
+        .unwrap();
+        submit_spell_menu_command(handle, snapshot, 31, 1, 7);
+        let menu = read_level1_spell_menu(handle);
+        assert_eq!((menu.left_family, menu.left_tier), (1, 7));
+        assert_eq!(menu.family_selected_tier[1], 7);
+        let (cursor_after_raw, holder_tier) = with_session(handle, |session| {
+            let fire =
+                session.context.spell_fire.as_ref().ok_or_else(|| {
+                    AbiError::new(MC_STATUS_VALIDATION_FAILED, "spell state absent")
+                })?;
+            let holder_tier = fire
+                .holders
+                .iter()
+                .find(|holder| holder.entity_index == 154)
+                .ok_or_else(|| {
+                    AbiError::new(MC_STATUS_VALIDATION_FAILED, "possession holder absent")
+                })?
+                .level_gate;
+            Ok((
+                (
+                    fire.selected_spell_ui_index,
+                    fire.selected_subspell_index,
+                    fire.selected_holder_index,
+                ),
+                holder_tier,
+            ))
+        })
+        .unwrap();
+        assert_eq!(cursor_after_raw, cursor_before_raw);
+        assert_eq!(holder_tier, 2);
+
+        let before_no_op = menu;
+        submit_spell_menu_command(handle, snapshot, 32, -1, 7);
+        let menu = read_level1_spell_menu(handle);
+        assert_eq!(
+            (
+                menu.selected_ui_index,
+                menu.selected_tier,
+                menu.left_family,
+                menu.left_tier,
+                menu.right_family,
+                menu.right_tier,
+                menu.family_selected_tier,
+                menu.holder_entity_index,
+            ),
+            (
+                before_no_op.selected_ui_index,
+                before_no_op.selected_tier,
+                before_no_op.left_family,
+                before_no_op.left_tier,
+                before_no_op.right_family,
+                before_no_op.right_tier,
+                before_no_op.family_selected_tier,
+                before_no_op.holder_entity_index,
+            )
+        );
+    }
+
+    fn assert_spell_menu_cast_routes(handle: u64, snapshot: &mut McSessionSnapshotV2) {
+        submit_spell_menu_command(handle, snapshot, 31, 1, 0);
+        submit_spell_menu_command(handle, snapshot, 32, 0, 0);
+        submit_spell_menu_command(handle, snapshot, 38, 0, 2);
+        let menu = read_level1_spell_menu(handle);
+        assert_eq!(menu.family_hand_eligibility, [2, 0, 0, 0]);
+        for (flags, expected_mask) in [(0x10_i8, 256_u32), (0x20_i8, 512_u32)] {
+            let command = McCommandV2 {
+                flags,
+                ..valid_command()
+            };
+            assert_eq!(
+                mc_native_session_step(
+                    handle,
+                    &raw const command,
+                    &raw mut *snapshot,
+                    struct_size::<McSessionSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+            let (left_holder, right_holder, direction_mask) = with_session(handle, |session| {
+                let fire = session.context.spell_fire.as_ref().ok_or_else(|| {
+                    AbiError::new(MC_STATUS_VALIDATION_FAILED, "spell state absent")
+                })?;
+                Ok((
+                    fire.left_holder_index,
+                    fire.right_holder_index,
+                    fire.caster.control_flags & 0x0300,
+                ))
+            })
+            .unwrap();
+            assert_eq!((left_holder, right_holder), (154, 153));
+            assert_eq!(direction_mask, expected_mask);
+        }
+    }
+
+    #[test]
+    fn top_hud_uses_shared_holder_tier_while_menu_preserves_per_hand_tiers() {
+        let handle = open_fixture();
+        configure_shared_possession_holder(handle);
+
+        let mut snapshot = McSessionSnapshotV2::default();
+        submit_spell_menu_command(handle, &mut snapshot, 40, 1, 1);
+        submit_spell_menu_command(handle, &mut snapshot, 41, 2, 0);
+        submit_spell_menu_command(handle, &mut snapshot, 31, 1, 2);
+        submit_spell_menu_command(handle, &mut snapshot, 40, 1, 2);
+        submit_spell_menu_command(handle, &mut snapshot, 41, 1, 0);
+        submit_spell_menu_command(handle, &mut snapshot, 32, 1, 1);
+
+        let hud = read_level1_hud(handle);
+        let menu = read_level1_spell_menu(handle);
         assert_eq!((hud.left.model, hud.left.tier), (1, 1));
         assert_eq!((hud.right.model, hud.right.tier), (1, 1));
         assert_eq!((hud.selected_model, hud.selected_tier), (1, 1));
         assert_eq!((menu.left_family, menu.left_tier), (1, 2));
         assert_eq!((menu.right_family, menu.right_tier), (1, 1));
         assert_eq!(menu.family_selected_tier[1], 1);
+
+        assert_raw_tier_and_family_minus_one(handle, &mut snapshot);
+        assert_spell_menu_cast_routes(handle, &mut snapshot);
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 

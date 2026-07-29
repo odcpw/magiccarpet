@@ -464,7 +464,7 @@ namespace MagicCarpet.Native
             [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
             internal sbyte[] familySelectedTier;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
-            internal byte[] reserved1;
+            internal byte[] familyHandEligibility;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
             internal ushort[] holderEntityIndex;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
