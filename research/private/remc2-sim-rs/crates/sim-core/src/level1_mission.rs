@@ -1524,6 +1524,7 @@ pub const FIREBALL_SPELL_FAMILY: u8 = 0;
 pub const FIREBALL_LIFETIME_TICKS: i16 = 0x2000 / FIREBALL_SPEED;
 pub const FIREBALL_PAYLOAD: i32 = 250;
 pub const FIREBALL_MANA_COST: i32 = 100;
+pub const FIREBALL_HOLDER_ACTIVATION_TICKS: u16 = 5;
 /// Qualified owner-data values from `DATA/SPELLS.DAT`, as loaded by remc2
 /// before `sub_6D9C0` evaluates single-player progression.
 pub const FIREBALL_TIER_THRESHOLDS_SINGLE_PLAYER: [i32; 3] = [0, 400, 12_000];
@@ -1996,6 +1997,49 @@ pub const SPEED_TRAIL_LIFE: i16 = 32;
 pub const SPEED_PICKUP_SOUND: u16 = 18;
 pub const EXIT_SWITCH_SOUND: u16 = 41;
 pub const EXIT_ACCELERATION_SOUND: u16 = 19;
+const SPELL_PICKUP_CLASS: u8 = 15;
+const SPELL_FAMILY_COUNT: usize = 4;
+const SPELL_WORLD_PICKUP_ACTIONS: [u8; SPELL_FAMILY_COUNT] = [1, 4, 7, 10];
+const SPELL_RESPAWNING_PICKUP_ACTIONS: [u8; SPELL_FAMILY_COUNT] = [2, 5, 8, 11];
+const SPELL_HOLDER_ACTIONS: [u8; SPELL_FAMILY_COUNT] = [0, 3, 6, 9];
+const SPELL_JAR_REWARD_CLASS: u8 = 10;
+/// Level 1's reachable class-10/action-98 parent model at the pinned source commit.
+pub const SPELL_JAR_REWARD_MODEL: u8 = 91;
+const SPELL_JAR_REWARD_ACTION: u8 = 98;
+const SPELL_JAR_REWARD_SPHERE_COUNT: usize = 3;
+const SPELL_JAR_REWARD_MIN_SPEED: i16 = 64;
+const SPELL_JAR_REWARD_MAX_SPEED: i16 = 768;
+const SPELL_JAR_REWARD_VERTICAL_BASE: u16 = 128;
+const SPELL_JAR_REWARD_GROUND_CLEARANCE: i16 = 96;
+const SPELL_JAR_REWARD_SPHERE_LIFE: i32 = 140;
+const SPELL_JAR_REWARD_SOURCE_FAMILY_COUNT: usize = 26;
+/// Pinned owned `SPELLS.DAT`, 80-byte records, third subspell `xpos1_E`
+/// at record + 66. `sub_32CF0` visits these original spell indices in order.
+const SPELL_JAR_REWARD_THIRD_SUBSPELL_XPOS: [i32; SPELL_JAR_REWARD_SOURCE_FAMILY_COUNT] = [
+    12_000, 4_800, 80, 1_200, 1_050, 1_200, 1_200, 2_000, 1_200, 10_000, 2_000, 990, 1_080, 1_200,
+    1_200, 1_600, 2_400, 3_600, 8_000, 1_200, 3_000, 1_200, 720, 1_200, 1_600, 1_600,
+];
+const SPELL_JAR_REWARD_EXPERIENCE: [i32; SPELL_JAR_REWARD_SOURCE_FAMILY_COUNT] =
+    spell_jar_reward_experience_sequence(SPELL_JAR_REWARD_THIRD_SUBSPELL_XPOS);
+/// Compressed Level 1 family -> original `SPELLS.DAT` family.
+const SPELL_JAR_REWARD_SOURCE_FAMILY_BY_LEVEL1_FAMILY: [u8; SPELL_FAMILY_COUNT] = [0, 3, 16, 2];
+
+const fn spell_jar_reward_experience(tier_two_threshold: i32) -> i32 {
+    let sign = tier_two_threshold >> 31;
+    (tier_two_threshold - (sign << 9) + sign) >> 9
+}
+
+const fn spell_jar_reward_experience_sequence(
+    source: [i32; SPELL_JAR_REWARD_SOURCE_FAMILY_COUNT],
+) -> [i32; SPELL_JAR_REWARD_SOURCE_FAMILY_COUNT] {
+    let mut result = [0; SPELL_JAR_REWARD_SOURCE_FAMILY_COUNT];
+    let mut index = 0;
+    while index < SPELL_JAR_REWARD_SOURCE_FAMILY_COUNT {
+        result[index] = spell_jar_reward_experience(source[index]);
+        index += 1;
+    }
+    result
+}
 
 const MISSION_ACTOR_CLASS: u8 = 5;
 const CASTLE_JAR_FEATURE: u16 = 31;
@@ -2346,6 +2390,40 @@ pub struct Level1Actor {
     pub visible: bool,
 }
 
+fn is_collected_castle_holder(actor: &Level1Actor) -> bool {
+    actor.kind == Level1ActorKind::CastleSpellJar
+        && actor.class == SPELL_PICKUP_CLASS
+        && actor.model == CASTLE_SPELL_FAMILY
+        && actor.collected
+}
+
+fn select_collected_spell_hand(
+    fire: &mut crate::SpellFireContext,
+    holder_index: u16,
+    hand_override: u8,
+) {
+    match hand_override {
+        2 => {
+            fire.left_holder_index = holder_index;
+            fire.left_subspell_index = 0;
+        }
+        nonzero if nonzero != 0 => {
+            fire.right_holder_index = holder_index;
+            fire.right_subspell_index = 0;
+        }
+        // Source `word_0x4A == 0`: choose left when it is empty or right is
+        // occupied; otherwise choose right.
+        _ if fire.left_holder_index == 0 || fire.right_holder_index != 0 => {
+            fire.left_holder_index = holder_index;
+            fire.left_subspell_index = 0;
+        }
+        _ => {
+            fire.right_holder_index = holder_index;
+            fire.right_subspell_index = 0;
+        }
+    }
+}
+
 /// One source-arena-owned body node created immediately by the model-3
 /// constructor. Unlike authored actors, body nodes have no authored row and
 /// are therefore keyed by their source slot in the native/Unity bridge.
@@ -2515,6 +2593,9 @@ enum SourceOccupant {
     DeathBurst(u32),
     SpeedTrail(u32),
     CheckpointSmoke(u32),
+    SpellPickup {
+        family: u8,
+    },
     Ambient(u16),
     MultipartSegment(u16),
     Resident {
@@ -2577,6 +2658,11 @@ impl SourceOccupant {
                 CHECKPOINT_SMOKE_CLASS,
                 CHECKPOINT_SMOKE_MODEL,
                 CHECKPOINT_SMOKE_ACTION,
+            )),
+            Self::SpellPickup { family } => Some((
+                SPELL_PICKUP_CLASS,
+                family,
+                SPELL_RESPAWNING_PICKUP_ACTIONS[family as usize],
             )),
             Self::Ambient(_) => None,
             Self::MultipartSegment(_) => Some((
@@ -4158,6 +4244,10 @@ impl Level1MissionTemplate {
             has_speed_spell: false,
             speed_experience: 0,
             speed_tier: 0,
+            spell_acquisition_order: Vec::new(),
+            spell_pickup_hand_overrides: BTreeMap::new(),
+            spell_acquisition_hand_overrides: BTreeMap::new(),
+            spell_jar_reward_experience_order: Vec::new(),
             castle_exists: false,
             castle_source_entity_index: 0,
             castle_presentation_id: 0,
@@ -4195,6 +4285,7 @@ impl Level1MissionTemplate {
             projectiles: Vec::new(),
             impacts: Vec::new(),
             mana_spheres: Vec::new(),
+            temporary_mana_sphere_life: BTreeMap::new(),
             mana_sphere_map_chains: RenderableMapChains::empty(),
             source_map_chains: RenderableMapChains::empty(),
             mana_carrier: None,
@@ -4324,6 +4415,24 @@ pub struct Level1MissionState {
     pub has_speed_spell: bool,
     pub speed_experience: i32,
     pub speed_tier: i8,
+    /// Source-dispatch order in which class-15 world holders were acquired.
+    ///
+    /// `sub_68FF0` assigns a hand before returning from the current source
+    /// slot. Keeping that order separate from authored-table order is
+    /// necessary when multiple overlapping jars are collected in one turn.
+    spell_acquisition_order: Vec<u16>,
+    /// Source class-15 `word_0x4A` overrides waiting on world pickups.
+    ///
+    /// Two forces the acquired holder into the left hand; every other
+    /// nonzero value forces the right hand. Acquisition consumes the source
+    /// value before the constructor/replacement tail.
+    spell_pickup_hand_overrides: BTreeMap<u16, u8>,
+    /// Consumed hand choice retained with each collected holder so projection
+    /// into a newly created `FlightContext` remains deterministic.
+    spell_acquisition_hand_overrides: BTreeMap<u16, u8>,
+    /// Original `SPELLS.DAT` family index and signed award, in the exact
+    /// ascending order committed by each even-phase action-98 dispatch.
+    spell_jar_reward_experience_order: Vec<(u8, i32)>,
     pub castle_exists: bool,
     pub castle_source_entity_index: u16,
     pub castle_presentation_id: u32,
@@ -4362,6 +4471,9 @@ pub struct Level1MissionState {
     projectiles: Vec<Level1Projectile>,
     impacts: Vec<FireballImpact>,
     mana_spheres: Vec<ManaSphere>,
+    /// Source `struct_byte_0xc.byte[1] & 0x20` plus `life_0x8` for the
+    /// temporary action-98 spheres. Ordinary spheres have no entry.
+    temporary_mana_sphere_life: BTreeMap<u16, i32>,
     mana_sphere_map_chains: RenderableMapChains,
     /// Source map-cell order used by `sub_10780`/`sub_108B0`.
     source_map_chains: RenderableMapChains,
@@ -5051,7 +5163,7 @@ impl Level1MissionState {
         let occupant = self.source_pool.occupant(source_entity_index)?;
 
         match occupant {
-            SourceOccupant::Authored(_) => {
+            SourceOccupant::Authored(_) | SourceOccupant::SpellPickup { .. } => {
                 Some(self.current_authored_source_entity_view(source_entity_index, record, view))
             }
             SourceOccupant::Resident { .. } => {
@@ -5999,6 +6111,23 @@ impl Level1MissionState {
     }
 
     #[must_use]
+    pub fn spell_jar_reward_experience_order(&self) -> &[(u8, i32)] {
+        &self.spell_jar_reward_experience_order
+    }
+
+    /// Set source class-15 `word_0x4A` for one world pickup.
+    ///
+    /// Zero is the ordinary empty-hand rule, two forces left, and every other
+    /// nonzero value forces right. The value is consumed on acquisition.
+    pub fn set_spell_pickup_hand_override(&mut self, source_slot: u16, value: u8) {
+        if value == 0 {
+            self.spell_pickup_hand_overrides.remove(&source_slot);
+        } else {
+            self.spell_pickup_hand_overrides.insert(source_slot, value);
+        }
+    }
+
+    #[must_use]
     pub fn mana_carrier(&self) -> Option<&ManaCarrier> {
         self.mana_carrier.as_ref().filter(|carrier| carrier.active)
     }
@@ -6408,6 +6537,60 @@ impl Level1MissionState {
             hash.u16(trail.life.cast_unsigned());
             hash.u8(u8::from(trail.active));
         }
+        if !self.spell_acquisition_order.is_empty() {
+            hash.bytes(b"spell-acquisition-order\0");
+            hash.u32(
+                u32::try_from(self.spell_acquisition_order.len())
+                    .expect("spell acquisition count fits u32"),
+            );
+            for source_slot in &self.spell_acquisition_order {
+                hash.u16(*source_slot);
+            }
+        }
+        if !self.spell_pickup_hand_overrides.is_empty() {
+            hash.bytes(b"spell-pickup-hand-overrides\0");
+            hash.u32(
+                u32::try_from(self.spell_pickup_hand_overrides.len())
+                    .expect("spell pickup hand override count fits u32"),
+            );
+            for (source_slot, hand_override) in &self.spell_pickup_hand_overrides {
+                hash.u16(*source_slot);
+                hash.u8(*hand_override);
+            }
+        }
+        if !self.spell_acquisition_hand_overrides.is_empty() {
+            hash.bytes(b"spell-acquisition-hand-overrides\0");
+            hash.u32(
+                u32::try_from(self.spell_acquisition_hand_overrides.len())
+                    .expect("spell acquisition hand override count fits u32"),
+            );
+            for (source_slot, hand_override) in &self.spell_acquisition_hand_overrides {
+                hash.u16(*source_slot);
+                hash.u8(*hand_override);
+            }
+        }
+        if !self.spell_jar_reward_experience_order.is_empty() {
+            hash.bytes(b"spell-jar-reward-experience-order\0");
+            hash.u32(
+                u32::try_from(self.spell_jar_reward_experience_order.len())
+                    .expect("spell jar reward experience count fits u32"),
+            );
+            for (source_family, amount) in &self.spell_jar_reward_experience_order {
+                hash.u8(*source_family);
+                hash.u32(amount.cast_unsigned());
+            }
+        }
+        if !self.temporary_mana_sphere_life.is_empty() {
+            hash.bytes(b"temporary-mana-sphere-life\0");
+            hash.u32(
+                u32::try_from(self.temporary_mana_sphere_life.len())
+                    .expect("temporary mana sphere count fits u32"),
+            );
+            for (source_slot, life) in &self.temporary_mana_sphere_life {
+                hash.u16(*source_slot);
+                hash.u32(life.cast_unsigned());
+            }
+        }
         hash.u32(self.global_rng);
         hash.u32(self.next_effect_id);
         hash.bytes(&self.model_phase_counters);
@@ -6509,6 +6692,145 @@ impl Level1MissionState {
             random_state: self.global_rng,
         });
         true
+    }
+
+    fn try_spawn_spell_jar_reward_sphere<W: FlightWorld>(
+        &mut self,
+        world: &W,
+        source_entity_index: u16,
+        source_position: Position,
+        parent_rng: &mut u16,
+    ) -> bool {
+        let Some(sphere_slot) = self.allocate_mana_sphere_source() else {
+            return false;
+        };
+        let id = u32::from(sphere_slot);
+        *parent_rng = next_rng16(*parent_rng);
+        let speed = i16::try_from(*parent_rng % 0x300)
+            .expect("slot-98 sphere speed modulus fits i16")
+            .clamp(SPELL_JAR_REWARD_MIN_SPEED, SPELL_JAR_REWARD_MAX_SPEED);
+        *parent_rng = next_rng16(*parent_rng);
+        let vertical_velocity =
+            i16::try_from((*parent_rng & 0x7f).wrapping_add(SPELL_JAR_REWARD_VERTICAL_BASE))
+                .expect("slot-98 vertical speed fits i16");
+        *parent_rng = next_rng16(*parent_rng);
+        let _render_variant = (*parent_rng % 9).wrapping_sub(1);
+        *parent_rng = next_rng16(*parent_rng);
+        let mana = i32::from(*parent_rng % 0x0a00) + 1;
+        *parent_rng = next_rng16(*parent_rng);
+        let yaw = i16::try_from(*parent_rng & 0x07ff).expect("slot-98 sphere yaw is 11-bit");
+        let mut velocity = Position::default();
+        move_entity(&mut velocity, yaw, 0, speed);
+        let mut position = source_position;
+        position.z = world
+            .ground_height(source_position)
+            .wrapping_add(SPELL_JAR_REWARD_GROUND_CLEARANCE);
+        let phase = sphere_slot.to_le_bytes()[0];
+        self.source_slots[usize::from(sphere_slot)].phase = phase;
+        let entity_rng = self.source_slots[usize::from(sphere_slot)].entity_rng;
+        self.mana_spheres.push(ManaSphere {
+            id,
+            source_entity_index: sphere_slot,
+            entity_rng,
+            position,
+            velocity_x: velocity.x.cast_signed(),
+            velocity_y: velocity.y.cast_signed(),
+            vertical_velocity,
+            yaw,
+            mana,
+            owner_entity_index: 0,
+            incoming_owner_entity_index: 0,
+            assigned_carrier_id: 0,
+            phase,
+            active: true,
+            pending_delete: false,
+        });
+        self.temporary_mana_sphere_life
+            .insert(sphere_slot, SPELL_JAR_REWARD_SPHERE_LIFE);
+        self.mana_sphere_map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: sphere_slot,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .expect("slot-98 sphere source slot fits the map chain");
+        self.events.push(Level1MissionEvent::ManaSphereSpawned {
+            sphere_id: id,
+            source_entity_index,
+            mana,
+        });
+        true
+    }
+
+    /// Dispatch class-10 action 98 (`sub_32CF0`) at its source cursor.
+    ///
+    /// Each of the three constructors is independent: a failed allocation
+    /// consumes no parent RNG and does not prevent either later attempts or
+    /// the progression tail.
+    fn update_spell_jar_reward_slot<W: FlightWorld>(
+        &mut self,
+        world: &W,
+        source_entity_index: u16,
+        source_position: Position,
+    ) {
+        let Some(source_record) = self
+            .source_slots
+            .get(usize::from(source_entity_index))
+            .copied()
+            .filter(|record| {
+                record.active
+                    && record.class == SPELL_JAR_REWARD_CLASS
+                    && record.action == SPELL_JAR_REWARD_ACTION
+            })
+        else {
+            return;
+        };
+        let mut parent_rng = source_record.entity_rng;
+        for _ in 0..SPELL_JAR_REWARD_SPHERE_COUNT {
+            self.try_spawn_spell_jar_reward_sphere(
+                world,
+                source_entity_index,
+                source_position,
+                &mut parent_rng,
+            );
+        }
+        self.source_slots[usize::from(source_entity_index)].entity_rng = parent_rng;
+        if let Some(actor) = self
+            .actors
+            .iter_mut()
+            .find(|actor| actor.source_entity_index == source_entity_index)
+        {
+            actor.entity_rng = parent_rng;
+        }
+        // The source's byte_0x3E bit zero suppresses only progression, not
+        // the three constructor attempts above.
+        if source_record.phase & 1 == 0 {
+            for (source_family, amount) in SPELL_JAR_REWARD_EXPERIENCE.iter().copied().enumerate() {
+                let source_family =
+                    u8::try_from(source_family).expect("source spell family fits u8");
+                self.spell_jar_reward_experience_order
+                    .push((source_family, amount));
+                if let Some(level1_family) = SPELL_JAR_REWARD_SOURCE_FAMILY_BY_LEVEL1_FAMILY
+                    .iter()
+                    .position(|candidate| *candidate == source_family)
+                {
+                    self.award_spell_experience(
+                        u8::try_from(level1_family).expect("Level 1 spell family fits u8"),
+                        amount,
+                    );
+                }
+            }
+        }
+        let next_phase = source_record.phase.wrapping_add(1);
+        self.source_slots[usize::from(source_entity_index)].phase = next_phase;
+        if let Some(actor) = self
+            .actors
+            .iter_mut()
+            .find(|actor| actor.source_entity_index == source_entity_index)
+        {
+            actor.phase = next_phase;
+        }
     }
 
     pub fn spawn_mana_sphere_from_death<W: FlightWorld>(
@@ -6642,11 +6964,7 @@ impl Level1MissionState {
         {
             return false;
         }
-        let Some(holder_index) = self
-            .actors
-            .iter()
-            .position(|actor| actor.kind == Level1ActorKind::CastleSpellJar && actor.collected)
-        else {
+        let Some(holder_index) = self.actors.iter().position(is_collected_castle_holder) else {
             return false;
         };
 
@@ -6713,7 +7031,7 @@ impl Level1MissionState {
     pub fn castle_holder_active_value(&self) -> i16 {
         self.actors
             .iter()
-            .find(|actor| actor.kind == Level1ActorKind::CastleSpellJar && actor.collected)
+            .find(|actor| is_collected_castle_holder(actor))
             .map_or(0, |actor| {
                 i16::try_from(actor.state_value).expect("Castle holder active value fits i16")
             })
@@ -6723,7 +7041,7 @@ impl Level1MissionState {
         if let Some(holder) = self
             .actors
             .iter_mut()
-            .find(|actor| actor.kind == Level1ActorKind::CastleSpellJar && actor.collected)
+            .find(|actor| is_collected_castle_holder(actor))
         {
             holder.state_value = i32::from(value);
         }
@@ -6816,33 +7134,47 @@ impl Level1MissionState {
             // experience does not silently select the newly unlocked tier.
             holder.level_gate = holder.level_gate.clamp(0, available_tier.max(0));
         }
-        for actor in self
+        let mut ordered_holder_slots = self.spell_acquisition_order.clone();
+        for source_slot in self
             .actors
             .iter()
-            .filter(|actor| actor.active && actor.collected && actor.source_entity_index != 0)
+            .filter(|actor| {
+                actor.active
+                    && actor.collected
+                    && actor.class == SPELL_PICKUP_CLASS
+                    && usize::from(actor.model) < SPELL_FAMILY_COUNT
+                    && actor.source_entity_index != 0
+            })
+            .map(|actor| actor.source_entity_index)
         {
-            let (family, activation_value, mana_cost) = match actor.kind {
-                Level1ActorKind::CastleSpellJar => (
-                    CASTLE_SPELL_FAMILY,
+            if !ordered_holder_slots.contains(&source_slot) {
+                ordered_holder_slots.push(source_slot);
+            }
+        }
+        for holder_index in ordered_holder_slots {
+            let Some(actor) = self.actors.iter().find(|actor| {
+                actor.source_entity_index == holder_index
+                    && actor.active
+                    && actor.collected
+                    && actor.class == SPELL_PICKUP_CLASS
+                    && usize::from(actor.model) < SPELL_FAMILY_COUNT
+            }) else {
+                continue;
+            };
+            let family = actor.model;
+            let (activation_value, mana_cost) = match family {
+                FIREBALL_SPELL_FAMILY => (FIREBALL_HOLDER_ACTIVATION_TICKS, FIREBALL_MANA_COST),
+                POSSESSION_SPELL_FAMILY => (
+                    POSSESSION_HOLDER_ACTIVATION_TICKS.cast_unsigned(),
+                    POSSESSION_MANA_COST,
+                ),
+                CASTLE_SPELL_FAMILY => (
                     CASTLE_HOLDER_ACTIVATION_TICKS.cast_unsigned(),
                     CASTLE_INITIAL_MANA_COST,
                 ),
-                Level1ActorKind::SpeedSpellJar => (
-                    SPEED_SPELL_FAMILY,
-                    SPEED_SPELL_ACTIVATION_TICKS,
-                    SPEED_SPELL_MANA_COST,
-                ),
-                Level1ActorKind::Archer
-                | Level1ActorKind::Firefly
-                | Level1ActorKind::ExitTarget
-                | Level1ActorKind::ExitSwitch
-                | Level1ActorKind::MultipartHead
-                | Level1ActorKind::ExperienceScroll
-                | Level1ActorKind::Tree
-                | Level1ActorKind::Stone
-                | Level1ActorKind::CheckpointSmokeEmitter => continue,
+                SPEED_SPELL_FAMILY => (SPEED_SPELL_ACTIVATION_TICKS, SPEED_SPELL_MANA_COST),
+                _ => continue,
             };
-            let holder_index = actor.source_entity_index;
             let existing = fire
                 .holders
                 .iter()
@@ -6861,18 +7193,12 @@ impl Level1MissionState {
                     mana_cost,
                     action_marker: 0,
                 });
-                // SetSpell fills an empty hand; with both initial hands
-                // occupied, each collected teaching jar replaces the left.
-                if fire.left_holder_index == 0 {
-                    fire.left_holder_index = holder_index;
-                    fire.left_subspell_index = 0;
-                } else if fire.right_holder_index == 0 {
-                    fire.right_holder_index = holder_index;
-                    fire.right_subspell_index = 0;
-                } else {
-                    fire.left_holder_index = holder_index;
-                    fire.left_subspell_index = 0;
-                }
+                let hand_override = self
+                    .spell_acquisition_hand_overrides
+                    .get(&holder_index)
+                    .copied()
+                    .unwrap_or(0);
+                select_collected_spell_hand(fire, holder_index, hand_override);
                 fire.selected_holder_index = holder_index;
                 fire.selected_spell_ui_index = family;
                 fire.selected_subspell_index = 0;
@@ -7389,6 +7715,10 @@ impl Level1MissionState {
                 );
                 true
             }
+            Some(SourceOccupant::SpellPickup { .. }) => {
+                self.step_actor_slot(world, player, current_source_views, source_slot);
+                true
+            }
             Some(
                 SourceOccupant::PlayerFireball(_)
                 | SourceOccupant::ArcherArrow(_)
@@ -7459,6 +7789,47 @@ impl Level1MissionState {
         (occupant, handled, source_effects)
     }
 
+    fn sync_dispatched_authored_source_slot(&mut self, source_slot: u16, authored_index: u16) {
+        if let Some(actor) = self
+            .actors
+            .iter()
+            .find(|actor| actor.authored_index == authored_index)
+        {
+            let record = &mut self.source_slots[usize::from(source_slot)];
+            record.action = actor.action;
+            record.phase = actor.phase;
+            record.entity_rng = actor.entity_rng;
+            if !actor.active {
+                record.control_flags |= SOURCE_DISABLED_FLAG;
+            }
+        } else if let Some(house) = self.authored_houses[usize::from(source_slot)] {
+            let record = &mut self.source_slots[usize::from(source_slot)];
+            record.action = house.action;
+            record.phase = house.phase;
+            record.entity_rng = house.rng;
+            record.control_flags = house.control_flags;
+        } else if let Some(ambient) = self.ambient_entities[usize::from(source_slot)] {
+            let record = &mut self.source_slots[usize::from(source_slot)];
+            record.action = ambient.action;
+            record.phase = ambient.phase;
+            record.entity_rng = ambient.entity_rng;
+            record.control_flags = ambient.control_flags;
+        } else {
+            self.source_slots[usize::from(source_slot)].phase = self.source_slots
+                [usize::from(source_slot)]
+            .phase
+            .wrapping_add(1);
+        }
+        let phase = self.source_slots[usize::from(source_slot)].phase;
+        if let Some(allocation) = self
+            .authored_allocations
+            .iter_mut()
+            .find(|allocation| allocation.authored_index == authored_index)
+        {
+            allocation.phase = phase;
+        }
+    }
+
     fn sync_dispatched_source_slot(
         &mut self,
         source_slot: u16,
@@ -7469,43 +7840,19 @@ impl Level1MissionState {
             return;
         }
         if let Some(SourceOccupant::Authored(authored_index)) = occupant {
-            if let Some(actor) = self
+            self.sync_dispatched_authored_source_slot(source_slot, authored_index);
+        } else if let Some(SourceOccupant::SpellPickup { .. }) = occupant
+            && let Some(actor) = self
                 .actors
                 .iter()
-                .find(|actor| actor.authored_index == authored_index)
-            {
-                let record = &mut self.source_slots[usize::from(source_slot)];
-                record.action = actor.action;
-                record.phase = actor.phase;
-                record.entity_rng = actor.entity_rng;
-                if !actor.active {
-                    record.control_flags |= SOURCE_DISABLED_FLAG;
-                }
-            } else if let Some(house) = self.authored_houses[usize::from(source_slot)] {
-                let record = &mut self.source_slots[usize::from(source_slot)];
-                record.action = house.action;
-                record.phase = house.phase;
-                record.entity_rng = house.rng;
-                record.control_flags = house.control_flags;
-            } else if let Some(ambient) = self.ambient_entities[usize::from(source_slot)] {
-                let record = &mut self.source_slots[usize::from(source_slot)];
-                record.action = ambient.action;
-                record.phase = ambient.phase;
-                record.entity_rng = ambient.entity_rng;
-                record.control_flags = ambient.control_flags;
-            } else {
-                self.source_slots[usize::from(source_slot)].phase = self.source_slots
-                    [usize::from(source_slot)]
-                .phase
-                .wrapping_add(1);
-            }
-            let phase = self.source_slots[usize::from(source_slot)].phase;
-            if let Some(allocation) = self
-                .authored_allocations
-                .iter_mut()
-                .find(|allocation| allocation.authored_index == authored_index)
-            {
-                allocation.phase = phase;
+                .find(|actor| actor.source_entity_index == source_slot)
+        {
+            let record = &mut self.source_slots[usize::from(source_slot)];
+            record.action = actor.action;
+            record.phase = actor.phase;
+            record.entity_rng = actor.entity_rng;
+            if !actor.active {
+                record.control_flags |= SOURCE_DISABLED_FLAG;
             }
         } else if let Some(SourceOccupant::MultipartSegment(_)) = occupant
             && let Some(segment) = self
@@ -7699,8 +8046,19 @@ impl Level1MissionState {
             }
         }
         self.step_switch_slot_in_world(world, player, source_slot);
-        self.update_spell_pickup_slot(player, source_slot);
+        self.update_spell_pickup_slot(world, player, &current_source_views, source_slot);
         self.update_experience_scroll_slot(world, player, source_slot);
+        let source_position = current_source_views
+            .binary_search_by_key(&source_slot, |view| view.source_entity_index)
+            .ok()
+            .map_or_else(
+                || {
+                    self.source_entity_position(source_slot, player)
+                        .unwrap_or_default()
+                },
+                |index| current_source_views[index].position,
+            );
+        self.update_spell_jar_reward_slot(world, source_slot, source_position);
         let (occupant, handled, source_effects) =
             self.step_source_occupant(world, player, &current_source_views, source_slot);
         self.sync_dispatched_source_slot(source_slot, occupant, handled);
@@ -8625,76 +8983,192 @@ impl Level1MissionState {
         }
     }
 
-    fn update_spell_pickup_slot(&mut self, player: &FlightState, source_slot: u16) {
-        for actor in &mut self.actors {
-            if actor.source_entity_index != source_slot {
-                continue;
-            }
-            if !actor.active
-                || !matches!(
-                    actor.kind,
-                    Level1ActorKind::CastleSpellJar | Level1ActorKind::SpeedSpellJar
-                )
-            {
-                continue;
-            }
-            if actor.state_timer > 0 {
-                actor.state_timer -= 1;
-            }
-            let pickup_tick = actor.phase & 3 == 0;
-            actor.phase = actor.phase.wrapping_add(1);
-            if actor.collected
-                || !pickup_tick
-                || !overlaps_source_entities(
-                    actor.position,
-                    actor.collision_half_width,
-                    actor.collision_vertical_offset,
-                    actor.collision_half_height,
-                    player.position,
-                    PLAYER_COLLISION_HALF_WIDTH,
-                    PLAYER_COLLISION_VERTICAL_OFFSET,
-                    PLAYER_COLLISION_HALF_HEIGHT,
-                )
-            {
-                continue;
-            }
-            let family = match actor.kind {
-                Level1ActorKind::CastleSpellJar => {
-                    self.has_castle_spell = true;
-                    actor.action = 6;
-                    2
-                }
-                Level1ActorKind::SpeedSpellJar => {
-                    self.has_speed_spell = true;
-                    actor.action = 9;
-                    SPEED_SPELL_FAMILY
-                }
-                Level1ActorKind::Archer
-                | Level1ActorKind::Firefly
-                | Level1ActorKind::ExitTarget
-                | Level1ActorKind::ExitSwitch
-                | Level1ActorKind::MultipartHead
-                | Level1ActorKind::ExperienceScroll
-                | Level1ActorKind::Tree
-                | Level1ActorKind::Stone
-                | Level1ActorKind::CheckpointSmokeEmitter => continue,
-            };
+    fn has_spell_family(&self, family: u8) -> bool {
+        match family {
+            FIREBALL_SPELL_FAMILY => self.has_fireball,
+            POSSESSION_SPELL_FAMILY => self.has_possession,
+            CASTLE_SPELL_FAMILY => self.has_castle_spell,
+            SPEED_SPELL_FAMILY => self.has_speed_spell,
+            _ => false,
+        }
+    }
+
+    fn set_spell_family_owned(&mut self, family: u8) {
+        match family {
+            FIREBALL_SPELL_FAMILY => self.has_fireball = true,
+            POSSESSION_SPELL_FAMILY => self.has_possession = true,
+            CASTLE_SPELL_FAMILY => self.has_castle_spell = true,
+            SPEED_SPELL_FAMILY => self.has_speed_spell = true,
+            _ => {}
+        }
+    }
+
+    fn spawn_respawning_spell_pickup(
+        &mut self,
+        family: u8,
+        family_index: usize,
+        collected_actor: Level1Actor,
+    ) {
+        let occupant = SourceOccupant::SpellPickup { family };
+        let Some(replacement_slot) = self.allocate_source_slot(occupant) else {
+            return;
+        };
+        bind_dynamic_source_record(
+            &mut self.source_slots,
+            replacement_slot,
+            occupant,
+            self.global_rng,
+        );
+        let replacement_phase = replacement_slot.to_le_bytes()[0];
+        self.source_slots[usize::from(replacement_slot)].phase = replacement_phase;
+        let replacement = Level1Actor {
+            authored_index: 0,
+            source_entity_index: replacement_slot,
+            kind: if family == SPEED_SPELL_FAMILY {
+                Level1ActorKind::SpeedSpellJar
+            } else {
+                Level1ActorKind::CastleSpellJar
+            },
+            class: SPELL_PICKUP_CLASS,
+            model: family,
+            action: SPELL_RESPAWNING_PICKUP_ACTIONS[family_index],
+            activation_group: 0,
+            owner_id: replacement_slot.cast_signed(),
+            position: collected_actor.position,
+            max_life: 0,
+            life: 0,
+            pending_damage: 0,
+            pending_attacker: 0,
+            entity_rng: self.source_slots[usize::from(replacement_slot)].entity_rng,
+            yaw: 0,
+            desired_heading: 0,
+            min_speed: 0,
+            actual_speed: 0,
+            max_speed: 0,
+            target_entity_index: 0,
+            linked_entity_index: 0,
+            multipart_first_segment_index: 0,
+            movement_blocked: false,
+            stage_var_1: 0,
+            stage_var_2: 0,
+            attack_substate: 0,
+            state_value: 0,
+            phase: replacement_phase,
+            state_timer: 0,
+            animation_frame: 0,
+            collision_half_width: collected_actor.collision_half_width,
+            collision_vertical_offset: collected_actor.collision_vertical_offset,
+            collision_half_height: collected_actor.collision_half_height,
+            render_parameter_index: collected_actor.render_parameter_index,
+            base_tmap: collected_actor.base_tmap,
+            render_mode: collected_actor.render_mode,
+            logical_height: collected_actor.logical_height,
+            active: true,
+            collected: false,
+            visible: true,
+        };
+        self.actors.push(replacement);
+    }
+
+    fn update_spell_pickup_slot<W: FlightWorld>(
+        &mut self,
+        world: &W,
+        player: &FlightState,
+        source_views: &[Level1SourceEntityView],
+        source_slot: u16,
+    ) {
+        let Some(actor_index) = self.actors.iter().position(|actor| {
+            actor.source_entity_index == source_slot
+                && actor.active
+                && actor.class == SPELL_PICKUP_CLASS
+                && usize::from(actor.model) < SPELL_FAMILY_COUNT
+        }) else {
+            return;
+        };
+        let family_index = usize::from(self.actors[actor_index].model);
+        let pickup_action = matches!(
+            self.actors[actor_index].action,
+            action
+                if action == SPELL_WORLD_PICKUP_ACTIONS[family_index]
+                    || action == SPELL_RESPAWNING_PICKUP_ACTIONS[family_index]
+        );
+        if pickup_action {
+            // `sub_68FF0` settles the class-15 body before its cadence and
+            // source-player-list scan.
+            relax_to_terrain(&mut self.actors[actor_index].position, world, 0, -128);
+        }
+        if self.actors[actor_index].state_timer > 0 {
+            self.actors[actor_index].state_timer -= 1;
+        }
+        let pickup_tick = self.actors[actor_index].phase.is_multiple_of(4);
+        self.actors[actor_index].phase = self.actors[actor_index].phase.wrapping_add(1);
+        if !pickup_action {
+            return;
+        }
+        let actor = self.actors[actor_index];
+        let family = actor.model;
+        let eligible_player =
+            self.targeting_source_lists
+                .players
+                .iter()
+                .find_map(|candidate_slot| {
+                    source_view(source_views, *candidate_slot).filter(|candidate| {
+                        candidate.active
+                            && candidate.model == 0
+                            && candidate.life >= 0
+                            && candidate.authority == Level1SourceEntityAuthority::Player
+                            && candidate.source_id == player.entity_index
+                            && !self.has_spell_family(family)
+                            && overlaps_source_entities(
+                                actor.position,
+                                actor.collision_half_width,
+                                actor.collision_vertical_offset,
+                                actor.collision_half_height,
+                                candidate.position,
+                                candidate.collision_half_width,
+                                candidate.collision_vertical_offset,
+                                candidate.collision_half_height,
+                            )
+                    })
+                });
+        if actor.collected || !pickup_tick || eligible_player.is_none() {
+            return;
+        }
+        let eligible_player = eligible_player.expect("checked above");
+        let respawning = actor.action == SPELL_RESPAWNING_PICKUP_ACTIONS[family_index];
+        self.set_spell_family_owned(family);
+        let collected_actor = {
+            let actor = &mut self.actors[actor_index];
+            actor.action = SPELL_HOLDER_ACTIONS[family_index];
+            actor.owner_id = eligible_player.source_entity_index.cast_signed();
             actor.collected = true;
             actor.visible = false;
-            // remc2 preserves the class-15 holder, attaches it to the player
-            // and returns it to the family's active/charging action.
+            // `sub_68FF0` preserves this class-15 entity as the player's holder.
             actor.state_timer = 64;
             actor.state_value = 0;
-            self.events.push(Level1MissionEvent::SpellCollected {
-                family,
-                authored_index: actor.authored_index,
-            });
-            self.events.push(Level1MissionEvent::MissionSound {
-                sound_id: SPEED_PICKUP_SOUND,
-                source_entity_index: player.entity_index,
-                position: player.position,
-                random_state: self.global_rng,
-            });
+            *actor
+        };
+        self.spell_acquisition_order.push(source_slot);
+        if let Some(hand_override) = self.spell_pickup_hand_overrides.remove(&source_slot) {
+            self.spell_acquisition_hand_overrides
+                .insert(source_slot, hand_override);
+        }
+        self.events.push(Level1MissionEvent::SpellCollected {
+            family,
+            authored_index: collected_actor.authored_index,
+        });
+        self.events.push(Level1MissionEvent::MissionSound {
+            sound_id: SPEED_PICKUP_SOUND,
+            source_entity_index: eligible_player.source_entity_index,
+            position: eligible_player.position,
+            random_state: self.global_rng,
+        });
+
+        // The paired `sub_69250` variants call the family constructor only
+        // after the old jar has become a holder. Allocation failure therefore
+        // keeps the acquisition but creates no replacement.
+        if respawning {
+            self.spawn_respawning_spell_pickup(family, family_index, collected_actor);
         }
     }
 
@@ -12856,6 +13330,31 @@ impl Level1MissionState {
                 y: sphere_position.y,
             })
             .expect("qualified mana sphere source slot fits the map chain");
+        let temporary_expired = self
+            .temporary_mana_sphere_life
+            .get_mut(&source_slot)
+            .map(|life| {
+                *life = life.wrapping_sub(1);
+                *life == 0
+            });
+        if let Some(expired) = temporary_expired {
+            if expired {
+                let sphere = &mut self.mana_spheres[sphere_index];
+                sphere.pending_delete = true;
+                self.source_pool
+                    .disable_occupant(SourceOccupant::ManaSphere(sphere.id));
+                self.source_slots[usize::from(source_slot)].control_flags |= SOURCE_DISABLED_FLAG;
+                self.mana_sphere_map_chains
+                    .sync_entity(RenderableMapSeed {
+                        entity_index: source_slot,
+                        active: false,
+                        x: sphere.position.x,
+                        y: sphere.position.y,
+                    })
+                    .expect("expired slot-98 sphere source slot fits the map chain");
+            }
+            return;
+        }
         if !grounded {
             return;
         }
@@ -14354,6 +14853,8 @@ impl Level1MissionState {
         self.mana_sphere_map_chains
             .retain_entities(&active_sphere_slots)
             .expect("qualified mana sphere source slots fit the map chain");
+        self.temporary_mana_sphere_life
+            .retain(|source_slot, _| active_sphere_slots.contains(source_slot));
         self.mana_spheres
             .retain(|sphere| sphere.active && !sphere.pending_delete);
         if self
@@ -16934,6 +17435,7 @@ impl Level1Fnv1a64 {
             Some(SourceOccupant::Ambient(id)) => (21, u32::from(id)),
             Some(SourceOccupant::CastleDefense(id)) => (22, id),
             Some(SourceOccupant::CastleDefenseShot(id)) => (23, id),
+            Some(SourceOccupant::SpellPickup { family }) => (24, u32::from(family)),
         };
         self.u8(kind);
         self.u32(id);
@@ -17283,6 +17785,16 @@ mod tests {
         }
     }
 
+    const EXPECTED_SOURCE_EXPERIENCE: [i32; 26] = [
+        23, 9, 0, 2, 2, 2, 2, 3, 2, 19, 3, 1, 2, 2, 2, 3, 4, 7, 15, 2, 5, 2, 1, 2, 3, 3,
+    ];
+    const EXPECTED_SPHERES: [(u16, i16, i16, i16, i16, i32); 3] = [
+        (701, -119, -87, 210, 1_743, 1_009),
+        (702, 10, 64, 173, 970, 12),
+        (703, -183, 146, 232, 1_317, 135),
+    ];
+    const EXPECTED_PARENT_RNG: [u16; 4] = [0x1234, 0xfecf, 0xc3ca, 0x0d25];
+
     fn authored_bytes() -> Vec<u8> {
         let mut bytes =
             vec![0_u8; AUTHORED_FEATURE_OFFSET + AUTHORED_FEATURE_COUNT * AUTHORED_FEATURE_BYTES];
@@ -17359,6 +17871,128 @@ mod tests {
             bytes[offset + 12..offset + 14].copy_from_slice(&i16::to_le_bytes(tag));
         }
         bytes
+    }
+
+    fn install_spell_pickup(
+        mission: &mut Level1MissionState,
+        family: u8,
+        action: u8,
+        source_entity_index: u16,
+        position: Position,
+    ) {
+        let global_rng_low =
+            u16::try_from(mission.global_rng & u32::from(u16::MAX)).expect("masked source RNG");
+        let mut actor = mission
+            .actors
+            .iter()
+            .find(|actor| actor.kind == Level1ActorKind::CastleSpellJar)
+            .copied()
+            .expect("Level 1 Castle jar supplies the class-15 pickup shape");
+        actor.authored_index = 900 + u16::from(family);
+        actor.source_entity_index = source_entity_index;
+        actor.kind = if family == SPEED_SPELL_FAMILY {
+            Level1ActorKind::SpeedSpellJar
+        } else {
+            Level1ActorKind::CastleSpellJar
+        };
+        actor.class = SPELL_PICKUP_CLASS;
+        actor.model = family;
+        actor.action = action;
+        actor.position = position;
+        actor.owner_id = source_entity_index.cast_signed();
+        actor.phase = 0;
+        actor.state_timer = 0;
+        actor.state_value = 0;
+        actor.active = true;
+        actor.collected = false;
+        actor.visible = true;
+        mission.source_pool.occupants[usize::from(source_entity_index)] =
+            Some(SourceOccupant::Authored(actor.authored_index));
+        mission.source_pool.disabled[usize::from(source_entity_index)] = false;
+        mission.source_pool.replaceable[usize::from(source_entity_index)] = false;
+        mission
+            .source_pool
+            .free_stack
+            .retain(|slot| *slot != source_entity_index);
+        mission.source_slots[usize::from(source_entity_index)] = Level1ResetSourceSlot {
+            index: source_entity_index,
+            active: true,
+            class: SPELL_PICKUP_CLASS,
+            model: family,
+            action,
+            phase: 0,
+            entity_rng: source_entity_index.wrapping_add(global_rng_low),
+            control_flags: 8,
+        };
+        mission.actors.push(actor);
+    }
+
+    fn install_test_player_source(mission: &mut Level1MissionState, source_entity_index: u16) {
+        let global_rng_low =
+            u16::try_from(mission.global_rng & u32::from(u16::MAX)).expect("masked source RNG");
+        mission.source_pool.occupants[usize::from(source_entity_index)] =
+            Some(SourceOccupant::ImportedLive);
+        mission.source_pool.disabled[usize::from(source_entity_index)] = false;
+        mission.source_pool.replaceable[usize::from(source_entity_index)] = false;
+        mission
+            .source_pool
+            .free_stack
+            .retain(|slot| *slot != source_entity_index);
+        mission.source_slots[usize::from(source_entity_index)] = Level1ResetSourceSlot {
+            index: source_entity_index,
+            active: true,
+            class: 3,
+            model: 0,
+            action: 0,
+            phase: 0,
+            entity_rng: source_entity_index.wrapping_add(global_rng_low),
+            control_flags: 8,
+        };
+    }
+
+    fn install_spell_jar_reward_source(
+        mission: &mut Level1MissionState,
+        source_entity_index: u16,
+        phase: u8,
+        entity_rng: u16,
+        position: Position,
+    ) {
+        let mut actor = mission
+            .actors
+            .iter()
+            .find(|actor| actor.kind == Level1ActorKind::CastleSpellJar)
+            .copied()
+            .expect("Level 1 Castle jar supplies a typed source position");
+        actor.authored_index = 950;
+        actor.source_entity_index = source_entity_index;
+        actor.class = SPELL_JAR_REWARD_CLASS;
+        actor.model = SPELL_JAR_REWARD_MODEL;
+        actor.action = SPELL_JAR_REWARD_ACTION;
+        actor.position = position;
+        actor.phase = phase;
+        actor.entity_rng = entity_rng;
+        actor.active = true;
+        actor.collected = false;
+        actor.visible = false;
+        mission.source_pool.occupants[usize::from(source_entity_index)] =
+            Some(SourceOccupant::Authored(actor.authored_index));
+        mission.source_pool.disabled[usize::from(source_entity_index)] = false;
+        mission.source_pool.replaceable[usize::from(source_entity_index)] = false;
+        mission
+            .source_pool
+            .free_stack
+            .retain(|slot| *slot != source_entity_index);
+        mission.source_slots[usize::from(source_entity_index)] = Level1ResetSourceSlot {
+            index: source_entity_index,
+            active: true,
+            class: SPELL_JAR_REWARD_CLASS,
+            model: SPELL_JAR_REWARD_MODEL,
+            action: SPELL_JAR_REWARD_ACTION,
+            phase,
+            entity_rng,
+            control_flags: 8,
+        };
+        mission.actors.push(actor);
     }
 
     fn qualified_house_state() -> crate::house::HouseState {
@@ -22536,10 +23170,15 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the accepted PLAN-20 inventory strengthens this existing route test in place"
+    )]
     fn spatial_and_objective_switch_chain_activates_jar_then_archers() {
         let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
         let mut mission = template.session(10_000, 1_000);
         let mut player = FlightState {
+            entity_index: 152,
             position: LEVEL1_FIRST_WAYPOINT,
             ..FlightState::default()
         };
@@ -22616,6 +23255,682 @@ mod tests {
         assert!(castle_holder.collected);
         assert_eq!(castle_holder.action, 6);
         assert_eq!(castle_holder.state_timer, 64);
+
+        let pickup_position = Position {
+            x: 12_000,
+            y: 14_000,
+            z: 0,
+        };
+        let pickup_player = FlightState {
+            entity_index: 152,
+            position: pickup_position,
+            ..FlightState::default()
+        };
+        let mut ordered = template.session(10_000, 1_000);
+        ordered.has_fireball = false;
+        ordered.has_possession = false;
+        ordered.has_castle_spell = false;
+        ordered.has_speed_spell = false;
+        ordered.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        install_test_player_source(&mut ordered, pickup_player.entity_index);
+        for (family, source_slot) in [(0, 603), (1, 601), (2, 602), (3, 600)] {
+            install_spell_pickup(
+                &mut ordered,
+                family,
+                SPELL_WORLD_PICKUP_ACTIONS[usize::from(family)],
+                source_slot,
+                pickup_position,
+            );
+        }
+        ordered.begin_source_turn_at(pickup_position);
+        for source_slot in 600..=603 {
+            ordered.dispatch_source_slot(
+                &FlatWorld,
+                &pickup_player,
+                source_slot,
+                false,
+                false,
+                None,
+            );
+        }
+        assert_eq!(ordered.spell_acquisition_order, [600, 601, 602, 603]);
+        assert_eq!(
+            ordered
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    Level1MissionEvent::SpellCollected { family, .. } => Some(*family),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [3, 1, 2, 0],
+            "overlapping world pickups follow source dispatch, not authored actor order"
+        );
+        assert!(ordered.has_fireball);
+        assert!(ordered.has_possession);
+        assert!(ordered.has_castle_spell);
+        assert!(ordered.has_speed_spell);
+        let ordered_hash = ordered.source_arena_hash_v1();
+        let mut reordered = ordered.clone();
+        reordered.spell_acquisition_order.swap(0, 1);
+        assert_ne!(
+            reordered.source_arena_hash_v1(),
+            ordered_hash,
+            "source-arena digest covers future hand-selection order"
+        );
+        for (family, holder_action) in SPELL_HOLDER_ACTIONS.iter().copied().enumerate() {
+            let actor = ordered
+                .actors
+                .iter()
+                .find(|actor| {
+                    actor.class == SPELL_PICKUP_CLASS
+                        && usize::from(actor.model) == family
+                        && actor.collected
+                })
+                .expect("world pickup became a holder");
+            assert_eq!(actor.action, holder_action);
+            assert_eq!(actor.state_timer, 64);
+            assert!(!actor.visible);
+        }
+        let mut fire = crate::SpellFireContext {
+            left_holder_index: 10,
+            right_holder_index: 11,
+            holders: vec![
+                SpellActivationHolder {
+                    entity_index: 10,
+                    model: FIREBALL_SPELL_FAMILY,
+                    ..SpellActivationHolder::default()
+                },
+                SpellActivationHolder {
+                    entity_index: 11,
+                    model: POSSESSION_SPELL_FAMILY,
+                    ..SpellActivationHolder::default()
+                },
+            ],
+            ..crate::SpellFireContext::default()
+        };
+        let mut context = FlightContext {
+            spell_fire: Some(fire.clone()),
+            ..FlightContext::default()
+        };
+        ordered.sync_collected_spell_holders(&mut context);
+        fire = context.spell_fire.expect("spell registry");
+        assert_eq!(
+            fire.holders
+                .iter()
+                .map(|holder| holder.entity_index)
+                .collect::<Vec<_>>(),
+            [10, 11, 600, 601, 602, 603]
+        );
+        assert_eq!(
+            (
+                fire.left_holder_index,
+                fire.selected_holder_index,
+                fire.selected_spell_ui_index,
+            ),
+            (603, 603, FIREBALL_SPELL_FAMILY),
+            "the last source-dispatched acquisition owns the replacement hand"
+        );
+
+        let far_player = FlightState {
+            position: Position {
+                x: 30_000,
+                y: 30_000,
+                z: 0,
+            },
+            ..pickup_player
+        };
+        let mut player_scan = template.session(10_000, 1_000);
+        player_scan.has_fireball = false;
+        player_scan.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        for source_slot in 148..=152 {
+            install_test_player_source(&mut player_scan, source_slot);
+        }
+        install_spell_pickup(
+            &mut player_scan,
+            FIREBALL_SPELL_FAMILY,
+            SPELL_WORLD_PICKUP_ACTIONS[usize::from(FIREBALL_SPELL_FAMILY)],
+            650,
+            pickup_position,
+        );
+        let base_player_view = player_scan
+            .source_entity_views(&far_player, &[])
+            .into_iter()
+            .find(|view| view.source_entity_index == far_player.entity_index)
+            .expect("local player source view");
+        let mut wrong_color = base_player_view;
+        wrong_color.source_entity_index = 148;
+        wrong_color.source_id = 148;
+        wrong_color.authority = Level1SourceEntityAuthority::ImportedRecord;
+        wrong_color.position = pickup_position;
+        let mut dead = base_player_view;
+        dead.source_entity_index = 149;
+        dead.position = pickup_position;
+        dead.life = -1;
+        let mut wrong_model = base_player_view;
+        wrong_model.source_entity_index = 150;
+        wrong_model.position = pickup_position;
+        wrong_model.model = 1;
+        let mut first_eligible = base_player_view;
+        first_eligible.source_entity_index = 151;
+        first_eligible.position = pickup_position;
+        let player_views = [wrong_color, dead, wrong_model, first_eligible];
+        player_scan.begin_source_turn_at(far_player.position);
+        player_scan.dispatch_source_slot_with_views_and_look(
+            &FlatWorld,
+            &far_player,
+            &player_views,
+            650,
+            false,
+            false,
+            None,
+            0,
+            0,
+        );
+        let scanned_holder = player_scan
+            .actors
+            .iter()
+            .find(|actor| actor.source_entity_index == 650)
+            .expect("source-list pickup holder");
+        assert_eq!(
+            (scanned_holder.collected, scanned_holder.owner_id),
+            (true, 151),
+            "dead, wrong-model, and wrong-color rows are skipped before the first eligible local row"
+        );
+        assert!(player_scan.events.iter().any(|event| matches!(
+            event,
+            Level1MissionEvent::MissionSound {
+                sound_id: SPEED_PICKUP_SOUND,
+                source_entity_index: 151,
+                position,
+                ..
+            } if *position == pickup_position
+        )));
+
+        let mut phase_rejected = template.session(10_000, 1_000);
+        phase_rejected.has_fireball = false;
+        phase_rejected.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        install_test_player_source(&mut phase_rejected, pickup_player.entity_index);
+        install_spell_pickup(
+            &mut phase_rejected,
+            FIREBALL_SPELL_FAMILY,
+            SPELL_WORLD_PICKUP_ACTIONS[usize::from(FIREBALL_SPELL_FAMILY)],
+            650,
+            pickup_position,
+        );
+        phase_rejected
+            .actors
+            .iter_mut()
+            .find(|actor| actor.source_entity_index == 650)
+            .expect("phase discriminator pickup")
+            .phase = 1;
+        phase_rejected.source_slots[650].phase = 1;
+        phase_rejected.begin_source_turn_at(pickup_position);
+        phase_rejected.dispatch_source_slot(&FlatWorld, &pickup_player, 650, false, false, None);
+        assert!(
+            !phase_rejected.has_fireball,
+            "non-fourth phase cannot collect an otherwise eligible pickup"
+        );
+
+        let mut grounded = template.session(10_000, 1_000);
+        grounded.has_fireball = false;
+        grounded.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        install_test_player_source(&mut grounded, pickup_player.entity_index);
+        install_spell_pickup(
+            &mut grounded,
+            FIREBALL_SPELL_FAMILY,
+            SPELL_WORLD_PICKUP_ACTIONS[usize::from(FIREBALL_SPELL_FAMILY)],
+            650,
+            Position {
+                z: 500,
+                ..pickup_position
+            },
+        );
+        grounded
+            .actors
+            .iter_mut()
+            .find(|actor| actor.source_entity_index == 650)
+            .expect("grounding discriminator pickup")
+            .phase = 1;
+        grounded.source_slots[650].phase = 1;
+        grounded.begin_source_turn_at(far_player.position);
+        grounded.dispatch_source_slot(
+            &RaisedMaterialWorld {
+                ground_height: 100,
+                material_mask: 0,
+            },
+            &far_player,
+            650,
+            false,
+            false,
+            None,
+        );
+        assert_eq!(
+            grounded
+                .actors
+                .iter()
+                .find(|actor| actor.source_entity_index == 650)
+                .expect("grounded pickup")
+                .position
+                .z,
+            372,
+            "class-15 terrain relaxation precedes cadence and player scanning"
+        );
+
+        let mut already_enabled = template.session(10_000, 1_000);
+        already_enabled.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        install_test_player_source(&mut already_enabled, pickup_player.entity_index);
+        install_spell_pickup(
+            &mut already_enabled,
+            FIREBALL_SPELL_FAMILY,
+            SPELL_WORLD_PICKUP_ACTIONS[usize::from(FIREBALL_SPELL_FAMILY)],
+            650,
+            pickup_position,
+        );
+        already_enabled.begin_source_turn_at(pickup_position);
+        already_enabled.dispatch_source_slot(&FlatWorld, &pickup_player, 650, false, false, None);
+        assert!(
+            already_enabled.spell_acquisition_order.is_empty(),
+            "an already enabled family is not acquired again"
+        );
+
+        let mut hand_mission = template.session(10_000, 1_000);
+        hand_mission.has_fireball = false;
+        hand_mission.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        install_test_player_source(&mut hand_mission, pickup_player.entity_index);
+        install_spell_pickup(
+            &mut hand_mission,
+            FIREBALL_SPELL_FAMILY,
+            SPELL_WORLD_PICKUP_ACTIONS[usize::from(FIREBALL_SPELL_FAMILY)],
+            600,
+            pickup_position,
+        );
+        hand_mission.begin_source_turn_at(pickup_position);
+        hand_mission.dispatch_source_slot(&FlatWorld, &pickup_player, 600, false, false, None);
+        for (left, right, expected_left, expected_right) in [
+            (0, 0, 600, 0),
+            (10, 0, 10, 600),
+            (0, 11, 600, 11),
+            (10, 11, 600, 11),
+        ] {
+            let holders = [left, right]
+                .into_iter()
+                .filter(|holder| *holder != 0)
+                .map(|entity_index| SpellActivationHolder {
+                    entity_index,
+                    ..SpellActivationHolder::default()
+                })
+                .collect();
+            let mut hand_context = FlightContext {
+                spell_fire: Some(crate::SpellFireContext {
+                    left_holder_index: left,
+                    right_holder_index: right,
+                    holders,
+                    ..crate::SpellFireContext::default()
+                }),
+                ..FlightContext::default()
+            };
+            hand_mission.sync_collected_spell_holders(&mut hand_context);
+            let hand = hand_context.spell_fire.expect("hand projection");
+            assert_eq!(
+                (
+                    hand.left_holder_index,
+                    hand.right_holder_index,
+                    hand.selected_holder_index,
+                    hand.selected_spell_ui_index,
+                ),
+                (expected_left, expected_right, 600, FIREBALL_SPELL_FAMILY,),
+                "source hand rule mismatch for initial ({left}, {right})"
+            );
+        }
+
+        let mut override_mission = template.session(10_000, 1_000);
+        override_mission.has_fireball = false;
+        override_mission.has_possession = false;
+        override_mission.has_castle_spell = false;
+        override_mission.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        install_test_player_source(&mut override_mission, pickup_player.entity_index);
+        for (family, source_slot) in [
+            (FIREBALL_SPELL_FAMILY, 600),
+            (POSSESSION_SPELL_FAMILY, 601),
+            (CASTLE_SPELL_FAMILY, 602),
+        ] {
+            install_spell_pickup(
+                &mut override_mission,
+                family,
+                SPELL_WORLD_PICKUP_ACTIONS[usize::from(family)],
+                source_slot,
+                pickup_position,
+            );
+        }
+        override_mission.set_spell_pickup_hand_override(600, 2);
+        override_mission.set_spell_pickup_hand_override(601, 1);
+        override_mission.begin_source_turn_at(pickup_position);
+        let mut override_context = FlightContext {
+            spell_fire: Some(crate::SpellFireContext {
+                left_holder_index: 10,
+                right_holder_index: 11,
+                holders: vec![
+                    SpellActivationHolder {
+                        entity_index: 10,
+                        ..SpellActivationHolder::default()
+                    },
+                    SpellActivationHolder {
+                        entity_index: 11,
+                        ..SpellActivationHolder::default()
+                    },
+                ],
+                ..crate::SpellFireContext::default()
+            }),
+            ..FlightContext::default()
+        };
+        override_mission.dispatch_source_slot(&FlatWorld, &pickup_player, 600, false, false, None);
+        assert!(
+            !override_mission
+                .spell_pickup_hand_overrides
+                .contains_key(&600)
+        );
+        assert_eq!(
+            override_mission.spell_acquisition_hand_overrides.get(&600),
+            Some(&2)
+        );
+        override_mission.sync_collected_spell_holders(&mut override_context);
+        assert_eq!(
+            (
+                override_context
+                    .spell_fire
+                    .as_ref()
+                    .expect("force-left projection")
+                    .left_holder_index,
+                override_context
+                    .spell_fire
+                    .as_ref()
+                    .expect("force-left projection")
+                    .right_holder_index,
+            ),
+            (600, 11),
+            "word_0x4A == 2 forces the left hand"
+        );
+        override_mission.dispatch_source_slot(&FlatWorld, &pickup_player, 601, false, false, None);
+        assert!(
+            !override_mission
+                .spell_pickup_hand_overrides
+                .contains_key(&601)
+        );
+        override_mission.sync_collected_spell_holders(&mut override_context);
+        assert_eq!(
+            (
+                override_context
+                    .spell_fire
+                    .as_ref()
+                    .expect("force-right projection")
+                    .left_holder_index,
+                override_context
+                    .spell_fire
+                    .as_ref()
+                    .expect("force-right projection")
+                    .right_holder_index,
+            ),
+            (600, 601),
+            "nonzero word_0x4A other than two forces the right hand"
+        );
+        override_mission.dispatch_source_slot(&FlatWorld, &pickup_player, 602, false, false, None);
+        assert!(
+            !override_mission
+                .spell_acquisition_hand_overrides
+                .contains_key(&602)
+        );
+        override_mission.sync_collected_spell_holders(&mut override_context);
+        assert_eq!(
+            (
+                override_context
+                    .spell_fire
+                    .as_ref()
+                    .expect("reset hand projection")
+                    .left_holder_index,
+                override_context
+                    .spell_fire
+                    .as_ref()
+                    .expect("reset hand projection")
+                    .right_holder_index,
+            ),
+            (602, 601),
+            "consumed overrides do not leak into the next zero-override pickup"
+        );
+
+        for alias_family in [FIREBALL_SPELL_FAMILY, POSSESSION_SPELL_FAMILY] {
+            let mut alias = template.session(10_000, 1_000);
+            alias.has_castle_spell = true;
+            alias.source_pool = Level1SourcePool::from_free_stack(&[700]).unwrap();
+            install_spell_pickup(
+                &mut alias,
+                alias_family,
+                SPELL_HOLDER_ACTIONS[usize::from(alias_family)],
+                650,
+                pickup_position,
+            );
+            let alias_actor = alias
+                .actors
+                .iter_mut()
+                .find(|actor| actor.source_entity_index == 650)
+                .expect("non-castle class-15 alias");
+            alias_actor.collected = true;
+            alias_actor.state_value = 123;
+            assert_eq!(alias.castle_holder_active_value(), 0);
+            alias.set_castle_holder_active_value(77);
+            assert_eq!(
+                alias
+                    .actors
+                    .iter()
+                    .find(|actor| actor.source_entity_index == 650)
+                    .expect("non-castle alias after setter")
+                    .state_value,
+                123,
+                "Castle active-value selector rejects family {alias_family}"
+            );
+            alias
+                .actors
+                .iter_mut()
+                .find(|actor| actor.source_entity_index == 650)
+                .expect("non-castle alias before cast")
+                .state_value = 0;
+            let alias_mana = alias.player_mana;
+            assert!(
+                !alias.cast_initial_castle(&FlatWorld, &pickup_player, 0),
+                "Castle cast selector rejects collected family {alias_family}"
+            );
+            assert!(alias.projectiles.is_empty());
+            assert_eq!(alias.player_mana, alias_mana);
+        }
+
+        for family in 0..SPELL_FAMILY_COUNT {
+            let family = u8::try_from(family).unwrap();
+            let mut respawning = template.session(10_000, 1_000);
+            respawning.has_fireball = false;
+            respawning.has_possession = false;
+            respawning.has_castle_spell = false;
+            respawning.has_speed_spell = false;
+            respawning.source_pool = Level1SourcePool::from_free_stack(&[700]).unwrap();
+            install_test_player_source(&mut respawning, pickup_player.entity_index);
+            install_spell_pickup(
+                &mut respawning,
+                family,
+                SPELL_RESPAWNING_PICKUP_ACTIONS[usize::from(family)],
+                650,
+                pickup_position,
+            );
+            {
+                let stale = respawning
+                    .actors
+                    .iter_mut()
+                    .find(|actor| actor.source_entity_index == 650)
+                    .expect("respawning pickup to poison");
+                stale.max_life = 987;
+                stale.life = 654;
+                stale.pending_damage = 321;
+                stale.pending_attacker = 222;
+                stale.entity_rng = 0xdead;
+                stale.yaw = 444;
+                stale.desired_heading = 555;
+                stale.min_speed = 66;
+                stale.actual_speed = 77;
+                stale.max_speed = 88;
+                stale.target_entity_index = 333;
+                stale.linked_entity_index = 334;
+                stale.multipart_first_segment_index = 335;
+                stale.movement_blocked = true;
+                stale.stage_var_1 = 7;
+                stale.stage_var_2 = 8;
+                stale.attack_substate = 9;
+                stale.animation_frame = 10;
+            }
+            respawning.begin_source_turn_at(pickup_position);
+            respawning.dispatch_source_slot(&FlatWorld, &pickup_player, 650, false, false, None);
+            let holder = respawning
+                .actors
+                .iter()
+                .find(|actor| actor.source_entity_index == 650)
+                .expect("respawning pickup holder");
+            assert!(holder.collected);
+            assert_eq!(holder.action, SPELL_HOLDER_ACTIONS[usize::from(family)]);
+            assert_eq!(holder.owner_id, pickup_player.entity_index.cast_signed());
+            let replacement = respawning
+                .actors
+                .iter()
+                .find(|actor| actor.source_entity_index == 700)
+                .expect("same-family replacement");
+            assert_eq!(
+                (replacement.class, replacement.model, replacement.action),
+                (
+                    SPELL_PICKUP_CLASS,
+                    family,
+                    SPELL_RESPAWNING_PICKUP_ACTIONS[usize::from(family)],
+                )
+            );
+            assert!(replacement.active);
+            assert!(!replacement.collected);
+            assert!(replacement.visible);
+            assert_eq!(replacement.position, pickup_position);
+            assert_eq!(replacement.action, holder.action + 2);
+            assert_eq!(
+                (
+                    replacement.authored_index,
+                    replacement.max_life,
+                    replacement.life,
+                    replacement.pending_damage,
+                    replacement.pending_attacker,
+                    replacement.yaw,
+                    replacement.desired_heading,
+                    replacement.min_speed,
+                    replacement.actual_speed,
+                    replacement.max_speed,
+                ),
+                (0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                "replacement uses fresh constructor life, RNG-adjacent, and movement state"
+            );
+            assert_eq!(
+                (
+                    replacement.target_entity_index,
+                    replacement.linked_entity_index,
+                    replacement.multipart_first_segment_index,
+                    replacement.movement_blocked,
+                    replacement.stage_var_1,
+                    replacement.stage_var_2,
+                    replacement.attack_substate,
+                    replacement.state_value,
+                    replacement.state_timer,
+                    replacement.animation_frame,
+                ),
+                (0, 0, 0, false, 0, 0, 0, 0, 0, 0),
+                "replacement uses fresh constructor linkage and action state"
+            );
+            let replacement_source = respawning.source_slots[700];
+            assert_eq!(replacement.entity_rng, replacement_source.entity_rng);
+            assert_ne!(replacement.entity_rng, holder.entity_rng);
+            assert_eq!(
+                (
+                    replacement_source.class,
+                    replacement_source.model,
+                    replacement_source.action,
+                    replacement_source.phase,
+                    replacement.phase,
+                    replacement_source.control_flags,
+                ),
+                (
+                    SPELL_PICKUP_CLASS,
+                    family,
+                    SPELL_RESPAWNING_PICKUP_ACTIONS[usize::from(family)],
+                    700_u16.to_le_bytes()[0],
+                    700_u16.to_le_bytes()[0],
+                    8,
+                ),
+                "replacement source record is the fresh same-family constructor"
+            );
+            assert_eq!(
+                respawning.source_pool.occupant(700),
+                Some(SourceOccupant::SpellPickup { family })
+            );
+            let fresh_rng = replacement.entity_rng;
+            respawning.begin_source_turn_at(far_player.position);
+            respawning.dispatch_source_slot(&FlatWorld, &far_player, 700, false, false, None);
+            let replacement = respawning
+                .actors
+                .iter()
+                .find(|actor| actor.source_entity_index == 700)
+                .expect("replacement after its own source dispatch");
+            assert_eq!(
+                (
+                    replacement.collected,
+                    replacement.life,
+                    replacement.max_life,
+                    replacement.entity_rng,
+                    replacement.phase,
+                    respawning.source_slots[700].entity_rng,
+                    respawning.source_slots[700].phase,
+                ),
+                (false, 0, 0, fresh_rng, 189, fresh_rng, 189),
+                "later dispatch preserves and advances the fresh replacement source state"
+            );
+
+            let mut exhausted = template.session(10_000, 1_000);
+            exhausted.has_fireball = false;
+            exhausted.has_possession = false;
+            exhausted.has_castle_spell = false;
+            exhausted.has_speed_spell = false;
+            exhausted.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+            install_test_player_source(&mut exhausted, pickup_player.entity_index);
+            install_spell_pickup(
+                &mut exhausted,
+                family,
+                SPELL_RESPAWNING_PICKUP_ACTIONS[usize::from(family)],
+                650,
+                pickup_position,
+            );
+            exhausted.begin_source_turn_at(pickup_position);
+            exhausted.dispatch_source_slot(&FlatWorld, &pickup_player, 650, false, false, None);
+            assert!(
+                exhausted
+                    .actors
+                    .iter()
+                    .find(|actor| actor.source_entity_index == 650)
+                    .is_some_and(|actor| actor.collected),
+                "allocation failure cannot roll back family {family} acquisition"
+            );
+            assert_eq!(
+                exhausted
+                    .actors
+                    .iter()
+                    .filter(|actor| {
+                        actor.class == SPELL_PICKUP_CLASS
+                            && actor.model == family
+                            && actor.active
+                            && !actor.collected
+                    })
+                    .count(),
+                0,
+                "allocation failure creates no family {family} replacement"
+            );
+        }
     }
 
     #[test]
@@ -26774,6 +28089,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the accepted PLAN-20 inventory keeps reward accounting in one production-path test"
+    )]
     fn experience_scroll_awards_every_enabled_level_one_spell_and_recomputes_tiers() {
         let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
         let mut mission = template.session(10_000, 2_000);
@@ -26827,6 +28146,267 @@ mod tests {
                 ..
             }
         )));
+
+        assert_eq!(SPELL_JAR_REWARD_EXPERIENCE, EXPECTED_SOURCE_EXPERIENCE);
+        assert_eq!(
+            SPELL_JAR_REWARD_SOURCE_FAMILY_BY_LEVEL1_FAMILY,
+            [0, 3, 16, 2]
+        );
+        assert_eq!(spell_jar_reward_experience(-513), -1);
+        assert_eq!(spell_jar_reward_experience(-511), 0);
+        assert_eq!(SPELL_JAR_REWARD_SPHERE_COUNT, 3);
+        let reward_position = Position {
+            x: 12_000,
+            y: 14_000,
+            z: 500,
+        };
+        let reward_player = FlightState {
+            entity_index: 152,
+            position: Position {
+                x: 20_000,
+                y: 20_000,
+                z: 1_000,
+            },
+            ..FlightState::default()
+        };
+        let mut full_reward = None;
+        for (success_count, free_stack) in [
+            (3_usize, &[703, 702, 701][..]),
+            (2, &[702, 701][..]),
+            (1, &[701][..]),
+            (0, &[][..]),
+        ] {
+            let mut reward = template.session(10_000, 2_000);
+            reward.source_pool = Level1SourcePool::from_free_stack(free_stack).unwrap();
+            reward.fireball_experience = 398;
+            reward.possession_experience = 598;
+            reward.castle_experience = 38;
+            reward.speed_experience = 398;
+            install_spell_jar_reward_source(&mut reward, 600, 0, 0x1234, reward_position);
+            reward.begin_source_turn_at(reward_player.position);
+            reward.dispatch_source_slot(&FlatWorld, &reward_player, 600, false, false, None);
+
+            assert_eq!(
+                reward
+                    .mana_spheres
+                    .iter()
+                    .map(|sphere| {
+                        (
+                            sphere.source_entity_index,
+                            sphere.velocity_x,
+                            sphere.velocity_y,
+                            sphere.vertical_velocity,
+                            sphere.yaw,
+                            sphere.mana,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+                EXPECTED_SPHERES[..success_count],
+                "fixed source-derived sphere vector mismatch for {success_count} successes"
+            );
+            assert!(reward.mana_spheres.iter().all(|sphere| {
+                sphere.position
+                    == Position {
+                        z: 96,
+                        ..reward_position
+                    }
+                    && sphere.owner_entity_index == 0
+                    && reward
+                        .temporary_mana_sphere_life
+                        .get(&sphere.source_entity_index)
+                        == Some(&140)
+            }));
+            assert_eq!(
+                reward
+                    .events
+                    .iter()
+                    .filter_map(|event| match event {
+                        Level1MissionEvent::ManaSphereSpawned {
+                            sphere_id,
+                            source_entity_index,
+                            mana,
+                        } => Some((*sphere_id, *source_entity_index, *mana)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                EXPECTED_SPHERES[..success_count]
+                    .iter()
+                    .map(|sphere| (u32::from(sphere.0), 600, sphere.5))
+                    .collect::<Vec<_>>(),
+                "slot 98 event order mismatch for {success_count} successes"
+            );
+            assert_eq!(
+                reward.source_slots[600].entity_rng,
+                EXPECTED_PARENT_RNG[success_count],
+                "parent RNG must advance exactly {} draws",
+                success_count * 5
+            );
+            assert_eq!(
+                (
+                    reward.fireball_experience,
+                    reward.possession_experience,
+                    reward.castle_experience,
+                    reward.speed_experience,
+                ),
+                (421, 600, 42, 398),
+                "even-phase progression is independent of allocation success count"
+            );
+            assert_eq!(
+                (
+                    reward.fireball_tier,
+                    reward.possession_tier,
+                    reward.castle_tier,
+                    reward.speed_tier,
+                ),
+                (1, 1, 1, 0)
+            );
+            assert_eq!(
+                reward.spell_jar_reward_experience_order(),
+                EXPECTED_SOURCE_EXPERIENCE
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .map(|(family, amount)| (u8::try_from(family).unwrap(), amount))
+                    .collect::<Vec<_>>(),
+                "all 26 source families must remain observable in ascending order"
+            );
+            if success_count == 3 {
+                full_reward = Some(reward);
+            }
+        }
+        let mut reward = full_reward.expect("three-success reward case");
+        let reward_hash = reward.source_arena_hash_v1();
+        assert_eq!(reward_hash, 0xeb9a_19f9_57d9_c2d5);
+        let mut reordered_experience = reward.clone();
+        reordered_experience
+            .spell_jar_reward_experience_order
+            .swap(0, 1);
+        assert_ne!(
+            reordered_experience.source_arena_hash_v1(),
+            reward_hash,
+            "source-arena digest covers all 26 awards and their order"
+        );
+        let mut changed_temporary_life = reward.clone();
+        *changed_temporary_life
+            .temporary_mana_sphere_life
+            .get_mut(&701)
+            .expect("temporary sphere") -= 1;
+        assert_ne!(
+            changed_temporary_life.source_arena_hash_v1(),
+            reward_hash,
+            "source-arena digest covers temporary sphere life"
+        );
+        *reward
+            .temporary_mana_sphere_life
+            .get_mut(&701)
+            .expect("first slot-98 sphere is temporary") = 1;
+        reward.dispatch_source_slot(&FlatWorld, &reward_player, 701, false, false, None);
+        assert_eq!(reward.temporary_mana_sphere_life.get(&701), Some(&0));
+        assert!(
+            reward
+                .mana_spheres
+                .iter()
+                .find(|sphere| sphere.source_entity_index == 701)
+                .is_some_and(|sphere| sphere.pending_delete),
+            "temporary sphere disables at source life zero"
+        );
+        assert_ne!(
+            reward.source_slots[701].control_flags & SOURCE_DISABLED_FLAG,
+            0
+        );
+        assert_eq!(
+            reward.mana_spheres.len(),
+            3,
+            "temporary sphere does not merge with its colocated siblings"
+        );
+
+        let mut odd = template.session(10_000, 2_000);
+        odd.source_pool = Level1SourcePool::from_free_stack(&[702, 701]).unwrap();
+        install_spell_jar_reward_source(&mut odd, 600, 1, 0x1234, reward_position);
+        odd.begin_source_turn_at(reward_player.position);
+        odd.dispatch_source_slot(&FlatWorld, &reward_player, 600, false, false, None);
+        assert_eq!(
+            odd.mana_spheres
+                .iter()
+                .map(|sphere| {
+                    (
+                        sphere.source_entity_index,
+                        sphere.velocity_x,
+                        sphere.velocity_y,
+                        sphere.vertical_velocity,
+                        sphere.yaw,
+                        sphere.mana,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            EXPECTED_SPHERES[..2],
+            "odd phase does not suppress sphere allocation"
+        );
+        assert_eq!(odd.source_slots[600].entity_rng, 0xc3ca);
+        assert_eq!(
+            (
+                odd.fireball_experience,
+                odd.possession_experience,
+                odd.castle_experience,
+                odd.speed_experience,
+            ),
+            (0, 0, 0, 0),
+            "odd source phase suppresses only progression, not allocation attempts"
+        );
+        assert!(odd.spell_jar_reward_experience_order().is_empty());
+
+        let expected_order = EXPECTED_SOURCE_EXPERIENCE
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(family, amount)| (u8::try_from(family).unwrap(), amount))
+            .collect::<Vec<_>>();
+        let mut repeated = template.session(10_000, 2_000);
+        repeated.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        install_spell_jar_reward_source(&mut repeated, 600, 0, 0x1234, reward_position);
+        for (dispatch, expected_phase, expected_experience, expected_order_len) in [
+            (1, 1, (23, 2, 4, 0), 26),
+            (2, 2, (23, 2, 4, 0), 26),
+            (3, 3, (46, 4, 8, 0), 52),
+        ] {
+            repeated.begin_source_turn_at(reward_player.position);
+            repeated.dispatch_source_slot(&FlatWorld, &reward_player, 600, false, false, None);
+            let actor = repeated
+                .actors
+                .iter()
+                .find(|actor| actor.source_entity_index == 600)
+                .expect("repeated action-98 source actor");
+            assert_eq!(
+                (
+                    repeated.source_slots[600].phase,
+                    actor.phase,
+                    repeated.source_slots[600].entity_rng,
+                    actor.entity_rng,
+                ),
+                (expected_phase, expected_phase, 0x1234, 0x1234),
+                "dispatch {dispatch} advances source and actor phase once while zero allocations consume no RNG"
+            );
+            assert_eq!(
+                (
+                    repeated.fireball_experience,
+                    repeated.possession_experience,
+                    repeated.castle_experience,
+                    repeated.speed_experience,
+                ),
+                expected_experience,
+                "even-odd-even progression cadence mismatch at dispatch {dispatch}"
+            );
+            assert_eq!(
+                repeated.spell_jar_reward_experience_order().len(),
+                expected_order_len
+            );
+            assert!(repeated.mana_spheres.is_empty());
+        }
+        assert_eq!(
+            repeated.spell_jar_reward_experience_order(),
+            [expected_order.as_slice(), expected_order.as_slice()].concat(),
+            "successive even phases append the full 26-family source order"
+        );
     }
 
     #[test]

@@ -39,9 +39,9 @@
     "unity_managed_assembly_path": "MagicCarpetNative_Data/Managed/MagicCarpet.Native.Runtime.dll",
     "unity_managed_assembly_sha256": "17478f7d8d0906953103ce68e3883727832225ad0f33b1f1ed5e01cdcbc93699",
     "unity_globalgamemanagers_sha256": "8abee05c17b175ff5f5b089ac2fd131f61041b1f320e47891678e07c829ae1d6",
-    "unity_build_guid": "d4f097b885534d26aba3990e639d95ad",
-    "native_plugin_file_sha256": "d53c1d86d6f9363374a2125e3dba7bfdd6118cb24f65185385f1e287415d1bcb",
-    "built_native_plugin_file_sha256": "d53c1d86d6f9363374a2125e3dba7bfdd6118cb24f65185385f1e287415d1bcb",
+    "unity_build_guid": "873f9499c0214825af96021fffd27f04",
+    "native_plugin_file_sha256": "95a4ef827bd056fc608e146117bb88f4a1b6d22d59634ea153d52b3e4726b988",
+    "built_native_plugin_file_sha256": "95a4ef827bd056fc608e146117bb88f4a1b6d22d59634ea153d52b3e4726b988",
     "unity_version": "6000.3.20f1",
     "native_abi": 2
   },
