@@ -1426,6 +1426,61 @@ namespace MagicCarpet.Native.Tests
         [Timeout(600_000)]
         public void LevelOneAutopilotCompletesThroughOrdinaryPlayerInputs()
         {
+            using (var selectorSession = NativeSession.Open(PackagePath, ClosurePath))
+            {
+                var selectorSnapshot = selectorSession.Step(0, 0, 0);
+                selectorSnapshot.selectedSpellUiIndex = 2;
+                Assert.That(selectorSnapshot.selectedSpellUiIndex, Is.EqualTo(2));
+                var selectorMission = new NativeSim.Level1MissionSnapshot
+                {
+                    currentStage = 3,
+                    playerLife = 10_000,
+                };
+                var selectorGoat = new NativeSim.GoatSnapshot
+                {
+                    active = 1,
+                    x = selectorSnapshot.x,
+                    y = checked((ushort)(selectorSnapshot.y - 1_000)),
+                    z = checked((short)(selectorSnapshot.z + 32)),
+                };
+                var selectorDriver = new Level1Autopilot();
+                var hover = selectorDriver.Next(
+                    Level1Autopilot.Observe(
+                        selectorSnapshot,
+                        selectorMission,
+                        Array.Empty<NativeSim.Level1ActorSnapshot>(),
+                        new[] { selectorGoat },
+                        Array.Empty<NativeSim.ManaSphereSnapshot>(),
+                        default));
+                Assert.That(
+                    (hover.Opcode, hover.Argument1, hover.Argument2),
+                    Is.EqualTo(((sbyte)40, (sbyte)0, (sbyte)0)),
+                    "the production pilot hovers family 0 instead of assigning a hand");
+
+                selectorSnapshot = selectorSession.Step(
+                    hover.Roll,
+                    hover.Pitch,
+                    hover.Flags,
+                    opcode: hover.Opcode,
+                    argument1: hover.Argument1,
+                    argument2: hover.Argument2,
+                    requestedSpell: hover.RequestedSpell);
+                Assert.That(selectorSnapshot.selectedSpellUiIndex, Is.Zero);
+                var fire = selectorDriver.Next(
+                    Level1Autopilot.Observe(
+                        selectorSnapshot,
+                        selectorMission,
+                        Array.Empty<NativeSim.Level1ActorSnapshot>(),
+                        new[] { selectorGoat },
+                        Array.Empty<NativeSim.ManaSphereSnapshot>(),
+                        default));
+                Assert.That(fire.Opcode, Is.Zero);
+                Assert.That(
+                    unchecked((byte)fire.Flags) & 0x40,
+                    Is.EqualTo(0x40),
+                    "selected fire follows the family-0 hover on the next tick");
+            }
+
             using var session = NativeSession.Open(PackagePath, ClosurePath);
             var driver = new Level1Autopilot();
             var snapshot = session.Snapshot();

@@ -214,6 +214,7 @@ namespace MagicCarpet.Native
         private const byte MultipartHeadKind = 7;
         private const int PossessionFlag = 0x20;
         private const int SelectedSpellFlag = 0x40;
+        private const short FireballSpellFamily = 0;
         private const short CastleSpellFamily = 2;
         private const short SpeedSpellFamily = 3;
         // Four Archer spheres plus five visible Goat spheres provide the
@@ -266,6 +267,22 @@ namespace MagicCarpet.Native
         internal Level1Autopilot(bool includePostCompletion = false)
         {
             this.includePostCompletion = includePostCompletion;
+        }
+
+        private static Command HoverSpellFamily(
+            Command steering,
+            short family,
+            string phase)
+        {
+            return new Command(
+                steering.Roll,
+                steering.Pitch,
+                unchecked((byte)steering.Flags) & ~0x70,
+                -1,
+                phase,
+                40,
+                checked((sbyte)family),
+                0);
         }
 
         internal static Observation Observe(
@@ -464,15 +481,10 @@ namespace MagicCarpet.Native
                 var aimed = Aim(player, CastleBuildSite, 0);
                 if (player.selectedSpellUiIndex != CastleSpellFamily)
                 {
-                    return new Command(
-                        aimed.Roll,
-                        aimed.Pitch,
-                        0,
-                        -1,
-                        "select-castle",
-                        31,
-                        checked((sbyte)CastleSpellFamily),
-                        0);
+                    return HoverSpellFamily(
+                        aimed,
+                        CastleSpellFamily,
+                        "select-castle");
                 }
                 return new Command(
                     aimed.Roll,
@@ -540,15 +552,10 @@ namespace MagicCarpet.Native
             {
                 if (player.selectedSpellUiIndex != SpeedSpellFamily)
                 {
-                    return new Command(
-                        attack.Roll,
-                        attack.Pitch,
-                        unchecked((byte)attack.Flags) & ~0x70,
-                        -1,
-                        "select-speed",
-                        31,
-                        checked((sbyte)SpeedSpellFamily),
-                        0);
+                    return HoverSpellFamily(
+                        attack,
+                        SpeedSpellFamily,
+                        "select-speed");
                 }
                 speedSpellRequested = true;
                 return new Command(
@@ -759,17 +766,12 @@ namespace MagicCarpet.Native
             LastAimDistance = currentDistance;
             LastAimActor = actor.authoredIndex;
             var flags = aimed.Flags;
-            if (player.selectedSpellUiIndex != 0)
+            if (player.selectedSpellUiIndex != FireballSpellFamily)
             {
-                return new Command(
-                    aimed.Roll,
-                    aimed.Pitch,
-                    unchecked((byte)flags) & ~0x70,
-                    -1,
-                    phase + "-select-fireball",
-                    31,
-                    0,
-                    0);
+                return HoverSpellFamily(
+                    aimed,
+                    FireballSpellFamily,
+                    phase + "-select-fireball");
             }
             // Multipart heads and their sixteen linked body segments form a
             // much larger guided/explosive target than an Archer or
@@ -828,17 +830,12 @@ namespace MagicCarpet.Native
             LastAimDistance = distance;
             LastAimActor = ushort.MaxValue;
             var flags = aimed.Flags;
-            if (player.selectedSpellUiIndex != 0)
+            if (player.selectedSpellUiIndex != FireballSpellFamily)
             {
-                return new Command(
-                    aimed.Roll,
-                    aimed.Pitch,
-                    unchecked((byte)flags) & ~0x70,
-                    -1,
-                    "harvest-goat-mana-select-fireball",
-                    31,
-                    0,
-                    0);
+                return HoverSpellFamily(
+                    aimed,
+                    FireballSpellFamily,
+                    "harvest-goat-mana-select-fireball");
             }
             if (distance < 6_800 &&
                 IsDirectlyAimed(player, target, 128, 256) &&
