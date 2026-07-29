@@ -9,6 +9,7 @@ pub const SPELL_JAR_SELECTOR: u16 = 59;
 pub const EXIT_TARGET_SELECTOR: u16 = 461;
 pub const LEVEL1_SECONDARY_SELECTORS: [u16; 10] = [30, 31, 32, 33, 34, 35, 36, 37, 66, 259];
 pub const LEVEL1_SCENERY_SELECTORS: [u16; 6] = [57, 75, 78, 87, 178, 179];
+pub const LEVEL1_AMBIENT_SELECTORS: [u16; 3] = [38, 54, 63];
 
 pub const SPELL_JAR_PAYLOAD_BYTES: usize = 838;
 pub const EXIT_TARGET_PAYLOAD_BYTES: usize = 6_516;
@@ -164,6 +165,46 @@ impl StaticWorldTmapBank {
                 height,
                 PAYLOAD_BYTES[ordinal],
                 PAYLOAD_SHA256[ordinal],
+            )?);
+        }
+        Ok(bank)
+    }
+
+    /// Add the three exact fixed frames selected indirectly by ambient
+    /// particle parameter rows 7, 9, and 41.
+    pub fn decode_with_level1_secondary_scenery_and_ambient(
+        spell_jar_payload: &[u8],
+        exit_target_payload: &[u8],
+        secondary_payloads: [&[u8]; LEVEL1_SECONDARY_SELECTORS.len()],
+        scenery_payloads: [&[u8]; LEVEL1_SCENERY_SELECTORS.len()],
+        ambient_payloads: [&[u8]; LEVEL1_AMBIENT_SELECTORS.len()],
+    ) -> Result<Self, String> {
+        let mut bank = Self::decode_with_level1_secondary_and_scenery(
+            spell_jar_payload,
+            exit_target_payload,
+            secondary_payloads,
+            scenery_payloads,
+        )?;
+        const EXTENTS: [(u16, u16); 3] = [(40, 39), (36, 34), (64, 53)];
+        const HEADERS: [u16; 3] = [0x2402, 0x1502, 0x1502];
+        const BYTES: [usize; 3] = [1_566, 1_230, 3_398];
+        const HASHES: [&str; 3] = [
+            "1dd8a48d785dac1dee3a5c012360cc4c7aab03687b4febb298a9f1fb8b7b284f",
+            "40de3c4958c5ffc65c3a57d6b37e5d7d1d8b6cdf1f2da3b941820b388d4e3eca",
+            "a2a5cf4d1ace2b0b025d02c5b9a14cf08d1d583eeae2bb06e8228a1347004ad7",
+        ];
+        for ordinal in 0..LEVEL1_AMBIENT_SELECTORS.len() {
+            let selector = LEVEL1_AMBIENT_SELECTORS[ordinal];
+            let (width, height) = EXTENTS[ordinal];
+            bank.frames.push(decode_base_frame(
+                ambient_payloads[ordinal],
+                selector,
+                HEADERS[ordinal],
+                HEADERS[ordinal].to_le_bytes()[1],
+                width,
+                height,
+                BYTES[ordinal],
+                HASHES[ordinal],
             )?);
         }
         Ok(bank)

@@ -230,7 +230,7 @@ namespace MagicCarpet.Native
         private static readonly Target SecondWaypoint =
             new(49_664, 54_528, 5_000, "second-waypoint");
         private static readonly Target CastleBuildSite =
-            new(49_920, 43_776, 1_200, "castle-build-site");
+            new(49_920, 40_960, 1_200, "castle-build-site");
         // Authored row 305 is a non-rendered overlap switch at tile 217,213.
         // A player can learn/replay this route as a fixed world waypoint; the
         // controller never observes the switch phase, extent, or allocation.

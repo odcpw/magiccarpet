@@ -32,8 +32,8 @@ namespace MagicCarpet.Native
             0x0a49c01e798aa855,
             0xae4de9caf41d5473,
             0xba9873861a554bcf,
-            0xced66d18ef029888,
-            0xad8add439ca3f97e
+            0xb09bfe27ac05352f,
+            0x053d7e07096e5077
         };
         private static readonly ulong[] AutoplayTerrainCoverageHashes =
         {
@@ -84,7 +84,7 @@ namespace MagicCarpet.Native
             0x263fb33a7683a4da
         };
         private static readonly ulong[] AutoplayEventHeads =
-            { 938, 1058, 1419, 1954, 2585 };
+            { 953, 1073, 1434, 1969, 2600 };
         private static readonly int[] YawLookupMode20 =
             { 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 0, 0 };
         private static readonly int[] YawLookupMode19 =
@@ -99,19 +99,19 @@ namespace MagicCarpet.Native
         };
         private static readonly string[] AutoplayEventLifecycleHashes =
         {
-            "90632175992f769fa5e6e3cd64fe1fe5728a497ddc8f586587aaef608c10e123",
-            "6cbb0fef221e1ee6a1561a9f2da165cee2fb668305635e866f515537d19d0cb5",
-            "c2f31241f2a0ca5877fbde80e2981f8c702003258600d564db7a1647873e32cf",
-            "4a05cfd2d3ffbfc8dd89b58c2df1dc3026ebd2455f28b3375e91ca0646b90e09",
-            "c957352ea08fb3fb585e8afdd678222c975326455da121e4716d796a198f8f0e"
+            "6291b1222c881fe09b508737ba2648d6da5d7914ccadb1eb3efec880f731da57",
+            "a896059932ffa14df7da7d168f03fabbeb0297f63add55419a2fe0cc962bf536",
+            "8500955f340b67a010cca7c51744c9b083e11e6cf2daaa8a9dffc604531740c6",
+            "b7ad589a207fe6957b07ac996a53800f15eabec1b4bb041bf7fbe3ef255486d6",
+            "ea4be024470e14902c78b5b66d7e7373b592c39aafc24d8004a9cec2e24dd68f"
         };
         private static readonly string[] AutoplayEventContentHashes =
         {
-            "d9806caaa514ffe50ed13bff879b0e98d076d0352bd7c98689d72500b1c4174c",
-            "db178afab1ce47c89bdcfbcd13c81cebb0909a13128dd2d70cd94f8c65ac63f1",
-            "f3f18602095c38e3104d4a60acef7f233f1fb78690a8b1c6af85d23452536312",
-            "80b65f57d8e5e3b4f937522eb373284cd242e1b190bb8d185313b88987204607",
-            "29b7564fe6abef75b0dcaaed952736ef03717f80f6e69042c0a9537b8cbc2085"
+            "247058da12a1dee22b45b16e0fbe8cdf59a886be703e384c177815e6d622c8f0",
+            "a5681b2062bbe0c4652ba643d339a99156dac6aeb6b45088bf7aa13e5916852e",
+            "6422adc6869e1c151100cc18c63374bec8ac361aae0a149a4ceb85eb62b178d0",
+            "02645bd42837207218f7b066dcf146719758a1e31375118ec2549c5b39c46b96",
+            "7ec85e7dc7e4ccbf83d147bb8f650ff1666d68b775402aeb4f3cb9b0947a6940"
         };
         private const ulong ExpectedResetHash = 0x9da4bc91af58f3ce;
         private const ulong ExpectedResetConformanceHash = 0x77b96b82492d6f4b;
@@ -136,7 +136,7 @@ namespace MagicCarpet.Native
         internal const string ExpectedOwnerAssetClosureHash =
             "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719";
         internal const string ExpectedNativePluginHash =
-            "3dbde36981b66d7b37e0a946f55ad1707ac357b4f8ee8bca1c0f53baca82589b";
+            "536c31fb1f97b7362327ee4007c7cd9feb5013c79a485a5890f906b754bd332a";
 
         private NativeSession session;
         private PlaythroughRecorder playthroughRecorder;
@@ -7519,15 +7519,30 @@ namespace MagicCarpet.Native
                         eventBuffer[index].kind == NativeSim.EventStartMusic)
                     {
                         sawAudio = true;
+                        var isSourceNoSoundSentinel =
+                            eventBuffer[index].kind ==
+                                NativeSim.EventPrepareSound &&
+                            eventBuffer[index].code == ushort.MaxValue;
                         Require(
                             ownerAssetCache != null
-                                ? eventBuffer[index].assetRefIndex >= 76 &&
-                                  eventBuffer[index].assetRefIndex <= 108
+                                ? isSourceNoSoundSentinel
+                                    ? eventBuffer[index].assetRefIndex ==
+                                        uint.MaxValue
+                                    : eventBuffer[index].assetRefIndex >= 76 &&
+                                      eventBuffer[index].assetRefIndex <= 108
                                 : eventBuffer[index].assetRefIndex == uint.MaxValue,
                             ownerAssetCache != null
-                                ? "typed audio event descriptor-backed asset reference"
+                                ? "typed audio event descriptor-backed asset reference " +
+                                  "or exact remc2 -1 no-sound sentinel"
                                 : "debug audio event has no absent-cache asset reference");
-                        if (ownerAudio != null &&
+                        if (isSourceNoSoundSentinel)
+                        {
+                            Require(
+                                !first.TryAudioCommand(
+                                    eventBuffer[index], out _, out _),
+                                "exact remc2 -1 no-sound sentinel has no audio sidecar");
+                        }
+                        else if (ownerAudio != null &&
                             (eventBuffer[index].kind ==
                                 NativeSim.EventPrepareSound ||
                              eventBuffer[index].kind ==

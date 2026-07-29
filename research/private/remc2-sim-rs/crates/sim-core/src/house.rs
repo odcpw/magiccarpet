@@ -11,6 +11,9 @@ use crate::{FlightWorld, Position, native_world::EntitySnapshot};
 pub const LEVEL_ONE_HOUSE_INDICES: std::ops::RangeInclusive<u16> = 1..=47;
 pub const HOUSE_CLASS: u8 = 10;
 pub const HOUSE_MODEL: u8 = 45;
+pub const HOUSE_BUILD_ACTION: u8 = 44;
+pub const HOUSE_TERRAIN_REMOVE_ACTION: u8 = 48;
+pub const HOUSE_TERRAIN_TO_LIVE_ACTION: u8 = 51;
 pub const HOUSE_LIVE_ACTION: u8 = 52;
 pub const HOUSE_REMOVE_ACTION: u8 = 53;
 
@@ -27,23 +30,35 @@ pub struct HouseParameter {
 impl HouseParameter {
     #[must_use]
     pub const fn level_one(building_index: u8) -> Option<Self> {
-        let (life_mana_scalar, flags) = match building_index {
-            17 => (500, 0x18),
-            26 => (20, 0x03),
-            29 => (28, 0x03),
-            30 => (25, 0x03),
-            31 => (29, 0x03),
-            34 => (118, 0x03),
-            42 => (52, 0x03),
-            47 => (34, 0x03),
-            50 => (24, 0x03),
-            51..=53 => (30, 0x08),
+        let (life_mana_scalar, flags, destruction_successor) = match building_index {
+            17 => (500, 0x18, 0),
+            19 => (9, 0x03, 0),
+            22 => (15, 0x03, 0),
+            26 => (20, 0x03, 0),
+            29 => (28, 0x03, 0),
+            30 => (25, 0x03, 0),
+            31 => (29, 0x03, 0),
+            32 => (51, 0x03, 0),
+            33 => (87, 0x03, 0),
+            34 => (118, 0x03, 0),
+            35 => (28, 0x03, 0),
+            // BLDGPRM row 37 is the authored group-13-through-32 house.
+            // Its source successor byte deliberately points back to row 37.
+            37 => (20, 0x08, 37),
+            39 => (30, 0x03, 0),
+            40 => (100, 0x03, 0),
+            42 => (52, 0x03, 0),
+            47 => (34, 0x03, 0),
+            50 => (24, 0x03, 0),
+            51..=53 => (30, 0x08, 0),
+            62 => (215, 0x03, 0),
+            74 => (245, 0x03, 0),
             _ => return None,
         };
         Some(Self {
             life_mana_scalar,
             flags,
-            destruction_successor: 0,
+            destruction_successor,
         })
     }
 
@@ -75,6 +90,9 @@ pub struct HouseState {
     pub collision_half_height: i16,
     pub action: u8,
     pub phase: u8,
+    pub xtype: u8,
+    /// Source byte `0x3b`: action 44 selects a -25 rather than -1 tail.
+    pub build_tail: u8,
     pub building_index: u8,
     pub capacity: i16,
     pub owner_entity_index: u16,
@@ -139,6 +157,8 @@ impl HouseState {
             collision_half_height: read_i16(bytes, 92),
             action: snapshot.action,
             phase: snapshot.phase,
+            xtype: bytes[65],
+            build_tail: bytes[59],
             building_index,
             capacity: read_i16(bytes, 136),
             owner_entity_index: read_u16(bytes, 152),
@@ -148,6 +168,55 @@ impl HouseState {
             pending_possession_owner: read_u16(bytes, 108),
             parameter,
         })
+    }
+
+    /// Dispatch one of the three BUILD lifecycle entries owned by the class-10
+    /// table. Returns `true` when the action is a BUILD entry and was handled.
+    pub fn dispatch_build_entry<W: FlightWorld>(&mut self, world: &W) -> bool {
+        match self.action {
+            HOUSE_BUILD_ACTION => step_build_44(self),
+            HOUSE_TERRAIN_REMOVE_ACTION | HOUSE_TERRAIN_TO_LIVE_ACTION => {
+                step_build_48_or_51(self, world);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Dispatch one complete source action for a standalone live house.
+    ///
+    /// Imported reset houses are owned by [`HouseFamily`], while authored
+    /// group houses are allocated later by the shared mission arena. Both use
+    /// this exact action body so BUILD-to-live timing, damage, resident
+    /// requests, destruction, phase wrapping, and disabled state cannot
+    /// diverge between the two ownership paths.
+    #[must_use]
+    pub fn step_source_action<W: FlightWorld>(&mut self, world: &W) -> Vec<HouseStepEvent> {
+        let mut events = Vec::new();
+        if !self.dispatch_build_entry(world) {
+            match self.action {
+                HOUSE_LIVE_ACTION => {
+                    step_live_house(self, &mut events);
+                    self.position.z = world.ground_height(self.position);
+                }
+                HOUSE_REMOVE_ACTION => {
+                    events.push(HouseStepEvent::RemoveFootprint {
+                        entity_index: self.entity_index,
+                        attacker_entity_index: self.pending_attacker.cast_unsigned(),
+                        position: self.position,
+                        building_index: self.building_index,
+                        occupants: self.occupants,
+                        rng: self.rng,
+                        xtype: self.xtype,
+                    });
+                    self.active = false;
+                    self.control_flags |= SOURCE_DISABLED_FLAG;
+                }
+                _ => {}
+            }
+        }
+        self.phase = self.phase.wrapping_add(1);
+        events
     }
 }
 
@@ -181,12 +250,20 @@ pub enum HouseStepEvent {
         building_index: u8,
         occupants: i32,
         rng: u16,
+        xtype: u8,
     },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HouseFamily {
     houses: Box<[HouseState]>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HouseResidentEntry {
+    Entered,
+    Full,
+    NotLive,
 }
 
 impl HouseFamily {
@@ -217,6 +294,71 @@ impl HouseFamily {
     #[must_use]
     pub fn houses(&self) -> &[HouseState] {
         &self.houses
+    }
+
+    /// Install the class-10/model-45 row produced by Builder action 96.
+    ///
+    /// `NewEvent_4A050` may reuse a reclaimed source slot, so an inactive
+    /// projection at the same index is replaced. A live duplicate is an
+    /// authority error. The family remains source-slot ordered even after
+    /// reclamation and reuse.
+    pub fn insert_builder_house(&mut self, house: HouseState) -> Result<(), String> {
+        if let Some(index) = self
+            .houses
+            .iter()
+            .position(|existing| existing.entity_index == house.entity_index)
+        {
+            if self.houses[index].active {
+                return Err(format!(
+                    "Builder house source slot {} is already live",
+                    house.entity_index
+                ));
+            }
+            self.houses[index] = house;
+            return Ok(());
+        }
+
+        let mut houses = self.houses.to_vec();
+        let insertion = houses
+            .binary_search_by_key(&house.entity_index, |existing| existing.entity_index)
+            .unwrap_or_else(|index| index);
+        houses.insert(insertion, house);
+        self.houses = houses.into_boxed_slice();
+        Ok(())
+    }
+
+    /// Apply the `sub_49A30` BUILD-row initialization to a constructor row
+    /// that was already inserted before the Builder sound.
+    pub fn initialize_builder_house(&mut self, house: HouseState) -> Result<(), String> {
+        let existing = self
+            .houses
+            .iter_mut()
+            .find(|existing| existing.entity_index == house.entity_index && existing.active)
+            .ok_or_else(|| {
+                format!(
+                    "Builder house source slot {} is not live for initialization",
+                    house.entity_index
+                )
+            })?;
+        *existing = house;
+        Ok(())
+    }
+
+    /// Apply the final action-51 write after BUILD-row initialization.
+    pub fn set_builder_house_action(
+        &mut self,
+        source_entity_index: u16,
+        action: u8,
+    ) -> Result<(), String> {
+        let house = self
+            .houses
+            .iter_mut()
+            .find(|house| house.entity_index == source_entity_index && house.active)
+            .ok_or_else(|| {
+                format!("Builder house source slot {source_entity_index} is not live for action")
+            })?;
+        house.action = action;
+        Ok(())
     }
 
     pub fn inject_damage(
@@ -266,14 +408,25 @@ impl HouseFamily {
         Ok(())
     }
 
-    pub fn add_occupant(&mut self, entity_index: u16) -> Result<(), String> {
-        let house = self
+    /// Atomically admit one resident into the authoritative live house.
+    ///
+    /// A dead/unknown house and a full house are ordinary source-level
+    /// rejections. Neither branch mutates the family. Success performs the
+    /// one and only occupant increment.
+    #[must_use]
+    pub fn try_enter_resident(&mut self, entity_index: u16) -> HouseResidentEntry {
+        let Some(house) = self
             .houses
             .iter_mut()
             .find(|house| house.entity_index == entity_index && house.active)
-            .ok_or_else(|| format!("house entity {entity_index} is not live"))?;
+        else {
+            return HouseResidentEntry::NotLive;
+        };
+        if house.occupants >= i32::from(house.capacity) {
+            return HouseResidentEntry::Full;
+        }
         house.occupants = house.occupants.wrapping_add(1);
-        Ok(())
+        HouseResidentEntry::Entered
     }
 
     pub fn commit_removal_state(
@@ -303,6 +456,23 @@ impl HouseFamily {
         source_slot: u16,
         world: &W,
     ) -> Vec<HouseStepEvent> {
+        self.try_step_source_slot(source_slot, world, |_| true)
+    }
+
+    /// Stage one source dispatch and commit it only when all cross-system
+    /// allocations can be accepted.
+    ///
+    /// Action 52 can request one resident and action 53 can fan out into many
+    /// row-major requests in the terrain bridge. Keeping the house mutation
+    /// staged lets that bridge reject allocation atomically: no phase, RNG,
+    /// ownership, mailbox, footprint, or event state is committed.
+    #[must_use]
+    pub fn try_step_source_slot<W: FlightWorld>(
+        &mut self,
+        source_slot: u16,
+        world: &W,
+        mut accept: impl FnMut(&[HouseStepEvent]) -> bool,
+    ) -> Vec<HouseStepEvent> {
         let Some(index) = self
             .houses
             .iter()
@@ -310,30 +480,60 @@ impl HouseFamily {
         else {
             return Vec::new();
         };
-        let house = &mut self.houses[index];
-        let mut events = Vec::new();
-        match house.action {
-            HOUSE_LIVE_ACTION => {
-                step_live_house(house, &mut events);
-                house.position.z = world.ground_height(house.position);
-            }
-            HOUSE_REMOVE_ACTION => {
-                events.push(HouseStepEvent::RemoveFootprint {
-                    entity_index: house.entity_index,
-                    attacker_entity_index: house.pending_attacker.cast_unsigned(),
-                    position: house.position,
-                    building_index: house.building_index,
-                    occupants: house.occupants,
-                    rng: house.rng,
-                });
-                house.active = false;
-                house.control_flags |= SOURCE_DISABLED_FLAG;
-            }
-            _ => {}
+        let mut house = self.houses[index];
+        let events = house.step_source_action(world);
+        if !accept(&events) {
+            return Vec::new();
         }
-        house.phase = house.phase.wrapping_add(1);
+        self.houses[index] = house;
         events
     }
+}
+
+/// `AddTerrainMod0A_2A_37BC0`: action 44 has its own 19-dispatch build
+/// countdown and negative reclamation tail. It is not an alias of 48/51.
+fn step_build_44(house: &mut HouseState) {
+    const BUILD_INITIALIZED_FLAG: u32 = 2;
+    if house.control_flags & BUILD_INITIALIZED_FLAG == 0 {
+        house.occupants = 19;
+        house.control_flags |= BUILD_INITIALIZED_FLAG;
+    }
+    if house.occupants <= 0 {
+        house.occupants = house.occupants.wrapping_add(1);
+        if house.occupants == 0 {
+            house.active = false;
+            house.control_flags |= SOURCE_DISABLED_FLAG;
+        }
+        return;
+    }
+    house.occupants -= 1;
+    if house.occupants == 0 {
+        house.occupants = if house.build_tail != 0 { -25 } else { -1 };
+    }
+}
+
+/// `ApplyTerrainModification_37240`: actions 48 and 51 share the terrain
+/// handler, then deliberately split at completion. Action 48 signals/removes
+/// the temporary BUILD row. Action 51 turns that same row into a live house.
+fn step_build_48_or_51<W: FlightWorld>(house: &mut HouseState, world: &W) {
+    house.life = house.life.wrapping_sub(1);
+    if house.life > 0 {
+        return;
+    }
+    if house.action == HOUSE_TERRAIN_REMOVE_ACTION {
+        house.active = false;
+        house.control_flags |= SOURCE_DISABLED_FLAG;
+        return;
+    }
+
+    house.life = i32::from(house.parameter.life_mana_scalar).wrapping_mul(1_000);
+    house.action = HOUSE_LIVE_ACTION;
+    if house.owner_entity_index == 0 {
+        house.control_flags |= 1;
+    } else {
+        house.control_flags &= !1;
+    }
+    house.position.z = world.ground_height(house.position);
 }
 
 fn step_live_house(house: &mut HouseState, events: &mut Vec<HouseStepEvent>) {
@@ -511,6 +711,17 @@ mod tests {
     fn damage_releases_one_occupant_and_fatal_damage_defers_removal_one_dispatch() {
         let world = load_world();
         let mut family = HouseFamily::from_entities(world.entities()).expect("house family");
+        family.houses[0].occupants = 47;
+        assert_eq!(family.try_enter_resident(1), HouseResidentEntry::Entered);
+        assert_eq!(family.houses()[0].occupants, 48);
+        let full = family.clone();
+        assert_eq!(family.try_enter_resident(1), HouseResidentEntry::Full);
+        assert_eq!(family, full, "full rejection must not mutate the house");
+        family.houses[0].active = false;
+        let dead = family.clone();
+        assert_eq!(family.try_enter_resident(1), HouseResidentEntry::NotLive);
+        assert_eq!(family, dead, "dead rejection must not mutate the house");
+        family = HouseFamily::from_entities(world.entities()).expect("house family");
         family.houses[0].occupants = 4;
         family.inject_damage(1, 100, 48).expect("damage");
         let events = family.step_source_slot(1, &world);
@@ -544,6 +755,59 @@ mod tests {
             events.as_slice(),
             [HouseStepEvent::RemoveFootprint { .. }]
         ));
+
+        // The allocation gate encloses the compare-event mailbox mutations,
+        // resident request, phase, and ground resample in one transaction.
+        let mut rejected = HouseFamily::from_entities(world.entities()).expect("house family");
+        rejected.houses[0].occupants = 4;
+        rejected.inject_damage(1, 100, 48).expect("damage");
+        let before = rejected.clone();
+        assert!(
+            rejected
+                .try_step_source_slot(1, &world, |events| {
+                    assert!(matches!(
+                        events,
+                        [
+                            HouseStepEvent::Damaged { .. },
+                            HouseStepEvent::ResidentRequested { .. }
+                        ]
+                    ));
+                    false
+                })
+                .is_empty()
+        );
+        assert_eq!(rejected, before);
+
+        // Every GetRandManaSphere branch consumes the eligibility draw first
+        // and the model draw second, in source order.
+        for (seed, expected) in [
+            (46, (4, 33)),
+            (128, (14, 113)),
+            (14, (13, 105)),
+            (144, (12, 97)),
+        ] {
+            let mut population =
+                HouseFamily::from_entities(world.entities()).expect("house family");
+            population.houses[0].phase = 0;
+            population.houses[0].occupants = 48;
+            population.houses[0].capacity = 48;
+            population.houses[0].rng = seed;
+            let events = population.step_source_slot(1, &world);
+            assert!(matches!(
+                events.as_slice(),
+                [HouseStepEvent::ResidentRequested {
+                    model,
+                    action,
+                    attacker_entity_index: 0,
+                    ..
+                }] if (*model, *action) == expected
+            ));
+            assert_eq!(
+                population.houses[0].rng,
+                next_rng(next_rng(seed)),
+                "eligibility and resident-selection draws"
+            );
+        }
     }
 
     #[test]
@@ -563,5 +827,68 @@ mod tests {
             }]
         ));
         assert!(family.submit_possession(2, 48, 0).is_err());
+
+        // Neutral payload cannot steal an already-possessed house, but the
+        // mailbox is still consumed. A nonzero payload accepts the new owner
+        // and installs the possessed/neutral control-bit combination.
+        family.houses[0].control_flags |= POSSESSED_FLAG;
+        family
+            .submit_possession(1, 49, 0)
+            .expect("neutral possession mailbox");
+        assert!(family.step_source_slot(1, &world).is_empty());
+        assert_eq!(family.houses[0].owner_entity_index, 48);
+        assert_eq!(family.houses[0].pending_possession_owner, 0);
+        family
+            .submit_possession(1, 49, 7)
+            .expect("strong possession mailbox");
+        assert!(matches!(
+            family.step_source_slot(1, &world).as_slice(),
+            [HouseStepEvent::Possessed {
+                owner_entity_index: 49,
+                payload: 7,
+                ..
+            }]
+        ));
+        assert_eq!(
+            family.houses[0].control_flags & (POSSESSED_FLAG | 1),
+            POSSESSED_FLAG
+        );
+
+        // BUILD entries retain the exact dispatch-table shape: 44 owns its
+        // 19/-1 staged tail, 48 disables at completion, and 51 becomes 52.
+        let mut build_44 = HouseFamily::from_entities(world.entities()).expect("house family");
+        build_44.houses[0].action = HOUSE_BUILD_ACTION;
+        build_44.houses[0].control_flags &= !2;
+        build_44.houses[0].build_tail = 0;
+        for _ in 0..19 {
+            assert!(build_44.step_source_slot(1, &world).is_empty());
+        }
+        assert_eq!(build_44.houses[0].occupants, -1);
+        let _ = build_44.step_source_slot(1, &world);
+        assert!(!build_44.houses[0].active);
+
+        let mut build_48 = HouseFamily::from_entities(world.entities()).expect("house family");
+        build_48.houses[0].action = HOUSE_TERRAIN_REMOVE_ACTION;
+        build_48.houses[0].life = 1;
+        let _ = build_48.step_source_slot(1, &world);
+        assert!(!build_48.houses[0].active);
+
+        let mut build_51 = HouseFamily::from_entities(world.entities()).expect("house family");
+        build_51.houses[0].action = HOUSE_TERRAIN_TO_LIVE_ACTION;
+        build_51.houses[0].life = 1;
+        build_51.houses[0].owner_entity_index = 0;
+        build_51.houses[0].control_flags &= !1;
+        build_51.houses[0].position.z = 0;
+        let _ = build_51.step_source_slot(1, &world);
+        assert_eq!(build_51.houses[0].action, HOUSE_LIVE_ACTION);
+        assert_eq!(
+            build_51.houses[0].life,
+            i32::from(build_51.houses[0].parameter.life_mana_scalar) * 1_000
+        );
+        assert_eq!(build_51.houses[0].control_flags & 1, 1);
+        assert_eq!(
+            build_51.houses[0].position.z,
+            world.ground_height(build_51.houses[0].position)
+        );
     }
 }

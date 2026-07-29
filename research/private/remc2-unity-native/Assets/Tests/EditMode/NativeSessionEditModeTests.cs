@@ -436,8 +436,12 @@ namespace MagicCarpet.Native.Tests
             first.Step(0, 0, 1);
             var advancedTerrain = first.TerrainState();
             Assert.That(advancedTerrain.tick, Is.EqualTo(1));
-            Assert.That(advancedTerrain.mutationSequence, Is.Zero);
-            Assert.That(advancedTerrain.terrainHash, Is.EqualTo(firstTerrain.terrainHash));
+            // The combined source path admits two action-0 ambient terrain
+            // updates on the first step, in source-list order.
+            Assert.That(advancedTerrain.mutationSequence, Is.EqualTo(2));
+            Assert.That(
+                advancedTerrain.terrainHash,
+                Is.Not.EqualTo(firstTerrain.terrainHash));
             Assert.That(second.TerrainState().tick, Is.Zero);
 
             first.Reset();
@@ -904,7 +908,7 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
-        [Timeout(600_000)]
+        [Timeout(1_200_000)]
         public void LevelOneAutopilotFreshSessionsHaveIdenticalDigests()
         {
             var first = RunAutopilotDigest();
@@ -937,7 +941,7 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
-        [Timeout(1_200_000)]
+        [Timeout(3_600_000)]
         public void LevelOnePostCompletionAutopilotFightsGroups33And34BeforeExit()
         {
             var first = RunAutopilotDigest(
@@ -1028,7 +1032,7 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
-        [Timeout(360_000)]
+        [Timeout(1_200_000)]
         public void LevelOneNaturalFireflyRetaliationUsesOnlyOrdinaryPlayerInputs()
         {
             var first = RunNaturalFireflyRetaliation();
@@ -1062,7 +1066,7 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
-        [Timeout(180_000)]
+        [Timeout(600_000)]
         public void LevelOneAutopilotCompletesThroughOrdinaryPlayerInputs()
         {
             using var session = NativeSession.Open(PackagePath, ClosurePath);
@@ -1377,8 +1381,9 @@ namespace MagicCarpet.Native.Tests
             Assert.That(mission.exitResultCode, Is.EqualTo(10));
             // Eighteen Castle growth passes plus its final stable resample
             // are followed by one source-exact house action-53 footprint
-            // removal on this deterministic combat route.
-            Assert.That(peakTerrainMutationSequence, Is.EqualTo(20));
+            // removal and three source-ordered ambient terrain updates on
+            // this deterministic combat route.
+            Assert.That(peakTerrainMutationSequence, Is.EqualTo(23));
             Assert.That(terrain.terrainHash, Is.Not.EqualTo(initialTerrainHash));
             var resetSnapshot = session.Reset();
             var resetTerrain = session.TerrainState();

@@ -122,6 +122,10 @@ impl FlightWorld for LegacyTerrain {
         material_mask(self.terrain_types[tile_index(tile_for(position))])
     }
 
+    fn terrain_type(&self, position: Position) -> u8 {
+        self.terrain_types[tile_index(tile_for(position))]
+    }
+
     fn angle_flags(&self, tile: Tile) -> u8 {
         self.angle_flags[tile_index(tile)]
     }

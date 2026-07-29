@@ -26,7 +26,7 @@ use crate::{
         GOAT_TMAP_SELECTORS, GOAT_TMAP_STATE_COUNT, GoatTmapBank, GoatTmapClocks, GoatTmapFrame,
         GoatTmapSelectorBank,
     },
-    house::{HouseState, HouseStepEvent},
+    house::{HOUSE_CLASS, HOUSE_MODEL, HouseResidentEntry, HouseState, HouseStepEvent},
     legacy_terrain::{
         LEGACY_MAP_CELLS, LegacyTerrain, interpolate_cave, interpolate_ground, material_mask,
     },
@@ -36,12 +36,15 @@ use crate::{
         FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_LOGICAL_HEIGHT, FIREBALL_IMPACT_RENDER_INDEX,
         FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LOGICAL_HEIGHT, FIREBALL_RENDER_INDEX,
         FIREBALL_RENDER_MODE, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT, FIREFLY_RENDER_INDEX,
-        FIREFLY_RENDER_MODE, Level1CastlePlacementBlocker, Level1CollisionTarget,
-        Level1MissionState, Level1MissionTemplate, Level1ResetSourceSlot,
-        Level1SourceCollisionTarget, MANA_CARRIER_BASE_TMAP, MANA_CARRIER_LOGICAL_HEIGHT,
-        MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_RENDER_MODE, SPELL_JAR_BASE_TMAP,
-        SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE,
+        FIREFLY_RENDER_MODE, HouseResidentRequest, Level1AmbientEntity,
+        Level1CastlePlacementBlocker, Level1CollisionTarget, Level1MissionState,
+        Level1MissionTemplate, Level1ResetSourceSlot, Level1SourceCollisionTarget,
+        Level1SourceEffect, Level1SourceEntityAuthority, Level1SourceEntityView,
+        MANA_CARRIER_BASE_TMAP, MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_RENDER_INDEX,
+        MANA_CARRIER_RENDER_MODE, SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT,
+        SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE,
     },
+    renderable_map_chain::RenderableMapSeed,
     spell_activation::{SpellActivationHolder, SpellCasterState},
     state_hash, step_outer_turn_with_context,
     villager::{
@@ -248,6 +251,57 @@ impl EntitySnapshot {
             active: self.active,
         }
     }
+
+    fn ambient_entity(&self) -> Option<Level1AmbientEntity> {
+        if !self.active
+            || self.class != 10
+            || !matches!(
+                (self.model, self.action),
+                (0, 0) | (1, 1) | (14, 14) | (60, 65)
+            )
+        {
+            return None;
+        }
+        let read_u16 = |offset| u16::from_le_bytes([self.record[offset], self.record[offset + 1]]);
+        let read_i16 = |offset| i16::from_le_bytes([self.record[offset], self.record[offset + 1]]);
+        let read_u32 = |offset| {
+            u32::from_le_bytes([
+                self.record[offset],
+                self.record[offset + 1],
+                self.record[offset + 2],
+                self.record[offset + 3],
+            ])
+        };
+        Some(Level1AmbientEntity {
+            source_entity_index: self.index,
+            parent_entity_index: 0,
+            source_id: self.source_id,
+            position: self.position,
+            max_life: self.max_life,
+            life: self.life,
+            control_flags: self.control_flags,
+            search_radius: read_u32(20),
+            entity_rng: read_u16(24),
+            class: self.class,
+            model: self.model,
+            action: self.action,
+            phase: self.phase,
+            yaw: self.yaw,
+            // Particle `array_0x52` axes, distinct from orientation yaw/pitch.
+            pitch: read_i16(88),
+            fov: read_i16(92),
+            vertical_velocity: read_i16(48),
+            actual_speed: self.actual_speed,
+            max_speed: read_i16(138),
+            render_parameter_index: self.particle_parameter_index.unwrap_or(0),
+            animation_frame: self.animation_frame(),
+            animation_limit: i8::from_le_bytes([self.record[97]]),
+            active: true,
+            map_linked: self.control_flags & 4 != 0,
+            last_material_effect: None,
+            collision_probe_ran: false,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -392,8 +446,52 @@ impl SessionTerrain {
         update: CastleTerrainUpdate,
         footprint: &CastleBuildFootprint,
     ) -> std::result::Result<(), String> {
+        if update.is_ambient() {
+            return self.apply_ambient_update(update);
+        }
         let mut staged = self.clone();
         staged.apply_castle_update_inner(update, footprint)?;
+        staged.mutation_sequence = staged.mutation_sequence.wrapping_add(1);
+        *self = staged;
+        Ok(())
+    }
+
+    pub fn apply_ambient_update(
+        &mut self,
+        update: CastleTerrainUpdate,
+    ) -> std::result::Result<(), String> {
+        let mut staged = self.clone();
+        match update {
+            CastleTerrainUpdate::AmbientMaterial {
+                position,
+                in_type,
+                target_type,
+            } => {
+                let x = position.x.wrapping_add(128).to_be_bytes()[0];
+                let y = position.y.wrapping_add(128).to_be_bytes()[0];
+                apply_ambient_material(
+                    &mut staged.planes,
+                    x,
+                    y,
+                    in_type,
+                    target_type,
+                    staged.map_type,
+                )?;
+            }
+            CastleTerrainUpdate::AmbientCollision {
+                position,
+                height_delta,
+            } => apply_ambient_collision(
+                &mut staged.planes,
+                position,
+                height_delta,
+                staged.map_type,
+                &mut staged.terrain_rng,
+            ),
+            _ => {
+                return Err("non-ambient update requires a Castle BUILD footprint".to_owned());
+            }
+        }
         staged.mutation_sequence = staged.mutation_sequence.wrapping_add(1);
         *self = staged;
         Ok(())
@@ -498,19 +596,8 @@ impl SessionTerrain {
                     continue;
                 }
                 let height = staged.planes.ground_heights[index];
-                if cell[1] >= height {
-                    staged.planes.ground_heights[index] = 0;
-                    continue;
-                }
-                house_rng = next_house_rng(house_rng);
-                staged.planes.ground_heights[index] = if house_rng % 50 <= 20 {
-                    height.wrapping_sub(cell[1])
-                } else {
-                    house_rng = next_house_rng(house_rng);
-                    height
-                        .wrapping_sub(cell[1])
-                        .wrapping_add((house_rng % 20) as u8)
-                };
+                staged.planes.ground_heights[index] =
+                    reduce_house_height(height, cell[1], &mut house_rng);
             }
         }
         for row in 0..footprint.height {
@@ -537,10 +624,39 @@ impl SessionTerrain {
         update: CastleTerrainUpdate,
         footprint: &CastleBuildFootprint,
     ) -> std::result::Result<(), String> {
+        if let CastleTerrainUpdate::AmbientMaterial {
+            position,
+            in_type,
+            target_type,
+        } = update
+        {
+            let x = position.x.wrapping_add(128).to_be_bytes()[0];
+            let y = position.y.wrapping_add(128).to_be_bytes()[0];
+            apply_ambient_material(&mut self.planes, x, y, in_type, target_type, self.map_type)?;
+            return Ok(());
+        }
+        if let CastleTerrainUpdate::AmbientCollision {
+            position,
+            height_delta,
+        } = update
+        {
+            apply_ambient_collision(
+                &mut self.planes,
+                position,
+                height_delta,
+                self.map_type,
+                &mut self.terrain_rng,
+            );
+            return Ok(());
+        }
         let position = match update {
             CastleTerrainUpdate::ConstructionPass { position, .. }
             | CastleTerrainUpdate::ConstructionCompleted { position }
             | CastleTerrainUpdate::StageDestroyed { position, .. } => position,
+            CastleTerrainUpdate::AmbientMaterial { .. }
+            | CastleTerrainUpdate::AmbientCollision { .. } => {
+                unreachable!("ambient update returned above")
+            }
         };
         let center_x = position.x.wrapping_add(128).to_be_bytes()[0];
         let center_y = position.y.wrapping_add(128).to_be_bytes()[0];
@@ -637,8 +753,27 @@ impl SessionTerrain {
                     entity_rng,
                 );
             }
+            CastleTerrainUpdate::AmbientMaterial { .. }
+            | CastleTerrainUpdate::AmbientCollision { .. } => {
+                unreachable!("ambient update returned above")
+            }
         }
         Ok(())
+    }
+}
+
+pub(crate) fn reduce_house_height(height: u8, reduction: u8, house_rng: &mut u16) -> u8 {
+    if reduction >= height {
+        return 0;
+    }
+    *house_rng = next_house_rng(*house_rng);
+    if *house_rng % 0x32 <= 20 {
+        height.wrapping_sub(reduction)
+    } else {
+        *house_rng = next_house_rng(*house_rng);
+        height
+            .wrapping_sub(reduction)
+            .wrapping_add((*house_rng % 0x14) as u8)
     }
 }
 
@@ -657,6 +792,12 @@ impl FlightWorld for SessionTerrain {
         let x = position.x.to_be_bytes()[0];
         let y = position.y.to_be_bytes()[0];
         material_mask(self.planes.terrain_types[terrain_index(x, y)])
+    }
+
+    fn terrain_type(&self, position: Position) -> u8 {
+        let x = position.x.to_be_bytes()[0];
+        let y = position.y.to_be_bytes()[0];
+        self.planes.terrain_types[terrain_index(x, y)]
     }
 
     fn angle_flags(&self, tile: crate::Tile) -> u8 {
@@ -942,6 +1083,105 @@ fn apply_castle_material(
             (x, y.wrapping_add(1)),
         ] {
             planes.angles[terrain_index(corner_x, corner_y)] &= 0xf7;
+        }
+    }
+}
+
+fn apply_ambient_material(
+    planes: &mut TerrainPlanes,
+    x: u8,
+    y: u8,
+    in_type: u8,
+    target_type: u8,
+    map_type: MapType,
+) -> std::result::Result<(), String> {
+    let base_offset = match target_type {
+        20 => 0x10,
+        21 => 0x20,
+        22 => 0x30,
+        _ => {
+            return Err(format!(
+                "ambient terrain target {target_type} is outside 20..=22"
+            ));
+        }
+    };
+    let corner = classify_castle_corner(planes, x, y, in_type);
+    let table_offset = base_offset + 2 * corner;
+    let index = terrain_index(x, y);
+    planes.terrain_types[index] = TERRAIN_GENERATION_TABLE_PREFIX[table_offset];
+    planes.angles[index] =
+        (planes.angles[index] & 0x8f) | TERRAIN_GENERATION_TABLE_PREFIX[table_offset + 1];
+    planes.angles[index] |= 0x80;
+    for (corner_x, corner_y) in [
+        (x, y),
+        (x.wrapping_add(1), y),
+        (x.wrapping_add(1), y.wrapping_add(1)),
+        (x, y.wrapping_add(1)),
+    ] {
+        let index = terrain_index(corner_x, corner_y);
+        if map_type == MapType::Cave {
+            normalize_cave_clearance(planes, index);
+        } else {
+            planes.angles[index] &= 0xf7;
+        }
+    }
+    Ok(())
+}
+
+fn apply_ambient_collision(
+    planes: &mut TerrainPlanes,
+    position: Position,
+    height_delta: i8,
+    map_type: MapType,
+    terrain_rng: &mut u16,
+) {
+    let base_x = (position.x as i16).wrapping_add(128) >> 8;
+    let base_y = (position.y as i16).wrapping_add(128) >> 8;
+    for (offset_x, offset_y) in [(0_i16, 0_i16), (1, 0), (0, 1), (1, 1)] {
+        let signed_x = base_x.wrapping_add(offset_x);
+        let signed_y = base_y.wrapping_add(offset_y);
+        let x = signed_x as u8;
+        let y = signed_y as u8;
+        let index = terrain_index(x, y);
+        if planes.angles[index] & 0x80 != 0 {
+            break;
+        }
+        let unclamped = i16::from(planes.ground_heights[index]) + i16::from(height_delta);
+        let height = unclamped.clamp(0, 200) as u8;
+        planes.ground_heights[index] = height;
+        if map_type == MapType::Cave {
+            let secondary = i16::from(planes.secondary_heights[index]) - i16::from(height_delta);
+            planes.secondary_heights[index] = if secondary >= 255 {
+                u8::MAX
+            } else {
+                secondary as u8
+            };
+        }
+        if height != 0 {
+            planes.angles[index] = (planes.angles[index] & 0xf8) | 1;
+        } else {
+            let allowed = [
+                (x.wrapping_sub(1), y.wrapping_sub(1)),
+                (x, y.wrapping_sub(1)),
+                (x.wrapping_add(1), y.wrapping_sub(1)),
+                (x.wrapping_add(1), y),
+                (x.wrapping_sub(1), y),
+                (x.wrapping_sub(1), y.wrapping_add(1)),
+                (x, y.wrapping_add(1)),
+                (x.wrapping_add(1), y.wrapping_add(1)),
+            ]
+            .into_iter()
+            .all(|(x, y)| {
+                let angle = planes.angles[terrain_index(x, y)] & 7;
+                !matches!(angle, 2 | 3 | 5)
+            });
+            if allowed {
+                planes.angles[index] &= 0xf0;
+            }
+        }
+        add_building_to_terrain(planes, x, y, map_type, terrain_rng);
+        if !(0..=200).contains(&unclamped) && signed_x == 0 && signed_y == 0 {
+            break;
         }
     }
 }
@@ -1326,6 +1566,27 @@ impl NativeWorld {
                 control_flags: entity.control_flags,
             })
             .collect::<Vec<_>>();
+        let mut initial_ambient_entities = entities
+            .iter()
+            .filter_map(EntitySnapshot::ambient_entity)
+            .collect::<Vec<_>>();
+        initial_ambient_entities.sort_unstable_by_key(|entity| entity.source_entity_index);
+        let emitter_slots = initial_ambient_entities
+            .iter()
+            .filter(|entity| (entity.model, entity.action) == (60, 65))
+            .map(|entity| entity.source_entity_index)
+            .collect::<Vec<_>>();
+        let mut smoke_ordinal = 0_usize;
+        for entity in &mut initial_ambient_entities {
+            match (entity.model, entity.action) {
+                (14, 14) => {
+                    entity.parent_entity_index = emitter_slots[smoke_ordinal];
+                    smoke_ordinal += 1;
+                }
+                (0, 0) => entity.parent_entity_index = entity.source_id,
+                _ => {}
+            }
+        }
         let initial_castle_blockers = entities
             .iter()
             .filter(|entity| {
@@ -1378,6 +1639,7 @@ impl NativeWorld {
                 global_mana_denominator,
                 runtime.random_state,
                 &initial_source_slots,
+                &initial_ambient_entities,
                 &initial_castle_blockers,
                 &initial_building_blockers,
                 &initial_possession_targets,
@@ -1602,6 +1864,10 @@ impl FlightWorld for NativeWorld {
         self.terrain.material_mask(position)
     }
 
+    fn terrain_type(&self, position: Position) -> u8 {
+        self.terrain.terrain_type(position)
+    }
+
     fn angle_flags(&self, tile: crate::Tile) -> u8 {
         self.terrain.angle_flags(tile)
     }
@@ -1619,6 +1885,264 @@ pub struct NativeSession<'world> {
     pub camera_fov: i16,
     pub pending_house_effects: Vec<HouseStepEvent>,
     pub mission: Level1MissionState,
+}
+
+fn goat_source_entity_view(goat: &GoatState) -> Level1SourceEntityView {
+    Level1SourceEntityView {
+        source_entity_index: goat.entity_index,
+        source_id: goat.source_id,
+        authority: Level1SourceEntityAuthority::LiveGoat,
+        active: goat.active,
+        visible: goat.active,
+        class: GOAT_CLASS,
+        model: GOAT_MODEL,
+        action: goat.action,
+        phase: goat.phase,
+        entity_rng: goat.rng,
+        control_flags: goat.control_flags,
+        position: goat.position,
+        max_life: goat.max_life,
+        life: goat.life,
+        pending_damage: goat.pending_damage,
+        pending_attacker: goat.pending_attacker.cast_unsigned(),
+        owner_entity_index: goat.current_attacker.cast_unsigned(),
+        target_entity_index: goat.target_entity_index.unwrap_or(0),
+        linked_entity_index: 0,
+        actual_speed: goat.actual_speed,
+        maximum_speed: goat.maximum_speed,
+        collision_half_width: goat.collision_half_width,
+        collision_half_depth: goat.collision_half_width,
+        collision_vertical_offset: goat.collision_vertical_offset,
+        collision_half_height: goat.collision_half_height,
+        villager_entry_eligible: false,
+        builder_placement_latch: 0,
+    }
+}
+
+fn house_source_entity_view(house: &HouseState) -> Level1SourceEntityView {
+    Level1SourceEntityView {
+        source_entity_index: house.entity_index,
+        source_id: house.source_id,
+        authority: Level1SourceEntityAuthority::LiveHouse,
+        active: house.active,
+        visible: house.active,
+        class: HOUSE_CLASS,
+        model: HOUSE_MODEL,
+        action: house.action,
+        phase: house.phase,
+        entity_rng: house.rng,
+        control_flags: house.control_flags,
+        position: house.position,
+        max_life: house.max_life,
+        life: house.life,
+        pending_damage: house.pending_damage,
+        pending_attacker: house.pending_attacker.cast_unsigned(),
+        owner_entity_index: house.owner_entity_index,
+        target_entity_index: 0,
+        linked_entity_index: 0,
+        actual_speed: 0,
+        maximum_speed: 0,
+        collision_half_width: house.collision_half_width,
+        collision_half_depth: house.collision_half_depth,
+        collision_vertical_offset: house.collision_vertical_offset,
+        collision_half_height: house.collision_half_height,
+        villager_entry_eligible: house.parameter.produces_villagers(),
+        builder_placement_latch: 0,
+    }
+}
+
+fn villager_source_entity_view(villager: &VillagerState) -> Level1SourceEntityView {
+    Level1SourceEntityView {
+        source_entity_index: villager.entity_index,
+        source_id: villager.source_id,
+        authority: Level1SourceEntityAuthority::LiveVillager,
+        active: villager.active,
+        visible: villager.active,
+        class: VILLAGER_CLASS,
+        model: VILLAGER_MODEL,
+        action: villager.action,
+        phase: villager.phase,
+        entity_rng: villager.rng,
+        control_flags: villager.control_flags,
+        position: villager.position,
+        max_life: villager.max_life,
+        life: villager.life,
+        pending_damage: villager.pending_damage,
+        pending_attacker: villager.pending_attacker.cast_unsigned(),
+        owner_entity_index: villager.current_attacker.cast_unsigned(),
+        target_entity_index: villager.target_entity_index.unwrap_or(0),
+        linked_entity_index: 0,
+        actual_speed: villager.actual_speed,
+        maximum_speed: villager.maximum_speed,
+        collision_half_width: villager.collision_half_width,
+        collision_half_depth: villager.collision_half_width,
+        collision_vertical_offset: villager.collision_vertical_offset,
+        collision_half_height: villager.collision_half_height,
+        villager_entry_eligible: false,
+        builder_placement_latch: 0,
+    }
+}
+
+fn current_live_world_source_entity_view(
+    live_world: &LiveWorldState,
+    source_entity_index: u16,
+) -> Option<Level1SourceEntityView> {
+    live_world
+        .goats()
+        .iter()
+        .find(|goat| goat.entity_index == source_entity_index)
+        .map(goat_source_entity_view)
+        .or_else(|| {
+            live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == source_entity_index)
+                .map(house_source_entity_view)
+        })
+        .or_else(|| {
+            live_world
+                .villagers()
+                .iter()
+                .find(|villager| villager.entity_index == source_entity_index)
+                .map(villager_source_entity_view)
+        })
+}
+
+/// Update only the current host-owned row after that source action. The
+/// turn-start vector remains allocated and ordered once; this does not admit
+/// the row into any frozen remc2 seeker list.
+pub fn refresh_level1_current_source_view(
+    source_views: &mut Vec<Level1SourceEntityView>,
+    live_world: &LiveWorldState,
+    source_entity_index: u16,
+) {
+    let Some(current) = current_live_world_source_entity_view(live_world, source_entity_index)
+    else {
+        return;
+    };
+    match source_views.binary_search_by_key(&source_entity_index, |view| view.source_entity_index) {
+        Ok(index) => source_views[index] = current,
+        Err(index) => source_views.insert(index, current),
+    }
+}
+
+/// Build the production turn-start source snapshot from the existing typed
+/// authorities. The returned values live only on the caller's stack/heap for
+/// the duration of this source turn.
+#[must_use]
+pub fn level1_turn_start_source_views(
+    mission: &Level1MissionState,
+    player: &FlightState,
+    live_world: &LiveWorldState,
+) -> Vec<Level1SourceEntityView> {
+    let mut imported = Vec::with_capacity(
+        live_world.goats().len() + live_world.houses().len() + live_world.villagers().len(),
+    );
+    imported.extend(live_world.goats().iter().map(goat_source_entity_view));
+    imported.extend(live_world.houses().iter().map(house_source_entity_view));
+    imported.extend(
+        live_world
+            .villagers()
+            .iter()
+            .map(villager_source_entity_view),
+    );
+    mission.source_entity_views(player, &imported)
+}
+
+/// Apply one resident dispatch's effects after its mission borrow has ended.
+///
+/// House entry stages both authorities and commits them together. Rejected
+/// full/dead entries leave both hashes unchanged. Returned seeds let the C API
+/// update its presentation chain from the same applied effect; the direct
+/// session already receives the mission-owned chain update.
+pub fn apply_level1_source_effects(
+    mission: &mut Level1MissionState,
+    live_world: &mut LiveWorldState,
+    effects: &[Level1SourceEffect],
+) -> std::result::Result<Vec<RenderableMapSeed>, String> {
+    let mut staged_mission = mission.clone();
+    let mut staged_world = live_world.clone();
+    let mut render_updates = Vec::new();
+    let applied = (|| {
+        for effect in effects.iter().copied() {
+            match effect {
+                Level1SourceEffect::CreateBuilderHouse { house } => {
+                    staged_world.insert_builder_house(house)?;
+                    staged_mission.update_external_collision_target(house_collision_target(&house));
+                    if let Some(seed) = staged_mission.apply_local_source_effect(effect)? {
+                        render_updates.push(seed);
+                    }
+                }
+                Level1SourceEffect::InitializeBuilderHouse { house } => {
+                    staged_world.initialize_builder_house(house)?;
+                    staged_mission.update_external_collision_target(house_collision_target(&house));
+                    staged_mission.apply_local_source_effect(effect)?;
+                }
+                Level1SourceEffect::SetBuilderHouseAction {
+                    source_entity_index,
+                    action,
+                } => {
+                    staged_world.set_builder_house_action(source_entity_index, action)?;
+                    staged_mission.apply_local_source_effect(effect)?;
+                }
+                Level1SourceEffect::TryEnterResident {
+                    resident_source_entity_index,
+                    house_source_entity_index,
+                } => {
+                    if staged_mission.owns_authored_house(house_source_entity_index) {
+                        if let Some(seed) = staged_mission.apply_local_source_effect(effect)? {
+                            render_updates.push(seed);
+                        }
+                        continue;
+                    }
+                    if staged_world.try_enter_resident(house_source_entity_index)
+                        == HouseResidentEntry::Entered
+                    {
+                        if let Some(seed) = staged_mission.apply_local_source_effect(
+                            Level1SourceEffect::DisableSourceSlot {
+                                source_entity_index: resident_source_entity_index,
+                            },
+                        )? {
+                            render_updates.push(seed);
+                        }
+                    }
+                }
+                Level1SourceEffect::TryEnterVillager {
+                    resident_source_entity_index,
+                    house_source_entity_index,
+                } => {
+                    if staged_mission.owns_authored_house(house_source_entity_index) {
+                        staged_mission.apply_local_source_effect(effect)?;
+                        continue;
+                    }
+                    if staged_world.try_enter_resident(house_source_entity_index)
+                        != HouseResidentEntry::Entered
+                    {
+                        staged_mission
+                            .reject_dynamic_villager_entry(resident_source_entity_index)?;
+                    }
+                }
+                _ => {
+                    if let Some(seed) = staged_mission.apply_local_source_effect(effect)? {
+                        render_updates.push(seed);
+                    }
+                }
+            }
+        }
+        Ok::<(), String>(())
+    })();
+    if let Err(error) = applied {
+        if let Some(source_entity_index) = effects.iter().find_map(|effect| match effect {
+            Level1SourceEffect::CreateBuilderHouse { house } => Some(house.entity_index),
+            _ => None,
+        }) {
+            let _ = mission.rollback_builder_house_allocation(source_entity_index);
+        }
+        return Err(error);
+    }
+    *mission = staged_mission;
+    *live_world = staged_world;
+    Ok(render_updates)
 }
 
 fn goat_collision_target(goat: &GoatState) -> Level1CollisionTarget {
@@ -1716,6 +2240,8 @@ impl NativeSession<'_> {
         }
         let begin_goat_events = self.live_world.begin_source_turn(&initial_target);
         self.process_goat_events(&begin_goat_events);
+        let mut source_views =
+            level1_turn_start_source_views(&self.mission, &self.state, &self.live_world);
         let mut evidence = Vec::new();
         for source_slot in 1..ENTITY_COUNT {
             let source_slot = u16::try_from(source_slot).expect("source cursor fits u16");
@@ -1726,10 +2252,28 @@ impl NativeSession<'_> {
                     .submit_house_possession(source_slot, owner_entity_index, payload)
                     .expect("possession mailbox targets a live eligible house");
             }
+            let house_state_before_dispatch = self
+                .live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == source_slot && house.active)
+                .is_some_and(|house| {
+                    house.action == crate::house::HOUSE_REMOVE_ACTION
+                        || (house.action == crate::house::HOUSE_LIVE_ACTION
+                            && house.parameter.produces_villagers()
+                            && ((house.pending_attacker != 0 && house.occupants > 2)
+                                || (house.phase & 0x1f == 0
+                                    && house.capacity > 5
+                                    && i32::from(house.capacity) == house.occupants)))
+                })
+                .then(|| self.live_world.clone());
             let house_events = self
                 .live_world
                 .step_house_source_slot(source_slot, &self.terrain);
-            self.process_house_events(&house_events);
+            if !self.process_house_events(&house_events) {
+                self.live_world =
+                    house_state_before_dispatch.expect("failed house dispatch was staged");
+            }
             let player_target = [GoatPlayerTarget {
                 entity_index: self.state.entity_index,
                 position: self.state.position,
@@ -1738,8 +2282,13 @@ impl NativeSession<'_> {
             let goat_events =
                 self.live_world
                     .step_source_slot(source_slot, &self.terrain, &player_target);
-            self.live_world
-                .step_villager_source_slot(source_slot, &self.terrain);
+            let villager_effects = self.live_world.step_villager_source_slot(
+                source_slot,
+                &self.terrain,
+                &source_views,
+            );
+            self.mission
+                .apply_imported_villager_effects(&villager_effects);
             self.process_goat_events(&goat_events);
             if let Some(house) = self
                 .live_world
@@ -1790,6 +2339,7 @@ impl NativeSession<'_> {
                     villager.control_flags,
                 );
             }
+            refresh_level1_current_source_view(&mut source_views, &self.live_world, source_slot);
             if let Some(dolmen) =
                 self.world
                     .entities
@@ -1854,14 +2404,19 @@ impl NativeSession<'_> {
                     &mut self.context,
                 );
             }
-            self.mission.dispatch_source_slot(
+            let source_effects = self.mission.dispatch_source_slot_with_views_and_look(
                 &self.terrain,
                 &self.state,
+                &source_views,
                 source_slot,
                 fireball_activated,
                 possession_activated,
                 castle_cast_yaw,
+                0,
+                0,
             );
+            apply_level1_source_effects(&mut self.mission, &mut self.live_world, &source_effects)
+                .expect("resident source effects apply after slot dispatch");
             if source_slot == self.state.entity_index && self.mission.exit_sequence_active {
                 self.mission.advance_exit_sequence(
                     &self.terrain,
@@ -1902,15 +2457,20 @@ impl NativeSession<'_> {
         if updates.is_empty() {
             return;
         }
-        let footprint = self
-            .mission
-            .castle_stage_one_footprint()
-            .cloned()
-            .expect("Castle terrain updates require the validated BUILD[1] footprint");
         for update in updates {
-            self.terrain
-                .apply_castle_update(update, &footprint)
-                .expect("qualified Level 1 Castle terrain update");
+            if update.is_ambient() {
+                self.terrain
+                    .apply_ambient_update(update)
+                    .expect("qualified Level 1 ambient terrain update");
+            } else {
+                let footprint = self
+                    .mission
+                    .castle_stage_one_footprint()
+                    .expect("Castle terrain updates require the validated BUILD[1] footprint");
+                self.terrain
+                    .apply_castle_update(update, footprint)
+                    .expect("qualified Level 1 Castle terrain update");
+            }
         }
     }
 
@@ -1955,7 +2515,16 @@ impl NativeSession<'_> {
         }
     }
 
-    fn process_house_events(&mut self, events: &[HouseStepEvent]) {
+    fn process_house_events(&mut self, events: &[HouseStepEvent]) -> bool {
+        let allocation_transaction = events.iter().any(|event| {
+            matches!(
+                event,
+                HouseStepEvent::ResidentRequested { .. } | HouseStepEvent::RemoveFootprint { .. }
+            )
+        });
+        let terrain_before_dispatch = allocation_transaction.then(|| self.terrain.clone());
+        let mission_before_dispatch = allocation_transaction.then(|| self.mission.clone());
+        let pending_effect_count = self.pending_house_effects.len();
         for event in events {
             match *event {
                 HouseStepEvent::Possessed {
@@ -1975,6 +2544,7 @@ impl NativeSession<'_> {
                     building_index,
                     occupants,
                     rng,
+                    xtype,
                     ..
                 } => {
                     let produces_residents = self
@@ -2005,15 +2575,29 @@ impl NativeSession<'_> {
                             outcome.final_occupants,
                         )
                         .expect("commit action-53 house state");
+                    let requests = outcome
+                        .residents
+                        .iter()
+                        .map(|resident| HouseResidentRequest {
+                            position: resident.position,
+                            model: resident.model,
+                            action: resident.action,
+                            attacker_entity_index,
+                        })
+                        .collect::<Vec<_>>();
+                    let Some(_order) = self
+                        .mission
+                        .commit_imported_house_demolition(entity_index, xtype, &requests)
+                        .expect("qualified action-53 resident/xtype transaction")
+                    else {
+                        self.terrain = terrain_before_dispatch
+                            .expect("action-53 terrain transaction was staged");
+                        self.mission = mission_before_dispatch
+                            .expect("action-53 mission transaction was staged");
+                        self.pending_house_effects.truncate(pending_effect_count);
+                        return false;
+                    };
                     for resident in outcome.residents {
-                        self.mission
-                            .spawn_house_resident(
-                                resident.position,
-                                resident.model,
-                                resident.action,
-                                attacker_entity_index,
-                            )
-                            .expect("qualified action-53 resident constructor");
                         self.pending_house_effects
                             .push(HouseStepEvent::ResidentRequested {
                                 entity_index,
@@ -2023,7 +2607,6 @@ impl NativeSession<'_> {
                                 action: resident.action,
                             });
                     }
-                    self.mission.remove_imported_building(entity_index);
                     self.pending_house_effects.push(*event);
                 }
                 HouseStepEvent::ResidentRequested {
@@ -2033,9 +2616,24 @@ impl NativeSession<'_> {
                     action,
                     ..
                 } => {
-                    self.mission
-                        .spawn_house_resident(position, model, action, attacker_entity_index)
-                        .expect("qualified action-52 resident constructor");
+                    let request = HouseResidentRequest {
+                        position,
+                        model,
+                        action,
+                        attacker_entity_index,
+                    };
+                    let Some(_) = self
+                        .mission
+                        .spawn_house_residents_atomic(&[request])
+                        .expect("qualified action-52 resident transaction")
+                    else {
+                        self.terrain = terrain_before_dispatch
+                            .expect("action-52 terrain transaction was staged");
+                        self.mission = mission_before_dispatch
+                            .expect("action-52 mission transaction was staged");
+                        self.pending_house_effects.truncate(pending_effect_count);
+                        return false;
+                    };
                     self.pending_house_effects.push(*event);
                 }
                 HouseStepEvent::Damaged { .. } | HouseStepEvent::DestructionStarted { .. } => {
@@ -2043,6 +2641,7 @@ impl NativeSession<'_> {
                 }
             }
         }
+        true
     }
 
     fn reclaim_imported_source_slots(&mut self) {
@@ -5010,6 +5609,75 @@ mod tests {
             terrain.planes().entity_indices,
             world.terrain_planes().entity_indices
         );
+
+        let mut ambient = SessionTerrain::from_world(&world);
+        let material_x = 200_u8;
+        let material_y = 201_u8;
+        for (x, y) in [
+            (material_x, material_y),
+            (material_x.wrapping_add(1), material_y),
+            (material_x.wrapping_add(1), material_y.wrapping_add(1)),
+            (material_x, material_y.wrapping_add(1)),
+        ] {
+            ambient.planes.ground_heights[terrain_index(x, y)] = 50;
+            ambient.planes.angles[terrain_index(x, y)] = 0;
+        }
+        ambient
+            .apply_castle_update(
+                CastleTerrainUpdate::AmbientMaterial {
+                    position: Position {
+                        x: u16::from(material_x) << 8,
+                        y: u16::from(material_y) << 8,
+                        z: 1_600,
+                    },
+                    in_type: 2,
+                    target_type: 20,
+                },
+                footprint,
+            )
+            .expect("source action-0 terrain material update");
+        assert_eq!(
+            ambient.planes.terrain_types[terrain_index(material_x, material_y)],
+            TERRAIN_GENERATION_TABLE_PREFIX[0x18]
+        );
+        assert_eq!(
+            ambient.planes.angles[terrain_index(material_x, material_y)],
+            (TERRAIN_GENERATION_TABLE_PREFIX[0x19] | 0x80) & 0xf7
+        );
+
+        let collision_x = 210_u8;
+        let collision_y = 211_u8;
+        for (x, y) in [
+            (collision_x, collision_y),
+            (collision_x.wrapping_add(1), collision_y),
+            (collision_x.wrapping_add(1), collision_y.wrapping_add(1)),
+            (collision_x, collision_y.wrapping_add(1)),
+        ] {
+            ambient.planes.ground_heights[terrain_index(x, y)] = 100;
+            ambient.planes.angles[terrain_index(x, y)] = 0;
+        }
+        ambient
+            .apply_castle_update(
+                CastleTerrainUpdate::AmbientCollision {
+                    position: Position {
+                        x: u16::from(collision_x) << 8,
+                        y: u16::from(collision_y) << 8,
+                        z: 3_200,
+                    },
+                    height_delta: -3,
+                },
+                footprint,
+            )
+            .expect("source action-0 SEARCH terrain deformation");
+        for (x, y) in [
+            (collision_x, collision_y),
+            (collision_x.wrapping_add(1), collision_y),
+            (collision_x, collision_y.wrapping_add(1)),
+            (collision_x.wrapping_add(1), collision_y.wrapping_add(1)),
+        ] {
+            assert_eq!(ambient.planes.ground_heights[terrain_index(x, y)], 97);
+        }
+        assert_eq!(ambient.mutation_sequence(), 2);
     }
 
     #[test]
@@ -5072,10 +5740,134 @@ mod tests {
         );
         assert_eq!(terrain.mutation_sequence(), 1);
         assert_ne!(terrain.deterministic_hash(), before);
+
+        let mut session = world.session();
+        let resident_position = session.live_world.houses()[0].position;
+        let resident_slot = session
+            .mission
+            .spawn_house_resident(resident_position, 4, 33, 0)
+            .expect("resident constructor")
+            .expect("qualified source arena has a resident slot");
+        let occupants_before = session.live_world.houses()[0].occupants;
+        let live_hash_before = session.live_world.hash_v1();
+        let arena_hash_before = session.mission.source_arena_hash_v1();
+        let updates = apply_level1_source_effects(
+            &mut session.mission,
+            &mut session.live_world,
+            &[Level1SourceEffect::TryEnterResident {
+                resident_source_entity_index: resident_slot,
+                house_source_entity_index: 1,
+            }],
+        )
+        .expect("atomic resident entry effect");
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            session.live_world.houses()[0].occupants,
+            occupants_before + 1,
+            "successful entry increments the sole house authority exactly once"
+        );
+        assert!(!session.mission.dynamic_residents().next().unwrap().active);
+        assert_ne!(session.live_world.hash_v1(), live_hash_before);
+        assert_ne!(session.mission.source_arena_hash_v1(), arena_hash_before);
+
+        while session.live_world.houses()[0].occupants
+            < i32::from(session.live_world.houses()[0].capacity)
+        {
+            assert_eq!(
+                session.live_world.try_enter_resident(1),
+                HouseResidentEntry::Entered
+            );
+        }
+        let full_resident = session
+            .mission
+            .spawn_house_resident(resident_position, 4, 33, 0)
+            .expect("resident constructor")
+            .expect("second resident slot");
+        let full_live_hash = session.live_world.hash_v1();
+        let full_arena_hash = session.mission.source_arena_hash_v1();
+        assert!(
+            apply_level1_source_effects(
+                &mut session.mission,
+                &mut session.live_world,
+                &[Level1SourceEffect::TryEnterResident {
+                    resident_source_entity_index: full_resident,
+                    house_source_entity_index: 1,
+                }],
+            )
+            .expect("full resident entry rejection")
+            .is_empty()
+        );
+        assert_eq!(session.live_world.hash_v1(), full_live_hash);
+        assert_eq!(session.mission.source_arena_hash_v1(), full_arena_hash);
+        assert!(
+            session
+                .mission
+                .dynamic_residents()
+                .find(|resident| resident.source_entity_index == full_resident)
+                .is_some_and(|resident| resident.active)
+        );
+
+        let mut dead_session = world.session();
+        let lethal = dead_session.live_world.houses()[0].life + 1;
+        dead_session
+            .live_world
+            .inject_damage(1, lethal, 152)
+            .expect("lethal house damage");
+        let _ = dead_session
+            .live_world
+            .step_house_source_slot(1, &dead_session.terrain);
+        let _ = dead_session
+            .live_world
+            .step_house_source_slot(1, &dead_session.terrain);
+        assert!(!dead_session.live_world.houses()[0].active);
+        let dead_resident = dead_session
+            .mission
+            .spawn_house_resident(resident_position, 4, 33, 0)
+            .expect("resident constructor")
+            .expect("dead-house resident slot");
+        let dead_live_hash = dead_session.live_world.hash_v1();
+        let dead_arena_hash = dead_session.mission.source_arena_hash_v1();
+        assert!(
+            apply_level1_source_effects(
+                &mut dead_session.mission,
+                &mut dead_session.live_world,
+                &[Level1SourceEffect::TryEnterResident {
+                    resident_source_entity_index: dead_resident,
+                    house_source_entity_index: 1,
+                }],
+            )
+            .expect("dead resident entry rejection")
+            .is_empty()
+        );
+        assert_eq!(dead_session.live_world.hash_v1(), dead_live_hash);
+        assert_eq!(dead_session.mission.source_arena_hash_v1(), dead_arena_hash);
     }
 
     #[test]
     fn house_action_53_interleaves_resident_and_height_rng_in_one_cell() {
+        let mut boundary_20_rng = 3;
+        assert_eq!(reduce_house_height(100, 10, &mut boundary_20_rng), 90);
+        assert_eq!(
+            boundary_20_rng, 37_570,
+            "`rand % 0x32 == 20` consumes one draw"
+        );
+        let mut boundary_21_rng = 20;
+        assert_eq!(reduce_house_height(100, 10, &mut boundary_21_rng), 108);
+        assert_eq!(
+            boundary_21_rng, 14_898,
+            "`rand % 0x32 == 21` consumes the second draw"
+        );
+        let mut wrapping_rng = 29;
+        assert_eq!(
+            reduce_house_height(250, 1, &mut wrapping_rng),
+            12,
+            "the second branch truncates to the source byte"
+        );
+        assert_eq!(wrapping_rng, 20_859);
+        let mut no_draw_rng = 0xabcd;
+        assert_eq!(reduce_house_height(10, 10, &mut no_draw_rng), 0);
+        assert_eq!(no_draw_rng, 0xabcd);
+
         let footprint =
             CastleBuildFootprint::from_owner_cells(99, 1, 1, &[0xff, 10]).expect("one-cell BUILD");
         let mut terrain = SessionTerrain {
@@ -5138,7 +5930,11 @@ mod tests {
             .expect("house 11");
         assert!(dying.active);
         assert_eq!(dying.action, crate::house::HOUSE_REMOVE_ACTION);
-        assert_eq!(session.terrain.mutation_sequence(), 0);
+        assert_eq!(
+            session.terrain.mutation_sequence(),
+            2,
+            "the first source turn applies two action-0 village terrain effects"
+        );
 
         session.step(PlayerCommand::default());
         let removed = session
@@ -5150,7 +5946,11 @@ mod tests {
         assert!(!removed.active);
         assert_eq!(removed.occupants, 0);
         assert_eq!(removed.rng, 2);
-        assert_eq!(session.terrain.mutation_sequence(), 1);
+        assert_eq!(
+            session.terrain.mutation_sequence(),
+            3,
+            "house removal follows the two source-ordered ambient mutations"
+        );
         assert_ne!(session.terrain.deterministic_hash(), initial_terrain_hash);
         assert_eq!(
             session
@@ -5164,6 +5964,50 @@ mod tests {
                 .collect::<Vec<_>>(),
             [(4, 33), (12, 97)]
         );
+
+        let mut replay = world.session();
+        replay
+            .live_world
+            .inject_damage(11, 28_001, replay.state.entity_index.cast_signed())
+            .expect("fatal replay damage");
+        replay.step(PlayerCommand::default());
+        replay.step(PlayerCommand::default());
+        assert_eq!(replay.live_world, session.live_world);
+        assert_eq!(replay.terrain, session.terrain);
+        assert_eq!(replay.mission, session.mission);
+        assert_eq!(replay.pending_house_effects, session.pending_house_effects);
+
+        let mut exhausted = world.session();
+        exhausted
+            .live_world
+            .inject_damage(11, 28_001, exhausted.state.entity_index.cast_signed())
+            .expect("fatal house damage");
+        let destruction_started = exhausted
+            .live_world
+            .step_house_source_slot(11, &exhausted.terrain);
+        assert!(matches!(
+            destruction_started.as_slice(),
+            [HouseStepEvent::DestructionStarted { .. }]
+        ));
+        while exhausted
+            .mission
+            .spawn_house_resident(Position::default(), 4, 33, 152)
+            .unwrap()
+            .is_some()
+        {}
+        let live_before = exhausted.live_world.clone();
+        let terrain_before = exhausted.terrain.clone();
+        let mission_before = exhausted.mission.clone();
+        let effects_before = exhausted.pending_house_effects.clone();
+        let removal = exhausted
+            .live_world
+            .step_house_source_slot(11, &exhausted.terrain);
+        assert!(!exhausted.process_house_events(&removal));
+        exhausted.live_world = live_before.clone();
+        assert_eq!(exhausted.live_world, live_before);
+        assert_eq!(exhausted.terrain, terrain_before);
+        assert_eq!(exhausted.mission, mission_before);
+        assert_eq!(exhausted.pending_house_effects, effects_before);
     }
 
     #[test]

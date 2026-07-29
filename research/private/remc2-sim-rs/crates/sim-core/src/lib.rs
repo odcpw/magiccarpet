@@ -593,6 +593,20 @@ pub trait FlightWorld {
     fn ground_height(&self, position: Position) -> i16;
     fn ceiling_height(&self, position: Position) -> Option<i16>;
     fn material_mask(&self, position: Position) -> u32;
+    fn terrain_type(&self, position: Position) -> u8 {
+        match self.material_mask(position) {
+            1 => 0,
+            2 => 1,
+            4 => 2,
+            8 => 3,
+            0x10 => 4,
+            0x20 => 5,
+            0x1_0000 => 26,
+            0x10_0000 => 10,
+            0x20_0000 => 11,
+            _ => 6,
+        }
+    }
     fn angle_flags(&self, tile: Tile) -> u8;
 }
 

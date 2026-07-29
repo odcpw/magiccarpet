@@ -9,11 +9,12 @@ use crate::{
     FlightWorld, Position, angle_distance, distance_3d_wrapped,
     goat_map_chain::{GoatMapChains, GoatMapSeed},
     heading_for_positions,
-    house::{HouseFamily, HouseState, HouseStepEvent},
+    house::{HouseFamily, HouseResidentEntry, HouseState, HouseStepEvent},
+    level1_mission::Level1SourceEntityView,
     move_entity,
     native_world::EntitySnapshot,
     turn_toward,
-    villager::{VillagerBehaviorConfig, VillagerFamily, VillagerState},
+    villager::{VillagerBehaviorConfig, VillagerFamily, VillagerState, VillagerStepEffect},
     wrapping_i16,
 };
 
@@ -1086,7 +1087,6 @@ impl LiveWorldState {
     }
 
     pub fn begin_source_turn(&mut self, players: &[GoatPlayerTarget]) -> Vec<GoatStepEvent> {
-        self.villagers.sync_houses(self.houses.houses());
         self.goats.begin_source_turn(players)
     }
 
@@ -1103,12 +1103,39 @@ impl LiveWorldState {
         self.goats.step_source_slot(source_slot, world, players)
     }
 
-    pub fn step_villager_source_slot<W: FlightWorld>(&mut self, source_slot: u16, world: &W) {
-        if let Some(building_entity_index) = self.villagers.step_source_slot(source_slot, world) {
-            self.houses
-                .add_occupant(building_entity_index)
-                .expect("villager selected a live Level 1 house");
-        }
+    pub fn step_villager_source_slot<W: FlightWorld>(
+        &mut self,
+        source_slot: u16,
+        world: &W,
+        source_views: &[Level1SourceEntityView],
+    ) -> Vec<VillagerStepEffect> {
+        self.villagers
+            .step_source_slot(source_slot, world, source_views, &mut self.houses)
+    }
+
+    /// Route resident entry through the existing authoritative house family.
+    #[must_use]
+    pub fn try_enter_resident(&mut self, entity_index: u16) -> HouseResidentEntry {
+        self.houses.try_enter_resident(entity_index)
+    }
+
+    /// Commit a Builder-produced class-10/model-45 row to the one
+    /// authoritative live house family.
+    pub fn insert_builder_house(&mut self, house: HouseState) -> Result<(), String> {
+        self.houses.insert_builder_house(house)
+    }
+
+    pub fn initialize_builder_house(&mut self, house: HouseState) -> Result<(), String> {
+        self.houses.initialize_builder_house(house)
+    }
+
+    pub fn set_builder_house_action(
+        &mut self,
+        source_entity_index: u16,
+        action: u8,
+    ) -> Result<(), String> {
+        self.houses
+            .set_builder_house_action(source_entity_index, action)
     }
 
     #[must_use]
@@ -1118,9 +1145,6 @@ impl LiveWorldState {
         world: &W,
     ) -> Vec<HouseStepEvent> {
         let events = self.houses.step_source_slot(source_slot, world);
-        if !events.is_empty() {
-            self.villagers.sync_houses(self.houses.houses());
-        }
         events
     }
 
@@ -1142,7 +1166,6 @@ impl LiveWorldState {
     ) -> Result<(), String> {
         self.houses
             .commit_removal_state(entity_index, final_rng, final_occupants)?;
-        self.villagers.sync_houses(self.houses.houses());
         Ok(())
     }
 
@@ -1270,6 +1293,7 @@ impl LiveWorldState {
             hash.i32(villager.pending_damage);
             hash.i16(villager.pending_attacker);
             hash.i16(villager.current_attacker);
+            hash.i16(villager.kill_credit_entity);
             hash.u16(villager.rng);
             hash.i16(villager.yaw);
             hash.i16(villager.pitch);
@@ -1289,6 +1313,8 @@ impl LiveWorldState {
             hash.i16(villager.actual_speed);
             hash.i16(villager.minimum_speed);
             hash.i16(villager.maximum_speed);
+            hash.i32(villager.mana);
+            hash.u16(villager.owner_entity_index);
             match villager.target_entity_index {
                 Some(index) => {
                     hash.u8(1);

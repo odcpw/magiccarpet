@@ -82,15 +82,17 @@ use sim_core::{
     },
     native_world::{
         AssetRef, EntityAuthority, EntitySnapshot, NativeWorld, ParticleParameter, SessionTerrain,
-        TerrainPlanes,
+        TerrainPlanes, apply_level1_source_effects, level1_turn_start_source_views,
+        refresh_level1_current_source_view,
     },
     positional_sound_should_replace, prepare_event_sound_command,
     render_camera::{TerrainSlopeCamera, TerrainSlopeCameraSample},
     renderable_map_chain::{RenderableMapChains, RenderableMapSeed},
     source_projection_hash, state_hash,
     static_world_tmap::{
-        EXIT_TARGET_PAYLOAD_BYTES, EXIT_TARGET_PAYLOAD_SHA256, LEVEL1_SCENERY_SELECTORS,
-        SPELL_JAR_PAYLOAD_BYTES, SPELL_JAR_PAYLOAD_SHA256, StaticWorldTmapBank,
+        EXIT_TARGET_PAYLOAD_BYTES, EXIT_TARGET_PAYLOAD_SHA256, LEVEL1_AMBIENT_SELECTORS,
+        LEVEL1_SCENERY_SELECTORS, SPELL_JAR_PAYLOAD_BYTES, SPELL_JAR_PAYLOAD_SHA256,
+        StaticWorldTmapBank,
     },
     step_outer_turn_with_context,
     terrain_frame::{
@@ -1621,6 +1623,18 @@ fn reset_renderable_map_chains(
         x: actor.position.x,
         y: actor.position.y,
     }));
+    seeds.extend(
+        world
+            .level1_mission()
+            .ambient_entities()
+            .filter(|ambient| ambient.map_linked)
+            .map(|ambient| RenderableMapSeed {
+                entity_index: ambient.source_entity_index,
+                active: false,
+                x: ambient.position.x,
+                y: ambient.position.y,
+            }),
+    );
     seeds.sort_unstable_by_key(|seed| seed.entity_index);
     seeds.dedup_by_key(|seed| seed.entity_index);
     RenderableMapChains::from_reset(
@@ -2016,6 +2030,7 @@ impl SessionRecord {
                 .dynamic_residents()
                 .copied()
                 .collect::<Vec<_>>();
+            let ambient_entities = self.mission.ambient_entities().copied().collect::<Vec<_>>();
             render_level1_world_frame(
                 Level1TerrainFrameCamera {
                     render_x: camera.x.wrapping_add(slope.offset_x.cast_unsigned()),
@@ -2041,6 +2056,7 @@ impl SessionRecord {
                     local_player_entity_index: self.state.entity_index,
                     goats: self.live_world.goats(),
                     frozen_actors: &self.frozen_actors,
+                    ambient_entities: &ambient_entities,
                     frozen_actor_tmap_bank: Some(&assets.frozen_actor_tmap_bank),
                     villager_tmap_clocks: Some(villager_tmap_clocks),
                     mission_actors: self.mission.actors(),
@@ -2304,15 +2320,20 @@ impl SessionRecord {
         if updates.is_empty() {
             return;
         }
-        let footprint = self
-            .mission
-            .castle_stage_one_footprint()
-            .cloned()
-            .expect("Castle terrain updates require the validated BUILD[1] footprint");
         for update in updates {
-            self.terrain
-                .apply_castle_update(update, &footprint)
-                .expect("qualified Level 1 Castle terrain update");
+            if update.is_ambient() {
+                self.terrain
+                    .apply_ambient_update(update)
+                    .expect("qualified Level 1 ambient terrain update");
+            } else {
+                let footprint = self
+                    .mission
+                    .castle_stage_one_footprint()
+                    .expect("Castle terrain updates require the validated BUILD[1] footprint");
+                self.terrain
+                    .apply_castle_update(update, footprint)
+                    .expect("qualified Level 1 Castle terrain update");
+            }
         }
     }
 
@@ -2435,6 +2456,8 @@ impl SessionRecord {
                 .into_iter()
                 .map(|event| (event, self.mission.global_rng())),
         );
+        let mut source_views =
+            level1_turn_start_source_views(&self.mission, &self.state, &self.live_world);
         let mut evidence = Vec::new();
         for source_slot in 1_u16..1_000 {
             if let Some((owner_entity_index, payload)) =
@@ -2456,8 +2479,13 @@ impl SessionRecord {
             let slot_goat_events =
                 self.live_world
                     .step_source_slot(source_slot, &self.terrain, &player_target);
-            self.live_world
-                .step_villager_source_slot(source_slot, &self.terrain);
+            let villager_effects = self.live_world.step_villager_source_slot(
+                source_slot,
+                &self.terrain,
+                &source_views,
+            );
+            self.mission
+                .apply_imported_villager_effects(&villager_effects);
             self.apply_goat_event_side_effects(world.as_ref(), &slot_goat_events);
             goat_events.extend(
                 slot_goat_events
@@ -2513,6 +2541,7 @@ impl SessionRecord {
                     villager.control_flags,
                 );
             }
+            refresh_level1_current_source_view(&mut source_views, &self.live_world, source_slot);
             if let Some(dolmen) = world
                 .entities()
                 .get(usize::from(source_slot))
@@ -2591,9 +2620,10 @@ impl SessionRecord {
                     &mut self.context,
                 );
             }
-            self.mission.dispatch_source_slot_with_look(
+            let source_effects = self.mission.dispatch_source_slot_with_views_and_look(
                 &self.terrain,
                 &self.state,
+                &source_views,
                 source_slot,
                 fireball_activated,
                 possession_activated,
@@ -2601,6 +2631,17 @@ impl SessionRecord {
                 self.camera_look_yaw,
                 self.camera_look_pitch,
             );
+            for seed in apply_level1_source_effects(
+                &mut self.mission,
+                &mut self.live_world,
+                &source_effects,
+            )
+            .expect("resident source effects apply after slot dispatch")
+            {
+                self.renderable_map_chains
+                    .sync_entity(seed)
+                    .expect("resident source effect updates presentation map chain");
+            }
             if source_slot == self.state.entity_index && self.mission.exit_sequence_active {
                 self.mission.advance_exit_sequence(
                     &self.terrain,
@@ -2879,6 +2920,16 @@ impl SessionRecord {
                 y: segment.position.y,
             })?;
         }
+        for ambient in self.mission.ambient_entities() {
+            if ambient.map_linked {
+                self.renderable_map_chains.sync_entity(RenderableMapSeed {
+                    entity_index: ambient.source_entity_index,
+                    active: ambient.visible(),
+                    x: ambient.position.x,
+                    y: ambient.position.y,
+                })?;
+            }
+        }
         for projectile in self
             .mission
             .projectiles()
@@ -3017,6 +3068,17 @@ impl SessionRecord {
                     x: segment.position.x,
                     y: segment.position.y,
                 })?;
+            } else if let Some(ambient) = self
+                .mission
+                .ambient_entities()
+                .find(|ambient| ambient.source_entity_index == source_slot)
+            {
+                self.renderable_map_chains.sync_entity(RenderableMapSeed {
+                    entity_index: ambient.source_entity_index,
+                    active: ambient.visible(),
+                    x: ambient.position.x,
+                    y: ambient.position.y,
+                })?;
             } else if let Some(building) = self
                 .mission
                 .possessed_buildings()
@@ -3151,6 +3213,25 @@ impl SessionRecord {
         for seed in newly_tracked_residents {
             self.renderable_map_chains.sync_entity(seed)?;
         }
+        let newly_tracked_ambient = self
+            .mission
+            .ambient_entities()
+            .filter(|ambient| {
+                ambient.map_linked
+                    && !self
+                        .renderable_map_chains
+                        .tracks(ambient.source_entity_index)
+            })
+            .map(|ambient| RenderableMapSeed {
+                entity_index: ambient.source_entity_index,
+                active: ambient.visible(),
+                x: ambient.position.x,
+                y: ambient.position.y,
+            })
+            .collect::<Vec<_>>();
+        for seed in newly_tracked_ambient {
+            self.renderable_map_chains.sync_entity(seed)?;
+        }
         if self.mission.castle_exists
             && self.mission.castle_source_entity_index != 0
             && !self
@@ -3260,6 +3341,12 @@ impl SessionRecord {
                 .iter()
                 .filter(|segment| segment.active)
                 .map(|segment| segment.source_entity_index),
+        );
+        active.extend(
+            self.mission
+                .ambient_entities()
+                .filter(|ambient| ambient.visible())
+                .map(|ambient| ambient.source_entity_index),
         );
         active.extend(
             self.mission
@@ -3953,6 +4040,28 @@ impl SessionRecord {
                     44,
                     self.mission.global_rng(),
                 );
+                record
+            }
+            Level1MissionEvent::CastleDefenseShot {
+                controller_entity_index,
+                target_entity_index,
+                projectile_entity_index,
+                spell_family,
+                subspell,
+                yaw,
+                pitch,
+                first_shot,
+            } => {
+                let mut record =
+                    self.next_event_base(MC_EVENT_LEVEL1_CASTLE_PROJECTILE_SPAWNED, hash);
+                record.entity_index = projectile_entity_index;
+                record.code = u32::from(spell_family)
+                    | (u32::from(subspell) << 8)
+                    | (u32::from(first_shot) << 16);
+                record.value_0 = i32::from(target_entity_index);
+                record.value_1 = i32::from(controller_entity_index);
+                record.reserved[0] = u32::from(yaw.cast_unsigned());
+                record.reserved[1] = u32::from(pitch.cast_unsigned());
                 record
             }
             Level1MissionEvent::CastleManaChanged { mana } => {
@@ -6341,6 +6450,25 @@ fn entity_snapshot(
         snapshot.pitch = 0;
         snapshot.actual_speed = resident.actual_speed;
     }
+    if let Some(ambient) = mission
+        .ambient_entities()
+        .find(|ambient| ambient.source_entity_index == entity.index)
+    {
+        snapshot.authority = MC_AUTHORITY_LEVEL1_MISSION_LIVE;
+        snapshot.active = u8::from(ambient.active);
+        snapshot.class_id = ambient.class;
+        snapshot.model = ambient.model;
+        snapshot.action = ambient.action;
+        snapshot.phase = ambient.phase;
+        snapshot.has_parameter_record = 1;
+        snapshot.parameter_record_index = ambient.render_parameter_index;
+        snapshot.x = ambient.position.x;
+        snapshot.y = ambient.position.y;
+        snapshot.z = ambient.position.z;
+        snapshot.yaw = ambient.yaw;
+        snapshot.pitch = ambient.pitch;
+        snapshot.actual_speed = ambient.actual_speed;
+    }
     snapshot
 }
 
@@ -6385,6 +6513,12 @@ fn goat_snapshot(goat: &GoatState) -> McGoatSnapshotV2 {
 
 fn level1_mission_snapshot(session: &SessionRecord) -> McLevel1MissionSnapshotV2 {
     let mission = &session.mission;
+    let possessed_buildings = || {
+        mission
+            .possessed_buildings()
+            .iter()
+            .filter(|building| building.active && building.owner_entity_index != 0)
+    };
     McLevel1MissionSnapshotV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
         struct_size: struct_size::<McLevel1MissionSnapshotV2>(),
@@ -6420,15 +6554,13 @@ fn level1_mission_snapshot(session: &SessionRecord) -> McLevel1MissionSnapshotV2
         exit_sequence_phase: u32::from(mission.exit_sequence_phase),
         exit_sequence_timer: i32::from(mission.exit_sequence_timer),
         possession_experience: mission.possession_experience,
-        last_possessed_building_entity: mission
-            .possessed_buildings()
+        last_possessed_building_entity: possessed_buildings()
             .last()
             .map_or(0, |building| building.entity_index),
-        last_possessed_building_owner: mission
-            .possessed_buildings()
+        last_possessed_building_owner: possessed_buildings()
             .last()
             .map_or(0, |building| building.owner_entity_index),
-        possessed_building_count: u16::try_from(mission.possessed_buildings().len())
+        possessed_building_count: u16::try_from(possessed_buildings().count())
             .expect("Level 1 possessed building count fits u16"),
         possession_tier: u8::try_from(mission.possession_tier)
             .expect("Level 1 possession tier is non-negative"),
@@ -7680,11 +7812,24 @@ fn load_qualified_static_world_tmap_bank(root: &Path) -> AbiResult<StaticWorldTm
         })
         .into_iter()
         .collect::<AbiResult<Vec<_>>>()?;
-    StaticWorldTmapBank::decode_with_level1_secondary_and_scenery(
+    let ambient = LEVEL1_AMBIENT_SELECTORS
+        .map(|selector| {
+            let path = root.join(format!("terrain/tmaps1/{selector:03}.decoded.bin"));
+            fs::read(&path).map_err(|error| {
+                AbiError::new(
+                    MC_STATUS_IO_ERROR,
+                    format!("failed reading {}: {error}", path.display()),
+                )
+            })
+        })
+        .into_iter()
+        .collect::<AbiResult<Vec<_>>>()?;
+    StaticWorldTmapBank::decode_with_level1_secondary_scenery_and_ambient(
         &spell_jar,
         &exit_target,
         std::array::from_fn(|index| secondary[index].as_slice()),
         std::array::from_fn(|index| scenery[index].as_slice()),
+        std::array::from_fn(|index| ambient[index].as_slice()),
     )
     .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))
 }
@@ -9572,6 +9717,76 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
                     .renderable_map_chains
                     .tracks(actor.source_entity_index)
             }));
+            assert_eq!(session.mission.ambient_entities().count(), 40);
+            let fire = session
+                .mission
+                .ambient_entities()
+                .find(|ambient| ambient.source_entity_index == 122)
+                .copied()
+                .expect("frame-zero village fire");
+            let child_before = session
+                .mission
+                .ambient_entities()
+                .find(|ambient| ambient.source_entity_index == 164)
+                .copied()
+                .expect("frame-zero village fire child");
+            session.camera_slope_sample = TerrainSlopeCameraSample::default();
+            let mut ambient_before = None;
+            let mut ambient_camera = None;
+            for yaw in (0_i16..2_048_i16).step_by(256) {
+                let camera = CameraHistory {
+                    tick: session.state.tick,
+                    source_turn: session.source_turn,
+                    x: fire.position.x.wrapping_sub(768),
+                    y: fire.position.y,
+                    z: fire.position.z.wrapping_add(128),
+                    yaw,
+                    pitch: 0,
+                    roll: 0,
+                    fov: 128,
+                };
+                session.camera_history = camera;
+                let frame = session.world_frame()?;
+                if frame.ambient_raster_stats.framebuffer_writes > 0 {
+                    ambient_camera = Some(camera);
+                    ambient_before = Some(frame);
+                    break;
+                }
+            }
+            let ambient_before = ambient_before.ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_VALIDATION_FAILED,
+                    "no cardinal test view rasterized village fire entity 122",
+                )
+            })?;
+            assert!(ambient_before.ambient_entities_composited);
+            assert!(ambient_before.ambient_raster_stats.framebuffer_writes > 0);
+            session.step(PlayerCommand::default());
+            session.camera_history = ambient_camera.expect("visible ambient camera");
+            let ambient_after = session.world_frame()?;
+            assert_ne!(
+                ambient_before.index_hash, ambient_after.index_hash,
+                "ambient action/reclamation must change production render pixels"
+            );
+            assert!(
+                session
+                    .mission
+                    .ambient_entities()
+                    .all(|entity| entity.model != 14)
+            );
+            assert!(
+                session
+                    .mission
+                    .ambient_entities()
+                    .find(|entity| entity.source_entity_index == 164)
+                    .is_some_and(|entity| {
+                        entity.life == 6
+                            && entity.animation_frame == 2
+                            && entity.position != child_before.position
+                    })
+            );
+            session.reset();
+            assert_eq!(session.mission.ambient_entities().count(), 40);
             let actor = session.frozen_actors[0];
             session.camera_slope_sample = TerrainSlopeCameraSample::default();
             let mut visible = None;
@@ -11832,7 +12047,59 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
                 .iter()
                 .filter(|entity| entity.authority == MC_AUTHORITY_FROZEN_OBSERVED)
                 .count(),
-            114
+            74
+        );
+        let fire = entities[122];
+        assert_eq!(
+            (
+                fire.authority,
+                fire.active,
+                fire.class_id,
+                fire.model,
+                fire.action,
+                fire.phase,
+                fire.parameter_record_index,
+            ),
+            (MC_AUTHORITY_LEVEL1_MISSION_LIVE, 1, 10, 1, 1, 123, 41)
+        );
+        let emitter = entities[113];
+        assert_eq!(
+            (
+                emitter.authority,
+                emitter.active,
+                emitter.class_id,
+                emitter.model,
+                emitter.action,
+                emitter.phase,
+                emitter.parameter_record_index,
+            ),
+            (MC_AUTHORITY_LEVEL1_MISSION_LIVE, 1, 10, 60, 65, 114, 0)
+        );
+        let smoke = entities[155];
+        assert_eq!(
+            (
+                smoke.authority,
+                smoke.active,
+                smoke.class_id,
+                smoke.model,
+                smoke.action,
+                smoke.phase,
+                smoke.parameter_record_index,
+            ),
+            (MC_AUTHORITY_LEVEL1_MISSION_LIVE, 1, 10, 14, 14, 156, 9)
+        );
+        let child = entities[164];
+        assert_eq!(
+            (
+                child.authority,
+                child.active,
+                child.class_id,
+                child.model,
+                child.action,
+                child.phase,
+                child.parameter_record_index,
+            ),
+            (MC_AUTHORITY_LEVEL1_MISSION_LIVE, 1, 10, 0, 0, 165, 7)
         );
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
@@ -12824,12 +13091,189 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
 
     #[test]
     fn direct_core_and_capi_source_dispatch_remain_in_lockstep() {
+        const DISTANCE_WINNER_C_PUBLIC_AIM: (i16, i16) = (0, 0);
+        const NUMERIC_FIRST_A_PUBLIC_AIM: (i16, i16) = (16, 0);
+
         let (package, closure) = fixture_paths();
         let world = NativeWorld::load(package, closure).expect("package M loads");
         let mut direct = world.session();
         let handle = open_fixture();
         let command = valid_command();
         let mut snapshot = McSessionSnapshotV2::default();
+
+        // The native host supplies one complete typed turn-start snapshot to
+        // every source dispatch. Make all relevant orders disagree:
+        // numeric A/B/C/D, reversed host D/C/B/A, model-major B/A/C/D, nearest
+        // C, plus a still-nearer same-turn insertion E that must remain absent
+        // from the frozen guidance lists until the next rebuild.
+        let exercise_targeting_vector =
+            |mission: &mut Level1MissionState,
+             state: &mut FlightState,
+             terrain: &SessionTerrain,
+             live_world: &LiveWorldState| {
+                state.position = Position {
+                    x: 40_000,
+                    y: 40_000,
+                    z: 2_000,
+                };
+                state.yaw = 0;
+                state.effective_pitch = 0;
+                state.actual_speed = 0;
+                mission.has_fireball = true;
+                mission.player_mana = 10_000;
+                let origin = state.position;
+                let spawn_resident = |mission: &mut Level1MissionState,
+                                      model,
+                                      action,
+                                      x_offset: u16,
+                                      y_distance: u16,
+                                      z_offset: i16| {
+                    mission
+                        .spawn_house_resident(
+                            Position {
+                                x: origin.x.wrapping_add(x_offset),
+                                y: origin.y.wrapping_sub(y_distance),
+                                z: origin.z.wrapping_add(z_offset),
+                            },
+                            model,
+                            action,
+                            0,
+                        )
+                        .expect("qualified resident family")
+                        .expect("resident source slot")
+                };
+                let numeric_first = spawn_resident(mission, 12, 97, 64, 1_000, 100);
+                let model_first = spawn_resident(mission, 4, 33, 128, 1_000, 164);
+                let distance_first = spawn_resident(mission, 12, 97, 0, 512, 100);
+                let host_first = spawn_resident(mission, 13, 105, 256, 1_000, 36);
+                assert!(
+                    numeric_first < model_first
+                        && model_first < distance_first
+                        && distance_first < host_first
+                );
+
+                mission.begin_source_turn_at(origin);
+                let mut turn_start = level1_turn_start_source_views(mission, state, live_world);
+                turn_start.reverse();
+                mission.dispatch_source_slot_with_views_and_look(
+                    terrain,
+                    state,
+                    &turn_start,
+                    0,
+                    false,
+                    false,
+                    None,
+                    0,
+                    0,
+                );
+
+                let same_turn_insertion = spawn_resident(mission, 4, 33, 100, 283, 100);
+                let mut later_views = level1_turn_start_source_views(mission, state, live_world);
+                later_views.reverse();
+                assert!(mission.spawn_fireball_with_look(state, 0, 0));
+                let projectile_offset = mission.projectiles().len() - 1;
+                let projectile_slot =
+                    mission.projectiles()[projectile_offset].source_entity_index();
+                mission.dispatch_source_slot_with_views_and_look(
+                    terrain,
+                    state,
+                    &later_views,
+                    projectile_slot,
+                    false,
+                    false,
+                    None,
+                    0,
+                    0,
+                );
+                let Level1Projectile::PlayerFireball(projectile) =
+                    mission.projectiles()[projectile_offset]
+                else {
+                    panic!("targeting vector spawns a player Fireball");
+                };
+                assert_eq!(
+                    projectile.target_entity_index, distance_first,
+                    "distance winner C replaces model-list head B, while same-turn insertion E remains frozen out"
+                );
+                (
+                    [
+                        numeric_first,
+                        model_first,
+                        distance_first,
+                        host_first,
+                        same_turn_insertion,
+                    ],
+                    projectile_offset,
+                    projectile.source_entity_index,
+                    projectile.target_entity_index,
+                    projectile.yaw,
+                    projectile.pitch,
+                )
+            };
+        let mut direct_vector = world.session();
+        let vector_handle = open_fixture();
+        let direct_outcome = exercise_targeting_vector(
+            &mut direct_vector.mission,
+            &mut direct_vector.state,
+            &direct_vector.terrain,
+            &direct_vector.live_world,
+        );
+        let capi_outcome = with_session_mut(vector_handle, |session| {
+            Ok(exercise_targeting_vector(
+                &mut session.mission,
+                &mut session.state,
+                &session.terrain,
+                &session.live_world,
+            ))
+        })
+        .expect("registered C API targeting-vector session");
+        assert_eq!(direct_outcome, capi_outcome);
+        assert_eq!(
+            direct_outcome.3, direct_outcome.0[2],
+            "direct core target identity proves that distance winner C defeated numeric A, model-list B, and reversed-host D"
+        );
+        let capi_vector_snapshot = with_session(vector_handle, |session| Ok(session.snapshot()))
+            .expect("registered C API targeting-vector snapshot");
+        let mut visible_projectile = McFireballProjectileSnapshotV2::default();
+        let mut vector_written = 0;
+        assert_eq!(
+            mc_native_fireball_projectiles_copy(
+                vector_handle,
+                capi_vector_snapshot.generation,
+                capi_vector_snapshot.tick,
+                u32::try_from(capi_outcome.1).expect("projectile offset fits u32"),
+                &raw mut visible_projectile,
+                1,
+                struct_size::<McFireballProjectileSnapshotV2>(),
+                &raw mut vector_written,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(vector_written, 1);
+        assert_eq!(
+            (visible_projectile.yaw, visible_projectile.pitch),
+            DISTANCE_WINNER_C_PUBLIC_AIM,
+            "C API projection independently exposes C's source-derived straight-ahead yaw/pitch"
+        );
+        assert_ne!(
+            (visible_projectile.yaw, visible_projectile.pitch),
+            NUMERIC_FIRST_A_PUBLIC_AIM,
+            "candidate A's distinct in-cone yaw would hit the source first-turn +16 yaw limit"
+        );
+        assert_eq!(
+            visible_projectile.reserved[0],
+            u32::from(capi_outcome.2),
+            "reserved[0] is the projectile source slot, not the selected target"
+        );
+        assert_eq!(mc_native_session_destroy(vector_handle), MC_STATUS_OK);
+
+        let reset_villagers = direct.live_world.villagers().to_vec();
+        assert_eq!(
+            reset_villagers
+                .iter()
+                .map(|villager| villager.entity_index)
+                .collect::<Vec<_>>(),
+            (51_u16..=78).collect::<Vec<_>>()
+        );
 
         for turn in 1..=24 {
             direct.step(PlayerCommand::default());
@@ -12862,6 +13306,223 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
             })
             .expect("registered C API session");
         }
+        assert!(
+            direct
+                .live_world
+                .villagers()
+                .iter()
+                .zip(&reset_villagers)
+                .all(|(live, reset)| {
+                    live.active
+                        && live.phase == reset.phase.wrapping_add(24)
+                        && live.position != reset.position
+                        && direct.mission.source_slots()[usize::from(live.entity_index)].action
+                            == live.action
+                }),
+            "all 28 frame-zero Villagers execute live action-111 bodies"
+        );
+        with_session(handle, |capi| {
+            assert_eq!(
+                direct.live_world.villagers(),
+                capi.live_world.villagers(),
+                "direct and C API Villager bodies diverged"
+            );
+            for villager in capi.live_world.villagers() {
+                let projection = capi
+                    .frozen_actors
+                    .iter()
+                    .find(|actor| actor.source_entity_index == villager.entity_index)
+                    .expect("live Villager presentation projection");
+                assert_eq!(
+                    (projection.position, projection.yaw),
+                    (villager.position, villager.yaw),
+                    "Villager presentation must follow live simulation"
+                );
+                assert!(capi.renderable_map_chains.tracks(villager.entity_index));
+            }
+            Ok(())
+        })
+        .expect("registered C API session");
+
+        let lethal_damage = direct
+            .live_world
+            .villagers()
+            .iter()
+            .find(|villager| villager.entity_index == 51)
+            .unwrap()
+            .life
+            + 1;
+        direct
+            .live_world
+            .inject_damage(51, lethal_damage, 152)
+            .expect("direct Villager lethal mailbox");
+        with_session_mut(handle, |capi| {
+            capi.live_world
+                .inject_damage(51, lethal_damage, 152)
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))
+        })
+        .expect("C API Villager lethal mailbox");
+        let mut removed_turn = None;
+        for death_turn in 1..=10 {
+            direct.step(PlayerCommand::default());
+            assert_eq!(
+                mc_native_session_step(
+                    handle,
+                    &raw const command,
+                    &raw mut snapshot,
+                    struct_size::<McSessionSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+            with_session(handle, |capi| {
+                assert_eq!(direct.live_world.villagers(), capi.live_world.villagers());
+                assert_eq!(
+                    direct.mission.source_arena_hash_v1(),
+                    capi.mission.source_arena_hash_v1()
+                );
+                Ok(())
+            })
+            .expect("registered C API session");
+            let villager = direct
+                .live_world
+                .villagers()
+                .iter()
+                .find(|villager| villager.entity_index == 51)
+                .unwrap();
+            if death_turn == 1 {
+                assert_eq!(villager.action, 108);
+                assert_eq!(villager.pending_damage, lethal_damage);
+                assert_eq!(villager.pending_attacker, 0);
+                assert_eq!(villager.kill_credit_entity, 152);
+            }
+            if !villager.active {
+                removed_turn = Some(death_turn);
+                break;
+            }
+        }
+        assert_eq!(
+            removed_turn,
+            Some(2),
+            "frame-zero reset_counter=2 takes action 108's immediate-disable branch"
+        );
+        assert!(
+            direct
+                .mission
+                .death_bursts()
+                .iter()
+                .all(|burst| burst.parent_entity_index != 51),
+            "the immediate-disable branch does not enter action 109"
+        );
+        assert!(direct.mission.imported_source_slot_is_live(51));
+        with_session(handle, |capi| {
+            let dead = capi
+                .live_world
+                .villagers()
+                .iter()
+                .find(|villager| villager.entity_index == 51)
+                .unwrap();
+            assert!(!dead.active);
+            assert!(
+                !capi
+                    .renderable_map_chains
+                    .entity_chain(
+                        dead.position.x.to_be_bytes()[0],
+                        dead.position.y.to_be_bytes()[0]
+                    )
+                    .contains(&51),
+                "death unlinks the live Villager presentation immediately"
+            );
+            Ok(())
+        })
+        .expect("registered C API session");
+        direct.step(PlayerCommand::default());
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert!(
+            !direct.mission.imported_source_slot_is_live(51),
+            "the next turn reclaims the disabled imported source slot"
+        );
+        with_session(handle, |capi| {
+            assert!(!capi.mission.imported_source_slot_is_live(51));
+            assert_eq!(direct.live_world.hash_v1(), capi.live_world.hash_v1());
+            assert_eq!(
+                direct.mission.source_arena_hash_v1(),
+                capi.mission.source_arena_hash_v1()
+            );
+            Ok(())
+        })
+        .expect("registered C API session");
+
+        let resident_position = direct.live_world.houses()[0].position;
+        let resident_slot = direct
+            .mission
+            .spawn_house_resident(resident_position, 4, 33, 0)
+            .expect("direct resident constructor")
+            .expect("direct source arena resident slot");
+        let capi_resident_slot = with_session_mut(handle, |capi| {
+            Ok(capi
+                .mission
+                .spawn_house_resident(resident_position, 4, 33, 0)
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?
+                .expect("C API source arena resident slot"))
+        })
+        .expect("registered C API session");
+        assert_eq!(resident_slot, capi_resident_slot);
+        for (model, action) in [(12, 97), (13, 105), (14, 113)] {
+            let direct_slot = direct
+                .mission
+                .spawn_house_resident(resident_position, model, action, 0)
+                .expect("direct resident-family constructor")
+                .expect("direct source arena resident-family slot");
+            let capi_slot = with_session_mut(handle, |capi| {
+                Ok(capi
+                    .mission
+                    .spawn_house_resident(resident_position, model, action, 0)
+                    .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?
+                    .expect("C API source arena resident-family slot"))
+            })
+            .expect("registered C API session");
+            assert_eq!(direct_slot, capi_slot);
+        }
+        direct.step(PlayerCommand::default());
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        with_session(handle, |capi| {
+            assert!(direct.mission.resident_projection_is_linked(resident_slot));
+            assert!(capi.mission.resident_projection_is_linked(resident_slot));
+            assert!(
+                capi.renderable_map_chains.tracks(resident_slot),
+                "C API applies the resident render projection in the dispatch slot"
+            );
+            assert_eq!(
+                direct.live_world.hash_v1(),
+                capi.live_world.hash_v1(),
+                "resident effect live-world hashes diverged"
+            );
+            assert_eq!(
+                direct.mission.source_arena_hash_v1(),
+                capi.mission.source_arena_hash_v1(),
+                "resident effect source-arena hashes diverged"
+            );
+            assert_eq!(direct.mission.dynamic_resident_behavior_gap_mask(), 0);
+            assert_eq!(capi.mission.dynamic_resident_behavior_gap_mask(), 0);
+            Ok(())
+        })
+        .expect("registered C API session");
 
         direct.mission.has_fireball = true;
         direct.mission.player_mana = 10_000;

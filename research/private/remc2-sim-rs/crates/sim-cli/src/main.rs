@@ -1,5 +1,9 @@
 use atlas_registry::AtlasRegistry;
 use sim_core::legacy_terrain::LegacyTerrain;
+use sim_core::level1_mission::{
+    Level1ResetSourceSlot, compare_level1_reset_from_authored, level1_reset_harness_error_json,
+    level1_reset_report_json,
+};
 use sim_core::native_world::NativeWorld;
 use sim_core::recording::{InputRecording, RecordedPlayer};
 use sim_core::regression_state::RegressionStateSequence;
@@ -34,10 +38,11 @@ fn main() -> ExitCode {
         Some("inspect-forward") => inspect_forward(),
         Some("inspect-idle-diff") => inspect_idle_diff(),
         Some("find-castle-site") => find_castle_site(),
+        Some("reset-from-authored") => reset_from_authored(),
         Some("trace") => trace(),
         _ => {
             eprintln!(
-                "usage: sim-cli <atlas-check|find-castle-site|inspect-forward|inspect-idle-diff|inspect-recording|inspect-regression|trace> ..."
+                "usage: sim-cli <atlas-check|find-castle-site|inspect-forward|inspect-idle-diff|inspect-recording|inspect-regression|reset-from-authored|trace> ..."
             );
             ExitCode::from(2)
         }
@@ -257,6 +262,82 @@ fn atlas_check() -> ExitCode {
         summary.tables, summary.mappings
     );
     ExitCode::SUCCESS
+}
+
+fn reset_from_authored() -> ExitCode {
+    let arguments = std::env::args().collect::<Vec<_>>();
+    let (package, closure, matrix) = match arguments.as_slice() {
+        [_, _] => (
+            std::path::PathBuf::from("../generated/level1-export-m"),
+            std::path::PathBuf::from("../generated/level1-asset-closure.json"),
+            std::path::PathBuf::from("level1-conformance/level1-conformance-matrix.json"),
+        ),
+        [_, _, package, closure, matrix] => (
+            std::path::PathBuf::from(package),
+            std::path::PathBuf::from(closure),
+            std::path::PathBuf::from(matrix),
+        ),
+        _ => {
+            reset_comparator_error(
+                "invocation",
+                "usage: sim-cli reset-from-authored [<package> <closure> <matrix>]",
+            );
+            return ExitCode::from(2);
+        }
+    };
+    let authored = match std::fs::read(package.join("authored-level.bin")) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            reset_comparator_error("authored-read", &error.to_string());
+            return ExitCode::from(2);
+        }
+    };
+    let matrix = match std::fs::read(matrix) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            reset_comparator_error("matrix-read", &error.to_string());
+            return ExitCode::from(2);
+        }
+    };
+    let world = match NativeWorld::load(&package, closure) {
+        Ok(world) => world,
+        Err(error) => {
+            reset_comparator_error("owner-package-load", &error.to_string());
+            return ExitCode::from(2);
+        }
+    };
+    let observed = world
+        .entities()
+        .iter()
+        .filter(|entity| entity.active)
+        .map(|entity| Level1ResetSourceSlot {
+            index: entity.index,
+            active: entity.active,
+            class: entity.class,
+            model: entity.model,
+            action: entity.action,
+            phase: entity.phase,
+            entity_rng: entity.entity_rng,
+            control_flags: entity.control_flags,
+        })
+        .collect::<Vec<_>>();
+    let report = match compare_level1_reset_from_authored(&authored, &observed, &matrix) {
+        Ok(report) => report,
+        Err(error) => {
+            reset_comparator_error("comparator-harness", &error);
+            return ExitCode::from(2);
+        }
+    };
+    println!("{}", level1_reset_report_json(&report));
+    if report.usable() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn reset_comparator_error(stage: &str, error: &str) {
+    eprintln!("{}", level1_reset_harness_error_json(stage, error));
 }
 
 fn inspect_regression() -> ExitCode {

@@ -47,14 +47,14 @@ use crate::{
         FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_LOGICAL_HEIGHT, FIREBALL_IMPACT_RENDER_INDEX,
         FIREBALL_LOGICAL_HEIGHT, FIREBALL_RENDER_INDEX, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT,
         FIREFLY_RENDER_INDEX, FIREFLY_RENDER_MODE, FireballImpact, Level1Actor, Level1ActorKind,
-        Level1MultipartSegment, Level1PossessedBuilding, Level1Projectile, MANA_CARRIER_BASE_TMAP,
-        MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_RENDER_INDEX, MANA_SPHERE_NEUTRAL_BASE_TMAP,
-        MANA_SPHERE_NEUTRAL_RENDER_BASE, MANA_SPHERE_PLAYER_ONE_BASE_TMAP,
-        MANA_SPHERE_PLAYER_ONE_RENDER_BASE, MULTIPART_HEAD_BASE_TMAP,
-        MULTIPART_HEAD_LOGICAL_HEIGHT, MULTIPART_HEAD_RENDER_INDEX, MULTIPART_HEAD_RENDER_MODE,
-        MULTIPART_SEGMENT_BASE_TMAP, MULTIPART_SEGMENT_RENDER_MODE, ManaCarrier, ManaSphere,
-        POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_LOGICAL_HEIGHT, POSSESSION_IMPACT_MODEL,
-        POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_PROJECTILE_BASE_TMAP,
+        Level1AmbientEntity, Level1MultipartSegment, Level1PossessedBuilding, Level1Projectile,
+        MANA_CARRIER_BASE_TMAP, MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_RENDER_INDEX,
+        MANA_SPHERE_NEUTRAL_BASE_TMAP, MANA_SPHERE_NEUTRAL_RENDER_BASE,
+        MANA_SPHERE_PLAYER_ONE_BASE_TMAP, MANA_SPHERE_PLAYER_ONE_RENDER_BASE,
+        MULTIPART_HEAD_BASE_TMAP, MULTIPART_HEAD_LOGICAL_HEIGHT, MULTIPART_HEAD_RENDER_INDEX,
+        MULTIPART_HEAD_RENDER_MODE, MULTIPART_SEGMENT_BASE_TMAP, MULTIPART_SEGMENT_RENDER_MODE,
+        ManaCarrier, ManaSphere, POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_LOGICAL_HEIGHT,
+        POSSESSION_IMPACT_MODEL, POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_PROJECTILE_BASE_TMAP,
         POSSESSION_PROJECTILE_LOGICAL_HEIGHT, POSSESSION_PROJECTILE_RENDER_INDEX,
         SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX,
         SPELL_JAR_RENDER_MODE, STONE_BASE_TMAP, STONE_LOGICAL_HEIGHT, STONE_RENDER_INDEX,
@@ -132,6 +132,7 @@ pub struct Level1WorldFrameResources<'a> {
     pub local_player_entity_index: u16,
     pub goats: &'a [GoatState],
     pub frozen_actors: &'a [Level1FrozenActorRender],
+    pub ambient_entities: &'a [Level1AmbientEntity],
     pub frozen_actor_tmap_bank: Option<&'a FrozenActorTmapBank>,
     pub villager_tmap_clocks: Option<&'a VillagerTmapClocks>,
     pub mission_actors: &'a [Level1Actor],
@@ -212,6 +213,10 @@ pub struct Level1TerrainFrame {
     /// True only when the exact 31 reset-frozen Level 1 actors were evaluated
     /// in the shared source map-cell chains.
     pub frozen_actors_composited: bool,
+    /// Aggregate source-indexed village fire/smoke raster accounting.
+    pub ambient_raster_stats: Mode20SpriteRasterStats,
+    /// True when the live ambient projection participated in map-chain draw.
+    pub ambient_entities_composited: bool,
     /// Aggregate source-indexed Archer raster accounting.
     pub archer_raster_stats: Mode20SpriteRasterStats,
     /// Selector-global draw-attempt mask for animated selectors 8..10.
@@ -344,6 +349,7 @@ fn render_level1_frame(
     let mut goat_selector_mask = 0_u8;
     let mut frozen_actor_raster_stats = Mode20SpriteRasterStats::default();
     let mut frozen_actor_selector_mask = 0_u16;
+    let mut ambient_raster_stats = Mode20SpriteRasterStats::default();
     let mut archer_raster_stats = Mode20SpriteRasterStats::default();
     let mut archer_selector_mask = 0_u8;
     let mut firefly_raster_stats = Mode20SpriteRasterStats::default();
@@ -391,6 +397,7 @@ fn render_level1_frame(
                 &mut goat_selector_mask,
                 &mut frozen_actor_raster_stats,
                 &mut frozen_actor_selector_mask,
+                &mut ambient_raster_stats,
                 &mut archer_raster_stats,
                 &mut archer_selector_mask,
                 &mut firefly_raster_stats,
@@ -455,6 +462,7 @@ fn render_level1_frame(
                 &mut goat_selector_mask,
                 &mut frozen_actor_raster_stats,
                 &mut frozen_actor_selector_mask,
+                &mut ambient_raster_stats,
                 &mut archer_raster_stats,
                 &mut archer_selector_mask,
                 &mut firefly_raster_stats,
@@ -503,6 +511,8 @@ fn render_level1_frame(
         frozen_actor_raster_stats,
         frozen_actor_selector_mask,
         frozen_actors_composited: world.is_some(),
+        ambient_raster_stats,
+        ambient_entities_composited: world.is_some(),
         archer_raster_stats,
         archer_selector_mask,
         archers_composited: world.is_some(),
@@ -581,6 +591,7 @@ fn raster_world_chain(
     goat_selector_mask: &mut u8,
     frozen_actor_aggregate: &mut Mode20SpriteRasterStats,
     frozen_actor_selector_mask: &mut u16,
+    ambient_aggregate: &mut Mode20SpriteRasterStats,
     archer_aggregate: &mut Mode20SpriteRasterStats,
     archer_selector_mask: &mut u8,
     firefly_aggregate: &mut Mode20SpriteRasterStats,
@@ -623,6 +634,103 @@ fn raster_world_chain(
             })?;
         let control_flags = source_slot.control_flags;
         if control_flags & 0x21 != 0 {
+            continue;
+        }
+        if let Some(ambient) = world_resources
+            .ambient_entities
+            .iter()
+            .find(|ambient| ambient.source_entity_index == entity_index)
+        {
+            if !ambient.visible() {
+                continue;
+            }
+            let parameter = world_resources
+                .particle_parameters
+                .get(usize::from(ambient.render_parameter_index))
+                .ok_or_else(|| {
+                    TerrainFrameError(format!(
+                        "ambient entity {entity_index} parameter {} is absent",
+                        ambient.render_parameter_index
+                    ))
+                })?;
+            let expected = match (ambient.model, ambient.action) {
+                (0, 0) => (7, 38, 36),
+                (1, 1) => (41, 54, 21),
+                (14, 14) => (9, 63, 21),
+                _ => continue,
+            };
+            if (
+                ambient.render_parameter_index,
+                parameter.base_tmap,
+                parameter.render_mode,
+            ) != expected
+            {
+                return Err(TerrainFrameError(format!(
+                    "ambient entity {entity_index} render tuple changed: {}/{}/{}",
+                    ambient.render_parameter_index, parameter.base_tmap, parameter.render_mode
+                )));
+            }
+            let frame = world_resources
+                .static_world_tmap_bank
+                .frame(parameter.base_tmap)
+                .ok_or_else(|| {
+                    TerrainFrameError(format!(
+                        "ambient selector {} has no qualified frame",
+                        parameter.base_tmap
+                    ))
+                })?;
+            let sprite_camera = Mode20SpriteCamera {
+                render_x: camera.render_x,
+                render_y: camera.render_y,
+                eye_z: camera.eye_z,
+                yaw: camera.yaw,
+                projection,
+            };
+            let placement = project_fixed_sprite_with_definition(
+                Mode20SpriteDefinition {
+                    base_selector: parameter.base_tmap,
+                    logical_height: i32::from(parameter.rotation_speed),
+                },
+                None,
+                false,
+                sprite_camera,
+                Mode20SpriteEntity {
+                    x: ambient.position.x,
+                    y: ambient.position.y,
+                    z: ambient.position.z,
+                    yaw: ambient.yaw,
+                },
+                frame.width,
+                frame.height,
+            );
+            let Ok(placement) = placement else { continue };
+            raster_world_sprite_pass(
+                pass,
+                indices,
+                placement,
+                sprite_camera,
+                ambient.position,
+                ambient.render_parameter_index,
+                interpolate_ground(
+                    resources.ground_heights,
+                    ambient.position.x,
+                    ambient.position.y,
+                ),
+                frame.width,
+                frame.height,
+                &frame.pixels,
+                resources.tablesn,
+                camera.roll,
+                control_flags,
+                shadow_surface,
+                world_resources.night,
+                false,
+                world_resources.particle_parameters,
+                ambient_aggregate,
+                reflected_aggregate,
+                shadow_aggregate,
+            )
+            .map_err(TerrainFrameError)?;
             continue;
         }
         if let Some(building) = world_resources
@@ -3089,6 +3197,7 @@ mod tests {
                     local_player_entity_index: world.reset_state().entity_index,
                     goats: &[],
                     frozen_actors: &frozen_actors,
+                    ambient_entities: &[],
                     frozen_actor_tmap_bank: Some(&frozen_actor_bank),
                     villager_tmap_clocks: Some(&villager_clocks),
                     mission_actors: &[],
@@ -3134,6 +3243,7 @@ mod tests {
                 local_player_entity_index: world.reset_state().entity_index,
                 goats: &[],
                 frozen_actors: &frozen_actors,
+                ambient_entities: &[],
                 frozen_actor_tmap_bank: Some(&frozen_actor_bank),
                 villager_tmap_clocks: Some(&villager_clocks),
                 mission_actors: &[],
@@ -3179,6 +3289,7 @@ mod tests {
                     local_player_entity_index: world.reset_state().entity_index,
                     goats: world.reset_live_world().goats(),
                     frozen_actors: &[],
+                    ambient_entities: &[],
                     frozen_actor_tmap_bank: None,
                     villager_tmap_clocks: None,
                     mission_actors: &[],
@@ -3238,6 +3349,7 @@ mod tests {
                 local_player_entity_index: world.reset_state().entity_index,
                 goats: world.reset_live_world().goats(),
                 frozen_actors: &[],
+                ambient_entities: &[],
                 frozen_actor_tmap_bank: None,
                 villager_tmap_clocks: None,
                 mission_actors: &[],
@@ -3339,6 +3451,7 @@ mod tests {
                     local_player_entity_index: world.reset_state().entity_index,
                     goats: world.reset_live_world().goats(),
                     frozen_actors: &[],
+                    ambient_entities: &[],
                     frozen_actor_tmap_bank: None,
                     villager_tmap_clocks: None,
                     mission_actors: std::slice::from_ref(&archer),
@@ -3424,6 +3537,7 @@ mod tests {
                     local_player_entity_index: world.reset_state().entity_index,
                     goats: world.reset_live_world().goats(),
                     frozen_actors: &[],
+                    ambient_entities: &[],
                     frozen_actor_tmap_bank: Some(&frozen_actor_bank),
                     villager_tmap_clocks: Some(&villager_clocks),
                     mission_actors: &[],
@@ -3494,6 +3608,7 @@ mod tests {
                     local_player_entity_index: world.reset_state().entity_index,
                     goats: world.reset_live_world().goats(),
                     frozen_actors: &[],
+                    ambient_entities: &[],
                     frozen_actor_tmap_bank: None,
                     villager_tmap_clocks: None,
                     mission_actors: std::slice::from_ref(&firefly),
@@ -3564,6 +3679,7 @@ mod tests {
                     local_player_entity_index: world.reset_state().entity_index,
                     goats: world.reset_live_world().goats(),
                     frozen_actors: &[],
+                    ambient_entities: &[],
                     frozen_actor_tmap_bank: None,
                     villager_tmap_clocks: None,
                     mission_actors: std::slice::from_ref(&prop),
@@ -3607,6 +3723,7 @@ mod tests {
                     local_player_entity_index: world.reset_state().entity_index,
                     goats: world.reset_live_world().goats(),
                     frozen_actors: &[],
+                    ambient_entities: &[],
                     frozen_actor_tmap_bank: None,
                     villager_tmap_clocks: None,
                     mission_actors: std::slice::from_ref(&prop),
@@ -3650,6 +3767,7 @@ mod tests {
                     local_player_entity_index: world.reset_state().entity_index,
                     goats: world.reset_live_world().goats(),
                     frozen_actors: &[],
+                    ambient_entities: &[],
                     frozen_actor_tmap_bank: None,
                     villager_tmap_clocks: None,
                     mission_actors: std::slice::from_ref(&prop),
@@ -3764,6 +3882,7 @@ mod tests {
                     local_player_entity_index: local_player,
                     goats: world.reset_live_world().goats(),
                     frozen_actors: &[],
+                    ambient_entities: &[],
                     frozen_actor_tmap_bank: None,
                     villager_tmap_clocks: None,
                     mission_actors: &[],
@@ -3818,6 +3937,7 @@ mod tests {
                 local_player_entity_index: local_player,
                 goats: world.reset_live_world().goats(),
                 frozen_actors: &[],
+                ambient_entities: &[],
                 frozen_actor_tmap_bank: None,
                 villager_tmap_clocks: None,
                 mission_actors: &[],

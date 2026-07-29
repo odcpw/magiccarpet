@@ -5,17 +5,17 @@
 //! and staged action 111.
 
 use crate::{
-    FlightWorld, Position, heading_for_positions, house::HouseState, move_entity,
-    native_world::EntitySnapshot, turn_toward, wrapping_i16,
+    FlightWorld, Position, heading_for_positions,
+    house::{HouseFamily, HouseResidentEntry},
+    level1_mission::{Level1SourceEntityView, SOURCE_DISABLED_FLAG},
+    move_entity,
+    native_world::EntitySnapshot,
+    turn_toward, wrapping_i16,
 };
 
 pub const LEVEL_ONE_VILLAGER_INDICES: [u16; 28] = [
     51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74,
     75, 76, 77, 78,
-];
-pub const LEVEL_ONE_BUILDING_INDICES: [u16; 47] = [
-    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
-    27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
 ];
 pub const VILLAGER_CLASS: u8 = 5;
 pub const VILLAGER_MODEL: u8 = 13;
@@ -29,10 +29,7 @@ pub const VILLAGER_DEATH_ACTION: u8 = 108;
 pub const VILLAGER_REMOVAL_ACTION: u8 = 109;
 pub const VILLAGER_PARAMETER_INDEX: u16 = 100;
 
-const ELIGIBLE_BUILDING_INDICES: [u16; 41] = [
-    1, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
-    31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
-];
+const SOURCE_DEATH_BURST_SUPPRESSED_FLAG: u32 = 0x0010_0000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VillagerBehaviorConfig {
@@ -42,6 +39,8 @@ pub struct VillagerBehaviorConfig {
     pub terrain_threshold: i16,
     pub allowed_material_mask: u32,
     pub behavior_cadence: u16,
+    pub engagement_range: u16,
+    pub separation_radius: i16,
     pub behavior_flags: u8,
 }
 
@@ -53,6 +52,8 @@ impl VillagerBehaviorConfig {
         terrain_threshold: 15,
         allowed_material_mask: 0xffff_fefe,
         behavior_cadence: 40,
+        engagement_range: 3_584,
+        separation_radius: 512,
         behavior_flags: 9,
     };
 
@@ -64,6 +65,8 @@ impl VillagerBehaviorConfig {
             terrain_threshold: read_i16(bytes, 16),
             allowed_material_mask: read_u32(bytes, 20),
             behavior_cadence: read_u16(bytes, 26),
+            engagement_range: read_u16(bytes, 28),
+            separation_radius: read_i16(bytes, 30),
             behavior_flags: bytes[32],
         };
         if config != Self::LEVEL_ONE {
@@ -87,6 +90,7 @@ pub struct VillagerState {
     pub pending_damage: i32,
     pub pending_attacker: i16,
     pub current_attacker: i16,
+    pub kill_credit_entity: i16,
     pub rng: u16,
     pub yaw: i16,
     pub pitch: i16,
@@ -104,6 +108,8 @@ pub struct VillagerState {
     pub actual_speed: i16,
     pub minimum_speed: i16,
     pub maximum_speed: i16,
+    pub mana: i32,
+    pub owner_entity_index: u16,
     pub target_entity_index: Option<u16>,
 }
 
@@ -141,6 +147,7 @@ impl VillagerState {
             pending_damage: read_i32(bytes, 98),
             pending_attacker: read_i16(bytes, 102),
             current_attacker: read_i16(bytes, 42),
+            kill_credit_entity: read_i16(bytes, 40),
             rng: read_u16(bytes, 24),
             yaw: read_i16(bytes, 32),
             pitch: read_i16(bytes, 34),
@@ -158,24 +165,37 @@ impl VillagerState {
             actual_speed: read_i16(bytes, 134),
             minimum_speed: read_i16(bytes, 136),
             maximum_speed: read_i16(bytes, 138),
+            mana: read_i32(bytes, 148),
+            owner_entity_index: read_u16(bytes, 152),
             target_entity_index: relation_index(read_u16(bytes, 154)),
         })
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct VillagerBuilding {
-    entity_index: u16,
-    position: Position,
-    capacity: i16,
-    occupants: i32,
-    eligible: bool,
+pub enum VillagerStepEffect {
+    TryEnterBuilding {
+        resident_source_entity_index: u16,
+        house_source_entity_index: u16,
+    },
+    TargetPlayer {
+        player_source_entity_index: u16,
+    },
+    DeathBurst {
+        source_entity_index: u16,
+        position: Position,
+    },
+    DisableSourceSlot {
+        source_entity_index: u16,
+    },
+    PopulationCensusDecrement {
+        source_entity_index: u16,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VillagerFamily {
     villagers: Box<[VillagerState]>,
-    buildings: Box<[VillagerBuilding]>,
     config: VillagerBehaviorConfig,
 }
 
@@ -208,27 +228,8 @@ impl VillagerFamily {
             villagers.push(state);
         }
 
-        let mut buildings = Vec::with_capacity(LEVEL_ONE_BUILDING_INDICES.len());
-        for entity_index in LEVEL_ONE_BUILDING_INDICES {
-            let snapshot = entities
-                .get(usize::from(entity_index))
-                .ok_or_else(|| format!("missing Level 1 building entity {entity_index}"))?;
-            let bytes = snapshot.record_bytes();
-            buildings.push(VillagerBuilding {
-                entity_index,
-                position: snapshot.position,
-                capacity: read_i16(bytes, 136),
-                occupants: read_i32(bytes, 20),
-                eligible: snapshot.active
-                    && snapshot.class == 10
-                    && snapshot.model == 45
-                    && ELIGIBLE_BUILDING_INDICES.contains(&entity_index),
-            });
-        }
-
         Ok(Self {
             villagers: villagers.into_boxed_slice(),
-            buildings: buildings.into_boxed_slice(),
             config,
         })
     }
@@ -236,22 +237,6 @@ impl VillagerFamily {
     #[must_use]
     pub fn villagers(&self) -> &[VillagerState] {
         &self.villagers
-    }
-
-    pub fn sync_houses(&mut self, houses: &[HouseState]) {
-        for building in &mut self.buildings {
-            let Some(house) = houses
-                .iter()
-                .find(|house| house.entity_index == building.entity_index)
-            else {
-                building.eligible = false;
-                continue;
-            };
-            building.position = house.position;
-            building.capacity = house.capacity;
-            building.occupants = house.occupants;
-            building.eligible = house.active && house.parameter.produces_villagers();
-        }
     }
 
     /// `sub_12500` class-5 stage service for Level 1's kind-7 broadcast.
@@ -267,43 +252,37 @@ impl VillagerFamily {
         released
     }
 
-    pub fn step_source_slot<W: FlightWorld>(&mut self, source_slot: u16, world: &W) -> Option<u16> {
+    pub fn step_source_slot<W: FlightWorld>(
+        &mut self,
+        source_slot: u16,
+        world: &W,
+        source_views: &[Level1SourceEntityView],
+        houses: &mut HouseFamily,
+    ) -> Vec<VillagerStepEffect> {
         let Some(index) = self
             .villagers
             .iter()
             .position(|villager| villager.entity_index == source_slot && villager.active)
         else {
-            return None;
+            return Vec::new();
         };
-        let entered_building = match self.villagers[index].action {
-            VILLAGER_INITIAL_ACTION => {
-                self.villagers[index].action = VILLAGER_FREE_ACTION;
-                self.step_free(index, world)
+        let mut effects =
+            step_villager_state(&mut self.villagers[index], world, source_views, self.config);
+        for effect in effects.iter().copied() {
+            let VillagerStepEffect::TryEnterBuilding {
+                house_source_entity_index,
+                ..
+            } = effect
+            else {
+                continue;
+            };
+            if houses.try_enter_resident(house_source_entity_index) != HouseResidentEntry::Entered {
+                reject_building_entry(&mut self.villagers[index]);
             }
-            VILLAGER_STAGED_ACTION => {
-                self.step_scripted(index, world);
-                None
-            }
-            VILLAGER_FREE_ACTION | VILLAGER_FREE_ALIAS_ACTION_A | VILLAGER_FREE_ALIAS_ACTION_B => {
-                self.villagers[index].action = VILLAGER_FREE_ACTION;
-                self.step_free(index, world)
-            }
-            VILLAGER_HIT_ACTION => {
-                self.step_hit(index);
-                None
-            }
-            VILLAGER_DEATH_ACTION => {
-                self.step_death(index);
-                None
-            }
-            VILLAGER_REMOVAL_ACTION => {
-                self.step_removal(index);
-                None
-            }
-            _ => return None,
-        };
+        }
+        effects.retain(|effect| !matches!(effect, VillagerStepEffect::TryEnterBuilding { .. }));
         self.villagers[index].phase = self.villagers[index].phase.wrapping_add(1);
-        entered_building
+        effects
     }
 
     pub fn inject_damage(
@@ -324,194 +303,386 @@ impl VillagerFamily {
         villager.pending_attacker = attacker;
         Ok(())
     }
+}
 
-    fn step_scripted<W: FlightWorld>(&mut self, index: usize, world: &W) {
-        if self.apply_damage(index) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VillagerDamageResult {
+    None,
+    Hit(u16),
+    Dead,
+}
+
+/// Execute one source-dispatch body for both reset/imported and house-created
+/// model-13 residents. The caller owns phase advancement and applies the
+/// returned effects immediately after the entity borrow ends.
+pub(crate) fn step_villager_state<W: FlightWorld>(
+    villager: &mut VillagerState,
+    world: &W,
+    source_views: &[Level1SourceEntityView],
+    config: VillagerBehaviorConfig,
+) -> Vec<VillagerStepEffect> {
+    let mut effects = Vec::new();
+    match villager.action {
+        VILLAGER_INITIAL_ACTION | VILLAGER_FREE_ALIAS_ACTION_A | VILLAGER_FREE_ALIAS_ACTION_B => {
+            villager.action = VILLAGER_FREE_ACTION;
+            step_free_villager(villager, world, source_views, config, &mut effects);
+        }
+        VILLAGER_FREE_ACTION => {
+            step_free_villager(villager, world, source_views, config, &mut effects);
+        }
+        VILLAGER_DEATH_ACTION => {
+            if villager.reset_counter != 0 {
+                disable_villager(villager, &mut effects);
+            } else {
+                // `PreKillEntity_1C890(entity, 104)`: model 13 is excluded
+                // from the player creature-kill counter, then enters 109.
+                villager.action = VILLAGER_REMOVAL_ACTION;
+            }
+        }
+        VILLAGER_REMOVAL_ACTION => {
+            if villager.phase & 7 == 0 {
+                // Level 1 townies carry zero mana, so
+                // `TransformEntityToManaSphere_36BA0(false)` performs no RNG
+                // draw or allocation. The class-10/model-1 burst is attempted
+                // before the dying source slot is disabled.
+                if villager.control_flags & SOURCE_DEATH_BURST_SUPPRESSED_FLAG == 0 {
+                    effects.push(VillagerStepEffect::DeathBurst {
+                        source_entity_index: villager.entity_index,
+                        position: villager.position,
+                    });
+                }
+                disable_villager(villager, &mut effects);
+            }
+        }
+        VILLAGER_HIT_ACTION => {
+            step_hit_villager(villager, world, source_views, config, &mut effects);
+        }
+        VILLAGER_STAGED_ACTION => {
+            step_staged_villager(villager, world, source_views, config, &mut effects);
+            villager.actual_speed = if villager.action == VILLAGER_HIT_ACTION {
+                villager.minimum_speed
+            } else {
+                villager.maximum_speed
+            };
+        }
+        _ => {}
+    }
+    effects
+}
+
+fn step_free_villager<W: FlightWorld>(
+    villager: &mut VillagerState,
+    world: &W,
+    source_views: &[Level1SourceEntityView],
+    config: VillagerBehaviorConfig,
+    effects: &mut Vec<VillagerStepEffect>,
+) {
+    match consume_villager_mailbox(villager) {
+        VillagerDamageResult::Hit(attacker) => {
+            if source_view(source_views, attacker)
+                .is_some_and(|target| matches!(target.model, 0 | 1))
+            {
+                effects.push(VillagerStepEffect::TargetPlayer {
+                    player_source_entity_index: attacker,
+                });
+            }
+            villager.target_entity_index = Some(attacker);
+            villager.action = VILLAGER_HIT_ACTION;
+            villager.actual_speed = villager.minimum_speed;
             return;
         }
-        self.move_actor(index, world);
-        if self.villagers[index].phase & 0x0f == 0
-            && self.villagers[index].control_flags.to_le_bytes()[2] & 4 == 0
-        {
-            let rng = next_rng(self.villagers[index].rng);
-            self.villagers[index].rng = rng;
-            self.villagers[index].roll = self.villagers[index]
-                .roll
-                .wrapping_add(i16::try_from(rng % 113 + 142).expect("wander delta fits i16"))
-                & 0x07ff;
+        VillagerDamageResult::Dead => {
+            villager.action = VILLAGER_DEATH_ACTION;
+            return;
         }
-        self.villagers[index].actual_speed = if self.villagers[index].action == VILLAGER_HIT_ACTION
-        {
-            self.villagers[index].minimum_speed
-        } else {
-            self.villagers[index].maximum_speed
+        VillagerDamageResult::None => {}
+    }
+
+    if move_villager(villager, world, config) {
+        effects.push(VillagerStepEffect::PopulationCensusDecrement {
+            source_entity_index: villager.entity_index,
+        });
+    }
+    if !u16::from(villager.phase).is_multiple_of(config.behavior_cadence) {
+        return;
+    }
+
+    if let Some(target_index) = villager.target_entity_index {
+        let Some(target) = source_view(source_views, target_index).filter(|target| {
+            target.active
+                && target.life >= 0
+                && target.class == 10
+                && target.model == 45
+                && target.villager_entry_eligible
+        }) else {
+            reject_building_entry(villager);
+            return;
         };
-    }
-
-    fn step_free<W: FlightWorld>(&mut self, index: usize, world: &W) -> Option<u16> {
-        if self.apply_damage(index) {
-            return None;
-        }
-        self.move_actor(index, world);
-        if !u16::from(self.villagers[index].phase).is_multiple_of(self.config.behavior_cadence) {
-            return None;
-        }
-
-        if let Some(target_index) = self.villagers[index].target_entity_index {
-            let Some(building_index) = self
-                .buildings
-                .iter()
-                .position(|building| building.entity_index == target_index && building.eligible)
-            else {
-                self.villagers[index].target_entity_index = None;
-                self.villagers[index].actual_speed = self.villagers[index].maximum_speed;
-                return None;
-            };
-            let target = self.buildings[building_index];
-            if wrapped_distance_3d(self.villagers[index].position, target.position) > 2_048 {
-                self.villagers[index].roll = i16::try_from(heading_for_positions(
-                    self.villagers[index].position,
-                    target.position,
-                ))
-                .expect("11-bit heading fits i16");
-            } else if i32::from(target.capacity) > target.occupants {
-                self.villagers[index].reset_counter = 1;
-                self.villagers[index].action = VILLAGER_DEATH_ACTION;
-                self.buildings[building_index].occupants =
-                    self.buildings[building_index].occupants.wrapping_add(1);
-                return Some(target_index);
-            } else {
-                self.villagers[index].target_entity_index = None;
-                self.villagers[index].actual_speed = self.villagers[index].maximum_speed;
-            }
-            return None;
-        }
-
-        let first = next_rng(self.villagers[index].rng);
-        let second = next_rng(first);
-        self.villagers[index].rng = second;
-        let sign = 2 * (i32::from(first % 157) / 79) - 1;
-        let magnitude = i32::from(second & 0xff) + 85;
-        self.villagers[index].roll =
-            wrapping_i16(i64::from(self.villagers[index].roll) + i64::from(sign * magnitude))
-                & 0x07ff;
-
-        let position = self.villagers[index].position;
-        self.villagers[index].target_entity_index = self
-            .buildings
-            .iter()
-            .filter(|building| building.eligible)
-            .min_by_key(|building| squared_wrapping_xy_distance(position, building.position))
-            .map(|building| building.entity_index);
-        if self.villagers[index].target_entity_index.is_some() {
-            self.villagers[index].actual_speed =
-                self.villagers[index].maximum_speed.wrapping_add(12);
-        }
-        None
-    }
-
-    fn step_hit(&mut self, index: usize) {
-        if self.apply_damage(index) {
-            return;
-        }
-        self.villagers[index].target_entity_index = None;
-        self.villagers[index].action = VILLAGER_FREE_ACTION;
-        self.villagers[index].actual_speed = self.villagers[index].maximum_speed;
-    }
-
-    fn step_death(&mut self, index: usize) {
-        if self.villagers[index].reset_counter != 0 {
-            self.villagers[index].active = false;
-            self.villagers[index].control_flags |= 0x0000_0400;
+        if wrapped_distance_3d(villager.position, target.position) > 0x800 {
+            villager.roll =
+                i16::try_from(heading_for_positions(villager.position, target.position))
+                    .expect("11-bit heading fits i16");
         } else {
-            // KillTownie_23680 delegates ordinary deaths to
-            // PreKillEntity_1C890(entity, 104), selecting action 109.
-            self.villagers[index].action = VILLAGER_REMOVAL_ACTION;
+            villager.reset_counter = 1;
+            villager.action = VILLAGER_DEATH_ACTION;
+            effects.push(VillagerStepEffect::TryEnterBuilding {
+                resident_source_entity_index: villager.entity_index,
+                house_source_entity_index: target.source_entity_index,
+            });
         }
+        return;
     }
 
-    fn step_removal(&mut self, index: usize) {
-        // KillEntity_1C930 only performs its conversion/effect/removal work
-        // on the entity's source phase cadence.
-        if self.villagers[index].phase & 7 == 0 {
-            self.villagers[index].active = false;
-            self.villagers[index].control_flags |= 0x0000_0400;
+    let direction_selector = next_rng(villager.rng);
+    villager.rng = next_rng(direction_selector);
+    let sign = 2 * (i32::from(direction_selector % 157) / 79) - 1;
+    let magnitude = i32::from(villager.rng & 0xff) + 85;
+    villager.roll = wrapping_i16(i64::from(villager.roll) + i64::from(sign * magnitude)) & 0x07ff;
+
+    let mut best = None;
+    let mut best_distance = u32::MAX;
+    for candidate in source_views.iter().copied().filter(|candidate| {
+        candidate.active
+            && candidate.life >= 0
+            && candidate.class == 10
+            && candidate.model == 45
+            && candidate.villager_entry_eligible
+    }) {
+        let distance = squared_source_xy_distance(villager.position, candidate.position);
+        if distance < best_distance {
+            best = Some(candidate.source_entity_index);
+            best_distance = distance;
         }
     }
-
-    fn apply_damage(&mut self, index: usize) -> bool {
-        let villager = &mut self.villagers[index];
-        if villager.pending_attacker != 0 {
-            villager.life = villager.life.wrapping_sub(villager.pending_damage);
-            villager.current_attacker = villager.pending_attacker;
-            villager.pending_damage = 0;
-            villager.pending_attacker = 0;
-            villager.target_entity_index = Some(villager.current_attacker.cast_unsigned());
-            villager.action = if villager.life < 0 {
-                VILLAGER_DEATH_ACTION
-            } else {
-                VILLAGER_HIT_ACTION
-            };
-            return true;
-        }
-        villager.current_attacker = 0;
-        false
+    villager.target_entity_index = best;
+    if best.is_some() {
+        villager.actual_speed = villager.maximum_speed.wrapping_add(12);
     }
+}
 
-    fn move_actor<W: FlightWorld>(&mut self, index: usize, world: &W) {
-        let original = self.villagers[index].position;
-        let original_yaw = self.villagers[index].yaw;
-        let headings = [
-            original_yaw,
-            original_yaw.wrapping_add(341) & 0x07ff,
-            original_yaw.wrapping_sub(341) & 0x07ff,
-            original_yaw.wrapping_add(1_024) & 0x07ff,
-        ];
-        for (attempt, heading) in headings.into_iter().enumerate() {
-            let mut candidate = original;
+fn step_hit_villager<W: FlightWorld>(
+    villager: &mut VillagerState,
+    world: &W,
+    source_views: &[Level1SourceEntityView],
+    config: VillagerBehaviorConfig,
+    effects: &mut Vec<VillagerStepEffect>,
+) {
+    match consume_villager_mailbox(villager) {
+        VillagerDamageResult::Hit(attacker) => {
+            villager.target_entity_index = Some(attacker);
             relax_to_terrain(
-                &mut candidate,
+                &mut villager.position,
                 world,
-                self.config.ground_clearance,
-                self.config.vertical_relaxation,
+                config.ground_clearance,
+                config.vertical_relaxation,
             );
-            move_entity(
-                &mut candidate,
-                heading,
-                0,
-                self.villagers[index].actual_speed,
-            );
-            let crossed_tile = source_tile(candidate) != source_tile(original);
-            let blocked = (attempt != 0 || crossed_tile)
-                && (material_probe_blocked(
-                    candidate,
-                    heading,
-                    self.villagers[index].collision_half_width,
-                    self.config.allowed_material_mask,
-                    world,
-                ) || terrain_slope_measure(candidate, world)
-                    >= i32::from(self.config.terrain_threshold));
-            if blocked {
-                self.villagers[index].control_flags |= 0x0004_0000;
-                self.villagers[index].yaw = heading;
-                continue;
-            }
-            let villager = &mut self.villagers[index];
-            villager.position = candidate;
-            villager.yaw =
-                heading.wrapping_add(turn_toward(heading, villager.roll, self.config.turn_clamp))
-                    & 0x07ff;
-            if attempt == 0 {
-                villager.control_flags &= !0x0004_0000;
-            }
             return;
         }
-        if self.config.behavior_flags & 1 != 0
-            || world.material_mask(self.villagers[index].position) == 1
-        {
-            self.villagers[index].life = -1;
+        VillagerDamageResult::Dead => {
+            villager.action = VILLAGER_DEATH_ACTION;
+        }
+        VillagerDamageResult::None => {
+            if move_villager(villager, world, config) {
+                effects.push(VillagerStepEffect::PopulationCensusDecrement {
+                    source_entity_index: villager.entity_index,
+                });
+            }
+            let target = villager
+                .target_entity_index
+                .and_then(|target| source_view(source_views, target))
+                .filter(|target| {
+                    target.active
+                        && target.life >= 0
+                        && target.control_flags & SOURCE_DISABLED_FLAG == 0
+                });
+            if let Some(target) = target {
+                if villager.phase & 3 == 0 {
+                    villager.roll = i16::try_from(
+                        (heading_for_positions(villager.position, target.position) + 0x400)
+                            & 0x07ff,
+                    )
+                    .expect("11-bit heading fits i16");
+                    for peer in source_views.iter().copied().filter(|peer| {
+                        peer.active
+                            && peer.class == VILLAGER_CLASS
+                            && peer.model == VILLAGER_MODEL
+                            && peer.source_id != villager.source_id
+                    }) {
+                        let dx =
+                            (i32::from(villager.position.x) - i32::from(peer.position.x)).abs();
+                        let dy =
+                            (i32::from(villager.position.y) - i32::from(peer.position.y)).abs();
+                        if dx < i32::from(config.separation_radius)
+                            && dy < i32::from(config.separation_radius)
+                        {
+                            villager.roll = i16::try_from(heading_for_positions(
+                                peer.position,
+                                villager.position,
+                            ))
+                            .expect("11-bit heading fits i16");
+                            break;
+                        }
+                    }
+                }
+                if !u16::from(villager.phase).is_multiple_of(config.behavior_cadence)
+                    || wrapped_distance_3d(villager.position, target.position)
+                        < u32::from(config.engagement_range)
+                {
+                    return;
+                }
+            }
+            villager.action = VILLAGER_FREE_ACTION;
         }
     }
+    if villager.action != VILLAGER_HIT_ACTION {
+        villager.target_entity_index = None;
+        villager.actual_speed = villager.maximum_speed;
+    }
+}
+
+fn step_staged_villager<W: FlightWorld>(
+    villager: &mut VillagerState,
+    world: &W,
+    source_views: &[Level1SourceEntityView],
+    config: VillagerBehaviorConfig,
+    effects: &mut Vec<VillagerStepEffect>,
+) {
+    match consume_villager_mailbox(villager) {
+        VillagerDamageResult::Hit(attacker) => {
+            let foreign_attacker = source_view(source_views, attacker).is_none_or(|target| {
+                (target.class, target.model) != (VILLAGER_CLASS, VILLAGER_MODEL)
+            });
+            if foreign_attacker {
+                villager.target_entity_index = Some(attacker);
+                villager.stage_var_2 = 10;
+                villager.action = if config.behavior_flags & 8 != 0 {
+                    VILLAGER_HIT_ACTION
+                } else {
+                    VILLAGER_FREE_ALIAS_ACTION_A
+                };
+            }
+            relax_to_terrain(
+                &mut villager.position,
+                world,
+                config.ground_clearance,
+                config.vertical_relaxation,
+            );
+        }
+        VillagerDamageResult::Dead => {
+            villager.action = VILLAGER_DEATH_ACTION;
+        }
+        VillagerDamageResult::None => {
+            if config.behavior_flags & 2 == 0 {
+                if move_villager(villager, world, config) {
+                    effects.push(VillagerStepEffect::PopulationCensusDecrement {
+                        source_entity_index: villager.entity_index,
+                    });
+                }
+                if villager.phase & 0x0f == 0 && villager.control_flags & 0x0004_0000 == 0 {
+                    villager.rng = next_rng(villager.rng);
+                    villager.roll = villager.roll.wrapping_add(
+                        i16::try_from(villager.rng % 113 + 142).expect("wander delta fits i16"),
+                    ) & 0x07ff;
+                }
+            }
+        }
+    }
+}
+
+fn consume_villager_mailbox(villager: &mut VillagerState) -> VillagerDamageResult {
+    let mut result = VillagerDamageResult::None;
+    if villager.pending_attacker != 0 {
+        villager.life = villager.life.wrapping_sub(villager.pending_damage);
+        villager.current_attacker = villager.pending_attacker;
+        villager.pending_attacker = 0;
+        result = VillagerDamageResult::Hit(villager.current_attacker.cast_unsigned());
+    } else {
+        villager.current_attacker = 0;
+    }
+    if villager.life < 0 {
+        villager.kill_credit_entity = villager.current_attacker;
+        VillagerDamageResult::Dead
+    } else {
+        result
+    }
+}
+
+fn disable_villager(villager: &mut VillagerState, effects: &mut Vec<VillagerStepEffect>) {
+    villager.active = false;
+    villager.control_flags |= SOURCE_DISABLED_FLAG;
+    effects.push(VillagerStepEffect::DisableSourceSlot {
+        source_entity_index: villager.entity_index,
+    });
+}
+
+pub(crate) fn reject_building_entry(villager: &mut VillagerState) {
+    villager.reset_counter = 0;
+    villager.target_entity_index = None;
+    villager.action = VILLAGER_FREE_ACTION;
+    villager.actual_speed = villager.maximum_speed;
+}
+
+fn move_villager<W: FlightWorld>(
+    villager: &mut VillagerState,
+    world: &W,
+    config: VillagerBehaviorConfig,
+) -> bool {
+    let original = villager.position;
+    let original_yaw = villager.yaw;
+    let headings = [
+        original_yaw,
+        original_yaw.wrapping_add(341) & 0x07ff,
+        original_yaw.wrapping_sub(341) & 0x07ff,
+        original_yaw.wrapping_add(1_024) & 0x07ff,
+    ];
+    for (attempt, heading) in headings.into_iter().enumerate() {
+        let mut candidate = original;
+        relax_to_terrain(
+            &mut candidate,
+            world,
+            config.ground_clearance,
+            config.vertical_relaxation,
+        );
+        move_entity(&mut candidate, heading, 0, villager.actual_speed);
+        let crossed_tile = source_tile(candidate) != source_tile(original);
+        let blocked = (attempt != 0 || crossed_tile)
+            && (material_probe_blocked(
+                candidate,
+                heading,
+                villager.collision_half_width,
+                config.allowed_material_mask,
+                world,
+            ) || terrain_slope_measure(candidate, world)
+                >= i32::from(config.terrain_threshold));
+        if blocked {
+            villager.control_flags |= 0x0004_0000;
+            villager.yaw = heading;
+            continue;
+        }
+        villager.position = candidate;
+        villager.yaw =
+            heading.wrapping_add(turn_toward(heading, villager.roll, config.turn_clamp)) & 0x07ff;
+        if attempt == 0 {
+            villager.control_flags &= !0x0004_0000;
+        }
+        return false;
+    }
+    if config.behavior_flags & 1 != 0 || world.material_mask(villager.position) == 1 {
+        let was_alive = villager.life >= 0;
+        villager.life = -1;
+        return was_alive;
+    }
+    false
+}
+
+fn source_view(
+    source_views: &[Level1SourceEntityView],
+    source_entity_index: u16,
+) -> Option<Level1SourceEntityView> {
+    source_views
+        .binary_search_by_key(&source_entity_index, |view| view.source_entity_index)
+        .ok()
+        .map(|index| source_views[index])
 }
 
 fn next_rng(seed: u16) -> u16 {
@@ -526,9 +697,9 @@ fn source_tile(position: Position) -> (u8, u8) {
     (position.x.to_be_bytes()[0], position.y.to_be_bytes()[0])
 }
 
-fn squared_wrapping_xy_distance(left: Position, right: Position) -> u32 {
-    let dx = i32::from(right.x.wrapping_sub(left.x).cast_signed());
-    let dy = i32::from(right.y.wrapping_sub(left.y).cast_signed());
+fn squared_source_xy_distance(left: Position, right: Position) -> u32 {
+    let dx = i32::from(right.x) - i32::from(left.x);
+    let dy = i32::from(right.y) - i32::from(left.y);
     dx.wrapping_mul(dx)
         .cast_unsigned()
         .wrapping_add(dy.wrapping_mul(dy).cast_unsigned())
@@ -620,7 +791,89 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::native_world::NativeWorld;
+    use crate::{Tile, level1_mission::Level1SourceEntityAuthority, native_world::NativeWorld};
+
+    #[derive(Clone, Copy)]
+    struct FlatWorld;
+
+    impl FlightWorld for FlatWorld {
+        fn ground_height(&self, _position: Position) -> i16 {
+            0
+        }
+
+        fn ceiling_height(&self, _position: Position) -> Option<i16> {
+            None
+        }
+
+        fn material_mask(&self, _position: Position) -> u32 {
+            0
+        }
+
+        fn angle_flags(&self, _tile: Tile) -> u8 {
+            0
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct BlockedWorld;
+
+    impl FlightWorld for BlockedWorld {
+        fn ground_height(&self, _position: Position) -> i16 {
+            0
+        }
+
+        fn ceiling_height(&self, _position: Position) -> Option<i16> {
+            None
+        }
+
+        fn material_mask(&self, _position: Position) -> u32 {
+            1
+        }
+
+        fn angle_flags(&self, _tile: Tile) -> u8 {
+            0
+        }
+    }
+
+    fn source_view(
+        source_entity_index: u16,
+        source_id: u16,
+        position: Position,
+        class: u8,
+        model: u8,
+        life: i32,
+        villager_entry_eligible: bool,
+    ) -> Level1SourceEntityView {
+        Level1SourceEntityView {
+            source_entity_index,
+            source_id,
+            authority: Level1SourceEntityAuthority::LiveHouse,
+            active: true,
+            visible: true,
+            class,
+            model,
+            action: 52,
+            phase: 0,
+            entity_rng: 0,
+            control_flags: 0,
+            position,
+            max_life: 1_000,
+            life,
+            pending_damage: 0,
+            pending_attacker: 0,
+            owner_entity_index: 0,
+            target_entity_index: 0,
+            linked_entity_index: 0,
+            actual_speed: 0,
+            maximum_speed: 0,
+            collision_half_width: 128,
+            collision_half_depth: 128,
+            collision_vertical_offset: 0,
+            collision_half_height: 128,
+            villager_entry_eligible,
+            builder_placement_latch: 0,
+        }
+    }
 
     fn load_world() -> NativeWorld {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated");
@@ -640,14 +893,41 @@ mod tests {
         assert_eq!(family.villagers().len(), 28);
         for (ordinal, villager) in family.villagers().iter().enumerate() {
             assert_eq!(villager.entity_index, 51 + ordinal as u16);
+            assert_eq!(villager.source_id, 51 + ordinal as u16);
+            assert!(villager.active);
             assert_eq!(villager.action, 111);
             assert_eq!(villager.phase, 1 + ordinal as u8);
+            assert_eq!((villager.max_life, villager.life), (1_000, 1_000));
+            assert_eq!((villager.pending_damage, villager.pending_attacker), (0, 0));
+            assert_eq!(villager.reset_counter, 2);
             assert_eq!(villager.actual_speed, 18);
             assert_eq!(villager.minimum_speed, 54);
             assert_eq!(villager.maximum_speed, 18);
             assert_eq!(villager.stage_var_1, 2);
             assert_eq!(villager.stage_var_2, 7);
+            assert_eq!((villager.mana, villager.owner_entity_index), (0, 0));
+            assert!(matches!(
+                villager.render_parameter_index,
+                239 | 241 | 242 | 271
+            ));
         }
+        assert_eq!(
+            family
+                .villagers()
+                .iter()
+                .map(|villager| villager.entity_index)
+                .collect::<Vec<_>>(),
+            LEVEL_ONE_VILLAGER_INDICES
+        );
+        let family_before_house_entry = family.clone();
+        let mut houses = HouseFamily::from_entities(world.entities()).expect("house family");
+        let occupants_before = houses.houses()[0].occupants;
+        assert_eq!(houses.try_enter_resident(1), HouseResidentEntry::Entered);
+        assert_eq!(houses.houses()[0].occupants, occupants_before + 1);
+        assert_eq!(
+            family, family_before_house_entry,
+            "VillagerFamily stores no second house authority or occupancy counter"
+        );
     }
 
     #[test]
@@ -668,12 +948,62 @@ mod tests {
         let mut family =
             VillagerFamily::from_entities(world.entities(), VillagerBehaviorConfig::LEVEL_ONE)
                 .expect("villager family");
+        let mut houses = HouseFamily::from_entities(world.entities()).expect("house family");
         let before = family.villagers()[0].clone();
-        family.step_source_slot(51, world.terrain());
+        family.step_source_slot(51, world.terrain(), &[], &mut houses);
         let after = &family.villagers()[0];
         assert_eq!(after.phase, before.phase.wrapping_add(1));
         assert_ne!(after.position, before.position);
         assert_eq!(family.villagers()[1].phase, 2);
+
+        let mut staged = before;
+        staged.position = Position {
+            x: u16::MAX - 5,
+            y: 20_000,
+            z: 0,
+        };
+        staged.yaw = 512;
+        staged.roll = 512;
+        staged.actual_speed = 100;
+        staged.phase = 0;
+        let rng_before = staged.rng;
+        let effects = step_villager_state(
+            &mut staged,
+            &FlatWorld,
+            &[],
+            VillagerBehaviorConfig::LEVEL_ONE,
+        );
+        assert!(effects.is_empty());
+        assert_eq!(staged.position.x, 94, "movement wraps as a source u16");
+        assert_eq!(staged.rng, next_rng(rng_before));
+        assert_eq!(
+            staged.roll,
+            512_i16.wrapping_add(i16::try_from(staged.rng % 113 + 142).unwrap()) & 0x07ff
+        );
+
+        let mut blocked = staged;
+        blocked.action = VILLAGER_FREE_ACTION;
+        blocked.position = Position {
+            x: 255,
+            y: 255,
+            z: 0,
+        };
+        blocked.actual_speed = 300;
+        blocked.life = 1_000;
+        let effects = step_villager_state(
+            &mut blocked,
+            &BlockedWorld,
+            &[],
+            VillagerBehaviorConfig::LEVEL_ONE,
+        );
+        assert_eq!(blocked.life, -1);
+        assert_ne!(blocked.control_flags & 0x0004_0000, 0);
+        assert_eq!(
+            effects,
+            [VillagerStepEffect::PopulationCensusDecrement {
+                source_entity_index: blocked.entity_index
+            }]
+        );
     }
 
     #[test]
@@ -682,6 +1012,7 @@ mod tests {
         let mut family =
             VillagerFamily::from_entities(world.entities(), VillagerBehaviorConfig::LEVEL_ONE)
                 .expect("villager family");
+        let mut houses = HouseFamily::from_entities(world.entities()).expect("house family");
         // Exercise KillTownie_23680's ordinary combat-death branch rather
         // than its nonzero dword_0x10 immediate-disable branch.
         family.villagers[0].reset_counter = 0;
@@ -689,19 +1020,42 @@ mod tests {
             .inject_damage(51, family.villagers()[0].life + 1, 152)
             .expect("lethal hit");
 
-        family.step_source_slot(51, world.terrain());
+        family.step_source_slot(51, world.terrain(), &[], &mut houses);
         assert_eq!(family.villagers()[0].action, VILLAGER_DEATH_ACTION);
         assert!(family.villagers()[0].active);
+        assert_eq!(family.villagers()[0].pending_attacker, 0);
+        assert_eq!(
+            family.villagers()[0].pending_damage,
+            family.villagers()[0]
+                .life
+                .wrapping_neg()
+                .wrapping_add(1_000),
+            "source mailbox retains its damage dword"
+        );
+        assert_eq!(family.villagers()[0].kill_credit_entity, 152);
 
-        family.step_source_slot(51, world.terrain());
+        family.step_source_slot(51, world.terrain(), &[], &mut houses);
         assert_eq!(family.villagers()[0].action, VILLAGER_REMOVAL_ACTION);
         assert!(family.villagers()[0].active);
 
+        let mut removal_effects = Vec::new();
         while family.villagers()[0].active {
-            family.step_source_slot(51, world.terrain());
+            removal_effects = family.step_source_slot(51, world.terrain(), &[], &mut houses);
         }
         assert_eq!(family.villagers()[0].phase & 7, 1);
         assert_ne!(family.villagers()[0].control_flags & 0x0000_0400, 0);
+        assert!(matches!(
+            removal_effects.as_slice(),
+            [
+                VillagerStepEffect::DeathBurst {
+                    source_entity_index: 51,
+                    ..
+                },
+                VillagerStepEffect::DisableSourceSlot {
+                    source_entity_index: 51
+                }
+            ]
+        ));
     }
 
     #[test]
@@ -710,15 +1064,249 @@ mod tests {
         let mut family =
             VillagerFamily::from_entities(world.entities(), VillagerBehaviorConfig::LEVEL_ONE)
                 .expect("villager family");
+        let mut houses = HouseFamily::from_entities(world.entities()).expect("house family");
         for action in [
             VILLAGER_INITIAL_ACTION,
             VILLAGER_FREE_ALIAS_ACTION_A,
             VILLAGER_FREE_ALIAS_ACTION_B,
         ] {
             family.villagers[0].action = action;
-            family.step_source_slot(51, world.terrain());
+            family.step_source_slot(51, world.terrain(), &[], &mut houses);
             assert_eq!(family.villagers()[0].action, VILLAGER_FREE_ACTION);
         }
+
+        let base = family.villagers()[0].clone();
+        let mut death = base.clone();
+        death.action = VILLAGER_DEATH_ACTION;
+        death.reset_counter = 1;
+        let effects = step_villager_state(
+            &mut death,
+            &FlatWorld,
+            &[],
+            VillagerBehaviorConfig::LEVEL_ONE,
+        );
+        assert!(!death.active);
+        assert_eq!(
+            effects,
+            [VillagerStepEffect::DisableSourceSlot {
+                source_entity_index: death.entity_index
+            }]
+        );
+
+        let attacker = source_view(
+            152,
+            152,
+            Position {
+                x: 10_000,
+                y: 10_000,
+                z: 0,
+            },
+            3,
+            0,
+            1_000,
+            false,
+        );
+        let mut staged = base.clone();
+        staged.action = VILLAGER_STAGED_ACTION;
+        staged.pending_damage = 5;
+        staged.pending_attacker = 152;
+        staged.life = 1_000;
+        step_villager_state(
+            &mut staged,
+            &FlatWorld,
+            &[attacker],
+            VillagerBehaviorConfig::LEVEL_ONE,
+        );
+        assert_eq!(
+            (
+                staged.action,
+                staged.stage_var_2,
+                staged.target_entity_index,
+                staged.actual_speed,
+                staged.life,
+                staged.pending_damage,
+                staged.pending_attacker,
+            ),
+            (VILLAGER_HIT_ACTION, 10, Some(152), 54, 995, 5, 0)
+        );
+
+        let mut hit = base.clone();
+        hit.action = VILLAGER_HIT_ACTION;
+        hit.target_entity_index = Some(999);
+        hit.phase = 40;
+        hit.actual_speed = 54;
+        step_villager_state(&mut hit, &FlatWorld, &[], VillagerBehaviorConfig::LEVEL_ONE);
+        assert_eq!(
+            (hit.action, hit.target_entity_index, hit.actual_speed),
+            (VILLAGER_FREE_ACTION, None, hit.maximum_speed)
+        );
+
+        let mut selector = base.clone();
+        selector.action = VILLAGER_FREE_ACTION;
+        selector.phase = 40;
+        selector.actual_speed = 0;
+        selector.position = Position {
+            x: 20_000,
+            y: 20_000,
+            z: 0,
+        };
+        let lower = source_view(
+            1,
+            1,
+            Position {
+                x: 19_900,
+                y: 20_000,
+                z: 0,
+            },
+            10,
+            45,
+            1_000,
+            true,
+        );
+        let higher = source_view(
+            8,
+            8,
+            Position {
+                x: 20_100,
+                y: 20_000,
+                z: 0,
+            },
+            10,
+            45,
+            1_000,
+            true,
+        );
+        let rng_before = selector.rng;
+        step_villager_state(
+            &mut selector,
+            &FlatWorld,
+            &[lower, higher],
+            VillagerBehaviorConfig::LEVEL_ONE,
+        );
+        assert_eq!(selector.target_entity_index, Some(1));
+        assert_eq!(selector.actual_speed, selector.maximum_speed + 12);
+        assert_eq!(selector.rng, next_rng(next_rng(rng_before)));
+
+        let eligible_house = houses
+            .houses()
+            .iter()
+            .find(|house| {
+                house.active
+                    && house.parameter.produces_villagers()
+                    && house.occupants < i32::from(house.capacity)
+            })
+            .copied()
+            .expect("eligible Level 1 Villager house");
+        let eligible_view = source_view(
+            eligible_house.entity_index,
+            eligible_house.source_id,
+            eligible_house.position,
+            10,
+            45,
+            eligible_house.life,
+            true,
+        );
+        let occupants_before = houses
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == eligible_house.entity_index)
+            .unwrap()
+            .occupants;
+        family.villagers[0] = base.clone();
+        family.villagers[0].action = VILLAGER_FREE_ACTION;
+        family.villagers[0].phase = 40;
+        family.villagers[0].actual_speed = 0;
+        family.villagers[0].position = eligible_house.position;
+        family.villagers[0].target_entity_index = Some(eligible_house.entity_index);
+        family.step_source_slot(51, &FlatWorld, &[eligible_view], &mut houses);
+        assert_eq!(
+            houses
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == eligible_house.entity_index)
+                .unwrap()
+                .occupants,
+            occupants_before + 1
+        );
+        assert_eq!(
+            (
+                family.villagers()[0].action,
+                family.villagers()[0].reset_counter,
+                family.villagers()[0].active,
+            ),
+            (VILLAGER_DEATH_ACTION, 1, true)
+        );
+        let effects = family.step_source_slot(51, &FlatWorld, &[eligible_view], &mut houses);
+        assert_eq!(
+            effects,
+            [VillagerStepEffect::DisableSourceSlot {
+                source_entity_index: 51
+            }]
+        );
+        assert_eq!(
+            houses
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == eligible_house.entity_index)
+                .unwrap()
+                .occupants,
+            occupants_before + 1,
+            "entry increments the authoritative house exactly once"
+        );
+
+        let mut full_houses = HouseFamily::from_entities(world.entities()).expect("house family");
+        while full_houses.try_enter_resident(eligible_house.entity_index)
+            == HouseResidentEntry::Entered
+        {}
+        let full_occupants = full_houses
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == eligible_house.entity_index)
+            .unwrap()
+            .occupants;
+        family.villagers[0] = base;
+        family.villagers[0].action = VILLAGER_FREE_ACTION;
+        family.villagers[0].phase = 40;
+        family.villagers[0].actual_speed = 0;
+        family.villagers[0].position = eligible_house.position;
+        family.villagers[0].target_entity_index = Some(eligible_house.entity_index);
+        family.step_source_slot(51, &FlatWorld, &[eligible_view], &mut full_houses);
+        assert_eq!(
+            (
+                family.villagers()[0].action,
+                family.villagers()[0].target_entity_index,
+                family.villagers()[0].reset_counter,
+            ),
+            (VILLAGER_FREE_ACTION, None, 0)
+        );
+        assert_eq!(
+            full_houses
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == eligible_house.entity_index)
+                .unwrap()
+                .occupants,
+            full_occupants,
+            "full house rejection is a bookkeeping no-op"
+        );
+
+        let mut dead_view = eligible_view;
+        dead_view.life = -1;
+        let occupants_before_dead = full_occupants;
+        family.villagers[0].target_entity_index = Some(eligible_house.entity_index);
+        family.villagers[0].phase = 40;
+        family.step_source_slot(51, &FlatWorld, &[dead_view], &mut full_houses);
+        assert_eq!(family.villagers()[0].target_entity_index, None);
+        assert_eq!(
+            full_houses
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == eligible_house.entity_index)
+                .unwrap()
+                .occupants,
+            occupants_before_dead,
+            "dead house rejection is a bookkeeping no-op"
+        );
     }
 
     #[test]

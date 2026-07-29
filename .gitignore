@@ -1,6 +1,5 @@
 # Local agent, task-graph, editor, and build state.
 /.agents/
-/.beads/
 /.bv/
 /.codex/
 /.ntm/
