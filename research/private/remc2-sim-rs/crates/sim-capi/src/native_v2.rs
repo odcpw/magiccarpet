@@ -63,22 +63,22 @@ use sim_core::{
         FIREBALL_PROJECTILE_CLASS, FIREBALL_PROJECTILE_MODEL, FIREBALL_RENDER_INDEX,
         FIREBALL_RENDER_MODE, FireballImpact, LEVEL1_MINIMAP_COMMAND_BLEND_PIXEL,
         LEVEL1_MINIMAP_MAX_ENTITY_COMMANDS, LEVEL1_MINIMAP_MAX_MARKS, Level1Actor, Level1ActorKind,
-        Level1CollisionTarget, Level1MinimapEntityInput, Level1MinimapMarks, Level1MissionEvent,
-        Level1MissionState, Level1MultipartSegment, Level1Projectile, MANA_CARRIER_ACTION,
-        MANA_CARRIER_BASE_TMAP, MANA_CARRIER_CLASS, MANA_CARRIER_LOGICAL_HEIGHT,
-        MANA_CARRIER_MAX_LIFE, MANA_CARRIER_MAX_MANA, MANA_CARRIER_MODEL,
-        MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_SPEED, MANA_SPHERE_ACTION, MANA_SPHERE_CLASS,
-        MANA_SPHERE_MODEL, MANA_SPHERE_NEUTRAL_BASE_TMAP, MANA_SPHERE_NEUTRAL_RENDER_BASE,
-        MANA_SPHERE_PLAYER_ONE_BASE_TMAP, MANA_SPHERE_PLAYER_ONE_RENDER_BASE, ManaCarrier,
-        ManaSphere, POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_CLASS,
-        POSSESSION_IMPACT_LOGICAL_HEIGHT, POSSESSION_IMPACT_MODEL, POSSESSION_IMPACT_RENDER_INDEX,
-        POSSESSION_IMPACT_RENDER_MODE, POSSESSION_PROJECTILE_BASE_TMAP,
-        POSSESSION_PROJECTILE_CLASS, POSSESSION_PROJECTILE_LOGICAL_HEIGHT,
-        POSSESSION_PROJECTILE_MODEL, POSSESSION_PROJECTILE_RENDER_INDEX,
-        POSSESSION_PROJECTILE_RENDER_MODE, PlayerHitReaction, WATER_SPLASH_BASE_TMAP,
-        WATER_SPLASH_LOGICAL_HEIGHT, WATER_SPLASH_MODEL, WATER_SPLASH_RENDER_INDEX,
-        WATER_SPLASH_RENDER_MODE, level1_minimap_castle_rope_pixels, level1_minimap_entity_command,
-        mana_sphere_size_ordinal,
+        Level1AmbientEntity, Level1CollisionTarget, Level1MinimapEntityInput, Level1MinimapMarks,
+        Level1MissionEvent, Level1MissionState, Level1MultipartSegment, Level1Projectile,
+        MANA_CARRIER_ACTION, MANA_CARRIER_BASE_TMAP, MANA_CARRIER_CLASS,
+        MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_MAX_LIFE, MANA_CARRIER_MAX_MANA,
+        MANA_CARRIER_MODEL, MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_SPEED, MANA_SPHERE_ACTION,
+        MANA_SPHERE_CLASS, MANA_SPHERE_MODEL, MANA_SPHERE_NEUTRAL_BASE_TMAP,
+        MANA_SPHERE_NEUTRAL_RENDER_BASE, MANA_SPHERE_PLAYER_ONE_BASE_TMAP,
+        MANA_SPHERE_PLAYER_ONE_RENDER_BASE, ManaCarrier, ManaSphere, POSSESSION_IMPACT_BASE_TMAP,
+        POSSESSION_IMPACT_CLASS, POSSESSION_IMPACT_LOGICAL_HEIGHT, POSSESSION_IMPACT_MODEL,
+        POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_IMPACT_RENDER_MODE,
+        POSSESSION_PROJECTILE_BASE_TMAP, POSSESSION_PROJECTILE_CLASS,
+        POSSESSION_PROJECTILE_LOGICAL_HEIGHT, POSSESSION_PROJECTILE_MODEL,
+        POSSESSION_PROJECTILE_RENDER_INDEX, POSSESSION_PROJECTILE_RENDER_MODE, PlayerHitReaction,
+        WATER_SPLASH_BASE_TMAP, WATER_SPLASH_LOGICAL_HEIGHT, WATER_SPLASH_MODEL,
+        WATER_SPLASH_RENDER_INDEX, WATER_SPLASH_RENDER_MODE, level1_minimap_castle_rope_pixels,
+        level1_minimap_entity_command, mana_sphere_size_ordinal,
     },
     native_world::{
         AssetRef, EntityAuthority, EntitySnapshot, NativeWorld, ParticleParameter, SessionTerrain,
@@ -292,6 +292,9 @@ const AUDIO_VOICE_COUNT: usize = 10;
 const TERRAIN_CELLS: usize = 256 * 256;
 const POSITIONAL_QUALIFICATION_VECTOR_COUNT: u32 = 23;
 const TERRAIN_PNT5_QUALIFICATION_VECTOR_COUNT: u32 = 13;
+// Pinned remc2 6806c720 `Events.cpp:561-605` assigns the NewEvent entity
+// parameter row at lines 573 and 599, independently of its particle selector.
+const LEVEL1_NEW_EVENT_ENTITY_PARAMETER_RECORD_INDEX: u16 = 59;
 const TERRAIN_ATLAS_SHA256: &str =
     "d4d69babd648008aac40413e6089e27bbe32e6b2a5be4311eb10b1aaa33fc5de";
 const TABLESN_SHA256: &str = "f88974baf68f728fb534a4dab35397b9cb3ca2f424019bbde36858eebbf97495";
@@ -1971,129 +1974,113 @@ impl SessionRecord {
         Ok(rgb6.map(|channel| channel.saturating_mul(4)))
     }
 
-    fn world_frame(&mut self) -> AbiResult<Level1TerrainFrame> {
-        let frame = {
-            let assets = self.terrain_frame_assets.as_ref().ok_or_else(|| {
-                AbiError::new(
-                    MC_STATUS_VALIDATION_FAILED,
-                    "world frame unavailable: MC_ASSET_CACHE_PATH was not supplied when the session opened",
-                )
-            })?;
-            let tmap_clocks = self.selector_frames.as_ref().ok_or_else(|| {
-                AbiError::new(
-                    MC_STATUS_VALIDATION_FAILED,
-                    "world frame unavailable without qualified Goat TMAP descriptors",
-                )
-            })?;
-            let archer_tmap_clocks = self.archer_selector_frames.as_ref().ok_or_else(|| {
-                AbiError::new(
-                    MC_STATUS_VALIDATION_FAILED,
-                    "world frame unavailable without qualified Archer TMAP descriptors",
-                )
-            })?;
-            let firefly_tmap_clocks = self.firefly_selector_frames.as_ref().ok_or_else(|| {
-                AbiError::new(
-                    MC_STATUS_VALIDATION_FAILED,
-                    "world frame unavailable without qualified Firefly TMAP descriptors",
-                )
-            })?;
-            let villager_tmap_clocks = self.villager_selector_frames.as_ref().ok_or_else(|| {
-                AbiError::new(
-                    MC_STATUS_VALIDATION_FAILED,
-                    "world frame unavailable without qualified villager TMAP descriptors",
-                )
-            })?;
-            let fireball_tmap_clock = self.fireball_selector_frame.as_ref().ok_or_else(|| {
-                AbiError::new(
-                    MC_STATUS_VALIDATION_FAILED,
-                    "world frame unavailable without qualified Fireball TMAP descriptor",
-                )
-            })?;
-            let possession_tmap_clock =
-                self.possession_selector_frame.as_ref().ok_or_else(|| {
-                    AbiError::new(
-                        MC_STATUS_VALIDATION_FAILED,
-                        "world frame unavailable without qualified Possession TMAP descriptor",
-                    )
-                })?;
-            let castle_tmap_clock = self.castle_selector_frame.as_ref().ok_or_else(|| {
-                AbiError::new(
-                    MC_STATUS_VALIDATION_FAILED,
-                    "world frame unavailable without qualified Castle TMAP descriptor",
-                )
-            })?;
-            let camera = self.camera_history;
-            let slope = self.camera_slope_sample;
-            let planes = self.terrain.planes();
-            let dynamic_residents = self
-                .mission
-                .dynamic_residents()
-                .copied()
-                .collect::<Vec<_>>();
-            let ambient_entities = self.mission.ambient_entities().copied().collect::<Vec<_>>();
-            render_level1_world_frame(
-                Level1TerrainFrameCamera {
-                    render_x: camera.x.wrapping_add(slope.offset_x.cast_unsigned()),
-                    render_y: camera.y.wrapping_add(slope.offset_y.cast_unsigned()),
-                    eye_z: i32::from(camera.z),
-                    yaw: camera.yaw,
-                    pitch: camera.pitch,
-                    roll: camera.roll,
-                    fov: camera.fov,
-                    source_turn: camera.source_turn,
-                    reflections: true,
-                },
-                Level1TerrainFrameResources {
-                    terrain_types: &planes.terrain_types,
-                    ground_heights: &planes.ground_heights,
-                    shading: &planes.shading,
-                    angles: &planes.angles,
-                    terrain_atlas: &assets.terrain_atlas,
-                    tablesn: &assets.tablesn,
-                    sky: &assets.sky,
-                },
-                Level1WorldFrameResources {
-                    local_player_entity_index: self.state.entity_index,
-                    goats: self.live_world.goats(),
-                    frozen_actors: &self.frozen_actors,
-                    ambient_entities: &ambient_entities,
-                    frozen_actor_tmap_bank: Some(&assets.frozen_actor_tmap_bank),
-                    villager_tmap_clocks: Some(villager_tmap_clocks),
-                    mission_actors: self.mission.actors(),
-                    dynamic_residents: &dynamic_residents,
-                    mission_segments: self.mission.multipart_segments(),
-                    castle_root: self
-                        .mission
-                        .castle_exists
-                        .then_some(Level1CastleRootRender {
-                            source_entity_index: self.mission.castle_source_entity_index,
-                            position: self.mission.castle_position,
-                            active: true,
-                        }),
-                    mana_spheres: self.mission.mana_spheres(),
-                    mana_carrier: self.mission.mana_carrier(),
-                    map_chains: &self.renderable_map_chains,
-                    goat_tmap_clocks: tmap_clocks,
-                    archer_tmap_bank: &assets.archer_tmap_bank,
-                    archer_tmap_clocks,
-                    firefly_tmap_bank: &assets.firefly_tmap_bank,
-                    firefly_tmap_clocks,
-                    projectiles: self.mission.projectiles(),
-                    impacts: self.mission.impacts(),
-                    possessed_buildings: self.mission.possessed_buildings(),
-                    combat_tmap_bank: &assets.combat_tmap_bank,
-                    static_world_tmap_bank: &assets.static_world_tmap_bank,
-                    economy_tmap_bank: &assets.economy_tmap_bank,
-                    fireball_tmap_clock,
-                    possession_tmap_clock,
-                    castle_tmap_clock,
-                    particle_parameters: &self.world.presentation().particles,
-                    source_slots: self.mission.source_slots(),
-                    night: self.world.metadata().map_type == sim_core::native_world::MapType::Night,
-                },
+    fn render_world_frame(
+        &self,
+        ambient_entities: &[Level1AmbientEntity],
+        map_chains: &RenderableMapChains,
+    ) -> AbiResult<Level1TerrainFrame> {
+        let unavailable = |message| AbiError::new(MC_STATUS_VALIDATION_FAILED, message);
+        let assets = self.terrain_frame_assets.as_ref().ok_or_else(|| {
+            unavailable(
+                "world frame unavailable: MC_ASSET_CACHE_PATH was not supplied when the session opened",
             )
-            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?
-        };
+        })?;
+        let tmap_clocks = self.selector_frames.as_ref().ok_or_else(|| {
+            unavailable("world frame unavailable without qualified Goat TMAP descriptors")
+        })?;
+        let archer_tmap_clocks = self.archer_selector_frames.as_ref().ok_or_else(|| {
+            unavailable("world frame unavailable without qualified Archer TMAP descriptors")
+        })?;
+        let firefly_tmap_clocks = self.firefly_selector_frames.as_ref().ok_or_else(|| {
+            unavailable("world frame unavailable without qualified Firefly TMAP descriptors")
+        })?;
+        let villager_tmap_clocks = self.villager_selector_frames.as_ref().ok_or_else(|| {
+            unavailable("world frame unavailable without qualified villager TMAP descriptors")
+        })?;
+        let fireball_tmap_clock = self.fireball_selector_frame.as_ref().ok_or_else(|| {
+            unavailable("world frame unavailable without qualified Fireball TMAP descriptor")
+        })?;
+        let possession_tmap_clock = self.possession_selector_frame.as_ref().ok_or_else(|| {
+            unavailable("world frame unavailable without qualified Possession TMAP descriptor")
+        })?;
+        let castle_tmap_clock = self.castle_selector_frame.as_ref().ok_or_else(|| {
+            unavailable("world frame unavailable without qualified Castle TMAP descriptor")
+        })?;
+        let camera = self.camera_history;
+        let slope = self.camera_slope_sample;
+        let planes = self.terrain.planes();
+        let dynamic_residents = self
+            .mission
+            .dynamic_residents()
+            .copied()
+            .collect::<Vec<_>>();
+        render_level1_world_frame(
+            Level1TerrainFrameCamera {
+                render_x: camera.x.wrapping_add(slope.offset_x.cast_unsigned()),
+                render_y: camera.y.wrapping_add(slope.offset_y.cast_unsigned()),
+                eye_z: i32::from(camera.z),
+                yaw: camera.yaw,
+                pitch: camera.pitch,
+                roll: camera.roll,
+                fov: camera.fov,
+                source_turn: camera.source_turn,
+                reflections: true,
+            },
+            Level1TerrainFrameResources {
+                terrain_types: &planes.terrain_types,
+                ground_heights: &planes.ground_heights,
+                shading: &planes.shading,
+                angles: &planes.angles,
+                terrain_atlas: &assets.terrain_atlas,
+                tablesn: &assets.tablesn,
+                sky: &assets.sky,
+            },
+            Level1WorldFrameResources {
+                local_player_entity_index: self.state.entity_index,
+                goats: self.live_world.goats(),
+                frozen_actors: &self.frozen_actors,
+                ambient_entities,
+                frozen_actor_tmap_bank: Some(&assets.frozen_actor_tmap_bank),
+                villager_tmap_clocks: Some(villager_tmap_clocks),
+                mission_actors: self.mission.actors(),
+                dynamic_residents: &dynamic_residents,
+                mission_segments: self.mission.multipart_segments(),
+                castle_root: self
+                    .mission
+                    .castle_exists
+                    .then_some(Level1CastleRootRender {
+                        source_entity_index: self.mission.castle_source_entity_index,
+                        position: self.mission.castle_position,
+                        active: true,
+                    }),
+                mana_spheres: self.mission.mana_spheres(),
+                mana_carrier: self.mission.mana_carrier(),
+                map_chains,
+                goat_tmap_clocks: tmap_clocks,
+                archer_tmap_bank: &assets.archer_tmap_bank,
+                archer_tmap_clocks,
+                firefly_tmap_bank: &assets.firefly_tmap_bank,
+                firefly_tmap_clocks,
+                projectiles: self.mission.projectiles(),
+                impacts: self.mission.impacts(),
+                possessed_buildings: self.mission.possessed_buildings(),
+                combat_tmap_bank: &assets.combat_tmap_bank,
+                static_world_tmap_bank: &assets.static_world_tmap_bank,
+                economy_tmap_bank: &assets.economy_tmap_bank,
+                fireball_tmap_clock,
+                possession_tmap_clock,
+                castle_tmap_clock,
+                particle_parameters: &self.world.presentation().particles,
+                source_slots: self.mission.source_slots(),
+                night: self.world.metadata().map_type == sim_core::native_world::MapType::Night,
+            },
+        )
+        .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))
+    }
+
+    fn world_frame(&mut self) -> AbiResult<Level1TerrainFrame> {
+        let ambient_entities = self.mission.ambient_entities().copied().collect::<Vec<_>>();
+        let frame = self.render_world_frame(&ambient_entities, &self.renderable_map_chains)?;
         let mask = frame.goat_selector_mask;
         self.selector_frames
             .as_mut()
@@ -6461,7 +6448,7 @@ fn entity_snapshot(
         snapshot.action = ambient.action;
         snapshot.phase = ambient.phase;
         snapshot.has_parameter_record = 1;
-        snapshot.parameter_record_index = ambient.render_parameter_index;
+        snapshot.parameter_record_index = LEVEL1_NEW_EVENT_ENTITY_PARAMETER_RECORD_INDEX;
         snapshot.x = ambient.position.x;
         snapshot.y = ambient.position.y;
         snapshot.z = ambient.position.z;
@@ -9718,6 +9705,144 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
                     .tracks(actor.source_entity_index)
             }));
             assert_eq!(session.mission.ambient_entities().count(), 40);
+            let reset_ambient = session
+                .mission
+                .ambient_entities()
+                .copied()
+                .collect::<Vec<_>>();
+            let render_ambient_ablation =
+                |ambient_entities: &[Level1AmbientEntity]| -> AbiResult<Level1TerrainFrame> {
+                    let mut map_chains = session.renderable_map_chains.clone();
+                    for ambient in &reset_ambient {
+                        if ambient_entities.iter().any(|selected| {
+                            selected.source_entity_index == ambient.source_entity_index
+                        }) {
+                            continue;
+                        }
+                        map_chains
+                            .sync_entity(RenderableMapSeed {
+                                entity_index: ambient.source_entity_index,
+                                active: false,
+                                x: ambient.position.x,
+                                y: ambient.position.y,
+                            })
+                            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+                    }
+                    session.render_world_frame(ambient_entities, &map_chains)
+                };
+            let reset_full = render_ambient_ablation(&reset_ambient)?;
+            let reset_without_ambient = render_ambient_ablation(&[])?;
+            assert_eq!(reset_full.index_hash, 0x6cbc_716b_dcd0_4ed6);
+            assert_eq!(
+                reset_full.terrain_coverage,
+                reset_without_ambient.terrain_coverage
+            );
+            assert_eq!(
+                reset_full.coverage_hash,
+                reset_without_ambient.coverage_hash
+            );
+            assert_eq!(reset_full.stats, reset_without_ambient.stats);
+
+            let changed_summary = |frame: &Level1TerrainFrame,
+                                   baseline: &Level1TerrainFrame|
+             -> (usize, Option<(usize, usize, usize, usize)>) {
+                assert_eq!(frame.terrain_coverage, baseline.terrain_coverage);
+                assert_eq!(frame.coverage_hash, baseline.coverage_hash);
+                assert_eq!(frame.stats, baseline.stats);
+                assert_eq!(frame.indices.len(), baseline.indices.len());
+                let mut count = 0;
+                let mut unchanged_count = 0;
+                let mut bounds: Option<(usize, usize, usize, usize)> = None;
+                for (index, (&actual, &without_ambient)) in frame
+                    .indices
+                    .iter()
+                    .zip(baseline.indices.iter())
+                    .enumerate()
+                {
+                    if actual == without_ambient {
+                        unchanged_count += 1;
+                        continue;
+                    }
+                    let x = index % LEVEL1_VIEW_WIDTH;
+                    let y = index / LEVEL1_VIEW_WIDTH;
+                    count += 1;
+                    bounds = Some(bounds.map_or((x, y, x, y), |(min_x, min_y, max_x, max_y)| {
+                        (min_x.min(x), min_y.min(y), max_x.max(x), max_y.max(y))
+                    }));
+                }
+                assert_eq!(count + unchanged_count, frame.indices.len());
+                (count, bounds)
+            };
+
+            assert_eq!(reset_without_ambient.index_hash, 0x2f38_beef_8e4a_62fb);
+            assert_eq!(
+                reset_without_ambient
+                    .ambient_raster_stats
+                    .framebuffer_writes,
+                0
+            );
+            assert_eq!(reset_full.ambient_raster_stats.framebuffer_writes, 6_396);
+            assert_eq!(
+                changed_summary(&reset_full, &reset_without_ambient),
+                (5_362, Some((25, 114, 252, 199)))
+            );
+
+            for (model, row_count, index_hash, framebuffer_writes, delta) in [
+                (
+                    1,
+                    8,
+                    0x0537_4b45_3e37_1501,
+                    1_482,
+                    (1_482, Some((57, 138, 99, 178))),
+                ),
+                (
+                    14,
+                    9,
+                    0x7ca3_63e6_8e1e_8ada,
+                    104,
+                    (102, Some((134, 114, 211, 168))),
+                ),
+                (
+                    0,
+                    14,
+                    0x4bf1_e2b9_86a1_ab89,
+                    4_810,
+                    (4_309, Some((25, 134, 252, 199))),
+                ),
+            ] {
+                let family = reset_ambient
+                    .iter()
+                    .copied()
+                    .filter(|ambient| ambient.model == model)
+                    .collect::<Vec<_>>();
+                let frame = render_ambient_ablation(&family)?;
+                assert_eq!(
+                    (
+                        family.len(),
+                        frame.index_hash,
+                        frame.ambient_raster_stats.framebuffer_writes,
+                        changed_summary(&frame, &reset_without_ambient),
+                    ),
+                    (row_count, index_hash, framebuffer_writes, delta),
+                    "reset ambient family model {model}"
+                );
+            }
+            let emitter_113 = reset_ambient
+                .iter()
+                .copied()
+                .filter(|ambient| ambient.source_entity_index == 113)
+                .collect::<Vec<_>>();
+            assert_eq!(emitter_113.len(), 1);
+            assert!(!session.renderable_map_chains.tracks(113));
+            let emitter_frame = render_ambient_ablation(&emitter_113)?;
+            assert_eq!(
+                (
+                    emitter_frame.index_hash,
+                    emitter_frame.ambient_raster_stats.framebuffer_writes,
+                    changed_summary(&emitter_frame, &reset_without_ambient),
+                ),
+                (0x2f38_beef_8e4a_62fb, 0, (0, None))
+            );
             let fire = session
                 .mission
                 .ambient_entities()
@@ -12058,9 +12183,19 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
                 fire.model,
                 fire.action,
                 fire.phase,
+                fire.has_parameter_record,
                 fire.parameter_record_index,
             ),
-            (MC_AUTHORITY_LEVEL1_MISSION_LIVE, 1, 10, 1, 1, 123, 41)
+            (
+                MC_AUTHORITY_LEVEL1_MISSION_LIVE,
+                1,
+                10,
+                1,
+                1,
+                123,
+                1,
+                LEVEL1_NEW_EVENT_ENTITY_PARAMETER_RECORD_INDEX,
+            )
         );
         let emitter = entities[113];
         assert_eq!(
@@ -12071,9 +12206,19 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
                 emitter.model,
                 emitter.action,
                 emitter.phase,
+                emitter.has_parameter_record,
                 emitter.parameter_record_index,
             ),
-            (MC_AUTHORITY_LEVEL1_MISSION_LIVE, 1, 10, 60, 65, 114, 0)
+            (
+                MC_AUTHORITY_LEVEL1_MISSION_LIVE,
+                1,
+                10,
+                60,
+                65,
+                114,
+                1,
+                LEVEL1_NEW_EVENT_ENTITY_PARAMETER_RECORD_INDEX,
+            )
         );
         let smoke = entities[155];
         assert_eq!(
@@ -12084,9 +12229,19 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
                 smoke.model,
                 smoke.action,
                 smoke.phase,
+                smoke.has_parameter_record,
                 smoke.parameter_record_index,
             ),
-            (MC_AUTHORITY_LEVEL1_MISSION_LIVE, 1, 10, 14, 14, 156, 9)
+            (
+                MC_AUTHORITY_LEVEL1_MISSION_LIVE,
+                1,
+                10,
+                14,
+                14,
+                156,
+                1,
+                LEVEL1_NEW_EVENT_ENTITY_PARAMETER_RECORD_INDEX,
+            )
         );
         let child = entities[164];
         assert_eq!(
@@ -12097,9 +12252,78 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
                 child.model,
                 child.action,
                 child.phase,
+                child.has_parameter_record,
                 child.parameter_record_index,
             ),
-            (MC_AUTHORITY_LEVEL1_MISSION_LIVE, 1, 10, 0, 0, 165, 7)
+            (
+                MC_AUTHORITY_LEVEL1_MISSION_LIVE,
+                1,
+                10,
+                0,
+                0,
+                165,
+                1,
+                LEVEL1_NEW_EVENT_ENTITY_PARAMETER_RECORD_INDEX,
+            )
+        );
+
+        with_session_mut(handle, |session| {
+            session.mission.begin_source_turn_at(session.state.position);
+            session.mission.dispatch_source_slot(
+                &session.terrain,
+                &session.state,
+                113,
+                false,
+                false,
+                None,
+            );
+            assert_eq!(
+                session.world.entities()[178].parameter_relation,
+                None,
+                "newly allocated ambient slot has no frozen/static entity-parameter relation"
+            );
+            let dynamic_smoke = session
+                .mission
+                .ambient_entities()
+                .find(|ambient| ambient.source_entity_index == 178)
+                .copied()
+                .expect("emitter 113 allocates smoke slot 178");
+            assert_eq!(dynamic_smoke.render_parameter_index, 9);
+            Ok(())
+        })
+        .expect("source-turn emitter dispatch");
+        assert_eq!(
+            mc_native_entities_copy(
+                handle,
+                0,
+                entities.as_mut_ptr(),
+                1_000,
+                struct_size::<McEntitySnapshotV2>(),
+                &raw mut written,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(written, 1_000);
+        let dynamic_smoke = entities[178];
+        assert_eq!(
+            (
+                dynamic_smoke.authority,
+                dynamic_smoke.active,
+                dynamic_smoke.class_id,
+                dynamic_smoke.model,
+                dynamic_smoke.action,
+                dynamic_smoke.has_parameter_record,
+                dynamic_smoke.parameter_record_index,
+            ),
+            (
+                MC_AUTHORITY_LEVEL1_MISSION_LIVE,
+                1,
+                10,
+                14,
+                14,
+                1,
+                LEVEL1_NEW_EVENT_ENTITY_PARAMETER_RECORD_INDEX,
+            )
         );
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }

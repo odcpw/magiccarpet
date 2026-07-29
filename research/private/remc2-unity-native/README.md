@@ -638,13 +638,27 @@ independent five-capture graphical gates at
 `/tmp/magiccarpet-autoplay-terrain-qualified-order-a.log` and
 `/tmp/magiccarpet-autoplay-terrain-qualified-order-b.log`.
 
-The reset frame pins index hash `2f38beef8e4a62fb`, coverage hash
-`65fa674ae4afefec`, GPU PALN-resolved bottom-up readback hash
-`20adbcad23e28889`, logical top-down RGBA hash `4f565333a9bbcab9`, 578
-primary mode-5 triangles, and 37,174 terrain writes. GPU qualification reads
-back all 64,000 raw index pixels, all 64,000 raw coverage pixels, all 256 PALN
-entries, and all 64,000 resolved RGBA pixels. It repeats the reset readback at
-the same tick and records the graphics API/device.
+The isolated/no-ambient reset frame and managed self-test retain index hash
+`2f38beef8e4a62fb`. The complete reset world has native index hash
+`6cbc716bdcd04ed6`, while both paths retain coverage hash
+`65fa674ae4afefec`, 578 primary mode-5 triangles, and 37,174 terrain writes.
+GPU qualification pins the full-world raw R8 upload hash
+`a572934d2db1f794`, PALN-resolved bottom-up readback hash
+`ad0386b8aca8afbd`, and logical top-down RGBA hash `77fdd7ddf04bb56d`.
+It reads back all 64,000 raw index pixels, all 64,000 raw coverage pixels, all
+256 PALN entries, and all 64,000 resolved RGBA pixels, then repeats the reset
+readback at the same tick and records the graphics API/device.
+
+The reset-camera ambient ablation keeps coverage bytes, coverage hash, and
+terrain statistics byte-identical. The complete ambient slice changes exactly
+5,362 index pixels within `(25,114)-(252,199)`. Isolated model families change
+1,482 pixels for model 1 within `(57,138)-(99,178)`, 102 pixels for model 14
+within `(134,114)-(211,168)`, and 4,309 pixels for model 0 within
+`(25,134)-(252,199)`. Their respective framebuffer-write counts are 1,482,
+104, and 4,810; the complete slice writes 6,396 pixels because source-ordered
+families may overwrite prior pixels. Emitter 113 is off the renderable map
+chain and its isolated ablation contributes zero framebuffer writes and zero
+changed pixels.
 
 Rust qualification also pins a reset-lattice census of 672 visible / 168
 culled vertices, 388 near / 212 fog-ramp / 72 fog-zero visible vertices, both

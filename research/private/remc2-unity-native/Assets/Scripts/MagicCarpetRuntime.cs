@@ -3073,13 +3073,13 @@ namespace MagicCarpet.Native
             {
                 var first = ValidateTerrainFrameGpuGolden(
                     "reset-world-supported-families",
-                    0x20adbcad23e28889,
-                    0x4f565333a9bbcab9,
+                    0xad0386b8aca8afbd,
+                    0x77fdd7ddf04bb56d,
                     true);
                 var repeated = ValidateTerrainFrameGpuGolden(
                     "reset-world-supported-families-repeat",
-                    0x20adbcad23e28889,
-                    0x4f565333a9bbcab9,
+                    0xad0386b8aca8afbd,
+                    0x77fdd7ddf04bb56d,
                     false);
                 Require(first == repeated, "same-tick terrain GPU readback stability");
                 terrainFrameGpuValidated = true;
@@ -3473,7 +3473,7 @@ namespace MagicCarpet.Native
                 }
                 var rawHash = ByteHash(observed);
                 var expectedHash = label == "indices"
-                    ? 0x4c233374e72fc127UL
+                    ? 0xa572934d2db1f794UL
                     : 0x0982b037e66fa6d4UL;
                 Require(
                     rawHash == expectedHash,
