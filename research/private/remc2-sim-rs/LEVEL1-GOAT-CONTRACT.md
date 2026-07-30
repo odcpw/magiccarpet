@@ -203,20 +203,44 @@ in Unity source or a distributable player.
 
 The family/live-world hash is additive: existing player `state_hash`,
 `source_projection_hash`, and `conformance_hash` values remain byte-for-byte
-unchanged. `live_world_hash_v1` is FNV-1a 64-bit over a schema/version tag,
-outer tick, Goat count, then all 33 rows in ascending entity-index order. Each
-row feeds every causally mutable field, including roll, proximity countdown,
-and proximity subcounter, as fixed-width little-endian bytes with explicit
-option tags. The preserved Level 1 sequence proves ten global-RNG advances per
-outer turn, while only the `UpdateEntities_57730` advance is currently
-source-mapped in this slice.
-Therefore global RNG is excluded until all other source-ordered consumers and
-the value at sound dispatch are qualified. Selector animation remains
-excluded from `live_world_hash_v1` to preserve that contract; the separate
+unchanged. Legacy `live_world_hash_v1` remains FNV-1a 64-bit over
+`mc2-live-world-v1\0`, outer tick, Goat count and all Goat rows, house count
+and all house rows, then villager count and all villager rows. Rows remain in
+ascending entity-index order and include their active flags and every causally
+mutable field, including roll, proximity countdown, and proximity subcounter,
+as fixed-width little-endian bytes with explicit option tags. Global RNG
+remains excluded from that byte-compatible v1 preimage.
+
+Current direct and C ABI `live_world_hash` projections use the explicit
+`mc2-live-world-v2\0` composite domain: the little-endian legacy v1 hash
+followed by authoritative mission `D41A0_0.rand_0x8`. This admits RNG-only
+mutations without duplicating RNG ownership or changing the ABI layout.
+Selector animation remains excluded from both live-world domains; the separate
 `selector_state_hash` covers descriptor state, mutable pixels, latches, and
-accepted draw-feedback metadata. Unqualified global RNG, generation, event
-cursors, audio voice allocation, Unity transforms, and wall-clock state are
-excluded from `live_world_hash_v1`.
+accepted draw-feedback metadata. Generation, event cursors, audio voice
+allocation, Unity transforms, and wall-clock state remain excluded.
+
+The quiet Level 1 reset turn has this exact stored global-RNG sequence:
+
+1. `UpdateEntities_57730`: `0xad6e67d9 -> 0x9909f858`;
+2. model-60 slot 113: `0x9909f858 -> 0xa631b437`;
+3. slot 114: `0xa631b437 -> 0x829a3776`;
+4. slot 115: `0x829a3776 -> 0xd2c99e15`;
+5. slot 116: `0xd2c99e15 -> 0xeb078414`;
+6. slot 117: `0xeb078414 -> 0xde4d0573`;
+7. slot 118: `0xde4d0573 -> 0xa334be32`;
+8. slot 119: `0xa334be32 -> 0x0eeaca51`;
+9. slot 120: `0x0eeaca51 -> 0x661cc5d0`;
+10. slot 121: `0x661cc5d0 -> 0x43e9ccaf`.
+
+The model-60 draw is source-driven, not an unconditional turn allowance:
+terminal/inactive/non-model-60 rows omit it, while every live emitter stores
+its draw before `NewEvent_4A050` chooses an ordinary or replaceable slot or
+fails allocation. Builder, Archer, checkpoint, and ground-fire consumers
+remain conditional at their own source call sites. Goat sound 46 observes the
+stored `0x9909f858`; `PrepareEventSound_6E450` derives nonstored
+`0xa631b437`, producing action-14 `+25` and other-action `+5` pitch deltas
+without changing authoritative RNG.
 
 ## Evidence and qualification
 

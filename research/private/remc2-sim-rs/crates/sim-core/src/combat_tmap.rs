@@ -1,7 +1,7 @@
 //! Qualified indexed TMAP resources for the live Level 1 combat families.
 //!
 //! Fireball selector 463 is one selector-global mutable SS2 stream. Arrow,
-//! castle-projectile, impact, and splash selectors are immutable frames.
+//! castle-projectile, ground-fire, impact, and splash selectors are immutable frames.
 
 use crate::ss2_tmap::{apply_ss2_delta, read_u16, read_u32, require_hash};
 
@@ -9,12 +9,13 @@ pub const FIREBALL_SELECTOR: u16 = 463;
 pub const FIREBALL_STATE_COUNT: usize = 5;
 pub const POSSESSION_SELECTOR: u16 = 144;
 pub const POSSESSION_STATE_COUNT: usize = 9;
-pub const COMBAT_STATIC_SELECTORS: [u16; 35] = [
-    61, 105, 106, 107, 108, 109, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 186, 187, 188, 189, 190,
-    191, 192, 193, 194, 195, 54, 96, 97, 98, 99, 100, 101, 102, 103,
+pub const COMBAT_STATIC_SELECTORS: [u16; 36] = [
+    61, 77, 105, 106, 107, 108, 109, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 186, 187, 188, 189,
+    190, 191, 192, 193, 194, 195, 54, 96, 97, 98, 99, 100, 101, 102, 103,
 ];
-pub const COMBAT_STATIC_EXTENTS: [(u16, u16); 35] = [
+pub const COMBAT_STATIC_EXTENTS: [(u16, u16); 36] = [
     (32, 31),
+    (42, 44),
     (18, 24),
     (35, 14),
     (50, 12),
@@ -50,8 +51,9 @@ pub const COMBAT_STATIC_EXTENTS: [(u16, u16); 35] = [
     (36, 39),
     (36, 39),
 ];
-pub const COMBAT_STATIC_SHA256: [&str; 35] = [
+pub const COMBAT_STATIC_SHA256: [&str; 36] = [
     "c4ab0a77ef7d7813cbafd46e39fe38dfa7106cfe0fae7e367ac76dff38143cc8",
+    "8b146c19d4f866a1fc600068a242a2b2e1929a025c6bb3b78ebaf0685bf26cbb",
     "53d228896686b080487f4b4c5535ac3181d5d29d26216eeb340ae4bad97d8832",
     "cf196e0ddbf8729f72a47cf2528aea639fe1feaa8ab8f11fac24da34c4f583f9",
     "c32401d5811d0d5801d88523b3f365a3c15b05d233a989547c3bfd490338ef48",
@@ -450,6 +452,30 @@ mod tests {
     #[test]
     fn fireball_clock_uses_the_same_non_group_sticky_descriptor_bit() {
         let bank = qualified_bank();
+        let ground_fire_ordinal = COMBAT_STATIC_SELECTORS
+            .iter()
+            .position(|selector| *selector == 77)
+            .expect("ground-fire TMAP 77 is admitted");
+        assert_eq!(
+            (
+                COMBAT_STATIC_EXTENTS[ground_fire_ordinal],
+                COMBAT_STATIC_SHA256[ground_fire_ordinal],
+            ),
+            (
+                (42, 44),
+                "8b146c19d4f866a1fc600068a242a2b2e1929a025c6bb3b78ebaf0685bf26cbb",
+            ),
+            "the native model-6 compositor admits only the qualified owner TMAP 77"
+        );
+        let ground_fire = bank.static_frame(77).expect("qualified TMAP 77 frame");
+        assert_eq!(
+            (
+                ground_fire.width,
+                ground_fire.height,
+                ground_fire.pixels.len()
+            ),
+            (42, 44, 1_848)
+        );
         let mut clock = FireballTmapClock::from_bank(&bank);
         clock.latch_draw_attempt(true);
         for expected in 1..FIREBALL_STATE_COUNT {

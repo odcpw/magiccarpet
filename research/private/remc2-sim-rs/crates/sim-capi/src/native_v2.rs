@@ -61,7 +61,8 @@ use sim_core::{
         FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_CLASS, FIREBALL_IMPACT_LOGICAL_HEIGHT,
         FIREBALL_IMPACT_RENDER_INDEX, FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LOGICAL_HEIGHT,
         FIREBALL_PROJECTILE_CLASS, FIREBALL_PROJECTILE_MODEL, FIREBALL_RENDER_INDEX,
-        FIREBALL_RENDER_MODE, FireballImpact, LEVEL1_MINIMAP_COMMAND_BLEND_PIXEL,
+        FIREBALL_RENDER_MODE, FireballImpact, GROUND_FIRE_BASE_TMAP, GROUND_FIRE_MODEL,
+        GROUND_FIRE_RENDER_MODE, LEVEL1_MINIMAP_COMMAND_BLEND_PIXEL,
         LEVEL1_MINIMAP_MAX_ENTITY_COMMANDS, LEVEL1_MINIMAP_MAX_MARKS, Level1Actor, Level1ActorKind,
         Level1AmbientEntity, Level1CollisionTarget, Level1MinimapEntityInput, Level1MinimapMarks,
         Level1MissionEvent, Level1MissionState, Level1MultipartSegment, Level1Projectile,
@@ -70,16 +71,18 @@ use sim_core::{
         MANA_CARRIER_MODEL, MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_SPEED, MANA_SPHERE_ACTION,
         MANA_SPHERE_CLASS, MANA_SPHERE_MODEL, MANA_SPHERE_NEUTRAL_BASE_TMAP,
         MANA_SPHERE_NEUTRAL_RENDER_BASE, MANA_SPHERE_PLAYER_ONE_BASE_TMAP,
-        MANA_SPHERE_PLAYER_ONE_RENDER_BASE, ManaCarrier, ManaSphere, POSSESSION_IMPACT_BASE_TMAP,
-        POSSESSION_IMPACT_CLASS, POSSESSION_IMPACT_LOGICAL_HEIGHT, POSSESSION_IMPACT_MODEL,
-        POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_IMPACT_RENDER_MODE,
-        POSSESSION_PROJECTILE_BASE_TMAP, POSSESSION_PROJECTILE_CLASS,
-        POSSESSION_PROJECTILE_LOGICAL_HEIGHT, POSSESSION_PROJECTILE_MODEL,
-        POSSESSION_PROJECTILE_RENDER_INDEX, POSSESSION_PROJECTILE_RENDER_MODE,
-        POSSESSION_STRONG_IMPACT_MODEL, PlayerHitReaction, WATER_SPLASH_BASE_TMAP,
-        WATER_SPLASH_LOGICAL_HEIGHT, WATER_SPLASH_MODEL, WATER_SPLASH_RENDER_INDEX,
-        WATER_SPLASH_RENDER_MODE, level1_minimap_castle_rope_pixels, level1_minimap_entity_command,
-        mana_sphere_size_ordinal,
+        MANA_SPHERE_PLAYER_ONE_RENDER_BASE, ManaCarrier, ManaSphere,
+        POSSESSION_ATTRACTION_BASE_TMAP, POSSESSION_ATTRACTION_LOGICAL_HEIGHT,
+        POSSESSION_ATTRACTION_MODEL, POSSESSION_ATTRACTION_RENDER_INDEX,
+        POSSESSION_ATTRACTION_RENDER_MODE, POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_CLASS,
+        POSSESSION_IMPACT_LOGICAL_HEIGHT, POSSESSION_IMPACT_MODEL, POSSESSION_IMPACT_RENDER_INDEX,
+        POSSESSION_IMPACT_RENDER_MODE, POSSESSION_PROJECTILE_BASE_TMAP,
+        POSSESSION_PROJECTILE_CLASS, POSSESSION_PROJECTILE_LOGICAL_HEIGHT,
+        POSSESSION_PROJECTILE_MODEL, POSSESSION_PROJECTILE_RENDER_INDEX,
+        POSSESSION_PROJECTILE_RENDER_MODE, POSSESSION_STRONG_IMPACT_MODEL, PlayerHitReaction,
+        WATER_SPLASH_BASE_TMAP, WATER_SPLASH_LOGICAL_HEIGHT, WATER_SPLASH_MODEL,
+        WATER_SPLASH_RENDER_INDEX, WATER_SPLASH_RENDER_MODE, ground_fire_presentation,
+        level1_minimap_castle_rope_pixels, level1_minimap_entity_command, mana_sphere_size_ordinal,
     },
     native_world::{
         AssetRef, EntityAuthority, EntitySnapshot, NativeWorld, ParticleParameter, SessionTerrain,
@@ -1677,6 +1680,10 @@ struct AudioVoice {
 }
 
 impl SessionRecord {
+    fn live_world_hash_v2(&self) -> u64 {
+        self.live_world.hash_v2(self.mission.global_rng())
+    }
+
     fn new(world: NativeWorld) -> AbiResult<Self> {
         let terrain_frame_assets = load_optional_terrain_frame_assets()?.map(Arc::new);
         let world = Arc::new(world);
@@ -2682,7 +2689,7 @@ impl SessionRecord {
             let record = self.encode_flight_event(event, state_hash);
             self.append_event(record);
         }
-        let live_world_hash = self.live_world.hash_v1();
+        let live_world_hash = self.live_world_hash_v2();
         for (event, random_state) in goat_events {
             let record = self.encode_goat_event(event, live_world_hash, random_state);
             self.append_event(record);
@@ -2940,7 +2947,12 @@ impl SessionRecord {
                 y: position.y,
             })?;
         }
-        for impact in self.mission.impacts() {
+        for impact in self
+            .mission
+            .impacts()
+            .iter()
+            .filter(|impact| impact.model != POSSESSION_ATTRACTION_MODEL)
+        {
             self.renderable_map_chains.sync_entity(RenderableMapSeed {
                 entity_index: impact.source_entity_index,
                 active: impact.active,
@@ -3349,7 +3361,7 @@ impl SessionRecord {
             self.mission
                 .impacts()
                 .iter()
-                .filter(|impact| impact.active)
+                .filter(|impact| impact.active && impact.model != POSSESSION_ATTRACTION_MODEL)
                 .map(|impact| impact.source_entity_index),
         );
         active.extend(
@@ -3686,6 +3698,8 @@ impl SessionRecord {
             GoatStepEvent::Bleat {
                 entity_index,
                 sound_id,
+                position,
+                action,
             } => {
                 let mut record = self.next_event_base(MC_EVENT_GOAT_SOUND_REQUEST, live_hash);
                 record.entity_index = entity_index;
@@ -3694,22 +3708,14 @@ impl SessionRecord {
                     .world
                     .sound_asset_ref(sound_id)
                     .unwrap_or(MC_ASSET_REF_NONE);
-                if let Some(goat) = self
-                    .live_world
-                    .goats()
-                    .iter()
-                    .find(|goat| goat.entity_index == entity_index)
-                    .map(|goat| (goat.position, goat.action))
-                {
-                    self.attach_mission_sound(
-                        &mut record,
-                        sound_id,
-                        entity_index,
-                        goat.0,
-                        goat.1,
-                        random_state,
-                    );
-                }
+                self.attach_mission_sound(
+                    &mut record,
+                    sound_id,
+                    entity_index,
+                    position,
+                    action,
+                    random_state,
+                );
                 record
             }
             GoatStepEvent::ManaConverted { entity_index, mana } => {
@@ -3961,11 +3967,13 @@ impl SessionRecord {
             }
             Level1MissionEvent::ActorDamaged {
                 authored_index,
+                attacker_entity_index,
                 damage,
                 life,
             } => {
                 let mut record = self.next_event_base(MC_EVENT_LEVEL1_ACTOR_DAMAGED, hash);
                 record.entity_index = authored_index;
+                record.code = u32::from(attacker_entity_index);
                 record.value_0 = damage;
                 record.value_1 = life;
                 record
@@ -5260,7 +5268,7 @@ pub extern "C" fn mc_native_goats_copy(
                 struct_size: struct_size::<McGoatBatchV2>(),
                 generation: session.generation,
                 tick: session.live_world.outer_tick().into(),
-                live_world_hash: session.live_world.hash_v1(),
+                live_world_hash: session.live_world_hash_v2(),
                 start_ordinal,
                 written: u32::try_from(count).expect("33 Goats fit u32"),
                 total_count: u32::try_from(LEVEL_ONE_GOAT_INDICES.len()).expect("33 Goats fit u32"),
@@ -5870,7 +5878,7 @@ pub extern "C" fn mc_native_session_goat_inject_damage(
                 struct_size: struct_size::<McGoatBatchV2>(),
                 generation: session.generation,
                 tick: session.live_world.outer_tick().into(),
-                live_world_hash: session.live_world.hash_v1(),
+                live_world_hash: session.live_world_hash_v2(),
                 start_ordinal: 0,
                 written: 0,
                 total_count: u32::try_from(LEVEL_ONE_GOAT_INDICES.len()).expect("33 Goats fit u32"),
@@ -7460,6 +7468,21 @@ fn fireball_impact_snapshot(impact: &FireballImpact) -> McFireballImpactSnapshot
                 WATER_SPLASH_RENDER_MODE,
                 WATER_SPLASH_LOGICAL_HEIGHT,
             )
+        } else if impact.model == GROUND_FIRE_MODEL {
+            let (render_parameter_index, logical_height) = ground_fire_presentation(impact.phase);
+            (
+                GROUND_FIRE_BASE_TMAP,
+                render_parameter_index,
+                GROUND_FIRE_RENDER_MODE,
+                logical_height,
+            )
+        } else if impact.model == POSSESSION_ATTRACTION_MODEL {
+            (
+                POSSESSION_ATTRACTION_BASE_TMAP,
+                POSSESSION_ATTRACTION_RENDER_INDEX,
+                POSSESSION_ATTRACTION_RENDER_MODE,
+                POSSESSION_ATTRACTION_LOGICAL_HEIGHT,
+            )
         } else if matches!(
             impact.model,
             POSSESSION_IMPACT_MODEL | POSSESSION_STRONG_IMPACT_MODEL
@@ -8319,6 +8342,145 @@ mod tests {
         open_paths(&package, &closure).expect("package M opens")
     }
 
+    fn configured_goat_pitch_handle(retain_action_14: bool) -> u64 {
+        const BLEATING_GOAT: u16 = 102;
+        const BLEATING_GOAT_RESET_RNG: u16 = 32_616;
+
+        let handle = open_fixture();
+        with_session_mut(handle, |session| {
+            let mut entities = session.world.entities().to_vec();
+            let goat = &mut entities[usize::from(BLEATING_GOAT)];
+            goat.action = 14;
+            goat.position = session.state.position;
+            session.live_world = LiveWorldState::from_entities(
+                &entities,
+                session.world.goat_stage_point(),
+                session.world.goat_config(),
+            )
+            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+            let configured = session
+                .live_world
+                .goats()
+                .iter()
+                .find(|goat| goat.entity_index == BLEATING_GOAT)
+                .expect("source-derived Goat slot 102");
+            assert_eq!(configured.rng, BLEATING_GOAT_RESET_RNG);
+            assert_eq!(configured.action, 14);
+            assert_eq!(session.mission.global_rng(), 0xad6e_67d9);
+            Ok(())
+        })
+        .expect("configure the source-derived action-14 pitch discriminator");
+
+        let mut before = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_snapshot(
+                handle,
+                &raw mut before,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        if retain_action_14 {
+            let damage = McGoatDamageCommandV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McGoatDamageCommandV2>(),
+                generation: before.generation,
+                entity_index: BLEATING_GOAT,
+                reserved_0: 0,
+                damage: 1,
+                reserved: [0; 4],
+            };
+            let mut batch = McGoatBatchV2::default();
+            assert_eq!(
+                mc_native_session_goat_inject_damage(
+                    handle,
+                    &raw const damage,
+                    &raw mut batch,
+                    struct_size::<McGoatBatchV2>(),
+                ),
+                MC_STATUS_OK
+            );
+        }
+        handle
+    }
+
+    fn goat_pitch_audio_after_step(handle: u64) -> McAudioCommandV2 {
+        const BLEATING_GOAT: u16 = 102;
+        let mut after = McSessionSnapshotV2::default();
+        let idle = valid_command();
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const idle,
+                &raw mut after,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let query = McEventQueryV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McEventQueryV2>(),
+            generation: after.generation,
+            cursor: 0,
+            reserved: [0; 4],
+        };
+        let mut events = vec![McEventV2::default(); 256];
+        let mut event_batch = McEventBatchV2::default();
+        assert_eq!(
+            mc_native_events_copy_since(
+                handle,
+                &raw const query,
+                events.as_mut_ptr(),
+                u32::try_from(events.len()).unwrap(),
+                struct_size::<McEventV2>(),
+                &raw mut event_batch,
+                struct_size::<McEventBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        events.truncate(usize::try_from(event_batch.written).unwrap());
+        let bleat = events
+            .iter()
+            .find(|event| {
+                event.kind == MC_EVENT_GOAT_SOUND_REQUEST
+                    && event.entity_index == BLEATING_GOAT
+                    && event.code == 46
+            })
+            .expect("production Goat action emits sound 46 before slot 113");
+        let mut audio = McAudioCommandV2::default();
+        assert_eq!(
+            mc_native_audio_command_for_event(
+                handle,
+                after.generation,
+                bleat.sequence,
+                &raw mut audio,
+                struct_size::<McAudioCommandV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        audio
+    }
+
+    fn production_goat_pitch_case(retain_action_14: bool) -> McAudioCommandV2 {
+        const BLEATING_GOAT: u16 = 102;
+        let handle = configured_goat_pitch_handle(retain_action_14);
+        let audio = goat_pitch_audio_after_step(handle);
+        with_session(handle, |session| {
+            let goat = session
+                .live_world
+                .goats()
+                .iter()
+                .find(|goat| goat.entity_index == BLEATING_GOAT)
+                .expect("source-derived Goat slot 102 remains projected");
+            assert_eq!(session.mission.global_rng(), 0x43e9_ccaf);
+            assert_eq!(goat.action == 14, retain_action_14);
+            Ok(())
+        })
+        .expect("inspect the post-turn source discriminator");
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+        audio
+    }
+
     #[test]
     fn dynamic_house_resident_overlays_the_source_entity_projection() {
         let (package, closure) = fixture_paths();
@@ -8810,6 +8972,46 @@ mod tests {
         };
         let weak_snapshot = fireball_impact_snapshot(&weak_marker);
         let strong_snapshot = fireball_impact_snapshot(&strong_marker);
+        let ground_fire_rows = [0_u32, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1, 0]
+            .into_iter()
+            .map(|phase| {
+                let snapshot = fireball_impact_snapshot(&FireballImpact {
+                    model: GROUND_FIRE_MODEL,
+                    payload: 50,
+                    phase,
+                    animation_frame: 0,
+                    ..weak_marker
+                });
+                (
+                    snapshot.render_parameter_index,
+                    snapshot.logical_height,
+                    snapshot.base_tmap,
+                    snapshot.render_mode,
+                    snapshot.animation_frame,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ground_fire_rows,
+            [
+                (228, 50, 77, 1, 0),
+                (229, 150, 77, 1, 0),
+                (230, 300, 77, 1, 0),
+                (231, 450, 77, 1, 0),
+                (232, 600, 77, 1, 0),
+                (233, 700, 77, 1, 0),
+                (234, 800, 77, 1, 0),
+                (235, 950, 77, 1, 0),
+                (234, 800, 77, 1, 0),
+                (233, 700, 77, 1, 0),
+                (232, 600, 77, 1, 0),
+                (231, 450, 77, 1, 0),
+                (230, 300, 77, 1, 0),
+                (229, 150, 77, 1, 0),
+                (228, 50, 77, 1, 0),
+            ],
+            "model 6 projects sub_31760 expansion and contraction through rows 228..235"
+        );
         assert_eq!(
             (
                 strong_snapshot.class_id,
@@ -8836,6 +9038,39 @@ mod tests {
             ),
             (POSSESSION_STRONG_IMPACT_MODEL, 1, 1, 1),
             "CAPI projects the bounded render frame, never class-10 dword phase"
+        );
+        let attraction_snapshot = fireball_impact_snapshot(&FireballImpact {
+            model: POSSESSION_ATTRACTION_MODEL,
+            payload: i32::try_from(
+                sim_core::level1_mission::POSSESSION_ATTRACTION_TIER_TWO_RADIUS_SQUARED,
+            )
+            .unwrap(),
+            phase: 128,
+            animation_frame: 0,
+            ..weak_marker
+        });
+        assert_eq!(
+            (
+                attraction_snapshot.model,
+                attraction_snapshot.class_id,
+                attraction_snapshot.render_parameter_index,
+                attraction_snapshot.base_tmap,
+                attraction_snapshot.logical_height,
+                attraction_snapshot.render_mode,
+                attraction_snapshot.animation_frame,
+                attraction_snapshot.reserved,
+            ),
+            (
+                POSSESSION_ATTRACTION_MODEL,
+                FIREBALL_IMPACT_CLASS,
+                POSSESSION_ATTRACTION_RENDER_INDEX,
+                POSSESSION_ATTRACTION_BASE_TMAP,
+                POSSESSION_ATTRACTION_LOGICAL_HEIGHT,
+                POSSESSION_ATTRACTION_RENDER_MODE,
+                0,
+                [2, 0],
+            ),
+            "model 54 remains in gameplay inventory with its literal row-zero tuple"
         );
     }
 
@@ -10487,6 +10722,160 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
             MC_STATUS_BOUNDS
         );
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+
+        let stored_rng = 0x9909_f858_u32;
+        let nonstored_rng = stored_rng.wrapping_mul(9_377).wrapping_add(9_439);
+        assert_eq!(nonstored_rng, 0xa631_b437);
+        for (source_action, expected_delta) in [(0, 5), (14, 25)] {
+            let prepared = prepare_event_sound_command(
+                Position::default(),
+                0,
+                Position::default(),
+                46,
+                stored_rng,
+                102,
+                source_action,
+            )
+            .expect("sound46 has a source PrepareEventSound route");
+            assert_eq!(
+                prepared.command.rate_delta_percent, expected_delta,
+                "sound46 derives its pitch from the nonstored next LCG value"
+            );
+            assert_eq!(
+                stored_rng, 0x9909_f858,
+                "pitch derivation never stores the derived LCG value"
+            );
+        }
+
+        let snapshot_handle = open_fixture();
+        let (snapshot_audio, listener, sound_position, mutated_position, captured_rng) =
+            with_session_mut(snapshot_handle, |session| {
+                const BLEATING_GOAT: u16 = 102;
+                let listener = session.state.position;
+                let mut entities = session.world.entities().to_vec();
+                let goat = &mut entities[usize::from(BLEATING_GOAT)];
+                goat.action = 14;
+                goat.position = listener;
+                session.live_world = LiveWorldState::from_entities(
+                    &entities,
+                    session.world.goat_stage_point(),
+                    session.world.goat_config(),
+                )
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+                session
+                    .live_world
+                    .inject_damage(
+                        BLEATING_GOAT,
+                        1,
+                        i16::try_from(session.state.entity_index)
+                            .expect("qualified player index fits signed source relation"),
+                    )
+                    .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+                session.mission.begin_source_turn_at(listener);
+                let player = [GoatPlayerTarget {
+                    entity_index: session.state.entity_index,
+                    position: listener,
+                    control_flags: 0,
+                }];
+                let events =
+                    session
+                        .live_world
+                        .step_source_slot(BLEATING_GOAT, &session.terrain, &player);
+                let (bleat, sound_position, sound_action) = events
+                    .into_iter()
+                    .find_map(|event| match event {
+                        event @ GoatStepEvent::Bleat {
+                            entity_index: BLEATING_GOAT,
+                            sound_id: 46,
+                            position,
+                            action,
+                        } => Some((event, position, action)),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        AbiError::new(
+                            MC_STATUS_VALIDATION_FAILED,
+                            "source-derived Goat slot 102 did not emit sound46",
+                        )
+                    })?;
+                assert_eq!(sound_action, 14);
+                let captured_rng = session.mission.global_rng();
+                assert_eq!(captured_rng, 0x9909_f858);
+
+                let mutated_position = Position {
+                    x: sound_position.x.wrapping_add(4_096),
+                    y: sound_position.y.wrapping_add(2_048),
+                    z: sound_position.z.wrapping_add(512),
+                };
+                let goat = &mut entities[usize::from(BLEATING_GOAT)];
+                goat.action = 0;
+                goat.position = mutated_position;
+                session.live_world = LiveWorldState::from_entities(
+                    &entities,
+                    session.world.goat_stage_point(),
+                    session.world.goat_config(),
+                )
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+
+                let event =
+                    session.encode_goat_event(bleat, session.live_world_hash_v2(), captured_rng);
+                let audio = session
+                    .audio_commands
+                    .get(&event.sequence)
+                    .copied()
+                    .ok_or_else(|| {
+                        AbiError::new(
+                            MC_STATUS_VALIDATION_FAILED,
+                            "snapshotted sound46 event has no audio sidecar",
+                        )
+                    })?;
+                assert_eq!(session.mission.global_rng(), captured_rng);
+                Ok((
+                    audio,
+                    listener,
+                    sound_position,
+                    mutated_position,
+                    captured_rng,
+                ))
+            })
+            .expect("production Goat sound snapshot survives later live-row mutation");
+        assert_eq!(captured_rng, 0x9909_f858);
+        assert_eq!(snapshot_audio.rate_delta_percent, 25);
+        assert_eq!(
+            (
+                snapshot_audio.relative_x,
+                snapshot_audio.relative_y,
+                snapshot_audio.relative_z,
+            ),
+            (
+                i32::from(sound_position.x) - i32::from(listener.x),
+                i32::from(sound_position.y) - i32::from(listener.y),
+                i32::from(sound_position.z) - i32::from(listener.z),
+            )
+        );
+        assert_ne!(sound_position, mutated_position);
+        assert_eq!(mc_native_session_destroy(snapshot_handle), MC_STATUS_OK);
+
+        let other_action = production_goat_pitch_case(false);
+        let action_14 = production_goat_pitch_case(true);
+        assert_eq!(
+            (
+                other_action.sound_id,
+                other_action.rate_delta_percent,
+                other_action.playback_rate_hz,
+            ),
+            (46, 5, 23_152),
+            "stored 0x9909f858 derives nonstored 0xa631b437 and the other-action +5 family"
+        );
+        assert_eq!(
+            (
+                action_14.sound_id,
+                action_14.rate_delta_percent,
+                action_14.playback_rate_hz,
+            ),
+            (46, 25, 27_562),
+            "stored 0x9909f858 derives nonstored 0xa631b437 and action-14 +25"
+        );
     }
 
     #[test]
@@ -11613,6 +12002,246 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
             ),
             MC_STATUS_GENERATION_MISMATCH
         );
+
+        let mut reset = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_reset(handle, &raw mut reset, struct_size::<McSessionSnapshotV2>(),),
+            MC_STATUS_OK
+        );
+        let idle = valid_command();
+        let (tree_source_slot, tree_authored_index, tree_position) =
+            with_session_mut(handle, |session| {
+                let activation_target = session
+                    .world
+                    .level1_mission()
+                    .possession_targets()
+                    .first()
+                    .map(|target| target.entity_index)
+                    .ok_or_else(|| {
+                        AbiError::new(
+                            MC_STATUS_VALIDATION_FAILED,
+                            "qualified Level 1 has no imported house activation target",
+                        )
+                    })?;
+                session
+                    .mission
+                    .commit_imported_house_demolition(activation_target, 1, &[])
+                    .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?
+                    .ok_or_else(|| {
+                        AbiError::new(
+                            MC_STATUS_VALIDATION_FAILED,
+                            "production xtype-one activation failed",
+                        )
+                    })?;
+                session
+                    .mission
+                    .actors()
+                    .iter()
+                    .find(|actor| actor.kind == Level1ActorKind::Tree && actor.active)
+                    .map(|actor| {
+                        (
+                            actor.source_entity_index,
+                            actor.authored_index,
+                            actor.position,
+                        )
+                    })
+                    .ok_or_else(|| {
+                        AbiError::new(
+                            MC_STATUS_VALIDATION_FAILED,
+                            "group-one activation produced no live tree",
+                        )
+                    })
+            })
+            .unwrap();
+
+        for shot in 0..2 {
+            with_session_mut(handle, |session| {
+                session.state.position = Position {
+                    x: tree_position.x.wrapping_sub(512),
+                    y: tree_position.y,
+                    z: tree_position.z.wrapping_add(100),
+                };
+                session.state.yaw = 512;
+                session.state.pitch_accumulator = 0;
+                session.state.effective_pitch = 0;
+                session.state.target_speed = 0;
+                session.state.actual_speed = 0;
+                session.state.strafe_speed = 0;
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(
+                mc_native_session_step(
+                    handle,
+                    &raw const fire,
+                    &raw mut flight,
+                    struct_size::<McSessionSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+            let mut reached = false;
+            for _ in 0..24 {
+                reached = with_session(handle, |session| {
+                    let tree = session
+                        .mission
+                        .actors()
+                        .iter()
+                        .find(|actor| actor.source_entity_index == tree_source_slot)
+                        .ok_or_else(|| {
+                            AbiError::new(
+                                MC_STATUS_VALIDATION_FAILED,
+                                "production tree source row disappeared",
+                            )
+                        })?;
+                    Ok(if shot == 0 {
+                        tree.life < sim_core::level1_mission::TREE_LIFE
+                    } else {
+                        session
+                            .mission
+                            .impacts()
+                            .iter()
+                            .any(|impact| impact.model == GROUND_FIRE_MODEL && impact.active)
+                    })
+                })
+                .unwrap();
+                if reached {
+                    break;
+                }
+                assert_eq!(
+                    mc_native_session_step(
+                        handle,
+                        &raw const idle,
+                        &raw mut flight,
+                        struct_size::<McSessionSnapshotV2>(),
+                    ),
+                    MC_STATUS_OK
+                );
+            }
+            assert!(
+                reached,
+                "production shot {shot} reaches the real tree lifecycle"
+            );
+        }
+
+        let query = McEventQueryV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McEventQueryV2>(),
+            generation: flight.generation,
+            cursor: 0,
+            reserved: [0; 4],
+        };
+        let mut events = vec![McEventV2::default(); 256];
+        let mut batch = McEventBatchV2::default();
+        assert_eq!(
+            mc_native_events_copy_since(
+                handle,
+                &raw const query,
+                events.as_mut_ptr(),
+                u32::try_from(events.len()).unwrap(),
+                struct_size::<McEventV2>(),
+                &raw mut batch,
+                struct_size::<McEventBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        events.truncate(usize::try_from(batch.written).unwrap());
+        assert!(events.iter().any(|event| {
+            event.kind == MC_EVENT_LEVEL1_ACTOR_DAMAGED
+                && event.entity_index == tree_authored_index
+                && event.code == u32::from(flight.entity_index)
+        }));
+
+        let first_ground_fire = read_level1_impacts(handle)
+            .into_iter()
+            .find(|impact| impact.model == GROUND_FIRE_MODEL && impact.active != 0)
+            .expect("the second production hit creates live class-10/model-6 ground fire");
+        assert_eq!(
+            (
+                first_ground_fire.class_id,
+                first_ground_fire.render_parameter_index,
+                first_ground_fire.base_tmap,
+                first_ground_fire.render_mode,
+                first_ground_fire.logical_height,
+                first_ground_fire.animation_frame,
+                first_ground_fire.authority,
+            ),
+            (
+                FIREBALL_IMPACT_CLASS,
+                228,
+                77,
+                1,
+                50,
+                0,
+                MC_AUTHORITY_LEVEL1_MISSION_LIVE,
+            )
+        );
+        assert!(
+            first_ground_fire.reserved[0] > 0 && first_ground_fire.reserved[0] < 1_000,
+            "the production ground fire retains its real source-arena slot"
+        );
+        with_session_mut(handle, |session| {
+            assert!(
+                session
+                    .renderable_map_chains
+                    .tracks(u16::try_from(first_ground_fire.reserved[0]).unwrap()),
+                "model 6 follows NewAdd0A06's AddEventToMap path"
+            );
+            session.state.position = Position {
+                x: tree_position.x.wrapping_add(16_384),
+                y: tree_position.y.wrapping_add(16_384),
+                z: tree_position.z.wrapping_add(2_000),
+            };
+            session.state.target_speed = 0;
+            session.state.actual_speed = 0;
+            session.state.strafe_speed = 0;
+            session.mission.player_life = 1_000_000;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut changed_rows = Vec::new();
+        for _ in 0..256 {
+            let Some(ground_fire) = read_level1_impacts(handle).into_iter().find(|impact| {
+                impact.impact_id == first_ground_fire.impact_id && impact.active != 0
+            }) else {
+                break;
+            };
+            let phase = usize::from(ground_fire.render_parameter_index.saturating_sub(228));
+            let expected_heights = [50, 150, 300, 450, 600, 700, 800, 950];
+            assert!(
+                phase < expected_heights.len(),
+                "ground-fire row {} lies outside 228..235",
+                ground_fire.render_parameter_index
+            );
+            assert_eq!(
+                (
+                    ground_fire.base_tmap,
+                    ground_fire.render_mode,
+                    ground_fire.logical_height,
+                    ground_fire.animation_frame,
+                ),
+                (77, 1, expected_heights[phase], 0)
+            );
+            if changed_rows.last().copied() != Some(ground_fire.render_parameter_index) {
+                changed_rows.push(ground_fire.render_parameter_index);
+            }
+            assert_eq!(
+                mc_native_session_step(
+                    handle,
+                    &raw const idle,
+                    &raw mut flight,
+                    struct_size::<McSessionSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+        }
+        assert_eq!(
+            changed_rows,
+            [
+                228, 229, 230, 231, 232, 233, 234, 235, 234, 233, 232, 231, 230, 229, 228
+            ],
+            "the real tree fire expands and contracts through the source phase table"
+        );
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 
@@ -11689,6 +12318,38 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
             MC_STATUS_OK
         );
         menu
+    }
+
+    fn read_level1_impacts(handle: u64) -> Vec<McFireballImpactSnapshotV2> {
+        let mut mission = McLevel1MissionSnapshotV2::default();
+        assert_eq!(
+            mc_native_level1_mission_snapshot(
+                handle,
+                &raw mut mission,
+                struct_size::<McLevel1MissionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let mut impacts = vec![
+            McFireballImpactSnapshotV2::default();
+            usize::try_from(mission.impact_count).unwrap()
+        ];
+        let mut written = 0;
+        assert_eq!(
+            mc_native_fireball_impacts_copy(
+                handle,
+                mission.generation,
+                mission.tick,
+                0,
+                impacts.as_mut_ptr(),
+                mission.impact_count,
+                struct_size::<McFireballImpactSnapshotV2>(),
+                &raw mut written,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(written, mission.impact_count);
+        impacts
     }
 
     fn assert_raw_tier_and_family_minus_one(handle: u64, snapshot: &mut McSessionSnapshotV2) {
@@ -12040,6 +12701,21 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
     fn real_level_one_right_hand_possession_claims_and_composites_a_building() {
         let handle = open_fixture_with_owner_cache_and_terrain_frame_assets();
         let target = with_session_mut(handle, |session| {
+            session.mission.possession_experience = 600;
+            session.mission.possession_tier = 1;
+            let fire =
+                session.context.spell_fire.as_mut().ok_or_else(|| {
+                    AbiError::new(MC_STATUS_VALIDATION_FAILED, "spell state absent")
+                })?;
+            fire.spell_levels[1] = 1;
+            fire.family_selected_tiers[1] = 1;
+            fire.holders
+                .iter_mut()
+                .find(|holder| holder.entity_index == 154)
+                .ok_or_else(|| {
+                    AbiError::new(MC_STATUS_VALIDATION_FAILED, "possession holder absent")
+                })?
+                .level_gate = 1;
             let target = *session
                 .world
                 .level1_mission()
@@ -12114,8 +12790,53 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
         assert_eq!(mission.possessed_building_count, 1);
         assert_eq!(mission.last_possessed_building_entity, target.entity_index);
         assert_eq!(mission.last_possessed_building_owner, snapshot.entity_index);
-        assert_eq!(mission.possession_experience, 1);
-        assert_eq!(mission.possession_tier, 0);
+        assert_eq!(mission.possession_experience, 601);
+        assert_eq!(mission.possession_tier, 1);
+        let mut impacts = vec![
+            McFireballImpactSnapshotV2::default();
+            usize::try_from(mission.impact_count).unwrap()
+        ];
+        let mut impact_written = 0;
+        assert_eq!(
+            mc_native_fireball_impacts_copy(
+                handle,
+                mission.generation,
+                mission.tick,
+                0,
+                impacts.as_mut_ptr(),
+                mission.impact_count,
+                struct_size::<McFireballImpactSnapshotV2>(),
+                &raw mut impact_written,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(impact_written, mission.impact_count);
+        let attraction = impacts
+            .iter()
+            .find(|impact| impact.model == POSSESSION_ATTRACTION_MODEL)
+            .expect("tier-one production collision retains its model-54 gameplay row");
+        assert_eq!(
+            (
+                attraction.class_id,
+                attraction.render_parameter_index,
+                attraction.base_tmap,
+                attraction.render_mode,
+                attraction.logical_height,
+                attraction.animation_frame,
+                attraction.authority,
+                attraction.active,
+            ),
+            (
+                FIREBALL_IMPACT_CLASS,
+                POSSESSION_ATTRACTION_RENDER_INDEX,
+                POSSESSION_ATTRACTION_BASE_TMAP,
+                POSSESSION_ATTRACTION_RENDER_MODE,
+                POSSESSION_ATTRACTION_LOGICAL_HEIGHT,
+                0,
+                MC_AUTHORITY_LEVEL1_MISSION_LIVE,
+                1,
+            )
+        );
         with_session(handle, |session| {
             let house = session
                 .live_world
@@ -12131,6 +12852,12 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
             assert_eq!(house.owner_entity_index, snapshot.entity_index);
             assert_eq!(house.pending_possession_owner, 0);
             assert_eq!(house.pending_possession_payload, 0);
+            assert!(
+                !session
+                    .renderable_map_chains
+                    .tracks(u16::try_from(attraction.reserved[0]).unwrap()),
+                "model 54 remains in gameplay snapshots without an AddEventToMap chain"
+            );
             Ok(())
         })
         .unwrap();
@@ -12148,61 +12875,69 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
                 MC_STATUS_OK
             );
         }
-        let writes = with_session_mut(handle, |session| {
-            assert!(
-                session
+        let writes =
+            with_session_mut(handle, |session| {
+                assert!(
+                    session
+                        .mission
+                        .projectiles()
+                        .iter()
+                        .all(|projectile| !projectile.active())
+                );
+                assert!(
+                    session
+                        .mission
+                        .impacts()
+                        .iter()
+                        .filter(|impact| impact.model != POSSESSION_ATTRACTION_MODEL)
+                        .all(|impact| !impact.active)
+                );
+                assert!(
+                    session.mission.impacts().iter().any(|impact| {
+                        impact.model == POSSESSION_ATTRACTION_MODEL && impact.active
+                    }),
+                    "the invisible model-54 gameplay auxiliary outlives its short model-12 sibling"
+                );
+                let building = session
                     .mission
-                    .projectiles()
+                    .possessed_buildings()
                     .iter()
-                    .all(|projectile| !projectile.active())
-            );
-            assert!(
-                session
-                    .mission
-                    .impacts()
-                    .iter()
-                    .all(|impact| !impact.active)
-            );
-            let building = session
-                .mission
-                .possessed_buildings()
-                .iter()
-                .find(|building| building.entity_index == target.entity_index)
-                .copied()
-                .ok_or_else(|| {
-                    AbiError::new(
-                        MC_STATUS_VALIDATION_FAILED,
-                        "possessed Level 1 building disappeared",
-                    )
-                })?;
-            assert_eq!(building.owner_entity_index, snapshot.entity_index);
-            assert_eq!(building.render_parameter_index, 177);
-            assert_eq!(building.base_tmap, 96);
-            assert_eq!(building.render_mode, 0);
-            assert_eq!(building.logical_height, 400);
+                    .find(|building| building.entity_index == target.entity_index)
+                    .copied()
+                    .ok_or_else(|| {
+                        AbiError::new(
+                            MC_STATUS_VALIDATION_FAILED,
+                            "possessed Level 1 building disappeared",
+                        )
+                    })?;
+                assert_eq!(building.owner_entity_index, snapshot.entity_index);
+                assert_eq!(building.render_parameter_index, 177);
+                assert_eq!(building.base_tmap, 96);
+                assert_eq!(building.render_mode, 0);
+                assert_eq!(building.logical_height, 400);
 
-            session.state.position = Position {
-                x: target.position.x,
-                y: target.position.y.wrapping_add(1_000),
-                z: target.position.z,
-            };
-            session.state.yaw = 0;
-            session.state.pitch_accumulator = 0;
-            session.state.effective_pitch = 0;
-            session.camera_history = CameraHistory::capture(
-                &session.state,
-                session.source_turn,
-                session.camera_fov,
-                0,
-                0,
-            );
-            session
-                .sync_supported_renderable_records()
-                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
-            let frame = session.world_frame()?;
-            Ok(frame.combat_raster_stats.framebuffer_writes)
-        })
-        .unwrap();
+                session.state.position = Position {
+                    x: target.position.x,
+                    y: target.position.y.wrapping_add(1_000),
+                    z: target.position.z,
+                };
+                session.state.yaw = 0;
+                session.state.pitch_accumulator = 0;
+                session.state.effective_pitch = 0;
+                session.camera_history = CameraHistory::capture(
+                    &session.state,
+                    session.source_turn,
+                    session.camera_fov,
+                    0,
+                    0,
+                );
+                session
+                    .sync_supported_renderable_records()
+                    .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+                let frame = session.world_frame()?;
+                Ok(frame.combat_raster_stats.framebuffer_writes)
+            })
+            .unwrap();
         assert!(
             writes > 0,
             "the persistent remc2 parameter-177/TMAP-96 building reaches the indexed compositor"
@@ -12636,12 +13371,25 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
 
         let first = open_fixture();
         let second = open_fixture();
+        let rng_only = open_fixture();
         let first_session = session_snapshot(first);
         let second_session = session_snapshot(second);
+        let rng_only_session = session_snapshot(rng_only);
         let (reset_rows, reset_batch) = goats(first, first_session.generation);
         let (second_rows, second_batch) = goats(second, second_session.generation);
+        let (rng_only_reset_rows, rng_only_reset_batch) =
+            goats(rng_only, rng_only_session.generation);
         assert_eq!(reset_rows, second_rows);
         assert_eq!(reset_batch.live_world_hash, second_batch.live_world_hash);
+        assert_eq!(
+            reset_batch.live_world_hash, 0x498e_4302_1f82_80b8,
+            "C ABI publishes the explicit v2 reset hash"
+        );
+        assert_eq!(rng_only_reset_rows, reset_rows);
+        assert_eq!(
+            rng_only_reset_batch.live_world_hash,
+            reset_batch.live_world_hash
+        );
         assert_eq!(reset_batch.tick, 0);
         assert_eq!(reset_rows[0].entity_index, 50);
         assert_eq!(reset_rows[0].authority, MC_AUTHORITY_GOAT_LIVE);
@@ -12649,6 +13397,44 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
         assert_eq!(reset_rows[0].base_tmap, 152);
         assert_eq!(reset_rows[0].life, 600);
         assert_eq!(reset_rows[0].max_life, 600);
+
+        with_session_mut(rng_only, |session| {
+            assert_eq!(session.mission.global_rng(), 0xad6e_67d9);
+            session.mission.begin_source_turn();
+            assert_eq!(session.mission.global_rng(), 0x9909_f858);
+            Ok(())
+        })
+        .expect("production UpdateEntities turn-start RNG draw");
+        let (rng_only_rows, rng_only_batch) = goats(rng_only, rng_only_session.generation);
+        assert_eq!(
+            rng_only_rows, rng_only_reset_rows,
+            "mission RNG changes while every C ABI Goat row remains identical"
+        );
+        assert_eq!(rng_only_batch.tick, rng_only_reset_batch.tick);
+        assert_ne!(
+            rng_only_batch.live_world_hash, rng_only_reset_batch.live_world_hash,
+            "C ABI live_world_hash must admit an RNG-only mutation"
+        );
+        let mut rng_only_restored = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_reset(
+                rng_only,
+                &raw mut rng_only_restored,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let (restored_rng_rows, restored_rng_batch) = goats(rng_only, rng_only_restored.generation);
+        assert_eq!(
+            restored_rng_rows, second_rows,
+            "reset restores every row after an RNG-only mutation"
+        );
+        assert_eq!(restored_rng_batch.tick, second_batch.tick);
+        assert_eq!(
+            restored_rng_batch.live_world_hash, second_batch.live_world_hash,
+            "reset restores the v2 RNG composite to an untouched session"
+        );
+        assert_eq!(mc_native_session_destroy(rng_only), MC_STATUS_OK);
 
         let mut stepped = McSessionSnapshotV2::default();
         let idle_command = valid_command();
@@ -13786,8 +14572,8 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
                     "flight state diverged on turn {turn}"
                 );
                 assert_eq!(
-                    direct.live_world.hash_v1(),
-                    capi.live_world.hash_v1(),
+                    direct.live_world_hash_v2(),
+                    capi.live_world_hash_v2(),
                     "typed imported world diverged on turn {turn}"
                 );
                 assert_eq!(
@@ -13944,7 +14730,7 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
         );
         with_session(handle, |capi| {
             assert!(!capi.mission.imported_source_slot_is_live(51));
-            assert_eq!(direct.live_world.hash_v1(), capi.live_world.hash_v1());
+            assert_eq!(direct.live_world_hash_v2(), capi.live_world_hash_v2());
             assert_eq!(
                 direct.mission.source_arena_hash_v1(),
                 capi.mission.source_arena_hash_v1()
@@ -14041,8 +14827,8 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
                 "C API applies the resident render projection in the dispatch slot"
             );
             assert_eq!(
-                direct.live_world.hash_v1(),
-                capi.live_world.hash_v1(),
+                direct.live_world_hash_v2(),
+                capi.live_world_hash_v2(),
                 "resident effect live-world hashes diverged"
             );
             assert_eq!(
@@ -14092,8 +14878,8 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
                     "flight state diverged on dynamic turn {turn}"
                 );
                 assert_eq!(
-                    direct.live_world.hash_v1(),
-                    capi.live_world.hash_v1(),
+                    direct.live_world_hash_v2(),
+                    capi.live_world_hash_v2(),
                     "typed imported world diverged on dynamic turn {turn}"
                 );
                 assert_eq!(

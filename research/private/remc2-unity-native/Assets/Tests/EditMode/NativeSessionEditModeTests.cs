@@ -986,6 +986,85 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(impacts[0].payload, Is.EqualTo(250));
             }
 
+            var groundFire = new NativeSim.FireballImpactSnapshot
+            {
+                abiVersion = NativeSim.AbiVersion,
+                structSize = 52,
+                impactId = 4435,
+                sourceProjectileId = 803,
+                authority = NativeSim.Level1MissionLive,
+                active = 1,
+                damageSubmitted = 1,
+                classId = 10,
+                model = 6,
+                renderMode = 1,
+                animationFrame = 0,
+                x = 30_414,
+                y = 33_440,
+                z = 256,
+                lifeTicks = 130,
+                payload = 50,
+                baseTmap = 77,
+                renderParameterIndex = 228,
+                logicalHeight = 50,
+                reserved = new uint[] { 122, 0 },
+            };
+            var groundFireRows = new ushort[]
+            {
+                228, 229, 230, 231, 232, 233, 234, 235,
+                234, 233, 232, 231, 230, 229, 228
+            };
+            foreach (var row in groundFireRows)
+            {
+                var phaseSnapshot = groundFire;
+                phaseSnapshot.renderParameterIndex = row;
+                phaseSnapshot.logicalHeight =
+                    NativeSession.GroundFireLogicalHeight(row);
+                Assert.DoesNotThrow(
+                    () => NativeSession.ValidateFireballImpactSnapshot(
+                        phaseSnapshot),
+                    $"ground-fire row {row}");
+            }
+
+            var malformedMapping = groundFire;
+            malformedMapping.renderParameterIndex = 236;
+            Assert.Throws<InvalidOperationException>(
+                () => NativeSession.ValidateFireballImpactSnapshot(malformedMapping));
+            var malformedHeight = groundFire;
+            malformedHeight.logicalHeight = 150;
+            Assert.Throws<InvalidOperationException>(
+                () => NativeSession.ValidateFireballImpactSnapshot(malformedHeight));
+            var malformedFrame = groundFire;
+            malformedFrame.animationFrame = 1;
+            Assert.Throws<InvalidOperationException>(
+                () => NativeSession.ValidateFireballImpactSnapshot(malformedFrame));
+            var malformedReserved = groundFire;
+            malformedReserved.reserved = new uint[] { 122, 1 };
+            Assert.Throws<InvalidOperationException>(
+                () => NativeSession.ValidateFireballImpactSnapshot(malformedReserved));
+
+            var attraction = groundFire;
+            attraction.impactId = 4436;
+            attraction.model = 54;
+            attraction.renderMode = 20;
+            attraction.baseTmap = 8;
+            attraction.renderParameterIndex = 0;
+            attraction.logicalHeight = 250;
+            Assert.DoesNotThrow(
+                () => NativeSession.ValidateFireballImpactSnapshot(attraction));
+
+            var strongPossession = groundFire;
+            strongPossession.impactId = 4437;
+            strongPossession.model = 70;
+            strongPossession.renderMode = 21;
+            strongPossession.baseTmap = 54;
+            strongPossession.renderParameterIndex = 41;
+            strongPossession.logicalHeight = 250;
+            strongPossession.animationFrame = 1;
+            Assert.DoesNotThrow(
+                () => NativeSession.ValidateFireballImpactSnapshot(
+                    strongPossession));
+
             var reset = session.Reset();
             mission = session.Level1Mission();
             Assert.That(mission.generation, Is.EqualTo(reset.generation));
@@ -1392,6 +1471,26 @@ namespace MagicCarpet.Native.Tests
         [Timeout(1_200_000)]
         public void LevelOneNaturalFireflyRetaliationUsesOnlyOrdinaryPlayerInputs()
         {
+            AssertNaturalFireflyDrainAccounting();
+            Assert.That(
+                RequestsPlayerFireball(0x40, 0, 2),
+                Is.True,
+                "select-and-cast Fireball is suppressed");
+            Assert.That(
+                RequestsPlayerFireball(
+                    0x40,
+                    NativeSim.NoRequestedSpell,
+                    0),
+                Is.True,
+                "an already-selected Fireball cast is suppressed");
+            Assert.That(
+                RequestsPlayerFireball(
+                    0x40,
+                    NativeSim.NoRequestedSpell,
+                    2),
+                Is.False,
+                "an already-selected non-Fireball cast remains available");
+
             var first = RunNaturalFireflyRetaliation();
             var second = RunNaturalFireflyRetaliation();
             UnityEngine.Debug.Log(
@@ -1399,20 +1498,34 @@ namespace MagicCarpet.Native.Tests
                 $"approach={first} repeat={second}");
 
             Assert.That(first.StageFourFireCommands, Is.Zero);
-            Assert.That(first.FireflyHitCount, Is.Zero);
-            Assert.That(first.HostileSpawnCount, Is.GreaterThanOrEqualTo(1));
-            Assert.That(first.HostileImpactCount, Is.GreaterThanOrEqualTo(1));
-            Assert.That(first.VisibleHostileImpactCount, Is.GreaterThanOrEqualTo(1));
-            Assert.That(first.HostilePlayerDamageCount, Is.GreaterThanOrEqualTo(1));
-            Assert.That(first.MinimumPlayerLife, Is.LessThanOrEqualTo(9_500));
+            Assert.That(first.PlayerDirectFireflyHitCount, Is.Zero);
+            Assert.That(
+                first.HostilePlayerDamageCount + first.ContactPlayerDamageCount,
+                Is.GreaterThanOrEqualTo(1),
+                "source Fireflies may retaliate through ranged 500-damage or contact 300-damage");
+            if (first.HostilePlayerDamageCount > 0)
+            {
+                Assert.That(first.HostileSpawnCount, Is.GreaterThanOrEqualTo(1));
+                Assert.That(first.HostileImpactCount, Is.GreaterThanOrEqualTo(1));
+                Assert.That(first.VisibleHostileImpactCount, Is.GreaterThanOrEqualTo(1));
+            }
+            Assert.That(first.MinimumPlayerLife, Is.LessThan(10_000));
             Assert.That(first.CommandHash, Is.EqualTo(second.CommandHash));
             Assert.That(first.EventHash, Is.EqualTo(second.EventHash));
             Assert.That(first.StateHash, Is.EqualTo(second.StateHash));
             Assert.That(first.Tick, Is.EqualTo(second.Tick));
+            Assert.That(
+                first.PlayerDirectFireflyHitCount,
+                Is.EqualTo(second.PlayerDirectFireflyHitCount));
+            Assert.That(
+                first.CollateralFireflyHitCount,
+                Is.EqualTo(second.CollateralFireflyHitCount));
 
             UnityEngine.Debug.Log(
                 $"MC_LEVEL1_FIREFLY_RETALIATION PASS tick={first.Tick} " +
-                $"fire={first.StageFourFireCommands} hits={first.FireflyHitCount} " +
+                $"fire={first.StageFourFireCommands} " +
+                $"directHits={first.PlayerDirectFireflyHitCount} " +
+                $"collateralHits={first.CollateralFireflyHitCount} " +
                 $"hostileSpawns={first.HostileSpawnCount} " +
                 $"hostileImpacts={first.HostileImpactCount}/" +
                 $"{first.VisibleHostileImpactCount} " +
@@ -2368,6 +2481,130 @@ namespace MagicCarpet.Native.Tests
                 suppressedCommands);
         }
 
+        private static void AssertNaturalFireflyDrainAccounting()
+        {
+            const ushort playerEntityIndex = 7;
+            const ushort fireflyEntityIndex = 113;
+            const ushort archerEntityIndex = 114;
+            var actors = new[]
+            {
+                new NativeSim.Level1ActorSnapshot
+                {
+                    authoredIndex = fireflyEntityIndex,
+                    kind = 2,
+                },
+                new NativeSim.Level1ActorSnapshot
+                {
+                    authoredIndex = archerEntityIndex,
+                    kind = 1,
+                },
+            };
+            var playerFireflyDamage = new NativeSim.NativeEvent
+            {
+                kind = NativeSim.EventLevel1ActorDamaged,
+                code = playerEntityIndex,
+                entityIndex = fireflyEntityIndex,
+            };
+            var collateralFireflyDamage = playerFireflyDamage;
+            collateralFireflyDamage.code = 99;
+            var playerArcherDamage = playerFireflyDamage;
+            playerArcherDamage.entityIndex = archerEntityIndex;
+
+            var cases = new[]
+            {
+                new
+                {
+                    Name = "stage-entry batch",
+                    StageFourStarted = true,
+                    ObserveThisStep = false,
+                    CountRetaliation = false,
+                },
+                new
+                {
+                    Name = "final projectile drain batch",
+                    StageFourStarted = true,
+                    ObserveThisStep = false,
+                    CountRetaliation = false,
+                },
+                new
+                {
+                    Name = "subsequent observation batch",
+                    StageFourStarted = true,
+                    ObserveThisStep = true,
+                    CountRetaliation = true,
+                },
+            };
+            foreach (var drainCase in cases)
+            {
+                var window = NaturalFireflyAccountingWindow.ForStep(
+                    drainCase.StageFourStarted,
+                    drainCase.ObserveThisStep);
+                Assert.That(
+                    ClassifyNaturalFireflyDamage(
+                        window,
+                        playerFireflyDamage,
+                        actors,
+                        playerEntityIndex),
+                    Is.EqualTo(FireflyDamageAttribution.Player),
+                    $"{drainCase.Name} counts player-attributed Firefly damage");
+                Assert.That(
+                    ClassifyNaturalFireflyDamage(
+                        window,
+                        collateralFireflyDamage,
+                        actors,
+                        playerEntityIndex),
+                    Is.EqualTo(FireflyDamageAttribution.Collateral),
+                    $"{drainCase.Name} separates collateral Firefly damage");
+                Assert.That(
+                    ClassifyNaturalFireflyDamage(
+                        window,
+                        playerArcherDamage,
+                        actors,
+                        playerEntityIndex),
+                    Is.EqualTo(FireflyDamageAttribution.None),
+                    $"{drainCase.Name} excludes non-Firefly damage");
+                Assert.That(
+                    window.CountRetaliation,
+                    Is.EqualTo(drainCase.CountRetaliation),
+                    $"{drainCase.Name} keeps retaliation, spawn, impact, and " +
+                    "life accounting observation-gated");
+            }
+
+            var beforeStage = NaturalFireflyAccountingWindow.ForStep(
+                stageFourStartedAfterStep: false,
+                observeThisStep: false);
+            Assert.That(
+                ClassifyNaturalFireflyDamage(
+                    beforeStage,
+                    playerFireflyDamage,
+                    actors,
+                    playerEntityIndex),
+                Is.EqualTo(FireflyDamageAttribution.None),
+                "pre-stage Firefly damage remains outside the stage-four proof");
+        }
+
+        private static FireflyDamageAttribution ClassifyNaturalFireflyDamage(
+            NaturalFireflyAccountingWindow window,
+            NativeSim.NativeEvent nativeEvent,
+            NativeSim.Level1ActorSnapshot[] actors,
+            ushort playerEntityIndex)
+        {
+            if (!window.CountFireflyDamage ||
+                nativeEvent.kind != NativeSim.EventLevel1ActorDamaged ||
+                !Array.Exists(
+                    actors,
+                    actor =>
+                        actor.authoredIndex == nativeEvent.entityIndex &&
+                        actor.kind == 2))
+            {
+                return FireflyDamageAttribution.None;
+            }
+
+            return nativeEvent.code == playerEntityIndex
+                ? FireflyDamageAttribution.Player
+                : FireflyDamageAttribution.Collateral;
+        }
+
         private static NaturalFireflyResult RunNaturalFireflyRetaliation(
             int maximumStageFourTicks = 20_000)
         {
@@ -2388,8 +2625,10 @@ namespace MagicCarpet.Native.Tests
             var eventHash = FnvOffset;
             var stateHash = FnvOffset;
             var stageFourStartTick = 0UL;
+            var observationStartTick = 0UL;
             var stageFourFireCommands = 0;
-            var fireflyHitCount = 0;
+            var playerDirectFireflyHitCount = 0;
+            var collateralFireflyHitCount = 0;
             var hostileSpawnCount = 0;
             var hostileImpactCount = 0;
             var hostilePlayerDamageCount = 0;
@@ -2403,6 +2642,7 @@ namespace MagicCarpet.Native.Tests
 
             for (var tick = 0; tick < 120_000; tick++)
             {
+                var observeThisStep = observationStartTick != 0;
                 var command = driver.Next(
                     Level1Autopilot.Observe(
                         snapshot,
@@ -2418,7 +2658,6 @@ namespace MagicCarpet.Native.Tests
                     if (stageFourStartTick == 0)
                     {
                         stageFourStartTick = snapshot.tick;
-                        minimumPlayerLife = mission.playerLife;
                     }
                     var nearestFireflyDistance =
                         NearestVisibleActorDistance(snapshot, actors, 2);
@@ -2449,9 +2688,10 @@ namespace MagicCarpet.Native.Tests
                     flags = unchecked((byte)command.Flags);
                     requestedSpell = command.RequestedSpell;
 
-                    var requestsFireball =
-                        (flags & 0x40) != 0 &&
-                        requestedSpell == 0;
+                    var requestsFireball = RequestsPlayerFireball(
+                        flags,
+                        requestedSpell,
+                        snapshot.selectedSpellUiIndex);
                     if (requestsFireball)
                     {
                         flags = (byte)(flags & ~0x40);
@@ -2470,8 +2710,10 @@ namespace MagicCarpet.Native.Tests
                         command.Phase,
                         command.Opcode,
                         command.Argument1);
-                    if ((unchecked((byte)command.Flags) & 0x40) != 0 &&
-                        command.RequestedSpell == 0)
+                    if (RequestsPlayerFireball(
+                            unchecked((byte)command.Flags),
+                            command.RequestedSpell,
+                            snapshot.selectedSpellUiIndex))
                     {
                         stageFourFireCommands++;
                     }
@@ -2505,17 +2747,49 @@ namespace MagicCarpet.Native.Tests
                     spheres = session.Level1ManaSpheres(mission);
                     castle = session.Level1Castle(mission);
                 }
-                if (stageFourStartTick != 0)
+                if (stageFourStartTick == 0 && mission.currentStage == 4)
+                {
+                    // The stage may enter during this authoritative step.
+                    // Count its event batch because later source slots can
+                    // already hit the newly activated Fireflies.
+                    stageFourStartTick = snapshot.tick;
+                }
+                if (stageFourStartTick != 0 && observationStartTick == 0)
+                {
+                    var playerProjectileActive = Array.Exists(
+                        session.FireballProjectiles(mission),
+                        projectile =>
+                            projectile.active != 0 &&
+                            projectile.projectileKind == 1 &&
+                            projectile.ownerEntityIndex == snapshot.entityIndex);
+                    if (!playerProjectileActive)
+                    {
+                        // Arm only after the step that drains the final
+                        // player-owned projectile. Direct Firefly damage is
+                        // counted across the whole stage, while retaliation
+                        // accounting begins on the following step.
+                        observationStartTick = snapshot.tick;
+                        minimumPlayerLife = mission.playerLife;
+                    }
+                }
+                var accountingWindow =
+                    NaturalFireflyAccountingWindow.ForStep(
+                        stageFourStartTick != 0,
+                        observeThisStep);
+                if (accountingWindow.CountRetaliation)
                 {
                     minimumPlayerLife = Math.Min(minimumPlayerLife, mission.playerLife);
                 }
-                foreach (var impact in session.FireballImpacts(mission))
+                if (accountingWindow.CountRetaliation)
                 {
-                    if (impact.active != 0 &&
-                        impact.model == 0 &&
-                        hostileProjectiles.Contains(impact.sourceProjectileId))
+                    foreach (var impact in session.FireballImpacts(mission))
                     {
-                        visibleHostileImpacts.Add(impact.impactId);
+                        if (impact.active != 0 &&
+                            impact.model == 0 &&
+                            hostileProjectiles.Contains(impact.sourceProjectileId))
+                        {
+                            visibleHostileImpacts.Add(impact.impactId);
+                        }
                     }
                 }
 
@@ -2560,25 +2834,33 @@ namespace MagicCarpet.Native.Tests
                             eventHash,
                             unchecked((uint)nativeEvent.value1));
 
-                        if (stageFourStartTick != 0 &&
-                            nativeEvent.kind == NativeSim.EventLevel1ActorDamaged &&
-                            nativeEvent.value0 == 250 &&
-                            Array.Exists(
+                        var damageAttribution =
+                            ClassifyNaturalFireflyDamage(
+                                accountingWindow,
+                                nativeEvent,
                                 actors,
-                                actor =>
-                                    actor.authoredIndex == nativeEvent.entityIndex &&
-                                    actor.kind == 2))
+                                snapshot.entityIndex);
+                        if (damageAttribution !=
+                            FireflyDamageAttribution.None)
                         {
-                            fireflyHitCount++;
+                            if (damageAttribution ==
+                                FireflyDamageAttribution.Player)
+                            {
+                                playerDirectFireflyHitCount++;
+                            }
+                            else
+                            {
+                                collateralFireflyHitCount++;
+                            }
                         }
-                        else if (stageFourStartTick != 0 &&
+                        else if (accountingWindow.CountRetaliation &&
                                  nativeEvent.kind ==
                                  NativeSim.EventLevel1FireflyFireballSpawned)
                         {
                             hostileProjectiles.Add(nativeEvent.code);
                             hostileSpawnCount++;
                         }
-                        else if (stageFourStartTick != 0 &&
+                        else if (accountingWindow.CountRetaliation &&
                                  nativeEvent.kind ==
                                      NativeSim.EventLevel1FireballImpacted &&
                                  hostileProjectiles.Contains(
@@ -2586,7 +2868,7 @@ namespace MagicCarpet.Native.Tests
                         {
                             hostileImpactCount++;
                         }
-                        else if (stageFourStartTick != 0 &&
+                        else if (accountingWindow.CountRetaliation &&
                                  nativeEvent.kind ==
                                      NativeSim.EventLevel1PlayerDamaged)
                         {
@@ -2605,13 +2887,14 @@ namespace MagicCarpet.Native.Tests
                     if (batch.hasMore == 0) break;
                 }
 
-                if (stageFourStartTick != 0 &&
-                    hostilePlayerDamageCount > 0)
+                if (observationStartTick != 0 &&
+                    (hostilePlayerDamageCount > 0 ||
+                     contactPlayerDamageCount > 0))
                 {
                     break;
                 }
-                if (stageFourStartTick != 0 &&
-                    snapshot.tick - stageFourStartTick >=
+                if (observationStartTick != 0 &&
+                    snapshot.tick - observationStartTick >=
                     (ulong)maximumStageFourTicks)
                 {
                     break;
@@ -2622,7 +2905,8 @@ namespace MagicCarpet.Native.Tests
             return new NaturalFireflyResult(
                 snapshot.tick,
                 stageFourFireCommands,
-                fireflyHitCount,
+                playerDirectFireflyHitCount,
+                collateralFireflyHitCount,
                 hostileSpawnCount,
                 hostileImpactCount,
                 visibleHostileImpacts.Count,
@@ -2632,6 +2916,17 @@ namespace MagicCarpet.Native.Tests
                 commandHash,
                 eventHash,
                 stateHash);
+        }
+
+        private static bool RequestsPlayerFireball(
+            byte flags,
+            short requestedSpell,
+            byte selectedSpellUiIndex)
+        {
+            return (flags & 0x40) != 0 &&
+                   (requestedSpell == 0 ||
+                    (requestedSpell == NativeSim.NoRequestedSpell &&
+                     selectedSpellUiIndex == 0));
         }
 
         private static double NearestVisibleActorDistance(
@@ -2783,11 +3078,42 @@ namespace MagicCarpet.Native.Tests
             }
         }
 
+        private enum FireflyDamageAttribution : byte
+        {
+            None,
+            Player,
+            Collateral,
+        }
+
+        private readonly struct NaturalFireflyAccountingWindow
+        {
+            internal readonly bool CountFireflyDamage;
+            internal readonly bool CountRetaliation;
+
+            private NaturalFireflyAccountingWindow(
+                bool countFireflyDamage,
+                bool countRetaliation)
+            {
+                CountFireflyDamage = countFireflyDamage;
+                CountRetaliation = countRetaliation;
+            }
+
+            internal static NaturalFireflyAccountingWindow ForStep(
+                bool stageFourStartedAfterStep,
+                bool observeThisStep)
+            {
+                return new NaturalFireflyAccountingWindow(
+                    stageFourStartedAfterStep,
+                    observeThisStep);
+            }
+        }
+
         private readonly struct NaturalFireflyResult
         {
             internal readonly ulong Tick;
             internal readonly int StageFourFireCommands;
-            internal readonly int FireflyHitCount;
+            internal readonly int PlayerDirectFireflyHitCount;
+            internal readonly int CollateralFireflyHitCount;
             internal readonly int HostileSpawnCount;
             internal readonly int HostileImpactCount;
             internal readonly int VisibleHostileImpactCount;
@@ -2801,7 +3127,8 @@ namespace MagicCarpet.Native.Tests
             internal NaturalFireflyResult(
                 ulong tick,
                 int stageFourFireCommands,
-                int fireflyHitCount,
+                int playerDirectFireflyHitCount,
+                int collateralFireflyHitCount,
                 int hostileSpawnCount,
                 int hostileImpactCount,
                 int visibleHostileImpactCount,
@@ -2814,7 +3141,8 @@ namespace MagicCarpet.Native.Tests
             {
                 Tick = tick;
                 StageFourFireCommands = stageFourFireCommands;
-                FireflyHitCount = fireflyHitCount;
+                PlayerDirectFireflyHitCount = playerDirectFireflyHitCount;
+                CollateralFireflyHitCount = collateralFireflyHitCount;
                 HostileSpawnCount = hostileSpawnCount;
                 HostileImpactCount = hostileImpactCount;
                 VisibleHostileImpactCount = visibleHostileImpactCount;
@@ -2829,7 +3157,9 @@ namespace MagicCarpet.Native.Tests
             public override string ToString()
             {
                 return $"tick={Tick},fire={StageFourFireCommands}," +
-                       $"hits={FireflyHitCount},spawns={HostileSpawnCount}," +
+                       $"directHits={PlayerDirectFireflyHitCount}," +
+                       $"collateralHits={CollateralFireflyHitCount}," +
+                       $"spawns={HostileSpawnCount}," +
                        $"impacts={HostileImpactCount}/{VisibleHostileImpactCount}," +
                        $"damage={HostilePlayerDamageCount}," +
                        $"contact={ContactPlayerDamageCount},minLife={MinimumPlayerLife}";
@@ -3096,10 +3426,25 @@ namespace MagicCarpet.Native.Tests
                 Is.False);
             Assert.That(
                 MagicCarpetRuntime.ManagedMissionImpactVisible(
-                    1, NativeSim.TerrainFrameCombatComposited),
+                    6, 1, NativeSim.TerrainFrameCombatComposited),
                 Is.False);
             Assert.That(
-                MagicCarpetRuntime.ManagedMissionImpactVisible(1, 0),
+                MagicCarpetRuntime.ManagedMissionImpactVisible(6, 1, 0),
+                Is.True);
+            foreach (var model in new byte[] { 12, 54, 70 })
+            {
+                Assert.That(
+                    MagicCarpetRuntime.ManagedMissionImpactHasMarker(model),
+                    Is.False,
+                    $"source-hidden impact model {model} creates no marker object");
+                Assert.That(
+                    MagicCarpetRuntime.ManagedMissionImpactVisible(
+                        model, 1, 0),
+                    Is.False,
+                    $"source-hidden impact model {model}");
+            }
+            Assert.That(
+                MagicCarpetRuntime.ManagedMissionImpactHasMarker(6),
                 Is.True);
         }
 

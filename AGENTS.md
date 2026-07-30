@@ -63,6 +63,17 @@ The program has two deliverables:
 General engineering techniques may inform both. Reconstructed MC2 code and
 original expression do not cross into the commercial successor.
 
+## Test cadence
+
+- Expect the full 29-test Unity EditMode gate to take at least about 75
+  minutes and potentially well over 90 minutes when repeated post-completion
+  determinism routes are enabled.
+- Monitor it sparsely through milestone or log growth and CPU activity. Avoid
+  frequent status chatter, and investigate a hang only if that progress stops
+  materially beyond the relevant per-test timeout or observed envelope.
+- Balance redundancy against cost: avoid low-value repetition, but keep enough
+  independent checks to catch important failures.
+
 ## Beads and collaboration
 
 - Use only `br` to create or change beads and dependencies; always request

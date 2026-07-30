@@ -5374,33 +5374,39 @@ namespace MagicCarpet.Native
             RemoveMissingMissionMarkers(
                 missionProjectileRegistry, liveProjectiles);
 
+            var seenImpactIds = new HashSet<uint>();
             var liveImpacts = new HashSet<uint>();
             foreach (var impact in fireballImpacts)
             {
                 Require(
-                    liveImpacts.Add(impact.impactId),
+                    seenImpactIds.Add(impact.impactId),
                     $"unique Fireball impact {impact.impactId}");
-                if (!missionImpactRegistry.TryGetValue(
-                    impact.impactId, out var marker))
-                {
-                    marker = CreateMissionMarker(
-                        $"Fireball impact {impact.impactId}",
-                        impact.impactId);
-                    missionImpactRegistry.Add(impact.impactId, marker);
-                }
+                var groundFireHeight =
+                    NativeSession.GroundFireLogicalHeight(
+                        impact.renderParameterIndex);
                 var supportedImpact =
                     impact.model == 0 &&
                     impact.renderMode == 36 &&
                     impact.baseTmap == 38 &&
                     impact.logicalHeight == 250 ||
+                    impact.model == 6 &&
+                    impact.renderMode == 1 &&
+                    impact.baseTmap == 77 &&
+                    groundFireHeight != 0 &&
+                    impact.logicalHeight == groundFireHeight ||
                     impact.model == 5 &&
                     impact.renderMode == 11 &&
                     impact.baseTmap == 186 &&
                     impact.logicalHeight == 300 ||
-                    impact.model == 12 &&
+                    (impact.model == 12 || impact.model == 70) &&
                     impact.renderMode == 21 &&
                     impact.baseTmap == 54 &&
                     impact.renderParameterIndex == 41 &&
+                    impact.logicalHeight == 250 ||
+                    impact.model == 54 &&
+                    impact.renderMode == 20 &&
+                    impact.baseTmap == 8 &&
+                    impact.renderParameterIndex == 0 &&
                     impact.logicalHeight == 250 ||
                     impact.model == 13 &&
                     impact.renderMode == 21 &&
@@ -5411,22 +5417,45 @@ namespace MagicCarpet.Native
                         (impact.renderParameterIndex - 66) * 50;
                 Require(
                     supportedImpact &&
-                    impact.animationFrame >= 0 &&
-                    (impact.model == 13
-                        ? impact.animationFrame >= 67 && impact.animationFrame <= 74
-                        : impact.animationFrame <= 9),
+                    (impact.model == 6 || impact.model == 54
+                        ? impact.animationFrame == 0
+                        : impact.model == 13
+                            ? impact.animationFrame >= 67 &&
+                                impact.animationFrame <= 74
+                            : impact.model == 12 || impact.model == 70
+                                ? impact.animationFrame >= 0 &&
+                                    impact.animationFrame <= 1
+                                : impact.animationFrame >= 0 &&
+                                    impact.animationFrame <= 9),
                     $"class-10 effect presentation {impact.impactId}");
+                if (!ManagedMissionImpactHasMarker(impact.model))
+                {
+                    continue;
+                }
+                liveImpacts.Add(impact.impactId);
+                if (!missionImpactRegistry.TryGetValue(
+                    impact.impactId, out var marker))
+                {
+                    marker = CreateMissionMarker(
+                        $"Fireball impact {impact.impactId}",
+                        impact.impactId);
+                    missionImpactRegistry.Add(impact.impactId, marker);
+                }
                 UpdateMissionMarker(
                     marker,
                     impact.x,
                     impact.y,
                     impact.z,
-                    impact.model == 12 || impact.model == 13
+                    impact.model == 6 ||
+                    impact.model == 12 ||
+                    impact.model == 13 ||
+                    impact.model == 70
                         ? impact.baseTmap
                         : impact.baseTmap + impact.animationFrame,
                     impact.logicalHeight,
                     false,
                     ManagedMissionImpactVisible(
+                        impact.model,
                         impact.active,
                         terrainFrameInfo.flags));
             }
@@ -5509,11 +5538,18 @@ namespace MagicCarpet.Native
             return (worldFrameFlags & NativeSim.TerrainFrameCombatComposited) == 0;
         }
 
+        internal static bool ManagedMissionImpactHasMarker(byte model)
+        {
+            return model != 12 && model != 54 && model != 70;
+        }
+
         internal static bool ManagedMissionImpactVisible(
+            byte model,
             byte active,
             uint worldFrameFlags)
         {
-            return active != 0 &&
+            return ManagedMissionImpactHasMarker(model) &&
+                   active != 0 &&
                    (worldFrameFlags & NativeSim.TerrainFrameCombatComposited) == 0;
         }
 

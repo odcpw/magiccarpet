@@ -1295,62 +1295,103 @@ namespace MagicCarpet.Native
             }
             foreach (var impact in values)
             {
-                var exactRenderMapping =
-                    (
-                        impact.model == 0 &&
-                        impact.renderParameterIndex == 7 &&
-                        impact.baseTmap == 38 &&
-                        impact.logicalHeight == 250 &&
-                        impact.renderMode == 36
-                    ) ||
-                    (
-                        impact.model == 5 &&
-                        impact.renderParameterIndex == 244 &&
-                        impact.baseTmap == 186 &&
-                        impact.logicalHeight == 300 &&
-                        impact.renderMode == 11
-                    ) ||
-                    (
-                        impact.model == 12 &&
-                        impact.renderParameterIndex == 41 &&
-                        impact.baseTmap == 54 &&
-                        impact.logicalHeight == 250 &&
-                        impact.renderMode == 21
-                    ) ||
-                    (
-                        impact.model == 13 &&
-                        impact.renderParameterIndex >= 67 &&
-                        impact.renderParameterIndex <= 74 &&
-                        impact.baseTmap == 57 &&
-                        impact.logicalHeight ==
-                            (impact.renderParameterIndex - 66) * 50 &&
-                        impact.renderMode == 21
-                    );
-                if (
-                    impact.abiVersion != NativeSim.AbiVersion ||
-                    impact.structSize != 52 ||
-                    impact.authority != NativeSim.Level1MissionLive ||
-                    !exactRenderMapping ||
-                    impact.animationFrame < 0 ||
-                    (
-                        impact.model == 13
-                            ? impact.animationFrame < 67 || impact.animationFrame > 74
-                            : impact.animationFrame > 9
-                    ) ||
-                    impact.reserved0 != 0 ||
-                    impact.reserved1 != 0 ||
-                    impact.reserved == null ||
-                    impact.reserved.Length != 2 ||
-                    impact.reserved[0] == 0 ||
-                    impact.reserved[0] >= 1000 ||
-                    impact.reserved[1] != 0)
-                {
-                    throw new InvalidOperationException(
-                        $"native Fireball impact {impact.impactId} returned " +
-                        "invalid layout, authority, or reserved state");
-                }
+                ValidateFireballImpactSnapshot(impact);
             }
             return values;
+        }
+
+        internal static void ValidateFireballImpactSnapshot(
+            NativeSim.FireballImpactSnapshot impact)
+        {
+            var groundFireHeight =
+                GroundFireLogicalHeight(impact.renderParameterIndex);
+            var exactRenderMapping =
+                (
+                    impact.model == 0 &&
+                    impact.renderParameterIndex == 7 &&
+                    impact.baseTmap == 38 &&
+                    impact.logicalHeight == 250 &&
+                    impact.renderMode == 36
+                ) ||
+                (
+                    impact.model == 6 &&
+                    groundFireHeight != 0 &&
+                    impact.baseTmap == 77 &&
+                    impact.logicalHeight == groundFireHeight &&
+                    impact.renderMode == 1
+                ) ||
+                (
+                    impact.model == 5 &&
+                    impact.renderParameterIndex == 244 &&
+                    impact.baseTmap == 186 &&
+                    impact.logicalHeight == 300 &&
+                    impact.renderMode == 11
+                ) ||
+                (
+                    (impact.model == 12 || impact.model == 70) &&
+                    impact.renderParameterIndex == 41 &&
+                    impact.baseTmap == 54 &&
+                    impact.logicalHeight == 250 &&
+                    impact.renderMode == 21
+                ) ||
+                (
+                    impact.model == 54 &&
+                    impact.renderParameterIndex == 0 &&
+                    impact.baseTmap == 8 &&
+                    impact.logicalHeight == 250 &&
+                    impact.renderMode == 20
+                ) ||
+                (
+                    impact.model == 13 &&
+                    impact.renderParameterIndex >= 67 &&
+                    impact.renderParameterIndex <= 74 &&
+                    impact.baseTmap == 57 &&
+                    impact.logicalHeight ==
+                        (impact.renderParameterIndex - 66) * 50 &&
+                    impact.renderMode == 21
+                );
+            var exactAnimationFrame = impact.model == 6 || impact.model == 54
+                ? impact.animationFrame == 0
+                : impact.model == 13
+                    ? impact.animationFrame >= 67 && impact.animationFrame <= 74
+                    : impact.model == 12 || impact.model == 70
+                        ? impact.animationFrame >= 0 && impact.animationFrame <= 1
+                        : impact.animationFrame >= 0 && impact.animationFrame <= 9;
+            if (
+                impact.abiVersion != NativeSim.AbiVersion ||
+                impact.structSize != 52 ||
+                impact.authority != NativeSim.Level1MissionLive ||
+                !exactRenderMapping ||
+                !exactAnimationFrame ||
+                impact.reserved0 != 0 ||
+                impact.reserved1 != 0 ||
+                impact.reserved == null ||
+                impact.reserved.Length != 2 ||
+                impact.reserved[0] == 0 ||
+                impact.reserved[0] >= 1000 ||
+                impact.reserved[1] != 0)
+            {
+                throw new InvalidOperationException(
+                    $"native Fireball impact {impact.impactId} returned " +
+                    "invalid layout, authority, or reserved state");
+            }
+        }
+
+        internal static ushort GroundFireLogicalHeight(
+            ushort renderParameterIndex)
+        {
+            switch (renderParameterIndex)
+            {
+                case 228: return 50;
+                case 229: return 150;
+                case 230: return 300;
+                case 231: return 450;
+                case 232: return 600;
+                case 233: return 700;
+                case 234: return 800;
+                case 235: return 950;
+                default: return 0;
+            }
         }
 
         internal NativeSim.GoatBatch InjectGoatDamageForQualification(

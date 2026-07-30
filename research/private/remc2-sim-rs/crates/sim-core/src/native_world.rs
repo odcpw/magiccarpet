@@ -36,12 +36,18 @@ use crate::{
         FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_LOGICAL_HEIGHT, FIREBALL_IMPACT_RENDER_INDEX,
         FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LOGICAL_HEIGHT, FIREBALL_RENDER_INDEX,
         FIREBALL_RENDER_MODE, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT, FIREFLY_RENDER_INDEX,
-        FIREFLY_RENDER_MODE, HouseResidentRequest, Level1AmbientEntity,
-        Level1CastlePlacementBlocker, Level1CollisionTarget, Level1MissionState,
-        Level1MissionTemplate, Level1ResetSourceSlot, Level1SourceCollisionTarget,
-        Level1SourceEffect, Level1SourceEntityAuthority, Level1SourceEntityView,
-        MANA_CARRIER_BASE_TMAP, MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_RENDER_INDEX,
-        MANA_CARRIER_RENDER_MODE, SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT,
+        FIREFLY_RENDER_MODE, GROUND_FIRE_BASE_TMAP, GROUND_FIRE_FIRST_RENDER_INDEX,
+        GROUND_FIRE_LOGICAL_HEIGHTS, GROUND_FIRE_PRESENTATION_BYTE_11,
+        GROUND_FIRE_PRESENTATION_SPEEDS, GROUND_FIRE_RENDER_MODE, HouseResidentRequest,
+        Level1AmbientEntity, Level1CastlePlacementBlocker, Level1CollisionTarget,
+        Level1MissionState, Level1MissionTemplate, Level1ResetSourceSlot,
+        Level1SourceCollisionTarget, Level1SourceEffect, Level1SourceEntityAuthority,
+        Level1SourceEntityView, MANA_CARRIER_BASE_TMAP, MANA_CARRIER_LOGICAL_HEIGHT,
+        MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_RENDER_MODE, POSSESSION_ATTRACTION_BASE_TMAP,
+        POSSESSION_ATTRACTION_LOGICAL_HEIGHT, POSSESSION_ATTRACTION_RENDER_INDEX,
+        POSSESSION_ATTRACTION_RENDER_MODE, POSSESSION_IMPACT_BASE_TMAP,
+        POSSESSION_IMPACT_LOGICAL_HEIGHT, POSSESSION_IMPACT_RENDER_INDEX,
+        POSSESSION_IMPACT_RENDER_MODE, SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT,
         SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE,
     },
     renderable_map_chain::RenderableMapSeed,
@@ -2466,6 +2472,10 @@ pub fn apply_level1_source_effects(
     live_world: &mut LiveWorldState,
     effects: &[Level1SourceEffect],
 ) -> std::result::Result<Vec<RenderableMapSeed>, String> {
+    if effects.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let mut staged_mission = mission.clone();
     let mut staged_world = live_world.clone();
     let mut render_updates = Vec::new();
@@ -2585,6 +2595,13 @@ fn house_collision_target(house: &HouseState) -> Level1CollisionTarget {
 }
 
 impl NativeSession<'_> {
+    /// Compose the legacy typed live-world hash with the authoritative
+    /// mission-owned global RNG under the explicit v2 domain.
+    #[must_use]
+    pub fn live_world_hash_v2(&self) -> u64 {
+        self.live_world.hash_v2(self.mission.global_rng())
+    }
+
     pub fn reset(&mut self) {
         self.terrain = SessionTerrain::from_world(self.world);
         self.state = self.world.reset_state;
@@ -3222,6 +3239,22 @@ fn validate_level_one_mission_presentation(presentation: &PresentationSelectors)
             -1,
         ),
         (
+            POSSESSION_IMPACT_RENDER_INDEX,
+            POSSESSION_IMPACT_BASE_TMAP,
+            POSSESSION_IMPACT_RENDER_MODE,
+            POSSESSION_IMPACT_LOGICAL_HEIGHT,
+            264,
+            -1,
+        ),
+        (
+            POSSESSION_ATTRACTION_RENDER_INDEX,
+            POSSESSION_ATTRACTION_BASE_TMAP,
+            POSSESSION_ATTRACTION_RENDER_MODE,
+            POSSESSION_ATTRACTION_LOGICAL_HEIGHT,
+            133,
+            1,
+        ),
+        (
             SPELL_JAR_RENDER_INDEX,
             SPELL_JAR_BASE_TMAP,
             SPELL_JAR_RENDER_MODE,
@@ -3253,6 +3286,35 @@ fn validate_level_one_mission_presentation(presentation: &PresentationSelectors)
             || parameter.byte_10 != 0
             || parameter.byte_11 != byte_11
             || parameter.render_mode != render_mode
+            || parameter.byte_13 != 0
+        {
+            return Err(NativeWorldError::new(format!(
+                "Level 1 render parameter {index} mismatch: {parameter:?}"
+            )));
+        }
+    }
+    for (phase, ((logical_height, speed), byte_11)) in GROUND_FIRE_LOGICAL_HEIGHTS
+        .into_iter()
+        .zip(GROUND_FIRE_PRESENTATION_SPEEDS)
+        .zip(GROUND_FIRE_PRESENTATION_BYTE_11)
+        .enumerate()
+    {
+        let index = GROUND_FIRE_FIRST_RENDER_INDEX
+            + u16::try_from(phase).expect("eight ground-fire phases fit u16");
+        let parameter = presentation
+            .particles
+            .get(usize::from(index))
+            .ok_or_else(|| {
+                NativeWorldError::new(format!("Level 1 render parameter {index} is absent"))
+            })?;
+        if parameter.base_tmap != GROUND_FIRE_BASE_TMAP
+            || parameter.word_2 != 8_492
+            || parameter.word_4 != 42
+            || parameter.speed != speed
+            || parameter.rotation_speed != logical_height
+            || parameter.byte_10 != 0
+            || parameter.byte_11 != byte_11
+            || parameter.render_mode != GROUND_FIRE_RENDER_MODE
             || parameter.byte_13 != 0
         {
             return Err(NativeWorldError::new(format!(
@@ -6202,6 +6264,36 @@ mod tests {
         assert_ne!(terrain.deterministic_hash(), before);
 
         let mut session = world.session();
+        let empty_mission_before = session.mission.clone();
+        let empty_live_world_before = session.live_world.clone();
+        let empty_global_rng = session.mission.global_rng();
+        let empty_events = session.mission.events().to_vec();
+        let empty_arena_hash = session.mission.source_arena_hash_v1();
+        let empty_live_hash = session.live_world_hash_v2();
+        let actor_storage = session.mission.actors().as_ptr();
+        let goat_storage = session.live_world.goats().as_ptr();
+        assert!(
+            apply_level1_source_effects(&mut session.mission, &mut session.live_world, &[],)
+                .expect("empty effect batch is an exact no-op")
+                .is_empty()
+        );
+        assert_eq!(session.mission, empty_mission_before);
+        assert_eq!(session.live_world, empty_live_world_before);
+        assert_eq!(session.mission.global_rng(), empty_global_rng);
+        assert_eq!(session.mission.events(), empty_events);
+        assert_eq!(session.mission.source_arena_hash_v1(), empty_arena_hash);
+        assert_eq!(session.live_world_hash_v2(), empty_live_hash);
+        assert_eq!(
+            session.mission.actors().as_ptr(),
+            actor_storage,
+            "empty production dispatch must not clone mission storage"
+        );
+        assert_eq!(
+            session.live_world.goats().as_ptr(),
+            goat_storage,
+            "empty production dispatch must not clone live-world storage"
+        );
+
         let resident_position = session.live_world.houses()[0].position;
         let resident_slot = session
             .mission
@@ -6209,7 +6301,7 @@ mod tests {
             .expect("resident constructor")
             .expect("qualified source arena has a resident slot");
         let occupants_before = session.live_world.houses()[0].occupants;
-        let live_hash_before = session.live_world.hash_v1();
+        let live_hash_before = session.live_world_hash_v2();
         let arena_hash_before = session.mission.source_arena_hash_v1();
         let updates = apply_level1_source_effects(
             &mut session.mission,
@@ -6227,7 +6319,7 @@ mod tests {
             "successful entry increments the sole house authority exactly once"
         );
         assert!(!session.mission.dynamic_residents().next().unwrap().active);
-        assert_ne!(session.live_world.hash_v1(), live_hash_before);
+        assert_ne!(session.live_world_hash_v2(), live_hash_before);
         assert_ne!(session.mission.source_arena_hash_v1(), arena_hash_before);
 
         while session.live_world.houses()[0].occupants
@@ -6243,7 +6335,7 @@ mod tests {
             .spawn_house_resident(resident_position, 4, 33, 0)
             .expect("resident constructor")
             .expect("second resident slot");
-        let full_live_hash = session.live_world.hash_v1();
+        let full_live_hash = session.live_world_hash_v2();
         let full_arena_hash = session.mission.source_arena_hash_v1();
         assert!(
             apply_level1_source_effects(
@@ -6257,7 +6349,7 @@ mod tests {
             .expect("full resident entry rejection")
             .is_empty()
         );
-        assert_eq!(session.live_world.hash_v1(), full_live_hash);
+        assert_eq!(session.live_world_hash_v2(), full_live_hash);
         assert_eq!(session.mission.source_arena_hash_v1(), full_arena_hash);
         assert!(
             session
@@ -6285,7 +6377,7 @@ mod tests {
             .spawn_house_resident(resident_position, 4, 33, 0)
             .expect("resident constructor")
             .expect("dead-house resident slot");
-        let dead_live_hash = dead_session.live_world.hash_v1();
+        let dead_live_hash = dead_session.live_world_hash_v2();
         let dead_arena_hash = dead_session.mission.source_arena_hash_v1();
         assert!(
             apply_level1_source_effects(
@@ -6299,7 +6391,7 @@ mod tests {
             .expect("dead resident entry rejection")
             .is_empty()
         );
-        assert_eq!(dead_session.live_world.hash_v1(), dead_live_hash);
+        assert_eq!(dead_session.live_world_hash_v2(), dead_live_hash);
         assert_eq!(dead_session.mission.source_arena_hash_v1(), dead_arena_hash);
     }
 
@@ -6917,11 +7009,28 @@ mod tests {
             let error = validate_level_one_mission_presentation(&parsed).unwrap_err();
             assert!(error.to_string().contains("169 mismatch"));
         }
-        let mut presentation = original;
+        let mut presentation = original.clone();
         presentation[row + 11] = (-15_i8).cast_unsigned();
         let parsed = parse_presentation(&presentation).expect("well-formed mutation");
         let error = validate_level_one_mission_presentation(&parsed).unwrap_err();
         assert!(error.to_string().contains("169 mismatch"));
+
+        for index in [
+            POSSESSION_ATTRACTION_RENDER_INDEX,
+            POSSESSION_IMPACT_RENDER_INDEX,
+            GROUND_FIRE_FIRST_RENDER_INDEX,
+            GROUND_FIRE_FIRST_RENDER_INDEX + 7,
+        ] {
+            let mut presentation = original.clone();
+            let row = 12 + usize::from(index) * PARTICLE_RECORD_BYTES;
+            presentation[row] ^= 1;
+            let parsed = parse_presentation(&presentation).expect("well-formed mutation");
+            let error = validate_level_one_mission_presentation(&parsed).unwrap_err();
+            assert!(
+                error.to_string().contains(&format!("{index} mismatch")),
+                "row {index} mutation reached the exact Level 1 presentation gate: {error}"
+            );
+        }
     }
 
     #[test]

@@ -1718,6 +1718,10 @@ pub const POSSESSION_IMPACT_ANIMATION_LIMIT: u8 = 1;
 pub const POSSESSION_ATTRACTION_MODEL: u8 = 54;
 pub const POSSESSION_ATTRACTION_ACTION: u8 = 59;
 pub const POSSESSION_ATTRACTION_LIFE: i16 = 128;
+pub const POSSESSION_ATTRACTION_RENDER_INDEX: u16 = 0;
+pub const POSSESSION_ATTRACTION_BASE_TMAP: u16 = 8;
+pub const POSSESSION_ATTRACTION_RENDER_MODE: u8 = 20;
+pub const POSSESSION_ATTRACTION_LOGICAL_HEIGHT: u16 = 250;
 pub const POSSESSION_ATTRACTION_TIER_ONE_RADIUS_SQUARED: u32 = 3_840 * 3_840;
 pub const POSSESSION_ATTRACTION_TIER_TWO_RADIUS_SQUARED: u32 = 5_120 * 5_120;
 pub const POSSESSION_ATTRACTION_MAX_SPEED: i16 = 42;
@@ -2102,6 +2106,13 @@ pub const GROUND_FIRE_DAMAGE: i32 = 50;
 pub const GROUND_FIRE_CONSTRUCTOR_LIFE: i16 = 240;
 pub const GROUND_FIRE_MIN_TREE_LIFE: i16 = 130;
 pub const GROUND_FIRE_TREE_LIFE_RANGE: u16 = 60;
+pub const GROUND_FIRE_FIRST_RENDER_INDEX: u16 = 228;
+pub const GROUND_FIRE_LAST_RENDER_INDEX: u16 = 235;
+pub const GROUND_FIRE_BASE_TMAP: u16 = 77;
+pub const GROUND_FIRE_RENDER_MODE: u8 = 1;
+pub const GROUND_FIRE_LOGICAL_HEIGHTS: [u16; 8] = [50, 150, 300, 450, 600, 700, 800, 950];
+pub const GROUND_FIRE_PRESENTATION_SPEEDS: [u16; 8] = [47, 143, 286, 429, 572, 668, 763, 906];
+pub const GROUND_FIRE_PRESENTATION_BYTE_11: [i8; 8] = [-1, 1, 1, 1, 1, 1, 1, 1];
 pub const GROUND_FIRE_COLLISION_HALF_WIDTH: i16 = 272;
 pub const GROUND_FIRE_COLLISION_VERTICAL_OFFSET: i16 = 0;
 pub const GROUND_FIRE_COLLISION_HALF_HEIGHT: i16 = 1_536;
@@ -2109,6 +2120,23 @@ pub const GROUND_FIRE_DYNAMIC_LIGHT_RADIUS: u8 = 80;
 pub const GROUND_FIRE_DYNAMIC_LIGHT_KIND: u8 = 11;
 pub const SOURCE_DYNAMIC_LIGHT_FLAG: u32 = 0x0008_0000;
 pub const SOURCE_DYNAMIC_LIGHT_CAPACITY: usize = 50;
+
+#[must_use]
+pub const fn ground_fire_presentation(phase: u32) -> (u16, u16) {
+    let phase = if phase > 7 { 7 } else { phase } as usize;
+    (
+        GROUND_FIRE_FIRST_RENDER_INDEX + phase as u16,
+        GROUND_FIRE_LOGICAL_HEIGHTS[phase],
+    )
+}
+
+#[must_use]
+pub const fn impact_is_presentational(model: u8) -> bool {
+    !matches!(
+        model,
+        POSSESSION_IMPACT_MODEL | POSSESSION_ATTRACTION_MODEL | POSSESSION_STRONG_IMPACT_MODEL
+    )
+}
 pub const STONE_CLASS: u8 = 2;
 pub const STONE_MODEL: u8 = 1;
 pub const STONE_ACTION: u8 = 3;
@@ -4081,10 +4109,6 @@ impl Level1SourcePool {
         !self.free_stack.is_empty()
     }
 
-    fn ordinary_free_slots(&self) -> usize {
-        self.free_stack.len()
-    }
-
     #[cfg(test)]
     fn release(&mut self, slot: u16) -> bool {
         if slot == 0 {
@@ -4874,6 +4898,7 @@ pub enum Level1MissionEvent {
     },
     ActorDamaged {
         authored_index: u16,
+        attacker_entity_index: u16,
         damage: i32,
         life: i32,
     },
@@ -6500,7 +6525,7 @@ impl Level1MissionState {
         view.source_id = impact.owner_entity_index;
         view.authority = Level1SourceEntityAuthority::AuthoredAmbient;
         view.active = impact.active;
-        view.visible = impact.active;
+        view.visible = impact.active && impact_is_presentational(impact.model);
         view.position = impact.position;
         view.life = i32::from(impact.life_ticks);
         view.entity_rng = impact.entity_rng;
@@ -9323,16 +9348,18 @@ impl Level1MissionState {
             self.objective_textbox_ticks -= 1;
         }
         self.source_turn_active = !self.player_dead;
+
+        // `UpdateEntities_57730` advances the shared 32-bit generator before
+        // its pause check and has no player-death guard. Mission-owned effects
+        // retain that exact invocation boundary even when later dispatch is
+        // inactive because the player is dead.
+        self.global_rng = next_rng32(self.global_rng);
         if !self.source_turn_active {
             return;
         }
         self.archers_present_at_turn_start = self.class_5_model_present_at_turn_start(4);
         self.fireflies_present_at_turn_start = self.count_alive(Level1ActorKind::Firefly) != 0;
 
-        // `UpdateEntities_57730` advances the shared 32-bit generator before
-        // reclaim and source dispatch. Mission-owned effects retain that exact
-        // order even though Unity never owns or advances simulation RNG.
-        self.global_rng = next_rng32(self.global_rng);
         self.clear_replaced_authored_projections();
         self.cleanup_pending_allocations();
         self.targeting_source_lists = TargetingSourceLists::default();
@@ -10039,11 +10066,9 @@ impl Level1MissionState {
         emitter.entity_rng = next_rng16(emitter.entity_rng);
         position.z = position.z.wrapping_add((emitter.entity_rng % 160) as i16);
 
-        // AddSmoke's admission test precedes NewEvent and consumes no RNG.
-        if self.source_pool.ordinary_free_slots() < 32 {
-            return false;
-        }
-        // SetParticleSmoke3C advances the global generator before NewEvent.
+        // `AddParticleSmoke0A_3D_32420` calls SetParticleSmoke3C directly:
+        // the stored draw precedes NewEvent whether allocation uses an
+        // ordinary slot, replaces an eligible row, or fails completely.
         self.global_rng = next_rng32(self.global_rng);
         let Some(source_slot) = self.allocate_source_slot(SourceOccupant::Ambient(u16::MAX)) else {
             return false;
@@ -12549,6 +12574,7 @@ impl Level1MissionState {
                     actor.life = actor.life.saturating_sub(damage);
                     self.events.push(Level1MissionEvent::ActorDamaged {
                         authored_index: actor.authored_index,
+                        attacker_entity_index: attacker,
                         damage,
                         life: actor.life,
                     });
@@ -12628,28 +12654,28 @@ impl Level1MissionState {
                 let mut hit_attacker = None;
                 if actor.pending_damage != 0 {
                     let damage = actor.pending_damage;
+                    let attacker = actor.pending_attacker;
                     actor.pending_damage = 0;
                     actor.life = actor.life.saturating_sub(damage);
-                    hit_attacker = Some(actor.pending_attacker);
+                    hit_attacker = Some(attacker);
                     self.events.push(Level1MissionEvent::ActorDamaged {
                         authored_index: actor.authored_index,
+                        attacker_entity_index: attacker,
                         damage,
                         life: actor.life,
                     });
                 }
                 let head_authored_index = actor.authored_index;
                 let head_life = actor.life;
-                let _ = actor;
                 if let Some(child) = self.multipart_segments.iter().find(|segment| {
                     segment.head_authored_index == head_authored_index
                         && segment.active
                         && segment.life < head_life
                 }) {
-                    self.actors[actor_index].life = child.life;
+                    actor.life = child.life;
                     hit_attacker = Some(child.pending_attacker);
                 }
                 if let Some(attacker) = hit_attacker {
-                    let actor = &mut self.actors[actor_index];
                     actor.linked_entity_index = 0;
                     if actor.life < 0 {
                         actor.action = MULTIPART_PRE_KILL_ACTION;
@@ -12664,17 +12690,41 @@ impl Level1MissionState {
                 }
             }
 
-            let actor = &mut self.actors[actor_index];
-            if actor.pending_damage != 0 {
-                let damage = actor.pending_damage;
+            let _ = actor;
+            if self.actors[actor_index].pending_damage != 0 {
+                let hit_actor = self.actors[actor_index];
+                let damage = hit_actor.pending_damage;
+                let attacker = hit_actor.pending_attacker;
+                let prior_action = hit_actor.action;
+                let linked_peer_index = (hit_actor.kind == Level1ActorKind::Firefly
+                    && prior_action == FIREFLY_LINKED_ACTION
+                    && hit_actor.linked_entity_index != 0)
+                    .then(|| {
+                        actor_views.iter().position(|peer| {
+                            peer.source_entity_index == hit_actor.linked_entity_index
+                                && peer.active
+                                && peer.life >= 0
+                                && peer.class == hit_actor.class
+                                && peer.model == hit_actor.model
+                        })
+                    })
+                    .flatten();
+                let stage_attacker_matches_family = source_view(source_views, attacker)
+                    .is_some_and(|attacker_view| {
+                        (attacker_view.class, attacker_view.model)
+                            == (hit_actor.class, hit_actor.model)
+                    });
+                let actor = &mut self.actors[actor_index];
                 actor.pending_damage = 0;
                 actor.life = actor.life.saturating_sub(damage);
+                let life = actor.life;
                 self.events.push(Level1MissionEvent::ActorDamaged {
                     authored_index: actor.authored_index,
+                    attacker_entity_index: attacker,
                     damage,
-                    life: actor.life,
+                    life,
                 });
-                if actor.life < 0 {
+                if life < 0 {
                     actor.linked_entity_index = 0;
                     actor.action = match actor.kind {
                         Level1ActorKind::Archer => 36,
@@ -12695,26 +12745,42 @@ impl Level1MissionState {
                             unreachable!("scenery actors were filtered above")
                         }
                     };
-                } else if actor.kind == Level1ActorKind::Archer
-                    && actor.pending_attacker == player.entity_index
-                {
+                } else if actor.kind == Level1ActorKind::Archer && attacker == player.entity_index {
                     actor.target_entity_index = player.entity_index;
                     actor.linked_entity_index = 0;
                     actor.action = 34;
                     enter_archer_attack_pose(actor);
                 } else if actor.kind == Level1ActorKind::Firefly
-                    && actor.pending_attacker != 0
-                    && actor.pending_attacker == player.entity_index
+                    && attacker != 0
+                    && !(prior_action == FIREFLY_STAGE_ACTION && stage_attacker_matches_family)
                 {
-                    actor.target_entity_index = player.entity_index;
+                    let _ = actor;
+                    if prior_action == FIREFLY_LINKED_ACTION
+                        && let Some(peer_index) = linked_peer_index
+                    {
+                        // The action-155 wrapper alerts its valid same-family
+                        // peer before it rewrites the struck Firefly.
+                        let peer = &mut self.actors[peer_index];
+                        peer.target_entity_index = attacker;
+                        peer.linked_entity_index = 0;
+                        peer.action = FIREFLY_ATTACK_ACTION;
+                        actor_views[peer_index] = *peer;
+                    }
+                    let actor = &mut self.actors[actor_index];
+                    actor.target_entity_index = attacker;
                     actor.linked_entity_index = 0;
                     actor.stage_var_2 = 10;
                     actor.action = FIREFLY_ATTACK_ACTION;
-                    // HitFirebug_25610 sends every surviving hostile hit
-                    // through its v1 <= 1 branch and forces byte_0x46 to the
-                    // charge substate, regardless of the prior action.
-                    actor.attack_substate = 7;
+                    // HitFirebug_25610 is the already-attacking hit handler
+                    // and resumes at charge substate 7. Roam/linked and a
+                    // stage hit from a different family enter at substate 0.
+                    actor.attack_substate = if prior_action == FIREFLY_ATTACK_ACTION {
+                        7
+                    } else {
+                        0
+                    };
                 }
+                let actor = &mut self.actors[actor_index];
                 actor.pending_attacker = 0;
                 // The action that consumed the mailbox completes here. A
                 // newly selected attack or pre-kill action is dispatched on
@@ -12724,6 +12790,7 @@ impl Level1MissionState {
                 continue;
             }
 
+            let actor = &mut self.actors[actor_index];
             let pre_kill_action = match actor.kind {
                 Level1ActorKind::Archer => 36,
                 Level1ActorKind::Firefly => FIREFLY_PRE_KILL_ACTION,
@@ -28209,6 +28276,170 @@ mod tests {
         assert_firefly_rebuilt_candidate_order(&mut mission, actor_index, source_slot, player);
     }
 
+    fn assert_firefly_linked_hit_propagates(template: &Level1MissionTemplate, player: FlightState) {
+        let mut mission = template.session(10_000, 1_000);
+        mission.activate_group(6);
+        let mut firefly_indices = mission
+            .actors
+            .iter()
+            .enumerate()
+            .filter(|(_, actor)| actor.kind == Level1ActorKind::Firefly && actor.active)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        firefly_indices.sort_unstable_by_key(|index| mission.actors[*index].source_entity_index);
+        let peer_index = firefly_indices[0];
+        let struck_index = *firefly_indices.last().unwrap();
+        let peer_slot = mission.actors[peer_index].source_entity_index;
+        {
+            let peer = &mut mission.actors[peer_index];
+            peer.action = FIREFLY_ROAM_ACTION;
+            peer.target_entity_index = 0;
+            peer.linked_entity_index = 0;
+            peer.attack_substate = 0;
+            peer.stage_var_1 = 0;
+            peer.stage_var_2 = 0;
+        }
+        {
+            let struck = &mut mission.actors[struck_index];
+            struck.position = Position {
+                x: 40_000,
+                y: 40_000,
+                z: 0,
+            };
+            struck.action = FIREFLY_LINKED_ACTION;
+            struck.target_entity_index = 0;
+            struck.linked_entity_index = peer_slot;
+            struck.attack_substate = 0;
+            struck.stage_var_1 = 0;
+            struck.stage_var_2 = 0;
+            struck.pending_damage = 50;
+            struck.pending_attacker = 35;
+        }
+
+        mission.step(&FlatWorld, &player);
+
+        let peer = mission.actors[peer_index];
+        let struck = mission.actors[struck_index];
+        assert_eq!(
+            (
+                peer.target_entity_index,
+                peer.linked_entity_index,
+                peer.action
+            ),
+            (35, 0, FIREFLY_ATTACK_ACTION),
+            "action-155 alerts the valid linked peer before rewriting the struck Firefly"
+        );
+        assert_eq!(struck.life, FIREFLY_LIFE - 50);
+        assert_eq!(
+            (
+                struck.target_entity_index,
+                struck.linked_entity_index,
+                struck.action,
+                struck.attack_substate,
+            ),
+            (35, 0, FIREFLY_ATTACK_ACTION, 0)
+        );
+    }
+
+    fn configure_firefly_stage_hit(actor: &mut Level1Actor, attacker: u16) {
+        actor.position = Position {
+            x: 40_000,
+            y: 40_000,
+            z: 0,
+        };
+        actor.action = FIREFLY_STAGE_ACTION;
+        actor.target_entity_index = 0;
+        actor.stage_var_1 = 8;
+        actor.stage_var_2 = 1;
+        actor.pending_damage = 50;
+        actor.pending_attacker = attacker;
+    }
+
+    fn assert_firefly_stage_hit_filters_same_family_and_player(
+        template: &Level1MissionTemplate,
+        player: FlightState,
+    ) {
+        let mut mission = template.session(10_000, 1_000);
+        mission.activate_group(6);
+        let mut firefly_indices = mission
+            .actors
+            .iter()
+            .enumerate()
+            .filter(|(_, actor)| actor.kind == Level1ActorKind::Firefly && actor.active)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        firefly_indices.sort_unstable_by_key(|index| mission.actors[*index].source_entity_index);
+        let same_family_index = firefly_indices[0];
+        let struck_index = *firefly_indices.last().unwrap();
+        let same_family_slot = mission.actors[same_family_index].source_entity_index;
+        configure_firefly_stage_hit(&mut mission.actors[struck_index], same_family_slot);
+
+        mission.step(&FlatWorld, &player);
+
+        let struck = mission.actors[struck_index];
+        assert_eq!(struck.life, FIREFLY_LIFE - 50);
+        assert_eq!(
+            (
+                struck.target_entity_index,
+                struck.action,
+                struck.stage_var_1,
+                struck.stage_var_2,
+            ),
+            (0, FIREFLY_STAGE_ACTION, 8, 1),
+            "same-class/model damage remains in stage behavior"
+        );
+
+        configure_firefly_stage_hit(&mut mission.actors[struck_index], player.entity_index);
+        mission.step(&FlatWorld, &player);
+        let struck = mission.actors[struck_index];
+        assert_eq!(struck.life, FIREFLY_LIFE - 100);
+        assert_eq!(
+            (
+                struck.target_entity_index,
+                struck.action,
+                struck.stage_var_2,
+                struck.attack_substate,
+            ),
+            (player.entity_index, FIREFLY_ATTACK_ACTION, 10, 0),
+            "a player is a different class/model and enters Firefly attack"
+        );
+    }
+
+    fn assert_firefly_stage_hit_accepts_non_family(
+        template: &Level1MissionTemplate,
+        player: FlightState,
+    ) {
+        let mut non_family = template.session(10_000, 1_000);
+        non_family.activate_group(3);
+        non_family.activate_group(6);
+        let attacker = non_family
+            .actors
+            .iter()
+            .find(|actor| actor.kind == Level1ActorKind::Archer && actor.active)
+            .map(|actor| actor.source_entity_index)
+            .expect("group 3 activates a non-family Archer");
+        let struck_index = non_family
+            .actors
+            .iter()
+            .enumerate()
+            .filter(|(_, actor)| actor.kind == Level1ActorKind::Firefly && actor.active)
+            .max_by_key(|(_, actor)| actor.source_entity_index)
+            .map(|(index, _)| index)
+            .unwrap();
+        configure_firefly_stage_hit(&mut non_family.actors[struck_index], attacker);
+        non_family.step(&FlatWorld, &player);
+        let struck = non_family.actors[struck_index];
+        assert_eq!(
+            (
+                struck.target_entity_index,
+                struck.action,
+                struck.attack_substate,
+            ),
+            (attacker, FIREFLY_ATTACK_ACTION, 0),
+            "a different class/model source enters Firefly attack"
+        );
+    }
+
     #[test]
     fn hostile_hit_enters_firefly_attack_and_death_waits_for_phase_gate() {
         let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
@@ -28228,15 +28459,44 @@ mod tests {
             },
             ..FlightState::default()
         };
+        let authored_index = mission.actors[actor_index].authored_index;
+        mission.actors[actor_index].action = FIREFLY_ROAM_ACTION;
         mission.actors[actor_index].pending_damage = 250;
-        mission.actors[actor_index].pending_attacker = player.entity_index;
+        mission.actors[actor_index].pending_attacker = 33;
         mission.step(&FlatWorld, &player);
         assert_eq!(mission.actors[actor_index].life, 350);
         assert_eq!(mission.actors[actor_index].action, FIREFLY_ATTACK_ACTION);
+        assert_eq!(mission.actors[actor_index].target_entity_index, 33);
+        assert_eq!(mission.actors[actor_index].attack_substate, 0);
+        assert!(mission.events().iter().any(|event| matches!(
+            event,
+            Level1MissionEvent::ActorDamaged {
+                authored_index: event_authored_index,
+                attacker_entity_index: 33,
+                damage: 250,
+                life: 350,
+            } if *event_authored_index == authored_index
+        )));
+
+        mission.actors[actor_index].action = FIREFLY_ATTACK_ACTION;
+        mission.actors[actor_index].pending_damage = 100;
+        mission.actors[actor_index].pending_attacker = 34;
+        mission.step(&FlatWorld, &player);
+        assert_eq!(mission.actors[actor_index].life, 250);
+        assert_eq!(mission.actors[actor_index].target_entity_index, 34);
         assert_eq!(
             mission.actors[actor_index].attack_substate, 7,
-            "every source-valid surviving hit forces the Firefly charge branch"
+            "an already-attacking Firefly resumes at HitFirebug's charge substate"
         );
+        assert!(mission.events().iter().any(|event| matches!(
+            event,
+            Level1MissionEvent::ActorDamaged {
+                authored_index: event_authored_index,
+                attacker_entity_index: 34,
+                damage: 100,
+                life: 250,
+            } if *event_authored_index == authored_index
+        )));
 
         mission.actors[actor_index].pending_damage = 500;
         mission.actors[actor_index].pending_attacker = player.entity_index;
@@ -28252,6 +28512,10 @@ mod tests {
             mission.step(&FlatWorld, &player);
         }
         assert!(!mission.actors[actor_index].active);
+
+        assert_firefly_linked_hit_propagates(&template, player);
+        assert_firefly_stage_hit_filters_same_family_and_player(&template, player);
+        assert_firefly_stage_hit_accepts_non_family(&template, player);
     }
 
     #[test]
@@ -28819,6 +29083,8 @@ mod tests {
         mission.actors[owner_index].position = position;
         mission.actors[target_index].position = position;
         let owner_entity_index = mission.actors[owner_index].source_entity_index;
+        let target_authored_index = mission.actors[target_index].authored_index;
+        mission.actors[target_index].action = FIREFLY_ROAM_ACTION;
         let impact_id = 80;
         let impact_slot = mission
             .source_pool
@@ -28860,6 +29126,24 @@ mod tests {
         );
         assert_eq!(mission.player_pending_damage, FIREFLY_FIREBALL_PAYLOAD);
         assert_eq!(mission.player_pending_attacker, owner_entity_index);
+
+        mission.step(&FlatWorld, &player);
+        assert_eq!(
+            mission.actors[target_index].target_entity_index,
+            owner_entity_index
+        );
+        assert_eq!(mission.actors[target_index].action, FIREFLY_ATTACK_ACTION);
+        assert_eq!(mission.actors[target_index].attack_substate, 0);
+        assert!(mission.events().iter().any(|event| matches!(
+            event,
+            Level1MissionEvent::ActorDamaged {
+                authored_index,
+                attacker_entity_index,
+                damage: FIREFLY_FIREBALL_PAYLOAD,
+                ..
+            } if *authored_index == target_authored_index
+                && *attacker_entity_index == owner_entity_index
+        )));
     }
 
     #[test]
@@ -29037,6 +29321,15 @@ mod tests {
             }
         )));
         assert!(mission.events.contains(&Level1MissionEvent::PlayerDied));
+
+        let dead_turn_rng = mission.global_rng;
+        mission.begin_source_turn();
+        assert_eq!(
+            mission.global_rng,
+            next_rng32(dead_turn_rng),
+            "UpdateEntities stores its turn-start draw before the dead-player dispatch gate"
+        );
+        assert!(!mission.source_turn_active);
 
         let reset = template.session(499, 1_000);
         assert_eq!(reset.player_life, 499);
@@ -34625,8 +34918,19 @@ mod tests {
                     )),
                 )
                 .unwrap();
+            let primary_view = strong
+                .current_source_entity_view(
+                    &player,
+                    primary.source_entity_index,
+                    Some(Level1SourceEntityView::imported_record(
+                        strong.source_slots[usize::from(primary.source_entity_index)],
+                    )),
+                )
+                .unwrap();
             assert_eq!(
                 (
+                    primary_view.visible,
+                    attraction_view.visible,
                     attraction_view.position,
                     attraction_view.life,
                     attraction_view.collision_half_width,
@@ -34635,13 +34939,16 @@ mod tests {
                     attraction_view.collision_half_height,
                 ),
                 (
+                    false,
+                    false,
                     attraction.position,
                     i32::from(POSSESSION_ATTRACTION_LIFE),
                     POSSESSION_ATTRACTION_COLLISION_HALF_WIDTH,
                     POSSESSION_ATTRACTION_COLLISION_HALF_WIDTH,
                     POSSESSION_ATTRACTION_COLLISION_VERTICAL_OFFSET,
                     POSSESSION_ATTRACTION_COLLISION_HALF_HEIGHT,
-                )
+                ),
+                "models 12/70 and model54 remain gameplay-live but set the source no-draw bit"
             );
             if tier == 2 {
                 strong.begin_source_turn();
@@ -37023,6 +37330,94 @@ mod tests {
                 .all(|entity| entity.map_linked && entity.render_parameter_index == 7)
         );
 
+        let mut ordered_rng = template.session(10_000, 2_000);
+        assert_eq!(
+            ordered_rng.global_rng, 0xad6e_67d9,
+            "qualified Level 1 runtime reset RNG"
+        );
+        let mut actual_draws = Vec::new();
+        let before_update = ordered_rng.global_rng;
+        ordered_rng.begin_source_turn();
+        actual_draws.push((
+            "UpdateEntities_57730",
+            0_u16,
+            before_update,
+            ordered_rng.global_rng,
+        ));
+        for source_slot in 1_u16..u16::try_from(ENTITY_POOL_SIZE).unwrap() {
+            let before_dispatch = ordered_rng.global_rng;
+            ordered_rng.dispatch_source_slot(
+                &FlatWorld,
+                &FlightState::default(),
+                source_slot,
+                false,
+                false,
+                None,
+            );
+            if ordered_rng.global_rng != before_dispatch {
+                actual_draws.push((
+                    "SetParticleSmoke3C_4EA20",
+                    source_slot,
+                    before_dispatch,
+                    ordered_rng.global_rng,
+                ));
+            }
+        }
+        assert_eq!(
+            actual_draws,
+            [
+                ("UpdateEntities_57730", 0, 0xad6e_67d9, 0x9909_f858),
+                ("SetParticleSmoke3C_4EA20", 113, 0x9909_f858, 0xa631_b437,),
+                ("SetParticleSmoke3C_4EA20", 114, 0xa631_b437, 0x829a_3776,),
+                ("SetParticleSmoke3C_4EA20", 115, 0x829a_3776, 0xd2c9_9e15,),
+                ("SetParticleSmoke3C_4EA20", 116, 0xd2c9_9e15, 0xeb07_8414,),
+                ("SetParticleSmoke3C_4EA20", 117, 0xeb07_8414, 0xde4d_0573,),
+                ("SetParticleSmoke3C_4EA20", 118, 0xde4d_0573, 0xa334_be32,),
+                ("SetParticleSmoke3C_4EA20", 119, 0xa334_be32, 0x0eea_ca51,),
+                ("SetParticleSmoke3C_4EA20", 120, 0x0eea_ca51, 0x661c_c5d0,),
+                ("SetParticleSmoke3C_4EA20", 121, 0x661c_c5d0, 0x43e9_ccaf,),
+            ],
+            "first mismatch identifies the exact stored draw site, source slot, and transition"
+        );
+
+        let mut omitted_emitter = template.session(10_000, 2_000);
+        let omitted_rng = omitted_emitter.ambient_entities[115]
+            .as_mut()
+            .expect("source slot 115 is a model-60 emitter");
+        omitted_rng.life = -1;
+        let mut omitted_draws = Vec::new();
+        omitted_emitter.begin_source_turn();
+        omitted_draws.push((0_u16, omitted_emitter.global_rng));
+        for source_slot in 1_u16..u16::try_from(ENTITY_POOL_SIZE).unwrap() {
+            let before_dispatch = omitted_emitter.global_rng;
+            omitted_emitter.dispatch_source_slot(
+                &FlatWorld,
+                &FlightState::default(),
+                source_slot,
+                false,
+                false,
+                None,
+            );
+            if omitted_emitter.global_rng != before_dispatch {
+                omitted_draws.push((source_slot, omitted_emitter.global_rng));
+            }
+        }
+        assert_eq!(
+            omitted_draws,
+            [
+                (0, 0x9909_f858),
+                (113, 0xa631_b437),
+                (114, 0x829a_3776),
+                (116, 0xd2c9_9e15),
+                (117, 0xeb07_8414),
+                (118, 0xde4d_0573),
+                (119, 0xa334_be32),
+                (120, 0x0eea_ca51),
+                (121, 0x661c_c5d0),
+            ],
+            "a terminal emitter omits exactly its source-ordered draw and shifts later values"
+        );
+
         let mut first = template.session(10_000, 2_000);
         let mut second = template.session(10_000, 2_000);
         assert_eq!(first.source_arena_hash_v1(), second.source_arena_hash_v1());
@@ -37117,15 +37512,58 @@ mod tests {
             next_rng16(178_u16.wrapping_add(global_after as u16))
         );
 
-        let mut admission = template.session(10_000, 2_000);
-        admission.source_pool.free_stack.truncate(31);
-        let before = admission.ambient_entities[113].unwrap();
-        let global = admission.global_rng;
-        admission.step_ambient_slot(&FlatWorld, 113);
-        let after = admission.ambient_entities[113].unwrap();
-        assert_eq!(admission.global_rng, global);
-        assert_eq!(after.entity_rng, next_rng16(next_rng16(before.entity_rng)));
-        assert_eq!(admission.ambient_entities().count(), 40);
+        let mut terminal = template.session(10_000, 2_000);
+        let mut terminal_emitter = terminal.ambient_entities[113].unwrap();
+        terminal_emitter.life = -1;
+        let terminal_entity_rng = terminal_emitter.entity_rng;
+        assert!(terminal.step_ambient_emitter(&mut terminal_emitter));
+        assert_eq!(terminal.global_rng, 0xad6e_67d9);
+        assert_eq!(terminal_emitter.entity_rng, terminal_entity_rng);
+
+        let mut replaceable = template.session(10_000, 2_000);
+        replaceable.source_pool.free_stack.clear();
+        replaceable.source_pool.replaceable_stack.clear();
+        replaceable.source_pool.replaceable[122] = true;
+        replaceable.source_pool.replaceable_stack.push(122);
+        let replaceable_before = replaceable.ambient_entities[113].unwrap();
+        replaceable.step_ambient_slot(&FlatWorld, 113);
+        let replaceable_after = replaceable.ambient_entities[113].unwrap();
+        let replaced_child = replaceable.ambient_entities[122].unwrap();
+        assert_eq!(
+            replaceable.global_rng, 0x9909_f858,
+            "model60 consumes its stored draw before replaceable allocation"
+        );
+        assert_eq!(
+            replaceable_after.entity_rng,
+            next_rng16(next_rng16(next_rng16(replaceable_before.entity_rng)))
+        );
+        assert_eq!(
+            (
+                replaced_child.source_entity_index,
+                replaced_child.parent_entity_index,
+                replaced_child.model,
+                replaced_child.action,
+            ),
+            (122, 113, 14, 14)
+        );
+        assert_eq!(replaceable.ambient_entities().count(), 40);
+
+        let mut exhausted = template.session(10_000, 2_000);
+        exhausted.source_pool.free_stack.clear();
+        exhausted.source_pool.replaceable_stack.clear();
+        let exhausted_before = exhausted.ambient_entities[113].unwrap();
+        exhausted.step_ambient_slot(&FlatWorld, 113);
+        let exhausted_after = exhausted.ambient_entities[113].unwrap();
+        assert_eq!(
+            exhausted.global_rng, 0x9909_f858,
+            "model60 consumes its stored draw before total NewEvent failure"
+        );
+        assert_eq!(
+            exhausted_after.entity_rng,
+            next_rng16(next_rng16(exhausted_before.entity_rng)),
+            "failed NewEvent skips only the post-allocation third entity draw"
+        );
+        assert_eq!(exhausted.ambient_entities().count(), 40);
 
         let seed = (0..=u16::MAX)
             .find(|seed| {

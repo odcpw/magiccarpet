@@ -46,15 +46,16 @@ use crate::{
         EXPERIENCE_SCROLL_RENDER_INDEX, EXPERIENCE_SCROLL_RENDER_MODE, FIREBALL_BASE_TMAP,
         FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_LOGICAL_HEIGHT, FIREBALL_IMPACT_RENDER_INDEX,
         FIREBALL_LOGICAL_HEIGHT, FIREBALL_RENDER_INDEX, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT,
-        FIREFLY_RENDER_INDEX, FIREFLY_RENDER_MODE, FireballImpact, Level1Actor, Level1ActorKind,
-        Level1AmbientEntity, Level1MultipartSegment, Level1PossessedBuilding, Level1Projectile,
-        MANA_CARRIER_BASE_TMAP, MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_RENDER_INDEX,
-        MANA_SPHERE_NEUTRAL_BASE_TMAP, MANA_SPHERE_NEUTRAL_RENDER_BASE,
-        MANA_SPHERE_PLAYER_ONE_BASE_TMAP, MANA_SPHERE_PLAYER_ONE_RENDER_BASE,
-        MULTIPART_HEAD_BASE_TMAP, MULTIPART_HEAD_LOGICAL_HEIGHT, MULTIPART_HEAD_RENDER_INDEX,
-        MULTIPART_HEAD_RENDER_MODE, MULTIPART_SEGMENT_BASE_TMAP, MULTIPART_SEGMENT_RENDER_MODE,
-        ManaCarrier, ManaSphere, POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_LOGICAL_HEIGHT,
-        POSSESSION_IMPACT_MODEL, POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_PROJECTILE_BASE_TMAP,
+        FIREFLY_RENDER_INDEX, FIREFLY_RENDER_MODE, FireballImpact, GROUND_FIRE_BASE_TMAP,
+        GROUND_FIRE_MODEL, Level1Actor, Level1ActorKind, Level1AmbientEntity,
+        Level1MultipartSegment, Level1PossessedBuilding, Level1Projectile, MANA_CARRIER_BASE_TMAP,
+        MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_RENDER_INDEX, MANA_SPHERE_NEUTRAL_BASE_TMAP,
+        MANA_SPHERE_NEUTRAL_RENDER_BASE, MANA_SPHERE_PLAYER_ONE_BASE_TMAP,
+        MANA_SPHERE_PLAYER_ONE_RENDER_BASE, MULTIPART_HEAD_BASE_TMAP,
+        MULTIPART_HEAD_LOGICAL_HEIGHT, MULTIPART_HEAD_RENDER_INDEX, MULTIPART_HEAD_RENDER_MODE,
+        MULTIPART_SEGMENT_BASE_TMAP, MULTIPART_SEGMENT_RENDER_MODE, ManaCarrier, ManaSphere,
+        POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_LOGICAL_HEIGHT, POSSESSION_IMPACT_MODEL,
+        POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_PROJECTILE_BASE_TMAP,
         POSSESSION_PROJECTILE_LOGICAL_HEIGHT, POSSESSION_PROJECTILE_RENDER_INDEX,
         POSSESSION_STRONG_IMPACT_MODEL, SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT,
         SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE, STONE_BASE_TMAP, STONE_LOGICAL_HEIGHT,
@@ -62,7 +63,8 @@ use crate::{
         TREE_DEAD_BASE_TMAP_A, TREE_DEAD_BASE_TMAP_B, TREE_DEAD_RENDER_INDEX_A,
         TREE_DEAD_RENDER_INDEX_B, TREE_LOGICAL_HEIGHT, TREE_RENDER_INDEX_A, TREE_RENDER_INDEX_B,
         TREE_RENDER_MODE, WATER_SPLASH_BASE_TMAP, WATER_SPLASH_LOGICAL_HEIGHT,
-        WATER_SPLASH_RENDER_INDEX, mana_sphere_size_ordinal,
+        WATER_SPLASH_RENDER_INDEX, ground_fire_presentation, impact_is_presentational,
+        mana_sphere_size_ordinal,
     },
     mode5_raster::{Mode5Vertex, rasterize_mode5_triangle_from_atlas},
     mode26_raster::{NIGHT_TABLES_BYTES, rasterize_mode26_triangle_from_atlas_into_framebuffer},
@@ -1476,7 +1478,11 @@ fn raster_world_chain(
             if !impact.active {
                 continue;
             }
+            if !impact_is_presentational(impact.model) {
+                continue;
+            }
             let splash = impact.model == crate::level1_mission::WATER_SPLASH_MODEL;
+            let ground_fire = impact.model == GROUND_FIRE_MODEL;
             let checkpoint_smoke = impact.model == CHECKPOINT_SMOKE_MODEL;
             let (possession, fireball) = impact_presentation_discriminants(impact.model);
             let (render_index, base, logical_height, quarter_anchor, animate) = if splash {
@@ -1486,6 +1492,15 @@ fn raster_world_chain(
                     WATER_SPLASH_LOGICAL_HEIGHT,
                     false,
                     true,
+                )
+            } else if ground_fire {
+                let (render_index, logical_height) = ground_fire_presentation(impact.phase);
+                (
+                    render_index,
+                    GROUND_FIRE_BASE_TMAP,
+                    logical_height,
+                    false,
+                    false,
                 )
             } else if possession {
                 // Parameter 41 is render mode 21: GameRenderOriginal selects
@@ -3959,14 +3974,30 @@ mod tests {
             .expect("dedicated Possession marker insertion");
         let mut marker_source_slots = mission.source_slots().to_vec();
         marker_source_slots[991].control_flags = 0;
-        let mut possession_marker_hashes = Vec::new();
-        for model in [POSSESSION_IMPACT_MODEL, POSSESSION_STRONG_IMPACT_MODEL] {
-            assert_eq!(
-                impact_presentation_discriminants(model),
-                (true, false),
-                "both possession markers must classify as possession, never fireball"
-            );
-            let marker = FireballImpact {
+        let mut invisible_impact_hashes = Vec::new();
+        for model in [
+            None,
+            Some(POSSESSION_IMPACT_MODEL),
+            Some(crate::level1_mission::POSSESSION_ATTRACTION_MODEL),
+            Some(POSSESSION_STRONG_IMPACT_MODEL),
+        ] {
+            if let Some(model) = model {
+                assert!(
+                    !impact_is_presentational(model),
+                    "models 12, 54, and 70 carry gameplay state but the source renderer hides them"
+                );
+                if matches!(
+                    model,
+                    POSSESSION_IMPACT_MODEL | POSSESSION_STRONG_IMPACT_MODEL
+                ) {
+                    assert_eq!(
+                        impact_presentation_discriminants(model),
+                        (true, false),
+                        "models 12/70 remain possession, never fireball, even though drawing is suppressed"
+                    );
+                }
+            }
+            let marker = model.map(|model| FireballImpact {
                 id: u32::from(model),
                 source_entity_index: 991,
                 source_projectile_id: 998,
@@ -3984,6 +4015,94 @@ mod tests {
                     200
                 },
                 animation_frame: 1,
+                damage_submitted: false,
+                active: true,
+            });
+            let impact_chains = if marker.is_some() {
+                &marker_chains
+            } else {
+                &archer_chains
+            };
+            let frame = render_level1_world_frame(
+                archer_camera,
+                render_resources(),
+                Level1WorldFrameResources {
+                    local_player_entity_index: local_player,
+                    goats: world.reset_live_world().goats(),
+                    frozen_actors: &[],
+                    ambient_entities: &[],
+                    frozen_actor_tmap_bank: None,
+                    villager_tmap_clocks: None,
+                    mission_actors: std::slice::from_ref(&archer),
+                    dynamic_residents: &[],
+                    mission_segments: &[],
+                    castle_root: None,
+                    mana_spheres: &[],
+                    mana_carrier: None,
+                    map_chains: impact_chains,
+                    goat_tmap_clocks: &clocks,
+                    archer_tmap_bank: &archer_bank,
+                    archer_tmap_clocks: &archer_clocks,
+                    firefly_tmap_bank: &firefly_bank,
+                    firefly_tmap_clocks: &firefly_clocks,
+                    projectiles: &[],
+                    impacts: marker.as_slice(),
+                    possessed_buildings: &[],
+                    combat_tmap_bank: &combat_bank,
+                    static_world_tmap_bank: &static_world_bank,
+                    economy_tmap_bank: &economy_bank,
+                    fireball_tmap_clock: &fireball_clock,
+                    possession_tmap_clock: &possession_clock,
+                    castle_tmap_clock: &castle_clock,
+                    particle_parameters: &world.presentation().particles,
+                    source_slots: &marker_source_slots,
+                    night: true,
+                },
+            )
+            .expect("source-hidden class-10 gameplay impact");
+            assert!(!frame.possession_draw_attempted);
+            assert!(!frame.fireball_draw_attempted);
+            invisible_impact_hashes.push(byte_hash(&frame.indices));
+        }
+        assert!(
+            invisible_impact_hashes
+                .iter()
+                .all(|hash| *hash == invisible_impact_hashes[0]),
+            "models 12, 54, and 70 must not alter the native terrain framebuffer"
+        );
+
+        assert_eq!(
+            (0_u32..=7)
+                .map(ground_fire_presentation)
+                .collect::<Vec<_>>(),
+            [
+                (228, 50),
+                (229, 150),
+                (230, 300),
+                (231, 450),
+                (232, 600),
+                (233, 700),
+                (234, 800),
+                (235, 950),
+            ],
+            "sub_31760's phase selects exact parameter rows 228..235"
+        );
+        let mut ground_fire_hashes = Vec::new();
+        for phase in [0, 7] {
+            let marker = FireballImpact {
+                id: 6,
+                source_entity_index: 991,
+                source_projectile_id: 998,
+                owner_entity_index: local_player,
+                external_target_entity_index: 0,
+                model: GROUND_FIRE_MODEL,
+                position: goat.position,
+                payload: 50,
+                life_ticks: 130,
+                entity_rng: 0,
+                vertical_velocity: 0,
+                phase,
+                animation_frame: 0,
                 damage_submitted: false,
                 active: true,
             };
@@ -4023,18 +4142,14 @@ mod tests {
                     night: true,
                 },
             )
-            .expect("Possession marker presentation");
-            assert!(frame.possession_draw_attempted);
-            assert!(!frame.fireball_draw_attempted);
-            assert!(
-                frame.combat_raster_stats.framebuffer_writes > 0,
-                "the synthetic marker reaches the production indexed compositor"
-            );
-            possession_marker_hashes.push(byte_hash(&frame.indices));
+            .expect("phase-driven ground-fire presentation");
+            assert!(frame.fireball_draw_attempted);
+            assert!(!frame.possession_draw_attempted);
+            ground_fire_hashes.push(byte_hash(&frame.indices));
         }
-        assert_eq!(
-            possession_marker_hashes[0], possession_marker_hashes[1],
-            "model 12/70 and their distinct class-10 phases share marker 41; terrain sees only the bounded render frame"
+        assert_ne!(
+            ground_fire_hashes[0], ground_fire_hashes[1],
+            "fixed selector 77 scales differently for source phases 0 and 7"
         );
 
         let hostile_sphere = ManaSphere {

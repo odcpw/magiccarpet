@@ -95,24 +95,13 @@ pub struct GoatPlayerTarget {
     pub control_flags: u32,
 }
 
-/// Derive Goat sound 46's source pitch from the current global RNG without
-/// mutating that RNG.
-#[must_use]
-pub fn goat_sound_rate_delta(global_rng: u32, action: u8) -> i16 {
-    let random_value = global_rng.wrapping_mul(9_377).wrapping_add(9_439);
-    let variation = i16::try_from(random_value % 20).expect("pitch modulo fits i16");
-    if action == 14 {
-        variation + 10
-    } else {
-        variation - 10
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GoatStepEvent {
     Bleat {
         entity_index: u16,
         sound_id: u16,
+        position: Position,
+        action: u8,
     },
     ManaConverted {
         entity_index: u16,
@@ -810,6 +799,8 @@ impl GoatFamily {
             events.push(GoatStepEvent::Bleat {
                 entity_index: goat.entity_index,
                 sound_id: 46,
+                position: goat.position,
+                action: goat.action,
             });
         }
         goat.actual_speed = if goat.action == 14 {
@@ -826,6 +817,8 @@ impl GoatFamily {
             events.push(GoatStepEvent::Bleat {
                 entity_index: goat.entity_index,
                 sound_id: 46,
+                position: goat.position,
+                action: goat.action,
             });
         }
         if goat.action == 14 {
@@ -843,6 +836,8 @@ impl GoatFamily {
             events.push(GoatStepEvent::Bleat {
                 entity_index: goat.entity_index,
                 sound_id: 46,
+                position: goat.position,
+                action: goat.action,
             });
         }
     }
@@ -1326,6 +1321,20 @@ impl LiveWorldState {
         hash.finish()
     }
 
+    /// Compose the legacy typed-row hash with the mission-owned global RNG.
+    ///
+    /// The v1 preimage remains byte-for-byte compatible. Public current-state
+    /// projections use this explicit v2 domain so future-affecting global RNG
+    /// mutations cannot alias while the typed live rows remain unchanged.
+    #[must_use]
+    pub fn hash_v2(&self, global_rng: u32) -> u64 {
+        let mut hash = Fnv1a64::new();
+        hash.bytes(b"mc2-live-world-v2\0");
+        hash.u64(self.hash_v1());
+        hash.u32(global_rng);
+        hash.finish()
+    }
+
     fn sync_goat_map_chains(&mut self) {
         self.goat_map_chains
             .sync(&goat_map_seeds(self.goats.goats()))
@@ -1379,6 +1388,10 @@ impl Fnv1a64 {
     }
 
     fn u32(&mut self, value: u32) {
+        self.bytes(&value.to_le_bytes());
+    }
+
+    fn u64(&mut self, value: u64) {
         self.bytes(&value.to_le_bytes());
     }
 
@@ -1771,12 +1784,6 @@ mod tests {
             .find(|seed| next_rng(*seed).is_multiple_of(77))
             .expect("a bleat seed exists");
         assert_eq!(next_rng(seed) % 77, 0);
-        assert_eq!(goat_sound_rate_delta(0, 15), 9);
-        assert_eq!(goat_sound_rate_delta(0, 14), 29);
-        assert_eq!(
-            goat_sound_rate_delta(u32::MAX, 15),
-            i16::try_from(9_439_u32.wrapping_sub(9_377) % 20).unwrap() - 10
-        );
     }
 
     #[test]
@@ -1794,11 +1801,34 @@ mod tests {
         )
         .expect("first live world");
         let second = first.clone();
-        let reset_hash = first.hash_v1();
+        let reset_rng = 0xad6e_67d9;
+        let reset_v1_hash = first.hash_v1();
+        let reset_v2_hash = first.hash_v2(reset_rng);
+        assert_eq!(
+            reset_v1_hash, 0xe19e_27c4_0ed9_f484,
+            "legacy v1 byte stream remains pinned"
+        );
+        assert_eq!(
+            reset_v2_hash, 0x498e_4302_1f82_80b8,
+            "v2 composes the pinned v1 hash with reset global RNG"
+        );
+        assert_eq!(first, second, "live rows start byte-for-byte identical");
+        assert_eq!(
+            first.hash_v1(),
+            reset_v1_hash,
+            "legacy v1 excludes mission-owned global RNG"
+        );
+        assert_ne!(
+            first.hash_v2(reset_rng.wrapping_add(1)),
+            reset_v2_hash,
+            "an RNG-only mutation must change v2 live_world_hash while every live row is identical"
+        );
 
         first.step(world.terrain());
-        assert_ne!(first.hash_v1(), reset_hash);
-        assert_eq!(second.hash_v1(), reset_hash);
+        assert_ne!(first.hash_v1(), reset_v1_hash);
+        assert_ne!(first.hash_v2(reset_rng), reset_v2_hash);
+        assert_eq!(second.hash_v1(), reset_v1_hash);
+        assert_eq!(second.hash_v2(reset_rng), reset_v2_hash);
 
         first
             .reset(
@@ -1808,7 +1838,8 @@ mod tests {
             )
             .expect("reset live world");
         assert_eq!(first, second);
-        assert_eq!(first.hash_v1(), reset_hash);
+        assert_eq!(first.hash_v1(), reset_v1_hash);
+        assert_eq!(first.hash_v2(reset_rng), reset_v2_hash);
     }
 
     #[test]
