@@ -24,6 +24,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -41,6 +42,24 @@ constexpr std::size_t kEntitySlots = 1000;
 constexpr std::size_t kAuthoredFeatures = 1200;
 constexpr std::size_t kAuthoredLevelBytes = 0x6604;
 constexpr std::size_t kTerrainBytes = 0x70000;
+constexpr std::size_t kFeatureStartBytes = 16;
+constexpr std::size_t kFeatureAllocatorHeaderBytes = 32;
+constexpr std::size_t kFeatureAllocatorRelationCount = 1000;
+constexpr std::size_t kFeatureAllocatorTraceRecordBytes = 8;
+constexpr std::uint32_t kFeatureStartGlobalRng = 0x0000BFCA;
+constexpr std::array<std::uint32_t, 7> kFeatureGlobalRngBarriers = {
+    0x1B712AE9,
+    0x2C34E568,
+    0x3D870B47,
+    0xAF843886,
+    0xFA1A8925,
+    0x05F99924,
+    0xDB828483,
+};
+// GenerateLevelMap leaves 9775 at the isolated input seam. The load-feature
+// topology/house passes then advance the terrain RNG to this post-feature value.
+constexpr std::uint16_t kFeatureStartTerrainRng = 9775;
+constexpr std::uint16_t kFeatureEndTerrainRng = 44470;
 constexpr const char* kExpectedTerrainSha256 =
     "05d4d12788d3754577b800883f2e4dac32ed722628a303eb5cd7577cb09c967c";
 constexpr const char* kExpectedTerrainTypeSha256 =
@@ -335,6 +354,96 @@ Bytes capture_terrain() {
     return result;
 }
 
+void normalize_level_one_inactive_terrain_plane(Bytes& terrain) {
+    if (terrain.data.size() != kTerrainBytes) {
+        throw std::runtime_error("terrain normalization extent mismatch");
+    }
+    if (D41A0_0.terrain_2FECE.MapType == MapType_t::Cave) {
+        throw std::runtime_error("inactive-plane normalization is forbidden for Cave maps");
+    }
+    if (D41A0_0.terrain_2FECE.MapType != MapType_t::Night) {
+        throw std::runtime_error("Level 1 live MapType is not Night (1)");
+    }
+    // remc2's stock regression comparison deliberately omits this cave-only
+    // plane on non-Cave maps. It is uninitialized host state at both capture
+    // phases, so normalize the pre-feature and frame-zero files identically.
+    std::fill(
+        terrain.data.begin() + 0x40000,
+        terrain.data.begin() + 0x50000,
+        std::uint8_t{0});
+}
+
+Bytes capture_feature_boundary(const char (&magic)[5]) {
+    Bytes result;
+    result.magic(magic);
+    result.u16(1);
+    result.u16(kFeatureStartBytes);
+    result.u16(rand2_17B4E0);
+    result.u16(0);
+    result.u32(D41A0_0.rand_0x8);
+    if (result.data.size() != kFeatureStartBytes) {
+        throw std::runtime_error("feature-boundary serialization size mismatch");
+    }
+    return result;
+}
+
+std::vector<std::uint16_t> level_one_building_selectors(
+    const Type_Level_2FECE& authored) {
+    std::set<std::uint16_t> selectors;
+    for (std::size_t index = 1; index < kAuthoredFeatures; ++index) {
+        const auto& feature = authored.entity_0x30311[index];
+        if (feature.DisId == -1 &&
+            feature.type_0x30311 == 10 &&
+            feature.subtype_0x30311 == 45) {
+            if (feature.par1_14 >= str_D93C0_bldgprmbuffer.size()) {
+                throw std::runtime_error("Level 1 house BLDGPRM selector is outside the source table");
+            }
+            selectors.insert(feature.par1_14);
+        }
+    }
+    return {selectors.begin(), selectors.end()};
+}
+
+Bytes capture_feature_construction_inputs(
+    const Type_Level_2FECE& authored,
+    std::vector<std::uint16_t>& selectors) {
+    if (x_WORD_180660_VGA_type_resolution != 1) {
+        throw std::runtime_error("isolated Level 1 feature seam requires VGA selector 1");
+    }
+    selectors = level_one_building_selectors(authored);
+    if (selectors.empty()) {
+        throw std::runtime_error("Level 1 has no source house construction selectors");
+    }
+
+    Bytes result;
+    result.magic("MCI3");
+    result.u16(1);
+    result.u16(16);
+    result.u16(static_cast<std::uint16_t>(selectors.size()));
+    result.u16(1);
+    result.u32(0);
+    for (const std::uint16_t selector : selectors) {
+        const auto& parameter = str_D93C0_bldgprmbuffer[selector];
+        const auto& bitmap =
+            (*filearray_2aa18c[filearrayindex_BUILD00DATTAB].posistruct)[selector];
+        const std::uint32_t data_bytes =
+            static_cast<std::uint32_t>(bitmap.width_4) *
+            static_cast<std::uint32_t>(bitmap.height_5) * 2;
+        if (bitmap.data == nullptr || bitmap.width_4 == 0 || bitmap.height_5 == 0) {
+            throw std::runtime_error("Level 1 BUILD selector has an empty source footprint");
+        }
+        result.u16(selector);
+        result.u16(parameter.word_0);
+        result.u8(parameter.byte_2);
+        result.u8(parameter.byte_3);
+        result.u8(bitmap.width_4);
+        result.u8(bitmap.height_5);
+        result.u32(data_bytes);
+        result.raw(bitmap.data, data_bytes);
+    }
+    return result;
+}
+
 void append_entity_record(Bytes& output, const type_entity_0x6E8E& entity, std::size_t index) {
     output.u16(static_cast<std::uint16_t>(index));
     output.u8(entity.class_0x3F_63 == 0 ? 0 : 1);
@@ -469,6 +578,232 @@ Bytes capture_entities(std::uint32_t& active_count, std::uint16_t& record_size) 
     result.u32(kEntitySlots);
     result.raw(records.data.data(), records.data.size());
     return result;
+}
+
+Bytes capture_normalized_feature_entities(
+    std::uint32_t& active_count,
+    std::uint16_t& record_size) {
+    Bytes records;
+    active_count = 0;
+    std::size_t first_size = 0;
+    const std::array<std::uint8_t, 172> zero_payload{};
+    for (std::size_t index = 0; index < kEntitySlots; ++index) {
+        const auto& entity = D41A0_0.struct_0x6E8E[index];
+        const std::size_t before = records.data.size();
+        if (entity.class_0x3F_63 == 0) {
+            records.u16(static_cast<std::uint16_t>(index));
+            records.u8(0);
+            records.u8(0);
+            records.raw(zero_payload.data(), zero_payload.size());
+        } else {
+            append_entity_record(records, entity, index);
+            ++active_count;
+        }
+        const std::size_t size = records.data.size() - before;
+        if (index == 0) first_size = size;
+        else if (size != first_size) {
+            throw std::runtime_error("normalized feature entity record size changed");
+        }
+    }
+    record_size = static_cast<std::uint16_t>(first_size);
+    Bytes result;
+    result.magic("MCE3");
+    result.u16(1);
+    result.u16(record_size);
+    result.u32(kEntitySlots);
+    result.raw(records.data.data(), records.data.size());
+    return result;
+}
+
+struct FeatureAllocatorTrace {
+    std::uint8_t operation;
+    std::uint8_t role;
+    std::uint16_t slot;
+    std::uint16_t authored_index;
+};
+
+std::vector<FeatureAllocatorTrace> expected_feature_allocator_trace(
+    const Type_Level_2FECE& authored) {
+    std::vector<FeatureAllocatorTrace> trace = {
+        {1, 1, 1, 62},
+        {1, 1, 2, 63},
+        {2, 1, 1, 62},
+        {2, 1, 2, 63},
+    };
+    std::uint16_t next_ordinary_slot = 1;
+    bool saw_special = false;
+    for (int pass = 0; pass < 2; ++pass) {
+        for (std::size_t index = 1; index < kAuthoredFeatures; ++index) {
+            const auto& feature = authored.entity_0x30311[index];
+            if (feature.DisId != -1 ||
+                feature.type_0x30311 != 10 ||
+                feature.subtype_0x30311 != 45) {
+                continue;
+            }
+            const bool special =
+                (str_D93C0_bldgprmbuffer[feature.par1_14].byte_2 & 0x10) != 0;
+            if (special != (pass == 0)) continue;
+            std::uint16_t slot = 0;
+            if (special) {
+                if (saw_special) {
+                    throw std::runtime_error("Level 1 has more than one special-pass house");
+                }
+                saw_special = true;
+                slot = 2;
+            } else if (next_ordinary_slot == 1) {
+                slot = next_ordinary_slot++;
+            } else {
+                slot = ++next_ordinary_slot;
+            }
+            trace.push_back({
+                1,
+                static_cast<std::uint8_t>(special ? 2 : 3),
+                slot,
+                static_cast<std::uint16_t>(index),
+            });
+        }
+    }
+    if (!saw_special || trace.size() != 51) {
+        throw std::runtime_error(
+            "Level 1 allocator trace is not 2 path pops, 2 frees, and 47 houses: special=" +
+            std::to_string(saw_special) + " entries=" + std::to_string(trace.size()));
+    }
+    return trace;
+}
+
+Bytes capture_feature_allocator(const Type_Level_2FECE& authored) {
+    if (D41A0_0.dword_0x35 != 951 || D41A0_0.dword_0x11e6 != -1) {
+        throw std::runtime_error("isolated feature allocator counters differ from the pinned source seam");
+    }
+    for (std::size_t index = 0; index <= 951; ++index) {
+        const std::uint32_t relation = entity_relation(D41A0_0.pointers_0x246[index]);
+        const std::uint32_t expected = 999 - static_cast<std::uint32_t>(index);
+        if (relation != expected + 1) {
+            throw std::runtime_error("isolated feature free-stack relation order changed");
+        }
+    }
+    const auto trace = expected_feature_allocator_trace(authored);
+    Bytes result;
+    result.magic("MCA3");
+    result.u16(1);
+    result.u16(kFeatureAllocatorHeaderBytes);
+    result.i32(D41A0_0.dword_0x35);
+    result.i32(D41A0_0.dword_0x11e6);
+    result.u32(static_cast<std::uint32_t>(D41A0_0.dword_0x35 + 1));
+    result.u32(0);
+    result.u32(static_cast<std::uint32_t>(trace.size()));
+    result.u16(2);
+    result.u16(kFeatureAllocatorTraceRecordBytes);
+    for (std::size_t index = 0; index < kFeatureAllocatorRelationCount; ++index) {
+        result.u16(
+            index <= static_cast<std::size_t>(D41A0_0.dword_0x35)
+                ? static_cast<std::uint16_t>(
+                      entity_relation(D41A0_0.pointers_0x246[index]) - 1)
+                : 0);
+    }
+    for (std::size_t index = 0; index < kFeatureAllocatorRelationCount; ++index) {
+        result.u16(0);
+    }
+    for (const auto& entry : trace) {
+        result.u8(entry.operation);
+        result.u8(entry.role);
+        result.u16(entry.slot);
+        result.u16(entry.authored_index);
+        result.u16(0);
+    }
+    return result;
+}
+
+void validate_feature_house_fixture(const Type_Level_2FECE& authored) {
+    if (D41A0_0.rand_0x8 != kFeatureGlobalRngBarriers.back()) {
+        throw std::runtime_error("isolated feature final global RNG differs from barrier seven");
+    }
+    if (rand2_17B4E0 != kFeatureEndTerrainRng) {
+        throw std::runtime_error(
+            "isolated feature final terrain RNG differs from the pinned source seam: " +
+            std::to_string(rand2_17B4E0));
+    }
+
+    const auto trace = expected_feature_allocator_trace(authored);
+    std::array<bool, 1000> active{};
+    std::size_t active_count = 0;
+    for (std::size_t slot = 0; slot < kEntitySlots; ++slot) {
+        active[slot] = D41A0_0.struct_0x6E8E[slot].class_0x3F_63 != 0;
+        if (active[slot]) ++active_count;
+    }
+    if (active_count != 47 || active[0]) {
+        throw std::runtime_error("isolated feature arena is not exactly 47 nonzero source slots");
+    }
+    for (std::size_t slot = 1; slot <= 47; ++slot) {
+        if (!active[slot]) {
+            throw std::runtime_error("isolated feature active slots are not exactly 1..47");
+        }
+    }
+    for (std::size_t slot = 48; slot < kEntitySlots; ++slot) {
+        if (active[slot]) {
+            throw std::runtime_error("isolated feature arena has an active slot above 47");
+        }
+    }
+
+    for (const auto& entry : trace) {
+        if (entry.role < 2) continue;
+        const auto& source = authored.entity_0x30311[entry.authored_index];
+        const auto& house = D41A0_0.struct_0x6E8E[entry.slot];
+        if (house.class_0x3F_63 != 10 ||
+            house.model_0x40_64 != 45 ||
+            house.actionIndex_0x45_69 != 52 ||
+            house.byte_0x46_70 != source.par1_14 ||
+            house.xtype_0x41_65 != 0 ||
+            source.par2_16 != 0) {
+            throw std::runtime_error("isolated feature house identity/selector/xtype changed");
+        }
+        const std::uint8_t expected_phase =
+            entry.slot == 2
+                ? 64
+                : static_cast<std::uint8_t>(entry.slot + 31);
+        const std::uint16_t allocation_rng =
+            entry.slot == 2
+                ? static_cast<std::uint16_t>(kFeatureGlobalRngBarriers[4] + entry.slot)
+                : static_cast<std::uint16_t>(kFeatureGlobalRngBarriers[5] + entry.slot);
+        if (house.byte_0x3E_62 != expected_phase ||
+            house.rand_0x14_20 != allocation_rng ||
+            house.life_0x8 !=
+                1000 * str_D93C0_bldgprmbuffer[source.par1_14].word_0) {
+            throw std::runtime_error(
+                "isolated feature house phase/RNG/life changed at slot " +
+                std::to_string(entry.slot) +
+                ": phase=" + std::to_string(house.byte_0x3E_62) +
+                "/" + std::to_string(expected_phase) +
+                " rng=" + std::to_string(house.rand_0x14_20) +
+                "/" + std::to_string(allocation_rng) +
+                " life=" + std::to_string(house.life_0x8) +
+                "/" + std::to_string(
+                    1000 * str_D93C0_bldgprmbuffer[source.par1_14].word_0));
+        }
+    }
+
+    std::array<bool, 1000> linked{};
+    for (std::size_t cell = 0; cell < kTerrainCells; ++cell) {
+        std::uint16_t slot = static_cast<std::uint16_t>(mapEntityIndex_15B4E0[cell]);
+        std::uint16_t newer = 0;
+        while (slot != 0) {
+            if (slot > 47 || !active[slot] || linked[slot]) {
+                throw std::runtime_error("isolated feature map head/chain is invalid or duplicated");
+            }
+            const auto& entity = D41A0_0.struct_0x6E8E[slot];
+            if (entity.nextEntity_0x18_24 != newer) {
+                throw std::runtime_error("isolated feature next-map relation changed");
+            }
+            linked[slot] = true;
+            newer = slot;
+            slot = entity.oldMapEntity_0x16_22;
+        }
+    }
+    for (std::size_t slot = 1; slot <= 47; ++slot) {
+        if (!linked[slot]) {
+            throw std::runtime_error("isolated feature house is absent from map heads/chains");
+        }
+    }
 }
 
 void append_spell_bytes(Bytes& output, const type_8_1a& values) {
@@ -1137,19 +1472,7 @@ int run(const Arguments& arguments) {
     }
 
     Bytes terrain = capture_terrain();
-    if (D41A0_0.terrain_2FECE.MapType == MapType_t::Cave) {
-        throw std::runtime_error("inactive-plane normalization is forbidden for Cave maps");
-    }
-    if (D41A0_0.terrain_2FECE.MapType != MapType_t::Night) {
-        throw std::runtime_error("Level 1 live MapType is not Night (1)");
-    }
-    // remc2's stock regression comparison deliberately omits this cave-only
-    // plane on non-Cave maps. Two consecutive Level 1 captures proved its
-    // bytes are uninitialized host state, so exclude them explicitly.
-    std::fill(
-        terrain.data.begin() + 0x40000,
-        terrain.data.begin() + 0x50000,
-        std::uint8_t{0});
+    normalize_level_one_inactive_terrain_plane(terrain);
     const std::string terrain_type_sha =
         sha256_range(terrain.data, 0x00000, 0x10000);
     const std::string terrain_height_sha =
@@ -1211,16 +1534,69 @@ int run(const Arguments& arguments) {
     if (authored.MapType != MapType_t::Night) {
         throw std::runtime_error("Level 1 MapType is not Night (1)");
     }
+    if (x_WORD_180660_VGA_type_resolution != 1) {
+        throw std::runtime_error("Level 1 isolated feature seam is not using VGA selector 1");
+    }
+    std::vector<std::uint16_t> feature_building_selectors;
+    Bytes feature_construction_inputs =
+        capture_feature_construction_inputs(authored, feature_building_selectors);
+    const Type_Level_2FECE feature_expectation = authored;
+    const auto feature_allocator_trace =
+        expected_feature_allocator_trace(feature_expectation);
+    GenerateLevelMap_43830(&authored);
+    Bytes terrain_pre_features = capture_terrain();
+    normalize_level_one_inactive_terrain_plane(terrain_pre_features);
+    if (!std::all_of(
+            terrain_pre_features.data.begin() + 0x50000,
+            terrain_pre_features.data.end(),
+            [](std::uint8_t value) { return value == 0; })) {
+        throw std::runtime_error("post-GenerateLevelMap entity-index plane is not zero");
+    }
+    Bytes feature_start = capture_feature_boundary("MFS3");
+    if (rand2_17B4E0 != kFeatureStartTerrainRng ||
+        D41A0_0.rand_0x8 != kFeatureStartGlobalRng) {
+        throw std::runtime_error("isolated feature start RNGs differ from pristine Level 1");
+    }
+    std::memset(
+        D41A0_0.struct_0x6E8E,
+        0,
+        sizeof(D41A0_0.struct_0x6E8E));
+    sub_49F30();
+    sub_49270_generate_level_features(&authored);
+    validate_feature_house_fixture(feature_expectation);
+    Bytes terrain_post_features = capture_terrain();
+    normalize_level_one_inactive_terrain_plane(terrain_post_features);
+    Bytes feature_end = capture_feature_boundary("MFE3");
+    std::uint32_t feature_active_entities = 0;
+    std::uint16_t feature_entity_record_size = 0;
+    Bytes feature_entities = capture_normalized_feature_entities(
+        feature_active_entities,
+        feature_entity_record_size);
+    Bytes feature_allocator = capture_feature_allocator(feature_expectation);
+    if (feature_allocator_trace.size() != 51) {
+        throw std::runtime_error("immutable feature allocator expectation changed after generation");
+    }
+    if (feature_active_entities != 47 || feature_entity_record_size != entity_record_size) {
+        throw std::runtime_error(
+            "isolated load-feature entity arena is not 47 source-compatible records");
+    }
 
     fs::remove(runtime_config);
 
-    const std::array<std::pair<const char*, const Bytes*>, 6> files = {{
+    const std::array<std::pair<const char*, const Bytes*>, 13> files = {{
         {"authored-level.bin", &authored_bytes},
+        {"entities-post-features.bin", &feature_entities},
         {"entities.bin", &entities},
+        {"feature-allocator.bin", &feature_allocator},
+        {"feature-construction-inputs.bin", &feature_construction_inputs},
+        {"feature-end.bin", &feature_end},
+        {"feature-start.bin", &feature_start},
         {"players.bin", &players},
         {"presentation.bin", &presentation},
         {"runtime.bin", &runtime},
-        {"terrain.bin", &terrain}
+        {"terrain-post-features.bin", &terrain_post_features},
+        {"terrain-pre-features.bin", &terrain_pre_features},
+        {"terrain.bin", &terrain},
     }};
     json file_manifest = json::object();
     std::string identity_input;
@@ -1239,7 +1615,7 @@ int run(const Arguments& arguments) {
     package_hash.update(identity_input);
 
     json manifest = {
-        {"schema", "mc2-owner-level-export/v2"},
+        {"schema", "mc2-owner-level-export/v3"},
         {"byte_order", "little-endian"},
         {"level", {
             {"external", 1},
@@ -1247,6 +1623,75 @@ int run(const Arguments& arguments) {
             {"map_type", {{"id", 1}, {"name", "Night"}}}
         }},
         {"capture", {{"site", "0x002285ff"}, {"frame", 0}}},
+        {"feature_generation_oracle", {
+            {"provenance", "pristine authored Level 1 rerun after live frame-zero outputs were copied"},
+            {"start_phase", "after-GenerateLevelMap_43830-before-sub_49F30-sub_49270"},
+            {"end_phase", "after-sub_49270-before-group0"},
+            {"vga_selector", 1},
+            {"global_rng_barriers", {
+                kFeatureGlobalRngBarriers[0],
+                kFeatureGlobalRngBarriers[1],
+                kFeatureGlobalRngBarriers[2],
+                kFeatureGlobalRngBarriers[3],
+                kFeatureGlobalRngBarriers[4],
+                kFeatureGlobalRngBarriers[5],
+                kFeatureGlobalRngBarriers[6]
+            }},
+            {"start_record", {
+                {"file", "feature-start.bin"},
+                {"magic", "MFS3"},
+                {"version", 1},
+                {"bytes", kFeatureStartBytes},
+                {"terrain_rng", {{"offset", 8}, {"encoding", "u16_le"}}},
+                {"global_rng", {{"offset", 12}, {"encoding", "u32_le"}}}
+            }},
+            {"end_record", {
+                {"file", "feature-end.bin"},
+                {"magic", "MFE3"},
+                {"version", 1},
+                {"bytes", kFeatureStartBytes},
+                {"terrain_rng", {{"offset", 8}, {"encoding", "u16_le"}}},
+                {"global_rng", {{"offset", 12}, {"encoding", "u32_le"}}}
+            }},
+            {"pre_terrain", {
+                {"file", "terrain-pre-features.bin"},
+                {"bytes", kTerrainBytes},
+                {"inactive_secondary_plane", "zero-normalized-non-cave"}
+            }},
+            {"post_terrain", {
+                {"file", "terrain-post-features.bin"},
+                {"bytes", kTerrainBytes},
+                {"inactive_secondary_plane", "zero-normalized-non-cave"}
+            }},
+            {"post_entities", {
+                {"file", "entities-post-features.bin"},
+                {"magic", "MCE3"},
+                {"version", 1},
+                {"record_bytes", feature_entity_record_size},
+                {"slots", kEntitySlots},
+                {"active", feature_active_entities},
+                {"inactive_payload", "zero-normalized-after-index-active-prefix"},
+                {"map_heads", "terrain-post-features.bin entity-index plane"},
+                {"map_links", "oldMapEntity/nextEntity in complete active records"}
+            }},
+            {"allocator", {
+                {"file", "feature-allocator.bin"},
+                {"magic", "MCA3"},
+                {"version", 1},
+                {"header_bytes", kFeatureAllocatorHeaderBytes},
+                {"relation_count", kFeatureAllocatorRelationCount},
+                {"trace_record_bytes", kFeatureAllocatorTraceRecordBytes},
+                {"trace_provenance", "source-derived expected operations; counters and relations captured live"}
+            }},
+            {"construction_inputs", {
+                {"file", "feature-construction-inputs.bin"},
+                {"magic", "MCI3"},
+                {"version", 1},
+                {"record_count", feature_building_selectors.size()},
+                {"selectors", feature_building_selectors},
+                {"source", "live pinned BLDGPRM rows plus BUILD footprint bytes"}
+            }}
+        }},
         {"dimensions", {{"terrain", {256, 256}}}},
         {"counts", {
             {"authored_features", kAuthoredFeatures},

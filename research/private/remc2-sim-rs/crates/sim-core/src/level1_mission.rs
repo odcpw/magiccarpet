@@ -5,6 +5,10 @@
 //! are required to play Level 1. It is not a generic replacement for the
 //! complete remc2 entity dispatcher.
 
+use crate::native_world::{
+    TerrainPlanes, apply_level1_load_house_edge_smoothing, apply_level1_load_house_sweep,
+    apply_level1_load_path_point, level1_feature_ground_height, level1_load_house_base,
+};
 use crate::{
     FlightContext, FlightEvent, FlightProfile, FlightState, FlightWorld, MovementResolution,
     Position, SIN_16_16, SpellActivationHolder, SpellFireSource, SpellHolder, Tile, angle_distance,
@@ -126,6 +130,7 @@ impl Level1ResetSourceSlot {
 
 pub const LEVEL1_FRAME_ZERO_ACTIVE_ENTITY_COUNT: usize = 177;
 pub const LEVEL1_RESET_COMPARATOR_SCHEMA: &str = "mc2-level1-reset-from-authored/v1";
+pub const LEVEL1_FEATURE_COMPARATOR_SCHEMA: &str = "mc2-level1-load-features/v1";
 pub const LEVEL1_RESET_SOURCE_RECORD_BYTES: usize = 13;
 pub const LEVEL1_RESET_COMPARATOR_FIELD_COVERAGE: [&str; 8] = [
     "index",
@@ -293,6 +298,48 @@ pub struct Level1ResetFromAuthoredReport {
     pub observed_family_census: BTreeMap<String, usize>,
     pub field_coverage: Vec<&'static str>,
     pub divergences: Vec<Level1ResetDivergence>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Level1FeatureOracleBytes<'a> {
+    pub authored: &'a [u8],
+    pub pre_terrain: &'a [u8],
+    pub feature_start: &'a [u8],
+    pub construction: &'a [u8],
+    pub post_terrain: &'a [u8],
+    pub feature_end: &'a [u8],
+    pub entities: &'a [u8],
+    pub allocator: &'a [u8],
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Level1FeatureGenerationReport {
+    pub schema: &'static str,
+    pub exact: bool,
+    pub path_tiles: usize,
+    pub house_entities: usize,
+    pub terrain_bytes: usize,
+    pub entity_bytes: usize,
+    pub allocator_bytes: usize,
+    pub start_terrain_rng: u16,
+    pub end_terrain_rng: u16,
+    pub start_global_rng: u32,
+    pub end_global_rng: u32,
+    #[cfg(test)]
+    generated: Level1FeatureGenerated,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Level1ResetFromAuthoredProductionReport {
+    pub reset: Level1ResetFromAuthoredReport,
+    pub feature_generation: Level1FeatureGenerationReport,
+}
+
+impl Level1ResetFromAuthoredProductionReport {
+    #[must_use]
+    pub const fn usable(&self) -> bool {
+        self.reset.usable() && self.feature_generation.exact
+    }
 }
 
 impl Level1ResetFromAuthoredReport {
@@ -568,6 +615,65 @@ pub fn compare_level1_reset_from_authored(
     })
 }
 
+/// Execute the complete Level 1 load-time feature phase from authored data,
+/// compare its terrain, house entities, allocator expectation, and RNG
+/// boundaries byte-for-byte with an isolated remc2 source capture, then run
+/// the established frame-zero source-arena comparator against package M.
+///
+/// Package M remains the active v2 owner package. The v3 bytes supplied here
+/// are comparison evidence for this reset harness only and never replace or
+/// widen the runtime package schema.
+///
+/// # Errors
+///
+/// Returns the first malformed input or byte-exact semantic mismatch, with a
+/// terrain tile, entity slot/field, allocator offset, or RNG boundary.
+pub fn compare_level1_reset_from_authored_with_feature_oracle(
+    authored_bytes: &[u8],
+    observed_active_entities: &[Level1ResetSourceSlot],
+    matrix_bytes: &[u8],
+    oracle_bytes: Level1FeatureOracleBytes<'_>,
+) -> Result<Level1ResetFromAuthoredProductionReport, String> {
+    compare_level1_feature_bytes(authored_bytes, oracle_bytes.authored, |offset| {
+        format!("feature authored byte {offset}")
+    })?;
+    let inputs = decode_level1_feature_inputs(
+        authored_bytes.to_vec(),
+        oracle_bytes.pre_terrain.to_vec(),
+        oracle_bytes.feature_start,
+        oracle_bytes.construction,
+    )?;
+    let oracle = decode_level1_feature_oracle(
+        oracle_bytes.post_terrain.to_vec(),
+        oracle_bytes.feature_end,
+        oracle_bytes.entities.to_vec(),
+        oracle_bytes.allocator.to_vec(),
+    )?;
+    let generated = generate_level1_load_features(&inputs)?;
+    compare_level1_feature_generation(&generated, &oracle)?;
+    let reset =
+        compare_level1_reset_from_authored(authored_bytes, observed_active_entities, matrix_bytes)?;
+    let feature_generation = Level1FeatureGenerationReport {
+        schema: LEVEL1_FEATURE_COMPARATOR_SCHEMA,
+        exact: true,
+        path_tiles: generated.path_tiles.len(),
+        house_entities: generated.plan.houses.len(),
+        terrain_bytes: generated.post_terrain.len(),
+        entity_bytes: generated.entities.len(),
+        allocator_bytes: generated.allocator.len(),
+        start_terrain_rng: inputs.start_terrain_rng,
+        end_terrain_rng: generated.end_terrain_rng,
+        start_global_rng: inputs.start_global_rng,
+        end_global_rng: generated.end_global_rng,
+        #[cfg(test)]
+        generated,
+    };
+    Ok(Level1ResetFromAuthoredProductionReport {
+        reset,
+        feature_generation,
+    })
+}
+
 #[must_use]
 pub fn level1_reset_report_json(report: &Level1ResetFromAuthoredReport) -> String {
     let first_mismatch = report
@@ -621,6 +727,38 @@ pub fn level1_reset_report_json(report: &Level1ResetFromAuthoredReport) -> Strin
     .to_string()
 }
 
+/// Serialize the combined source-arena and load-feature verification report.
+///
+/// # Panics
+///
+/// Panics only if the JSON produced internally by
+/// [`level1_reset_report_json`] cannot be parsed back into a JSON value.
+#[must_use]
+pub fn level1_reset_production_report_json(
+    report: &Level1ResetFromAuthoredProductionReport,
+) -> String {
+    let mut value =
+        serde_json::from_str::<serde_json::Value>(&level1_reset_report_json(&report.reset))
+            .expect("reset report JSON is internally valid");
+    value["summary"]["feature_generation_equal"] =
+        serde_json::Value::Bool(report.feature_generation.exact);
+    value["feature_generation"] = serde_json::json!({
+        "schema": report.feature_generation.schema,
+        "exact": report.feature_generation.exact,
+        "path_tiles": report.feature_generation.path_tiles,
+        "house_entities": report.feature_generation.house_entities,
+        "terrain_bytes": report.feature_generation.terrain_bytes,
+        "entity_bytes": report.feature_generation.entity_bytes,
+        "allocator_bytes": report.feature_generation.allocator_bytes,
+        "start_terrain_rng": report.feature_generation.start_terrain_rng,
+        "end_terrain_rng": report.feature_generation.end_terrain_rng,
+        "start_global_rng": report.feature_generation.start_global_rng,
+        "end_global_rng": report.feature_generation.end_global_rng,
+        "allocator_trace_provenance": "source-derived expected operations",
+    });
+    value.to_string()
+}
+
 #[must_use]
 pub fn level1_reset_harness_error_json(stage: &str, error: &str) -> String {
     serde_json::json!({
@@ -652,55 +790,33 @@ fn reconstruct_level1_frame_zero(
     authored_bytes: &[u8],
 ) -> Result<Vec<ExpectedLevel1ResetEntity>, String> {
     let features = parse_authored_features(authored_bytes)?;
-    let group_minus_one = features
-        .iter()
-        .filter(|feature| feature.kind != 0 && feature.activation_group == -1)
-        .copied()
-        .collect::<Vec<_>>();
-    let houses = group_minus_one
-        .iter()
-        .filter(|feature| feature.kind == 10 && feature.subtype == 45)
-        .copied()
-        .collect::<Vec<_>>();
-    let terrain_commands = group_minus_one
-        .iter()
-        .filter(|feature| feature.kind == 10 && feature.subtype == 29)
-        .count();
-    if houses.len() != 47
-        || terrain_commands != 2
-        || group_minus_one.len() != houses.len() + terrain_commands
-    {
-        return Err(format!(
-            "Level 1 authored group -1 mismatch: {} houses, {terrain_commands} terrain commands, {} total rows",
-            houses.len(),
-            group_minus_one.len()
-        ));
-    }
+    let initial_global_rng = u32::from(u16::from_le_bytes([
+        *authored_bytes
+            .get(23)
+            .ok_or_else(|| "Level 1 authored seed is absent".to_owned())?,
+        *authored_bytes
+            .get(24)
+            .ok_or_else(|| "Level 1 authored seed is truncated".to_owned())?,
+    ]));
+    let load_features = plan_level1_load_features(authored_bytes, initial_global_rng)?;
 
     let mut expected = Vec::with_capacity(LEVEL1_FRAME_ZERO_ACTIVE_ENTITY_COUNT);
-    let mut source_slot = 1_u16;
-    for house in houses {
-        let phase = if source_slot == 2 {
-            65
-        } else {
-            u8::try_from(source_slot + 32)
-                .map_err(|_| "Level 1 house phase exceeds u8".to_owned())?
-        };
+    for house in &load_features.houses {
         expected.push(expected_reset_entity(
-            house.index,
+            house.authored_index,
             "load-house",
             &["AUT-G-1-HOUSES", "DSP-10-52"],
             true,
-            source_slot,
+            house.source_slot,
             10,
             45,
             52,
-            phase,
+            house.frame_zero_phase,
             2,
             0x0000_000d,
         ));
-        source_slot += 1;
     }
+    let mut source_slot = 48_u16;
 
     let group_zero = features
         .iter()
@@ -2165,6 +2281,988 @@ pub struct AuthoredFeature {
     pub parameter_1: u16,
     pub parameter_2: u16,
     pub parameter_3: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Level1LoadPathSegment {
+    pub source_slot: u16,
+    pub start_tile_x: u8,
+    pub start_tile_y: u8,
+    pub length: u16,
+    pub step_x: i8,
+    pub step_y: i8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Level1LoadHouse {
+    pub authored_index: u16,
+    pub source_slot: u16,
+    pub building_index: u8,
+    pub parameter_2: u16,
+    pub tile_x: u8,
+    pub tile_y: u8,
+    pub isolated_phase: u8,
+    pub frame_zero_phase: u8,
+    pub entity_rng: u16,
+    pub parameter: HouseParameter,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Level1LoadFeaturePlan {
+    pub path_segments: [Level1LoadPathSegment; 2],
+    pub houses: Vec<Level1LoadHouse>,
+    pub final_global_rng: u32,
+}
+
+pub(crate) fn plan_level1_load_features(
+    authored_bytes: &[u8],
+    global_rng: u32,
+) -> Result<Level1LoadFeaturePlan, String> {
+    plan_level1_load_features_with(authored_bytes, global_rng, |building_index| {
+        HouseParameter::level_one(building_index)
+    })
+}
+
+fn plan_level1_load_features_with(
+    authored_bytes: &[u8],
+    mut global_rng: u32,
+    parameter_for: impl Fn(u8) -> Option<HouseParameter>,
+) -> Result<Level1LoadFeaturePlan, String> {
+    let features = parse_authored_features(authored_bytes)?;
+    let mut stage_tags = features
+        .iter()
+        .map(|feature| {
+            feature.activation_group == -1
+                && feature.kind == 10
+                && matches!(feature.subtype, 28 | 29 | 31 | 50 | 80)
+        })
+        .collect::<Vec<_>>();
+
+    // Barrier one follows the subtype-82 scan.
+    global_rng = next_load_global_rng(global_rng);
+
+    let path_segments = plan_level1_load_path(&features, &mut stage_tags)?;
+
+    // Barriers two through five execute/reclaim the temporary path rows and
+    // advance to the RNG state used by the bit-0x10 house scan.
+    for _ in 0..4 {
+        global_rng = next_load_global_rng(global_rng);
+    }
+
+    let authored_houses = features
+        .iter()
+        .filter(|feature| {
+            feature.activation_group == -1 && feature.kind == 10 && feature.subtype == 45
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    if authored_houses.len() != 47 {
+        return Err(format!(
+            "Level 1 load-time house census changed: {}",
+            authored_houses.len()
+        ));
+    }
+    let mut free_slots = (1_u16..1_000).rev().collect::<Vec<_>>();
+    assert_eq!(free_slots.pop(), Some(1));
+    assert_eq!(free_slots.pop(), Some(2));
+    free_slots.push(1);
+    free_slots.push(2);
+    let mut houses = Vec::with_capacity(47);
+    append_load_houses(
+        &authored_houses,
+        true,
+        global_rng,
+        &mut free_slots,
+        &mut houses,
+        &parameter_for,
+    )?;
+
+    // Barrier six completes the special house and advances the RNG before
+    // ordinary houses allocate from the reclaimed temporary slots.
+    global_rng = next_load_global_rng(global_rng);
+    append_load_houses(
+        &authored_houses,
+        false,
+        global_rng,
+        &mut free_slots,
+        &mut houses,
+        &parameter_for,
+    )?;
+    global_rng = next_load_global_rng(global_rng);
+    houses.sort_unstable_by_key(|house| house.source_slot);
+    if houses.iter().map(|house| house.source_slot).ne(1..=47) {
+        return Err("Level 1 load-time house slots are not exactly 1..=47".to_owned());
+    }
+    Ok(Level1LoadFeaturePlan {
+        path_segments,
+        houses,
+        final_global_rng: global_rng,
+    })
+}
+
+fn plan_level1_load_path(
+    features: &[AuthoredFeature],
+    stage_tags: &mut [bool],
+) -> Result<[Level1LoadPathSegment; 2], String> {
+    let head = features
+        .iter()
+        .find(|feature| {
+            feature.activation_group == -1
+                && feature.kind == 10
+                && feature.subtype == 29
+                && stage_tags[usize::from(feature.index)]
+        })
+        .copied()
+        .ok_or_else(|| "Level 1 load-time subtype-29 path head is absent".to_owned())?;
+    let mut head_index = head.index;
+    while features[usize::from(head_index)].parameter_1 != 0 {
+        head_index = features[usize::from(head_index)].parameter_1;
+        if usize::from(head_index) >= features.len() {
+            return Err("Level 1 subtype-29 predecessor escapes authored rows".to_owned());
+        }
+    }
+    let first = features[usize::from(head_index)];
+    let second_index = first.parameter_2;
+    if second_index == 0 || usize::from(second_index) >= features.len() {
+        return Err("Level 1 subtype-29 path has no linked endpoint".to_owned());
+    }
+    let second = features[usize::from(second_index)];
+    if second.parameter_1 != first.index
+        || second.parameter_2 != 0
+        || first.index != 62
+        || second.index != 63
+    {
+        return Err(format!(
+            "Level 1 subtype-29 linkage changed: {} -> {} -> {}",
+            first.index, second.index, second.parameter_2
+        ));
+    }
+    stage_tags[usize::from(first.index)] = false;
+    stage_tags[usize::from(second.index)] = false;
+    let first_x = u8::try_from(first.tile_x)
+        .map_err(|_| "Level 1 subtype-29 head X exceeds one map byte".to_owned())?;
+    let first_y = u8::try_from(first.tile_y)
+        .map_err(|_| "Level 1 subtype-29 head Y exceeds one map byte".to_owned())?;
+    let second_x = u8::try_from(second.tile_x)
+        .map_err(|_| "Level 1 subtype-29 tail X exceeds one map byte".to_owned())?;
+    let second_y = u8::try_from(second.tile_y)
+        .map_err(|_| "Level 1 subtype-29 tail Y exceeds one map byte".to_owned())?;
+    let (delta_x, step_x) = shortest_load_axis(first_x, second_x);
+    let (delta_y, step_y) = shortest_load_axis(first_y, second_y);
+    let diagonal = delta_x.min(delta_y);
+    let tail = delta_x.abs_diff(delta_y);
+    let elbow_x = advance_load_axis(first_x, step_x, diagonal);
+    let elbow_y = advance_load_axis(first_y, step_y, diagonal);
+    Ok([
+        Level1LoadPathSegment {
+            source_slot: 1,
+            start_tile_x: first_x,
+            start_tile_y: first_y,
+            length: diagonal,
+            step_x,
+            step_y,
+        },
+        Level1LoadPathSegment {
+            source_slot: 2,
+            start_tile_x: elbow_x,
+            start_tile_y: elbow_y,
+            length: tail,
+            step_x: if delta_x > delta_y { step_x } else { 0 },
+            step_y: if delta_y > delta_x { step_y } else { 0 },
+        },
+    ])
+}
+
+fn append_load_houses(
+    authored_houses: &[AuthoredFeature],
+    special_pass: bool,
+    global_rng: u32,
+    free_slots: &mut Vec<u16>,
+    houses: &mut Vec<Level1LoadHouse>,
+    parameter_for: &impl Fn(u8) -> Option<HouseParameter>,
+) -> Result<(), String> {
+    for feature in authored_houses {
+        let building_index = u8::try_from(feature.parameter_1)
+            .map_err(|_| format!("house {} BLDGPRM index exceeds u8", feature.index))?;
+        let parameter = parameter_for(building_index).ok_or_else(|| {
+            format!(
+                "house {} uses unqualified BLDGPRM row {building_index}",
+                feature.index
+            )
+        })?;
+        if (parameter.flags & 0x10 != 0) != special_pass {
+            continue;
+        }
+        let source_slot = free_slots
+            .pop()
+            .ok_or_else(|| "Level 1 load-time house allocation exhausted".to_owned())?;
+        let isolated_phase = if source_slot == 2 {
+            64
+        } else {
+            u8::try_from(source_slot + 31)
+                .map_err(|_| "Level 1 load-time house phase exceeds u8".to_owned())?
+        };
+        let frame_zero_phase = isolated_phase
+            .checked_add(1)
+            .ok_or_else(|| "Level 1 frame-zero house phase exceeds u8".to_owned())?;
+        let tile_x = u8::try_from(feature.tile_x)
+            .map_err(|_| format!("house {} X exceeds one map byte", feature.index))?;
+        let tile_y = u8::try_from(feature.tile_y)
+            .map_err(|_| format!("house {} Y exceeds one map byte", feature.index))?;
+        houses.push(Level1LoadHouse {
+            authored_index: feature.index,
+            source_slot,
+            building_index,
+            parameter_2: feature.parameter_2,
+            tile_x,
+            tile_y,
+            isolated_phase,
+            frame_zero_phase,
+            entity_rng: low_u16(global_rng).wrapping_add(source_slot),
+            parameter,
+        });
+    }
+    Ok(())
+}
+
+const fn next_load_global_rng(value: u32) -> u32 {
+    value.wrapping_mul(9_377).wrapping_add(9_439)
+}
+
+fn shortest_load_axis(start: u8, end: u8) -> (u16, i8) {
+    let forward = end.wrapping_sub(start);
+    let backward = start.wrapping_sub(end);
+    if forward <= backward {
+        (u16::from(forward), 1)
+    } else {
+        (u16::from(backward), -1)
+    }
+}
+
+const fn advance_load_axis(start: u8, step: i8, distance: u16) -> u8 {
+    let distance_low = distance.to_le_bytes()[0];
+    if step < 0 {
+        start.wrapping_sub(distance_low)
+    } else {
+        start.wrapping_add(distance_low)
+    }
+}
+
+const fn low_u16(value: u32) -> u16 {
+    let bytes = value.to_le_bytes();
+    u16::from_le_bytes([bytes[0], bytes[1]])
+}
+
+const LEVEL1_FEATURE_TERRAIN_BYTES: usize = 0x70_000;
+const LEVEL1_FEATURE_ENTITY_RECORD_BYTES: usize = 176;
+const LEVEL1_FEATURE_ENTITY_COUNT: usize = 1_000;
+const LEVEL1_FEATURE_START_GLOBAL_RNG: u32 = 0x0000_bfca;
+const LEVEL1_FEATURE_END_GLOBAL_RNG: u32 = 0xdb82_8483;
+#[cfg(test)]
+const LEVEL1_FEATURE_GLOBAL_RNG_BARRIERS: [u32; 7] = [
+    0x1b71_2ae9,
+    0x2c34_e568,
+    0x3d87_0b47,
+    0xaf84_3886,
+    0xfa1a_8925,
+    0x05f9_9924,
+    0xdb82_8483,
+];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Level1FeatureConstruction {
+    selector: u8,
+    raw_width: u8,
+    raw_height: u8,
+    parameter: HouseParameter,
+    footprint: CastleBuildFootprint,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Level1FeatureInputs {
+    pub authored: Vec<u8>,
+    pub pre_terrain: Vec<u8>,
+    pub start_terrain_rng: u16,
+    pub start_global_rng: u32,
+    pub construction: BTreeMap<u8, Level1FeatureConstruction>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Level1FeatureOracle {
+    pub post_terrain: Vec<u8>,
+    pub end_terrain_rng: u16,
+    pub end_global_rng: u32,
+    pub entities: Vec<u8>,
+    pub allocator: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Level1FeatureGenerated {
+    pub post_terrain: Vec<u8>,
+    pub end_terrain_rng: u16,
+    pub end_global_rng: u32,
+    pub entities: Vec<u8>,
+    pub allocator: Vec<u8>,
+    pub plan: Level1LoadFeaturePlan,
+    pub path_tiles: Vec<(u8, u8)>,
+}
+
+#[derive(Clone, Debug)]
+struct Level1FeatureHouseRuntime {
+    plan: Level1LoadHouse,
+    position: Position,
+    footprint: CastleBuildFootprint,
+    record: [u8; LEVEL1_FEATURE_ENTITY_RECORD_BYTES],
+}
+
+pub(crate) fn decode_level1_feature_inputs(
+    authored: Vec<u8>,
+    pre_terrain: Vec<u8>,
+    feature_start: &[u8],
+    construction: &[u8],
+) -> Result<Level1FeatureInputs, String> {
+    let (start_terrain_rng, start_global_rng) =
+        decode_level1_feature_boundary(feature_start, *b"MFS3")?;
+    if pre_terrain.len() != LEVEL1_FEATURE_TERRAIN_BYTES {
+        return Err(format!(
+            "Level 1 pre-feature terrain has {} bytes, expected {LEVEL1_FEATURE_TERRAIN_BYTES}",
+            pre_terrain.len()
+        ));
+    }
+    if pre_terrain[0x50_000..].iter().any(|byte| *byte != 0) {
+        return Err("Level 1 pre-feature map-head plane is not empty".to_owned());
+    }
+    if start_global_rng != LEVEL1_FEATURE_START_GLOBAL_RNG {
+        return Err(format!(
+            "Level 1 feature-start global RNG is {start_global_rng:#010x}, expected {LEVEL1_FEATURE_START_GLOBAL_RNG:#010x}"
+        ));
+    }
+    Ok(Level1FeatureInputs {
+        authored,
+        pre_terrain,
+        start_terrain_rng,
+        start_global_rng,
+        construction: decode_level1_feature_construction(construction)?,
+    })
+}
+
+pub(crate) fn decode_level1_feature_oracle(
+    post_terrain: Vec<u8>,
+    feature_end: &[u8],
+    entities: Vec<u8>,
+    allocator: Vec<u8>,
+) -> Result<Level1FeatureOracle, String> {
+    if post_terrain.len() != LEVEL1_FEATURE_TERRAIN_BYTES {
+        return Err(format!(
+            "Level 1 post-feature terrain has {} bytes, expected {LEVEL1_FEATURE_TERRAIN_BYTES}",
+            post_terrain.len()
+        ));
+    }
+    let (end_terrain_rng, end_global_rng) = decode_level1_feature_boundary(feature_end, *b"MFE3")?;
+    validate_level1_feature_entities_header(&entities)?;
+    validate_level1_feature_allocator_header(&allocator)?;
+    Ok(Level1FeatureOracle {
+        post_terrain,
+        end_terrain_rng,
+        end_global_rng,
+        entities,
+        allocator,
+    })
+}
+
+fn decode_level1_feature_boundary(bytes: &[u8], magic: [u8; 4]) -> Result<(u16, u32), String> {
+    if bytes.len() != 16
+        || bytes[..4] != magic
+        || read_feature_u16(bytes, 4)? != 1
+        || read_feature_u16(bytes, 6)? != 16
+        || read_feature_u16(bytes, 10)? != 0
+    {
+        return Err(format!(
+            "Level 1 {} feature boundary is malformed",
+            std::str::from_utf8(&magic).unwrap_or("unknown")
+        ));
+    }
+    Ok((read_feature_u16(bytes, 8)?, read_feature_u32(bytes, 12)?))
+}
+
+fn decode_level1_feature_construction(
+    bytes: &[u8],
+) -> Result<BTreeMap<u8, Level1FeatureConstruction>, String> {
+    if bytes.len() < 16
+        || bytes[..4] != *b"MCI3"
+        || read_feature_u16(bytes, 4)? != 1
+        || read_feature_u16(bytes, 6)? != 16
+        || read_feature_u16(bytes, 10)? != 1
+        || read_feature_u32(bytes, 12)? != 0
+    {
+        return Err("Level 1 feature construction header is malformed".to_owned());
+    }
+    let count = usize::from(read_feature_u16(bytes, 8)?);
+    let mut offset = 16_usize;
+    let mut result = BTreeMap::new();
+    for _ in 0..count {
+        let header_end = offset
+            .checked_add(12)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(|| "Level 1 feature construction row is truncated".to_owned())?;
+        let selector_word = read_feature_u16(bytes, offset)?;
+        let selector = u8::try_from(selector_word)
+            .map_err(|_| format!("BLDGPRM selector {selector_word} exceeds u8"))?;
+        let parameter = HouseParameter {
+            life_mana_scalar: read_feature_u16(bytes, offset + 2)?,
+            flags: bytes[offset + 4],
+            destruction_successor: bytes[offset + 5],
+        };
+        let raw_width = bytes[offset + 6];
+        let raw_height = bytes[offset + 7];
+        let data_bytes = usize::try_from(read_feature_u32(bytes, offset + 8)?)
+            .map_err(|_| "Level 1 BUILD extent exceeds usize".to_owned())?;
+        offset = header_end;
+        let data_end = offset
+            .checked_add(data_bytes)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(|| format!("Level 1 BUILD {selector} payload is truncated"))?;
+        if raw_width == 0
+            || raw_height == 0
+            || data_bytes != usize::from(raw_width) * usize::from(raw_height) * 2
+        {
+            return Err(format!(
+                "Level 1 BUILD {selector} raw dimensions do not match its payload"
+            ));
+        }
+        let width = raw_width >> 1;
+        let height = raw_height >> 1;
+        let effective_bytes = usize::from(width) * usize::from(height) * 2;
+        let footprint = CastleBuildFootprint::from_owner_cells(
+            selector,
+            width,
+            height,
+            &bytes[offset..offset + effective_bytes],
+        )?;
+        if result
+            .insert(
+                selector,
+                Level1FeatureConstruction {
+                    selector,
+                    raw_width,
+                    raw_height,
+                    parameter,
+                    footprint,
+                },
+            )
+            .is_some()
+        {
+            return Err(format!(
+                "Level 1 feature construction repeats selector {selector}"
+            ));
+        }
+        offset = data_end;
+    }
+    if offset != bytes.len() {
+        return Err("Level 1 feature construction has trailing bytes".to_owned());
+    }
+    let expected = [17_u8, 26, 29, 30, 31, 34, 42, 47, 50, 51, 52, 53];
+    if result.keys().copied().ne(expected) {
+        return Err("Level 1 feature construction selector set changed".to_owned());
+    }
+    Ok(result)
+}
+
+pub(crate) fn generate_level1_load_features(
+    inputs: &Level1FeatureInputs,
+) -> Result<Level1FeatureGenerated, String> {
+    let mut terrain = decode_level1_feature_terrain(&inputs.pre_terrain)?;
+    let mut terrain_rng = inputs.start_terrain_rng;
+    let plan = plan_level1_load_features_with(
+        &inputs.authored,
+        inputs.start_global_rng,
+        |building_index| {
+            inputs
+                .construction
+                .get(&building_index)
+                .map(|construction| construction.parameter)
+        },
+    )?;
+    if plan.final_global_rng != LEVEL1_FEATURE_END_GLOBAL_RNG {
+        return Err(format!(
+            "Level 1 feature planner ended global RNG at {:#010x}, expected {LEVEL1_FEATURE_END_GLOBAL_RNG:#010x}",
+            plan.final_global_rng
+        ));
+    }
+
+    let mut path_tiles = Vec::with_capacity(61);
+    for segment in &plan.path_segments {
+        let mut x = segment.start_tile_x;
+        let mut y = segment.start_tile_y;
+        for _ in 0..segment.length {
+            path_tiles.push((x, y));
+            apply_level1_load_path_point(&mut terrain, x, y, &mut terrain_rng);
+            x = x.wrapping_add_signed(segment.step_x);
+            y = y.wrapping_add_signed(segment.step_y);
+        }
+    }
+
+    let mut houses = BTreeMap::<u16, Level1FeatureHouseRuntime>::new();
+    let special = plan
+        .houses
+        .iter()
+        .find(|house| house.parameter.flags & 0x10 != 0)
+        .copied()
+        .ok_or_else(|| "Level 1 feature plan lacks its special-pass house".to_owned())?;
+    allocate_level1_feature_house(&mut terrain, &mut houses, special, inputs)?;
+    for remaining in (0..30_u8).rev() {
+        step_level1_feature_house(&mut terrain, &mut terrain_rng, &mut houses, 2, remaining)?;
+    }
+
+    let mut ordinary = plan
+        .houses
+        .iter()
+        .filter(|house| house.parameter.flags & 0x10 == 0)
+        .copied()
+        .collect::<Vec<_>>();
+    ordinary.sort_unstable_by_key(|house| house.authored_index);
+    for house in ordinary {
+        allocate_level1_feature_house(&mut terrain, &mut houses, house, inputs)?;
+    }
+    for remaining in (0..30_u8).rev() {
+        for source_slot in 1..=47_u16 {
+            if source_slot != 2 {
+                step_level1_feature_house(
+                    &mut terrain,
+                    &mut terrain_rng,
+                    &mut houses,
+                    source_slot,
+                    remaining,
+                )?;
+            }
+        }
+    }
+    Ok(Level1FeatureGenerated {
+        post_terrain: encode_level1_feature_terrain(&terrain),
+        end_terrain_rng: terrain_rng,
+        end_global_rng: plan.final_global_rng,
+        entities: encode_level1_feature_entities(&houses),
+        allocator: encode_level1_feature_allocator(&plan)?,
+        plan,
+        path_tiles,
+    })
+}
+
+fn allocate_level1_feature_house(
+    terrain: &mut TerrainPlanes,
+    houses: &mut BTreeMap<u16, Level1FeatureHouseRuntime>,
+    plan: Level1LoadHouse,
+    inputs: &Level1FeatureInputs,
+) -> Result<(), String> {
+    let construction = inputs
+        .construction
+        .get(&plan.building_index)
+        .ok_or_else(|| format!("missing Level 1 BUILD {}", plan.building_index))?;
+    if construction.selector != plan.building_index {
+        return Err(format!(
+            "Level 1 BUILD key/selector mismatch for {}",
+            plan.building_index
+        ));
+    }
+    let (center_x, center_y, initial_z) =
+        level1_load_house_base(terrain, plan.tile_x, plan.tile_y, &construction.footprint);
+    let position = Position {
+        x: u16::from(center_x) << 8,
+        y: u16::from(center_y) << 8,
+        z: initial_z,
+    };
+    let record = level1_feature_house_record(plan, position, construction)?;
+    let mut runtime = Level1FeatureHouseRuntime {
+        plan,
+        position,
+        footprint: construction.footprint.clone(),
+        record,
+    };
+    insert_level1_feature_map_link(terrain, houses, &mut runtime)?;
+    if houses.insert(plan.source_slot, runtime).is_some() {
+        return Err(format!(
+            "Level 1 feature slot {} allocated twice",
+            plan.source_slot
+        ));
+    }
+    Ok(())
+}
+
+fn insert_level1_feature_map_link(
+    terrain: &mut TerrainPlanes,
+    houses: &mut BTreeMap<u16, Level1FeatureHouseRuntime>,
+    house: &mut Level1FeatureHouseRuntime,
+) -> Result<(), String> {
+    let map_index = usize::from(house.position.x.to_be_bytes()[0])
+        + usize::from(house.position.y.to_be_bytes()[0]) * 256;
+    let old = terrain.entity_indices[map_index].cast_unsigned();
+    write_feature_u16(&mut house.record, 26, old);
+    if old != 0 {
+        let older = houses
+            .get_mut(&old)
+            .ok_or_else(|| format!("Level 1 map head {old} is not an allocated house"))?;
+        write_feature_u16(&mut older.record, 28, house.plan.source_slot);
+    }
+    terrain.entity_indices[map_index] = house.plan.source_slot.cast_signed();
+    Ok(())
+}
+
+fn step_level1_feature_house(
+    terrain: &mut TerrainPlanes,
+    terrain_rng: &mut u16,
+    houses: &mut BTreeMap<u16, Level1FeatureHouseRuntime>,
+    source_slot: u16,
+    remaining: u8,
+) -> Result<(), String> {
+    let house = houses
+        .get(&source_slot)
+        .ok_or_else(|| format!("missing Level 1 feature house slot {source_slot}"))?;
+    let position = house.position;
+    let footprint = house.footprint.clone();
+    apply_level1_load_house_sweep(terrain, terrain_rng, position, &footprint, remaining);
+    if remaining == 0 {
+        apply_level1_load_house_edge_smoothing(terrain, position, &footprint);
+        let final_z = level1_feature_ground_height(terrain, position.x, position.y);
+        let house = houses
+            .get_mut(&source_slot)
+            .ok_or_else(|| format!("missing Level 1 feature house slot {source_slot}"))?;
+        house.position.z = final_z;
+        write_feature_i16(&mut house.record, 84, final_z);
+    }
+    Ok(())
+}
+
+fn level1_feature_house_record(
+    plan: Level1LoadHouse,
+    position: Position,
+    construction: &Level1FeatureConstruction,
+) -> Result<[u8; LEVEL1_FEATURE_ENTITY_RECORD_BYTES], String> {
+    let mut record = [0_u8; LEVEL1_FEATURE_ENTITY_RECORD_BYTES];
+    write_feature_u16(&mut record, 0, plan.source_slot);
+    record[2] = 1;
+    write_feature_i32(&mut record, 8, 30);
+    write_feature_i32(
+        &mut record,
+        12,
+        i32::from(construction.parameter.life_mana_scalar) * 1_000,
+    );
+    write_feature_u32(&mut record, 16, 0x0000_000d);
+    write_feature_i32(&mut record, 20, 2);
+    write_feature_u16(&mut record, 24, plan.entity_rng);
+    write_feature_u16(&mut record, 30, plan.source_slot);
+    write_feature_u16(&mut record, 46, construction.parameter.life_mana_scalar);
+    record[60] = 0x21 | (u8::from(construction.parameter.flags & 8 == 0) * 2);
+    record[61] = (-6_i8).cast_unsigned();
+    record[65] = construction.parameter.destruction_successor;
+    record[66] = plan.isolated_phase;
+    record[67] = 10;
+    record[68] = 45;
+    record[69] = 0;
+    record[70] = u8::MAX;
+    record[71] = 10;
+    record[73] = 52;
+    record[74] = construction.selector;
+    write_feature_i16(&mut record, 80, position.x.cast_signed());
+    write_feature_i16(&mut record, 82, position.y.cast_signed());
+    write_feature_i16(&mut record, 84, position.z);
+    write_feature_i16(
+        &mut record,
+        88,
+        ((i16::from(construction.footprint.width) << 8) + 1_280) >> 1,
+    );
+    write_feature_i16(
+        &mut record,
+        90,
+        ((i16::from(construction.footprint.height) << 8) + 1_280) >> 1,
+    );
+    write_feature_i16(&mut record, 92, 256);
+    write_feature_i16(&mut record, 94, 177);
+    record[97] = 1;
+    write_feature_i16(&mut record, 134, 16);
+    let raw_area = u16::from(construction.raw_width) * u16::from(construction.raw_height);
+    write_feature_i16(
+        &mut record,
+        136,
+        i16::try_from(raw_area >> 4)
+            .map_err(|_| "Level 1 BUILD minimum speed exceeds i16".to_owned())?,
+    );
+    if construction.parameter.flags & 8 == 0 {
+        write_feature_i32(
+            &mut record,
+            148,
+            (i32::from(construction.parameter.life_mana_scalar) * 1_000) >> 7,
+        );
+    }
+    write_feature_i16(&mut record, 162, position.z);
+    write_feature_u32(&mut record, 164, 60);
+    record[168] = 2;
+    write_feature_u32(&mut record, 172, 1);
+    Ok(record)
+}
+
+fn decode_level1_feature_terrain(bytes: &[u8]) -> Result<TerrainPlanes, String> {
+    if bytes.len() != LEVEL1_FEATURE_TERRAIN_BYTES {
+        return Err("Level 1 feature terrain extent changed".to_owned());
+    }
+    let byte_plane = |offset: usize| bytes[offset..offset + 0x10_000].to_vec().into_boxed_slice();
+    let mut entity_indices = Vec::with_capacity(0x10_000);
+    for pair in bytes[0x50_000..].chunks_exact(2) {
+        entity_indices.push(i16::from_le_bytes([pair[0], pair[1]]));
+    }
+    Ok(TerrainPlanes {
+        terrain_types: byte_plane(0),
+        ground_heights: byte_plane(0x10_000),
+        shading: byte_plane(0x20_000),
+        angles: byte_plane(0x30_000),
+        secondary_heights: byte_plane(0x40_000),
+        entity_indices: entity_indices.into_boxed_slice(),
+    })
+}
+
+fn encode_level1_feature_terrain(terrain: &TerrainPlanes) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(LEVEL1_FEATURE_TERRAIN_BYTES);
+    bytes.extend_from_slice(&terrain.terrain_types);
+    bytes.extend_from_slice(&terrain.ground_heights);
+    bytes.extend_from_slice(&terrain.shading);
+    bytes.extend_from_slice(&terrain.angles);
+    bytes.extend_from_slice(&terrain.secondary_heights);
+    for index in &terrain.entity_indices {
+        bytes.extend_from_slice(&index.to_le_bytes());
+    }
+    bytes
+}
+
+fn encode_level1_feature_entities(houses: &BTreeMap<u16, Level1FeatureHouseRuntime>) -> Vec<u8> {
+    let mut bytes =
+        Vec::with_capacity(12 + LEVEL1_FEATURE_ENTITY_COUNT * LEVEL1_FEATURE_ENTITY_RECORD_BYTES);
+    bytes.extend_from_slice(b"MCE3");
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(
+        &u16::try_from(LEVEL1_FEATURE_ENTITY_RECORD_BYTES)
+            .expect("Level 1 entity record extent fits u16")
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(
+        &u32::try_from(LEVEL1_FEATURE_ENTITY_COUNT)
+            .expect("Level 1 entity count fits u32")
+            .to_le_bytes(),
+    );
+    for source_slot in
+        0..u16::try_from(LEVEL1_FEATURE_ENTITY_COUNT).expect("Level 1 entity count fits u16")
+    {
+        if let Some(house) = houses.get(&source_slot) {
+            bytes.extend_from_slice(&house.record);
+        } else {
+            let mut record = [0_u8; LEVEL1_FEATURE_ENTITY_RECORD_BYTES];
+            write_feature_u16(&mut record, 0, source_slot);
+            bytes.extend_from_slice(&record);
+        }
+    }
+    bytes
+}
+
+fn encode_level1_feature_allocator(plan: &Level1LoadFeaturePlan) -> Result<Vec<u8>, String> {
+    let mut trace = vec![
+        (1_u8, 1_u8, 1_u16, 62_u16),
+        (1, 1, 2, 63),
+        (2, 1, 1, 62),
+        (2, 1, 2, 63),
+    ];
+    let mut special = plan
+        .houses
+        .iter()
+        .filter(|house| house.parameter.flags & 0x10 != 0)
+        .copied()
+        .collect::<Vec<_>>();
+    let mut ordinary = plan
+        .houses
+        .iter()
+        .filter(|house| house.parameter.flags & 0x10 == 0)
+        .copied()
+        .collect::<Vec<_>>();
+    special.sort_unstable_by_key(|house| house.authored_index);
+    ordinary.sort_unstable_by_key(|house| house.authored_index);
+    trace.extend(
+        special
+            .into_iter()
+            .map(|house| (1, 2, house.source_slot, house.authored_index)),
+    );
+    trace.extend(
+        ordinary
+            .into_iter()
+            .map(|house| (1, 3, house.source_slot, house.authored_index)),
+    );
+    if trace.len() != 51 {
+        return Err(format!(
+            "Level 1 allocator trace has {} rows, expected 51",
+            trace.len()
+        ));
+    }
+
+    let mut bytes = Vec::with_capacity(32 + 4_000 + trace.len() * 8);
+    bytes.extend_from_slice(b"MCA3");
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&32_u16.to_le_bytes());
+    bytes.extend_from_slice(&951_i32.to_le_bytes());
+    bytes.extend_from_slice(&(-1_i32).to_le_bytes());
+    bytes.extend_from_slice(&952_u32.to_le_bytes());
+    bytes.extend_from_slice(&0_u32.to_le_bytes());
+    bytes.extend_from_slice(
+        &u32::try_from(trace.len())
+            .expect("Level 1 allocator trace extent fits u32")
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(&2_u16.to_le_bytes());
+    bytes.extend_from_slice(&8_u16.to_le_bytes());
+    for index in 0..1_000_u16 {
+        let relation = if index <= 951 { 999 - index } else { 0 };
+        bytes.extend_from_slice(&relation.to_le_bytes());
+    }
+    bytes.resize(bytes.len() + 2_000, 0);
+    for (operation, role, source_slot, authored_index) in trace {
+        bytes.push(operation);
+        bytes.push(role);
+        bytes.extend_from_slice(&source_slot.to_le_bytes());
+        bytes.extend_from_slice(&authored_index.to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn compare_level1_feature_generation(
+    generated: &Level1FeatureGenerated,
+    oracle: &Level1FeatureOracle,
+) -> Result<(), String> {
+    if generated.end_terrain_rng != oracle.end_terrain_rng {
+        return Err(format!(
+            "feature-end terrain RNG mismatch: generated {}, oracle {}",
+            generated.end_terrain_rng, oracle.end_terrain_rng
+        ));
+    }
+    if generated.end_global_rng != oracle.end_global_rng {
+        return Err(format!(
+            "feature-end global RNG mismatch: generated {:#010x}, oracle {:#010x}",
+            generated.end_global_rng, oracle.end_global_rng
+        ));
+    }
+    compare_level1_feature_bytes(&generated.post_terrain, &oracle.post_terrain, |offset| {
+        let (plane, local) = match offset {
+            0x00_000..=0x0f_fff => ("terrain-type", offset),
+            0x10_000..=0x1f_fff => ("height", offset - 0x10_000),
+            0x20_000..=0x2f_fff => ("shade", offset - 0x20_000),
+            0x30_000..=0x3f_fff => ("angle", offset - 0x30_000),
+            0x40_000..=0x4f_fff => ("secondary", offset - 0x40_000),
+            _ => ("map-head", (offset - 0x50_000) / 2),
+        };
+        format!("{plane} tile ({},{})", local & 0xff, (local >> 8) & 0xff)
+    })?;
+    compare_level1_feature_bytes(&generated.entities, &oracle.entities, |offset| {
+        if offset < 12 {
+            format!("entity header byte {offset}")
+        } else {
+            let local = offset - 12;
+            let field = match local % LEVEL1_FEATURE_ENTITY_RECORD_BYTES {
+                66 => "phase",
+                67 => "class",
+                68 => "model",
+                69 => "xtype",
+                73 => "action",
+                74 => "building-selector",
+                _ => "byte",
+            };
+            format!(
+                "entity slot {} {field} {}",
+                local / LEVEL1_FEATURE_ENTITY_RECORD_BYTES,
+                local % LEVEL1_FEATURE_ENTITY_RECORD_BYTES
+            )
+        }
+    })?;
+    compare_level1_feature_bytes(&generated.allocator, &oracle.allocator, |offset| {
+        format!("allocator byte {offset}")
+    })
+}
+
+fn compare_level1_feature_bytes(
+    generated: &[u8],
+    oracle: &[u8],
+    context: impl Fn(usize) -> String,
+) -> Result<(), String> {
+    if generated.len() != oracle.len() {
+        return Err(format!(
+            "{} extent mismatch: generated {}, oracle {}",
+            context(generated.len().min(oracle.len())),
+            generated.len(),
+            oracle.len()
+        ));
+    }
+    if let Some(offset) = generated
+        .iter()
+        .zip(oracle)
+        .position(|(generated, oracle)| generated != oracle)
+    {
+        return Err(format!(
+            "{} mismatch: generated {}, oracle {}",
+            context(offset),
+            generated[offset],
+            oracle[offset]
+        ));
+    }
+    Ok(())
+}
+
+fn validate_level1_feature_entities_header(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() != 12 + LEVEL1_FEATURE_ENTITY_COUNT * LEVEL1_FEATURE_ENTITY_RECORD_BYTES
+        || bytes[..4] != *b"MCE3"
+        || read_feature_u16(bytes, 4)? != 1
+        || usize::from(read_feature_u16(bytes, 6)?) != LEVEL1_FEATURE_ENTITY_RECORD_BYTES
+        || usize::try_from(read_feature_u32(bytes, 8)?).ok() != Some(LEVEL1_FEATURE_ENTITY_COUNT)
+    {
+        return Err("Level 1 feature entity oracle header is malformed".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_level1_feature_allocator_header(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() < 4_032
+        || bytes[..4] != *b"MCA3"
+        || read_feature_u16(bytes, 4)? != 1
+        || read_feature_u16(bytes, 6)? != 32
+    {
+        return Err("Level 1 feature allocator oracle header is malformed".to_owned());
+    }
+    Ok(())
+}
+
+fn read_feature_u16(bytes: &[u8], offset: usize) -> Result<u16, String> {
+    bytes
+        .get(offset..offset + 2)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u16::from_le_bytes)
+        .ok_or_else(|| format!("Level 1 feature u16 at {offset} is truncated"))
+}
+
+fn read_feature_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
+    bytes
+        .get(offset..offset + 4)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u32::from_le_bytes)
+        .ok_or_else(|| format!("Level 1 feature u32 at {offset} is truncated"))
+}
+
+fn write_feature_u16(bytes: &mut [u8], offset: usize, value: u16) {
+    bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+
+fn write_feature_i16(bytes: &mut [u8], offset: usize, value: i16) {
+    bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+
+fn write_feature_u32(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn write_feature_i32(bytes: &mut [u8], offset: usize, value: i32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
 impl AuthoredFeature {
@@ -17496,7 +18594,7 @@ fn relax_to_terrain<W: FlightWorld>(
     }
 }
 
-fn parse_authored_features(bytes: &[u8]) -> Result<Vec<AuthoredFeature>, String> {
+pub(crate) fn parse_authored_features(bytes: &[u8]) -> Result<Vec<AuthoredFeature>, String> {
     let required = AUTHORED_FEATURE_OFFSET + AUTHORED_FEATURE_COUNT * AUTHORED_FEATURE_BYTES;
     if bytes.len() < required {
         return Err(format!(
@@ -32638,6 +33736,258 @@ mod tests {
         ambient_plan18_source_contract();
         switch_plan11_source_contract();
         authored_groups_plan12_source_contract();
+        level1_load_features_plan24_source_contract();
+    }
+
+    fn level1_load_features_plan24_source_contract() {
+        let private_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let fixture = private_root.join("generated/plan24-o-final3-20260730");
+        let read = |name| {
+            std::fs::read(fixture.join(name))
+                .unwrap_or_else(|error| panic!("read PLAN24 {name}: {error}"))
+        };
+        let oracle_authored = read("authored-level.bin");
+        let pre_terrain = read("terrain-pre-features.bin");
+        let feature_start = read("feature-start.bin");
+        let construction = read("feature-construction-inputs.bin");
+        let post_terrain = read("terrain-post-features.bin");
+        let feature_end = read("feature-end.bin");
+        let entities = read("entities-post-features.bin");
+        let allocator = read("feature-allocator.bin");
+        let oracle_bytes = Level1FeatureOracleBytes {
+            authored: &oracle_authored,
+            pre_terrain: &pre_terrain,
+            feature_start: &feature_start,
+            construction: &construction,
+            post_terrain: &post_terrain,
+            feature_end: &feature_end,
+            entities: &entities,
+            allocator: &allocator,
+        };
+        let (authored, observed, matrix) = reset_comparator_fixture();
+        let production = compare_level1_reset_from_authored_with_feature_oracle(
+            &authored,
+            &observed,
+            &matrix,
+            oracle_bytes,
+        )
+        .expect("production reset-from-authored feature comparator");
+        assert!(production.usable());
+        assert!(production.reset.usable());
+        assert!(production.feature_generation.exact);
+        assert_eq!(production.feature_generation.path_tiles, 61);
+        assert_eq!(production.feature_generation.house_entities, 47);
+        let generated = &production.feature_generation.generated;
+
+        let inputs = decode_level1_feature_inputs(
+            oracle_authored.clone(),
+            pre_terrain.clone(),
+            &feature_start,
+            &construction,
+        )
+        .expect("independent PLAN24 inputs");
+        assert_eq!(
+            (inputs.start_terrain_rng, inputs.start_global_rng),
+            (9_775, LEVEL1_FEATURE_START_GLOBAL_RNG)
+        );
+        assert_eq!(
+            (
+                production.feature_generation.end_terrain_rng,
+                production.feature_generation.end_global_rng,
+            ),
+            (44_470, LEVEL1_FEATURE_END_GLOBAL_RNG)
+        );
+
+        assert_level1_load_feature_plan_contract(&inputs, generated);
+        assert_level1_load_feature_terrain_contract(&inputs, generated);
+        assert_level1_load_feature_tamper_contract(
+            &authored,
+            &observed,
+            &matrix,
+            oracle_bytes,
+            generated,
+        );
+    }
+
+    fn assert_level1_load_feature_plan_contract(
+        inputs: &Level1FeatureInputs,
+        generated: &Level1FeatureGenerated,
+    ) {
+        assert_eq!(generated.path_tiles.len(), 61);
+        assert_eq!(generated.path_tiles.first(), Some(&(174, 212)));
+        assert_eq!(generated.path_tiles.last(), Some(&(114, 212)));
+        assert!(!generated.path_tiles.contains(&(113, 212)));
+        assert_eq!(
+            generated
+                .plan
+                .houses
+                .iter()
+                .map(|house| house.source_slot)
+                .collect::<Vec<_>>(),
+            (1_u16..=47).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            generated
+                .plan
+                .houses
+                .iter()
+                .find(|house| house.authored_index == 3)
+                .map(|house| {
+                    (
+                        house.source_slot,
+                        house.isolated_phase,
+                        house.frame_zero_phase,
+                        house.entity_rng,
+                    )
+                }),
+            Some((2, 64, 65, 35_111))
+        );
+        assert_eq!(
+            generated
+                .plan
+                .houses
+                .iter()
+                .find(|house| house.authored_index == 7)
+                .map(|house| {
+                    (
+                        house.source_slot,
+                        house.isolated_phase,
+                        house.frame_zero_phase,
+                        house.entity_rng,
+                    )
+                }),
+            Some((1, 32, 33, 39_205))
+        );
+        let mut global_rng = LEVEL1_FEATURE_START_GLOBAL_RNG;
+        for expected in LEVEL1_FEATURE_GLOBAL_RNG_BARRIERS {
+            global_rng = next_load_global_rng(global_rng);
+            assert_eq!(global_rng, expected);
+        }
+        assert_eq!(generated.end_terrain_rng, 44_470);
+
+        assert_eq!(
+            generated
+                .plan
+                .houses
+                .iter()
+                .map(|house| house.building_index)
+                .collect::<BTreeSet<_>>(),
+            inputs.construction.keys().copied().collect::<BTreeSet<_>>()
+        );
+        let mut synthetic_inputs = inputs.clone();
+        let par2 = AUTHORED_FEATURE_OFFSET + 3 * AUTHORED_FEATURE_BYTES + 16;
+        synthetic_inputs.authored[par2..par2 + 2].copy_from_slice(&7_u16.to_le_bytes());
+        let synthetic =
+            generate_level1_load_features(&synthetic_inputs).expect("synthetic nonzero par2");
+        assert_eq!(
+            synthetic.entities[12 + 2 * LEVEL1_FEATURE_ENTITY_RECORD_BYTES + 69],
+            0,
+            "sub_49A30 forces xtype zero rather than copying authored par2"
+        );
+    }
+
+    fn assert_level1_load_feature_terrain_contract(
+        inputs: &Level1FeatureInputs,
+        generated: &Level1FeatureGenerated,
+    ) {
+        let pre = decode_level1_feature_terrain(&inputs.pre_terrain).expect("pre terrain");
+        let mut path_only = pre.clone();
+        let mut path_rng = inputs.start_terrain_rng;
+        for &(x, y) in &generated.path_tiles {
+            apply_level1_load_path_point(&mut path_only, x, y, &mut path_rng);
+        }
+        assert_eq!(path_only.ground_heights, pre.ground_heights);
+        assert_eq!(path_only.secondary_heights, pre.secondary_heights);
+        assert_eq!(path_only.entity_indices, pre.entity_indices);
+
+        let mut signed_guard = pre.clone();
+        let guard_x = 20_u8;
+        let guard_y = 21_u8;
+        for (x, y, angle) in [
+            (guard_x, guard_y, 0x80),
+            (guard_x.wrapping_sub(1), guard_y, 0x81),
+            (guard_x.wrapping_sub(1), guard_y.wrapping_sub(1), 0x82),
+            (guard_x, guard_y.wrapping_sub(1), 0x83),
+        ] {
+            let index = usize::from(x) + usize::from(y) * 256;
+            signed_guard.terrain_types[index] = 42;
+            signed_guard.angles[index] = angle;
+        }
+        apply_level1_load_path_point(&mut signed_guard, guard_x, guard_y, &mut path_rng);
+        for (x, y) in [
+            (guard_x.wrapping_sub(1), guard_y),
+            (guard_x.wrapping_sub(1), guard_y.wrapping_sub(1)),
+            (guard_x, guard_y.wrapping_sub(1)),
+        ] {
+            assert_eq!(
+                signed_guard.terrain_types[usize::from(x) + usize::from(y) * 256],
+                42,
+                "bit-0x80 topology cell ({x},{y})"
+            );
+        }
+    }
+
+    fn assert_level1_load_feature_tamper_contract(
+        authored: &[u8],
+        observed: &[Level1ResetSourceSlot],
+        matrix: &[u8],
+        oracle: Level1FeatureOracleBytes<'_>,
+        generated: &Level1FeatureGenerated,
+    ) {
+        let unchanged = generated.clone();
+        let mut terrain_tamper = oracle.post_terrain.to_vec();
+        let terrain_offset = 0x20_000 + usize::from(212_u8) * 256 + usize::from(174_u8);
+        terrain_tamper[terrain_offset] ^= 1;
+        let terrain_oracle = Level1FeatureOracleBytes {
+            post_terrain: &terrain_tamper,
+            ..oracle
+        };
+        assert!(
+            compare_level1_reset_from_authored_with_feature_oracle(
+                authored,
+                observed,
+                matrix,
+                terrain_oracle,
+            )
+            .unwrap_err()
+            .contains("shade tile (174,212)")
+        );
+        let mut entity_tamper = oracle.entities.to_vec();
+        entity_tamper[12 + 2 * LEVEL1_FEATURE_ENTITY_RECORD_BYTES + 69] = 1;
+        let entity_oracle = Level1FeatureOracleBytes {
+            entities: &entity_tamper,
+            ..oracle
+        };
+        assert!(
+            compare_level1_reset_from_authored_with_feature_oracle(
+                authored,
+                observed,
+                matrix,
+                entity_oracle,
+            )
+            .unwrap_err()
+            .contains("entity slot 2 xtype")
+        );
+        let mut allocator_tamper = oracle.allocator.to_vec();
+        allocator_tamper[32] ^= 1;
+        let allocator_oracle = Level1FeatureOracleBytes {
+            allocator: &allocator_tamper,
+            ..oracle
+        };
+        assert!(
+            compare_level1_reset_from_authored_with_feature_oracle(
+                authored,
+                observed,
+                matrix,
+                allocator_oracle,
+            )
+            .unwrap_err()
+            .contains("allocator byte 32")
+        );
+        assert_eq!(
+            generated, &unchanged,
+            "oracle tampering cannot affect generation"
+        );
     }
 
     fn switch_plan11_source_contract() {

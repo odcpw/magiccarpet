@@ -1,8 +1,9 @@
 use atlas_registry::AtlasRegistry;
 use sim_core::legacy_terrain::LegacyTerrain;
 use sim_core::level1_mission::{
-    Level1ResetSourceSlot, compare_level1_reset_from_authored, level1_reset_harness_error_json,
-    level1_reset_report_json,
+    Level1FeatureOracleBytes, Level1ResetSourceSlot,
+    compare_level1_reset_from_authored_with_feature_oracle, level1_reset_harness_error_json,
+    level1_reset_production_report_json,
 };
 use sim_core::native_world::NativeWorld;
 use sim_core::recording::{InputRecording, RecordedPlayer};
@@ -14,6 +15,49 @@ use sim_core::{
 use std::process::ExitCode;
 
 struct FlatWorld;
+
+struct Level1FeatureOracleOwned {
+    authored: Vec<u8>,
+    pre_terrain: Vec<u8>,
+    feature_start: Vec<u8>,
+    construction: Vec<u8>,
+    post_terrain: Vec<u8>,
+    feature_end: Vec<u8>,
+    entities: Vec<u8>,
+    allocator: Vec<u8>,
+}
+
+impl Level1FeatureOracleOwned {
+    fn read(root: &std::path::Path) -> Result<Self, String> {
+        let read = |name| {
+            std::fs::read(root.join(name))
+                .map_err(|error| format!("read feature oracle {name}: {error}"))
+        };
+        Ok(Self {
+            authored: read("authored-level.bin")?,
+            pre_terrain: read("terrain-pre-features.bin")?,
+            feature_start: read("feature-start.bin")?,
+            construction: read("feature-construction-inputs.bin")?,
+            post_terrain: read("terrain-post-features.bin")?,
+            feature_end: read("feature-end.bin")?,
+            entities: read("entities-post-features.bin")?,
+            allocator: read("feature-allocator.bin")?,
+        })
+    }
+
+    fn as_bytes(&self) -> Level1FeatureOracleBytes<'_> {
+        Level1FeatureOracleBytes {
+            authored: &self.authored,
+            pre_terrain: &self.pre_terrain,
+            feature_start: &self.feature_start,
+            construction: &self.construction,
+            post_terrain: &self.post_terrain,
+            feature_end: &self.feature_end,
+            entities: &self.entities,
+            allocator: &self.allocator,
+        }
+    }
+}
 
 impl FlightWorld for FlatWorld {
     fn ground_height(&self, _position: Position) -> i16 {
@@ -266,21 +310,23 @@ fn atlas_check() -> ExitCode {
 
 fn reset_from_authored() -> ExitCode {
     let arguments = std::env::args().collect::<Vec<_>>();
-    let (package, closure, matrix) = match arguments.as_slice() {
+    let (package, closure, matrix, feature_oracle) = match arguments.as_slice() {
         [_, _] => (
             std::path::PathBuf::from("../generated/level1-export-m"),
             std::path::PathBuf::from("../generated/level1-asset-closure.json"),
             std::path::PathBuf::from("level1-conformance/level1-conformance-matrix.json"),
+            std::path::PathBuf::from("../generated/plan24-o-final3-20260730"),
         ),
-        [_, _, package, closure, matrix] => (
+        [_, _, package, closure, matrix, feature_oracle] => (
             std::path::PathBuf::from(package),
             std::path::PathBuf::from(closure),
             std::path::PathBuf::from(matrix),
+            std::path::PathBuf::from(feature_oracle),
         ),
         _ => {
             reset_comparator_error(
                 "invocation",
-                "usage: sim-cli reset-from-authored [<package> <closure> <matrix>]",
+                "usage: sim-cli reset-from-authored [<package> <closure> <matrix> <feature-oracle>]",
             );
             return ExitCode::from(2);
         }
@@ -306,6 +352,13 @@ fn reset_from_authored() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let feature_oracle = match Level1FeatureOracleOwned::read(&feature_oracle) {
+        Ok(oracle) => oracle,
+        Err(error) => {
+            reset_comparator_error("feature-oracle-read", &error);
+            return ExitCode::from(2);
+        }
+    };
     let observed = world
         .entities()
         .iter()
@@ -321,14 +374,19 @@ fn reset_from_authored() -> ExitCode {
             control_flags: entity.control_flags,
         })
         .collect::<Vec<_>>();
-    let report = match compare_level1_reset_from_authored(&authored, &observed, &matrix) {
+    let report = match compare_level1_reset_from_authored_with_feature_oracle(
+        &authored,
+        &observed,
+        &matrix,
+        feature_oracle.as_bytes(),
+    ) {
         Ok(report) => report,
         Err(error) => {
             reset_comparator_error("comparator-harness", &error);
             return ExitCode::from(2);
         }
     };
-    println!("{}", level1_reset_report_json(&report));
+    println!("{}", level1_reset_production_report_json(&report));
     if report.usable() {
         ExitCode::SUCCESS
     } else {

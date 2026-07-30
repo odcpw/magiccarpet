@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Strict verifier for private mc2-owner-level-export/v1 and v2 packages."""
+"""Strict verifier for private mc2-owner-level-export/v1, v2, and v3 packages."""
 
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ import sys
 
 SCHEMA_V1 = "mc2-owner-level-export/v1"
 SCHEMA_V2 = "mc2-owner-level-export/v2"
-SCHEMAS = {SCHEMA_V1, SCHEMA_V2}
+SCHEMA_V3 = "mc2-owner-level-export/v3"
+SCHEMAS = {SCHEMA_V1, SCHEMA_V2, SCHEMA_V3}
 STATE_SEQUENCE = (
     "remc2-regression-test/memimages/regressions/level1/"
     "sequence-002285FF-00356038.bin"
@@ -29,13 +30,73 @@ TERRAIN_ORACLE_HASHES = {
     "secondary_cave": "944112ef6eb54e042889c9cc841ed1d7bdb129c38c1c61ce4c8b8e81589f466b",
     "entity_indices": "d4a35266bee1854dfb8b4fb6c9175549a12e0de2edafff667cc0872d4cb3e72f",
 }
-REQUIRED_FILES = {
+V2_FILES = {
     "authored-level.bin",
     "entities.bin",
     "players.bin",
     "presentation.bin",
     "runtime.bin",
     "terrain.bin",
+}
+V3_FILES = V2_FILES | {
+    "entities-post-features.bin",
+    "feature-allocator.bin",
+    "feature-construction-inputs.bin",
+    "feature-end.bin",
+    "feature-start.bin",
+    "terrain-post-features.bin",
+    "terrain-pre-features.bin",
+}
+V3_PACKAGE_SHA256 = "15f1ca196b1ebf227860f468e419732c1ba917d57de9097acc5e2f647bbfd835"
+V3_SOURCE_IDENTITY = {
+    "upstream_commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+    "upstream_worktree_diff_sha256": (
+        "73fcffd66baaeeeab443d65b1e7bc333eba1f7e106e7918a552c5ac10ad33258"
+    ),
+    "compiled_source_sha256": (
+        "b8cfdd278a5a946fc340b118597fd8d65f0404600de9bdbcfabb6a8c212c5fb5"
+    ),
+}
+V3_FILE_HASHES = {
+    "entities-post-features.bin": (
+        "689b25fd48beb9632f3d1dda1011e40adc9e03e52b0defa7eda46fb12ed996c9"
+    ),
+    "feature-allocator.bin": (
+        "b72938b072b1ea1c0f68f416f6d9700e61175d6c02ff621c005ce3c1c8648f36"
+    ),
+    "feature-construction-inputs.bin": (
+        "9b38d898793fe9223a711ce6ee0bae53bc1260c2370d2383676f3a7812abe7a7"
+    ),
+    "feature-end.bin": (
+        "b9c1d1e5f271b1de6db4ba03e579b594015092d8b048cf1f36229c42427208b0"
+    ),
+    "feature-start.bin": (
+        "26388bdd17e751df50804222cc49701248fb589494bde2e4955b38880aed654d"
+    ),
+    "terrain-post-features.bin": (
+        "e1acc0e3b40c9f82efe9e7b74035f21d8d39174efd766380c36d7c8963a94140"
+    ),
+    "terrain-pre-features.bin": (
+        "bf90fe6865a1b09e3ffa05b47ddf6e36e95f9efa598eed8904b98df638127c05"
+    ),
+}
+V3_TERRAIN_PLANE_HASHES = {
+    "terrain-pre-features.bin": (
+        "a7fad153ce68d80ea0236ba87bcb27d78f0a713145ec037d91a960977c188dd5",
+        "a5e06ac561c540c44f4db44a563735ab28552c275ca6767ee6bd4597a0cde525",
+        "517dd198e17f956eb19b054c8c7efb7aa93504dda60d8faf17254f84316ffcb0",
+        "acf21ffd82f162c4dfe9e32c7d8313ebc7351e636953f145d1559fbd8dc64f32",
+        "de2f256064a0af797747c2b97505dc0b9f3df0de4f489eac731c23ae9ca9cc31",
+        "fa43239bcee7b97ca62f007cc68487560a39e19f74f3dde7486db3f98df8e471",
+    ),
+    "terrain-post-features.bin": (
+        "d545e90bf972783e9696c0c50bc976d5a5e3cd5cf4378d2abe0d1b524615ca19",
+        "8886bba60e1ab577ae08eab78d01721820c9510c0b678a9794eb6af1ea067e89",
+        "0fd52e8859197de782c15f715da8163b6b20ef5f17c1b7db04f8c960b33e402f",
+        "a415ad23b13a6aba0376a3f0db992615acd31b601c1fbae3a0f402a531f4a4ef",
+        "de2f256064a0af797747c2b97505dc0b9f3df0de4f489eac731c23ae9ca9cc31",
+        "98a9c8a98491af66484087944ffbbcb62705682df0b24a4adcb8aeb96d9ab9bc",
+    ),
 }
 STATE_HASH_ORDER = [
     "entity_index:u16", "position.x:u16", "position.y:u16", "position.z:i16",
@@ -245,6 +306,239 @@ def verify_ambient_sequence(upstream_root: Path, manifest: dict) -> None:
     }
 
 
+def verify_feature_generation_input(package: Path, manifest: dict) -> None:
+    descriptor = manifest["feature_generation_oracle"]
+    assert descriptor == {
+        "provenance": (
+            "pristine authored Level 1 rerun after live frame-zero outputs were copied"
+        ),
+        "start_phase": "after-GenerateLevelMap_43830-before-sub_49F30-sub_49270",
+        "end_phase": "after-sub_49270-before-group0",
+        "vga_selector": 1,
+        "global_rng_barriers": [
+            0x1B712AE9,
+            0x2C34E568,
+            0x3D870B47,
+            0xAF843886,
+            0xFA1A8925,
+            0x05F99924,
+            0xDB828483,
+        ],
+        "start_record": {
+            "file": "feature-start.bin",
+            "magic": "MFS3",
+            "version": 1,
+            "bytes": 16,
+            "terrain_rng": {"offset": 8, "encoding": "u16_le"},
+            "global_rng": {"offset": 12, "encoding": "u32_le"},
+        },
+        "end_record": {
+            "file": "feature-end.bin",
+            "magic": "MFE3",
+            "version": 1,
+            "bytes": 16,
+            "terrain_rng": {"offset": 8, "encoding": "u16_le"},
+            "global_rng": {"offset": 12, "encoding": "u32_le"},
+        },
+        "pre_terrain": {
+            "file": "terrain-pre-features.bin",
+            "bytes": 0x70000,
+            "inactive_secondary_plane": "zero-normalized-non-cave",
+        },
+        "post_terrain": {
+            "file": "terrain-post-features.bin",
+            "bytes": 0x70000,
+            "inactive_secondary_plane": "zero-normalized-non-cave",
+        },
+        "post_entities": {
+            "file": "entities-post-features.bin",
+            "magic": "MCE3",
+            "version": 1,
+            "record_bytes": 176,
+            "slots": 1000,
+            "active": 47,
+            "inactive_payload": "zero-normalized-after-index-active-prefix",
+            "map_heads": "terrain-post-features.bin entity-index plane",
+            "map_links": "oldMapEntity/nextEntity in complete active records",
+        },
+        "allocator": {
+            "file": "feature-allocator.bin",
+            "magic": "MCA3",
+            "version": 1,
+            "header_bytes": 32,
+            "relation_count": 1000,
+            "trace_record_bytes": 8,
+            "trace_provenance": (
+                "source-derived expected operations; counters and relations captured live"
+            ),
+        },
+        "construction_inputs": {
+            "file": "feature-construction-inputs.bin",
+            "magic": "MCI3",
+            "version": 1,
+            "record_count": 12,
+            "selectors": [17, 26, 29, 30, 31, 34, 42, 47, 50, 51, 52, 53],
+            "source": "live pinned BLDGPRM rows plus BUILD footprint bytes",
+        },
+    }
+    feature_start = (package / "feature-start.bin").read_bytes()
+    assert len(feature_start) == 16
+    assert feature_start[:4] == b"MFS3"
+    assert u16(feature_start, 4) == 1
+    assert u16(feature_start, 6) == 16
+    assert u16(feature_start, 8) == 9775
+    assert u16(feature_start, 10) == 0
+    assert u32(feature_start, 12) == 49098
+
+    feature_end = (package / "feature-end.bin").read_bytes()
+    assert len(feature_end) == 16
+    assert feature_end[:4] == b"MFE3"
+    assert u16(feature_end, 4) == 1
+    assert u16(feature_end, 6) == 16
+    assert u16(feature_end, 8) == 44470
+    assert u16(feature_end, 10) == 0
+    assert u32(feature_end, 12) == 0xDB828483
+
+    for name in ("terrain-pre-features.bin", "terrain-post-features.bin"):
+        terrain = (package / name).read_bytes()
+        assert len(terrain) == 0x70000
+        assert terrain[0x40000:0x50000] == bytes(0x10000)
+        planes = (
+            terrain[0x00000:0x10000],
+            terrain[0x10000:0x20000],
+            terrain[0x20000:0x30000],
+            terrain[0x30000:0x40000],
+            terrain[0x40000:0x50000],
+            terrain[0x50000:0x70000],
+        )
+        assert tuple(hashlib.sha256(plane).hexdigest() for plane in planes) == (
+            V3_TERRAIN_PLANE_HASHES[name]
+        ), f"feature terrain plane hashes: {name}"
+
+    feature_entities = verify_record_file(
+        package / "entities-post-features.bin", b"MCE3", 1, 1000, 176
+    )
+    construction = (package / "feature-construction-inputs.bin").read_bytes()
+    assert construction[:4] == b"MCI3"
+    assert u16(construction, 4) == 1
+    assert u16(construction, 6) == 16
+    assert u16(construction, 8) == 12
+    assert u16(construction, 10) == 1
+    assert u32(construction, 12) == 0
+    parameters = {}
+    offset = 16
+    for _ in range(12):
+        selector = u16(construction, offset)
+        scalar = u16(construction, offset + 2)
+        flags = construction[offset + 4]
+        successor = construction[offset + 5]
+        width = construction[offset + 6]
+        height = construction[offset + 7]
+        extent = u32(construction, offset + 8)
+        assert width > 0 and height > 0 and extent == width * height * 2
+        parameters[selector] = (scalar, flags, successor)
+        offset += 12 + extent
+    assert offset == len(construction)
+    assert parameters == {
+        17: (500, 0x18, 0),
+        26: (20, 0x03, 0),
+        29: (28, 0x03, 0),
+        30: (25, 0x03, 0),
+        31: (29, 0x03, 0),
+        34: (118, 0x03, 0),
+        42: (52, 0x03, 0),
+        47: (34, 0x03, 0),
+        50: (24, 0x03, 0),
+        51: (30, 0x08, 0),
+        52: (30, 0x08, 0),
+        53: (30, 0x08, 0),
+    }
+
+    active = []
+    for index in range(1000):
+        offset = 12 + index * 176
+        record = feature_entities[offset : offset + 176]
+        assert u16(record, 0) == index
+        if not record[2]:
+            assert record[3:] == bytes(173)
+            continue
+        active.append(index)
+        assert record[3] == 0
+        assert record[67] == 10
+        assert record[68] == 45, f"feature entity slot {index} model"
+        assert record[69] == 0, f"feature entity slot {index} xtype"
+        assert record[73] == 52
+        selector = record[74]
+        assert struct.unpack_from("<i", record, 12)[0] == parameters[selector][0] * 1000
+        assert record[66] == (64 if index == 2 else index + 31)
+        assert u16(record, 24) == (35109 + index if index == 2 else 39204 + index)
+    assert active == list(range(1, 48))
+
+    terrain_post = (package / "terrain-post-features.bin").read_bytes()
+    linked = set()
+    for cell in range(0x10000):
+        slot = u16(terrain_post, 0x50000 + cell * 2)
+        newer = 0
+        while slot:
+            assert 1 <= slot <= 47 and slot not in linked
+            record = feature_entities[12 + slot * 176 : 12 + (slot + 1) * 176]
+            assert u16(record, 28) == newer
+            linked.add(slot)
+            newer = slot
+            slot = u16(record, 26)
+    assert linked == set(range(1, 48))
+
+    allocator = (package / "feature-allocator.bin").read_bytes()
+    assert len(allocator) == 4440
+    assert allocator[:4] == b"MCA3"
+    assert u16(allocator, 4) == 1
+    assert u16(allocator, 6) == 32
+    assert struct.unpack_from("<i", allocator, 8)[0] == 951
+    assert struct.unpack_from("<i", allocator, 12)[0] == -1
+    assert u32(allocator, 16) == 952
+    assert u32(allocator, 20) == 0
+    assert u32(allocator, 24) == 51
+    assert u16(allocator, 28) == 2
+    assert u16(allocator, 30) == 8
+    free_relations = struct.unpack_from("<1000H", allocator, 32)
+    reclaim_relations = struct.unpack_from("<1000H", allocator, 2032)
+    assert free_relations[:952] == tuple(
+        range(999, 47, -1)
+    ), "feature allocator free relations"
+    assert free_relations[952:] == (0,) * 48
+    assert reclaim_relations == (0,) * 1000
+
+    trace = [
+        struct.unpack_from("<BBHHH", allocator, 4032 + index * 8)
+        for index in range(51)
+    ]
+    assert trace[:4] == [
+        (1, 1, 1, 62, 0),
+        (1, 1, 2, 63, 0),
+        (2, 1, 1, 62, 0),
+        (2, 1, 2, 63, 0),
+    ]
+    authored = (package / "authored-level.bin").read_bytes()
+    houses = []
+    for index in range(1, 1200):
+        record = authored[1091 + index * 20 : 1091 + (index + 1) * 20]
+        if u16(record, 0) == 10 and u16(record, 2) == 45:
+            activation_group = struct.unpack_from("<h", record, 8)[0]
+            if activation_group == -1:
+                houses.append((index, u16(record, 14)))
+                assert u16(record, 16) == 0
+    special = [house for house in houses if parameters[house[1]][1] & 0x10]
+    ordinary = [house for house in houses if not parameters[house[1]][1] & 0x10]
+    assert special == [(3, 17)]
+    assert len(ordinary) == 46 and ordinary[0][0] == 7
+    expected_house_trace = [(1, 2, 2, 3, 0)]
+    expected_house_trace.extend(
+        (1, 3, 1 if order == 0 else order + 2, row, 0)
+        for order, (row, _) in enumerate(ordinary)
+    )
+    assert trace[4:] == expected_house_trace
+
+
 def verify_record_file(
     path: Path,
     magic: bytes,
@@ -389,18 +683,20 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
     players = verify_record_file(
         package / "players.bin",
         b"MCP1",
-        2 if manifest["schema"] == SCHEMA_V2 else 1,
+        2 if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3} else 1,
         8,
         manifest["record_sizes"]["player"],
     )
     player_record_size = manifest["record_sizes"]["player"]
-    expected_player_size = 573 if manifest["schema"] == SCHEMA_V2 else 565
+    expected_player_size = (
+        573 if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3} else 565
+    )
     assert player_record_size == expected_player_size
     for index in range(8):
         offset = 12 + index * player_record_size
         assert u16(players, offset) == index
         assert players[offset + 50 : offset + 54] == bytes(4)
-    if manifest["schema"] == SCHEMA_V2:
+    if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3}:
         layout = manifest["record_layouts"]["player"]
         assert layout == {
             "index_offset": 0,
@@ -434,7 +730,7 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
         }
     ]
     assert u32(runtime, 32) == 1
-    if manifest["schema"] == SCHEMA_V2:
+    if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3}:
         verify_reset_projection(manifest, players, entities, runtime)
     else:
         assert "reset_projection" not in manifest
@@ -551,6 +847,8 @@ def verify(
     package: Path,
     source_root: Path | None = None,
     upstream_root: Path | None = None,
+    *,
+    enforce_reference_hashes: bool = True,
 ) -> dict:
     package = package.resolve(strict=True)
     manifest_path = package / "manifest.json"
@@ -565,11 +863,16 @@ def verify(
     assert manifest["counts"]["entity_slots"] == 1000
     assert manifest["counts"]["active_entities"] == 177
     assert manifest["dimensions"]["terrain"] == [256, 256]
-    assert set(manifest["files"]) == REQUIRED_FILES
+    required_files = V3_FILES if manifest["schema"] == SCHEMA_V3 else V2_FILES
+    assert set(manifest["files"]) == required_files
     assert stat.S_IMODE(package.stat().st_mode) == 0o700
     assert len(manifest["source"]["upstream_commit"]) == 40
     assert len(manifest["source"]["upstream_worktree_diff_sha256"]) == 64
     assert len(manifest["source"]["compiled_source_sha256"]) == 64
+    if manifest["schema"] == SCHEMA_V3:
+        assert {
+            key: manifest["source"][key] for key in V3_SOURCE_IDENTITY
+        } == V3_SOURCE_IDENTITY
     modified_hashes = {
         entry["path"]: entry["sha256"] for entry in manifest["source"]["modified_files"]
     }
@@ -594,11 +897,11 @@ def verify(
         assert identity == sorted(identity)
         aggregate = hashlib.sha256("".join(identity).encode()).hexdigest()
         assert aggregate == manifest["source"]["compiled_source_sha256"]
-        if manifest["schema"] == SCHEMA_V2:
+        if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3}:
             verify_ambient_sequence(upstream_root, manifest)
 
     identity_rows = []
-    for relative_name in sorted(REQUIRED_FILES):
+    for relative_name in sorted(required_files):
         entry = manifest["files"][relative_name]
         path = package / relative_name
         assert path.is_file()
@@ -610,8 +913,15 @@ def verify(
 
     expected_identity = hashlib.sha256("".join(identity_rows).encode()).hexdigest()
     assert manifest["package_sha256"] == expected_identity
+    if manifest["schema"] == SCHEMA_V3 and enforce_reference_hashes:
+        assert manifest["package_sha256"] == V3_PACKAGE_SHA256
+        assert {
+            name: manifest["files"][name]["sha256"] for name in V3_FILE_HASHES
+        } == V3_FILE_HASHES
     assert (package / "terrain.bin").stat().st_size == 0x70000
     assert (package / "authored-level.bin").stat().st_size == 0x6604
+    if manifest["schema"] == SCHEMA_V3:
+        verify_feature_generation_input(package, manifest)
     verify_binary_structure(package, manifest)
 
     raw_manifest = manifest_path.read_text(encoding="utf-8")

@@ -214,6 +214,12 @@ impl EntitySnapshot {
         &self.record
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_record_byte(mut self, offset: usize, value: u8) -> Self {
+        self.record[offset] = value;
+        self
+    }
+
     /// Raw zero-terminated `oldMapEntity_0x16_22` link used by the outdoor
     /// terrain-cell painter traversal.
     #[must_use]
@@ -835,9 +841,9 @@ fn add_building_to_terrain(
     map_type: MapType,
     terrain_rng: &mut u16,
 ) {
-    // The first `AddBuildingToTerrain_46570` source loop marks the selected
-    // cell plus its west, north-west, and north neighbors as unresolved
-    // topology.
+    // `AddBuildingToTerrain_46570` unconditionally marks the selected cell
+    // and its west, north-west, and north neighbors before rebuilding their
+    // topology. Unlike `sub_462A0`, bit 0x80 never suppresses these writes.
     for (mark_x, mark_y) in [
         (x, y),
         (x.wrapping_sub(1), y),
@@ -846,13 +852,71 @@ fn add_building_to_terrain(
     ] {
         planes.terrain_types[terrain_index(mark_x, mark_y)] = 1;
     }
+    rebuild_marked_building_topology(planes, x, y, 1, 1, map_type, terrain_rng);
+}
 
-    // `AddBuildingToTerrain_46570(tile, tile)` then resolves the 2x2 block
-    // whose south-east corner is the selected cell.
-    for row in 0..2_u8 {
-        for column in 0..2_u8 {
-            let tile_x = x.wrapping_sub(1).wrapping_add(column);
-            let tile_y = y.wrapping_sub(1).wrapping_add(row);
+fn rebuild_building_topology(
+    planes: &mut TerrainPlanes,
+    start_x: u8,
+    start_y: u8,
+    end_x: u8,
+    end_y: u8,
+    map_type: MapType,
+    terrain_rng: &mut u16,
+) {
+    let width = end_x.wrapping_sub(start_x).wrapping_add(1);
+    let height = end_y.wrapping_sub(start_y).wrapping_add(1);
+
+    // `sub_462A0` marks every selected cell plus its west, north-west, and
+    // north neighbors only when the signed angle byte is non-negative.
+    // Material BUILD cells retain bit 0x80 and must not be rewritten here.
+    for row in 0..height {
+        for column in 0..width {
+            let x = start_x.wrapping_add(column);
+            let y = start_y.wrapping_add(row);
+            for (mark_x, mark_y) in [
+                (x, y),
+                (x.wrapping_sub(1), y),
+                (x.wrapping_sub(1), y.wrapping_sub(1)),
+                (x, y.wrapping_sub(1)),
+            ] {
+                let index = terrain_index(mark_x, mark_y);
+                if planes.angles[index].cast_signed() >= 0 {
+                    planes.terrain_types[index] = 1;
+                }
+            }
+        }
+    }
+
+    rebuild_marked_building_topology(
+        planes,
+        start_x,
+        start_y,
+        width,
+        height,
+        map_type,
+        terrain_rng,
+    );
+}
+
+fn rebuild_marked_building_topology(
+    planes: &mut TerrainPlanes,
+    start_x: u8,
+    start_y: u8,
+    width: u8,
+    height: u8,
+    map_type: MapType,
+    terrain_rng: &mut u16,
+) {
+    let topology_width = width.wrapping_add(1);
+    let topology_height = height.wrapping_add(1);
+    let topology_start_x = start_x.wrapping_sub(1);
+    let topology_start_y = start_y.wrapping_sub(1);
+
+    for row in 0..topology_height {
+        for column in 0..topology_width {
+            let tile_x = topology_start_x.wrapping_add(column);
+            let tile_y = topology_start_y.wrapping_add(row);
             let index = terrain_index(tile_x, tile_y);
             if planes.terrain_types[index] != 1 {
                 continue;
@@ -879,12 +943,12 @@ fn add_building_to_terrain(
         }
     }
 
-    // Finally recalculate the 3x3 shading neighborhood in the literal source
-    // order. The signed eight-bit temporary deliberately wraps.
-    for row in 0..3_u8 {
-        for column in 0..3_u8 {
-            let tile_x = x.wrapping_sub(1).wrapping_add(column);
-            let tile_y = y.wrapping_sub(1).wrapping_add(row);
+    // Finally recalculate the one-cell-expanded shading neighborhood in the
+    // literal source order. The signed eight-bit temporary deliberately wraps.
+    for row in 0..topology_height.wrapping_add(1) {
+        for column in 0..topology_width.wrapping_add(1) {
+            let tile_x = topology_start_x.wrapping_add(column);
+            let tile_y = topology_start_y.wrapping_add(row);
             let down_right = planes.ground_heights
                 [terrain_index(tile_x.wrapping_add(1), tile_y.wrapping_add(1))];
             let up_left = planes.ground_heights
@@ -913,6 +977,344 @@ fn add_building_to_terrain(
             }
         }
     }
+}
+
+pub(crate) fn apply_level1_load_path_point(
+    planes: &mut TerrainPlanes,
+    x: u8,
+    y: u8,
+    terrain_rng: &mut u16,
+) {
+    let index = terrain_index(x, y);
+    planes.angles[index] = (planes.angles[index] & 0xf0) | 1;
+    rebuild_building_topology(planes, x, y, x, y, MapType::Night, terrain_rng);
+}
+
+pub(crate) fn level1_load_house_base(
+    planes: &TerrainPlanes,
+    tile_x: u8,
+    tile_y: u8,
+    footprint: &CastleBuildFootprint,
+) -> (u8, u8, i16) {
+    let mut center_x = tile_x;
+    let center_y = tile_y;
+    let mut start_x = center_x.wrapping_sub(footprint.width / 2);
+    let start_y = center_y.wrapping_sub(footprint.height / 2);
+    if start_x.wrapping_add(start_y) & 1 != 0 {
+        center_x = center_x.wrapping_add(1);
+        start_x = start_x.wrapping_add(1);
+    }
+    let corner_sum = u16::from(planes.ground_heights[terrain_index(start_x, start_y)])
+        + u16::from(
+            planes.ground_heights[terrain_index(start_x.wrapping_add(footprint.width), start_y)],
+        )
+        + u16::from(
+            planes.ground_heights[terrain_index(
+                start_x.wrapping_add(footprint.width),
+                start_y.wrapping_add(footprint.height),
+            )],
+        )
+        + u16::from(
+            planes.ground_heights[terrain_index(start_x, start_y.wrapping_add(footprint.height))],
+        );
+    (
+        center_x,
+        center_y,
+        i16::try_from((corner_sum >> 2) * 32).expect("average u8 corner height fits i16"),
+    )
+}
+
+pub(crate) fn apply_level1_load_house_sweep(
+    planes: &mut TerrainPlanes,
+    terrain_rng: &mut u16,
+    position: Position,
+    footprint: &CastleBuildFootprint,
+    remaining: u8,
+) {
+    let center_x = position.x.to_be_bytes()[0];
+    let center_y = position.y.to_be_bytes()[0];
+    let start_x = center_x.wrapping_sub(footprint.width / 2);
+    let start_y = center_y.wrapping_sub(footprint.height / 2);
+    let construction_base = position.z >> 5;
+
+    if remaining == 0 {
+        for row in 0..footprint.height {
+            for column in 0..footprint.width {
+                let cell = footprint.cells()
+                    [usize::from(row) * usize::from(footprint.width) + usize::from(column)];
+                if cell[0] != 0xff {
+                    rebuild_building_topology(
+                        planes,
+                        start_x.wrapping_add(column),
+                        start_y.wrapping_add(row),
+                        start_x.wrapping_add(column),
+                        start_y.wrapping_add(row),
+                        MapType::Night,
+                        terrain_rng,
+                    );
+                }
+            }
+        }
+        return;
+    }
+
+    for row in 0..footprint.height {
+        for column in 0..footprint.width {
+            let cell = footprint.cells()
+                [usize::from(row) * usize::from(footprint.width) + usize::from(column)];
+            if cell[1] == 0xff {
+                continue;
+            }
+            let x = start_x.wrapping_add(column);
+            let y = start_y.wrapping_add(row);
+            let index = terrain_index(x, y);
+            let current = i16::from(planes.ground_heights[index]);
+            let target = construction_base + i16::from(cell[1]);
+            let next = current.wrapping_add((target - current) / i16::from(remaining));
+            planes.ground_heights[index] = next.to_le_bytes()[0];
+            if planes.angles[index].trailing_zeros() >= 3 {
+                planes.angles[index] = (planes.angles[index] & 0xf0) | 1;
+                rebuild_building_topology(planes, x, y, x, y, MapType::Night, terrain_rng);
+            }
+        }
+    }
+
+    if remaining.is_multiple_of(5) || remaining == 1 {
+        for row in 0..footprint.height {
+            for column in 0..footprint.width {
+                let cell = footprint.cells()
+                    [usize::from(row) * usize::from(footprint.width) + usize::from(column)];
+                if cell[0] == 0xff {
+                    continue;
+                }
+                let x = start_x.wrapping_add(column);
+                let y = start_y.wrapping_add(row);
+                let index = terrain_index(x, y);
+                planes.angles[index] = (planes.angles[index] & 0xf0) | 1;
+                planes.terrain_types[index] = 1;
+            }
+        }
+        for row in 0..footprint.height {
+            for column in 0..footprint.width {
+                let cell = footprint.cells()
+                    [usize::from(row) * usize::from(footprint.width) + usize::from(column)];
+                if cell[0] != 0xff {
+                    apply_level1_house_material(
+                        planes,
+                        start_x.wrapping_add(column),
+                        start_y.wrapping_add(row),
+                        column,
+                        cell[0],
+                        terrain_rng,
+                    );
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn apply_level1_load_house_edge_smoothing(
+    planes: &mut TerrainPlanes,
+    position: Position,
+    footprint: &CastleBuildFootprint,
+) {
+    let center_x = position.x.to_be_bytes()[0];
+    let center_y = position.y.to_be_bytes()[0];
+    let footprint_start_x = center_x.wrapping_sub(footprint.width / 2);
+    let footprint_start_y = center_y.wrapping_sub(footprint.height / 2);
+    let half_width = footprint.width / 2;
+    let half_height = footprint.height / 2;
+    for radius in [2_u8, 5] {
+        smooth_level1_house_edges(
+            planes,
+            footprint_start_x,
+            footprint_start_y,
+            half_width,
+            half_height,
+            radius,
+        );
+    }
+}
+
+fn smooth_level1_house_edges(
+    planes: &mut TerrainPlanes,
+    start_x: u8,
+    start_y: u8,
+    half_width: u8,
+    half_height: u8,
+    radius: u8,
+) {
+    let boundary_x = start_x.wrapping_sub(half_width);
+    let boundary_y = start_y.wrapping_sub(half_height);
+    for row in 0..half_height.wrapping_mul(2) {
+        for inset in 0..=radius {
+            smooth_level1_house_height(
+                planes,
+                boundary_x.wrapping_sub(radius).wrapping_add(inset),
+                boundary_y.wrapping_add(row),
+            );
+            smooth_level1_house_height(
+                planes,
+                boundary_x
+                    .wrapping_add(half_width.wrapping_mul(2))
+                    .wrapping_add(inset),
+                boundary_y.wrapping_add(row),
+            );
+        }
+    }
+    for column in 0..half_width
+        .wrapping_mul(2)
+        .wrapping_add(radius.wrapping_mul(2))
+    {
+        for inset in 0..=radius {
+            smooth_level1_house_height(
+                planes,
+                boundary_x.wrapping_sub(radius).wrapping_add(column),
+                boundary_y.wrapping_sub(radius).wrapping_add(inset),
+            );
+            smooth_level1_house_height(
+                planes,
+                boundary_x.wrapping_sub(radius).wrapping_add(column),
+                boundary_y
+                    .wrapping_add(half_height.wrapping_mul(2))
+                    .wrapping_add(inset),
+            );
+        }
+    }
+}
+
+fn smooth_level1_house_height(planes: &mut TerrainPlanes, tile_x: u8, tile_y: u8) {
+    let index = terrain_index(tile_x, tile_y);
+    if planes.angles[index].trailing_zeros() >= 3
+        || planes.ground_heights[index] == 0
+        || !level1_house_smoothing_type(
+            planes.terrain_types[terrain_index(tile_x.wrapping_sub(1), tile_y.wrapping_sub(1))],
+        )
+        || !level1_house_smoothing_type(
+            planes.terrain_types[terrain_index(tile_x, tile_y.wrapping_sub(1))],
+        )
+        || !level1_house_smoothing_type(
+            planes.terrain_types[terrain_index(tile_x.wrapping_sub(1), tile_y)],
+        )
+        || !level1_house_smoothing_type(planes.terrain_types[index])
+    {
+        return;
+    }
+    let mut height_sum = 0_u32;
+    let mut height_count = 0_u32;
+    for row in 0..3_u8 {
+        for column in 0..3_u8 {
+            let neighbor = terrain_index(
+                tile_x.wrapping_sub(1).wrapping_add(column),
+                tile_y.wrapping_sub(1).wrapping_add(row),
+            );
+            if level1_house_smoothing_type(planes.terrain_types[neighbor]) {
+                height_sum += u32::from(planes.ground_heights[neighbor]);
+                height_count += 1;
+            }
+        }
+    }
+    if height_count != 0 {
+        planes.ground_heights[index] =
+            u8::try_from(height_sum / height_count).expect("average of u8 heights fits u8");
+    }
+}
+
+const fn level1_house_smoothing_type(terrain_type: u8) -> bool {
+    terrain_type <= 5 || terrain_type > 0x22
+}
+
+fn apply_level1_house_material(
+    planes: &mut TerrainPlanes,
+    x: u8,
+    y: u8,
+    column: u8,
+    material: u8,
+    terrain_rng: &mut u16,
+) {
+    let index = terrain_index(x, y);
+    if material < 8 {
+        planes.angles[index] = (planes.angles[index] & 0xf0) | material;
+        rebuild_building_topology(planes, x, y, x, y, MapType::Night, terrain_rng);
+        return;
+    }
+    match material {
+        8 => planes.terrain_types[index] = 8,
+        9 => planes.terrain_types[index] = 9,
+        16..=19 => {
+            let corner = classify_castle_corner(planes, x, y, column);
+            let table_offset = match material {
+                16 => 2 * corner,
+                17 => 0x40 + 2 * corner,
+                18 => 0x50 + 2 * (8 * usize::from(x.wrapping_add(y) & 1) + corner),
+                19 => 0x60 + 2 * (8 * usize::from(x.wrapping_add(y) & 1) + corner),
+                _ => unreachable!(),
+            };
+            let preserve = material == 16 && matches!(planes.terrain_types[index], 10..=12);
+            if !preserve {
+                let table = terrain_generation_table();
+                planes.terrain_types[index] = table[table_offset];
+                planes.angles[index] = (planes.angles[index] & 0x8f) | table[table_offset + 1];
+            }
+        }
+        _ => return,
+    }
+    planes.angles[index] |= 0x80;
+    for (corner_x, corner_y) in [
+        (x, y),
+        (x.wrapping_add(1), y),
+        (x.wrapping_add(1), y.wrapping_add(1)),
+        (x, y.wrapping_add(1)),
+    ] {
+        planes.angles[terrain_index(corner_x, corner_y)] &= 0xf7;
+    }
+}
+
+pub(crate) fn level1_feature_ground_height(planes: &TerrainPlanes, x: u16, y: u16) -> i16 {
+    let bytes = interpolate_ground(&planes.ground_heights, x, y).to_le_bytes();
+    i16::from_le_bytes([bytes[0], bytes[1]])
+}
+
+fn terrain_generation_table() -> &'static [u8; 0x120] {
+    static TABLE: OnceLock<[u8; 0x120]> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let source =
+            include_str!("../../../../../../upstream/magic-carpet-2-hd/remc2/engine/Unk_D4A30.cpp");
+        let initializer = source
+            .split_once("{//terrain gen")
+            .expect("remc2 terrain-generation initializer")
+            .1
+            .split_once("};")
+            .expect("remc2 terrain-generation terminator")
+            .0;
+        let initializer = initializer
+            .lines()
+            .map(|line| line.split_once("//").map_or(line, |(values, _)| values))
+            .collect::<String>();
+        let bytes = initializer.as_bytes();
+        let mut values = Vec::with_capacity(0x120);
+        let mut cursor = 0;
+        while cursor + 3 < bytes.len() {
+            if bytes[cursor] == b'0'
+                && bytes[cursor + 1] == b'x'
+                && bytes[cursor + 2].is_ascii_hexdigit()
+                && bytes[cursor + 3].is_ascii_hexdigit()
+            {
+                let hex = std::str::from_utf8(&bytes[cursor + 2..cursor + 4])
+                    .expect("ASCII hexadecimal terrain-generation byte");
+                values.push(
+                    u8::from_str_radix(hex, 16).expect("terrain-generation hexadecimal byte"),
+                );
+                cursor += 4;
+            } else {
+                cursor += 1;
+            }
+        }
+        assert_eq!(values.len(), 0x120);
+        values
+            .try_into()
+            .expect("terrain-generation table has fixed extent")
+    })
 }
 
 fn building_topology_entry(index: usize) -> [u8; 2] {
@@ -5459,6 +5861,48 @@ mod tests {
             private.join("generated/level1-unity-asset-cache"),
         )
         .expect("validated package M and owner cache");
+        let guard_x = 20_u8;
+        let guard_y = 21_u8;
+        let mut unconditional = world.terrain_planes().clone();
+        let mut signed = unconditional.clone();
+        for (x, y, angle) in [
+            (guard_x, guard_y, 0x80),
+            (guard_x.wrapping_sub(1), guard_y, 0x81),
+            (guard_x.wrapping_sub(1), guard_y.wrapping_sub(1), 0x82),
+            (guard_x, guard_y.wrapping_sub(1), 0x83),
+        ] {
+            let index = terrain_index(x, y);
+            unconditional.terrain_types[index] = 42;
+            unconditional.angles[index] = angle;
+            signed.terrain_types[index] = 42;
+            signed.angles[index] = angle;
+        }
+        let mut unconditional_rng = 9_775;
+        let mut signed_rng = 9_775;
+        add_building_to_terrain(
+            &mut unconditional,
+            guard_x,
+            guard_y,
+            MapType::Night,
+            &mut unconditional_rng,
+        );
+        apply_level1_load_path_point(&mut signed, guard_x, guard_y, &mut signed_rng);
+        for (x, y) in [
+            (guard_x, guard_y),
+            (guard_x.wrapping_sub(1), guard_y),
+            (guard_x.wrapping_sub(1), guard_y.wrapping_sub(1)),
+            (guard_x, guard_y.wrapping_sub(1)),
+        ] {
+            let index = terrain_index(x, y);
+            assert_ne!(
+                unconditional.terrain_types[index], 42,
+                "AddBuildingToTerrain must mark bit-0x80 cell ({x},{y})"
+            );
+            assert_eq!(
+                signed.terrain_types[index], 42,
+                "sub_462A0 must preserve bit-0x80 cell ({x},{y})"
+            );
+        }
         let footprint = world
             .level1_mission()
             .castle_stage_one_footprint()

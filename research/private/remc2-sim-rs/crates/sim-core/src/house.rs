@@ -157,7 +157,7 @@ impl HouseState {
             collision_half_height: read_i16(bytes, 92),
             action: snapshot.action,
             phase: snapshot.phase,
-            xtype: bytes[65],
+            xtype: bytes[69],
             build_tail: bytes[59],
             building_index,
             capacity: read_i16(bytes, 136),
@@ -704,6 +704,18 @@ mod tests {
                 },
                 576,
             )
+        );
+
+        let synthetic = world.entities()[1]
+            .clone()
+            .with_record_byte(65, 3)
+            .with_record_byte(69, 7);
+        assert_eq!(
+            HouseState::from_snapshot(&synthetic)
+                .expect("synthetic nonzero xtype")
+                .xtype,
+            7,
+            "xtype is serialized at source offset 65 plus the four-byte snapshot prefix"
         );
     }
 
