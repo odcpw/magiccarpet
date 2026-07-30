@@ -2004,6 +2004,9 @@ pub const SPEED_SPELL_MANA_COST: i32 = 1_000;
 pub const SPEED_TIER_THRESHOLDS_SINGLE_PLAYER: [i32; 3] = [0, 400, 1_200];
 pub const SPEED_SPELL_ACTIVATION_TICKS: u16 = 301;
 pub const SPEED_SPELL_TIER_MULTIPLIER: i16 = 2;
+const SPEED_SPELL_PROFILE_COUNT: usize = 3;
+const SPEED_SPELL_MAX_TIER: i8 = 2;
+const SPEED_SOUND_LATCH_FLAG: u32 = 0x80;
 pub const SPEED_TRAIL_CLASS: u8 = 10;
 pub const SPEED_TRAIL_MODEL: u8 = 2;
 pub const SPEED_TRAIL_ACTION: u8 = 2;
@@ -2036,7 +2039,46 @@ const SPELL_JAR_REWARD_THIRD_SUBSPELL_XPOS: [i32; SPELL_JAR_REWARD_SOURCE_FAMILY
 const SPELL_JAR_REWARD_EXPERIENCE: [i32; SPELL_JAR_REWARD_SOURCE_FAMILY_COUNT] =
     spell_jar_reward_experience_sequence(SPELL_JAR_REWARD_THIRD_SUBSPELL_XPOS);
 /// Compressed Level 1 family -> original `SPELLS.DAT` family.
-const SPELL_JAR_REWARD_SOURCE_FAMILY_BY_LEVEL1_FAMILY: [u8; SPELL_FAMILY_COUNT] = [0, 3, 16, 2];
+const SPELL_JAR_REWARD_SOURCE_FAMILY_BY_LEVEL1_FAMILY: [u8; SPELL_FAMILY_COUNT] = [0, 1, 16, 3];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SpeedSpellProfile {
+    tier: i8,
+    selector: i16,
+    mana_cost: i32,
+    max_mana_requirement: i32,
+    activation_ticks: u16,
+}
+
+const SPEED_SPELL_PROFILES: [SpeedSpellProfile; SPEED_SPELL_PROFILE_COUNT] = [
+    SpeedSpellProfile {
+        tier: 0,
+        selector: 2,
+        mana_cost: SPEED_SPELL_MANA_COST,
+        max_mana_requirement: 0,
+        activation_ticks: SPEED_SPELL_ACTIVATION_TICKS,
+    },
+    SpeedSpellProfile {
+        tier: 1,
+        selector: 3,
+        mana_cost: 2_500,
+        max_mana_requirement: 0,
+        activation_ticks: 451,
+    },
+    SpeedSpellProfile {
+        tier: 2,
+        selector: 4,
+        mana_cost: 5_000,
+        max_mana_requirement: 20_000,
+        activation_ticks: 501,
+    },
+];
+
+fn speed_spell_profile(tier: i8) -> SpeedSpellProfile {
+    let index = usize::try_from(tier.clamp(0, SPEED_SPELL_MAX_TIER))
+        .expect("clamped Speed tier is nonnegative");
+    SPEED_SPELL_PROFILES[index]
+}
 
 const fn spell_jar_reward_experience(tier_two_threshold: i32) -> i32 {
     let sign = tier_two_threshold >> 31;
@@ -4287,6 +4329,7 @@ impl Level1MissionTemplate {
             has_speed_spell: false,
             speed_experience: 0,
             speed_tier: 0,
+            active_speed_profile: None,
             spell_acquisition_order: Vec::new(),
             spell_pickup_hand_overrides: BTreeMap::new(),
             spell_acquisition_hand_overrides: BTreeMap::new(),
@@ -4462,6 +4505,12 @@ pub struct Level1MissionState {
     pub has_speed_spell: bool,
     pub speed_experience: i32,
     pub speed_tier: i8,
+    /// Tier fields copied into the active class-15/action-9 cast.
+    ///
+    /// `SetSpell_6D5E0` queues selection changes while `word_0x2E` is
+    /// nonzero, so an in-flight Speed cast keeps its original selector,
+    /// countdown, mana cost, and Castle-mana requirement.
+    active_speed_profile: Option<SpeedSpellProfile>,
     /// Source-dispatch order in which class-15 world holders were acquired.
     ///
     /// `sub_68FF0` assigns a hand before returning from the current source
@@ -6668,6 +6717,14 @@ impl Level1MissionState {
                 hash.u32(amount.cast_unsigned());
             }
         }
+        if let Some(profile) = self.active_speed_profile {
+            hash.bytes(b"active-speed-profile\0");
+            hash.u8(profile.tier.cast_unsigned());
+            hash.u16(profile.selector.cast_unsigned());
+            hash.u32(profile.mana_cost.cast_unsigned());
+            hash.u32(profile.max_mana_requirement.cast_unsigned());
+            hash.u16(profile.activation_ticks);
+        }
         if !self.temporary_mana_sphere_life.is_empty() {
             hash.bytes(b"temporary-mana-sphere-life\0");
             hash.u32(
@@ -7235,6 +7292,13 @@ impl Level1MissionState {
                 .iter()
                 .find(|holder| holder.entity_index == actor.source_entity_index)
             {
+                if actor.kind == Level1ActorKind::SpeedSpellJar {
+                    if actor.state_value <= 0 && holder.active_value > 0 {
+                        self.active_speed_profile = Some(speed_spell_profile(holder.level_gate));
+                    } else if holder.active_value <= 0 {
+                        self.active_speed_profile = None;
+                    }
+                }
                 actor.state_value = i32::from(holder.active_value);
             }
         }
@@ -7335,8 +7399,14 @@ impl Level1MissionState {
                 .iter()
                 .position(|holder| holder.entity_index == holder_index);
             if let Some(index) = existing {
-                fire.holders[index].active_value =
+                let holder = &mut fire.holders[index];
+                holder.active_value =
                     i16::try_from(actor.state_value).expect("spell holder active value fits i16");
+                if family == SPEED_SPELL_FAMILY && actor.state_value <= 0 {
+                    let profile = speed_spell_profile(holder.level_gate);
+                    holder.activation_value = profile.activation_ticks;
+                    holder.mana_cost = profile.mana_cost;
+                }
             } else {
                 fire.holders.push(SpellActivationHolder {
                     entity_index: holder_index,
@@ -7386,12 +7456,16 @@ impl Level1MissionState {
         });
     }
 
-    /// Dispatch the collected tier-zero Speed holder (`GetScroll_69DB0`) at
-    /// its own source-entity cursor.
+    /// Dispatch the collected Speed holder (`GetScroll_69DB0`) at its own
+    /// source-entity cursor.
     ///
     /// The source writes both requested and actual speed, uses a one-tick
-    /// three-times launch impulse, then sustains twice the normal minimum
-    /// speed until the 301-tick holder counter expires.
+    /// tier-specific launch and sustain impulse until the frozen holder
+    /// counter expires.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the source-shaped Speed dispatcher keeps gate, latch, trail, mana, and countdown order explicit"
+    )]
     pub fn dispatch_speed_holder_slot(
         &mut self,
         source_slot: u16,
@@ -7409,36 +7483,56 @@ impl Level1MissionState {
         let Some(fire) = context.spell_fire.as_mut() else {
             return;
         };
-        let Some(holder) = fire
+        let Some(holder_index) = fire
             .holders
-            .iter_mut()
-            .find(|holder| holder.entity_index == self.actors[actor_index].source_entity_index)
+            .iter()
+            .position(|holder| holder.entity_index == self.actors[actor_index].source_entity_index)
         else {
             return;
         };
+        let holder = fire.holders[holder_index];
         self.actors[actor_index].state_value = i32::from(holder.active_value);
         if self.actors[actor_index].state_value <= 0 {
+            self.active_speed_profile = None;
             return;
         }
+        let profile = *self
+            .active_speed_profile
+            .get_or_insert_with(|| speed_spell_profile(holder.level_gate));
+        let first_active_tick =
+            self.actors[actor_index].state_value == i32::from(profile.activation_ticks);
         if state.speed_changed_flag != 0 {
             // The source takes this branch instead of the normal Speed branch,
             // so manual cancellation never creates an action-2 trail.
             self.actors[actor_index].state_value = 1;
-        } else {
+        } else if self.player_life >= 0
+            && self.player_mana >= 0
+            && (profile.max_mana_requirement == 0
+                || (self.castle_exists && self.castle_mana >= profile.max_mana_requirement))
+            && (!first_active_tick || self.player_mana >= profile.mana_cost)
+        {
             let direction = if state.target_speed < 0 { -1 } else { 1 };
-            let multiplier = if self.actors[actor_index].state_value
-                == i32::from(SPEED_SPELL_ACTIVATION_TICKS)
-            {
+            let multiplier = if first_active_tick {
+                let source_record = &mut self.source_slots[usize::from(source_slot)];
+                if source_record.control_flags & SPEED_SOUND_LATCH_FLAG == 0 {
+                    source_record.control_flags |= SPEED_SOUND_LATCH_FLAG;
+                    context.events.push(crate::FlightEvent::PrepareSound {
+                        entity_index: state.entity_index,
+                        player_index: -1,
+                        sound_id: EXIT_ACCELERATION_SOUND,
+                    });
+                }
                 self.award_spell_experience(SPEED_SPELL_FAMILY, 1);
-                context.events.push(crate::FlightEvent::PrepareSound {
-                    entity_index: state.entity_index,
-                    player_index: i16::from(state.player_color_index),
-                    sound_id: EXIT_ACCELERATION_SOUND,
-                });
-                SPEED_SPELL_TIER_MULTIPLIER + 1
+                profile.selector + 1
             } else {
-                SPEED_SPELL_TIER_MULTIPLIER
+                profile.selector
             };
+            if self.actors[actor_index].state_value
+                == i32::from(profile.activation_ticks.saturating_sub(2))
+            {
+                self.source_slots[usize::from(source_slot)].control_flags &=
+                    !SPEED_SOUND_LATCH_FLAG;
+            }
             state.target_speed = direction * crate::PLAYER_MIN_SPEED * multiplier;
             state.actual_speed = state.target_speed;
             if self.actors[actor_index].phase & 3 == 0 {
@@ -7465,17 +7559,29 @@ impl Level1MissionState {
                     });
                 }
             }
+            if first_active_tick {
+                if self.player_mana_regen >= 0 {
+                    self.player_mana_regen = -profile.mana_cost;
+                } else {
+                    self.player_mana_regen = self.player_mana_regen.wrapping_sub(profile.mana_cost);
+                }
+            } else if self.actors[actor_index].state_value != 0 && self.player_mana_regen > 0 {
+                self.player_mana_regen = 0;
+            }
         }
         self.actors[actor_index].state_value -= 1;
         if self.actors[actor_index].state_value == 0 {
             let direction = if state.target_speed < 0 { -1 } else { 1 };
             state.target_speed = direction * crate::PLAYER_MIN_SPEED;
             state.actual_speed = state.target_speed;
+            self.active_speed_profile = None;
+            self.source_slots[usize::from(source_slot)].control_flags &= !SPEED_SOUND_LATCH_FLAG;
         }
-        holder.active_value = i16::try_from(self.actors[actor_index].state_value)
-            .expect("Speed holder countdown fits i16");
+        fire.holders[holder_index].active_value =
+            i16::try_from(self.actors[actor_index].state_value)
+                .expect("Speed holder countdown fits i16");
         if let Some(projected) = context.speed_spell_holder.as_mut() {
-            projected.active_value = holder.active_value;
+            projected.active_value = fire.holders[holder_index].active_value;
         }
     }
 
@@ -28881,8 +28987,103 @@ mod tests {
         assert_eq!(mission.exit_palette_weight, 15);
     }
 
+    /// Isolate one already-unlocked handler profile.
+    ///
+    /// The action-98 -> opcode-31 production reachability chain is exercised
+    /// separately in the existing experience-scroll case below.
+    fn configured_isolated_speed_profile_case(
+        tier: i8,
+        target_speed: i16,
+    ) -> (Level1MissionState, FlightState, FlightContext) {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(30_000, 30_000);
+        mission.has_speed_spell = true;
+        mission.speed_tier = 2;
+        let actor = mission
+            .actors
+            .iter_mut()
+            .find(|actor| actor.kind == Level1ActorKind::SpeedSpellJar)
+            .expect("Level 1 Speed jar");
+        actor.active = true;
+        actor.collected = true;
+        actor.source_entity_index = 900;
+        actor.phase = 0;
+        actor.state_value = 0;
+        let mut context = FlightContext {
+            spell_fire: Some(crate::SpellFireContext::default()),
+            ..FlightContext::default()
+        };
+        mission.sync_collected_spell_holders(&mut context);
+        let profile = speed_spell_profile(tier);
+        let holder = context
+            .spell_fire
+            .as_mut()
+            .expect("spell context")
+            .holders
+            .iter_mut()
+            .find(|holder| holder.entity_index == 900)
+            .expect("Speed holder");
+        holder.level_gate = tier;
+        context
+            .spell_fire
+            .as_mut()
+            .expect("spell context")
+            .family_selected_tiers[usize::from(SPEED_SPELL_FAMILY)] = tier;
+        mission.sync_collected_spell_holders(&mut context);
+        let holder = context
+            .spell_fire
+            .as_mut()
+            .expect("spell context")
+            .holders
+            .iter_mut()
+            .find(|holder| holder.entity_index == 900)
+            .expect("Speed holder");
+        assert_eq!(holder.activation_value, profile.activation_ticks);
+        assert_eq!(holder.mana_cost, profile.mana_cost);
+        holder.active_value = profile.activation_ticks.cast_signed();
+        mission.capture_spell_holder_active_values(&context);
+        let mut state = FlightState {
+            entity_index: 152,
+            target_speed,
+            actual_speed: target_speed,
+            ..FlightState::default()
+        };
+        mission.sync_speed_holder_projection(&mut state, &mut context);
+        (mission, state, context)
+    }
+
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the fixed PLAN-23 inventory keeps all Speed profile and cancellation discriminators in one existing case"
+    )]
     fn speed_spell_uses_exact_countdown_speeds_sound_trail_and_manual_cancel() {
+        assert_eq!(
+            SPEED_SPELL_PROFILES,
+            [
+                SpeedSpellProfile {
+                    tier: 0,
+                    selector: 2,
+                    mana_cost: 1_000,
+                    max_mana_requirement: 0,
+                    activation_ticks: 301,
+                },
+                SpeedSpellProfile {
+                    tier: 1,
+                    selector: 3,
+                    mana_cost: 2_500,
+                    max_mana_requirement: 0,
+                    activation_ticks: 451,
+                },
+                SpeedSpellProfile {
+                    tier: 2,
+                    selector: 4,
+                    mana_cost: 5_000,
+                    max_mana_requirement: 20_000,
+                    activation_ticks: 501,
+                },
+            ]
+        );
         let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
         let mut mission = template.session(10_000, 2_000);
         let actor = mission
@@ -28919,6 +29120,8 @@ mod tests {
             tick: 0,
             ..FlightState::default()
         };
+        let preserved_speed_flags = 0x4000_0000;
+        mission.source_slots[900].control_flags = preserved_speed_flags;
 
         mission.dispatch_speed_holder_slot(900, &mut state, &mut context);
         assert_eq!(state.target_speed, 240);
@@ -28926,12 +29129,18 @@ mod tests {
         assert_eq!(mission.speed_holder_active_value(), 300);
         assert_eq!(mission.speed_experience, 1);
         assert_eq!(mission.speed_tier, 0);
+        assert_eq!(mission.player_mana_regen, -SPEED_SPELL_MANA_COST);
+        assert_eq!(
+            mission.source_slots[900].control_flags,
+            preserved_speed_flags | SPEED_SOUND_LATCH_FLAG,
+            "the first Speed tick preserves other source flags while setting the sound latch"
+        );
         assert_eq!(mission.exit_palette_submode, EXIT_PALETTE_NONE);
         assert_eq!(
             context.events,
             [crate::FlightEvent::PrepareSound {
                 entity_index: 152,
-                player_index: 0,
+                player_index: -1,
                 sound_id: EXIT_ACCELERATION_SOUND,
             }]
         );
@@ -28975,6 +29184,11 @@ mod tests {
         assert_eq!(state.target_speed, 160);
         assert_eq!(state.actual_speed, 160);
         assert_eq!(mission.speed_holder_active_value(), 299);
+        assert_ne!(
+            mission.source_slots[900].control_flags & SPEED_SOUND_LATCH_FLAG,
+            0,
+            "activation minus one keeps the source sound latch set"
+        );
         assert!(context.events.is_empty());
         mission.step_speed_trail_slot(trail.source_entity_index);
 
@@ -28985,11 +29199,21 @@ mod tests {
             .expect("Level 1 Speed jar")
             .phase = 0;
         state.speed_changed_flag = 1;
+        mission.player_mana_regen = 321;
         let trails_before_cancel = mission.speed_trails().len();
         mission.dispatch_speed_holder_slot(900, &mut state, &mut context);
         assert_eq!(state.target_speed, 80);
         assert_eq!(state.actual_speed, 80);
         assert_eq!(mission.speed_holder_active_value(), 0);
+        assert_eq!(
+            mission.player_mana_regen, 321,
+            "manual cancellation skips Speed mana scheduling"
+        );
+        assert_eq!(
+            mission.source_slots[900].control_flags, preserved_speed_flags,
+            "manual expiry clears only the Speed sound latch"
+        );
+        assert!(mission.active_speed_profile.is_none());
         assert_eq!(mission.exit_palette_submode, EXIT_PALETTE_NONE);
         assert_eq!(
             mission.speed_trails().len(),
@@ -29018,6 +29242,312 @@ mod tests {
             None
         );
         assert!(!mission.source_slots[usize::from(trail.source_entity_index)].active);
+
+        for (tier, direction, first_speed, sustain_speed, expected_trails) in
+            [(1, 1, 320, 240, 113), (2, -1, -400, -320, 126)]
+        {
+            let profile = speed_spell_profile(tier);
+            let (mut mission, mut state, mut context) =
+                configured_isolated_speed_profile_case(tier, direction * crate::PLAYER_MIN_SPEED);
+            if tier == 2 {
+                mission.castle_exists = true;
+                mission.castle_mana = profile.max_mana_requirement;
+            }
+            let armed_hash = mission.source_arena_hash_v1();
+            let mut without_active_profile = mission.clone();
+            without_active_profile.active_speed_profile = None;
+            assert_ne!(
+                armed_hash,
+                without_active_profile.source_arena_hash_v1(),
+                "activation captures the future-affecting Speed profile before holder dispatch"
+            );
+
+            mission.dispatch_speed_holder_slot(900, &mut state, &mut context);
+
+            assert_eq!(state.target_speed, first_speed);
+            assert_eq!(state.actual_speed, first_speed);
+            assert_eq!(
+                mission.speed_holder_active_value(),
+                profile.activation_ticks.cast_signed() - 1
+            );
+            assert_eq!(
+                context.events,
+                [crate::FlightEvent::PrepareSound {
+                    entity_index: 152,
+                    player_index: -1,
+                    sound_id: EXIT_ACCELERATION_SOUND,
+                }]
+            );
+            assert_ne!(
+                mission.source_arena_hash_v1(),
+                armed_hash,
+                "holder countdown and trail allocation change authoritative state"
+            );
+            let active_hash = mission.source_arena_hash_v1();
+            let mut changed_profile = mission.clone();
+            changed_profile
+                .active_speed_profile
+                .as_mut()
+                .expect("active Speed profile")
+                .selector += 1;
+            assert_ne!(
+                changed_profile.source_arena_hash_v1(),
+                active_hash,
+                "the hash distinguishes different active Speed selectors"
+            );
+
+            context.events.clear();
+            for phase in 1..profile.activation_ticks {
+                mission
+                    .actors
+                    .iter_mut()
+                    .find(|actor| actor.kind == Level1ActorKind::SpeedSpellJar)
+                    .expect("Speed holder")
+                    .phase = phase.to_le_bytes()[0];
+                mission.dispatch_speed_holder_slot(900, &mut state, &mut context);
+                if phase == 1 {
+                    assert_eq!(state.target_speed, sustain_speed);
+                    assert_eq!(state.actual_speed, sustain_speed);
+                }
+            }
+            assert_eq!(mission.speed_holder_active_value(), 0);
+            assert_eq!(
+                state.target_speed,
+                direction * crate::PLAYER_MIN_SPEED,
+                "natural expiry restores the signed normal speed"
+            );
+            assert_eq!(state.actual_speed, state.target_speed);
+            assert_eq!(mission.speed_trails().len(), expected_trails);
+            assert!(
+                mission
+                    .speed_trails()
+                    .iter()
+                    .all(|trail| trail.life == SPEED_TRAIL_LIFE),
+                "every tier uses the class-10/model-2 lifetime"
+            );
+            assert!(context.events.is_empty());
+            assert_eq!(mission.speed_experience, 1);
+            assert!(mission.active_speed_profile.is_none());
+            assert_eq!(
+                mission.source_slots[900].control_flags & SPEED_SOUND_LATCH_FLAG,
+                0,
+                "natural expiry leaves the source sound latch clear"
+            );
+        }
+
+        let (mut failed_allocation, mut failed_state, mut failed_context) =
+            configured_isolated_speed_profile_case(1, crate::PLAYER_MIN_SPEED);
+        failed_allocation.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        failed_allocation.player_mana_regen = -75;
+        failed_allocation.dispatch_speed_holder_slot(900, &mut failed_state, &mut failed_context);
+        assert_eq!(failed_state.target_speed, 320);
+        assert_eq!(failed_allocation.speed_holder_active_value(), 450);
+        assert!(failed_allocation.speed_trails().is_empty());
+        assert_eq!(
+            failed_allocation.player_mana_regen, -2_575,
+            "a successful first tick schedules its cost even when trail allocation fails"
+        );
+
+        let (mut charged, mut charged_state, mut charged_context) =
+            configured_isolated_speed_profile_case(1, crate::PLAYER_MIN_SPEED);
+        charged.dispatch_speed_holder_slot(900, &mut charged_state, &mut charged_context);
+        assert_eq!(charged.player_mana_regen, -2_500);
+        let mana_before_charge = charged.player_mana;
+        charged.begin_source_turn_at(charged_state.position);
+        charged.dispatch_source_slot(
+            &FlatWorld,
+            &charged_state,
+            charged_state.entity_index,
+            false,
+            false,
+            None,
+        );
+        assert_eq!(
+            charged.player_mana,
+            mana_before_charge - 2_500,
+            "the next player source pass applies the scheduled Speed cost"
+        );
+        assert!(charged.player_mana_regen > 0);
+        charged
+            .actors
+            .iter_mut()
+            .find(|actor| actor.kind == Level1ActorKind::SpeedSpellJar)
+            .expect("Speed holder")
+            .phase = 1;
+        charged_context.events.clear();
+        charged.dispatch_speed_holder_slot(900, &mut charged_state, &mut charged_context);
+        assert_eq!(
+            charged.player_mana_regen, 0,
+            "a successful sustain tick cancels positive player mana regeneration"
+        );
+
+        let (mut retrigger, mut retrigger_state, mut retrigger_context) =
+            configured_isolated_speed_profile_case(1, crate::PLAYER_MIN_SPEED);
+        retrigger.dispatch_speed_holder_slot(900, &mut retrigger_state, &mut retrigger_context);
+        assert_eq!(retrigger.speed_holder_active_value(), 450);
+        assert_eq!(retrigger.speed_experience, 1);
+        assert_ne!(
+            retrigger.source_slots[900].control_flags & SPEED_SOUND_LATCH_FLAG,
+            0
+        );
+        assert_eq!(
+            retrigger_context.events,
+            [FlightEvent::PrepareSound {
+                entity_index: 152,
+                player_index: -1,
+                sound_id: EXIT_ACCELERATION_SOUND,
+            }]
+        );
+
+        retrigger_context.events.clear();
+        let evidence = crate::step_outer_turn_with_context(
+            &mut retrigger_state,
+            crate::PlayerCommand {
+                flags: 0x10,
+                ..crate::PlayerCommand::default()
+            },
+            0,
+            FlightProfile {
+                passive_vertical_step: 0,
+                ..FlightProfile::OUTDOOR
+            },
+            &FlatWorld,
+            &mut retrigger_context,
+        );
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(
+            retrigger_context
+                .spell_fire
+                .as_ref()
+                .expect("spell context")
+                .accepted_models,
+            [SPEED_SPELL_FAMILY]
+        );
+        retrigger.capture_spell_holder_active_values(&retrigger_context);
+        assert_eq!(retrigger.speed_holder_active_value(), 451);
+        retrigger_context.events.clear();
+        retrigger.dispatch_speed_holder_slot(900, &mut retrigger_state, &mut retrigger_context);
+        assert_eq!(retrigger.speed_holder_active_value(), 450);
+        assert_eq!(retrigger.speed_experience, 2);
+        assert!(
+            retrigger_context.events.is_empty(),
+            "an immediate active retrigger repeats XP but the set source latch suppresses sound"
+        );
+        assert_eq!(retrigger.player_mana_regen, -5_000);
+
+        retrigger.dispatch_speed_holder_slot(900, &mut retrigger_state, &mut retrigger_context);
+        assert_eq!(retrigger.speed_holder_active_value(), 449);
+        assert_ne!(
+            retrigger.source_slots[900].control_flags & SPEED_SOUND_LATCH_FLAG,
+            0,
+            "451 to 450 and 450 to 449 retain the latch"
+        );
+        retrigger.dispatch_speed_holder_slot(900, &mut retrigger_state, &mut retrigger_context);
+        assert_eq!(retrigger.speed_holder_active_value(), 448);
+        assert_eq!(
+            retrigger.source_slots[900].control_flags & SPEED_SOUND_LATCH_FLAG,
+            0,
+            "the successful 449 to 448 tick clears the tier-one source latch"
+        );
+
+        retrigger_context.events.clear();
+        crate::step_outer_turn_with_context(
+            &mut retrigger_state,
+            crate::PlayerCommand {
+                flags: 0x10,
+                ..crate::PlayerCommand::default()
+            },
+            0,
+            FlightProfile {
+                passive_vertical_step: 0,
+                ..FlightProfile::OUTDOOR
+            },
+            &FlatWorld,
+            &mut retrigger_context,
+        );
+        retrigger.capture_spell_holder_active_values(&retrigger_context);
+        assert_eq!(retrigger.speed_holder_active_value(), 451);
+        retrigger_context.events.clear();
+        retrigger.dispatch_speed_holder_slot(900, &mut retrigger_state, &mut retrigger_context);
+        assert_eq!(retrigger.speed_experience, 3);
+        assert_eq!(retrigger.speed_holder_active_value(), 450);
+        assert_eq!(retrigger.player_mana_regen, -7_500);
+        assert_eq!(
+            retrigger_context.events,
+            [FlightEvent::PrepareSound {
+                entity_index: 152,
+                player_index: -1,
+                sound_id: EXIT_ACCELERATION_SOUND,
+            }],
+            "active retrigger emits sound again after the source latch clears"
+        );
+
+        let (mut queued, mut queued_state, mut queued_context) =
+            configured_isolated_speed_profile_case(1, crate::PLAYER_MIN_SPEED);
+        queued.dispatch_speed_holder_slot(900, &mut queued_state, &mut queued_context);
+        crate::latch_command_with_context(
+            &mut queued_state,
+            crate::PlayerCommand {
+                opcode: 31,
+                argument_1: SPEED_SPELL_FAMILY.cast_signed(),
+                argument_2: 2,
+                ..crate::PlayerCommand::default()
+            },
+            &mut queued_context,
+        );
+        queued.sync_collected_spell_holders(&mut queued_context);
+        let queued_holder = queued_context
+            .spell_fire
+            .as_ref()
+            .expect("spell context")
+            .holders
+            .iter()
+            .find(|holder| holder.entity_index == 900)
+            .expect("Speed holder");
+        assert_eq!(queued_holder.level_gate, 2);
+        assert_eq!(queued_holder.activation_value, 451);
+        assert_eq!(queued_holder.mana_cost, 2_500);
+        queued.dispatch_speed_holder_slot(900, &mut queued_state, &mut queued_context);
+        assert_eq!(
+            queued_state.target_speed, 240,
+            "mid-cast tier changes cannot mutate the active tier-one selector"
+        );
+        queued_context
+            .spell_fire
+            .as_mut()
+            .expect("spell context")
+            .holders
+            .iter_mut()
+            .find(|holder| holder.entity_index == 900)
+            .expect("Speed holder")
+            .active_value = 1;
+        queued.capture_spell_holder_active_values(&queued_context);
+        queued.dispatch_speed_holder_slot(900, &mut queued_state, &mut queued_context);
+        queued.sync_collected_spell_holders(&mut queued_context);
+        let queued_holder = queued_context
+            .spell_fire
+            .as_ref()
+            .expect("spell context")
+            .holders
+            .iter()
+            .find(|holder| holder.entity_index == 900)
+            .expect("Speed holder");
+        assert_eq!(queued_holder.activation_value, 501);
+        assert_eq!(queued_holder.mana_cost, 5_000);
+
+        for (experience, expected_experience, expected_tier) in [(399, 400, 1), (1_199, 1_200, 2)] {
+            let (mut progression, mut progression_state, mut progression_context) =
+                configured_isolated_speed_profile_case(0, crate::PLAYER_MIN_SPEED);
+            progression.speed_experience = experience;
+            progression.speed_tier = expected_tier - 1;
+            progression.dispatch_speed_holder_slot(
+                900,
+                &mut progression_state,
+                &mut progression_context,
+            );
+            assert_eq!(progression.speed_experience, expected_experience);
+            assert_eq!(progression.speed_tier, expected_tier);
+        }
     }
 
     #[test]
@@ -29082,7 +29612,17 @@ mod tests {
         assert_eq!(SPELL_JAR_REWARD_EXPERIENCE, EXPECTED_SOURCE_EXPERIENCE);
         assert_eq!(
             SPELL_JAR_REWARD_SOURCE_FAMILY_BY_LEVEL1_FAMILY,
-            [0, 3, 16, 2]
+            [0, 1, 16, 3]
+        );
+        assert_eq!(
+            (
+                SPEED_TIER_THRESHOLDS_SINGLE_PLAYER[1]
+                    / SPELL_JAR_REWARD_EXPERIENCE[usize::from(SPEED_SPELL_FAMILY)],
+                SPEED_TIER_THRESHOLDS_SINGLE_PLAYER[2]
+                    / SPELL_JAR_REWARD_EXPERIENCE[usize::from(SPEED_SPELL_FAMILY)],
+            ),
+            (200, 600),
+            "without cast XP, even action-98 pulses unlock Speed tiers one and two after 200 and 600 awards"
         );
         assert_eq!(spell_jar_reward_experience(-513), -1);
         assert_eq!(spell_jar_reward_experience(-511), 0);
@@ -29180,7 +29720,7 @@ mod tests {
                     reward.castle_experience,
                     reward.speed_experience,
                 ),
-                (421, 600, 42, 398),
+                (421, 607, 42, 400),
                 "even-phase progression is independent of allocation success count"
             );
             assert_eq!(
@@ -29190,7 +29730,7 @@ mod tests {
                     reward.castle_tier,
                     reward.speed_tier,
                 ),
-                (1, 1, 1, 0)
+                (1, 1, 1, 1)
             );
             assert_eq!(
                 reward.spell_jar_reward_experience_order(),
@@ -29205,6 +29745,189 @@ mod tests {
             if success_count == 3 {
                 full_reward = Some(reward);
             }
+        }
+        for (
+            possession_before,
+            speed_before,
+            expected_possession,
+            expected_speed,
+            expected_possession_tier,
+            expected_speed_tier,
+        ) in [(591, 397, 600, 399, 1, 0), (590, 398, 599, 400, 0, 1)]
+        {
+            let mut independent = template.session(10_000, 2_000);
+            independent.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+            independent.possession_experience = possession_before;
+            independent.speed_experience = speed_before;
+            install_spell_jar_reward_source(&mut independent, 600, 0, 0x1234, reward_position);
+            independent.begin_source_turn_at(reward_player.position);
+            independent.dispatch_source_slot(&FlatWorld, &reward_player, 600, false, false, None);
+            assert_eq!(
+                (
+                    independent.possession_experience,
+                    independent.speed_experience,
+                    independent.possession_tier,
+                    independent.speed_tier,
+                ),
+                (
+                    expected_possession,
+                    expected_speed,
+                    expected_possession_tier,
+                    expected_speed_tier,
+                ),
+                "source family 1 Possession and source family 3 Speed advance independently"
+            );
+        }
+
+        for (
+            speed_before,
+            tier_before,
+            unlocked_tier,
+            activation_ticks,
+            mana_cost,
+            max_mana_requirement,
+            first_speed,
+        ) in [
+            (398, 0, 1, 451, 2_500, 0, 320),
+            (1_198, 1, 2, 501, 5_000, 20_000, 400),
+        ] {
+            let mut reachable = template.session(30_000, 30_000);
+            reachable.has_speed_spell = true;
+            reachable.speed_experience = speed_before;
+            reachable.speed_tier = tier_before;
+            let speed_actor = reachable
+                .actors
+                .iter_mut()
+                .find(|actor| actor.kind == Level1ActorKind::SpeedSpellJar)
+                .expect("Level 1 Speed jar");
+            speed_actor.active = true;
+            speed_actor.collected = true;
+            speed_actor.visible = false;
+            speed_actor.source_entity_index = 900;
+            speed_actor.action = SPELL_HOLDER_ACTIONS[usize::from(SPEED_SPELL_FAMILY)];
+            speed_actor.state_value = 0;
+            reachable.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+            install_spell_jar_reward_source(&mut reachable, 600, 0, 0x1234, reward_position);
+            reachable.begin_source_turn_at(reward_player.position);
+            reachable.dispatch_source_slot(&FlatWorld, &reward_player, 600, false, false, None);
+            assert_eq!(reachable.speed_experience, speed_before + 2);
+            assert_eq!(reachable.speed_tier, unlocked_tier);
+
+            let mut reachable_context = FlightContext {
+                spell_fire: Some(crate::SpellFireContext::default()),
+                ..FlightContext::default()
+            };
+            reachable.sync_collected_spell_holders(&mut reachable_context);
+            assert_eq!(
+                reachable_context
+                    .spell_fire
+                    .as_ref()
+                    .expect("spell context")
+                    .spell_levels[usize::from(SPEED_SPELL_FAMILY)],
+                unlocked_tier
+            );
+            let mut reachable_state = FlightState {
+                entity_index: 152,
+                target_speed: crate::PLAYER_MIN_SPEED,
+                actual_speed: crate::PLAYER_MIN_SPEED,
+                ..FlightState::default()
+            };
+            crate::latch_command_with_context(
+                &mut reachable_state,
+                crate::PlayerCommand {
+                    opcode: 31,
+                    argument_1: SPEED_SPELL_FAMILY.cast_signed(),
+                    argument_2: unlocked_tier,
+                    ..crate::PlayerCommand::default()
+                },
+                &mut reachable_context,
+            );
+            reachable.sync_collected_spell_holders(&mut reachable_context);
+            let refreshed_holder = reachable_context
+                .spell_fire
+                .as_ref()
+                .expect("spell context")
+                .holders
+                .iter()
+                .find(|holder| holder.entity_index == 900)
+                .expect("Speed holder");
+            assert_eq!(refreshed_holder.level_gate, unlocked_tier);
+            assert_eq!(refreshed_holder.activation_value, activation_ticks);
+            assert_eq!(refreshed_holder.mana_cost, mana_cost);
+            assert_eq!(
+                speed_spell_profile(refreshed_holder.level_gate).max_mana_requirement,
+                max_mana_requirement
+            );
+
+            if max_mana_requirement != 0 {
+                reachable.castle_exists = true;
+                reachable.castle_mana = max_mana_requirement;
+            }
+            reachable.sync_speed_holder_projection(&mut reachable_state, &mut reachable_context);
+            reachable_context.events.clear();
+            let evidence = crate::step_outer_turn_with_context(
+                &mut reachable_state,
+                crate::PlayerCommand {
+                    flags: 0x10,
+                    ..crate::PlayerCommand::default()
+                },
+                0,
+                FlightProfile {
+                    passive_vertical_step: 0,
+                    ..FlightProfile::OUTDOOR
+                },
+                &FlatWorld,
+                &mut reachable_context,
+            );
+            assert_eq!(evidence.len(), 1);
+            assert!(reachable_context.events.iter().any(|event| matches!(
+                event,
+                FlightEvent::RequestSpellActivation {
+                    source: SpellFireSource::Left,
+                    holder_entity_index: 900,
+                    direction_mask: 256,
+                }
+            )));
+            assert_eq!(
+                reachable_context
+                    .spell_fire
+                    .as_ref()
+                    .expect("spell context")
+                    .accepted_models,
+                [SPEED_SPELL_FAMILY],
+                "the normal left-hand cast path accepts the selected Speed holder"
+            );
+            reachable.capture_spell_holder_active_values(&reachable_context);
+            assert_eq!(
+                reachable.active_speed_profile,
+                Some(speed_spell_profile(unlocked_tier))
+            );
+            assert_eq!(
+                reachable.speed_holder_active_value(),
+                activation_ticks.cast_signed()
+            );
+            reachable_context.events.clear();
+            reachable.dispatch_speed_holder_slot(900, &mut reachable_state, &mut reachable_context);
+            assert_eq!(reachable_state.target_speed, first_speed);
+            assert_eq!(reachable_state.actual_speed, first_speed);
+            assert_eq!(
+                reachable.speed_holder_active_value(),
+                activation_ticks.cast_signed() - 1
+            );
+            assert_eq!(
+                reachable.speed_experience,
+                speed_before + 3,
+                "the real first cast tick adds one XP after the action-98 award"
+            );
+            assert_eq!(reachable.player_mana_regen, -mana_cost);
+            assert_eq!(
+                reachable_context.events,
+                [FlightEvent::PrepareSound {
+                    entity_index: reachable_state.entity_index,
+                    player_index: -1,
+                    sound_id: EXIT_ACCELERATION_SOUND,
+                }]
+            );
         }
         let mut reward = full_reward.expect("three-success reward case");
         let reward_hash = reward.source_arena_hash_v1();
@@ -29297,9 +30020,9 @@ mod tests {
         repeated.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
         install_spell_jar_reward_source(&mut repeated, 600, 0, 0x1234, reward_position);
         for (dispatch, expected_phase, expected_experience, expected_order_len) in [
-            (1, 1, (23, 2, 4, 0), 26),
-            (2, 2, (23, 2, 4, 0), 26),
-            (3, 3, (46, 4, 8, 0), 52),
+            (1, 1, (23, 9, 4, 2), 26),
+            (2, 2, (23, 9, 4, 2), 26),
+            (3, 3, (46, 18, 8, 4), 52),
         ] {
             repeated.begin_source_turn_at(reward_player.position);
             repeated.dispatch_source_slot(&FlatWorld, &reward_player, 600, false, false, None);
@@ -29350,6 +30073,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the fixed PLAN-23 inventory keeps final-phase and rejected-gate discriminators in one existing case"
+    )]
     fn speed_final_active_phase_spawns_trail_before_natural_expiry() {
         let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
         let mut mission = template.session(10_000, 2_000);
@@ -29399,6 +30126,95 @@ mod tests {
             mission.source_slots[usize::from(trail.source_entity_index)].phase,
             trail.source_entity_index.to_le_bytes()[0]
         );
+
+        let (mut gated, mut gated_state, mut gated_context) =
+            configured_isolated_speed_profile_case(2, crate::PLAYER_MIN_SPEED);
+        gated.castle_exists = true;
+        gated.castle_mana = 19_999;
+        gated.dispatch_speed_holder_slot(900, &mut gated_state, &mut gated_context);
+        assert_eq!(
+            gated_state.target_speed,
+            crate::PLAYER_MIN_SPEED,
+            "tier two does not apply below the 20,000 Castle-mana requirement"
+        );
+        assert_eq!(gated.speed_holder_active_value(), 500);
+        assert_eq!(gated.speed_experience, 0);
+        assert!(gated_context.events.is_empty());
+        assert!(gated.speed_trails().is_empty());
+        assert_eq!(
+            gated.active_speed_profile,
+            Some(speed_spell_profile(2)),
+            "a rejected active tick still retains the frozen cast profile"
+        );
+        let gated_regen = gated.player_mana_regen;
+        gated.dispatch_speed_holder_slot(900, &mut gated_state, &mut gated_context);
+        assert_eq!(
+            gated.speed_holder_active_value(),
+            499,
+            "the Castle-mana requirement is checked again on sustain"
+        );
+        assert_eq!(gated_state.target_speed, crate::PLAYER_MIN_SPEED);
+        assert_eq!(gated.player_mana_regen, gated_regen);
+        assert!(gated_context.events.is_empty());
+        assert!(gated.speed_trails().is_empty());
+
+        let (mut mana_gated, mut mana_state, mut mana_context) =
+            configured_isolated_speed_profile_case(2, crate::PLAYER_MIN_SPEED);
+        mana_gated.castle_exists = true;
+        mana_gated.castle_mana = 20_000;
+        mana_gated.player_mana = 4_999;
+        mana_gated.dispatch_speed_holder_slot(900, &mut mana_state, &mut mana_context);
+        assert_eq!(mana_state.target_speed, crate::PLAYER_MIN_SPEED);
+        assert_eq!(mana_gated.speed_holder_active_value(), 500);
+        assert_eq!(mana_gated.speed_experience, 0);
+        assert!(mana_context.events.is_empty());
+        assert!(mana_gated.speed_trails().is_empty());
+        assert!(mana_gated.player_mana_regen > 0);
+
+        mana_gated.dispatch_speed_holder_slot(900, &mut mana_state, &mut mana_context);
+        assert_eq!(
+            mana_state.target_speed, 320,
+            "after an insufficient-total-mana first tick, sustain uses only the nonnegative-mana gate"
+        );
+        assert_eq!(mana_state.actual_speed, 320);
+        assert_eq!(mana_gated.speed_holder_active_value(), 499);
+        assert_eq!(mana_gated.speed_experience, 0);
+        assert_eq!(mana_gated.player_mana_regen, 0);
+        assert!(mana_context.events.is_empty());
+        assert_eq!(mana_gated.speed_trails().len(), 1);
+
+        for (player_life, player_mana, rejected_gate) in
+            [(-1, 30_000, "life"), (30_000, -1, "mana")]
+        {
+            let (mut sustain_gated, mut sustain_state, mut sustain_context) =
+                configured_isolated_speed_profile_case(1, crate::PLAYER_MIN_SPEED);
+            sustain_context
+                .spell_fire
+                .as_mut()
+                .expect("spell context")
+                .holders
+                .iter_mut()
+                .find(|holder| holder.entity_index == 900)
+                .expect("Speed holder")
+                .active_value = 450;
+            sustain_gated.capture_spell_holder_active_values(&sustain_context);
+            sustain_gated.player_life = player_life;
+            sustain_gated.player_mana = player_mana;
+            let regen_before = sustain_gated.player_mana_regen;
+
+            sustain_gated.dispatch_speed_holder_slot(900, &mut sustain_state, &mut sustain_context);
+
+            assert_eq!(
+                sustain_gated.speed_holder_active_value(),
+                449,
+                "negative player {rejected_gate} rejects sustain but still decrements the holder"
+            );
+            assert_eq!(sustain_state.target_speed, crate::PLAYER_MIN_SPEED);
+            assert_eq!(sustain_state.actual_speed, crate::PLAYER_MIN_SPEED);
+            assert_eq!(sustain_gated.player_mana_regen, regen_before);
+            assert!(sustain_context.events.is_empty());
+            assert!(sustain_gated.speed_trails().is_empty());
+        }
     }
 
     #[test]
