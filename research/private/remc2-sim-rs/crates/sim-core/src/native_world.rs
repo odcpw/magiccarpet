@@ -2821,6 +2821,8 @@ impl NativeSession<'_> {
                 0,
                 0,
             );
+            self.mission
+                .apply_pending_player_transients(&mut self.state);
             apply_level1_source_effects(&mut self.mission, &mut self.live_world, &source_effects)
                 .expect("resident source effects apply after slot dispatch");
             if source_slot == self.state.entity_index && self.mission.exit_sequence_active {

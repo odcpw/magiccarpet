@@ -75,10 +75,11 @@ use sim_core::{
         POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_IMPACT_RENDER_MODE,
         POSSESSION_PROJECTILE_BASE_TMAP, POSSESSION_PROJECTILE_CLASS,
         POSSESSION_PROJECTILE_LOGICAL_HEIGHT, POSSESSION_PROJECTILE_MODEL,
-        POSSESSION_PROJECTILE_RENDER_INDEX, POSSESSION_PROJECTILE_RENDER_MODE, PlayerHitReaction,
-        WATER_SPLASH_BASE_TMAP, WATER_SPLASH_LOGICAL_HEIGHT, WATER_SPLASH_MODEL,
-        WATER_SPLASH_RENDER_INDEX, WATER_SPLASH_RENDER_MODE, level1_minimap_castle_rope_pixels,
-        level1_minimap_entity_command, mana_sphere_size_ordinal,
+        POSSESSION_PROJECTILE_RENDER_INDEX, POSSESSION_PROJECTILE_RENDER_MODE,
+        POSSESSION_STRONG_IMPACT_MODEL, PlayerHitReaction, WATER_SPLASH_BASE_TMAP,
+        WATER_SPLASH_LOGICAL_HEIGHT, WATER_SPLASH_MODEL, WATER_SPLASH_RENDER_INDEX,
+        WATER_SPLASH_RENDER_MODE, level1_minimap_castle_rope_pixels, level1_minimap_entity_command,
+        mana_sphere_size_ordinal,
     },
     native_world::{
         AssetRef, EntityAuthority, EntitySnapshot, NativeWorld, ParticleParameter, SessionTerrain,
@@ -2618,6 +2619,8 @@ impl SessionRecord {
                 self.camera_look_yaw,
                 self.camera_look_pitch,
             );
+            self.mission
+                .apply_pending_player_transients(&mut self.state);
             for seed in apply_level1_source_effects(
                 &mut self.mission,
                 &mut self.live_world,
@@ -7457,7 +7460,10 @@ fn fireball_impact_snapshot(impact: &FireballImpact) -> McFireballImpactSnapshot
                 WATER_SPLASH_RENDER_MODE,
                 WATER_SPLASH_LOGICAL_HEIGHT,
             )
-        } else if impact.model == POSSESSION_IMPACT_MODEL {
+        } else if matches!(
+            impact.model,
+            POSSESSION_IMPACT_MODEL | POSSESSION_STRONG_IMPACT_MODEL
+        ) {
             (
                 POSSESSION_IMPACT_BASE_TMAP,
                 POSSESSION_IMPACT_RENDER_INDEX,
@@ -7491,7 +7497,10 @@ fn fireball_impact_snapshot(impact: &FireballImpact) -> McFireballImpactSnapshot
         authority: MC_AUTHORITY_LEVEL1_MISSION_LIVE,
         active: u8::from(impact.active),
         damage_submitted: u8::from(impact.damage_submitted),
-        class_id: if impact.model == POSSESSION_IMPACT_MODEL {
+        class_id: if matches!(
+            impact.model,
+            POSSESSION_IMPACT_MODEL | POSSESSION_STRONG_IMPACT_MODEL
+        ) {
             POSSESSION_IMPACT_CLASS
         } else if impact.model == CHECKPOINT_SMOKE_MODEL {
             CHECKPOINT_SMOKE_CLASS
@@ -8772,6 +8781,62 @@ mod tests {
         assert_eq!(std::mem::offset_of!(McTerrainFrameInfoV2, index_bytes), 40);
         assert_eq!(std::mem::offset_of!(McTerrainFrameInfoV2, index_hash), 64);
         assert_eq!(std::mem::offset_of!(McTerrainFrameInfoV2, reserved), 88);
+
+        let weak_marker = FireballImpact {
+            id: 1,
+            source_entity_index: 2,
+            source_projectile_id: 3,
+            owner_entity_index: 152,
+            external_target_entity_index: 0,
+            model: POSSESSION_IMPACT_MODEL,
+            position: Position {
+                x: 20_000,
+                y: 19_616,
+                z: 128,
+            },
+            payload: 0,
+            life_ticks: 8,
+            entity_rng: 0,
+            vertical_velocity: 0,
+            phase: 77,
+            animation_frame: 1,
+            damage_submitted: false,
+            active: true,
+        };
+        let strong_marker = FireballImpact {
+            model: POSSESSION_STRONG_IMPACT_MODEL,
+            payload: 1,
+            ..weak_marker
+        };
+        let weak_snapshot = fireball_impact_snapshot(&weak_marker);
+        let strong_snapshot = fireball_impact_snapshot(&strong_marker);
+        assert_eq!(
+            (
+                strong_snapshot.class_id,
+                strong_snapshot.base_tmap,
+                strong_snapshot.render_parameter_index,
+                strong_snapshot.render_mode,
+                strong_snapshot.logical_height,
+            ),
+            (
+                weak_snapshot.class_id,
+                weak_snapshot.base_tmap,
+                weak_snapshot.render_parameter_index,
+                weak_snapshot.render_mode,
+                weak_snapshot.logical_height,
+            ),
+            "model 70 exports the same possession marker tuple as model 12"
+        );
+        assert_eq!(
+            (
+                strong_snapshot.model,
+                strong_snapshot.payload,
+                weak_snapshot.animation_frame,
+                strong_snapshot.animation_frame,
+            ),
+            (POSSESSION_STRONG_IMPACT_MODEL, 1, 1, 1),
+            "CAPI projects the bounded render frame, never class-10 dword phase"
+        );
     }
 
     #[test]

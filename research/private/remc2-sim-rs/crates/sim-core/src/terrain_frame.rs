@@ -56,13 +56,13 @@ use crate::{
         ManaCarrier, ManaSphere, POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_LOGICAL_HEIGHT,
         POSSESSION_IMPACT_MODEL, POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_PROJECTILE_BASE_TMAP,
         POSSESSION_PROJECTILE_LOGICAL_HEIGHT, POSSESSION_PROJECTILE_RENDER_INDEX,
-        SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX,
-        SPELL_JAR_RENDER_MODE, STONE_BASE_TMAP, STONE_LOGICAL_HEIGHT, STONE_RENDER_INDEX,
-        STONE_RENDER_MODE, TREE_BASE_TMAP_A, TREE_BASE_TMAP_B, TREE_DEAD_BASE_TMAP_A,
-        TREE_DEAD_BASE_TMAP_B, TREE_DEAD_RENDER_INDEX_A, TREE_DEAD_RENDER_INDEX_B,
-        TREE_LOGICAL_HEIGHT, TREE_RENDER_INDEX_A, TREE_RENDER_INDEX_B, TREE_RENDER_MODE,
-        WATER_SPLASH_BASE_TMAP, WATER_SPLASH_LOGICAL_HEIGHT, WATER_SPLASH_RENDER_INDEX,
-        mana_sphere_size_ordinal,
+        POSSESSION_STRONG_IMPACT_MODEL, SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT,
+        SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE, STONE_BASE_TMAP, STONE_LOGICAL_HEIGHT,
+        STONE_RENDER_INDEX, STONE_RENDER_MODE, TREE_BASE_TMAP_A, TREE_BASE_TMAP_B,
+        TREE_DEAD_BASE_TMAP_A, TREE_DEAD_BASE_TMAP_B, TREE_DEAD_RENDER_INDEX_A,
+        TREE_DEAD_RENDER_INDEX_B, TREE_LOGICAL_HEIGHT, TREE_RENDER_INDEX_A, TREE_RENDER_INDEX_B,
+        TREE_RENDER_MODE, WATER_SPLASH_BASE_TMAP, WATER_SPLASH_LOGICAL_HEIGHT,
+        WATER_SPLASH_RENDER_INDEX, mana_sphere_size_ordinal,
     },
     mode5_raster::{Mode5Vertex, rasterize_mode5_triangle_from_atlas},
     mode26_raster::{NIGHT_TABLES_BYTES, rasterize_mode26_triangle_from_atlas_into_framebuffer},
@@ -575,6 +575,17 @@ fn shadow_surface_allows(
         angles,
     );
     !terrain_material_blocks_shadow(shadow_texture)
+}
+
+const fn impact_presentation_discriminants(model: u8) -> (bool, bool) {
+    let possession = matches!(
+        model,
+        POSSESSION_IMPACT_MODEL | POSSESSION_STRONG_IMPACT_MODEL
+    );
+    let fireball = !possession
+        && model != crate::level1_mission::WATER_SPLASH_MODEL
+        && model != CHECKPOINT_SMOKE_MODEL;
+    (possession, fireball)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1466,8 +1477,8 @@ fn raster_world_chain(
                 continue;
             }
             let splash = impact.model == crate::level1_mission::WATER_SPLASH_MODEL;
-            let possession = impact.model == POSSESSION_IMPACT_MODEL;
             let checkpoint_smoke = impact.model == CHECKPOINT_SMOKE_MODEL;
+            let (possession, fireball) = impact_presentation_discriminants(impact.model);
             let (render_index, base, logical_height, quarter_anchor, animate) = if splash {
                 (
                     WATER_SPLASH_RENDER_INDEX,
@@ -1501,6 +1512,7 @@ fn raster_world_chain(
                     false,
                 )
             } else {
+                debug_assert!(fireball);
                 (
                     FIREBALL_IMPACT_RENDER_INDEX,
                     FIREBALL_IMPACT_BASE_TMAP,
@@ -1559,6 +1571,24 @@ fn raster_world_chain(
                 value_width,
                 value_height,
             );
+            if fireball
+                && (placement.is_ok()
+                    || matches!(
+                        placement,
+                        Err(crate::goat_sprite_raster::Mode20SpriteReject::NonPositiveProjection)
+                    ))
+            {
+                *fireball_draw_attempted = true;
+            }
+            if possession
+                && (placement.is_ok()
+                    || matches!(
+                        placement,
+                        Err(crate::goat_sprite_raster::Mode20SpriteReject::NonPositiveProjection)
+                    ))
+            {
+                *possession_draw_attempted = true;
+            }
             let Ok(placement) = placement else { continue };
             raster_world_sprite_pass(
                 pass,
@@ -3819,6 +3849,7 @@ mod tests {
             mana: 256,
             owner_entity_index: 0,
             incoming_owner_entity_index: 0,
+            incoming_possession_payload: 0,
             assigned_carrier_id: 0,
             phase: 0,
             active: true,
@@ -3916,6 +3947,95 @@ mod tests {
             assert!(frame.economy_raster_stats.framebuffer_writes > 0);
             assert_eq!(frame.castle_draw_attempted, expected_castle_latch);
         }
+
+        let mut marker_chains = archer_chains.clone();
+        marker_chains
+            .sync_entity(crate::renderable_map_chain::RenderableMapSeed {
+                entity_index: 991,
+                active: true,
+                x: archer.position.x,
+                y: archer.position.y,
+            })
+            .expect("dedicated Possession marker insertion");
+        let mut marker_source_slots = mission.source_slots().to_vec();
+        marker_source_slots[991].control_flags = 0;
+        let mut possession_marker_hashes = Vec::new();
+        for model in [POSSESSION_IMPACT_MODEL, POSSESSION_STRONG_IMPACT_MODEL] {
+            assert_eq!(
+                impact_presentation_discriminants(model),
+                (true, false),
+                "both possession markers must classify as possession, never fireball"
+            );
+            let marker = FireballImpact {
+                id: u32::from(model),
+                source_entity_index: 991,
+                source_projectile_id: 998,
+                owner_entity_index: local_player,
+                external_target_entity_index: 0,
+                model,
+                position: goat.position,
+                payload: i32::from(model == POSSESSION_STRONG_IMPACT_MODEL),
+                life_ticks: 8,
+                entity_rng: 0,
+                vertical_velocity: 0,
+                phase: if model == POSSESSION_IMPACT_MODEL {
+                    1
+                } else {
+                    200
+                },
+                animation_frame: 1,
+                damage_submitted: false,
+                active: true,
+            };
+            let frame = render_level1_world_frame(
+                archer_camera,
+                render_resources(),
+                Level1WorldFrameResources {
+                    local_player_entity_index: local_player,
+                    goats: world.reset_live_world().goats(),
+                    frozen_actors: &[],
+                    ambient_entities: &[],
+                    frozen_actor_tmap_bank: None,
+                    villager_tmap_clocks: None,
+                    mission_actors: std::slice::from_ref(&archer),
+                    dynamic_residents: &[],
+                    mission_segments: &[],
+                    castle_root: None,
+                    mana_spheres: &[],
+                    mana_carrier: None,
+                    map_chains: &marker_chains,
+                    goat_tmap_clocks: &clocks,
+                    archer_tmap_bank: &archer_bank,
+                    archer_tmap_clocks: &archer_clocks,
+                    firefly_tmap_bank: &firefly_bank,
+                    firefly_tmap_clocks: &firefly_clocks,
+                    projectiles: &[],
+                    impacts: std::slice::from_ref(&marker),
+                    possessed_buildings: &[],
+                    combat_tmap_bank: &combat_bank,
+                    static_world_tmap_bank: &static_world_bank,
+                    economy_tmap_bank: &economy_bank,
+                    fireball_tmap_clock: &fireball_clock,
+                    possession_tmap_clock: &possession_clock,
+                    castle_tmap_clock: &castle_clock,
+                    particle_parameters: &world.presentation().particles,
+                    source_slots: &marker_source_slots,
+                    night: true,
+                },
+            )
+            .expect("Possession marker presentation");
+            assert!(frame.possession_draw_attempted);
+            assert!(!frame.fireball_draw_attempted);
+            assert!(
+                frame.combat_raster_stats.framebuffer_writes > 0,
+                "the synthetic marker reaches the production indexed compositor"
+            );
+            possession_marker_hashes.push(byte_hash(&frame.indices));
+        }
+        assert_eq!(
+            possession_marker_hashes[0], possession_marker_hashes[1],
+            "model 12/70 and their distinct class-10 phases share marker 41; terrain sees only the bounded render frame"
+        );
 
         let hostile_sphere = ManaSphere {
             owner_entity_index: local_player.wrapping_add(1),
