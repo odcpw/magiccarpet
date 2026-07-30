@@ -1484,6 +1484,17 @@ namespace MagicCarpet.Native.Tests
             using var session = NativeSession.Open(PackagePath, ClosurePath);
             var driver = new Level1Autopilot();
             var snapshot = session.Snapshot();
+            var presentationEntities = session.Entities();
+            for (ushort entityIndex = 51; entityIndex <= 78; entityIndex++)
+            {
+                MagicCarpetRuntime.ApplyLiveVillagerProjection(
+                    presentationEntities,
+                    session.EntityAt(entityIndex),
+                    requireResetIdentity: true);
+            }
+            var priorVillagerRow70 = presentationEntities[70];
+            var observedVillagerRetirement = false;
+            var observedMissionReplacement = false;
             var mission = session.Level1Mission();
             var actors = session.Level1Actors(mission);
             var goats = session.Goats(
@@ -1731,6 +1742,34 @@ namespace MagicCarpet.Native.Tests
                     opcode: command.Opcode,
                     argument1: command.Argument1,
                     requestedSpell: command.RequestedSpell);
+                var villagerRow70 = session.EntityAt(70);
+                MagicCarpetRuntime.ApplyLiveVillagerProjection(
+                    presentationEntities,
+                    villagerRow70,
+                    requireResetIdentity: false);
+                if (priorVillagerRow70.authority == NativeSim.VillagerLive &&
+                    villagerRow70.authority != NativeSim.VillagerLive)
+                {
+                    observedVillagerRetirement = true;
+                }
+                if (villagerRow70.authority == NativeSim.Level1MissionLive)
+                {
+                    observedMissionReplacement = true;
+                    Assert.That(
+                        MagicCarpetRuntime.IsRetiredOrReplacedImportedActor(
+                            presentationEntities[70],
+                            qualifiedFrozenActor: true),
+                        Is.True,
+                        "a MissionLive replacement suppresses the imported Villager sprite");
+                }
+                if (villagerRow70.authority == 0)
+                {
+                    Assert.That(
+                        presentationEntities[70].active,
+                        Is.Zero,
+                        "a retired imported row cannot retain an active presentation");
+                }
+                priorVillagerRow70 = villagerRow70;
                 mission = session.Level1Mission();
                 actors = session.Level1Actors(mission);
                 terrain = session.TerrainState();
@@ -1788,6 +1827,14 @@ namespace MagicCarpet.Native.Tests
             Assert.That(peakPlayerFireballs, Is.GreaterThan(0));
             Assert.That(peakImpacts, Is.GreaterThan(0));
             Assert.That(observedCarrier, Is.True);
+            Assert.That(
+                observedVillagerRetirement,
+                Is.True,
+                "the production route retires imported Villager row 70");
+            Assert.That(
+                observedMissionReplacement,
+                Is.True,
+                "the production route reuses row 70 for a MissionLive entity");
             Assert.That(mission.currentStage, Is.EqualTo(5));
             Assert.That(mission.exitSequenceComplete, Is.EqualTo(1));
             Assert.That(mission.exitResultCode, Is.EqualTo(10));
@@ -1798,6 +1845,19 @@ namespace MagicCarpet.Native.Tests
             Assert.That(peakTerrainMutationSequence, Is.EqualTo(23));
             Assert.That(terrain.terrainHash, Is.Not.EqualTo(initialTerrainHash));
             var resetSnapshot = session.Reset();
+            for (ushort entityIndex = 51; entityIndex <= 78; entityIndex++)
+            {
+                MagicCarpetRuntime.ApplyLiveVillagerProjection(
+                    presentationEntities,
+                    session.EntityAt(entityIndex),
+                    requireResetIdentity: true);
+            }
+            Assert.That(
+                MagicCarpetRuntime.IsRetiredOrReplacedImportedActor(
+                    presentationEntities[70],
+                    qualifiedFrozenActor: true),
+                Is.False,
+                "reset restores VillagerLive ownership of row 70");
             var resetTerrain = session.TerrainState();
             Assert.That(resetTerrain.generation, Is.EqualTo(resetSnapshot.generation));
             Assert.That(resetTerrain.mutationSequence, Is.Zero);

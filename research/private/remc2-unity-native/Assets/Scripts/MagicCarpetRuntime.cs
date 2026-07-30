@@ -2062,7 +2062,7 @@ namespace MagicCarpet.Native
                 requestedSpell: selectedSpell);
             RefreshLiveTerrain();
             RefreshLiveGoats();
-            RefreshLiveVillagers();
+            RefreshLiveVillagers(requireResetIdentity: false);
             RefreshLiveMission();
             playthroughRecorder?.RecordTick(
                 simTick,
@@ -3006,6 +3006,7 @@ namespace MagicCarpet.Native
             goatOrdinalByEntity = new int[entities.Length];
             Array.Fill(goatOrdinalByEntity, -1);
             RefreshLiveGoats();
+            RefreshLiveVillagers(requireResetIdentity: true);
             RefreshLiveMission();
             for (var ordinal = 0; ordinal < goats.Length; ordinal++)
             {
@@ -7093,6 +7094,10 @@ namespace MagicCarpet.Native
                 marker.Node.position = SourceToUnity(nearestX, nearestY, sourceZ);
                 if (marker.Renderer != null)
                 {
+                    var retiredOrReplacedImportedActor =
+                        IsRetiredOrReplacedImportedActor(
+                            entity,
+                            marker.QualifiedFrozenActor);
                     var nativeFrozenActor =
                         !liveGoat &&
                         marker.QualifiedFrozenActor;
@@ -7101,6 +7106,7 @@ namespace MagicCarpet.Native
                         : Vector3.SqrMagnitude(
                             marker.Node.position - targetPosition);
                     marker.Renderer.enabled =
+                        !retiredOrReplacedImportedActor &&
                         active && drawingEnabled &&
                         !(liveGoat &&
                           (terrainFrameInfo.flags &
@@ -7114,6 +7120,7 @@ namespace MagicCarpet.Native
                     if (marker.OwnerSprite && marker.Group != null &&
                         marker.SpriteVisual != null)
                     {
+                        if (retiredOrReplacedImportedActor) continue;
                         Require(
                             liveGoat
                                 ? entity.authority == NativeSim.GoatLive &&
@@ -7189,19 +7196,60 @@ namespace MagicCarpet.Native
             }
         }
 
-        private void RefreshLiveVillagers()
+        internal static bool IsRetiredOrReplacedImportedActor(
+            NativeSim.EntitySnapshot entity,
+            bool qualifiedFrozenActor)
+        {
+            return qualifiedFrozenActor &&
+                   entity.authority != NativeSim.FrozenObserved &&
+                   entity.authority != NativeSim.VillagerLive;
+        }
+
+        internal static void ApplyLiveVillagerProjection(
+            NativeSim.EntitySnapshot[] presentationEntities,
+            NativeSim.EntitySnapshot villager,
+            bool requireResetIdentity)
+        {
+            var entityIndex = checked((int)villager.entityIndex);
+            Require(
+                presentationEntities != null &&
+                entityIndex >= 51 &&
+                entityIndex <= 78 &&
+                entityIndex < presentationEntities.Length,
+                $"imported Villager projection row {villager.entityIndex}");
+            if (villager.authority == NativeSim.VillagerLive)
+            {
+                Require(
+                    villager.classId == 5 &&
+                    villager.model == 13 &&
+                    (!requireResetIdentity || villager.active != 0),
+                    $"{(requireResetIdentity ? "exact reset" : "exact live")} " +
+                    $"Villager row {villager.entityIndex}");
+            }
+            else
+            {
+                Require(
+                    !requireResetIdentity &&
+                    (villager.authority == 0 ||
+                     villager.authority == NativeSim.Level1MissionLive),
+                    $"retired or replaced Villager row {villager.entityIndex}");
+            }
+            presentationEntities[entityIndex] = villager;
+        }
+
+        private void RefreshLiveVillagers(bool requireResetIdentity)
         {
             if (entities == null || entities.Length <= 78) return;
             for (ushort entityIndex = 51; entityIndex <= 78; entityIndex++)
             {
                 var villager = session.EntityAt(entityIndex);
                 Require(
-                    villager.entityIndex == entityIndex &&
-                    villager.classId == 5 &&
-                    villager.model == 13 &&
-                    villager.authority == NativeSim.VillagerLive,
-                    $"exact live Villager row {entityIndex}");
-                entities[entityIndex] = villager;
+                    villager.entityIndex == entityIndex,
+                    $"stable imported Villager row {entityIndex}");
+                ApplyLiveVillagerProjection(
+                    entities,
+                    villager,
+                    requireResetIdentity);
             }
         }
 
@@ -7475,7 +7523,7 @@ namespace MagicCarpet.Native
             RefreshLiveTerrain();
             RefreshLivePlayerRow();
             RefreshLiveGoats();
-            RefreshLiveVillagers();
+            RefreshLiveVillagers(requireResetIdentity: true);
             RefreshLiveMission();
             ReadAuthoritativePose(true);
             UpdateExactTerrainGrid();

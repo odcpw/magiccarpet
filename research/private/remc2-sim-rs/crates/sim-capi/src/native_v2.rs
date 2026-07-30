@@ -6397,6 +6397,7 @@ fn entity_snapshot(
         snapshot.pitch = goat.pitch;
         snapshot.actual_speed = goat.actual_speed;
     } else if entity.authority == EntityAuthority::VillagerLive
+        && mission.imported_source_slot_is_live(entity.index)
         && let Some(villager) = live_world
             .villagers()
             .iter()
@@ -13886,6 +13887,24 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
             Ok(())
         })
         .expect("registered C API session");
+        let retired_projection = with_session(handle, |capi| {
+            Ok(entity_snapshot(
+                &capi.world.entities()[51],
+                &capi.state,
+                &capi.live_world,
+                &capi.mission,
+            ))
+        })
+        .expect("retired imported Villager projection");
+        assert_eq!(
+            (
+                retired_projection.entity_index,
+                retired_projection.authority,
+                retired_projection.active,
+            ),
+            (51, MC_AUTHORITY_LEVEL1_MISSION_LIVE, 1),
+            "an existing MissionLive payload owns the projection as soon as the imported row retires"
+        );
 
         let resident_position = direct.live_world.houses()[0].position;
         let resident_slot = direct
@@ -13902,6 +13921,27 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
         })
         .expect("registered C API session");
         assert_eq!(resident_slot, capi_resident_slot);
+        let replacement_projection = with_session(handle, |capi| {
+            Ok(entity_snapshot(
+                &capi.world.entities()[usize::from(capi_resident_slot)],
+                &capi.state,
+                &capi.live_world,
+                &capi.mission,
+            ))
+        })
+        .expect("MissionLive replacement projection");
+        assert_eq!(
+            (
+                replacement_projection.entity_index,
+                replacement_projection.authority,
+                replacement_projection.active,
+                replacement_projection.class_id,
+                replacement_projection.model,
+                replacement_projection.action,
+            ),
+            (resident_slot, MC_AUTHORITY_LEVEL1_MISSION_LIVE, 1, 5, 4, 33,),
+            "the allocated row belongs exclusively to its MissionLive resident"
+        );
         for (model, action) in [(12, 97), (13, 105), (14, 113)] {
             let direct_slot = direct
                 .mission
@@ -14009,6 +14049,35 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
             saw_dynamic_family,
             "dynamic parity phase must allocate and dispatch a Fireball family"
         );
+        direct.reset();
+        assert_eq!(
+            mc_native_session_reset(
+                handle,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let reset_projection = with_session(handle, |capi| {
+            Ok(entity_snapshot(
+                &capi.world.entities()[51],
+                &capi.state,
+                &capi.live_world,
+                &capi.mission,
+            ))
+        })
+        .expect("reset Villager projection");
+        assert_eq!(
+            (
+                reset_projection.entity_index,
+                reset_projection.authority,
+                reset_projection.active,
+                reset_projection.class_id,
+                reset_projection.model,
+            ),
+            (51, MC_AUTHORITY_VILLAGER_LIVE, 1, 5, 13),
+            "reset alone restores the exact imported Villager identity"
+        );
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 
@@ -14016,37 +14085,44 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
     fn replaceable_fallback_hides_the_stale_generic_entity_projection() {
         let handle = open_fixture();
         let replaced_slot = with_session_mut(handle, |session| {
-            session.mission.has_fireball = true;
-            session.mission.player_mana = i32::MAX;
-            let free_count = session
-                .world
-                .entities()
+            let replaced_slot = 70;
+            let stale_villager = session
+                .live_world
+                .villagers()
                 .iter()
-                .skip(1)
-                .filter(|entity| !entity.active)
-                .count();
-            for _ in 0..=free_count {
-                assert!(session.mission.spawn_fireball(&session.state));
-            }
-            session
-                .world
-                .entities()
-                .iter()
-                .find(|entity| {
-                    entity.active
-                        && entity.control_flags & sim_core::level1_mission::SOURCE_REPLACEABLE_FLAG
-                            != 0
-                        && !session.mission.imported_source_slot_is_live(entity.index)
-                })
-                .map(|entity| entity.index)
-                .ok_or_else(|| {
-                    AbiError::new(
-                        MC_STATUS_VALIDATION_FAILED,
-                        "fallback allocation did not replace an imported source row",
-                    )
-                })
+                .find(|villager| villager.entity_index == replaced_slot)
+                .expect("row 70 imported Villager");
+            assert!(stale_villager.active);
+            assert!(
+                session.mission.disable_imported_source_slot(replaced_slot),
+                "production disable marks the imported source row"
+            );
+            let player = session.state;
+            session.mission.begin_source_turn();
+            session.mission.finish_source_turn(&player);
+            assert!(
+                !session.mission.imported_source_slot_is_live(replaced_slot),
+                "production turn-start cleanup retires the imported source row"
+            );
+            Ok(replaced_slot)
         })
-        .expect("replaceable fallback slot");
+        .expect("replaceable fallback Villager slot");
+
+        assert!(
+            (51..=78).contains(&replaced_slot),
+            "the discriminating fallback must retire one of the 28 Villager rows"
+        );
+        with_session(handle, |session| {
+            let entity = &session.world.entities()[usize::from(replaced_slot)];
+            assert!(
+                entity.authority == EntityAuthority::VillagerLive
+                    && entity.active
+                    && !session.mission.imported_source_slot_is_live(replaced_slot),
+                "the stale typed Villager remains present behind a retired source slot"
+            );
+            Ok(())
+        })
+        .expect("registered C API session");
 
         let mut snapshot = McEntitySnapshotV2::default();
         let mut written = 0;
