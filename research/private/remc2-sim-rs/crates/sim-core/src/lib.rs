@@ -888,9 +888,24 @@ pub fn step_entity_pass_with_context<W: FlightWorld>(
     world: &W,
     context: &mut FlightContext,
 ) -> StepEvidence {
-    let before = state.position;
     decode_movement(command.flags, state);
     journal_spell_fire(command.flags, context);
+    step_entity_body_with_context(state, profile, world, context)
+}
+
+/// Execute the recovered `sub_5D530` flight/entity body without relatching
+/// `PlayerEvents` input.
+///
+/// Player action 2 calls this body directly. It therefore preserves the
+/// movement/control fields retained by the preceding live player turn and
+/// suppresses any new command or spell-fire input while dying.
+pub fn step_entity_body_with_context<W: FlightWorld>(
+    state: &mut FlightState,
+    profile: FlightProfile,
+    world: &W,
+    context: &mut FlightContext,
+) -> StepEvidence {
+    let before = state.position;
 
     if state.skip_flight_once {
         state.skip_flight_once = false;

@@ -394,6 +394,67 @@ namespace MagicCarpet.Native
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct Level1PlayerLifecycleSnapshot
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal ulong tick;
+            internal ulong lifecycleHash;
+            internal ulong sourceArenaHash;
+            internal byte authority;
+            internal byte playerAction;
+            internal byte playerDead;
+            internal byte inputSuppressed;
+            internal byte playerActive;
+            internal byte playerVisible;
+            internal byte playerTargetable;
+            internal byte menuCloseRequested;
+            internal byte notificationActive;
+            internal byte notificationState;
+            internal byte banishedCameraActive;
+            internal byte markerPresent;
+            internal short fallVelocity;
+            internal short notificationTimer;
+            internal int actionTimer;
+            internal int replaceableCursor;
+            internal ushort killerEntityIndex;
+            internal ushort killerScoreAwards;
+            internal ushort notificationId;
+            internal ushort playerEntityRng;
+            internal uint playerControlFlags;
+            internal short playerEntityRoll;
+            internal short playerYaw;
+            internal short controllerPitch;
+            internal short controllerRoll;
+            internal short recoilSpeed;
+            internal ushort markerSourceEntityIndex;
+            internal ushort markerX;
+            internal ushort markerY;
+            internal short markerZ;
+            internal ushort markerTriggerEntityIndex;
+            internal ushort markerParticleParameterIndex;
+            internal int markerLife;
+            internal int markerMaxLife;
+            internal uint sourcePoolRebuildCount;
+            internal ulong lifecycleTraceHash;
+            internal ushort lifecycleTraceCount;
+            internal byte markerDispatchPhase;
+            internal byte markerClass;
+            internal byte markerModel;
+            internal byte markerAction;
+            internal byte markerByte38;
+            internal byte sourceColorPhase6;
+            internal uint sourceTurnCounter;
+            internal byte menuState;
+            internal byte killerScoreVictimColor;
+            internal short effectivePitch;
+            internal uint markerConstructorPhase;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal byte[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct Level1HudSpellSlot
         {
             internal ushort holderEntityIndex;
@@ -1393,6 +1454,23 @@ namespace MagicCarpet.Native
             uint snapshotSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_level1_player_lifecycle_snapshot(
+            ulong handle,
+            out Level1PlayerLifecycleSnapshot snapshot,
+            uint snapshotSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_level1_player_menu_state(
+            ulong handle,
+            byte menuState);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_level1_player_inject_damage_for_qualification(
+            ulong handle,
+            int damage,
+            ushort attackerEntityIndex);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_level1_hud_snapshot(
             ulong handle,
             out Level1HudSnapshot snapshot,
@@ -1622,6 +1700,7 @@ namespace MagicCarpet.Native
             RequireSize<GoatSnapshot>(84);
             RequireSize<GoatBatch>(64);
             RequireSize<Level1MissionSnapshot>(96);
+            RequireSize<Level1PlayerLifecycleSnapshot>(144);
             RequireSize<Level1HudSpellSlot>(36);
             RequireSize<Level1HudSnapshot>(128);
             RequireSize<Level1SpellMenuSnapshot>(64);
@@ -1685,6 +1764,22 @@ namespace MagicCarpet.Native
                 nameof(Level1MissionSnapshot.possessedBuildingCount), 92);
             RequireOffset<Level1MissionSnapshot>(
                 nameof(Level1MissionSnapshot.speedTrailCount), 95);
+            RequireOffset<Level1PlayerLifecycleSnapshot>(
+                nameof(Level1PlayerLifecycleSnapshot.playerAction), 41);
+            RequireOffset<Level1PlayerLifecycleSnapshot>(
+                nameof(Level1PlayerLifecycleSnapshot.actionTimer), 56);
+            RequireOffset<Level1PlayerLifecycleSnapshot>(
+                nameof(Level1PlayerLifecycleSnapshot.playerControlFlags), 72);
+            RequireOffset<Level1PlayerLifecycleSnapshot>(
+                nameof(Level1PlayerLifecycleSnapshot.sourcePoolRebuildCount), 108);
+            RequireOffset<Level1PlayerLifecycleSnapshot>(
+                nameof(Level1PlayerLifecycleSnapshot.markerDispatchPhase), 122);
+            RequireOffset<Level1PlayerLifecycleSnapshot>(
+                nameof(Level1PlayerLifecycleSnapshot.sourceTurnCounter), 128);
+            RequireOffset<Level1PlayerLifecycleSnapshot>(
+                nameof(Level1PlayerLifecycleSnapshot.effectivePitch), 134);
+            RequireOffset<Level1PlayerLifecycleSnapshot>(
+                nameof(Level1PlayerLifecycleSnapshot.markerConstructorPhase), 136);
             RequireOffset<Level1HudSpellSlot>(
                 nameof(Level1HudSpellSlot.maxMana), 12);
             RequireOffset<Level1HudSnapshot>(

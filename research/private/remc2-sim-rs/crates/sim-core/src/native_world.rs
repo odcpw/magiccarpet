@@ -52,7 +52,7 @@ use crate::{
     },
     renderable_map_chain::RenderableMapSeed,
     spell_activation::{SpellActivationHolder, SpellCasterState},
-    state_hash, step_outer_turn_with_context,
+    state_hash, step_entity_body_with_context, step_outer_turn_with_context,
     villager::{
         LEVEL_ONE_VILLAGER_INDICES, VILLAGER_CLASS, VILLAGER_MODEL, VillagerBehaviorConfig,
         VillagerState,
@@ -2246,6 +2246,15 @@ impl NativeWorld {
 
     #[must_use]
     pub fn session(&self) -> NativeSession<'_> {
+        let mut mission = self.level1_mission.session(
+            self.entities[usize::from(self.reset_state.entity_index)].life,
+            1_000,
+        );
+        mission.set_source_turn_counter(
+            self.players[usize::from(self.runtime.local_player_slot)]
+                .turn
+                .cast_unsigned(),
+        );
         NativeSession {
             world: self,
             terrain: SessionTerrain::from_world(self),
@@ -2255,10 +2264,7 @@ impl NativeWorld {
             goat_tmap_clocks: self.goat_tmap_bank.as_ref().map(GoatTmapClocks::from_bank),
             camera_fov: 128,
             pending_house_effects: Vec::new(),
-            mission: self.level1_mission.session(
-                self.entities[usize::from(self.reset_state.entity_index)].life,
-                1_000,
-            ),
+            mission,
         }
     }
 }
@@ -2618,6 +2624,11 @@ impl NativeSession<'_> {
             self.world.entities[usize::from(self.world.reset_state.entity_index)].life,
             1_000,
         );
+        self.mission.set_source_turn_counter(
+            self.world.players[usize::from(self.world.runtime.local_player_slot)]
+                .turn
+                .cast_unsigned(),
+        );
     }
 
     pub fn step(&mut self, command: PlayerCommand) -> Vec<crate::StepEvidence> {
@@ -2784,19 +2795,46 @@ impl NativeSession<'_> {
             let (fireball_activated, possession_activated, castle_cast_yaw) = if source_slot
                 == self.state.entity_index
             {
+                self.mission
+                    .prepare_player_action_before_flight(&mut self.state);
                 evidence = if self.mission.exit_sequence_owns_player_action() {
                     self.state.tick = self.state.tick.wrapping_add(1);
                     Vec::new()
                 } else {
-                    step_outer_turn_with_context(
-                        &mut self.state,
-                        command,
-                        0,
-                        self.world.profile,
-                        &self.terrain,
-                        &mut self.context,
-                    )
+                    match self.mission.player_action {
+                        crate::level1_mission::PLAYER_ACTION_ACTIVE => {
+                            step_outer_turn_with_context(
+                                &mut self.state,
+                                command,
+                                0,
+                                self.world.profile,
+                                &self.terrain,
+                                &mut self.context,
+                            )
+                        }
+                        crate::level1_mission::PLAYER_ACTION_DYING => {
+                            vec![step_entity_body_with_context(
+                                &mut self.state,
+                                self.world.profile,
+                                &self.terrain,
+                                &mut self.context,
+                            )]
+                        }
+                        _ => Vec::new(),
+                    }
                 };
+                if !self.mission.exit_sequence_owns_player_action() {
+                    let flight_proposed = evidence
+                        .last()
+                        .map_or(self.state.position, |pass| pass.proposed);
+                    self.mission
+                        .advance_player_lifecycle_after_flight_with_proposed(
+                            &self.terrain,
+                            &mut self.state,
+                            &mut self.context,
+                            flight_proposed,
+                        );
+                }
                 let activated_model = |model| {
                     self.context.spell_fire.as_ref().is_some_and(|fire| {
                         fire.holders.iter().any(|holder| {
@@ -2820,7 +2858,9 @@ impl NativeSession<'_> {
                 (false, false, None)
             };
             let mission_event_start = self.mission.events().len();
-            if !self.mission.exit_sequence_owns_player_action() {
+            if !self.mission.exit_sequence_owns_player_action()
+                && self.mission.player_action == crate::level1_mission::PLAYER_ACTION_ACTIVE
+            {
                 self.mission.dispatch_speed_holder_slot(
                     source_slot,
                     &mut self.state,

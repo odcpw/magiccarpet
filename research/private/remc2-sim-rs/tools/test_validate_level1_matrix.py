@@ -56,8 +56,8 @@ class Level1MatrixValidatorTests(unittest.TestCase):
             {
                 "ok": True,
                 "rows": 182,
-                "exact_rows": 98,
-                "non_exact_rows": 84,
+                "exact_rows": 100,
+                "non_exact_rows": 82,
                 "exclusions": 18,
                 "plan_items": 22,
                 "authored_indices": 308,
@@ -182,12 +182,30 @@ class Level1MatrixValidatorTests(unittest.TestCase):
             document["rows"][0]["quiet_default"] = True
 
         self.assert_mutation_rejected(mutate, "unknown fields")
+        self.assert_mutation_rejected(
+            lambda document: next(
+                row for row in document["rows"] if row["id"] == "DSP-03-02"
+            )["source"]["related"][0].__setitem__("quiet_default", True),
+            "unknown fields",
+        )
+        self.assert_mutation_rejected(
+            lambda document: next(
+                row for row in document["rows"] if row["id"] == "DSP-03-02"
+            )["source"].__setitem__("related", {}),
+            "expected array",
+        )
 
     def test_missing_field_is_rejected(self) -> None:
         def mutate(document: dict[str, Any]) -> None:
             del document["rows"][0]["confidence"]
 
         self.assert_mutation_rejected(mutate, "missing fields")
+        self.assert_mutation_rejected(
+            lambda document: next(
+                row for row in document["rows"] if row["id"] == "DSP-03-02"
+            )["source"]["related"][0].__delitem__("path"),
+            "missing fields",
+        )
 
     def test_weakly_typed_integer_is_rejected(self) -> None:
         def mutate(document: dict[str, Any]) -> None:

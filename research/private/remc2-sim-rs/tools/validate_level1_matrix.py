@@ -222,7 +222,7 @@ def validate_schema(value: Any) -> None:
         expect_string(row_fields[key], f"$.schema.row_fields.{key}")
     for field, keys in {
         "reachability": {"status", "chain"},
-        "source": {"commit", "symbols", "path", "lines", "dispatch"},
+        "source": {"commit", "symbols", "path", "lines", "dispatch", "related"},
         "implementation": {"rust", "capi", "unity", "absent"},
     }.items():
         descriptor = expect_keys(
@@ -296,6 +296,7 @@ def validate_row(
         row["source"],
         f"{path}.source",
         {"commit", "symbols", "path", "lines", "dispatch"},
+        {"related"},
     )
     commit = expect_string(source["commit"], f"{path}.source.commit")
     if commit != PINNED_REMC2_COMMIT:
@@ -315,6 +316,24 @@ def validate_row(
                 expect_int(
                     dispatch[key], f"{path}.source.dispatch.{key}", minimum=0
                 )
+    related_sources = (
+        expect_array(source["related"], f"{path}.source.related")
+        if "related" in source
+        else []
+    )
+    for related_index, related_value in enumerate(related_sources):
+        related_path = f"{path}.source.related[{related_index}]"
+        related = expect_keys(
+            related_value,
+            related_path,
+            {"commit", "symbols", "path", "lines"},
+        )
+        related_commit = expect_string(related["commit"], f"{related_path}.commit")
+        if related_commit != PINNED_REMC2_COMMIT:
+            fail(f"{related_path}.commit: expected pinned remc2 commit")
+        string_array(related["symbols"], f"{related_path}.symbols", unique=True)
+        expect_string(related["path"], f"{related_path}.path")
+        expect_string(related["lines"], f"{related_path}.lines")
 
     string_array(row["preconditions"], f"{path}.preconditions")
     string_array(row["behavior_ordered"], f"{path}.behavior_ordered")

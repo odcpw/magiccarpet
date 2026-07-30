@@ -17,7 +17,8 @@
     "symbols": "[functions]",
     "path": "path",
     "lines": "committed line span",
-    "dispatch": "{class, model, action_slot}|null"
+    "dispatch": "{class, model, action_slot}|null",
+    "related": "[{commit,symbols,path,lines}]"
    },
    "preconditions": "source-derived preconditions",
    "behavior_ordered": "ordered reads/comparisons/mutations/allocations/transitions/RNG/timing/effects",
@@ -61,8 +62,8 @@
   "totals": {
    "rows": 182,
    "by_classification": {
-    "Exact": 98,
-    "Partial": 50,
+    "Exact": 100,
+    "Partial": 48,
     "Wrong": 1,
     "Missing": 31,
     "Unproved": 2
@@ -84,8 +85,8 @@
      "Exact": 4
     },
     "dispatch": {
-     "Partial": 34,
-     "Exact": 51,
+     "Partial": 32,
+     "Exact": 53,
      "Wrong": 1,
      "Missing": 26,
      "Unproved": 2
@@ -8469,83 +8470,112 @@
    "id": "DSP-03-02",
    "subsystem": "dispatch",
    "family": "player-lifecycle",
-   "title": "Player death phase (class 3 slot 2)",
+   "title": "Player dying phase (class 3 action 2)",
    "reachability": {
     "status": "reachable",
-    "chain": "player life reaches 0 via hostile damage"
+    "chain": "hostile damage makes player life negative in action 0 -> action 2 runs until exact terrain contact"
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
     "symbols": [
-     "class-3 action 2"
+     "class-3 action 0 lethal entry",
+     "sub_5E310_multiplayer_test_die",
+     "sub_5E6C0",
+     "sub_501D0"
     ],
     "path": "remc2/engine/EventsFunctions.cpp",
-    "lines": "60085-60222 pinned",
+    "lines": "36672-36679, 60042-60089, 60093-60228, 60245-60297 pinned",
     "dispatch": {
      "class": 3,
      "model": 0,
      "action_slot": 2
-    }
+    },
+    "related": [
+     {
+      "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+      "symbols": [
+       "NewEvent_4A050"
+      ],
+      "path": "remc2/engine/Events.cpp",
+      "lines": "561-605 pinned"
+     }
+    ]
    },
-   "preconditions": [],
+   "preconditions": [
+    "the owned Level 1 reset is a Night map with source dynamic lights enabled"
+   ],
    "behavior_ordered": [
-    "fall",
-    "score and notification",
-    "release spell holders",
-    "create replacement",
-    "countdown"
+    "action 0 consumes the damage mailbox before the same-turn direct flight and installs its hit reaction once for that invocation; only the post-flight life-negative branch enters action 2, preserves the killer mailbox, zeros fall velocity, emits sound 16, and skips regeneration/spell work",
+    "each action-2 turn runs the direct flight/entity body without relatching player input, gates palette request 7 on source colorIndex[6] before conditionally closing a nonzero menu, applies clamped fall, and emits a replaceable class-10/model-1/action-1 burst with maxLife 1 and subspell 400 at predictedAxis; the fixed Level 1 Night/dynamic-light-enabled precondition calls AddEvent2 and same-slot source replacement preserves its separate light record",
+    "exact ground contact rebuilds allocation state including that burst, increments only the nonzero class-3/model-0-or-1 killer pointer's victim-color score without requiring its row active, clears the mailbox, exposes notification 374/state 1/timer 100, and releases all 26 mission-owned spell-holder entries with x/y draws, CopyPosition map relink, then a third life draw for every nonzero holder row",
+    "NewEvent_4A050 sets the marker dispatch byte to the allocated source slot low byte; sub_501D0 independently sets slot%11 constructor phase while creating class-10/model-40/action-42 with exact life/particle fields and source-map insertion; only successful allocation changes to action 3 and redirects live model-39 owners",
+    "the CAPI handoff retains live death-burst chains and applies holder release coordinates once, after which live holder movement owns subsequent chain positions",
+    "the player is hidden and the raw replaceable cursor is unconditionally decremented; failed marker allocation remains action 2 and retries the ordered contact effects"
    ],
    "implementation": {
     "rust": [
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs"
+     "research/private/remc2-sim-rs/crates/sim-core/src/lib.rs",
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs",
+     "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs"
     ],
     "capi": [
-     "research/private/remc2-sim-rs/crates/sim-capi/src/lib.rs"
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs",
+     "research/private/remc2-sim-rs/crates/sim-capi/include/mc_sim.h"
     ],
-    "unity": [],
+    "unity": [
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSim.cs",
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs",
+     "research/private/remc2-unity-native/Assets/Scripts/MagicCarpetRuntime.cs"
+    ],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "single-player desktop path implements death + restart; full source death sequence (replacement entity creation, spell-holder release order, score notification) not field-by-field proven"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "level1_mission::tests::lethal_player_hit_retains_source_mailbox_and_records_killer_and_death_sound",
-     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked lethal_player_hit_retains_source_mailbox_and_records_killer_and_death_sound",
-     "proves": "death entry ordering"
+     "command": "cd research/private/remc2-sim-rs && cargo test -p sim-core lethal_player_hit_retains_source_mailbox_and_records_killer_and_death_sound",
+      "proves": "one-shot same-turn mailbox recoil with next-turn decay, post-flight negative-life entry, lethal regen/spell suppression, conditional Level-1 AddEvent2 state with replacement-preserved light, palette-before-menu ordering, active-independent killer-pointer victim-color score, 26-family release/RNG/map vectors including literal-one retry, allocated-slot dispatch byte separate from constructor phase, retry cursor debt, redirect filtering, palette consumption, and stable action-3 transition"
     },
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "native_v2::tests::dead_player_ignores_flight_view_and_spell_input_until_reset",
-     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked dead_player_ignores_flight_view_and_spell_input_until_reset",
-     "proves": "post-death input suppression"
+     "command": "cd research/private/remc2-sim-rs && cargo test -p sim-capi dead_player_ignores_flight_view_and_spell_input_until_reset",
+      "proves": "production C ABI mailbox entry, retained direct-flight/fall behavior, player-input suppression, continuing world dispatch, live burst-chain handoff, non-replayed holder movement, truthful killer score and separate marker phases, action-3 presentation, and reset"
     }
    ],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-27",
-   "confidence": "medium",
+   "negative_coverage_required": [
+    "life equal to zero remains action 0",
+    "non-player killer receives no player score",
+    "inactive nonzero class-3/model-0-or-1 killer pointer still receives the victim-color score",
+    "score is written only to the qualifying killer player's victim-color cell",
+    "retired model-39 row is not redirected",
+    "marker allocation failure remains action 2 and retries literal holder pointer one with cursor debt"
+   ],
+   "plan_item": null,
+   "confidence": "high",
    "unresolved": []
   },
   {
    "id": "DSP-03-03",
    "subsystem": "dispatch",
    "family": "player-lifecycle",
-   "title": "Player banished/respawn phase (slot 3)",
+   "title": "Human player banished presentation (class 3 action 3)",
    "reachability": {
     "status": "reachable",
-    "chain": "after death countdown"
+    "chain": "successful action-2 death-marker allocation -> local model-0 human remains in action 3"
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
     "symbols": [
-     "class-3 action 3"
+     "sub_5E6C0",
+     "sub_5E7C0_multiplayer_test_banished human branch"
     ],
     "path": "remc2/engine/EventsFunctions.cpp",
-    "lines": "60294-60348 pinned",
+    "lines": "60253-60297, 60302-60354 pinned",
     "dispatch": {
      "class": 3,
      "model": 0,
@@ -8554,40 +8584,50 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "AI respawn countdown or banished notification; human camera/pose update"
+    "clear moveBoost/recoil and request palette 7 every action-3 turn",
+    "with a retained killer, store entity roll toward it, turn yaw/pitch with cap 22, and clamp the player to terrain; without a killer, rotate yaw by 5 and place the player terrain+256",
+    "zero controller pitch and roll separately while retaining effective pitch and entity roll/FOV, leave the 1200 action timer unchanged, and continue all non-player source dispatch"
    ],
    "implementation": {
     "rust": [
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs"
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs",
+     "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs"
     ],
-    "capi": [],
-    "unity": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs",
+     "research/private/remc2-sim-rs/crates/sim-capi/include/mc_sim.h"
+    ],
+    "unity": [
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSim.cs",
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs",
+     "research/private/remc2-unity-native/Assets/Scripts/MagicCarpetRuntime.cs"
+    ],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "camera/pose update during banished phase not source-proven"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
-     "test": "native_v2::tests::package_m_world_reset_and_copy_surfaces_are_exact",
-     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked package_m_world_reset_and_copy_surfaces_are_exact",
-     "proves": "reset-into-fresh-generation surface"
+     "test": "level1_mission::tests::lethal_player_hit_retains_source_mailbox_and_records_killer_and_death_sound",
+     "command": "cd research/private/remc2-sim-rs && cargo test -p sim-core lethal_player_hit_retains_source_mailbox_and_records_killer_and_death_sound",
+     "proves": "human action-3 pose cap, retained effective pitch/entity roll/FOV, separate controller zeroing, recoil clear, killer and no-killer terrain placement, palette-7 RGB6 consumption, and stable 1200 timer"
     },
     {
-     "kind": "qualification-record",
-     "file": "research/private/remc2-unity-native/LEVEL1-READINESS.md",
-     "test": "restart path exercised interactively via R in the desktop client",
-     "command": "none (documentation record, not executable evidence)",
-     "non_executable": true,
-     "proves": "record only: restart observed in built player; not field-level proof"
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_v2::tests::dead_player_ignores_flight_view_and_spell_input_until_reset",
+     "command": "cd research/private/remc2-sim-rs && cargo test -p sim-capi dead_player_ignores_flight_view_and_spell_input_until_reset",
+     "proves": "production C ABI action-3 effective-pitch/controller sidecar, pose/visibility/hash, and explicit reset recovery"
     }
    ],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-27",
-   "confidence": "medium",
+   "negative_coverage_required": [
+    "action-3 timer must not count down for the local human",
+    "controller pitch/roll zeroing must not erase retained effective pitch or entity roll"
+   ],
+   "plan_item": null,
+   "confidence": "high",
    "unresolved": []
   },
   {
@@ -15740,10 +15780,12 @@
   },
   {
    "id": "EXC-C3-WIZARD",
-   "scope": "class 3 model 1 (opponent wizard AI)",
-   "description": "No rival wizard exists in Level 1",
-   "mechanical_proof": "owner data: exactly one class-3 entity at reset (the player); authored table has no kind-3 rows besides the position marker (subtype 4); players.bin slots 1-7 are empty AI templates never instantiated in the Level 1 mission",
+   "scope": "class 3 model 1 opponent-wizard action-3 respawn/banishment branches",
+   "description": "Level 1 reaches only the local model-0 human action-3 presentation; AI respawn is excluded",
+   "mechanical_proof": "the action-3 dispatcher selects countdown/sub_5C950 respawn or one-shot banishment notification only when IsAiPlayer==1; owner data has exactly one class-3 runtime entity, the local model-0 player; the sole authored kind-3 row is a subtype-4 position marker and players.bin slots 1-7 are empty templates never instantiated in Level 1",
    "source_anchors": [
+    "EventsFunctions.cpp:60302-60354 pinned (action-3 AI/human split)",
+    "EventsFunctions.cpp:43685-43920 pinned (sub_5C950 AI respawn body)",
     "owner entity census (RST-003)",
     "owner authored census (RST-002)"
    ],
@@ -16334,23 +16376,23 @@
   },
   {
    "id": "PLAN-27",
-   "title": "Player death/respawn/banished field-level parity",
+   "title": "Player dying and human banished-presentation field parity",
    "depends_on": [
     "PLAN-01"
    ],
    "acceptance": [
-    "death phase (slot 2) and banished phase (slot 3) field-by-field source-mapped: spell-holder release order, replacement creation, score notification, camera/pose; focused tests"
+    "reachable human action-2 and action-3 behavior is field-by-field source-mapped: direct retained flight/fall, ordered spell-holder release, death-marker creation and retry debt, score/notification, palette, camera/pose, C ABI sidecar, and compact managed consumption"
    ],
    "allowed_surfaces": [
-    "sim-core"
+    "sim-core",
+    "sim-capi",
+    "unity-native"
    ],
    "not_done_if": [
-    "death path verified only by route survival"
+    "death path verified only by route survival",
+    "excluded AI respawn is presented as reachable Level 1 behavior"
    ],
-   "owned_rows": [
-    "DSP-03-02",
-    "DSP-03-03"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-28",

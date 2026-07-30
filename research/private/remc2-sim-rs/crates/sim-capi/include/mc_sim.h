@@ -390,6 +390,64 @@ typedef struct McLevel1MissionSnapshotV2 {
     uint8_t speed_trail_count;
 } McLevel1MissionSnapshotV2;
 
+typedef struct McLevel1PlayerLifecycleSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint64_t lifecycle_hash;
+    uint64_t source_arena_hash;
+    uint8_t authority;
+    uint8_t player_action;
+    uint8_t player_dead;
+    uint8_t input_suppressed;
+    uint8_t player_active;
+    uint8_t player_visible;
+    uint8_t player_targetable;
+    uint8_t menu_close_requested;
+    uint8_t notification_active;
+    uint8_t notification_state;
+    uint8_t banished_camera_active;
+    uint8_t marker_present;
+    int16_t fall_velocity;
+    int16_t notification_timer;
+    int32_t action_timer;
+    int32_t replaceable_cursor;
+    uint16_t killer_entity_index;
+    uint16_t killer_score_awards;
+    uint16_t notification_id;
+    uint16_t player_entity_rng;
+    uint32_t player_control_flags;
+    int16_t player_entity_roll;
+    int16_t player_yaw;
+    int16_t controller_pitch;
+    int16_t controller_roll;
+    int16_t recoil_speed;
+    uint16_t marker_source_entity_index;
+    uint16_t marker_x;
+    uint16_t marker_y;
+    int16_t marker_z;
+    uint16_t marker_trigger_entity_index;
+    uint16_t marker_particle_parameter_index;
+    int32_t marker_life;
+    int32_t marker_max_life;
+    uint32_t source_pool_rebuild_count;
+    uint64_t lifecycle_trace_hash;
+    uint16_t lifecycle_trace_count;
+    uint8_t marker_dispatch_phase;
+    uint8_t marker_class;
+    uint8_t marker_model;
+    uint8_t marker_action;
+    uint8_t marker_byte_38;
+    uint8_t source_color_phase_6;
+    uint32_t source_turn_counter;
+    uint8_t menu_state;
+    uint8_t killer_score_victim_color;
+    int16_t effective_pitch;
+    uint32_t marker_constructor_phase;
+    uint8_t reserved[4];
+} McLevel1PlayerLifecycleSnapshotV2;
+
 typedef struct McLevel1HudSpellSlotV2 {
     uint16_t holder_entity_index;
     uint16_t parent_entity_index;
@@ -1116,6 +1174,10 @@ int32_t mc_native_session_source_projection_hash(uint64_t handle,
                                                  uint64_t *out_hash);
 int32_t mc_native_session_source_arena_hash(uint64_t handle,
                                             uint64_t *out_hash);
+int32_t mc_native_level1_player_menu_state(uint64_t handle,
+                                           uint8_t menu_state);
+int32_t mc_native_level1_player_inject_damage_for_qualification(
+    uint64_t handle, int32_t damage, uint16_t attacker_entity_index);
 int32_t mc_native_presentation_state(uint64_t handle,
                                      McPresentationStateV2 *out_state,
                                      uint32_t out_state_size);
@@ -1182,6 +1244,9 @@ int32_t mc_native_goats_copy(uint64_t handle, uint64_t generation,
                              uint32_t out_batch_size);
 int32_t mc_native_level1_mission_snapshot(
     uint64_t handle, McLevel1MissionSnapshotV2 *out_snapshot,
+    uint32_t out_snapshot_size);
+int32_t mc_native_level1_player_lifecycle_snapshot(
+    uint64_t handle, McLevel1PlayerLifecycleSnapshotV2 *out_snapshot,
     uint32_t out_snapshot_size);
 int32_t mc_native_level1_hud_snapshot(
     uint64_t handle, McLevel1HudSnapshotV2 *out_snapshot,

@@ -558,6 +558,83 @@ namespace MagicCarpet.Native
             return mission;
         }
 
+        internal void SetLevel1PlayerMenuState(int menuState)
+        {
+            if (menuState is < 0 or > byte.MaxValue)
+            {
+                throw new ArgumentOutOfRangeException(nameof(menuState));
+            }
+            Check(
+                NativeSim.mc_native_level1_player_menu_state(
+                    Handle, checked((byte)menuState)),
+                "set live Level 1 player menu state");
+        }
+
+        internal void InjectLevel1PlayerDamageForQualification(
+            int damage,
+            ushort attackerEntityIndex)
+        {
+            Check(
+                NativeSim.mc_native_level1_player_inject_damage_for_qualification(
+                    Handle, damage, attackerEntityIndex),
+                "inject live Level 1 player damage for qualification");
+        }
+
+        internal NativeSim.Level1PlayerLifecycleSnapshot Level1PlayerLifecycle(
+            NativeSim.Level1MissionSnapshot mission)
+        {
+            var status = NativeSim.mc_native_level1_player_lifecycle_snapshot(
+                Handle,
+                out var lifecycle,
+                144);
+            Check(status, "read live Level 1 player lifecycle");
+            var absentMarkerIsZero =
+                lifecycle.markerPresent != 0 ||
+                lifecycle.markerSourceEntityIndex == 0 &&
+                lifecycle.markerX == 0 &&
+                lifecycle.markerY == 0 &&
+                lifecycle.markerZ == 0 &&
+                lifecycle.markerTriggerEntityIndex == 0 &&
+                lifecycle.markerParticleParameterIndex == 0 &&
+                lifecycle.markerLife == 0 &&
+                lifecycle.markerMaxLife == 0 &&
+                lifecycle.markerDispatchPhase == 0 &&
+                lifecycle.markerConstructorPhase == 0 &&
+                lifecycle.markerClass == 0 &&
+                lifecycle.markerModel == 0 &&
+                lifecycle.markerAction == 0 &&
+                lifecycle.markerByte38 == 0;
+            if (
+                lifecycle.abiVersion != NativeSim.AbiVersion ||
+                lifecycle.structSize != 144 ||
+                lifecycle.generation != mission.generation ||
+                lifecycle.tick != mission.tick ||
+                lifecycle.authority != NativeSim.Level1MissionLive ||
+                lifecycle.playerAction is not (0 or 2 or 3) ||
+                lifecycle.playerDead != (lifecycle.playerAction == 0 ? 0 : 1) ||
+                lifecycle.inputSuppressed != (lifecycle.playerAction == 0 ? 0 : 1) ||
+                lifecycle.playerActive > 1 ||
+                lifecycle.playerVisible > 1 ||
+                lifecycle.playerTargetable > 1 ||
+                lifecycle.menuCloseRequested > 1 ||
+                lifecycle.notificationActive > 1 ||
+                lifecycle.notificationState > 1 ||
+                lifecycle.banishedCameraActive > 1 ||
+                lifecycle.markerPresent > 1 ||
+                lifecycle.sourceColorPhase6 > 1 ||
+                lifecycle.killerScoreVictimColor > 7 ||
+                lifecycle.lifecycleHash == 0 ||
+                lifecycle.sourceArenaHash == 0 ||
+                !absentMarkerIsZero ||
+                !AllZero(lifecycle.reserved))
+            {
+                throw new InvalidOperationException(
+                    "native Level 1 player lifecycle returned invalid layout, " +
+                    "authority, action projection, flags, marker, or hash");
+            }
+            return lifecycle;
+        }
+
         internal NativeSim.Level1HudSnapshot Level1Hud(
             NativeSim.Level1MissionSnapshot mission)
         {

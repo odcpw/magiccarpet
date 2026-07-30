@@ -370,6 +370,16 @@ namespace MagicCarpet.Native
             }
         }
 
+        internal static void ApplyPlayerLifecyclePresentation(
+            SpellMenuController spellMenu,
+            NativeSim.Level1PlayerLifecycleSnapshot lifecycle)
+        {
+            if (lifecycle.menuCloseRequested != 0 && spellMenu.MenuState != 0)
+            {
+                spellMenu.Close();
+            }
+        }
+
         internal const int AuthoritativeSimulationHz = 30;
         private const float SourceUnitsPerUnityUnit = 64f;
         private const int TerrainCells = 256;
@@ -513,6 +523,7 @@ namespace MagicCarpet.Native
         private NativeSim.EntitySnapshot[] entities;
         private NativeSim.GoatSnapshot[] goats;
         private NativeSim.Level1MissionSnapshot mission;
+        private NativeSim.Level1PlayerLifecycleSnapshot playerLifecycle;
         private NativeSim.Level1HudSnapshot level1Hud;
         private NativeSim.Level1SpellMenuSnapshot level1SpellMenu;
         private NativeSim.Level1MinimapMarks level1MinimapMarks;
@@ -816,6 +827,8 @@ namespace MagicCarpet.Native
         internal int QualificationPendingSpellMenuCommands => spellMenuCommands.Count;
         internal NativeSim.Level1SpellMenuSnapshot QualificationSpellMenuSnapshot =>
             level1SpellMenu;
+        internal NativeSim.Level1PlayerLifecycleSnapshot QualificationPlayerLifecycle =>
+            playerLifecycle;
         internal byte QualificationSelectedSpellModel => level1Hud.selectedModel;
         internal uint QualificationSpellDirectionMask =>
             level1Hud.playerStatusFlags & 0x0300;
@@ -2052,6 +2065,7 @@ namespace MagicCarpet.Native
             {
                 AppendAutoplayCommand(appliedRoll, appliedPitch, unchecked((sbyte)flags));
             }
+            session.SetLevel1PlayerMenuState(spellMenuController.MenuState);
             snapshot = session.Step(
                 appliedRoll,
                 appliedPitch,
@@ -7292,6 +7306,7 @@ namespace MagicCarpet.Native
         private void RefreshLiveMission()
         {
             var nextMission = session.Level1Mission();
+            var nextPlayerLifecycle = session.Level1PlayerLifecycle(nextMission);
             var nextHud = session.Level1Hud(nextMission);
             var nextSpellMenu = session.Level1SpellMenu(nextMission);
             var nextMinimapMarks = session.Level1MinimapMarks(nextMission);
@@ -7306,6 +7321,8 @@ namespace MagicCarpet.Native
             Require(
                 nextMission.generation == snapshot.generation &&
                 nextMission.tick == snapshot.tick &&
+                nextPlayerLifecycle.generation == snapshot.generation &&
+                nextPlayerLifecycle.tick == snapshot.tick &&
                 nextHud.generation == snapshot.generation &&
                 nextHud.tick == snapshot.tick &&
                 nextSpellMenu.generation == snapshot.generation &&
@@ -7320,6 +7337,8 @@ namespace MagicCarpet.Native
                 nextExitPresentation.generation == snapshot.generation &&
                 nextExitPresentation.tick == snapshot.tick,
                 "live Level 1 mission and exit presentation match atomic flight snapshot");
+            ApplyPlayerLifecyclePresentation(
+                spellMenuController, nextPlayerLifecycle);
             if (simTick == 0 && nextMission.fidelityGapFlags != 0)
             {
                 Debug.LogWarning(
@@ -7354,6 +7373,7 @@ namespace MagicCarpet.Native
                     $"unique live Level 1 actor {actor.authoredIndex}");
             }
             mission = nextMission;
+            playerLifecycle = nextPlayerLifecycle;
             level1Hud = nextHud;
             level1SpellMenu = nextSpellMenu;
             level1MinimapMarks = nextMinimapMarks;

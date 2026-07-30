@@ -1807,6 +1807,39 @@ pub const PLAYER_HIT_AUX_TICKS: u16 = 64;
 pub const PLAYER_SURVIVED_FEEDBACK: u16 = 100;
 pub const PLAYER_PAIN_SOUND_BASE: u16 = 54;
 pub const PLAYER_DEATH_SOUND: u16 = 16;
+pub const PLAYER_ACTION_ACTIVE: u8 = 0;
+pub const PLAYER_ACTION_DYING: u8 = 2;
+pub const PLAYER_ACTION_BANISHED: u8 = 3;
+pub const PLAYER_DIED_NOTIFICATION_ID: u16 = 374;
+pub const PLAYER_DIED_NOTIFICATION_STATE: u8 = 1;
+pub const PLAYER_DIED_NOTIFICATION_TIMER: i16 = 100;
+pub const PLAYER_BANISHED_ACTION_TIMER: i32 = 1_200;
+pub const PLAYER_DEATH_MARKER_CLASS: u8 = 10;
+pub const PLAYER_DEATH_MARKER_MODEL: u8 = 40;
+pub const PLAYER_DEATH_MARKER_ACTION: u8 = 42;
+pub const PLAYER_DEATH_MARKER_BYTE_38: u8 = 2;
+pub const PLAYER_DEATH_MARKER_LIFE: i32 = 300;
+pub const PLAYER_DEATH_MARKER_PARTICLE_PARAMETER: u16 = 65;
+pub const PLAYER_DEATH_BURST_MAX_LIFE: i32 = 1;
+pub const PLAYER_DEATH_BURST_SUBSPELL_INDEX: u16 = 400;
+pub const PLAYER_DEATH_BURST_DYNAMIC_LIGHT_RADIUS: u8 = 128;
+pub const PLAYER_DEATH_BURST_DYNAMIC_LIGHT_KIND: u8 = 7;
+/// Level 1's owned reset fixes the source dynamic-light option on.
+pub const LEVEL1_SOURCE_DYNAMIC_LIGHTS_ENABLED: bool = true;
+/// Level 1 is authored as a Night map, satisfying `AddEvent2_847D0`'s
+/// Night/Cave predicate.
+pub const LEVEL1_LIGHTING_IS_NIGHT_OR_CAVE: bool = true;
+pub const PLAYER_LIFECYCLE_TRACE_PALETTE_REQUEST: u8 = 10;
+pub const PLAYER_LIFECYCLE_TRACE_MENU_CLOSE: u8 = 11;
+pub const PLAYER_LIFECYCLE_TRACE_REBUILD: u8 = 1;
+pub const PLAYER_LIFECYCLE_TRACE_SCORE_CHECK: u8 = 2;
+pub const PLAYER_LIFECYCLE_TRACE_MAILBOX_CLEAR: u8 = 3;
+pub const PLAYER_LIFECYCLE_TRACE_NOTIFICATION: u8 = 4;
+pub const PLAYER_LIFECYCLE_TRACE_HOLDER_FAMILY: u8 = 5;
+pub const PLAYER_LIFECYCLE_TRACE_MARKER_RESULT: u8 = 6;
+pub const PLAYER_LIFECYCLE_TRACE_REDIRECT: u8 = 7;
+pub const PLAYER_LIFECYCLE_TRACE_HIDE: u8 = 8;
+pub const PLAYER_LIFECYCLE_TRACE_ALLOCATOR_DECREMENT: u8 = 9;
 pub const MANA_SPHERE_CLASS: u8 = 10;
 pub const MANA_SPHERE_MODEL: u8 = 39;
 pub const MANA_SPHERE_ACTION: u8 = 41;
@@ -2311,6 +2344,7 @@ const LEVEL1_PALETTE_SLOWING_REQUEST: u8 = 3;
 const EXIT_PALETTE_FADE_TO_BLACK: u8 = 10;
 const EXIT_PALETTE_ENTRY_FLASH_REQUEST: u8 = 6;
 const EXIT_PALETTE_BLACK_REQUEST: u8 = 5;
+const PLAYER_BANISHED_PALETTE_REQUEST: u8 = 7;
 const LEVEL1_PALETTE_OBJECTIVE_REQUEST: u8 = 8;
 const LEVEL1_PALETTE_OBJECTIVE_FADE: u8 = 9;
 const EXIT_PALETTE_EFFECT_NONE: u8 = 0;
@@ -2319,6 +2353,7 @@ const EXIT_PALETTE_EFFECT_BLACK: u8 = 2;
 const LEVEL1_PALETTE_EFFECT_HIT: u8 = 3;
 const LEVEL1_PALETTE_EFFECT_SLOWING: u8 = 4;
 const LEVEL1_PALETTE_EFFECT_OBJECTIVE: u8 = 5;
+const PLAYER_BANISHED_PALETTE_EFFECT: u8 = 6;
 const EXIT_MOVEMENT_NOT_ATTEMPTED: u8 = 0;
 const EXIT_MOVEMENT_ACCEPTED: u8 = 1;
 const EXIT_MOVEMENT_REDIRECTED: u8 = 2;
@@ -3807,6 +3842,7 @@ enum SourceOccupant {
     ManaSphere(u32),
     ManaCarrier(u32),
     DeathBurst(u32),
+    PlayerDeathMarker(u16),
     SpeedTrail(u32),
     CheckpointSmoke(u32),
     SpellPickup {
@@ -3887,6 +3923,11 @@ impl SourceOccupant {
                 Some((MANA_CARRIER_CLASS, MANA_CARRIER_MODEL, MANA_CARRIER_ACTION))
             }
             Self::DeathBurst(_) => Some((DEATH_BURST_CLASS, DEATH_BURST_MODEL, DEATH_BURST_ACTION)),
+            Self::PlayerDeathMarker(_) => Some((
+                PLAYER_DEATH_MARKER_CLASS,
+                PLAYER_DEATH_MARKER_MODEL,
+                PLAYER_DEATH_MARKER_ACTION,
+            )),
             Self::SpeedTrail(_) => Some((SPEED_TRAIL_CLASS, SPEED_TRAIL_MODEL, SPEED_TRAIL_ACTION)),
             Self::CheckpointSmoke(_) => Some((
                 CHECKPOINT_SMOKE_CLASS,
@@ -3942,6 +3983,7 @@ struct Level1SourcePool {
     replaceable: Box<[bool]>,
     free_stack: Vec<u16>,
     replaceable_stack: Vec<u16>,
+    raw_replaceable_cursor: i32,
     replaced_imported_slots: Vec<u16>,
     replaced_authored_slots: Vec<(u16, u16)>,
 }
@@ -3953,6 +3995,7 @@ struct SourcePoolAllocationRollback {
     previous_disabled: bool,
     previous_replaceable: bool,
     from_free_stack: bool,
+    raw_replaceable_cursor: i32,
     replaced_imported_len: usize,
     replaced_authored_len: usize,
 }
@@ -3980,6 +4023,7 @@ impl Level1SourcePool {
             replaceable: vec![false; ENTITY_POOL_SIZE].into_boxed_slice(),
             free_stack: free_stack.to_vec(),
             replaceable_stack: Vec::new(),
+            raw_replaceable_cursor: -1,
             replaced_imported_slots: Vec::new(),
             replaced_authored_slots: Vec::new(),
         })
@@ -4012,11 +4056,13 @@ impl Level1SourcePool {
             .filter(|index| !slots[*index].active)
             .map(|index| u16::try_from(index).expect("source pool index fits u16"))
             .collect();
-        let replaceable_stack = (1..slots.len())
+        let replaceable_stack: Vec<u16> = (1..slots.len())
             .rev()
             .filter(|index| slots[*index].active && slots[*index].replaceable())
             .map(|index| u16::try_from(index).expect("source pool index fits u16"))
             .collect();
+        let raw_replaceable_cursor =
+            i32::try_from(replaceable_stack.len()).expect("replaceable stack length fits i32") - 1;
         Ok(Self {
             occupants: occupants.into_boxed_slice(),
             disabled: vec![false; ENTITY_POOL_SIZE].into_boxed_slice(),
@@ -4027,23 +4073,32 @@ impl Level1SourcePool {
                 .into_boxed_slice(),
             free_stack,
             replaceable_stack,
+            raw_replaceable_cursor,
             replaced_imported_slots: Vec::new(),
             replaced_authored_slots: Vec::new(),
         })
     }
 
     fn allocate(&mut self, occupant: SourceOccupant) -> Option<u16> {
-        let slot = if let Some(slot) = self.free_stack.pop() {
-            slot
+        let (slot, from_free_stack) = if let Some(slot) = self.free_stack.pop() {
+            (slot, true)
         } else {
-            self.replaceable_stack.pop()?
+            if self.raw_replaceable_cursor < 0 {
+                return None;
+            }
+            let slot = self.replaceable_stack.pop()?;
+            self.raw_replaceable_cursor = self.raw_replaceable_cursor.wrapping_sub(1);
+            (slot, false)
         };
+        let index = usize::from(slot);
+        let was_replaceable = self.replaceable[index];
         let entry = self
             .occupants
-            .get_mut(usize::from(slot))
+            .get_mut(index)
             .expect("validated source slot");
         assert!(
             entry.is_none()
+                || was_replaceable
                 || matches!(
                     *entry,
                     Some(
@@ -4060,8 +4115,15 @@ impl Level1SourcePool {
             self.replaced_authored_slots.push((slot, authored_index));
         }
         *entry = Some(occupant);
-        self.disabled[usize::from(slot)] = false;
-        self.replaceable[usize::from(slot)] = false;
+        self.disabled[index] = false;
+        self.replaceable[index] = false;
+        debug_assert!(
+            from_free_stack
+                || self.raw_replaceable_cursor
+                    == i32::try_from(self.replaceable_stack.len())
+                        .expect("replaceable stack length fits i32")
+                        - 1
+        );
         Some(slot)
     }
 
@@ -4084,6 +4146,7 @@ impl Level1SourcePool {
             previous_disabled: self.disabled[index],
             previous_replaceable: self.replaceable[index],
             from_free_stack,
+            raw_replaceable_cursor: self.raw_replaceable_cursor,
             replaced_imported_len: self.replaced_imported_slots.len(),
             replaced_authored_len: self.replaced_authored_slots.len(),
         })
@@ -4098,6 +4161,7 @@ impl Level1SourcePool {
             .truncate(rollback.replaced_imported_len);
         self.replaced_authored_slots
             .truncate(rollback.replaced_authored_len);
+        self.raw_replaceable_cursor = rollback.raw_replaceable_cursor;
         if rollback.from_free_stack {
             self.free_stack.push(rollback.slot);
         } else {
@@ -4175,6 +4239,15 @@ impl Level1SourcePool {
         *entry = Some(occupant);
     }
 
+    fn mark_replaceable(&mut self, slot: u16) {
+        let index = usize::from(slot);
+        assert!(
+            self.occupants.get(index).is_some_and(Option::is_some),
+            "cannot mark an unallocated source slot replaceable"
+        );
+        self.replaceable[index] = true;
+    }
+
     /// `sub_57F20` is called directly for an absorbed mana sphere, so that
     /// source slot becomes allocatable immediately rather than at the next
     /// `UpdateEntities_57730` sweep.
@@ -4239,6 +4312,20 @@ impl Level1SourcePool {
                 })
                 .map(|index| u16::try_from(index).expect("source pool index fits u16")),
         );
+        self.raw_replaceable_cursor = i32::try_from(self.replaceable_stack.len())
+            .expect("replaceable stack length fits i32")
+            - 1;
+    }
+
+    /// The dying-contact tail literally decrements `dword_0x11e6` after the
+    /// marker constructor, even after that constructor already consumed the
+    /// last replacement row or failed. When a replacement remains, the
+    /// decrement discards that row from subsequent allocation.
+    fn decrement_replaceable_cursor_after_player_contact(&mut self) {
+        if self.raw_replaceable_cursor >= 0 {
+            let _ = self.replaceable_stack.pop();
+        }
+        self.raw_replaceable_cursor = self.raw_replaceable_cursor.wrapping_sub(1);
     }
 
     fn occupant(&self, slot: u16) -> Option<SourceOccupant> {
@@ -4729,8 +4816,48 @@ pub struct DeathBurst {
     pub source_entity_index: u16,
     pub parent_entity_index: u16,
     pub position: Position,
+    pub max_life: i32,
     pub life_ticks: i16,
+    pub subspell_index: u16,
+    pub control_flags: u32,
     pub active: bool,
+}
+
+/// The class-10/model-40 entity allocated at exact dying-ground contact.
+///
+/// The source rewrites every model-39 owner relation to this slot only after
+/// the constructor succeeds. A failed constructor leaves action 2 live so
+/// the complete contact side-effect sequence can retry on the next turn.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PlayerDeathMarker {
+    pub source_entity_index: u16,
+    /// Trigger provenance only; remc2 does not write an owner relation.
+    pub trigger_player_entity_index: u16,
+    pub position: Position,
+    /// Source dispatch byte `byte_0x3E`; the constructor does not overwrite it.
+    pub dispatch_phase: u8,
+    /// Constructor `dword_0x10`, independently seeded from the allocated slot.
+    pub constructor_phase: u32,
+    pub byte_38: u8,
+    pub max_life: i32,
+    pub life: i32,
+    pub particle_parameter_index: u16,
+    pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReleasedSpellHolder {
+    pub family: u8,
+    pub source_entity_index: u16,
+    pub position: Position,
+    pub action: u8,
+    pub life: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PlayerLifecycleTraceEntry {
+    pub step: u8,
+    pub detail: i32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4794,8 +4921,7 @@ pub struct Level1DynamicLight {
 }
 
 /// The state installed by remc2's `sub_5EFA0` when the player consumes a
-/// non-shielded damage mailbox. Flight has already advanced for the current
-/// source turn; `recoil_*` therefore affects the next turn.
+/// non-shielded damage mailbox before the current action-0 flight body.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PlayerHitReaction {
     pub attacker_entity_index: u16,
@@ -5546,12 +5672,31 @@ impl Level1MissionTemplate {
             player_survived_feedback: 0,
             player_archer_target_ticks: 0,
             player_killer_entity_index: 0,
+            player_scores_by_entity: BTreeMap::new(),
             pending_player_hit_reaction: None,
+            last_player_hit_reaction: None,
+            player_action0_prepared_for_flight: false,
             player_damage_suppression: 0,
             source_turn_player_start_position: Position::default(),
+            source_turn_counter: 0,
+            source_color_phase_6: false,
             player_mana,
             player_max_mana: player_mana,
-            player_dead: false,
+            player_action: PLAYER_ACTION_ACTIVE,
+            player_fall_velocity: 0,
+            player_action_timer: 0,
+            player_notification_active: false,
+            player_notification_id: 0,
+            player_notification_state: 0,
+            player_notification_timer: 0,
+            player_death_marker: None,
+            player_spell_holder_registry: [0; 26],
+            released_spell_holders: [None; 26],
+            player_lifecycle_trace: Vec::new(),
+            player_entity_roll: 0,
+            player_banished_camera_active: false,
+            player_menu_state: 0,
+            player_menu_close_requested: false,
             has_fireball: true,
             has_possession: true,
             fireball_experience: 0,
@@ -5726,12 +5871,34 @@ pub struct Level1MissionState {
     /// Player control word `word_0x248_584`, set to 200 by model-4 action 34.
     player_archer_target_ticks: u16,
     player_killer_entity_index: u16,
+    player_scores_by_entity: BTreeMap<u16, [u16; 8]>,
+    /// Future-driving reaction waiting to be installed into the current
+    /// action-0 flight invocation.
     pending_player_hit_reaction: Option<PlayerHitReaction>,
+    /// Non-driving inspection copy of the most recently consumed mailbox.
+    last_player_hit_reaction: Option<PlayerHitReaction>,
+    player_action0_prepared_for_flight: bool,
     player_damage_suppression: u8,
     source_turn_player_start_position: Position,
+    source_turn_counter: u32,
+    source_color_phase_6: bool,
     pub player_mana: i32,
     pub player_max_mana: i32,
-    pub player_dead: bool,
+    pub player_action: u8,
+    pub player_fall_velocity: i16,
+    pub player_action_timer: i32,
+    pub player_notification_active: bool,
+    pub player_notification_id: u16,
+    pub player_notification_state: u8,
+    pub player_notification_timer: i16,
+    player_death_marker: Option<PlayerDeathMarker>,
+    player_spell_holder_registry: [u16; 26],
+    released_spell_holders: [Option<ReleasedSpellHolder>; 26],
+    player_lifecycle_trace: Vec<PlayerLifecycleTraceEntry>,
+    pub player_entity_roll: i16,
+    pub player_banished_camera_active: bool,
+    pub player_menu_state: u8,
+    pub player_menu_close_requested: bool,
     pub has_fireball: bool,
     pub has_possession: bool,
     pub fireball_experience: i32,
@@ -5915,11 +6082,11 @@ impl Level1MissionState {
                 source_entity_index: player.entity_index,
                 source_id: player.entity_index,
                 authority: Level1SourceEntityAuthority::Player,
-                active: !self.player_dead,
-                visible: !self.player_dead,
+                active: record.active,
+                visible: record.control_flags & 0x20 == 0,
                 class: record.class,
                 model: record.model,
-                action: record.action,
+                action: self.player_action,
                 phase: player.entity_phase,
                 entity_rng: record.entity_rng,
                 control_flags: record.control_flags,
@@ -6155,11 +6322,12 @@ impl Level1MissionState {
     ) -> Level1SourceEntityView {
         view.source_id = player.entity_index;
         view.authority = Level1SourceEntityAuthority::Player;
-        view.active = !self.player_dead;
-        view.visible = !self.player_dead;
+        view.active = self.source_slots[usize::from(player.entity_index)].active;
+        view.visible =
+            self.source_slots[usize::from(player.entity_index)].control_flags & 0x20 == 0;
         view.class = 3;
         view.model = 0;
-        view.action = 0;
+        view.action = self.player_action;
         view.phase = player.entity_phase;
         view.position = player.position;
         view.max_life = self.player_max_life;
@@ -6394,6 +6562,50 @@ impl Level1MissionState {
         Some(view)
     }
 
+    fn current_player_death_marker_source_entity_view(
+        &self,
+        source_entity_index: u16,
+        mut view: Level1SourceEntityView,
+    ) -> Option<Level1SourceEntityView> {
+        let marker = self
+            .player_death_marker
+            .filter(|marker| marker.source_entity_index == source_entity_index && marker.active)?;
+        view.authority = Level1SourceEntityAuthority::AuthoredAmbient;
+        view.active = true;
+        view.visible = true;
+        view.class = PLAYER_DEATH_MARKER_CLASS;
+        view.model = PLAYER_DEATH_MARKER_MODEL;
+        view.action = PLAYER_DEATH_MARKER_ACTION;
+        view.phase = marker.dispatch_phase;
+        view.position = marker.position;
+        view.max_life = marker.max_life;
+        view.life = marker.life;
+        view.owner_entity_index = 0;
+        Some(view)
+    }
+
+    fn current_death_burst_source_entity_view(
+        &self,
+        source_entity_index: u16,
+        mut view: Level1SourceEntityView,
+    ) -> Option<Level1SourceEntityView> {
+        let burst = self
+            .death_bursts
+            .iter()
+            .find(|burst| burst.source_entity_index == source_entity_index && burst.active)?;
+        view.authority = Level1SourceEntityAuthority::AuthoredAmbient;
+        view.active = true;
+        view.visible = true;
+        view.class = DEATH_BURST_CLASS;
+        view.model = DEATH_BURST_MODEL;
+        view.action = DEATH_BURST_ACTION;
+        view.position = burst.position;
+        view.max_life = burst.max_life;
+        view.life = i32::from(burst.life_ticks);
+        view.control_flags = burst.control_flags;
+        Some(view)
+    }
+
     fn current_castle_source_entity_view(
         &self,
         source_entity_index: u16,
@@ -6587,6 +6799,22 @@ impl Level1MissionState {
         if player.entity_index == source_entity_index {
             return Some(self.current_player_source_entity_view(player, view));
         }
+        if self
+            .released_spell_holders
+            .iter()
+            .flatten()
+            .any(|released| released.source_entity_index == source_entity_index)
+            && self
+                .actors
+                .iter()
+                .any(|actor| actor.source_entity_index == source_entity_index)
+        {
+            return Some(self.current_authored_source_entity_view(
+                source_entity_index,
+                record,
+                view,
+            ));
+        }
         if self.source_pool.occupant(source_entity_index) == Some(SourceOccupant::ImportedLive) {
             return imported_fallback;
         }
@@ -6615,6 +6843,12 @@ impl Level1MissionState {
             SourceOccupant::ManaCarrier(id) => {
                 self.current_mana_carrier_source_entity_view(source_entity_index, id, view)
             }
+            SourceOccupant::PlayerDeathMarker(_) => {
+                self.current_player_death_marker_source_entity_view(source_entity_index, view)
+            }
+            SourceOccupant::DeathBurst(_) => {
+                self.current_death_burst_source_entity_view(source_entity_index, view)
+            }
             SourceOccupant::CastleRoot(_)
             | SourceOccupant::CastleConstruction(_)
             | SourceOccupant::CastleDefense(_)
@@ -6634,7 +6868,6 @@ impl Level1MissionState {
             | SourceOccupant::Reserved
             | SourceOccupant::FireballImpact(_)
             | SourceOccupant::WaterSplash(_)
-            | SourceOccupant::DeathBurst(_)
             | SourceOccupant::SpeedTrail(_)
             | SourceOccupant::CheckpointSmoke(_)
             | SourceOccupant::Ambient(_) => {
@@ -7489,7 +7722,10 @@ impl Level1MissionState {
         source_slot: u16,
         dolmen: Level1CollisionTarget,
     ) {
-        if source_slot != dolmen.entity_index || !dolmen.active || self.player_dead {
+        if source_slot != dolmen.entity_index
+            || !dolmen.active
+            || self.player_action != PLAYER_ACTION_ACTIVE
+        {
             return;
         }
         if source_entities_overlap(
@@ -7628,11 +7864,117 @@ impl Level1MissionState {
         self.global_rng
     }
 
-    /// Take the hit reaction installed during the player's source-slot
-    /// dispatch. The native session applies this to `FlightState` only after
-    /// that dispatch, matching remc2's next-turn recoil timing.
+    /// Compatibility projection retained for the established mission ABI.
+    ///
+    /// Source action 2 is a live dying dispatcher and action 3 is the human
+    /// banished presentation; neither state freezes the rest of the world.
+    #[must_use]
+    pub const fn player_dead(&self) -> bool {
+        self.player_action != PLAYER_ACTION_ACTIVE
+    }
+
+    #[must_use]
+    pub const fn player_death_marker(&self) -> Option<PlayerDeathMarker> {
+        self.player_death_marker
+    }
+
+    #[must_use]
+    pub const fn source_pool_rebuild_count(&self) -> u32 {
+        self.source_pool_rebuild_count
+    }
+
+    #[must_use]
+    pub const fn source_pool_replaceable_cursor(&self) -> i32 {
+        self.source_pool.raw_replaceable_cursor
+    }
+
+    #[must_use]
+    pub const fn player_spell_holder_registry(&self) -> &[u16; 26] {
+        &self.player_spell_holder_registry
+    }
+
+    #[must_use]
+    pub const fn released_spell_holders(&self) -> &[Option<ReleasedSpellHolder>; 26] {
+        &self.released_spell_holders
+    }
+
+    #[must_use]
+    pub fn player_lifecycle_trace(&self) -> &[PlayerLifecycleTraceEntry] {
+        &self.player_lifecycle_trace
+    }
+
+    #[must_use]
+    pub fn player_lifecycle_trace_hash(&self) -> u64 {
+        let mut hash = Level1Fnv1a64::new();
+        hash.bytes(b"mc2-level1-player-lifecycle-trace-v1\0");
+        for entry in &self.player_lifecycle_trace {
+            hash.u8(entry.step);
+            hash.u32(entry.detail.cast_unsigned());
+        }
+        hash.finish()
+    }
+
+    #[must_use]
+    pub const fn source_turn_counter(&self) -> u32 {
+        self.source_turn_counter
+    }
+
+    #[must_use]
+    pub const fn source_color_phase_6(&self) -> bool {
+        self.source_color_phase_6
+    }
+
+    pub fn set_source_turn_counter(&mut self, source_turn: u32) {
+        self.source_turn_counter = source_turn;
+        self.source_color_phase_6 = (source_turn / 6) & 1 != 0;
+    }
+
+    #[must_use]
+    pub fn player_killer_score_awards(&self) -> u16 {
+        self.player_scores_by_entity
+            .values()
+            .flat_map(|scores| scores.iter().copied())
+            .fold(0, u16::wrapping_add)
+    }
+
+    #[must_use]
+    pub fn player_score_for(&self, player_entity_index: u16, victim_color: u8) -> u16 {
+        self.player_scores_by_entity
+            .get(&player_entity_index)
+            .map_or(0, |scores| scores[usize::from(victim_color.min(7))])
+    }
+
+    pub fn set_player_menu_state(&mut self, menu_state: u8) {
+        self.player_menu_state = menu_state;
+    }
+
+    #[must_use]
+    pub fn player_source_entity_rng(&self, player_entity_index: u16) -> u16 {
+        self.source_slots
+            .get(usize::from(player_entity_index))
+            .map_or(0, |record| record.entity_rng)
+    }
+
+    #[must_use]
+    pub fn player_source_control_flags(&self, player_entity_index: u16) -> u32 {
+        self.source_slots
+            .get(usize::from(player_entity_index))
+            .map_or(0, |record| record.control_flags)
+    }
+
+    #[must_use]
+    pub fn player_source_active(&self, player_entity_index: u16) -> bool {
+        self.source_slots
+            .get(usize::from(player_entity_index))
+            .is_some_and(|record| record.active)
+    }
+
+    /// Take the hit reaction captured by action-0 mailbox processing.
+    ///
+    /// Production installs its directional fields before the same-turn flight
+    /// body; this accessor remains for focused source-state inspection.
     pub fn take_player_hit_reaction(&mut self) -> Option<PlayerHitReaction> {
-        self.pending_player_hit_reaction.take()
+        self.last_player_hit_reaction.take()
     }
 
     #[must_use]
@@ -7805,6 +8147,13 @@ impl Level1MissionState {
         );
         for slot in &self.source_pool.replaceable_stack {
             hash.u16(*slot);
+        }
+        let rebuilt_cursor = i32::try_from(self.source_pool.replaceable_stack.len())
+            .expect("replaceable stack length fits i32")
+            - 1;
+        if self.source_pool.raw_replaceable_cursor != rebuilt_cursor {
+            hash.bytes(b"raw-replaceable-cursor\0");
+            hash.u32(self.source_pool.raw_replaceable_cursor.cast_unsigned());
         }
         hash.u32(
             u32::try_from(self.source_pool.replaced_imported_slots.len())
@@ -8248,9 +8597,131 @@ impl Level1MissionState {
             hash.u16(self.castle_association_owner_entity_index);
             hash.u16(self.castle_association_timer.cast_unsigned());
         }
+        if self.player_action != PLAYER_ACTION_ACTIVE
+            || self.player_fall_velocity != 0
+            || self.player_action_timer != 0
+            || self.player_notification_active
+            || self.player_notification_id != 0
+            || self.player_notification_state != 0
+            || self.player_notification_timer != 0
+            || self.player_death_marker.is_some()
+            || self
+                .player_spell_holder_registry
+                .iter()
+                .any(|slot| *slot != 0)
+            || self.released_spell_holders.iter().any(Option::is_some)
+            || !self.player_lifecycle_trace.is_empty()
+            || self.player_entity_roll != 0
+            || self.player_banished_camera_active
+            || self.player_menu_state != 0
+            || self.player_menu_close_requested
+            || self.player_killer_entity_index != 0
+            || self.player_killer_score_awards() != 0
+            || self.player_action0_prepared_for_flight
+        {
+            hash.bytes(b"player-dying-banished-lifecycle\0");
+            hash.u8(self.player_action);
+            hash.u16(self.player_fall_velocity.cast_unsigned());
+            hash.u32(self.player_action_timer.cast_unsigned());
+            hash.u8(u8::from(self.player_notification_active));
+            hash.u16(self.player_notification_id);
+            hash.u8(self.player_notification_state);
+            hash.u16(self.player_notification_timer.cast_unsigned());
+            hash.u16(self.player_killer_entity_index);
+            hash.u32(
+                u32::try_from(self.player_scores_by_entity.len())
+                    .expect("player score row count fits u32"),
+            );
+            for (player_entity_index, scores) in &self.player_scores_by_entity {
+                hash.u16(*player_entity_index);
+                for score in scores {
+                    hash.u16(*score);
+                }
+            }
+            hash.u16(self.player_entity_roll.cast_unsigned());
+            hash.u8(u8::from(self.player_banished_camera_active));
+            hash.u8(self.player_menu_state);
+            hash.u8(u8::from(self.player_menu_close_requested));
+            for holder in self.player_spell_holder_registry {
+                hash.u16(holder);
+            }
+            for holder in self.released_spell_holders {
+                if let Some(holder) = holder {
+                    hash.u8(1);
+                    hash.u8(holder.family);
+                    hash.u16(holder.source_entity_index);
+                    hash.u16(holder.position.x);
+                    hash.u16(holder.position.y);
+                    hash.u16(holder.position.z.cast_unsigned());
+                    hash.u8(holder.action);
+                    hash.u32(holder.life.cast_unsigned());
+                } else {
+                    hash.u8(0);
+                }
+            }
+            hash.u32(
+                u32::try_from(self.player_lifecycle_trace.len())
+                    .expect("player lifecycle trace length fits u32"),
+            );
+            for entry in &self.player_lifecycle_trace {
+                hash.u8(entry.step);
+                hash.u32(entry.detail.cast_unsigned());
+            }
+            if let Some(marker) = self.player_death_marker {
+                hash.u8(1);
+                hash.u16(marker.source_entity_index);
+                hash.u16(marker.trigger_player_entity_index);
+                hash.u16(marker.position.x);
+                hash.u16(marker.position.y);
+                hash.u16(marker.position.z.cast_unsigned());
+                hash.u8(marker.dispatch_phase);
+                hash.u32(marker.constructor_phase);
+                hash.u8(marker.byte_38);
+                hash.u32(marker.max_life.cast_unsigned());
+                hash.u32(marker.life.cast_unsigned());
+                hash.u16(marker.particle_parameter_index);
+                hash.u8(u8::from(marker.active));
+            } else {
+                hash.u8(0);
+            }
+            hash.u8(u8::from(self.player_action0_prepared_for_flight));
+        }
+        if !self.death_bursts.is_empty() {
+            hash.bytes(b"death-bursts\0");
+            hash.u32(u32::try_from(self.death_bursts.len()).expect("death burst count fits u32"));
+            for burst in &self.death_bursts {
+                hash.u16(burst.source_entity_index);
+                hash.u16(burst.parent_entity_index);
+                hash.u16(burst.position.x);
+                hash.u16(burst.position.y);
+                hash.u16(burst.position.z.cast_unsigned());
+                hash.u32(burst.max_life.cast_unsigned());
+                hash.u16(burst.life_ticks.cast_unsigned());
+                hash.u16(burst.subspell_index);
+                hash.u32(burst.control_flags);
+                hash.u8(u8::from(burst.active));
+            }
+        }
         hash.u32(self.global_rng);
         hash.u32(self.next_effect_id);
         hash.bytes(&self.model_phase_counters);
+        hash.finish()
+    }
+
+    /// Versioned complete hash for the reachable player dying/banished slice.
+    ///
+    /// The source-arena v1 digest remains its established allocation domain.
+    /// This v2 domain composes it with every future-driving flight/context
+    /// field plus the source-turn palette phase used by actions 2 and 3.
+    #[must_use]
+    pub fn player_lifecycle_hash_v2(&self, player: &FlightState, context: &FlightContext) -> u64 {
+        let mut hash = Level1Fnv1a64::new();
+        hash.bytes(b"mc2-level1-player-lifecycle-v2\0");
+        hash.u64(self.source_arena_hash_v1());
+        hash.u64(crate::state_hash(player));
+        hash.u64(crate::conformance_hash_v2(player, context));
+        hash.u32(self.source_turn_counter);
+        hash.u8(u8::from(self.source_color_phase_6));
         hash.finish()
     }
 
@@ -8264,7 +8735,10 @@ impl Level1MissionState {
         camera_look_yaw: i16,
         camera_look_pitch: i16,
     ) -> bool {
-        if self.player_dead || !self.has_fireball || self.player_mana < FIREBALL_MANA_COST {
+        if self.player_action != PLAYER_ACTION_ACTIVE
+            || !self.has_fireball
+            || self.player_mana < FIREBALL_MANA_COST
+        {
             return false;
         }
         let Some((id, source_entity_index)) =
@@ -8313,7 +8787,10 @@ impl Level1MissionState {
         camera_look_yaw: i16,
         camera_look_pitch: i16,
     ) -> bool {
-        if self.player_dead || !self.has_possession || self.player_mana < POSSESSION_MANA_COST {
+        if self.player_action != PLAYER_ACTION_ACTIVE
+            || !self.has_possession
+            || self.player_mana < POSSESSION_MANA_COST
+        {
             return false;
         }
         let profile = possession_spell_profile(self.possession_tier);
@@ -8574,17 +9051,61 @@ impl Level1MissionState {
     /// Allocate the class-10/model-1 burst created immediately after a
     /// creature's mana conversion. Although short-lived, this allocation is
     /// part of the source slot/RNG schedule.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the source allocator returns an index outside the fixed
+    /// Level 1 source-slot table.
     pub fn spawn_death_burst_from_death(
         &mut self,
         source_entity_index: u16,
         position: Position,
     ) -> Option<u16> {
         let burst_slot = self.allocate_death_burst_source()?;
+        let record = &mut self.source_slots[usize::from(burst_slot)];
+        record.control_flags = (record.control_flags & 0xfffd_fff7) | SOURCE_REPLACEABLE_FLAG;
+        self.source_pool.mark_replaceable(burst_slot);
+        self.source_map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: burst_slot,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .expect("death burst source slot fits the source map");
+        if LEVEL1_SOURCE_DYNAMIC_LIGHTS_ENABLED && LEVEL1_LIGHTING_IS_NIGHT_OR_CAVE {
+            let light_slot = (0..SOURCE_DYNAMIC_LIGHT_CAPACITY).find(|candidate| {
+                self.dynamic_lights
+                    .iter()
+                    .all(|light| usize::from(light.slot_index) != *candidate)
+            });
+            if let Some(light_slot) = light_slot {
+                self.dynamic_lights.push(Level1DynamicLight {
+                    slot_index: u8::try_from(light_slot)
+                        .expect("dynamic-light capacity fits a source byte"),
+                    source_entity_index: burst_slot,
+                    position,
+                    radius: PLAYER_DEATH_BURST_DYNAMIC_LIGHT_RADIUS,
+                    kind: PLAYER_DEATH_BURST_DYNAMIC_LIGHT_KIND,
+                    linked: true,
+                    history: [0; 25],
+                    active: true,
+                });
+                self.dynamic_lights
+                    .sort_unstable_by_key(|light| light.slot_index);
+                self.source_slots[usize::from(burst_slot)].control_flags |=
+                    SOURCE_DYNAMIC_LIGHT_FLAG;
+            }
+        }
+        let control_flags = self.source_slots[usize::from(burst_slot)].control_flags;
         self.death_bursts.push(DeathBurst {
             source_entity_index: burst_slot,
             parent_entity_index: source_entity_index,
             position,
+            max_life: PLAYER_DEATH_BURST_MAX_LIFE,
             life_ticks: 1,
+            subspell_index: PLAYER_DEATH_BURST_SUBSPELL_INDEX,
+            control_flags,
             active: true,
         });
         Some(burst_slot)
@@ -8626,7 +9147,7 @@ impl Level1MissionState {
         accepted_this_turn: bool,
     ) -> bool {
         let holder_active = self.castle_holder_active_value();
-        if self.player_dead
+        if self.player_action != PLAYER_ACTION_ACTIVE
             || !self.has_castle_spell
             || self.player_mana < CASTLE_INITIAL_MANA_COST
             || holder_active > 0
@@ -8753,6 +9274,7 @@ impl Level1MissionState {
         let Some(fire) = context.spell_fire.as_ref() else {
             return;
         };
+        self.player_spell_holder_registry = fire.enabled_holder_indices;
         if let Some(castle_holder) = self
             .actors
             .iter()
@@ -9075,8 +9597,8 @@ impl Level1MissionState {
         }
     }
 
-    fn submit_player_damage(&mut self, damage: i32, attacker: u16) {
-        if self.player_dead || damage <= 0 || attacker == 0 {
+    pub fn submit_player_damage(&mut self, damage: i32, attacker: u16) {
+        if self.player_action != PLAYER_ACTION_ACTIVE || damage <= 0 || attacker == 0 {
             return;
         }
         if self.player_pending_attacker == 0 {
@@ -9088,7 +9610,7 @@ impl Level1MissionState {
     }
 
     fn submit_player_contact_damage(&mut self, damage: i32, attacker: u16) {
-        if self.player_dead || damage <= 0 || attacker == 0 {
+        if self.player_action != PLAYER_ACTION_ACTIVE || damage <= 0 || attacker == 0 {
             return;
         }
         // Firefly charge uses `sub_11900`, whose mailbox behavior differs
@@ -9202,6 +9724,12 @@ impl Level1MissionState {
         if entity_index == self.castle_source_entity_index && self.castle_exists {
             return Some(self.castle_position);
         }
+        if self
+            .player_death_marker
+            .is_some_and(|marker| marker.source_entity_index == entity_index && marker.active)
+        {
+            return self.player_death_marker.map(|marker| marker.position);
+        }
         self.actors
             .iter()
             // Damage mailboxes are consumed after source dispatch. An
@@ -9230,7 +9758,7 @@ impl Level1MissionState {
     }
 
     fn consume_player_damage_mailbox(&mut self, player: &FlightState) {
-        if self.player_dead || self.player_pending_attacker == 0 {
+        if self.player_action != PLAYER_ACTION_ACTIVE || self.player_pending_attacker == 0 {
             return;
         }
         let attacker = self.player_pending_attacker;
@@ -9269,7 +9797,7 @@ impl Level1MissionState {
             self.player_pending_attacker = 0;
             (PLAYER_SURVIVED_FEEDBACK, 0)
         };
-        self.pending_player_hit_reaction = Some(PlayerHitReaction {
+        let reaction = PlayerHitReaction {
             attacker_entity_index: attacker,
             raw_damage: damage,
             applied_damage: damage,
@@ -9283,7 +9811,9 @@ impl Level1MissionState {
             survived_feedback,
             killer_entity_index,
             lethal,
-        });
+        };
+        self.pending_player_hit_reaction = Some(reaction);
+        self.last_player_hit_reaction = Some(reaction);
         self.events.push(Level1MissionEvent::PlayerDamaged {
             damage,
             life: self.player_life,
@@ -9294,16 +9824,396 @@ impl Level1MissionState {
             position: player.position,
             random_state: self.global_rng,
         });
-        if lethal {
-            self.player_dead = true;
-            self.events.push(Level1MissionEvent::PlayerDied);
-            self.events.push(Level1MissionEvent::MissionSound {
-                sound_id: PLAYER_DEATH_SOUND,
-                source_entity_index: player.entity_index,
-                position: player.position,
-                random_state: self.global_rng,
+    }
+
+    fn enter_player_dying(&mut self, player: &FlightState) {
+        self.player_action = PLAYER_ACTION_DYING;
+        self.player_fall_velocity = 0;
+        let source = &mut self.source_slots[usize::from(player.entity_index)];
+        source.action = PLAYER_ACTION_DYING;
+        self.events.push(Level1MissionEvent::PlayerDied);
+        self.events.push(Level1MissionEvent::MissionSound {
+            sound_id: PLAYER_DEATH_SOUND,
+            source_entity_index: player.entity_index,
+            position: player.position,
+            random_state: self.global_rng,
+        });
+    }
+
+    /// Consume action-0 mailbox state before the production player flight body.
+    pub fn prepare_player_action_before_flight(&mut self, player: &mut FlightState) {
+        if self.exit_sequence_owns_player_action() || self.player_action != PLAYER_ACTION_ACTIVE {
+            return;
+        }
+        let sheltered = self.player_inside_stage_one_castle(self.source_turn_player_start_position);
+        if sheltered {
+            self.forward_sheltered_player_damage_to_castle();
+        }
+        if self.player_damage_suppression != 0 {
+            self.player_pending_damage = 0;
+            self.player_pending_attacker = 0;
+            self.player_damage_suppression -= 1;
+        } else {
+            self.consume_player_damage_mailbox(player);
+        }
+        if let Some(reaction) = self.pending_player_hit_reaction.take() {
+            player.recoil_yaw = reaction.recoil_yaw;
+            player.recoil_speed = reaction.recoil_speed;
+        }
+        self.player_action0_prepared_for_flight = true;
+    }
+
+    /// Run the action-specific tail after an isolated/focused flight body.
+    pub fn advance_player_lifecycle_after_flight<W: FlightWorld>(
+        &mut self,
+        world: &W,
+        player: &mut FlightState,
+        context: &mut FlightContext,
+    ) {
+        let flight_proposed = player.position;
+        self.advance_player_lifecycle_after_flight_with_proposed(
+            world,
+            player,
+            context,
+            flight_proposed,
+        );
+    }
+
+    /// Run the action-specific tail after the production flight body.
+    ///
+    /// `predictedAxis_EB398ar` retains the body's proposed position even when
+    /// legacy movement rejects or redirects it. Action 2 constructs its
+    /// per-tick burst from that value before applying its separate fall.
+    ///
+    /// # Panics
+    ///
+    /// Panics if source-owned entity indices, angles, or map-chain coordinates
+    /// do not fit their recovered fixed-width representations.
+    pub fn advance_player_lifecycle_after_flight_with_proposed<W: FlightWorld>(
+        &mut self,
+        world: &W,
+        player: &mut FlightState,
+        context: &mut FlightContext,
+        flight_proposed: Position,
+    ) {
+        if self.player_action == PLAYER_ACTION_ACTIVE && self.player_life < 0 {
+            self.enter_player_dying(player);
+            return;
+        }
+        match self.player_action {
+            PLAYER_ACTION_DYING => {
+                self.player_lifecycle_trace.clear();
+                if self.source_color_phase_6 {
+                    self.exit_palette_submode = PLAYER_BANISHED_PALETTE_REQUEST;
+                }
+                self.player_lifecycle_trace.push(PlayerLifecycleTraceEntry {
+                    step: PLAYER_LIFECYCLE_TRACE_PALETTE_REQUEST,
+                    detail: if self.source_color_phase_6 {
+                        i32::from(PLAYER_BANISHED_PALETTE_REQUEST)
+                    } else {
+                        0
+                    },
+                });
+                let prior_menu_state = self.player_menu_state;
+                if self.player_menu_state != 0 {
+                    self.player_menu_state = 0;
+                    self.player_menu_close_requested = true;
+                    if let Some(fire) = context.spell_fire.as_mut() {
+                        fire.spell_menu_stage = 0;
+                    }
+                }
+                self.player_lifecycle_trace.push(PlayerLifecycleTraceEntry {
+                    step: PLAYER_LIFECYCLE_TRACE_MENU_CLOSE,
+                    detail: i32::from(prior_menu_state),
+                });
+
+                player.position.z = player.position.z.wrapping_add(self.player_fall_velocity);
+                self.player_fall_velocity = self.player_fall_velocity.wrapping_sub(2).max(-256);
+                if self.player_fall_velocity > 0 {
+                    self.player_fall_velocity = 0;
+                }
+                let ground = world
+                    .ground_height(player.position)
+                    .wrapping_add(PLAYER_COLLISION_VERTICAL_OFFSET);
+                if player.position.z < ground {
+                    player.position.z = ground;
+                }
+                let _ = self.spawn_death_burst_from_death(player.entity_index, flight_proposed);
+                if player.position.z == ground {
+                    self.complete_player_dying_contact(player, context);
+                }
+            }
+            PLAYER_ACTION_BANISHED => {
+                player.recoil_speed = 0;
+                self.exit_palette_submode = PLAYER_BANISHED_PALETTE_REQUEST;
+                self.player_banished_camera_active = true;
+                let killer_position = (self.player_killer_entity_index != 0)
+                    .then(|| self.source_entity_position(self.player_killer_entity_index, player))
+                    .flatten();
+                if let Some(target) = killer_position {
+                    let desired_yaw = i16::try_from(heading_for_positions(player.position, target))
+                        .expect("11-bit banished camera yaw");
+                    let horizontal = i32::try_from(wrapping_xy_distance(player.position, target))
+                        .expect("wrapped Level 1 camera distance fits i32");
+                    let desired_pitch = pitch_for_delta(
+                        horizontal,
+                        i32::from(target.z.wrapping_sub(player.position.z)),
+                    );
+                    self.player_entity_roll = desired_yaw;
+                    player.entity_fov = desired_pitch;
+                    player.yaw = player
+                        .yaw
+                        .wrapping_add(turn_toward(player.yaw, desired_yaw, 22))
+                        & 0x07ff;
+                    player.pitch_accumulator = player.pitch_accumulator.wrapping_add(turn_toward(
+                        player.pitch_accumulator & 0x07ff,
+                        desired_pitch,
+                        22,
+                    )) & 0x07ff;
+                    player.position.z = world.ground_height(player.position);
+                } else {
+                    player.yaw = player.yaw.wrapping_add(5) & 0x07ff;
+                    player.position.z = world.ground_height(player.position).wrapping_add(256);
+                }
+                player.display_pitch = 0;
+                player.pitch_accumulator = 0;
+                player.roll_accumulator = 0;
+                player.entity_phase = player.entity_phase.wrapping_add(1);
+                player.tick = player.tick.wrapping_add(1);
+            }
+            _ => {}
+        }
+    }
+
+    fn complete_player_dying_contact(&mut self, player: &FlightState, context: &mut FlightContext) {
+        // `sub_49F90` precedes every contact attempt, including retries after
+        // a failed model-40 constructor.
+        self.cleanup_pending_allocations();
+        self.source_pool.rebuild_free_stack();
+        self.source_pool_rebuild_count = self.source_pool_rebuild_count.wrapping_add(1);
+        self.player_lifecycle_trace.push(PlayerLifecycleTraceEntry {
+            step: PLAYER_LIFECYCLE_TRACE_REBUILD,
+            detail: self.source_pool.raw_replaceable_cursor,
+        });
+
+        let killer = self.player_killer_entity_index;
+        let qualifying_killer = self
+            .source_slots
+            .get(usize::from(killer))
+            .is_some_and(|source| {
+                killer != 0 && source.class == 3 && matches!(source.model, 0 | 1)
+            });
+        if qualifying_killer {
+            let victim_color = usize::from(player.player_color_index.min(7));
+            let scores = self.player_scores_by_entity.entry(killer).or_insert([0; 8]);
+            scores[victim_color] = scores[victim_color].wrapping_add(1);
+        }
+        self.player_lifecycle_trace.push(PlayerLifecycleTraceEntry {
+            step: PLAYER_LIFECYCLE_TRACE_SCORE_CHECK,
+            detail: if qualifying_killer {
+                i32::from(killer)
+            } else {
+                -i32::from(killer)
+            },
+        });
+
+        self.player_pending_damage = 0;
+        self.player_pending_attacker = 0;
+        self.player_lifecycle_trace.push(PlayerLifecycleTraceEntry {
+            step: PLAYER_LIFECYCLE_TRACE_MAILBOX_CLEAR,
+            detail: 0,
+        });
+        self.player_notification_active = true;
+        self.player_notification_id = PLAYER_DIED_NOTIFICATION_ID;
+        self.player_notification_state = PLAYER_DIED_NOTIFICATION_STATE;
+        self.player_notification_timer = PLAYER_DIED_NOTIFICATION_TIMER;
+        self.player_lifecycle_trace.push(PlayerLifecycleTraceEntry {
+            step: PLAYER_LIFECYCLE_TRACE_NOTIFICATION,
+            detail: i32::from(PLAYER_DIED_NOTIFICATION_ID),
+        });
+        self.release_player_spell_holders(player, context);
+
+        if let Some(marker) = self.allocate_player_death_marker(player) {
+            self.player_action = PLAYER_ACTION_BANISHED;
+            self.player_action_timer = PLAYER_BANISHED_ACTION_TIMER;
+            self.player_death_marker = Some(marker);
+            self.player_lifecycle_trace.push(PlayerLifecycleTraceEntry {
+                step: PLAYER_LIFECYCLE_TRACE_MARKER_RESULT,
+                detail: i32::from(marker.source_entity_index),
+            });
+            let source_pool = &self.source_pool;
+            for sphere in &mut self.mana_spheres {
+                if sphere.active
+                    && !sphere.pending_delete
+                    && sphere.owner_entity_index == player.entity_index
+                    && source_pool.occupant(sphere.source_entity_index)
+                        == Some(SourceOccupant::ManaSphere(sphere.id))
+                {
+                    sphere.owner_entity_index = marker.source_entity_index;
+                    self.player_lifecycle_trace.push(PlayerLifecycleTraceEntry {
+                        step: PLAYER_LIFECYCLE_TRACE_REDIRECT,
+                        detail: i32::from(sphere.source_entity_index),
+                    });
+                }
+            }
+        } else {
+            self.player_lifecycle_trace.push(PlayerLifecycleTraceEntry {
+                step: PLAYER_LIFECYCLE_TRACE_MARKER_RESULT,
+                detail: 0,
             });
         }
+
+        let source = &mut self.source_slots[usize::from(player.entity_index)];
+        source.action = self.player_action;
+        source.control_flags |= 0x20;
+        self.player_lifecycle_trace.push(PlayerLifecycleTraceEntry {
+            step: PLAYER_LIFECYCLE_TRACE_HIDE,
+            detail: i32::from(player.entity_index),
+        });
+        self.source_pool
+            .decrement_replaceable_cursor_after_player_contact();
+        self.player_lifecycle_trace.push(PlayerLifecycleTraceEntry {
+            step: PLAYER_LIFECYCLE_TRACE_ALLOCATOR_DECREMENT,
+            detail: self.source_pool.raw_replaceable_cursor,
+        });
+    }
+
+    fn release_player_spell_holders(&mut self, player: &FlightState, context: &mut FlightContext) {
+        let enabled_before = self.player_spell_holder_registry;
+        let mut released_slots = Vec::new();
+        for (family, holder_index) in enabled_before.into_iter().enumerate() {
+            let valid =
+                holder_index != 0 && self.source_slots.get(usize::from(holder_index)).is_some();
+            if !valid {
+                self.player_spell_holder_registry[family] = 0;
+                self.released_spell_holders[family] = None;
+                self.player_lifecycle_trace.push(PlayerLifecycleTraceEntry {
+                    step: PLAYER_LIFECYCLE_TRACE_HOLDER_FAMILY,
+                    detail: i32::try_from(family << 16).expect("spell family trace fits i32"),
+                });
+                continue;
+            }
+            self.player_spell_holder_registry[family] = 1;
+            let player_rng = &mut self.source_slots[usize::from(player.entity_index)].entity_rng;
+            *player_rng = next_rng16(*player_rng);
+            let x_offset = i16::try_from(i32::from(*player_rng & 0x01ff) - 256)
+                .expect("nine-bit holder x offset");
+            *player_rng = next_rng16(*player_rng);
+            let y_offset = i16::try_from(i32::from(*player_rng & 0x01ff) - 256)
+                .expect("nine-bit holder y offset");
+
+            let position = Position {
+                x: player.position.x.wrapping_add_signed(x_offset),
+                y: player.position.y.wrapping_add_signed(y_offset),
+                z: player.position.z,
+            };
+            let next_action = self
+                .actors
+                .iter()
+                .find(|actor| actor.source_entity_index == holder_index)
+                .map_or_else(
+                    || {
+                        self.source_slots[usize::from(holder_index)]
+                            .action
+                            .wrapping_add(1)
+                    },
+                    |actor| actor.action.wrapping_add(1),
+                );
+            let source = &mut self.source_slots[usize::from(holder_index)];
+            source.control_flags &= !1;
+            source.action = next_action;
+            if let Some(actor) = self
+                .actors
+                .iter_mut()
+                .find(|actor| actor.source_entity_index == holder_index)
+            {
+                actor.collected = false;
+                actor.visible = true;
+                actor.action = next_action;
+                actor.position = position;
+            }
+            self.source_map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: holder_index,
+                    active: true,
+                    x: position.x,
+                    y: position.y,
+                })
+                .expect("released spell holder source slot fits the source map");
+            let player_rng = &mut self.source_slots[usize::from(player.entity_index)].entity_rng;
+            *player_rng = next_rng16(*player_rng);
+            let life = i32::from(*player_rng % 90) + 200;
+            if let Some(actor) = self
+                .actors
+                .iter_mut()
+                .find(|actor| actor.source_entity_index == holder_index)
+            {
+                actor.life = life;
+            }
+            self.released_spell_holders[family] = Some(ReleasedSpellHolder {
+                family: u8::try_from(family).expect("spell family fits u8"),
+                source_entity_index: holder_index,
+                position,
+                action: next_action,
+                life,
+            });
+            released_slots.push(holder_index);
+            self.spell_acquisition_order
+                .retain(|source_slot| *source_slot != holder_index);
+            self.player_lifecycle_trace.push(PlayerLifecycleTraceEntry {
+                step: PLAYER_LIFECYCLE_TRACE_HOLDER_FAMILY,
+                detail: i32::try_from((family << 16) | usize::from(holder_index))
+                    .expect("spell holder trace fits i32"),
+            });
+        }
+        if let Some(fire) = context.spell_fire.as_mut() {
+            fire.enabled_holder_indices = self.player_spell_holder_registry;
+            fire.holders
+                .retain(|holder| !released_slots.contains(&holder.entity_index));
+            if released_slots.contains(&fire.left_holder_index) {
+                fire.left_holder_index = 0;
+            }
+            if released_slots.contains(&fire.right_holder_index) {
+                fire.right_holder_index = 0;
+            }
+            if released_slots.contains(&fire.selected_holder_index) {
+                fire.selected_holder_index = 0;
+            }
+        }
+    }
+
+    fn allocate_player_death_marker(&mut self, player: &FlightState) -> Option<PlayerDeathMarker> {
+        let occupant = SourceOccupant::PlayerDeathMarker(player.entity_index);
+        let source_entity_index = self.allocate_source_slot(occupant)?;
+        bind_dynamic_source_record(
+            &mut self.source_slots,
+            source_entity_index,
+            occupant,
+            self.global_rng,
+        );
+        let dispatch_phase = source_entity_index.to_le_bytes()[0];
+        self.source_slots[usize::from(source_entity_index)].phase = dispatch_phase;
+        let constructor_phase = u32::from(source_entity_index % 11);
+        self.source_map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: player.position.x,
+                y: player.position.y,
+            })
+            .expect("player death marker source slot fits the source map");
+        Some(PlayerDeathMarker {
+            source_entity_index,
+            trigger_player_entity_index: player.entity_index,
+            position: player.position,
+            dispatch_phase,
+            constructor_phase,
+            byte_38: PLAYER_DEATH_MARKER_BYTE_38,
+            max_life: PLAYER_DEATH_MARKER_LIFE,
+            life: PLAYER_DEATH_MARKER_LIFE,
+            particle_parameter_index: PLAYER_DEATH_MARKER_PARTICLE_PARAMETER,
+            active: true,
+        })
     }
 
     pub fn step<W: FlightWorld>(&mut self, world: &W, player: &FlightState) {
@@ -9344,19 +10254,27 @@ impl Level1MissionState {
     pub fn begin_source_turn(&mut self) {
         self.events.clear();
         self.pending_ambient_loop_5_distance = None;
+        self.player_menu_close_requested = false;
+        self.player_action0_prepared_for_flight = false;
+        if self.player_notification_timer != 0 {
+            self.player_notification_timer -= 1;
+            if self.player_notification_timer == 0 {
+                self.player_notification_active = false;
+                self.player_notification_id = 0;
+                self.player_notification_state = 0;
+            }
+        }
         if self.objective_textbox_ticks != 0 {
             self.objective_textbox_ticks -= 1;
         }
-        self.source_turn_active = !self.player_dead;
+        self.source_turn_active = true;
+        self.source_turn_counter = self.source_turn_counter.wrapping_add(1);
+        self.source_color_phase_6 = (self.source_turn_counter / 6) & 1 != 0;
 
         // `UpdateEntities_57730` advances the shared 32-bit generator before
-        // its pause check and has no player-death guard. Mission-owned effects
-        // retain that exact invocation boundary even when later dispatch is
-        // inactive because the player is dead.
+        // its pause check and has no player-action guard. Action 2/3 suppress
+        // only ordinary player input; every other source row keeps advancing.
         self.global_rng = next_rng32(self.global_rng);
-        if !self.source_turn_active {
-            return;
-        }
         self.archers_present_at_turn_start = self.class_5_model_present_at_turn_start(4);
         self.fireflies_present_at_turn_start = self.count_alive(Level1ActorKind::Firefly) != 0;
 
@@ -9528,7 +10446,9 @@ impl Level1MissionState {
                 self.step_castle_defense_slot(world, source_slot);
                 true
             }
-            Some(SourceOccupant::CastleDefenseShot(_)) => true,
+            Some(SourceOccupant::PlayerDeathMarker(_) | SourceOccupant::CastleDefenseShot(_)) => {
+                true
+            }
             Some(SourceOccupant::CastleAssociation(_)) => {
                 self.step_castle_association_slot(source_slot);
                 true
@@ -9756,56 +10676,71 @@ impl Level1MissionState {
             // Player action 12 bypasses the normal action-0 damage, regen, and
             // spell branches. Whether it begins this turn depends on whether
             // the exit switch's source slot dispatched before this player.
-            if !self.exit_sequence_owns_player_action() {
-                // Shelter is sampled before `sub_5F380` moves the player, then
-                // mailbox forwarding/clearing happens after flight.
+            if !self.exit_sequence_owns_player_action()
+                && self.player_action == PLAYER_ACTION_ACTIVE
+            {
                 let sheltered =
                     self.player_inside_stage_one_castle(self.source_turn_player_start_position);
-                if sheltered {
-                    self.forward_sheltered_player_damage_to_castle();
+                // Direct focused dispatches lack the production pre-flight
+                // hook, so preserve the source action-0 order here as a
+                // non-flight fallback.
+                if !self.player_action0_prepared_for_flight {
+                    if sheltered {
+                        self.forward_sheltered_player_damage_to_castle();
+                    }
+                    if self.player_damage_suppression != 0 {
+                        self.player_pending_damage = 0;
+                        self.player_pending_attacker = 0;
+                        self.player_damage_suppression -= 1;
+                    } else {
+                        self.consume_player_damage_mailbox(player);
+                        // Focused direct dispatch has no following flight body.
+                        // Consume the invocation-local driving copy so it
+                        // cannot be replayed by a later production turn.
+                        self.pending_player_hit_reaction = None;
+                    }
+                    if self.player_life < 0 {
+                        self.enter_player_dying(player);
+                    }
                 }
-                if self.player_damage_suppression != 0 {
-                    self.player_pending_damage = 0;
-                    self.player_pending_attacker = 0;
-                    self.player_damage_suppression -= 1;
-                } else {
-                    self.consume_player_damage_mailbox(player);
-                }
-                self.player_mana = self
-                    .player_mana
-                    .saturating_add(self.player_mana_regen)
-                    .min(self.player_max_mana);
-                if self.player_life_regen_cooldown != 0 {
-                    self.player_life_regen_cooldown -= 1;
-                } else {
-                    self.player_life = self
-                        .player_life
-                        .saturating_add(self.player_life_regen)
-                        .min(self.player_max_life);
-                }
-                if sheltered || self.dolmen_recharge_contact {
-                    self.player_mana_regen =
-                        (self.player_max_mana / 200).max(PLAYER_RECHARGE_MINIMUM_MANA_REGEN);
-                    self.player_life_regen = self.player_max_life / 250;
-                    self.dolmen_recharge_contact = false;
-                } else {
-                    self.player_mana_regen =
-                        (self.player_max_mana / 2_000).max(PLAYER_OUTDOOR_MANA_REGEN);
-                    self.player_life_regen = self.player_max_life / 2_000;
-                }
-                if self.player_hit_aux_ticks != 0 {
-                    self.player_hit_aux_ticks -= 1;
-                }
-                if spawn_fireball {
-                    self.spawn_fireball_with_look(player, camera_look_yaw, camera_look_pitch);
-                }
-                if spawn_possession {
-                    self.spawn_possession_with_look(player, camera_look_yaw, camera_look_pitch);
-                }
-                if let Some(combined_yaw) = castle_cast_yaw {
-                    self.cast_accepted_initial_castle(world, player, combined_yaw);
+                if self.player_action == PLAYER_ACTION_ACTIVE {
+                    self.player_mana = self
+                        .player_mana
+                        .saturating_add(self.player_mana_regen)
+                        .min(self.player_max_mana);
+                    if self.player_life_regen_cooldown != 0 {
+                        self.player_life_regen_cooldown -= 1;
+                    } else {
+                        self.player_life = self
+                            .player_life
+                            .saturating_add(self.player_life_regen)
+                            .min(self.player_max_life);
+                    }
+                    if sheltered || self.dolmen_recharge_contact {
+                        self.player_mana_regen =
+                            (self.player_max_mana / 200).max(PLAYER_RECHARGE_MINIMUM_MANA_REGEN);
+                        self.player_life_regen = self.player_max_life / 250;
+                        self.dolmen_recharge_contact = false;
+                    } else {
+                        self.player_mana_regen =
+                            (self.player_max_mana / 2_000).max(PLAYER_OUTDOOR_MANA_REGEN);
+                        self.player_life_regen = self.player_max_life / 2_000;
+                    }
+                    if self.player_hit_aux_ticks != 0 {
+                        self.player_hit_aux_ticks -= 1;
+                    }
+                    if spawn_fireball {
+                        self.spawn_fireball_with_look(player, camera_look_yaw, camera_look_pitch);
+                    }
+                    if spawn_possession {
+                        self.spawn_possession_with_look(player, camera_look_yaw, camera_look_pitch);
+                    }
+                    if let Some(combined_yaw) = castle_cast_yaw {
+                        self.cast_accepted_initial_castle(world, player, combined_yaw);
+                    }
                 }
             }
+            self.player_action0_prepared_for_flight = false;
         }
         self.step_switch_slot_in_world(world, player, source_slot);
         self.update_spell_pickup_slot(world, player, &current_source_views, source_slot);
@@ -10306,14 +11241,10 @@ impl Level1MissionState {
         self.clear_replaced_authored_projections();
         self.projectiles.retain(|projectile| projectile.active());
         self.impacts.retain(|impact| impact.active);
-        self.dynamic_lights.retain(|light| {
-            light.active
-                && self.impacts.iter().any(|impact| {
-                    impact.active
-                        && impact.model == GROUND_FIRE_MODEL
-                        && impact.source_entity_index == light.source_entity_index
-                })
-        });
+        // `AddEvent2_847D0` owns a separate light-pool record. Source-slot
+        // replacement does not erase it; only an explicit light update or the
+        // natural owning action disables the record.
+        self.dynamic_lights.retain(|light| light.active);
         self.clear_replaced_ambient_projections();
         self.source_turn_active = false;
     }
@@ -10331,6 +11262,9 @@ impl Level1MissionState {
             }
             EXIT_PALETTE_ENTRY_FLASH_REQUEST => {
                 self.begin_palette_fade_back(EXIT_PALETTE_EFFECT_ENTRY_FLASH);
+            }
+            PLAYER_BANISHED_PALETTE_REQUEST => {
+                self.begin_palette_fade_back(PLAYER_BANISHED_PALETTE_EFFECT);
             }
             EXIT_PALETTE_FADE_BACK => {
                 if self.exit_palette_fade_started {
@@ -10448,6 +11382,10 @@ impl Level1MissionState {
                     (green + 48).clamp(0, 63),
                     (blue + 48).clamp(0, 63),
                 ),
+                PLAYER_BANISHED_PALETTE_EFFECT => {
+                    let grayscale = (red + green + blue) / 3;
+                    (grayscale, grayscale, grayscale)
+                }
                 _ => (red, green, blue),
             };
             let denominator = i32::from(self.exit_palette_denominator.max(1));
@@ -15640,6 +16578,11 @@ impl Level1MissionState {
             burst.active = false;
             self.source_pool.disable_slot(source_slot);
             self.source_slots[usize::from(source_slot)].control_flags |= SOURCE_DISABLED_FLAG;
+            for light in &mut self.dynamic_lights {
+                if light.source_entity_index == source_slot {
+                    light.active = false;
+                }
+            }
         }
         self.death_bursts.retain(|burst| burst.active);
     }
@@ -17470,7 +18413,16 @@ impl Level1MissionState {
     }
 
     fn allocate_source_slot(&mut self, occupant: SourceOccupant) -> Option<u16> {
+        let previous = self.source_pool.next_allocation_rollback()?;
         let slot = self.source_pool.allocate(occupant)?;
+        debug_assert_eq!(slot, previous.slot);
+        if matches!(
+            previous.previous_occupant,
+            Some(SourceOccupant::DeathBurst(_))
+        ) {
+            self.death_bursts
+                .retain(|burst| burst.source_entity_index != slot);
+        }
         self.ambient_entities[usize::from(slot)] = None;
         Some(slot)
     }
@@ -19904,6 +20856,10 @@ impl Level1Fnv1a64 {
         self.bytes(&value.to_le_bytes());
     }
 
+    fn u64(&mut self, value: u64) {
+        self.bytes(&value.to_le_bytes());
+    }
+
     fn source_occupant(&mut self, occupant: Option<SourceOccupant>) {
         let (kind, id) = match occupant {
             None => (0, 0),
@@ -19944,6 +20900,9 @@ impl Level1Fnv1a64 {
             Some(SourceOccupant::GroundFire(id)) => (26, id),
             Some(SourceOccupant::PossessionAttraction(id)) => (27, id),
             Some(SourceOccupant::StrongPossessionImpact(id)) => (28, id),
+            Some(SourceOccupant::PlayerDeathMarker(player_entity_index)) => {
+                (29, u32::from(player_entity_index))
+            }
         };
         self.u8(kind);
         self.u32(id);
@@ -29255,13 +30214,17 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one named source-order lifecycle discriminator must remain atomic"
+    )]
     fn lethal_hostile_mailbox_skips_regeneration_and_session_reset_restores_player() {
         let template = Level1MissionTemplate::decode_with_runtime_context(
             &authored_bytes(),
             &FlatWorld,
             19_577,
             0,
-            &[100],
+            &[105, 104, 103, 102, 101, 100],
         )
         .unwrap();
         let mut mission = template.session(499, 1_000);
@@ -29312,7 +30275,8 @@ mod tests {
         mission.step(&FlatWorld, &player);
 
         assert_eq!(mission.player_life, -1);
-        assert!(mission.player_dead);
+        assert!(mission.player_dead());
+        assert_eq!(mission.player_action, PLAYER_ACTION_DYING);
         assert!(mission.events.iter().any(|event| matches!(
             event,
             Level1MissionEvent::PlayerDamaged {
@@ -29323,20 +30287,502 @@ mod tests {
         assert!(mission.events.contains(&Level1MissionEvent::PlayerDied));
 
         let dead_turn_rng = mission.global_rng;
+        mission.source_turn_counter = 5;
         mission.begin_source_turn();
         assert_eq!(
             mission.global_rng,
             next_rng32(dead_turn_rng),
-            "UpdateEntities stores its turn-start draw before the dead-player dispatch gate"
+            "UpdateEntities stores its turn-start draw before the live action-2 dispatcher"
         );
-        assert!(!mission.source_turn_active);
+        assert!(mission.source_turn_active);
+
+        let castle_holder = enable_castle_holder_source(&mut mission);
+        let speed_actor_index = mission
+            .actors
+            .iter()
+            .position(|actor| actor.kind == Level1ActorKind::SpeedSpellJar)
+            .unwrap();
+        if mission.actors[speed_actor_index].source_entity_index == 0 {
+            let authored_index = mission.actors[speed_actor_index].authored_index;
+            let source_entity_index = mission
+                .allocate_source_slot(SourceOccupant::Authored(authored_index))
+                .unwrap();
+            bind_dynamic_source_record(
+                &mut mission.source_slots,
+                source_entity_index,
+                SourceOccupant::Authored(authored_index),
+                mission.global_rng,
+            );
+            mission.actors[speed_actor_index].source_entity_index = source_entity_index;
+        }
+        let speed_holder = mission.actors[speed_actor_index].source_entity_index;
+        mission.actors[speed_actor_index].active = true;
+        mission.actors[speed_actor_index].collected = true;
+        mission.actors[speed_actor_index].action =
+            SPELL_HOLDER_ACTIONS[usize::from(SPEED_SPELL_FAMILY)];
+        mission.actors[speed_actor_index].state_value = 0;
+        let owned_sphere = mission
+            .spawn_mana_sphere_from_death(
+                &FlatWorld,
+                10,
+                player.position,
+                0,
+                0,
+                500,
+                player.entity_index,
+            )
+            .unwrap();
+        let mut retired_sphere = *mission
+            .mana_spheres
+            .iter()
+            .find(|sphere| sphere.id == owned_sphere)
+            .unwrap();
+        retired_sphere.id = retired_sphere.id.wrapping_add(10_000);
+        retired_sphere.source_entity_index = 998;
+        retired_sphere.active = false;
+        retired_sphere.pending_delete = true;
+        mission.mana_spheres.push(retired_sphere);
+        let mut context = FlightContext {
+            spell_fire: Some(crate::SpellFireContext::default()),
+            ..FlightContext::default()
+        };
+        mission.sync_collected_spell_holders(&mut context);
+        mission.capture_spell_holder_active_values(&context);
+        mission.set_player_menu_state(5);
+        let fire = context.spell_fire.as_ref().unwrap();
+        assert_eq!(
+            (
+                fire.enabled_holder_indices[usize::from(CASTLE_SPELL_FAMILY)],
+                fire.enabled_holder_indices[usize::from(SPEED_SPELL_FAMILY)],
+            ),
+            (castle_holder, speed_holder)
+        );
+        assert_eq!(
+            mission
+                .mana_spheres()
+                .iter()
+                .find(|sphere| sphere.id == retired_sphere.id)
+                .unwrap()
+                .owner_entity_index,
+            player.entity_index,
+            "the live class-10/model-39 walk does not rewrite a retired typed row"
+        );
+        mission.source_slots[usize::from(player.entity_index)].entity_rng = 0x1234;
+        let hash_before_contact = mission.source_arena_hash_v1();
+        let mut dying_player = FlightState {
+            position: Position {
+                z: PLAYER_COLLISION_VERTICAL_OFFSET,
+                ..player.position
+            },
+            tick: 6,
+            ..player
+        };
+        let burst_position = Position {
+            x: dying_player.position.x.wrapping_add(17),
+            y: dying_player.position.y.wrapping_sub(19),
+            z: dying_player.position.z.wrapping_add(23),
+        };
+        mission.advance_player_lifecycle_after_flight_with_proposed(
+            &FlatWorld,
+            &mut dying_player,
+            &mut context,
+            burst_position,
+        );
+        assert_eq!(mission.player_action, PLAYER_ACTION_BANISHED);
+        assert_eq!(mission.player_action_timer, PLAYER_BANISHED_ACTION_TIMER);
+        assert_eq!(mission.player_fall_velocity, -2);
+        assert!(mission.player_menu_close_requested);
+        assert!(mission.player_notification_active);
+        assert_eq!(
+            (
+                mission.player_notification_id,
+                mission.player_notification_state,
+            ),
+            (PLAYER_DIED_NOTIFICATION_ID, PLAYER_DIED_NOTIFICATION_STATE)
+        );
+        assert_eq!(
+            mission.player_notification_timer,
+            PLAYER_DIED_NOTIFICATION_TIMER
+        );
+        assert_eq!(mission.player_killer_score_awards(), 0);
+        assert_eq!(mission.source_pool_replaceable_cursor(), -1);
+        let burst = *mission.death_bursts().last().unwrap();
+        assert_eq!(
+            burst.position, burst_position,
+            "action 2 constructs its burst from the direct flight body's proposed axis"
+        );
+        assert_eq!(
+            (
+                burst.max_life,
+                burst.life_ticks,
+                burst.subspell_index,
+                burst.control_flags & (SOURCE_REPLACEABLE_FLAG | SOURCE_DYNAMIC_LIGHT_FLAG),
+            ),
+            (
+                PLAYER_DEATH_BURST_MAX_LIFE,
+                1,
+                PLAYER_DEATH_BURST_SUBSPELL_INDEX,
+                SOURCE_REPLACEABLE_FLAG | SOURCE_DYNAMIC_LIGHT_FLAG,
+            ),
+            "NewAdd0A01 installs exact action-1 burst lifetime, subspell, replacement, and light flags"
+        );
+        let burst_source = mission.source_slots[usize::from(burst.source_entity_index)];
+        assert_eq!(
+            (
+                burst_source.class,
+                burst_source.model,
+                burst_source.action,
+                burst_source.control_flags,
+            ),
+            (
+                DEATH_BURST_CLASS,
+                DEATH_BURST_MODEL,
+                DEATH_BURST_ACTION,
+                burst.control_flags,
+            )
+        );
+        assert!(mission.dynamic_lights.iter().any(|light| {
+            light.active
+                && light.source_entity_index == burst.source_entity_index
+                && light.position == burst.position
+                && light.radius == PLAYER_DEATH_BURST_DYNAMIC_LIGHT_RADIUS
+                && light.kind == PLAYER_DEATH_BURST_DYNAMIC_LIGHT_KIND
+                && light.linked
+        }));
+        assert!(
+            mission
+                .source_map_chains
+                .entity_chain(
+                    burst.position.x.to_be_bytes()[0],
+                    burst.position.y.to_be_bytes()[0],
+                )
+                .contains(&burst.source_entity_index),
+            "NewAdd0A01 inserts the burst into the live source map chain"
+        );
+        assert_eq!(
+            mission.source_slots[usize::from(player.entity_index)].entity_rng,
+            0x810e
+        );
+        let released = |source_entity_index| {
+            mission
+                .actors
+                .iter()
+                .find(|actor| actor.source_entity_index == source_entity_index)
+                .unwrap()
+        };
+        let castle = released(castle_holder);
+        assert_eq!(
+            (
+                castle.action,
+                castle.position,
+                castle.life,
+                castle.collected
+            ),
+            (
+                SPELL_WORLD_PICKUP_ACTIONS[usize::from(CASTLE_SPELL_FAMILY)],
+                Position {
+                    x: dying_player.position.x.wrapping_add_signed(147),
+                    y: dying_player.position.y.wrapping_add_signed(-174),
+                    z: dying_player.position.z,
+                },
+                225,
+                false,
+            )
+        );
+        let speed = released(speed_holder);
+        assert_eq!(
+            (speed.action, speed.position, speed.life, speed.collected),
+            (
+                SPELL_WORLD_PICKUP_ACTIONS[usize::from(SPEED_SPELL_FAMILY)],
+                Position {
+                    x: dying_player.position.x.wrapping_add_signed(240),
+                    y: dying_player.position.y.wrapping_add_signed(-49),
+                    z: dying_player.position.z,
+                },
+                208,
+                false,
+            )
+        );
+        let moved_castle_position = Position {
+            x: castle.position.x.wrapping_add(512),
+            ..castle.position
+        };
+        mission
+            .actors
+            .iter_mut()
+            .find(|actor| actor.source_entity_index == castle_holder)
+            .unwrap()
+            .position = moved_castle_position;
+        assert_eq!(
+            mission
+                .current_source_entity_view(&dying_player, castle_holder, None)
+                .unwrap()
+                .position,
+            moved_castle_position,
+            "released-holder history must not shadow later live actor movement"
+        );
+        let fire = context.spell_fire.as_ref().unwrap();
+        assert_eq!(
+            (
+                fire.enabled_holder_indices[usize::from(CASTLE_SPELL_FAMILY)],
+                fire.enabled_holder_indices[usize::from(SPEED_SPELL_FAMILY)],
+            ),
+            (1, 1),
+            "valid holder rows are rewritten to the source literal one"
+        );
+        let marker = mission.player_death_marker().unwrap();
+        assert_eq!(marker.trigger_player_entity_index, player.entity_index);
+        assert_eq!(
+            (
+                marker.dispatch_phase,
+                marker.constructor_phase,
+                marker.byte_38,
+                marker.max_life,
+                marker.life,
+                marker.particle_parameter_index,
+            ),
+            (
+                marker.source_entity_index.to_le_bytes()[0],
+                u32::from(marker.source_entity_index % 11),
+                PLAYER_DEATH_MARKER_BYTE_38,
+                PLAYER_DEATH_MARKER_LIFE,
+                PLAYER_DEATH_MARKER_LIFE,
+                PLAYER_DEATH_MARKER_PARTICLE_PARAMETER,
+            )
+        );
+        let marker_source = mission.source_slots[usize::from(marker.source_entity_index)];
+        assert_eq!(
+            (
+                marker_source.class,
+                marker_source.model,
+                marker_source.action,
+            ),
+            (
+                PLAYER_DEATH_MARKER_CLASS,
+                PLAYER_DEATH_MARKER_MODEL,
+                PLAYER_DEATH_MARKER_ACTION,
+            )
+        );
+        assert!(
+            mission
+                .source_map_chains
+                .entity_chain(
+                    marker.position.x.to_be_bytes()[0],
+                    marker.position.y.to_be_bytes()[0],
+                )
+                .contains(&marker.source_entity_index),
+            "sub_501D0 inserts the action-42 marker into the source map chain"
+        );
+        let marker_view = mission
+            .current_source_entity_view(&dying_player, marker.source_entity_index, None)
+            .unwrap();
+        assert_eq!(
+            (
+                marker_view.position,
+                marker_view.phase,
+                marker_view.max_life,
+                marker_view.life,
+                marker_view.owner_entity_index,
+            ),
+            (
+                marker.position,
+                marker.dispatch_phase,
+                PLAYER_DEATH_MARKER_LIFE,
+                PLAYER_DEATH_MARKER_LIFE,
+                0,
+            ),
+            "the source view projects the live marker rather than a default fallback"
+        );
+        assert_eq!(
+            mission
+                .mana_spheres()
+                .iter()
+                .find(|sphere| sphere.id == owned_sphere)
+                .unwrap()
+                .owner_entity_index,
+            marker.source_entity_index,
+            "model-39 owner relation redirects only after marker allocation"
+        );
+        assert_eq!(
+            mission.source_slots[usize::from(player.entity_index)].control_flags & 0x20,
+            0x20
+        );
+        assert_ne!(mission.source_arena_hash_v1(), hash_before_contact);
+        let trace = mission
+            .player_lifecycle_trace()
+            .iter()
+            .map(|entry| entry.step)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            &trace[..6],
+            &[
+                PLAYER_LIFECYCLE_TRACE_PALETTE_REQUEST,
+                PLAYER_LIFECYCLE_TRACE_MENU_CLOSE,
+                PLAYER_LIFECYCLE_TRACE_REBUILD,
+                PLAYER_LIFECYCLE_TRACE_SCORE_CHECK,
+                PLAYER_LIFECYCLE_TRACE_MAILBOX_CLEAR,
+                PLAYER_LIFECYCLE_TRACE_NOTIFICATION,
+            ]
+        );
+        assert_eq!(
+            (
+                mission.player_lifecycle_trace()[0].detail,
+                mission.player_lifecycle_trace()[1].detail,
+            ),
+            (i32::from(PLAYER_BANISHED_PALETTE_REQUEST), 5),
+            "action 2 requests the phase palette before conditionally closing menu state 5"
+        );
+        assert_eq!(
+            &trace[6..32],
+            &[PLAYER_LIFECYCLE_TRACE_HOLDER_FAMILY; 26],
+            "all 26 source holder families are visited in table order"
+        );
+        assert_eq!(
+            &trace[32..],
+            &[
+                PLAYER_LIFECYCLE_TRACE_MARKER_RESULT,
+                PLAYER_LIFECYCLE_TRACE_REDIRECT,
+                PLAYER_LIFECYCLE_TRACE_HIDE,
+                PLAYER_LIFECYCLE_TRACE_ALLOCATOR_DECREMENT,
+            ],
+            "contact order remains observable after the holder loop"
+        );
+        assert_eq!(
+            mission.player_lifecycle_trace()[3].detail,
+            -i32::from(mission.player_killer_entity_index()),
+            "the reachable non-player killer does not receive player score"
+        );
+
+        mission.advance_exit_palette_frame();
+        assert_eq!(mission.exit_palette_effect, PLAYER_BANISHED_PALETTE_EFFECT);
+        let mut palette = [0_u8; 768];
+        palette[3..6].copy_from_slice(&[9, 30, 60]);
+        assert_eq!(
+            &mission.effective_palette_rgb6(&palette)[3..6],
+            &[33, 33, 33],
+            "palette request seven is consumed into exact RGB6 grayscale"
+        );
+        let action_timer = mission.player_action_timer;
+        dying_player.recoil_speed = 123;
+        dying_player.effective_pitch = 321;
+        let expected_entity_roll = i16::try_from(heading_for_positions(
+            dying_player.position,
+            Position {
+                x: 19_000,
+                ..player.position
+            },
+        ))
+        .unwrap();
+        let yaw_before = dying_player.yaw;
+        mission.advance_player_lifecycle_after_flight(&FlatWorld, &mut dying_player, &mut context);
+        assert_eq!(mission.player_action_timer, action_timer);
+        assert!(mission.player_banished_camera_active);
+        assert_eq!(mission.player_entity_roll, expected_entity_roll);
+        assert!(
+            angle_distance(i32::from(dying_player.yaw), i32::from(yaw_before)).unsigned_abs() <= 22
+        );
+        assert_eq!(dying_player.recoil_speed, 0);
+        assert_eq!(dying_player.position.z, 0);
+        assert_eq!(
+            (
+                dying_player.display_pitch,
+                dying_player.effective_pitch,
+                dying_player.pitch_accumulator,
+                dying_player.roll_accumulator,
+            ),
+            (0, 321, 0, 0),
+            "action 3 clears controller pitch without erasing the distinct effective pitch"
+        );
+        let mut no_killer = mission.clone();
+        no_killer.player_killer_entity_index = 0;
+        let mut no_killer_player = FlightState {
+            yaw: 2_046,
+            effective_pitch: -222,
+            position: Position {
+                x: 12_000,
+                y: 13_000,
+                z: 777,
+            },
+            ..dying_player
+        };
+        no_killer.advance_player_lifecycle_after_flight(
+            &FlatWorld,
+            &mut no_killer_player,
+            &mut context,
+        );
+        assert_eq!(
+            (
+                no_killer_player.yaw,
+                no_killer_player.position.z,
+                no_killer_player.effective_pitch,
+                no_killer_player.pitch_accumulator,
+                no_killer_player.roll_accumulator,
+            ),
+            (3, 256, -222, 0, 0),
+            "the no-killer action-3 branch adds yaw five and one terrain high byte"
+        );
+        let lifecycle_hash = mission.player_lifecycle_hash_v2(&dying_player, &context);
+        let mut changed_mission = mission.clone();
+        changed_mission.player_killer_entity_index ^= 1;
+        assert_ne!(
+            changed_mission.player_lifecycle_hash_v2(&dying_player, &context),
+            lifecycle_hash
+        );
+        let mut changed_player = dying_player;
+        changed_player.recoil_speed = 1;
+        assert_ne!(
+            mission.player_lifecycle_hash_v2(&changed_player, &context),
+            lifecycle_hash
+        );
+        let mut changed_context = context.clone();
+        changed_context
+            .spell_fire
+            .as_mut()
+            .unwrap()
+            .left_holder_index = 77;
+        assert_ne!(
+            mission.player_lifecycle_hash_v2(&dying_player, &changed_context),
+            lifecycle_hash
+        );
 
         let reset = template.session(499, 1_000);
         assert_eq!(reset.player_life, 499);
         assert_eq!(reset.player_pending_damage, 0);
         assert_eq!(reset.player_pending_attacker, 0);
         assert_eq!(reset.player_life_regen_cooldown, 0);
-        assert!(!reset.player_dead);
+        assert!(!reset.player_dead());
+        assert_eq!(reset.player_action, PLAYER_ACTION_ACTIVE);
+        assert!(reset.player_death_marker().is_none());
+
+        let mut qualifying = template.session(499, 1_000);
+        qualifying.player_action = PLAYER_ACTION_DYING;
+        qualifying.player_killer_entity_index = player.entity_index;
+        qualifying.source_slots[usize::from(player.entity_index)].active = false;
+        qualifying.source_slots[usize::from(player.entity_index)].class = 3;
+        qualifying.source_slots[usize::from(player.entity_index)].model = 0;
+        let mut scored_player = FlightState {
+            player_color_index: 6,
+            position: Position {
+                z: PLAYER_COLLISION_VERTICAL_OFFSET,
+                ..player.position
+            },
+            ..player
+        };
+        qualifying.begin_source_turn();
+        qualifying.advance_player_lifecycle_after_flight(
+            &FlatWorld,
+            &mut scored_player,
+            &mut FlightContext::default(),
+        );
+        assert_eq!(
+            (
+                qualifying.player_score_for(player.entity_index, 6),
+                qualifying.player_score_for(player.entity_index, 0),
+                qualifying.player_score_for(10, 6),
+            ),
+            (1, 0, 0),
+            "the nonzero class-3/model-0 pointer qualifies even after its source row deactivates"
+        );
     }
 
     #[test]
@@ -29424,14 +30870,19 @@ mod tests {
                 && *source_entity_index == player.entity_index
                 && *position == player.position
         )));
+
         assert!(mission.take_player_hit_reaction().is_none());
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one named mailbox-entry discriminator covers every retained field"
+    )]
     fn lethal_player_hit_retains_source_mailbox_and_records_killer_and_death_sound() {
         let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
         let mut mission = template.session(499, 1_000);
-        let player = FlightState {
+        let mut player = FlightState {
             entity_index: 152,
             position: Position {
                 x: 20_000,
@@ -29454,7 +30905,42 @@ mod tests {
         mission.submit_player_damage(FIREFLY_FIREBALL_PAYLOAD, 10);
 
         mission.begin_source_turn();
-        mission.dispatch_source_slot(&FlatWorld, &player, player.entity_index, false, false, None);
+        let position_before_flight = player.position;
+        let mana_before_flight = mission.player_mana;
+        mission.prepare_player_action_before_flight(&mut player);
+        assert_eq!(mission.player_action, PLAYER_ACTION_ACTIVE);
+        assert_eq!(mission.player_life, -1);
+        assert_eq!(player.recoil_speed, 50);
+        let mut flight_context = FlightContext::default();
+        let flight = crate::step_outer_turn_with_context(
+            &mut player,
+            crate::PlayerCommand::default(),
+            0,
+            FlightProfile {
+                passive_vertical_step: 0,
+                ..FlightProfile::OUTDOOR
+            },
+            &FlatWorld,
+            &mut flight_context,
+        );
+        assert_ne!(
+            player.position, position_before_flight,
+            "the pre-flight mailbox recoil moves the player in the same action-0 turn"
+        );
+        let flight_proposed = flight.last().map_or(player.position, |pass| pass.proposed);
+        mission.advance_player_lifecycle_after_flight_with_proposed(
+            &FlatWorld,
+            &mut player,
+            &mut flight_context,
+            flight_proposed,
+        );
+        assert_eq!(mission.player_action, PLAYER_ACTION_DYING);
+        mission.dispatch_source_slot(&FlatWorld, &player, player.entity_index, true, true, None);
+        assert_eq!(mission.player_mana, mana_before_flight);
+        assert!(
+            mission.projectiles.is_empty(),
+            "lethal action-0 skips regeneration and spell dispatch after the flight body"
+        );
 
         let reaction = mission.take_player_hit_reaction().unwrap();
         assert!(reaction.lethal);
@@ -29471,6 +30957,159 @@ mod tests {
                 ..
             } if *source_entity_index == player.entity_index && *position == player.position
         )));
+
+        mission.player_spell_holder_registry[0] = 1;
+        mission.source_slots[1].action = 12;
+        mission.source_slots[1].control_flags |= 1;
+        mission.source_slots[usize::from(player.entity_index)].entity_rng = 0x1234;
+        let mut retry = mission.clone();
+        retry.player_fall_velocity = 0;
+        retry.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        let mut retry_player = FlightState {
+            position: Position {
+                z: PLAYER_COLLISION_VERTICAL_OFFSET,
+                ..player.position
+            },
+            ..player
+        };
+        let mut context = FlightContext::default();
+        let rebuilds_before = retry.source_pool_rebuild_count;
+        retry.advance_player_lifecycle_after_flight(&FlatWorld, &mut retry_player, &mut context);
+        assert_eq!(retry.player_action, PLAYER_ACTION_DYING);
+        assert!(retry.player_death_marker().is_none());
+        assert_eq!(retry.source_pool_rebuild_count, rebuilds_before + 1);
+        assert_eq!(retry.source_pool_replaceable_cursor(), -2);
+        assert_eq!(
+            retry.player_notification_timer,
+            PLAYER_DIED_NOTIFICATION_TIMER
+        );
+        let first_literal_holder = retry.released_spell_holders()[0]
+            .expect("literal source pointer one is a valid holder row");
+        let expected_x_rng = next_rng16(0x1234);
+        let expected_second_rng = next_rng16(expected_x_rng);
+        let expected_life_rng = next_rng16(expected_second_rng);
+        assert_eq!(
+            (
+                first_literal_holder.position,
+                first_literal_holder.action,
+                first_literal_holder.life,
+                retry.player_source_entity_rng(player.entity_index),
+            ),
+            (
+                Position {
+                    x: retry_player.position.x.wrapping_add_signed(
+                        i16::try_from(i32::from(expected_x_rng & 0x01ff) - 256).unwrap(),
+                    ),
+                    y: retry_player.position.y.wrapping_add_signed(
+                        i16::try_from(i32::from(expected_second_rng & 0x01ff) - 256).unwrap(),
+                    ),
+                    z: retry_player.position.z,
+                },
+                13,
+                i32::from(expected_life_rng % 90) + 200,
+                expected_life_rng,
+            ),
+            "holder release consumes x, y, CopyPosition, then the third life draw"
+        );
+        assert!(
+            retry
+                .source_map_chains
+                .entity_chain(
+                    first_literal_holder.position.x.to_be_bytes()[0],
+                    first_literal_holder.position.y.to_be_bytes()[0],
+                )
+                .contains(&1),
+            "CopyPosition unlinks and relinks the literal holder source row"
+        );
+        retry.player_notification_timer = 37;
+        assert!(retry.source_pool.release(900));
+        assert!(retry.source_pool.release(901));
+        retry.death_bursts.clear();
+        retry.advance_player_lifecycle_after_flight(&FlatWorld, &mut retry_player, &mut context);
+        assert_eq!(retry.source_pool_rebuild_count, rebuilds_before + 2);
+        assert_eq!(retry.player_action, PLAYER_ACTION_BANISHED);
+        assert_eq!(retry.player_action_timer, PLAYER_BANISHED_ACTION_TIMER);
+        assert!(retry.player_death_marker().is_some());
+        assert_eq!(
+            retry.player_notification_timer, PLAYER_DIED_NOTIFICATION_TIMER,
+            "marker-allocation retry repeats the literal contact notification"
+        );
+        let second_literal_holder = retry.released_spell_holders()[0].unwrap();
+        assert_ne!(
+            second_literal_holder.position, first_literal_holder.position,
+            "literal pointer one is reprocessed rather than cleared on a contact retry"
+        );
+        assert_eq!(second_literal_holder.action, 14);
+        let old_tile = (
+            first_literal_holder.position.x.to_be_bytes()[0],
+            first_literal_holder.position.y.to_be_bytes()[0],
+        );
+        let new_tile = (
+            second_literal_holder.position.x.to_be_bytes()[0],
+            second_literal_holder.position.y.to_be_bytes()[0],
+        );
+        if old_tile != new_tile {
+            assert!(
+                !retry
+                    .source_map_chains
+                    .entity_chain(old_tile.0, old_tile.1)
+                    .contains(&1),
+                "the retry removes the holder from its prior map cell"
+            );
+        }
+
+        let mut replacement_only = mission.clone();
+        replacement_only.player_fall_velocity = 0;
+        replacement_only.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        for slot in 900..=902 {
+            replacement_only.source_pool.replaceable[slot] = true;
+            replacement_only.source_slots[slot].active = true;
+        }
+        replacement_only.source_pool.rebuild_free_stack();
+        assert_eq!(replacement_only.source_pool_replaceable_cursor(), 2);
+        replacement_only.advance_player_lifecycle_after_flight(
+            &FlatWorld,
+            &mut retry_player,
+            &mut context,
+        );
+        assert_eq!(replacement_only.player_action, PLAYER_ACTION_BANISHED);
+        assert_eq!(
+            replacement_only
+                .player_death_marker()
+                .unwrap()
+                .source_entity_index,
+            900,
+            "the replaceable action-1 burst rejoins sub_49F90 and is reused by the marker"
+        );
+        assert!(replacement_only.death_bursts().is_empty());
+        assert!(
+            replacement_only.dynamic_lights().iter().any(|light| {
+                light.active
+                    && light.source_entity_index == 900
+                    && light.radius == PLAYER_DEATH_BURST_DYNAMIC_LIGHT_RADIUS
+                    && light.kind == PLAYER_DEATH_BURST_DYNAMIC_LIGHT_KIND
+            }),
+            "same-slot burst-to-marker replacement preserves the separate AddEvent2 light record"
+        );
+        assert_eq!(replacement_only.source_pool_replaceable_cursor(), 0);
+        assert_eq!(
+            replacement_only.source_pool.occupant(901),
+            Some(SourceOccupant::ImportedLive),
+            "the unconditional tail discards replacement 901 without replacing its live row"
+        );
+        assert_eq!(
+            replacement_only
+                .source_pool
+                .allocate(SourceOccupant::CheckpointSmoke(999)),
+            Some(902),
+            "only the row beyond the literal cursor decrement remains allocatable"
+        );
+        assert!(
+            replacement_only
+                .source_pool
+                .allocate(SourceOccupant::CheckpointSmoke(1_000))
+                .is_none()
+        );
     }
 
     fn enable_castle_holder(mission: &mut Level1MissionState) -> u16 {
@@ -33578,7 +35217,7 @@ mod tests {
                 mission.castle_mana,
                 mission.secured_mana_percent(),
                 mission.targeting_source_lists.class_10_auxiliary,
-                mission.player_dead,
+                mission.player_dead(),
                 mission.source_turn_active,
                 mission.mana_carrier
             );
@@ -37525,6 +39164,7 @@ mod tests {
         replaceable.source_pool.replaceable_stack.clear();
         replaceable.source_pool.replaceable[122] = true;
         replaceable.source_pool.replaceable_stack.push(122);
+        replaceable.source_pool.raw_replaceable_cursor = 0;
         let replaceable_before = replaceable.ambient_entities[113].unwrap();
         replaceable.step_ambient_slot(&FlatWorld, 113);
         let replaceable_after = replaceable.ambient_entities[113].unwrap();
@@ -37670,14 +39310,14 @@ mod tests {
         assert_eq!(report.implemented_field_comparisons, 1_416);
         assert_eq!(report.implemented_source_byte_comparisons, 2_301);
         assert_eq!(report.reset_gap_entities, 0);
-        assert_eq!(report.canonical_matrix_gaps, 84);
+        assert_eq!(report.canonical_matrix_gaps, 82);
         assert_eq!(
             report.field_coverage,
             LEVEL1_RESET_COMPARATOR_FIELD_COVERAGE
         );
         assert_eq!(report.expected_family_census, report.observed_family_census);
         assert_eq!(report.expected_family_census.len(), 14);
-        assert_eq!(report.divergences.len(), 84);
+        assert_eq!(report.divergences.len(), 82);
         assert_eq!(
             report
                 .divergences

@@ -301,6 +301,14 @@ namespace MagicCarpet.Native.Tests
         {
             using var session = NativeSession.Open(PackagePath, ClosurePath);
             var mission = session.Level1Mission();
+            var lifecycle = session.Level1PlayerLifecycle(mission);
+            Assert.That(lifecycle.structSize, Is.EqualTo(144));
+            Assert.That(lifecycle.playerAction, Is.Zero);
+            Assert.That(lifecycle.playerActive, Is.EqualTo(1));
+            Assert.That(lifecycle.playerVisible, Is.EqualTo(1));
+            Assert.That(lifecycle.playerTargetable, Is.EqualTo(1));
+            Assert.That(lifecycle.lifecycleHash, Is.Not.Zero);
+            Assert.That(lifecycle.sourceArenaHash, Is.Not.Zero);
             var exit = session.Level1ExitPresentation(mission);
             Assert.That(exit.generation, Is.EqualTo(mission.generation));
             Assert.That(exit.tick, Is.EqualTo(mission.tick));
@@ -724,6 +732,37 @@ namespace MagicCarpet.Native.Tests
             Assert.That(
                 rightChanged.familyEnabled,
                 Is.EqualTo(new byte[] { 1, 1, 0, 0 }));
+
+            session.SetLevel1PlayerMenuState(5);
+            var openLifecycle = session.Level1PlayerLifecycle(mission);
+            Assert.That(openLifecycle.menuState, Is.EqualTo(5));
+            controller.Open(
+                familyOneCentreX,
+                firstRowCentreY,
+                rightChanged,
+                geometry);
+            var playerSnapshot = session.Snapshot();
+            session.InjectLevel1PlayerDamageForQualification(
+                mission.playerMaxLife + 1,
+                playerSnapshot.entityIndex);
+            session.Step(0, 0, 0);
+            mission = session.Level1Mission();
+            var dyingEntry = session.Level1PlayerLifecycle(mission);
+            Assert.That(dyingEntry.playerAction, Is.EqualTo(2));
+            Assert.That(dyingEntry.menuCloseRequested, Is.Zero);
+            Assert.That(dyingEntry.menuState, Is.EqualTo(5));
+            session.Step(0, 0, 0);
+            mission = session.Level1Mission();
+            openLifecycle = session.Level1PlayerLifecycle(mission);
+            Assert.That(openLifecycle.playerAction, Is.EqualTo(2));
+            Assert.That(openLifecycle.menuCloseRequested, Is.EqualTo(1));
+            Assert.That(openLifecycle.menuState, Is.Zero);
+            MagicCarpetRuntime.ApplyPlayerLifecyclePresentation(
+                controller, openLifecycle);
+            Assert.That(
+                controller.MenuState,
+                Is.Zero,
+                "a real action-2 native/runtime step applies the conditional menu close");
         }
 
         [Test]

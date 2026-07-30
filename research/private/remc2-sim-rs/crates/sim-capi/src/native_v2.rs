@@ -79,10 +79,10 @@ use sim_core::{
         POSSESSION_IMPACT_RENDER_MODE, POSSESSION_PROJECTILE_BASE_TMAP,
         POSSESSION_PROJECTILE_CLASS, POSSESSION_PROJECTILE_LOGICAL_HEIGHT,
         POSSESSION_PROJECTILE_MODEL, POSSESSION_PROJECTILE_RENDER_INDEX,
-        POSSESSION_PROJECTILE_RENDER_MODE, POSSESSION_STRONG_IMPACT_MODEL, PlayerHitReaction,
-        WATER_SPLASH_BASE_TMAP, WATER_SPLASH_LOGICAL_HEIGHT, WATER_SPLASH_MODEL,
-        WATER_SPLASH_RENDER_INDEX, WATER_SPLASH_RENDER_MODE, ground_fire_presentation,
-        level1_minimap_castle_rope_pixels, level1_minimap_entity_command, mana_sphere_size_ordinal,
+        POSSESSION_PROJECTILE_RENDER_MODE, POSSESSION_STRONG_IMPACT_MODEL, WATER_SPLASH_BASE_TMAP,
+        WATER_SPLASH_LOGICAL_HEIGHT, WATER_SPLASH_MODEL, WATER_SPLASH_RENDER_INDEX,
+        WATER_SPLASH_RENDER_MODE, ground_fire_presentation, level1_minimap_castle_rope_pixels,
+        level1_minimap_entity_command, mana_sphere_size_ordinal,
     },
     native_world::{
         AssetRef, EntityAuthority, EntitySnapshot, NativeWorld, ParticleParameter, SessionTerrain,
@@ -98,7 +98,7 @@ use sim_core::{
         LEVEL1_SCENERY_SELECTORS, SPELL_JAR_PAYLOAD_BYTES, SPELL_JAR_PAYLOAD_SHA256,
         StaticWorldTmapBank,
     },
-    step_outer_turn_with_context,
+    step_entity_body_with_context, step_outer_turn_with_context,
     terrain_frame::{
         LEVEL1_SKY_BYTES, LEVEL1_TERRAIN_ATLAS_BYTES, LEVEL1_VIEW_HEIGHT, LEVEL1_VIEW_PIXELS,
         LEVEL1_VIEW_WIDTH, Level1CastleRootRender, Level1FrozenActorRender, Level1TerrainFrame,
@@ -179,10 +179,6 @@ pub const MC_TERRAIN_SHADE_U8: u32 = 2;
 pub const MC_TERRAIN_ANGLE_U8: u32 = 3;
 pub const MC_TERRAIN_SECONDARY_U8: u32 = 4;
 
-fn apply_player_hit_reaction(state: &mut FlightState, reaction: PlayerHitReaction) {
-    state.recoil_yaw = reaction.recoil_yaw;
-    state.recoil_speed = reaction.recoil_speed;
-}
 pub const MC_TERRAIN_ENTITY_INDEX_I16: u32 = 5;
 
 pub const MC_WORLD_STRING_SCHEMA: u32 = 0;
@@ -542,6 +538,69 @@ pub struct McLevel1MissionSnapshotV2 {
     pub possessed_building_count: u16,
     pub possession_tier: u8,
     pub speed_trail_count: u8,
+}
+
+/// ABI-additive source projection for the reachable Level 1 player actions
+/// 0, 2, and human-only 3. The established 96-byte mission snapshot retains
+/// its action!=0 `player_dead` compatibility byte.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McLevel1PlayerLifecycleSnapshotV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub tick: u64,
+    pub lifecycle_hash: u64,
+    pub source_arena_hash: u64,
+    pub authority: u8,
+    pub player_action: u8,
+    pub player_dead: u8,
+    pub input_suppressed: u8,
+    pub player_active: u8,
+    pub player_visible: u8,
+    pub player_targetable: u8,
+    pub menu_close_requested: u8,
+    pub notification_active: u8,
+    pub notification_state: u8,
+    pub banished_camera_active: u8,
+    pub marker_present: u8,
+    pub fall_velocity: i16,
+    pub notification_timer: i16,
+    pub action_timer: i32,
+    pub replaceable_cursor: i32,
+    pub killer_entity_index: u16,
+    pub killer_score_awards: u16,
+    pub notification_id: u16,
+    pub player_entity_rng: u16,
+    pub player_control_flags: u32,
+    pub player_entity_roll: i16,
+    pub player_yaw: i16,
+    pub controller_pitch: i16,
+    pub controller_roll: i16,
+    pub recoil_speed: i16,
+    pub marker_source_entity_index: u16,
+    pub marker_x: u16,
+    pub marker_y: u16,
+    pub marker_z: i16,
+    pub marker_trigger_entity_index: u16,
+    pub marker_particle_parameter_index: u16,
+    pub marker_life: i32,
+    pub marker_max_life: i32,
+    pub source_pool_rebuild_count: u32,
+    pub lifecycle_trace_hash: u64,
+    pub lifecycle_trace_count: u16,
+    pub marker_dispatch_phase: u8,
+    pub marker_class: u8,
+    pub marker_model: u8,
+    pub marker_action: u8,
+    pub marker_byte_38: u8,
+    pub source_color_phase_6: u8,
+    pub source_turn_counter: u32,
+    pub menu_state: u8,
+    pub killer_score_victim_color: u8,
+    pub effective_pitch: i16,
+    pub marker_constructor_phase: u32,
+    pub reserved: [u8; 4],
 }
 
 /// One selected spell-holder row consumed by `DrawSpellIcon_2E260`.
@@ -1422,6 +1481,8 @@ struct SessionRecord {
     camera_slope_sample: TerrainSlopeCameraSample,
     terrain_frame_assets: Option<Arc<TerrainFrameAssets>>,
     pending_house_effects: Vec<HouseStepEvent>,
+    #[cfg(test)]
+    immediate_released_holder_handoff: Vec<(u8, u16, u8, u8)>,
 }
 
 fn goat_collision_target(goat: &GoatState) -> Level1CollisionTarget {
@@ -1714,10 +1775,11 @@ impl SessionRecord {
         let camera_look_yaw = i16::from_le_bytes([record[28], record[29]]);
         let camera_look_pitch = i16::from_le_bytes([record[30], record[31]]);
         let state = *world.reset_state();
-        let mission = world.level1_mission().session(
+        let mut mission = world.level1_mission().session(
             world.entities()[usize::from(state.entity_index)].life,
             1_000,
         );
+        mission.set_source_turn_counter(source_turn.cast_unsigned());
         let camera_fov = 128;
         let camera_history = CameraHistory::capture(
             &state,
@@ -1767,6 +1829,8 @@ impl SessionRecord {
             camera_slope_sample,
             terrain_frame_assets,
             pending_house_effects: Vec::new(),
+            #[cfg(test)]
+            immediate_released_holder_handoff: Vec::new(),
         })
     }
 
@@ -1822,6 +1886,8 @@ impl SessionRecord {
         let player = &self.world.players()[usize::from(self.world.runtime().local_player_slot)];
         let record = player.record_bytes();
         self.source_turn = player.turn;
+        self.mission
+            .set_source_turn_counter(self.source_turn.cast_unsigned());
         self.camera_fov = 128;
         self.camera_look_yaw = i16::from_le_bytes([record[28], record[29]]);
         self.camera_look_pitch = i16::from_le_bytes([record[30], record[31]]);
@@ -1839,6 +1905,8 @@ impl SessionRecord {
             self.camera_history.y,
         );
         self.pending_house_effects.clear();
+        #[cfg(test)]
+        self.immediate_released_holder_handoff.clear();
     }
 
     fn presentation_state(&self) -> McPresentationStateV2 {
@@ -2333,6 +2401,8 @@ impl SessionRecord {
     }
 
     fn step(&mut self, command: PlayerCommand) {
+        #[cfg(test)]
+        self.immediate_released_holder_handoff.clear();
         self.mission.finish_hud_draw(self.state.tick);
         if let (Some(frames), Some(bank)) =
             (self.selector_frames.as_mut(), self.world.goat_tmap_bank())
@@ -2381,7 +2451,9 @@ impl SessionRecord {
         }
         self.mission.advance_exit_palette_frame();
         self.source_turn = self.source_turn.wrapping_add(1);
-        if !self.mission.exit_sequence_owns_player_action() && !self.mission.player_dead {
+        if !self.mission.exit_sequence_owns_player_action()
+            && self.mission.player_action == sim_core::level1_mission::PLAYER_ACTION_ACTIVE
+        {
             if command.opcode == 8 {
                 self.camera_fov = self.camera_fov.wrapping_add(i16::from(command.argument_1));
             }
@@ -2454,6 +2526,7 @@ impl SessionRecord {
         let mut source_views =
             level1_turn_start_source_views(&self.mission, &self.state, &self.live_world);
         let mut evidence = Vec::new();
+        let mut released_holder_handoff = false;
         for source_slot in 1_u16..1_000 {
             if let Some((owner_entity_index, payload)) =
                 self.mission.take_building_possession_mailbox(source_slot)
@@ -2554,21 +2627,111 @@ impl SessionRecord {
             let (fireball_activated, possession_activated, castle_cast_yaw) = if source_slot
                 == self.state.entity_index
             {
-                evidence = if self.mission.exit_sequence_owns_player_action()
-                    || self.mission.player_dead
-                {
+                self.mission
+                    .prepare_player_action_before_flight(&mut self.state);
+                evidence = if self.mission.exit_sequence_owns_player_action() {
                     self.state.tick = self.state.tick.wrapping_add(1);
                     Vec::new()
                 } else {
-                    step_outer_turn_with_context(
-                        &mut self.state,
-                        command,
-                        0,
-                        world.profile(),
-                        &self.terrain,
-                        &mut self.context,
-                    )
+                    match self.mission.player_action {
+                        sim_core::level1_mission::PLAYER_ACTION_ACTIVE => {
+                            step_outer_turn_with_context(
+                                &mut self.state,
+                                command,
+                                0,
+                                world.profile(),
+                                &self.terrain,
+                                &mut self.context,
+                            )
+                        }
+                        sim_core::level1_mission::PLAYER_ACTION_DYING => {
+                            vec![step_entity_body_with_context(
+                                &mut self.state,
+                                world.profile(),
+                                &self.terrain,
+                                &mut self.context,
+                            )]
+                        }
+                        _ => Vec::new(),
+                    }
                 };
+                if !self.mission.exit_sequence_owns_player_action() {
+                    let flight_proposed = evidence
+                        .last()
+                        .map_or(self.state.position, |pass| pass.proposed);
+                    let lifecycle_action = self.mission.player_action;
+                    self.mission
+                        .advance_player_lifecycle_after_flight_with_proposed(
+                            &self.terrain,
+                            &mut self.state,
+                            &mut self.context,
+                            flight_proposed,
+                        );
+                    released_holder_handoff = lifecycle_action
+                        == sim_core::level1_mission::PLAYER_ACTION_DYING
+                        && self.mission.player_lifecycle_trace().iter().any(|entry| {
+                            entry.step
+                                == sim_core::level1_mission::PLAYER_LIFECYCLE_TRACE_HOLDER_FAMILY
+                        });
+                    if released_holder_handoff {
+                        for released in self.mission.released_spell_holders().iter().flatten() {
+                            let tile = (
+                                released.position.x.to_be_bytes()[0],
+                                released.position.y.to_be_bytes()[0],
+                            );
+                            self.renderable_map_chains
+                                .sync_entity(RenderableMapSeed {
+                                    entity_index: released.source_entity_index,
+                                    active: true,
+                                    x: released.position.x,
+                                    y: released.position.y,
+                                })
+                                .expect("qualified immediate spell holder map insertion");
+                            debug_assert!(
+                                self.renderable_map_chains
+                                    .entity_chain(tile.0, tile.1)
+                                    .contains(&released.source_entity_index),
+                                "released holder must be visible before later source slots dispatch"
+                            );
+                            #[cfg(test)]
+                            self.immediate_released_holder_handoff.push((
+                                released.family,
+                                released.source_entity_index,
+                                tile.0,
+                                tile.1,
+                            ));
+                        }
+                    }
+                    if let Some(marker) = self
+                        .mission
+                        .player_death_marker()
+                        .filter(|marker| marker.active)
+                    {
+                        self.renderable_map_chains
+                            .sync_entity(RenderableMapSeed {
+                                entity_index: marker.source_entity_index,
+                                active: true,
+                                x: marker.position.x,
+                                y: marker.position.y,
+                            })
+                            .expect("qualified player death marker map insertion");
+                    }
+                    for burst in self
+                        .mission
+                        .death_bursts()
+                        .iter()
+                        .filter(|burst| burst.active)
+                    {
+                        self.renderable_map_chains
+                            .sync_entity(RenderableMapSeed {
+                                entity_index: burst.source_entity_index,
+                                active: true,
+                                x: burst.position.x,
+                                y: burst.position.y,
+                            })
+                            .expect("qualified death burst map insertion");
+                    }
+                }
                 // A multi-pass outer turn clears `accepted_models` when each
                 // pass latches the command. Detect the source-visible holder
                 // transition instead, matching the direct Rust session.
@@ -2608,7 +2771,9 @@ impl SessionRecord {
             self.mission
                 .set_source_map_chains(self.renderable_map_chains.clone());
             let mission_event_start = self.mission.events().len();
-            if !self.mission.exit_sequence_owns_player_action() && !self.mission.player_dead {
+            if !self.mission.exit_sequence_owns_player_action()
+                && self.mission.player_action == sim_core::level1_mission::PLAYER_ACTION_ACTIVE
+            {
                 self.mission.dispatch_speed_holder_slot(
                     source_slot,
                     &mut self.state,
@@ -2648,12 +2813,6 @@ impl SessionRecord {
                 );
             }
             self.apply_castle_terrain_updates();
-            if let Some(reaction) = self.mission.take_player_hit_reaction() {
-                // `sub_5EFA0` runs after this turn's player flight pass. The
-                // installed directional boost is consumed by `sub_5F380` on
-                // the next turn, not retroactively in the impact turn.
-                apply_player_hit_reaction(&mut self.state, reaction);
-            }
             self.inject_new_fireball_impacts(mission_event_start);
             self.sync_source_slot_renderable_records(source_slot)
                 .expect("validated source renderable map update");
@@ -2667,6 +2826,18 @@ impl SessionRecord {
         self.mission.finish_source_turn(&self.state);
         self.sync_supported_renderable_records()
             .expect("validated final source renderable map update");
+        if released_holder_handoff {
+            for released in self.mission.released_spell_holders().iter().flatten() {
+                self.renderable_map_chains
+                    .sync_entity(RenderableMapSeed {
+                        entity_index: released.source_entity_index,
+                        active: true,
+                        x: released.position.x,
+                        y: released.position.y,
+                    })
+                    .expect("qualified released spell holder map insertion");
+            }
+        }
         self.finalize_supported_renderable_records()
             .expect("validated source renderable active set");
         if let Some(fire) = self.context.spell_fire.as_mut() {
@@ -2958,6 +3129,31 @@ impl SessionRecord {
                 active: impact.active,
                 x: impact.position.x,
                 y: impact.position.y,
+            })?;
+        }
+        for burst in self
+            .mission
+            .death_bursts()
+            .iter()
+            .filter(|burst| burst.active)
+        {
+            self.renderable_map_chains.sync_entity(RenderableMapSeed {
+                entity_index: burst.source_entity_index,
+                active: true,
+                x: burst.position.x,
+                y: burst.position.y,
+            })?;
+        }
+        if let Some(marker) = self
+            .mission
+            .player_death_marker()
+            .filter(|marker| marker.active)
+        {
+            self.renderable_map_chains.sync_entity(RenderableMapSeed {
+                entity_index: marker.source_entity_index,
+                active: true,
+                x: marker.position.x,
+                y: marker.position.y,
             })?;
         }
         for building in self.mission.possessed_buildings() {
@@ -3364,6 +3560,27 @@ impl SessionRecord {
                 .filter(|impact| impact.active && impact.model != POSSESSION_ATTRACTION_MODEL)
                 .map(|impact| impact.source_entity_index),
         );
+        active.extend(
+            self.mission
+                .death_bursts()
+                .iter()
+                .filter(|burst| burst.active)
+                .map(|burst| burst.source_entity_index),
+        );
+        active.extend(
+            self.mission
+                .released_spell_holders()
+                .iter()
+                .flatten()
+                .map(|holder| holder.source_entity_index),
+        );
+        if let Some(marker) = self
+            .mission
+            .player_death_marker()
+            .filter(|marker| marker.active)
+        {
+            active.push(marker.source_entity_index);
+        }
         active.extend(
             self.mission
                 .possessed_buildings()
@@ -5292,6 +5509,45 @@ pub extern "C" fn mc_native_level1_mission_snapshot(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn mc_native_level1_player_lifecycle_snapshot(
+    handle: u64,
+    out_snapshot: *mut McLevel1PlayerLifecycleSnapshotV2,
+    out_snapshot_size: u32,
+) -> i32 {
+    boundary_value(out_snapshot, out_snapshot_size, || {
+        with_session(handle, |session| {
+            Ok(level1_player_lifecycle_snapshot(session))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_level1_player_menu_state(handle: u64, menu_state: u8) -> i32 {
+    boundary(|| {
+        with_session_mut(handle, |session| {
+            session.mission.set_player_menu_state(menu_state);
+            Ok(())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_level1_player_inject_damage_for_qualification(
+    handle: u64,
+    damage: i32,
+    attacker_entity_index: u16,
+) -> i32 {
+    boundary(|| {
+        with_session_mut(handle, |session| {
+            session
+                .mission
+                .submit_player_damage(damage, attacker_entity_index);
+            Ok(())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn mc_native_level1_hud_snapshot(
     handle: u64,
     out_snapshot: *mut McLevel1HudSnapshotV2,
@@ -6528,7 +6784,7 @@ fn level1_mission_snapshot(session: &SessionRecord) -> McLevel1MissionSnapshotV2
         text_selector: mission.current_text_selector,
         objective_textbox_ticks: mission.objective_textbox_ticks,
         tasks_completed: u8::from(mission.level_completed),
-        player_dead: u8::from(mission.player_dead),
+        player_dead: u8::from(mission.player_dead()),
         has_fireball: u8::from(mission.has_fireball),
         has_possession: u8::from(mission.has_possession),
         has_castle_spell: u8::from(mission.has_castle_spell),
@@ -6564,6 +6820,78 @@ fn level1_mission_snapshot(session: &SessionRecord) -> McLevel1MissionSnapshotV2
         possession_tier: u8::try_from(mission.possession_tier)
             .expect("Level 1 possession tier is non-negative"),
         speed_trail_count: u8::try_from(mission.speed_trails().len()).unwrap_or(u8::MAX),
+    }
+}
+
+fn level1_player_lifecycle_snapshot(session: &SessionRecord) -> McLevel1PlayerLifecycleSnapshotV2 {
+    let mission = &session.mission;
+    let marker = mission.player_death_marker();
+    let player_entity_index = session.state.entity_index;
+    let player_control_flags = mission.player_source_control_flags(player_entity_index);
+    McLevel1PlayerLifecycleSnapshotV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McLevel1PlayerLifecycleSnapshotV2>(),
+        generation: session.generation,
+        tick: session.state.tick,
+        lifecycle_hash: mission.player_lifecycle_hash_v2(&session.state, &session.context),
+        source_arena_hash: mission.source_arena_hash_v1(),
+        authority: MC_AUTHORITY_LEVEL1_MISSION_LIVE,
+        player_action: mission.player_action,
+        player_dead: u8::from(mission.player_dead()),
+        input_suppressed: u8::from(
+            mission.player_action != sim_core::level1_mission::PLAYER_ACTION_ACTIVE,
+        ),
+        player_active: u8::from(mission.player_source_active(player_entity_index)),
+        player_visible: u8::from(player_control_flags & 0x20 == 0),
+        player_targetable: u8::from(
+            mission.player_source_active(player_entity_index) && mission.player_life >= 0,
+        ),
+        menu_close_requested: u8::from(mission.player_menu_close_requested),
+        notification_active: u8::from(mission.player_notification_active),
+        notification_state: mission.player_notification_state,
+        banished_camera_active: u8::from(mission.player_banished_camera_active),
+        marker_present: u8::from(marker.is_some_and(|marker| marker.active)),
+        fall_velocity: mission.player_fall_velocity,
+        notification_timer: mission.player_notification_timer,
+        action_timer: mission.player_action_timer,
+        replaceable_cursor: mission.source_pool_replaceable_cursor(),
+        killer_entity_index: mission.player_killer_entity_index(),
+        killer_score_awards: mission.player_score_for(
+            mission.player_killer_entity_index(),
+            session.state.player_color_index,
+        ),
+        notification_id: mission.player_notification_id,
+        player_entity_rng: mission.player_source_entity_rng(player_entity_index),
+        player_control_flags,
+        player_entity_roll: mission.player_entity_roll,
+        player_yaw: session.state.yaw,
+        controller_pitch: session.state.pitch_accumulator,
+        controller_roll: session.state.roll_accumulator,
+        recoil_speed: session.state.recoil_speed,
+        marker_source_entity_index: marker.map_or(0, |marker| marker.source_entity_index),
+        marker_x: marker.map_or(0, |marker| marker.position.x),
+        marker_y: marker.map_or(0, |marker| marker.position.y),
+        marker_z: marker.map_or(0, |marker| marker.position.z),
+        marker_trigger_entity_index: marker.map_or(0, |marker| marker.trigger_player_entity_index),
+        marker_particle_parameter_index: marker.map_or(0, |marker| marker.particle_parameter_index),
+        marker_life: marker.map_or(0, |marker| marker.life),
+        marker_max_life: marker.map_or(0, |marker| marker.max_life),
+        source_pool_rebuild_count: mission.source_pool_rebuild_count(),
+        lifecycle_trace_hash: mission.player_lifecycle_trace_hash(),
+        lifecycle_trace_count: u16::try_from(mission.player_lifecycle_trace().len())
+            .unwrap_or(u16::MAX),
+        marker_dispatch_phase: marker.map_or(0, |marker| marker.dispatch_phase),
+        marker_class: marker.map_or(0, |_| sim_core::level1_mission::PLAYER_DEATH_MARKER_CLASS),
+        marker_model: marker.map_or(0, |_| sim_core::level1_mission::PLAYER_DEATH_MARKER_MODEL),
+        marker_action: marker.map_or(0, |_| sim_core::level1_mission::PLAYER_DEATH_MARKER_ACTION),
+        marker_byte_38: marker.map_or(0, |marker| marker.byte_38),
+        source_color_phase_6: u8::from(mission.source_color_phase_6()),
+        source_turn_counter: mission.source_turn_counter(),
+        menu_state: mission.player_menu_state,
+        killer_score_victim_color: session.state.player_color_index.min(7),
+        effective_pitch: session.state.effective_pitch,
+        marker_constructor_phase: marker.map_or(0, |marker| marker.constructor_phase),
+        reserved: [0; 4],
     }
 }
 
@@ -8300,33 +8628,79 @@ mod tests {
 
     #[test]
     fn player_hit_bridge_installs_only_next_turn_directional_recoil() {
-        let mut state = FlightState {
-            recoil_yaw: 17,
-            recoil_speed: 3,
-            ..FlightState::default()
-        };
-        let reaction = PlayerHitReaction {
-            attacker_entity_index: 10,
-            raw_damage: 500,
-            applied_damage: 500,
-            recoil_yaw: 512,
-            recoil_pitch: 1_792,
-            recoil_speed: 50,
-            pain_sound_id: 56,
-            hit_frame_ticks: 4,
-            regen_block_ticks: 16,
-            hit_aux_ticks: 64,
-            survived_feedback: 100,
-            killer_entity_index: 0,
-            lethal: false,
-        };
-
-        apply_player_hit_reaction(&mut state, reaction);
-
-        assert_eq!(state.recoil_yaw, 512);
-        assert_eq!(state.recoil_speed, 50);
-        assert_eq!(state.position, FlightState::default().position);
-        assert_eq!(state.tick, 0);
+        let handle = open_fixture();
+        let expected_life = with_session_mut(handle, |session| {
+            let attacker = 10;
+            session.mission.submit_player_damage(500, attacker);
+            Ok(session.mission.player_life - 500)
+        })
+        .expect("registered C API session");
+        let mut snapshot = McSessionSnapshotV2::default();
+        let command = valid_command();
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let control_handle = open_fixture();
+        let mut control_snapshot = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                control_handle,
+                &raw const command,
+                &raw mut control_snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let control_position =
+            with_session(control_handle, |session| Ok(session.state.position)).unwrap();
+        with_session(handle, |session| {
+            assert_eq!(session.mission.player_life, expected_life);
+            assert_eq!(
+                session.state.recoil_speed, 46,
+                "the same-turn eight-pass flight consumes four units of the installed boost"
+            );
+            assert_ne!(
+                session.state.position, control_position,
+                "sub_5EFA0 recoil participates in this same production flight turn"
+            );
+            Ok(())
+        })
+        .expect("registered C API session");
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_native_session_step(
+                control_handle,
+                &raw const command,
+                &raw mut control_snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        with_session(handle, |session| {
+            assert_eq!(session.mission.player_life, expected_life);
+            assert_eq!(
+                session.state.recoil_speed, 42,
+                "the next eight-pass turn decays the one-shot boost instead of replaying 50"
+            );
+            Ok(())
+        })
+        .expect("registered C API session");
+        assert_eq!(mc_native_session_destroy(control_handle), MC_STATUS_OK);
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 
     fn fixture_paths() -> (PathBuf, PathBuf) {
@@ -8685,6 +9059,7 @@ mod tests {
         assert_eq!(size_of::<McGoatSnapshotV2>(), 84);
         assert_eq!(size_of::<McGoatBatchV2>(), 64);
         assert_eq!(size_of::<McLevel1MissionSnapshotV2>(), 96);
+        assert_eq!(size_of::<McLevel1PlayerLifecycleSnapshotV2>(), 144);
         assert_eq!(size_of::<McLevel1HudSpellSlotV2>(), 36);
         assert_eq!(size_of::<McLevel1HudSnapshotV2>(), 128);
         assert_eq!(size_of::<McLevel1SpellMenuSnapshotV2>(), 64);
@@ -8748,6 +9123,38 @@ mod tests {
         assert_eq!(
             std::mem::offset_of!(McLevel1MissionSnapshotV2, player_life),
             40
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1PlayerLifecycleSnapshotV2, player_action),
+            41
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1PlayerLifecycleSnapshotV2, action_timer),
+            56
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1PlayerLifecycleSnapshotV2, player_control_flags),
+            72
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1PlayerLifecycleSnapshotV2, source_pool_rebuild_count),
+            108
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1PlayerLifecycleSnapshotV2, marker_dispatch_phase),
+            122
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1PlayerLifecycleSnapshotV2, source_turn_counter),
+            128
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1PlayerLifecycleSnapshotV2, effective_pitch),
+            134
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1PlayerLifecycleSnapshotV2, marker_constructor_phase),
+            136
         );
         assert_eq!(
             std::mem::offset_of!(McLevel1MissionSnapshotV2, actor_count),
@@ -9508,6 +9915,7 @@ _Static_assert(sizeof(McEntitySnapshotV2) == 52, "McEntitySnapshotV2 size");
 _Static_assert(sizeof(McGoatSnapshotV2) == 84, "McGoatSnapshotV2 size");
 _Static_assert(sizeof(McGoatBatchV2) == 64, "McGoatBatchV2 size");
 _Static_assert(sizeof(McLevel1MissionSnapshotV2) == 96, "McLevel1MissionSnapshotV2 size");
+_Static_assert(sizeof(McLevel1PlayerLifecycleSnapshotV2) == 144, "McLevel1PlayerLifecycleSnapshotV2 size");
 _Static_assert(sizeof(McLevel1HudSpellSlotV2) == 36, "McLevel1HudSpellSlotV2 size");
 _Static_assert(sizeof(McLevel1HudSnapshotV2) == 128, "McLevel1HudSnapshotV2 size");
 _Static_assert(sizeof(McLevel1SpellMenuSnapshotV2) == 64, "McLevel1SpellMenuSnapshotV2 size");
@@ -9556,6 +9964,14 @@ _Static_assert(offsetof(McGoatSnapshotV2, life) == 48, "Goat life offset");
 _Static_assert(offsetof(McGoatSnapshotV2, reserved) == 68, "Goat reserved offset");
 _Static_assert(offsetof(McGoatBatchV2, reserved) == 48, "Goat batch reserved offset");
 _Static_assert(offsetof(McLevel1MissionSnapshotV2, player_life) == 40, "Level 1 mission life offset");
+_Static_assert(offsetof(McLevel1PlayerLifecycleSnapshotV2, player_action) == 41, "player lifecycle action offset");
+_Static_assert(offsetof(McLevel1PlayerLifecycleSnapshotV2, action_timer) == 56, "player lifecycle timer offset");
+_Static_assert(offsetof(McLevel1PlayerLifecycleSnapshotV2, player_control_flags) == 72, "player lifecycle flags offset");
+_Static_assert(offsetof(McLevel1PlayerLifecycleSnapshotV2, source_pool_rebuild_count) == 108, "player lifecycle rebuild offset");
+_Static_assert(offsetof(McLevel1PlayerLifecycleSnapshotV2, marker_dispatch_phase) == 122, "player lifecycle marker dispatch offset");
+_Static_assert(offsetof(McLevel1PlayerLifecycleSnapshotV2, source_turn_counter) == 128, "player lifecycle source turn offset");
+_Static_assert(offsetof(McLevel1PlayerLifecycleSnapshotV2, effective_pitch) == 134, "player lifecycle effective pitch offset");
+_Static_assert(offsetof(McLevel1PlayerLifecycleSnapshotV2, marker_constructor_phase) == 136, "player lifecycle marker constructor offset");
 _Static_assert(offsetof(McLevel1MissionSnapshotV2, actor_count) == 64, "Level 1 mission actor count offset");
 _Static_assert(offsetof(McLevel1MissionSnapshotV2, exit_sequence_phase) == 76, "Level 1 mission exit phase offset");
 _Static_assert(offsetof(McLevel1MissionSnapshotV2, exit_sequence_timer) == 80, "Level 1 mission exit timer offset");
@@ -14261,7 +14677,7 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
         let handle = open_fixture();
         let command = valid_command();
         let mut snapshot = McSessionSnapshotV2::default();
-        for _ in 0..8 {
+        for _ in 0..300 {
             assert_eq!(
                 mc_native_session_step(
                     handle,
@@ -14998,92 +15414,329 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
     #[test]
     fn dead_player_ignores_flight_view_and_spell_input_until_reset() {
         let handle = open_fixture();
-        let before = with_session_mut(handle, |session| {
-            session.mission.player_dead = true;
-            session.mission.objective_textbox_ticks = 2;
-            Ok(session.snapshot())
+        with_session_mut(handle, |session| {
+            session.mission.objective_textbox_ticks = 4;
+            let fire = session
+                .context
+                .spell_fire
+                .get_or_insert_with(Default::default);
+            fire.enabled_holder_indices[0] = 1;
+            session
+                .mission
+                .capture_spell_holder_active_values(&session.context);
+            let lethal_damage = session.mission.player_max_life.saturating_add(1);
+            session.mission.submit_player_damage(lethal_damage, 10);
+            Ok(())
         })
         .unwrap();
-        let (before_camera, before_look) = with_session(handle, |session| {
-            Ok((
-                session.camera_history,
-                (session.camera_look_yaw, session.camera_look_pitch),
-            ))
-        })
-        .unwrap();
+        assert_eq!(mc_native_level1_player_menu_state(handle, 5), MC_STATUS_OK);
 
-        let mut command = valid_command();
-        command.flags = 0x11;
-        command.roll = 96;
-        command.pitch = -96;
-        command.requested_spell = 0;
-        let camera = McCameraInputV2 {
-            look_yaw: 777,
-            look_pitch: 333,
-            ..valid_camera_input()
-        };
-        let mut after = McSessionSnapshotV2::default();
+        let mut retained_command = valid_command();
+        retained_command.flags = 1;
+        retained_command.roll = 72;
+        retained_command.pitch = -48;
+        let mut dying_entry = McSessionSnapshotV2::default();
         assert_eq!(
-            mc_native_session_step_with_camera(
+            mc_native_session_step(
                 handle,
-                &raw const command,
-                &raw const camera,
-                &raw mut after,
+                &raw const retained_command,
+                &raw mut dying_entry,
                 struct_size::<McSessionSnapshotV2>(),
             ),
             MC_STATUS_OK
         );
-        let (after_camera, after_look) = with_session(handle, |session| {
-            Ok((
-                session.camera_history,
-                (session.camera_look_yaw, session.camera_look_pitch),
-            ))
-        })
-        .unwrap();
-        assert_eq!(after.tick, before.tick + 1);
-        assert_eq!(
-            (after.x, after.y, after.z, after.yaw),
-            (before.x, before.y, before.z, before.yaw)
-        );
-        assert_eq!(
-            (
-                after.display_pitch,
-                after.effective_pitch,
-                after.roll_accumulator,
-                after.target_speed,
-                after.actual_speed,
-                after.strafe_speed,
-            ),
-            (
-                before.display_pitch,
-                before.effective_pitch,
-                before.roll_accumulator,
-                before.target_speed,
-                before.actual_speed,
-                before.strafe_speed,
-            )
-        );
-        assert_eq!(after.fire_sequence, before.fire_sequence);
-        assert_eq!(after_camera.x, before_camera.x);
-        assert_eq!(after_camera.y, before_camera.y);
-        assert_eq!(after_camera.z, before_camera.z);
-        assert_eq!(after_camera.yaw, before_camera.yaw);
-        assert_eq!(after_camera.pitch, before_camera.pitch);
-        assert_eq!(after_camera.fov, before_camera.fov);
-        assert_eq!(after_look, before_look);
+        let (retained_roll_delta, retained_pitch_delta, retained_target_speed) =
+            with_session(handle, |session| {
+                assert_eq!(
+                    session.mission.player_action,
+                    sim_core::level1_mission::PLAYER_ACTION_DYING
+                );
+                Ok((
+                    session.state.roll_delta,
+                    session.state.pitch_delta,
+                    session.state.target_speed,
+                ))
+            })
+            .unwrap();
 
-        let mut mission = McLevel1MissionSnapshotV2::default();
+        let mut lifecycle = McLevel1PlayerLifecycleSnapshotV2::default();
         assert_eq!(
-            mc_native_level1_mission_snapshot(
+            mc_native_level1_player_lifecycle_snapshot(
                 handle,
-                &raw mut mission,
-                struct_size::<McLevel1MissionSnapshotV2>(),
+                &raw mut lifecycle,
+                struct_size::<McLevel1PlayerLifecycleSnapshotV2>(),
             ),
             MC_STATUS_OK
         );
+        assert_eq!(lifecycle.player_action, 2);
+        assert_eq!(
+            (
+                lifecycle.player_active,
+                lifecycle.player_visible,
+                lifecycle.player_targetable,
+                lifecycle.input_suppressed,
+            ),
+            (1, 1, 0, 1)
+        );
+
+        let mut suppressed = valid_command();
+        suppressed.flags = 0x12;
+        suppressed.roll = -101;
+        suppressed.pitch = 99;
+        suppressed.requested_spell = 0;
+        let fire_sequence_before = dying_entry.fire_sequence;
+        let expected_burst_position = with_session(handle, |session| {
+            let mut expected_state = session.state;
+            let mut expected_context = session.context.clone();
+            Ok(step_entity_body_with_context(
+                &mut expected_state,
+                session.world.profile(),
+                &session.terrain,
+                &mut expected_context,
+            )
+            .proposed)
+        })
+        .unwrap();
+        let mut after_direct_body = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const suppressed,
+                &raw mut after_direct_body,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        with_session(handle, |session| {
+            assert_eq!(
+                (
+                    session.state.roll_delta,
+                    session.state.pitch_delta,
+                    session.state.target_speed,
+                ),
+                (
+                    retained_roll_delta,
+                    retained_pitch_delta,
+                    retained_target_speed,
+                ),
+                "action 2 runs the direct retained flight body without relatching command axes"
+            );
+            assert!(
+                !session.mission.death_bursts().is_empty(),
+                "the production action-2 pass emits its per-tick burst"
+            );
+            assert_eq!(
+                session.mission.death_bursts().last().unwrap().position,
+                expected_burst_position,
+                "the C ABI production route retains predictedAxis before the separate fall"
+            );
+            let burst = session.mission.death_bursts().last().unwrap();
+            assert!(
+                session
+                    .renderable_map_chains
+                    .entity_chain(
+                        burst.position.x.to_be_bytes()[0],
+                        burst.position.y.to_be_bytes()[0],
+                    )
+                    .contains(&burst.source_entity_index),
+                "a live action-1 burst survives the production CAPI chain handoff before marker replacement"
+            );
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(after_direct_body.fire_sequence, fire_sequence_before);
+        assert_eq!(
+            mc_native_level1_player_lifecycle_snapshot(
+                handle,
+                &raw mut lifecycle,
+                struct_size::<McLevel1PlayerLifecycleSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(lifecycle.menu_close_requested, 1);
+        assert_eq!(lifecycle.menu_state, 0);
+
+        let mut mission = McLevel1MissionSnapshotV2::default();
+        for _ in 0..300 {
+            assert_eq!(
+                mc_native_level1_mission_snapshot(
+                    handle,
+                    &raw mut mission,
+                    struct_size::<McLevel1MissionSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+            assert_eq!(
+                mc_native_level1_player_lifecycle_snapshot(
+                    handle,
+                    &raw mut lifecycle,
+                    struct_size::<McLevel1PlayerLifecycleSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+            if lifecycle.player_action == 3 {
+                break;
+            }
+            let mut step = McSessionSnapshotV2::default();
+            assert_eq!(
+                mc_native_session_step(
+                    handle,
+                    &raw const suppressed,
+                    &raw mut step,
+                    struct_size::<McSessionSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+        }
+        assert_eq!(lifecycle.player_action, 3);
         assert_eq!(mission.player_dead, 1);
-        assert_eq!(mission.objective_textbox_ticks, 1);
-        assert_eq!(mission.projectile_count, 0);
+        assert_eq!(mission.objective_textbox_ticks, 0);
+        assert_eq!(
+            (
+                lifecycle.player_active,
+                lifecycle.player_visible,
+                lifecycle.player_targetable,
+                lifecycle.menu_close_requested,
+                lifecycle.notification_id,
+                lifecycle.notification_state,
+                lifecycle.notification_timer,
+                lifecycle.marker_present,
+                lifecycle.marker_class,
+                lifecycle.marker_model,
+                lifecycle.marker_action,
+                lifecycle.marker_byte_38,
+            ),
+            (1, 0, 0, 0, 374, 1, 100, 1, 10, 40, 42, 2)
+        );
+        assert_eq!(
+            (lifecycle.marker_life, lifecycle.marker_max_life),
+            (300, 300)
+        );
+        assert_eq!(
+            lifecycle.marker_dispatch_phase,
+            lifecycle.marker_source_entity_index.to_le_bytes()[0]
+        );
+        assert_eq!(
+            lifecycle.marker_constructor_phase,
+            u32::from(lifecycle.marker_source_entity_index % 11)
+        );
+        assert_eq!(
+            lifecycle.marker_trigger_entity_index,
+            dying_entry.entity_index
+        );
+        assert_eq!(lifecycle.marker_particle_parameter_index, 65);
+        assert!(lifecycle.lifecycle_trace_count >= 33);
+        assert_ne!(lifecycle.lifecycle_hash, lifecycle.source_arena_hash);
+        assert_eq!(lifecycle.killer_score_awards, 0);
+        with_session(handle, |session| {
+            let marker = session
+                .mission
+                .player_death_marker()
+                .expect("production action 2 allocated the death marker");
+            assert!(
+                session
+                    .renderable_map_chains
+                    .tracks(marker.source_entity_index),
+                "the production C ABI retains model 40 in its live source map"
+            );
+            assert!(
+                session
+                    .renderable_map_chains
+                    .entity_chain(
+                        marker.position.x.to_le_bytes()[1],
+                        marker.position.y.to_le_bytes()[1],
+                    )
+                    .contains(&marker.source_entity_index),
+                "sub_501D0 map-chain insertion survives the C ABI presentation sync"
+            );
+            Ok(())
+        })
+        .unwrap();
+
+        let (released_slot, released_position, moved_position) =
+            with_session_mut(handle, |session| {
+                let released = session
+                    .mission
+                    .released_spell_holders()
+                    .iter()
+                    .flatten()
+                    .find(|released| released.source_entity_index == 1)
+                    .copied()
+                    .expect("literal holder one survives the production contact path");
+                let moved = Position {
+                    x: released.position.x.wrapping_add(1_024),
+                    ..released.position
+                };
+                session
+                    .renderable_map_chains
+                    .sync_entity(RenderableMapSeed {
+                        entity_index: released.source_entity_index,
+                        active: true,
+                        x: moved.x,
+                        y: moved.y,
+                    })
+                    .expect("simulate the later live actor CopyPosition update");
+                Ok((released.source_entity_index, released.position, moved))
+            })
+            .unwrap();
+        let action_timer = lifecycle.action_timer;
+        let mut banished = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const suppressed,
+                &raw mut banished,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_native_level1_player_lifecycle_snapshot(
+                handle,
+                &raw mut lifecycle,
+                struct_size::<McLevel1PlayerLifecycleSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(lifecycle.player_action, 3);
+        assert_eq!(lifecycle.action_timer, action_timer);
+        assert_eq!(lifecycle.banished_camera_active, 1);
+        with_session(handle, |session| {
+            let moved_tile = (
+                moved_position.x.to_be_bytes()[0],
+                moved_position.y.to_be_bytes()[0],
+            );
+            assert!(
+                session
+                    .renderable_map_chains
+                    .entity_chain(moved_tile.0, moved_tile.1)
+                    .contains(&released_slot),
+                "a later live holder position owns the action-3 CAPI chain"
+            );
+            let released_tile = (
+                released_position.x.to_be_bytes()[0],
+                released_position.y.to_be_bytes()[0],
+            );
+            if moved_tile != released_tile {
+                assert!(
+                    !session
+                        .renderable_map_chains
+                        .entity_chain(released_tile.0, released_tile.1)
+                        .contains(&released_slot),
+                    "historical release coordinates are not replayed on action-3 turns"
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            (
+                lifecycle.controller_pitch,
+                lifecycle.controller_roll,
+                lifecycle.recoil_speed,
+            ),
+            (0, 0, 0)
+        );
 
         let mut reset = McSessionSnapshotV2::default();
         assert_eq!(
@@ -15100,7 +15753,309 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame re
         );
         assert_eq!(mission.player_dead, 0);
         assert_eq!(mission.player_life, mission.player_max_life);
+        assert_eq!(
+            mc_native_level1_player_lifecycle_snapshot(
+                handle,
+                &raw mut lifecycle,
+                struct_size::<McLevel1PlayerLifecycleSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(lifecycle.player_action, 0);
+        assert_eq!(lifecycle.marker_present, 0);
+        assert_eq!(lifecycle.notification_id, 0);
+
+        let (player_entity_index, victim_color, lethal_damage) =
+            with_session_mut(handle, |session| {
+                let position = session.state.position;
+                session.state.position.z =
+                    session.terrain.ground_height(position).wrapping_add(100);
+                Ok((
+                    session.state.entity_index,
+                    session.state.player_color_index,
+                    session.mission.player_max_life.saturating_add(1),
+                ))
+            })
+            .unwrap();
+        assert_eq!(
+            mc_native_level1_player_inject_damage_for_qualification(
+                handle,
+                lethal_damage,
+                player_entity_index,
+            ),
+            MC_STATUS_OK
+        );
+        let mut lethal_entry = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const suppressed,
+                &raw mut lethal_entry,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        with_session_mut(handle, |session| {
+            assert_eq!(
+                session.mission.player_action,
+                sim_core::level1_mission::PLAYER_ACTION_DYING
+            );
+            let position = session.state.position;
+            session.state.position.z = session.terrain.ground_height(position).wrapping_add(100);
+            session.state.recoil_speed = 0;
+            session.state.skip_flight_once = true;
+            Ok(())
+        })
+        .unwrap();
+        for _ in 0..8 {
+            let mut step = McSessionSnapshotV2::default();
+            assert_eq!(
+                mc_native_session_step(
+                    handle,
+                    &raw const suppressed,
+                    &raw mut step,
+                    struct_size::<McSessionSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+            assert_eq!(
+                mc_native_level1_player_lifecycle_snapshot(
+                    handle,
+                    &raw mut lifecycle,
+                    struct_size::<McLevel1PlayerLifecycleSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+            if lifecycle.player_action == sim_core::level1_mission::PLAYER_ACTION_BANISHED {
+                break;
+            }
+        }
+        assert_eq!(
+            lifecycle.player_action,
+            sim_core::level1_mission::PLAYER_ACTION_BANISHED
+        );
+        assert_eq!(lifecycle.killer_entity_index, player_entity_index);
+        assert_eq!(lifecycle.killer_score_victim_color, victim_color);
+        assert_eq!(
+            lifecycle.killer_score_awards, 1,
+            "the C ABI projects the qualifying killer's own victim-color score"
+        );
+        with_session_mut(handle, |session| {
+            session.state.effective_pitch = 321;
+            Ok(())
+        })
+        .unwrap();
+        let mut banished_pitch_step = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const suppressed,
+                &raw mut banished_pitch_step,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_native_level1_player_lifecycle_snapshot(
+                handle,
+                &raw mut lifecycle,
+                struct_size::<McLevel1PlayerLifecycleSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            lifecycle.effective_pitch, 321,
+            "the lifecycle ABI distinguishes retained effective pitch from cleared controller pitch"
+        );
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+
+        let exhausted_handle = open_fixture();
+        let (exhausted_player, exhausted_damage, exhausted_holder, allocated_residents) =
+            with_session_mut(exhausted_handle, |session| {
+                let holder = session
+                    .world
+                    .entities()
+                    .iter()
+                    .find(|entity| {
+                        entity.active
+                            && entity.class == 10
+                            && entity.model == 45
+                            && session.renderable_map_chains.tracks(entity.index)
+                    })
+                    .expect("Level 1 reset exposes a source-mapped static holder row")
+                    .index;
+                let fire = session
+                    .context
+                    .spell_fire
+                    .get_or_insert_with(Default::default);
+                fire.enabled_holder_indices[0] = holder;
+                session
+                    .mission
+                    .capture_spell_holder_active_values(&session.context);
+                let resident_position = session.state.position;
+                let mut allocated_residents = 0_u16;
+                while session
+                    .mission
+                    .spawn_house_resident(resident_position, 13, 105, 0)
+                    .expect("qualified resident constructor")
+                    .is_some()
+                {
+                    allocated_residents = allocated_residents.wrapping_add(1);
+                }
+                assert!(
+                    allocated_residents > 0,
+                    "the production source arena exposes allocatable rows before exhaustion"
+                );
+                Ok((
+                    session.state.entity_index,
+                    session.mission.player_max_life.saturating_add(1),
+                    holder,
+                    allocated_residents,
+                ))
+            })
+            .unwrap();
+        assert!(
+            allocated_residents > 100,
+            "the regression exhausts the real production source arena, not a one-slot stub"
+        );
+        assert_eq!(
+            mc_native_level1_player_inject_damage_for_qualification(
+                exhausted_handle,
+                exhausted_damage,
+                exhausted_player,
+            ),
+            MC_STATUS_OK
+        );
+        let mut exhausted_step = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                exhausted_handle,
+                &raw const suppressed,
+                &raw mut exhausted_step,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let force_contact = |handle| {
+            with_session_mut(handle, |session| {
+                let position = session.state.position;
+                session.state.position.z =
+                    session.terrain.ground_height(position).wrapping_add(100);
+                session.state.recoil_speed = 0;
+                session.state.skip_flight_once = true;
+                Ok(())
+            })
+            .unwrap();
+        };
+        force_contact(exhausted_handle);
+        assert_eq!(
+            mc_native_session_step(
+                exhausted_handle,
+                &raw const suppressed,
+                &raw mut exhausted_step,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let first_failed_release = with_session(exhausted_handle, |session| {
+            assert_eq!(
+                session.mission.player_action,
+                sim_core::level1_mission::PLAYER_ACTION_DYING,
+                "failed marker allocation retains action 2"
+            );
+            assert!(session.mission.player_death_marker().is_none());
+            let released = session.mission.released_spell_holders()[0]
+                .expect("failed marker allocation still releases the live holder row");
+            assert_eq!(released.source_entity_index, exhausted_holder);
+            let tile = (
+                released.position.x.to_be_bytes()[0],
+                released.position.y.to_be_bytes()[0],
+            );
+            assert!(
+                session
+                    .renderable_map_chains
+                    .entity_chain(tile.0, tile.1)
+                    .contains(&released.source_entity_index),
+                "the CAPI handoff retains holder relinking when the marker allocator fails"
+            );
+            Ok(released)
+        })
+        .unwrap();
+        with_session_mut(exhausted_handle, |session| {
+            session.state.position.x = session.state.position.x.wrapping_add(4_096);
+            Ok(())
+        })
+        .unwrap();
+        let literal_one_prior_tile = with_session(exhausted_handle, |session| {
+            Ok((0..=u8::MAX)
+                .find_map(|tile_y| {
+                    (0..=u8::MAX)
+                        .find(|tile_x| {
+                            session
+                                .renderable_map_chains
+                                .entity_chain(*tile_x, tile_y)
+                                .contains(&1)
+                        })
+                        .map(|tile_x| (tile_x, tile_y))
+                })
+                .expect("exhaustion leaves literal source row one map-linked"))
+        })
+        .unwrap();
+        force_contact(exhausted_handle);
+        assert_eq!(
+            mc_native_session_step(
+                exhausted_handle,
+                &raw const suppressed,
+                &raw mut exhausted_step,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        with_session(exhausted_handle, |session| {
+            assert_eq!(
+                session.mission.player_action,
+                sim_core::level1_mission::PLAYER_ACTION_DYING
+            );
+            assert!(session.mission.player_death_marker().is_none());
+            let retried = session.mission.released_spell_holders()[0]
+                .expect("the failed marker constructor retries holder release");
+            assert_ne!(
+                retried.position, first_failed_release.position,
+                "a retry records its current production release position"
+            );
+            assert_eq!(
+                retried.source_entity_index, 1,
+                "the source retry consumes the literal-one holder registry sentinel"
+            );
+            let retried_tile = (
+                retried.position.x.to_be_bytes()[0],
+                retried.position.y.to_be_bytes()[0],
+            );
+            assert_ne!(retried_tile, literal_one_prior_tile);
+            assert!(
+                session
+                    .immediate_released_holder_handoff
+                    .contains(&(0, retried.source_entity_index, retried_tile.0, retried_tile.1)),
+                "the current action-2 invocation publishes CopyEntityPosition immediately before later source slots dispatch"
+            );
+            assert!(
+                session
+                    .renderable_map_chains
+                    .entity_chain(retried_tile.0, retried_tile.1)
+                    .contains(&retried.source_entity_index),
+                "the failed-contact retry publishes literal row one at its current release position"
+            );
+            assert!(
+                !session
+                    .renderable_map_chains
+                    .entity_chain(literal_one_prior_tile.0, literal_one_prior_tile.1)
+                    .contains(&retried.source_entity_index),
+                "the failed-contact retry unlinks literal row one from its prior tile"
+            );
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(mc_native_session_destroy(exhausted_handle), MC_STATUS_OK);
     }
 
     #[test]
