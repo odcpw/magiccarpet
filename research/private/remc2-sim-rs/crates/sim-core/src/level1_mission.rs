@@ -5039,8 +5039,13 @@ impl Level1MissionState {
             }
             Level1Projectile::CastleBuild(projectile) => {
                 view.owner_entity_index = projectile.owner_entity_index;
+                view.target_entity_index = projectile.association_target_entity_index;
                 view.actual_speed = projectile.speed;
                 view.life = i32::from(projectile.life_ticks);
+                view.collision_half_width = CASTLE_PROJECTILE_COLLISION_HALF_WIDTH;
+                view.collision_half_depth = CASTLE_PROJECTILE_COLLISION_HALF_WIDTH;
+                view.collision_vertical_offset = CASTLE_PROJECTILE_COLLISION_VERTICAL_OFFSET;
+                view.collision_half_height = CASTLE_PROJECTILE_COLLISION_HALF_HEIGHT;
             }
             Level1Projectile::Possession(projectile) => {
                 view.owner_entity_index = projectile.owner_entity_index;
@@ -5174,13 +5179,10 @@ impl Level1MissionState {
                 view.position = association.position;
                 view.life = i32::from(association.life);
                 view.owner_entity_index = association.owner_entity_index;
-                view.target_entity_index = if self.castle_exists
-                    && association.owner_entity_index == self.castle_owner_entity_index
-                {
-                    self.castle_source_entity_index
-                } else {
-                    0
-                };
+                view.collision_half_width = CASTLE_ASSOCIATION_COLLISION_HALF_WIDTH;
+                view.collision_half_depth = CASTLE_ASSOCIATION_COLLISION_HALF_WIDTH;
+                view.collision_vertical_offset = CASTLE_ASSOCIATION_COLLISION_VERTICAL_OFFSET;
+                view.collision_half_height = CASTLE_ASSOCIATION_COLLISION_HALF_HEIGHT;
             }
             _ => unreachable!("castle view helper called for non-castle occupant"),
         }
@@ -15151,6 +15153,8 @@ impl Level1MissionState {
         }
         self.multipart_segments.retain(|segment| segment.active);
         self.speed_trails.retain(|trail| trail.active);
+        self.castle_associations
+            .retain(|association| association.active);
         let active_sphere_slots = self
             .mana_spheres
             .iter()
@@ -26947,6 +26951,122 @@ mod tests {
         );
     }
 
+    fn assert_castle_projectile_source_view(
+        mission: &Level1MissionState,
+        projectile: CastleBuildProjectile,
+    ) {
+        let view = mission
+            .complete_turn_start_source_views(&[])
+            .into_iter()
+            .find(|view| view.source_entity_index == projectile.source_entity_index)
+            .unwrap();
+        assert_eq!(
+            (
+                view.target_entity_index,
+                view.collision_half_width,
+                view.collision_half_depth,
+                view.collision_vertical_offset,
+                view.collision_half_height,
+            ),
+            (
+                mission.castle_source_entity_index,
+                CASTLE_PROJECTILE_COLLISION_HALF_WIDTH,
+                CASTLE_PROJECTILE_COLLISION_HALF_WIDTH,
+                CASTLE_PROJECTILE_COLLISION_VERTICAL_OFFSET,
+                CASTLE_PROJECTILE_COLLISION_HALF_HEIGHT,
+            ),
+            "the class-9 Castle projectile view projects word_0x96 and its type-row collision shape"
+        );
+    }
+
+    fn assert_castle_association_source_views(
+        mission: &Level1MissionState,
+        player: &FlightState,
+        association: CastleAssociationEffect,
+    ) {
+        let source_views = mission.complete_turn_start_source_views(&[]);
+        let castle_view = source_views
+            .iter()
+            .find(|view| view.source_entity_index == mission.castle_source_entity_index)
+            .unwrap();
+        assert_eq!(castle_view.linked_entity_index, player.entity_index);
+        let association_view = source_views
+            .iter()
+            .find(|view| view.source_entity_index == association.source_entity_index)
+            .unwrap();
+        assert_eq!(
+            (
+                association_view.owner_entity_index,
+                association_view.target_entity_index,
+                association_view.collision_half_width,
+                association_view.collision_half_depth,
+                association_view.collision_vertical_offset,
+                association_view.collision_half_height,
+            ),
+            (
+                player.entity_index,
+                0,
+                CASTLE_ASSOCIATION_COLLISION_HALF_WIDTH,
+                CASTLE_ASSOCIATION_COLLISION_HALF_WIDTH,
+                CASTLE_ASSOCIATION_COLLISION_VERTICAL_OFFSET,
+                CASTLE_ASSOCIATION_COLLISION_HALF_HEIGHT,
+            ),
+            "10/43/45 projects its owner and collision shape without inventing a Castle target"
+        );
+    }
+
+    fn assert_castle_association_reclaim_hash(
+        mission: &mut Level1MissionState,
+        association: CastleAssociationEffect,
+    ) {
+        let association_hash = mission.source_arena_hash_v1();
+        let mut changed_association = mission.clone();
+        changed_association.castle_association_timer -= 1;
+        assert_ne!(
+            changed_association.source_arena_hash_v1(),
+            association_hash,
+            "future-affecting live Castle association state participates in the hash"
+        );
+        let association_slot = association.source_entity_index;
+        let mut without_dead_history = mission.clone();
+        without_dead_history.castle_associations.clear();
+        assert_ne!(
+            without_dead_history.source_arena_hash_v1(),
+            association_hash,
+            "the disabled typed payload remains authoritative until next-turn reclamation"
+        );
+        mission.begin_source_turn();
+        without_dead_history.begin_source_turn();
+        assert!(mission.castle_associations().is_empty());
+        assert_eq!(mission.source_pool.occupant(association_slot), None);
+        assert!(mission.source_pool.free_stack.contains(&association_slot));
+        let cleared_record = mission.source_slots[usize::from(association_slot)];
+        assert_eq!(
+            (
+                cleared_record.active,
+                cleared_record.class,
+                cleared_record.model,
+                cleared_record.action,
+                cleared_record.phase,
+                cleared_record.entity_rng,
+                cleared_record.control_flags,
+            ),
+            (false, 0, 0, 0, 0, 0, 0),
+            "next-turn reclamation clears the disabled 10/43/45 source record"
+        );
+        assert!(
+            mission
+                .complete_turn_start_source_views(&[])
+                .iter()
+                .all(|view| view.source_entity_index != association_slot)
+        );
+        assert_eq!(
+            mission.source_arena_hash_v1(),
+            without_dead_history.source_arena_hash_v1(),
+            "reclaimed action-45 history is hash-neutral"
+        );
+    }
+
     fn assert_castle_association_scheduling(
         template: &Level1MissionTemplate,
         player: &FlightState,
@@ -26968,6 +27088,7 @@ mod tests {
             }
         );
         assert_ne!(first_flight.position, castle_position);
+        assert_castle_projectile_source_view(&later_slot, first_flight);
         let mut collision_turn = 0;
         for turn in 2..=12 {
             later_slot.step_with_spells(&FlatWorld, player, false, false, None);
@@ -27002,20 +27123,8 @@ mod tests {
             later_slot.castle_association_timer,
             CASTLE_ASSOCIATION_COLLISION_TIMER
         );
-        let castle_view = later_slot
-            .source_entity_views(player, &[])
-            .into_iter()
-            .find(|view| view.source_entity_index == later_slot.castle_source_entity_index)
-            .unwrap();
-        assert_eq!(castle_view.linked_entity_index, player.entity_index);
-        let association_hash = later_slot.source_arena_hash_v1();
-        let mut changed_association = later_slot.clone();
-        changed_association.castle_association_timer -= 1;
-        assert_ne!(
-            changed_association.source_arena_hash_v1(),
-            association_hash,
-            "future-affecting live Castle association state participates in the hash"
-        );
+        assert_castle_association_source_views(&later_slot, player, association);
+        assert_castle_association_reclaim_hash(&mut later_slot, association);
 
         let mut earlier_slot =
             existing_castle_mission(template, player, castle_position, &[100, 900]);
@@ -27034,6 +27143,14 @@ mod tests {
         assert_eq!(pending.update_count, 0);
         assert!(!pending.collision_attempted);
         assert!(pending.active);
+        let pending_hash = earlier_slot.source_arena_hash_v1();
+        let mut changed_pending = earlier_slot.clone();
+        changed_pending.castle_associations[0].life -= 1;
+        assert_ne!(
+            changed_pending.source_arena_hash_v1(),
+            pending_hash,
+            "live action-45 payload remains hash-sensitive before dispatch and reclaim"
+        );
         assert_eq!(earlier_slot.castle_association_owner_entity_index, 0);
         assert_eq!(earlier_slot.castle_association_timer, 0);
         assert!(
