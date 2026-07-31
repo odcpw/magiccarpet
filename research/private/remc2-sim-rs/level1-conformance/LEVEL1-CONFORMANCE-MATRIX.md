@@ -292,7 +292,7 @@ Exclusions with mechanical proof: 18. Plan items: 22. Authored census: 308/308 i
 
 | Row | Title | Class/Model/Slot | Classification | Plan | Key source anchor | Key evidence |
 |---|---|---|---|---|---|---|
-| `OBJ-001` | Six Level 1 objective predicates and stage progression | — | **Exact** | — | EventsFunctions.cpp:40567-40649 | level1_mission::tests::four_archers_plus_three_goats_fail_but... |
+| `OBJ-001` | Five Level 1 objective predicates, completion message, and stage progression | — | **Exact** | — | EventsFunctions.cpp:40567-40649 | level1_mission::tests::four_archers_plus_three_goats_fail_but... |
 | `OBJ-002` | Completion sequence: exit collision, fade, result code 10, restart | — | **Exact** | — | EventsFunctions.cpp:60353-60636 pinned | level1_mission::tests::group4_exit_switch_runs_source_timers_... |
 
 ### rng

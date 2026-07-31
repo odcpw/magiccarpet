@@ -9,8 +9,9 @@ milestone.
 
 Level 1 is a playable mission slice, but it is not yet a complete remc2
 conformance slice. The ordinary-input desktop
-route starts from a fresh session, flies through all six source-mapped
-objectives, collects and casts Fireball, Possession, Castle, and Speed, fights
+route starts from a fresh session, flies through all five source-mapped
+objective predicates and their completion message, collects and casts Fireball,
+Possession, Castle, and Speed, fights
 Archers and Fireflies, builds castle stage 1, possesses and deposits mana
 spheres, fills the castle, enters the authored exit, and reaches result code
 10 while alive. The separately tested post-completion group-33/34 multipart
@@ -88,7 +89,8 @@ and `Space` also casts the left hand. `Esc` releases capture, click recaptures,
   projectiles, Possession, spell jars, exit target, impacts, splashes, castle
   root, mana carrier, and mana spheres in source-slot order, with the shared
   reflection-before-primary and terrain-projected shadow passes.
-- The six objective textboxes use exact remc2 layout and source draw order:
+- Five objective textboxes (selectors 48–52) plus the completion textbox
+  (selector 53) use exact remc2 layout and source draw order:
   live indexed-world TABLESN blend, HFONT3 text, then HSPRN frame. Their
   foreground and masks remain indexed until the final owner-palette resolve.
 - Unity supplies input, audio playback, HUD/window presentation, and the
@@ -153,11 +155,11 @@ Current local artifact identities:
   `8abee05c17b175ff5f5b089ac2fd131f61041b1f320e47891678e07c829ae1d6`;
 - Unity build GUID: `ca97e2bdb3044fcf8514f2ad7db0fdf8`;
 - owner-cache content SHA-256:
-  `ee063ce1d5f804c8efc412dff2bedb0800d6fd347b38a6d0376e2a2e4dccd9dc`;
+  `a1dc7c3fca20da019807093530c601b872c3d81284a19d17d5e1aa1bccafd752`;
 - owner-cache manifest SHA-256:
-  `3909be6b29c1f879208f0a15ec2bccee58d65311cefd6698f0870d16c9742a8d`;
+  `474d4b24c157896ce98f0a8baa1593f98762fc314f081600c44a94f97743fad8`;
 - owner-cache source-frame census SHA-256:
-  `3ca66e8258fb239c51aa728d321029e2f5364b61d674abb3499e86c92f5f6e59`.
+  `57188c96853bfd9964c978c8ac9561fe69f69610d3e95aa3c7bbb0b2e5222722`.
 
 Current evidence from the final rebuilt player:
 

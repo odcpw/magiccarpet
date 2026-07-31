@@ -147,7 +147,7 @@ Then run the composed gate:
 ```bash
 python3 qualification/verify_presentation_correspondence.py \
   /tmp/magiccarpet-presentation \
-  --owner-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache-plan28-cp4-correction2 \
+  --owner-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache-plan28-cp4-correction6 \
   --unity-captures /tmp/magiccarpet-level1-qual-v5-a \
   --second-unity-captures /tmp/magiccarpet-level1-qual-v5-b \
   --unity-log-a /tmp/magiccarpet-autoplay-v5-a.log \

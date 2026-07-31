@@ -123,7 +123,8 @@ particular,
 material class `1` (strongly identified water) remains distinct from exact
 movement-redirection class `0x100`.
 
-The complete Level 1 mission-route test reaches objective selectors 48–53,
+The complete Level 1 mission-route test reaches five objective selectors
+48–52 followed by completion selector 53,
 collects and uses all four Level 1 spell families, drives the Archer,
 Firefly, and Goat death paths, builds castle stage 1, possesses and deposits
 mana spheres, enters the authored exit, and emits exactly one result-10

@@ -131,7 +131,9 @@ extern "C" {
 #define MC_EVENT_LEVEL1_EXIT_SEQUENCE_STARTED 35u
 #define MC_EVENT_LEVEL1_EXIT_SEQUENCE_COMPLETED 36u
 #define MC_EVENT_LEVEL1_WATER_SPLASHED 37u
+#define MC_EVENT_LEVEL1_ABILITY_IMPROVED 38u
 
+#define MC_AUDIO_ACTION_PREPARED_PENDING 0u
 #define MC_AUDIO_ACTION_START 1u
 #define MC_AUDIO_ACTION_RESTART 2u
 #define MC_AUDIO_ACTION_SUPPRESS_EXISTING 3u
@@ -1003,7 +1005,14 @@ typedef struct McAudioCommandV2 {
     uint8_t play_type;
     int8_t loop_count;
     uint8_t action;
-    uint8_t reserved_0;
+    /* One-based ordinary pooled playback order. Direct/immediate, pending,
+       and suppressed commands are zero. ABI offset/size is unchanged. */
+    uint8_t pooled_flush_rank;
+    /* reserved[0..1] = the non-zero little-endian u64 pooled flush ID (the
+       minimum participating event sequence) when pooled_flush_rank is
+       non-zero; reserved[2..3] remain zero. Action zero
+       is prepared/pending and must not be rendered. Sidecars remain queryable
+       across event-ring expiry until the client releases a resolved row. */
     uint32_t reserved[4];
 } McAudioCommandV2;
 
@@ -1442,6 +1451,10 @@ int32_t mc_native_events_copy_since(uint64_t handle,
 int32_t mc_native_audio_command_for_event(
     uint64_t handle, uint64_t generation, uint64_t event_sequence,
     McAudioCommandV2 *out_command, uint32_t out_command_size);
+int32_t mc_native_audio_command_release(
+    uint64_t handle, uint64_t generation, uint64_t event_sequence);
+int32_t mc_native_audio_command_discard(
+    uint64_t handle, uint64_t generation, uint64_t event_sequence);
 int32_t mc_native_audio_voice_complete(
     uint64_t handle, uint64_t generation, uint16_t voice_index,
     uint64_t event_sequence);

@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Callable
+from unittest import mock
 
 TOOLS_DIR = Path(__file__).resolve().parent
 WORKSPACE_ROOT = TOOLS_DIR.parent
@@ -49,22 +50,229 @@ class Level1MatrixValidatorTests(unittest.TestCase):
         ):
             self.validate_temporary(document)
 
+    def validate_temporary_audio_ledger(self, document: dict[str, Any]) -> None:
+        with tempfile.TemporaryDirectory(prefix="level1-audio-ledger-test-") as directory:
+            path = Path(directory) / "audio-ledger.json"
+            path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+            path.chmod(0o644)
+            with mock.patch.object(validator, "AUDIO_LEDGER_PATH", path):
+                validator.validate_file(CANONICAL_MATRIX, self.inventory)
+
+    def assert_correction_contract(self, document: dict[str, Any]) -> None:
+        rows = {row["id"]: row for row in document["rows"]}
+        scheduler = rows["SCH-004"]
+        self.assertIn("DrawAndEventsInGame_47560", scheduler["source"]["symbols"])
+        self.assertNotIn("GameRender_28870", scheduler["source"]["symbols"])
+        self.assertIn("31724", scheduler["source"]["lines"])
+        self.assertIn("31796-31815", scheduler["source"]["lines"])
+
+        rng = rows["RNG-001"]
+        rng_contract = json.dumps(
+            {
+                "symbols": rng["source"]["symbols"],
+                "lines": rng["source"]["lines"],
+                "behavior": rng["behavior_ordered"],
+                "negative": rng["negative_coverage_required"],
+            }
+        )
+        for symbol in (
+            "GenerateLevelMap",
+            "ApplyEvents",
+            "sub_232C0",
+            "sub_28FF0",
+            "sub_31120",
+            "SetParticleSmoke3B_4E9E0",
+            "SetParticleSmoke3C_4EA20",
+            "sub_4EA60",
+            "UpdateEntities_57730",
+            "sub_58630",
+            "AddArcherArrow_672E0",
+            "sub_5D530",
+            "PrepareEventSound_6E450",
+        ):
+            self.assertIn(symbol, rng["source"]["symbols"])
+        for token in (
+            "EXC-C5-MODELS",
+            "EXC-C10-REST",
+            "EXC-MULTIPLAYER",
+        ):
+            self.assertIn(token, rng_contract)
+
+        audio_tests = {
+            binding["test"] for binding in rows["AUD-002"]["evidence_bindings"]
+        }
+        self.assertIn(
+            "tests::mission_audio_census_is_unique_complete_and_compiler_bound",
+            audio_tests,
+        )
+        self.assertIn(
+            "native_world::tests::level_one_package_excludes_the_family_four_periodic_sound_branch",
+            audio_tests,
+        )
+
     def test_canonical_matrix_passes(self) -> None:
+        self.assert_correction_contract(self.canonical)
         summary = self.validate_temporary(copy.deepcopy(self.canonical))
         self.assertEqual(
             summary,
             {
                 "ok": True,
                 "rows": 182,
-                "exact_rows": 101,
-                "non_exact_rows": 81,
-                "exclusions": 18,
+                "exact_rows": 104,
+                "non_exact_rows": 78,
+                "exclusions": 22,
                 "plan_items": 22,
                 "authored_indices": 308,
                 "dispatch_slots": 845,
-                "cargo_tests": 442,
+                "cargo_tests": 458,
+                "audio_calls": 119,
+                "audio_reachable_calls": 46,
+                "audio_excluded_calls": 73,
             },
         )
+
+    def test_audio_ledger_mutations_are_rejected(self) -> None:
+        ledger = validator.load_matrix(validator.AUDIO_LEDGER_PATH)
+
+        def swap_first_two_tags(document: dict[str, Any]) -> None:
+            reachable = [
+                record["classification"]
+                for record in document["records"]
+                if record["classification"]["disposition"] == "reachable"
+            ]
+            first, second = reachable[:2]
+            first_tag = first["proposed_distinct_production_tag"]
+            second_tag = second["proposed_distinct_production_tag"]
+            first["proposed_distinct_production_tag"] = second_tag
+            second["proposed_distinct_production_tag"] = first_tag
+
+        cases: list[tuple[str, Callable[[dict[str, Any]], None], str]] = [
+            (
+                "omission",
+                lambda document: document["records"].pop(),
+                "expected 119 source calls",
+            ),
+            (
+                "duplicate identity",
+                lambda document: document["records"][1].__setitem__(
+                    "stable_occurrence_hash_sha256",
+                    document["records"][0]["stable_occurrence_hash_sha256"],
+                ),
+                "fresh pinned extraction disagrees",
+            ),
+            (
+                "misowned source tag",
+                swap_first_two_tags,
+                "compiled tag-to-occurrence ownership map disagrees",
+            ),
+            (
+                "preprocessor drift",
+                lambda document: document["records"][-1].__setitem__(
+                    "preprocessor_context", []
+                ),
+                "fresh pinned extraction disagrees",
+            ),
+            (
+                "record move",
+                lambda document: document["records"].__setitem__(
+                    slice(0, 2), reversed(document["records"][:2])
+                ),
+                "fresh pinned extraction disagrees",
+            ),
+            (
+                "anchor disagreement",
+                lambda document: document["records"][0].__setitem__(
+                    "pinned_line", document["records"][0]["pinned_line"] + 1
+                ),
+                "fresh pinned extraction disagrees",
+            ),
+            (
+                "unaccepted classification status",
+                lambda document: document["classification_scope_profile"].__setitem__(
+                    "status", "proposed"
+                ),
+                "classifications are not accepted closure evidence",
+            ),
+            (
+                "missing classification proof",
+                lambda document: document["records"][0]["classification"].__setitem__(
+                    "producer_or_profile_proof", ""
+                ),
+                "producer_or_profile_proof: expected non-empty string",
+            ),
+            (
+                "platform-state drift",
+                lambda document: document["records"][0].__setitem__(
+                    "canonical_linux_x64_preprocessor_state",
+                    "inactive (#else of defined(__linux__) || defined(__APPLE__))",
+                ),
+                "platform state disagrees",
+            ),
+            (
+                "swapped exclusion evidence",
+                lambda document: document["records"][52].__setitem__(
+                    "exclusion_registry_evidence",
+                    copy.deepcopy(document["records"][68]["exclusion_registry_evidence"]),
+                ),
+                "does not match the record exclusion",
+            ),
+        ]
+        for name, mutate, message in cases:
+            with self.subTest(name=name):
+                document = copy.deepcopy(ledger)
+                mutate(document)
+                with self.assertRaisesRegex(validator.ValidationError, message):
+                    self.validate_temporary_audio_ledger(document)
+
+    def test_canonical_audio_ledger_preserves_shared_semantic_sites(self) -> None:
+        ledger = validator.load_matrix(validator.AUDIO_LEDGER_PATH)
+        records = {record["pinned_line"]: record for record in ledger["records"]}
+        self.assertEqual(
+            records[22749]["classification"]["current_rust_tag"],
+            ["MissionAudioSite::FireballImpact", "MissionAudioSite::AmbientChildStart"],
+        )
+        self.assertEqual(
+            records[60592]["classification"]["current_rust_tag"],
+            [
+                "MissionAudioSite::ExitAccelerationPhase6",
+                "MissionAudioSite::ExitAccelerationPhase8",
+            ],
+        )
+        self.assertEqual(
+            records[44280]["classification"]["current_rust_tag"],
+            [
+                "MissionAudioSite::FireballLaunch",
+                "MissionAudioSite::CastleDefenseFirstShot",
+            ],
+        )
+        validator.validate_audio_call_ledger(self.canonical)
+
+    def test_correction_contract_rejects_invented_scheduler_and_incomplete_rng_census(self) -> None:
+        invented = copy.deepcopy(self.canonical)
+        scheduler = next(row for row in invented["rows"] if row["id"] == "SCH-004")
+        scheduler["source"]["symbols"].remove("DrawAndEventsInGame_47560")
+        scheduler["source"]["symbols"].append("GameRender_28870")
+        with self.assertRaises(AssertionError):
+            self.assert_correction_contract(invented)
+
+        incomplete = copy.deepcopy(self.canonical)
+        rng = next(row for row in incomplete["rows"] if row["id"] == "RNG-001")
+        rng["source"]["symbols"].remove("sub_58630")
+        with self.assertRaises(AssertionError):
+            self.assert_correction_contract(incomplete)
+
+        audio_incomplete = copy.deepcopy(self.canonical)
+        audio = next(
+            row for row in audio_incomplete["rows"] if row["id"] == "AUD-002"
+        )
+        audio["evidence_bindings"] = [
+            binding
+            for binding in audio["evidence_bindings"]
+            if binding["test"]
+            != "tests::mission_audio_census_is_unique_complete_and_compiler_bound"
+        ]
+        with self.assertRaises(AssertionError):
+            self.assert_correction_contract(audio_incomplete)
 
     def test_shape_valid_unknown_cargo_test_binding_is_rejected(self) -> None:
         def mutate(document: dict[str, Any]) -> None:

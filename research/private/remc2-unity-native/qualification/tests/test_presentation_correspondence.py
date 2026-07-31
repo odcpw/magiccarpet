@@ -21,9 +21,9 @@ SPEC.loader.exec_module(VERIFIER)
 CONTRACT = json.loads(
     (QUALIFICATION / "presentation-correspondence.json").read_text()
 )
-CP4_CACHE = (
+CORRECTION6_CACHE = (
     QUALIFICATION.parents[1]
-    / "generated/level1-unity-asset-cache-plan28-cp4-correction2"
+    / "generated/level1-unity-asset-cache-plan28-cp4-correction6"
 )
 
 
@@ -34,8 +34,8 @@ class PresentationContractTests(unittest.TestCase):
     def test_native_final_main_composed_gate_binds_qualified_cache(self) -> None:
         contract = copy.deepcopy(CONTRACT)
         VERIFIER.verify_contract(contract)
-        VERIFIER.verify_native_final_main_cache(contract, CP4_CACHE)
-        VERIFIER.verify_no_qualified_placeholders(contract, CP4_CACHE)
+        VERIFIER.verify_native_final_main_cache(contract, CORRECTION6_CACHE)
+        VERIFIER.verify_no_qualified_placeholders(contract, CORRECTION6_CACHE)
 
     def test_native_final_main_cache_hash_substitutions_are_rejected(self) -> None:
         mutations = {
@@ -48,7 +48,9 @@ class PresentationContractTests(unittest.TestCase):
                 mutated = copy.deepcopy(CONTRACT)
                 mutated["native_final_main"]["cache"][field] = "0" * 64
                 with self.assertRaisesRegex(SystemExit, message):
-                    VERIFIER.verify_native_final_main_cache(mutated, CP4_CACHE)
+                    VERIFIER.verify_native_final_main_cache(
+                        mutated, CORRECTION6_CACHE
+                    )
 
     def test_native_final_main_shape_valid_unknown_rust_test_is_rejected(self) -> None:
         mutated = copy.deepcopy(CONTRACT)

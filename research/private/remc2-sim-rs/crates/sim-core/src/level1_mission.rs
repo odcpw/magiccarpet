@@ -13,7 +13,8 @@ use crate::native_world::{
 use crate::source_sprite_tmap::SourceSpritePaletteOwner;
 use crate::{
     FlightContext, FlightEvent, FlightProfile, FlightState, FlightWorld, MovementResolution,
-    Position, SIN_16_16, SpellActivationHolder, SpellFireSource, SpellHolder, Tile, angle_distance,
+    Position, SIN_16_16, SourceAudioCallTag, SpellActivationHolder, SpellFireSource, SpellHolder,
+    Tile, angle_distance,
     dynamic_lighting::{
         DYNAMIC_LIGHT_CAPACITY, DynamicLightLinkedEntity, DynamicLightSlot,
         DynamicLightingExecutionReceipt, DynamicLightingState,
@@ -23,7 +24,7 @@ use crate::{
         HOUSE_CLASS, HOUSE_MODEL, HOUSE_TERRAIN_TO_LIVE_ACTION, HouseParameter, HouseState,
         HouseStepEvent,
     },
-    legacy_sqrt, move_entity, pitch_for_delta,
+    legacy_sqrt, mark_source_audio_call, move_entity, pitch_for_delta,
     renderable_map_chain::{RenderableMapChains, RenderableMapSeed},
     resolve_legacy_movement,
     source_sprite_tmap::{
@@ -39,6 +40,26 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+
+#[inline(always)]
+fn mark_class10_action00_first_eligible_sound() {
+    mark_source_audio_call(SourceAudioCallTag::Class10Action00FirstEligibleSound);
+}
+
+#[inline(always)]
+fn mark_water_splash_action05_first_update() {
+    mark_source_audio_call(SourceAudioCallTag::WaterSplashAction05FirstUpdate);
+}
+
+#[inline(always)]
+fn mark_exit_acceleration_source_call() {
+    mark_source_audio_call(SourceAudioCallTag::ExitAcceleration);
+}
+
+#[inline(always)]
+fn mark_projectile_delivery_source_call() {
+    mark_source_audio_call(SourceAudioCallTag::ProjectileDeliveryLaunch);
+}
 
 pub const AUTHORED_FEATURE_COUNT: usize = 1_200;
 pub const AUTHORED_FEATURE_BYTES: usize = 20;
@@ -2171,6 +2192,12 @@ pub const EXPERIENCE_SCROLL_COLLISION_VERTICAL_OFFSET: i16 = 37;
 pub const EXPERIENCE_SCROLL_COLLISION_HALF_HEIGHT: i16 = 1_280;
 pub const EXPERIENCE_SCROLL_SOUND: u16 = 63;
 pub const EXPERIENCE_SCROLL_AWARD: i32 = 4;
+pub const ABILITY_IMPROVED_SOUND: u16 = 61;
+pub const OBJECTIVE_ANNOUNCEMENT_SOUND: u16 = 61;
+pub const ABILITY_IMPROVED_TEMPLATE_SELECTOR: u16 = 159;
+pub const ABILITY_IMPROVED_NAME_SELECTOR_BASE: u16 = 160;
+pub const ABILITY_IMPROVED_NOTIFICATION_STATE: u8 = 5;
+pub const ABILITY_IMPROVED_NOTIFICATION_TIMER: i16 = 200;
 pub const TREE_CLASS: u8 = 2;
 pub const TREE_MODEL: u8 = 0;
 pub const TREE_LIVE_ACTION: u8 = 0;
@@ -3619,6 +3646,8 @@ pub enum Level1SourceEffect {
         action: u8,
     },
     MissionSound {
+        #[cfg(test)]
+        audio_site: crate::MissionAudioSite,
         sound_id: u16,
         source_entity_index: u16,
         position: Position,
@@ -4999,6 +5028,26 @@ pub struct PlayerLifecycleTraceEntry {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GlobalRngSite {
+    UpdateEntities,
+    BuilderSelection,
+    Model60Smoke,
+    CheckpointSmoke,
+    ArcherArrowSound,
+    GroundFireSmoke,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GlobalRngTraceEntry {
+    pub pass_index: u16,
+    pub source_slot: u16,
+    pub site: GlobalRngSite,
+    pub before: u32,
+    pub after: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ManaCarrier {
     /// Presentation identity is the authoritative source-arena slot. remc2's
     /// raw `id_0x1A_26` is overwritten with the owning player relation.
@@ -5094,6 +5143,13 @@ pub enum Level1MissionEvent {
         family: u8,
         authored_index: u16,
     },
+    AbilityImproved {
+        source_family: u8,
+        notification_template_selector: u16,
+        ability_name_selector: u16,
+        notification_state: u8,
+        notification_timer: i16,
+    },
     FireballSpawned {
         projectile_id: u32,
     },
@@ -5106,6 +5162,8 @@ pub enum Level1MissionEvent {
         mana: i32,
     },
     ManaSphereClaimed {
+        #[cfg(test)]
+        audio_site: crate::MissionAudioSite,
         sphere_id: u32,
         owner_entity_index: u16,
         sound_id: u16,
@@ -5120,6 +5178,8 @@ pub enum Level1MissionEvent {
         archer_authored_index: u16,
     },
     ArcherArrowSound {
+        #[cfg(test)]
+        audio_site: crate::MissionAudioSite,
         projectile_id: u32,
         sound_id: u16,
         source_entity_index: u16,
@@ -5131,17 +5191,23 @@ pub enum Level1MissionEvent {
         firefly_authored_index: u16,
     },
     FireflyChargeSound {
+        #[cfg(test)]
+        audio_site: crate::MissionAudioSite,
         firefly_authored_index: u16,
         sound_id: u16,
         random_state: u32,
     },
     FireballImpacted {
+        #[cfg(test)]
+        audio_site: crate::MissionAudioSite,
         projectile_id: u32,
         impact_id: u32,
         position: Position,
         sound_id: u16,
     },
     WaterSplashed {
+        #[cfg(test)]
+        audio_site: crate::MissionAudioSite,
         projectile_id: u32,
         splash_id: u32,
         position: Position,
@@ -5161,6 +5227,8 @@ pub enum Level1MissionEvent {
         level: u8,
     },
     CastleProjectileSpawned {
+        #[cfg(test)]
+        audio_site: crate::MissionAudioSite,
         projectile_id: u32,
         sound_id: u16,
         source_entity_index: u16,
@@ -5171,6 +5239,8 @@ pub enum Level1MissionEvent {
         projectile_id: u32,
     },
     CastleConstructionSound {
+        #[cfg(test)]
+        audio_site: crate::MissionAudioSite,
         sound_id: u16,
         source_entity_index: u16,
         position: Position,
@@ -5194,6 +5264,8 @@ pub enum Level1MissionEvent {
     },
     PlayerDied,
     MissionSound {
+        #[cfg(test)]
+        audio_site: crate::MissionAudioSite,
         sound_id: u16,
         source_entity_index: u16,
         position: Position,
@@ -5294,6 +5366,8 @@ pub struct Level1MissionTemplate {
     initial_building_blockers: Box<[Level1CastlePlacementBlocker]>,
     initial_possession_targets: Box<[Level1CollisionTarget]>,
     initial_source_collision_targets: Box<[Level1SourceCollisionTarget]>,
+    initial_objective_presentation_phase: u8,
+    initial_objective_textbox_ticks: u8,
     castle_stage_one_footprint: Option<CastleBuildFootprint>,
 }
 
@@ -5403,6 +5477,8 @@ impl Level1MissionTemplate {
             &[],
             &[],
             &[],
+            0,
+            33,
             None,
         )
     }
@@ -5421,6 +5497,8 @@ impl Level1MissionTemplate {
         initial_building_blockers: &[Level1CastlePlacementBlocker],
         initial_possession_targets: &[Level1CollisionTarget],
         initial_source_collision_targets: &[Level1SourceCollisionTarget],
+        initial_objective_presentation_phase: u8,
+        initial_objective_textbox_ticks: u8,
         castle_stage_one_footprint: Option<CastleBuildFootprint>,
     ) -> Result<Self, String> {
         if global_mana_denominator <= 0 {
@@ -5690,6 +5768,8 @@ impl Level1MissionTemplate {
             initial_source_collision_targets: initial_source_collision_targets
                 .to_vec()
                 .into_boxed_slice(),
+            initial_objective_presentation_phase,
+            initial_objective_textbox_ticks,
             castle_stage_one_footprint,
         })
     }
@@ -5753,7 +5833,12 @@ impl Level1MissionTemplate {
         let state = Level1MissionState {
             current_stage: 0,
             current_text_selector: 48,
-            objective_textbox_ticks: 33,
+            objective_presentation_phase: self.initial_objective_presentation_phase,
+            // The exporter stops after the first source frame: InGameLoop
+            // initializes paletteMod to zero and that frame's PaletteChanges
+            // increments it once before the captured handoff.
+            objective_presentation_palette_mod: 1,
+            objective_textbox_ticks: self.initial_objective_textbox_ticks,
             level_completed: false,
             exit_sequence_active: false,
             exit_sequence_complete: false,
@@ -5894,6 +5979,12 @@ impl Level1MissionTemplate {
             castle_defense_shots: Vec::new(),
             next_effect_id: 1,
             global_rng: self.initial_global_rng,
+            #[cfg(test)]
+            global_rng_trace: Vec::new(),
+            #[cfg(test)]
+            global_rng_trace_current_pass: 0,
+            #[cfg(test)]
+            global_rng_trace_next_pass: 0,
             source_turn_active: false,
             targeting_source_lists: TargetingSourceLists::default(),
             targeting_source_views: Arc::new(Vec::new()),
@@ -5951,6 +6042,8 @@ impl Level1MissionTemplate {
 pub struct Level1MissionState {
     pub current_stage: u8,
     pub current_text_selector: u8,
+    pub objective_presentation_phase: u8,
+    pub objective_presentation_palette_mod: u8,
     pub objective_textbox_ticks: u8,
     pub level_completed: bool,
     pub exit_sequence_active: bool,
@@ -6121,6 +6214,12 @@ pub struct Level1MissionState {
     castle_defense_shots: Vec<CastleDefenseShot>,
     next_effect_id: u32,
     global_rng: u32,
+    #[cfg(test)]
+    global_rng_trace: Vec<GlobalRngTraceEntry>,
+    #[cfg(test)]
+    global_rng_trace_current_pass: u16,
+    #[cfg(test)]
+    global_rng_trace_next_pass: u16,
     source_turn_active: bool,
     /// Membership and traversal links rebuilt once by `UpdateEntities_57730`.
     targeting_source_lists: TargetingSourceLists,
@@ -7155,12 +7254,16 @@ impl Level1MissionState {
                 Ok(Some(seed))
             }
             Level1SourceEffect::MissionSound {
+                #[cfg(test)]
+                audio_site,
                 sound_id,
                 source_entity_index,
                 position,
                 random_state,
             } => {
                 self.events.push(Level1MissionEvent::MissionSound {
+                    #[cfg(test)]
+                    audio_site,
                     sound_id,
                     source_entity_index,
                     position,
@@ -7801,8 +7904,9 @@ impl Level1MissionState {
 
     /// Production constructor for pinned class-10 slot 86.
     ///
-    /// Cave-level global scheduling is outside the Level 1 product slice, but
-    /// the constructor and ordinary ascending source dispatcher are shared.
+    /// Stage-one Level 1 construction invokes the shared constructor after
+    /// committing its construction child; the ordinary ascending source
+    /// dispatcher subsequently services the controller.
     pub fn spawn_castle_defense_controller(
         &mut self,
         position: Position,
@@ -8279,6 +8383,18 @@ impl Level1MissionState {
     #[must_use]
     pub const fn global_rng(&self) -> u32 {
         self.global_rng
+    }
+
+    #[cfg(test)]
+    pub(crate) fn global_rng_trace(&self) -> &[GlobalRngTraceEntry] {
+        &self.global_rng_trace
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_global_rng_trace(&mut self) {
+        self.global_rng_trace.clear();
+        self.global_rng_trace_current_pass = 0;
+        self.global_rng_trace_next_pass = 0;
     }
 
     /// Compatibility projection retained for the established mission ABI.
@@ -9236,10 +9352,13 @@ impl Level1MissionState {
             }));
         self.events
             .push(Level1MissionEvent::FireballSpawned { projectile_id: id });
+        mark_projectile_delivery_source_call();
         self.events.push(Level1MissionEvent::MissionSound {
+            #[cfg(test)]
+            audio_site: crate::MissionAudioSite::FireballLaunch,
             sound_id: FIREBALL_LAUNCH_SOUND,
-            source_entity_index: player.entity_index,
-            position: player.position,
+            source_entity_index,
+            position,
             random_state: self.global_rng,
         });
         true
@@ -9294,7 +9413,14 @@ impl Level1MissionState {
             }));
         self.events
             .push(Level1MissionEvent::PossessionSpawned { projectile_id: id });
+        mark_source_audio_call(if profile.tier == 0 {
+            SourceAudioCallTag::PossessionLaunchBasic
+        } else {
+            SourceAudioCallTag::PossessionLaunchTiered
+        });
         self.events.push(Level1MissionEvent::MissionSound {
+            #[cfg(test)]
+            audio_site: crate::MissionAudioSite::PossessionLaunch,
             sound_id: POSSESSION_LAUNCH_SOUND,
             source_entity_index,
             position,
@@ -9381,6 +9507,7 @@ impl Level1MissionState {
     fn update_spell_jar_reward_slot<W: FlightWorld>(
         &mut self,
         world: &W,
+        player: &FlightState,
         source_entity_index: u16,
         source_position: Position,
     ) {
@@ -9425,10 +9552,12 @@ impl Level1MissionState {
                     .iter()
                     .position(|candidate| *candidate == source_family)
                 {
-                    self.award_spell_experience(
+                    if let Some(improved_family) = self.award_spell_experience(
                         u8::try_from(level1_family).expect("Level 1 spell family fits u8"),
                         amount,
-                    );
+                    ) {
+                        self.emit_ability_improved(improved_family, player.position);
+                    }
                 }
             }
         }
@@ -9688,11 +9817,14 @@ impl Level1MissionState {
                 placement_checked: association_target_entity_index != 0,
                 active: true,
             }));
+        mark_source_audio_call(SourceAudioCallTag::InitialCastleLaunch);
         self.events
             .push(Level1MissionEvent::CastleProjectileSpawned {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::InitialCastleLaunch,
                 projectile_id: id,
                 sound_id: CASTLE_PROJECTILE_SOUND,
-                source_entity_index: player.entity_index,
+                source_entity_index,
                 position,
                 random_state: self.global_rng,
             });
@@ -9775,10 +9907,17 @@ impl Level1MissionState {
         }
     }
 
-    fn award_spell_experience(&mut self, family: u8, amount: i32) {
+    fn award_spell_experience(&mut self, family: u8, amount: i32) -> Option<u8> {
         if amount <= 0 {
-            return;
+            return None;
         }
+        let (enabled, source_family) = match family {
+            FIREBALL_SPELL_FAMILY => (self.has_fireball, 0),
+            POSSESSION_SPELL_FAMILY => (self.has_possession, 1),
+            CASTLE_SPELL_FAMILY => (self.has_castle_spell, 16),
+            SPEED_SPELL_FAMILY => (self.has_speed_spell, 3),
+            _ => return None,
+        };
         let (experience, tier, thresholds) = match family {
             FIREBALL_SPELL_FAMILY => (
                 &mut self.fireball_experience,
@@ -9800,13 +9939,44 @@ impl Level1MissionState {
                 &mut self.speed_tier,
                 &SPEED_TIER_THRESHOLDS_SINGLE_PLAYER,
             ),
-            _ => return,
+            _ => unreachable!("supported Level 1 family selected above"),
         };
+        let previous_tier = *tier;
         *experience = experience.saturating_add(amount);
         *tier = thresholds
             .iter()
             .rposition(|threshold| *experience >= *threshold)
             .unwrap_or(0) as i8;
+        (enabled && *tier != previous_tier).then_some(source_family)
+    }
+
+    fn emit_ability_improved(&mut self, source_family: u8, player_position: Position) {
+        let ability_name_selector =
+            ABILITY_IMPROVED_NAME_SELECTOR_BASE.wrapping_add(u16::from(source_family));
+        // `SetCurrentNotificationMessage` overwrites the local player's one
+        // notification slot. Repeated tier crossings therefore leave the
+        // final source-family name authoritative while their sound-61
+        // preparations remain available to the keyed audio pool.
+        self.player_notification_active = true;
+        self.player_notification_id = ability_name_selector;
+        self.player_notification_state = ABILITY_IMPROVED_NOTIFICATION_STATE;
+        self.player_notification_timer = ABILITY_IMPROVED_NOTIFICATION_TIMER;
+        mark_source_audio_call(SourceAudioCallTag::AbilityImprovedTier);
+        self.events.push(Level1MissionEvent::AbilityImproved {
+            source_family,
+            notification_template_selector: ABILITY_IMPROVED_TEMPLATE_SELECTOR,
+            ability_name_selector,
+            notification_state: ABILITY_IMPROVED_NOTIFICATION_STATE,
+            notification_timer: ABILITY_IMPROVED_NOTIFICATION_TIMER,
+        });
+        self.events.push(Level1MissionEvent::MissionSound {
+            #[cfg(test)]
+            audio_site: crate::MissionAudioSite::AbilityImproved,
+            sound_id: ABILITY_IMPROVED_SOUND,
+            source_entity_index: 0,
+            position: player_position,
+            random_state: self.global_rng,
+        });
     }
 
     /// Project collected mission-owned spell jars into the live player spell
@@ -9987,13 +10157,18 @@ impl Level1MissionState {
                 let source_record = &mut self.source_slots[usize::from(source_slot)];
                 if source_record.control_flags & SPEED_SOUND_LATCH_FLAG == 0 {
                     source_record.control_flags |= SPEED_SOUND_LATCH_FLAG;
+                    mark_source_audio_call(SourceAudioCallTag::SpeedSpellActivation);
                     context.events.push(crate::FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::SpeedSpellActivation,
                         entity_index: state.entity_index,
                         player_index: -1,
                         sound_id: EXIT_ACCELERATION_SOUND,
                     });
                 }
-                self.award_spell_experience(SPEED_SPELL_FAMILY, 1);
+                if let Some(improved_family) = self.award_spell_experience(SPEED_SPELL_FAMILY, 1) {
+                    self.emit_ability_improved(improved_family, state.position);
+                }
                 profile.selector + 1
             } else {
                 profile.selector
@@ -10277,7 +10452,10 @@ impl Level1MissionState {
             damage,
             life: self.player_life,
         });
+        mark_source_audio_call(SourceAudioCallTag::PlayerPain);
         self.events.push(Level1MissionEvent::MissionSound {
+            #[cfg(test)]
+            audio_site: crate::MissionAudioSite::PlayerPain,
             sound_id: pain_sound_id,
             source_entity_index: player.entity_index,
             position: player.position,
@@ -10291,7 +10469,10 @@ impl Level1MissionState {
         let source = &mut self.source_slots[usize::from(player.entity_index)];
         source.action = PLAYER_ACTION_DYING;
         self.events.push(Level1MissionEvent::PlayerDied);
+        mark_source_audio_call(SourceAudioCallTag::PlayerDeath);
         self.events.push(Level1MissionEvent::MissionSound {
+            #[cfg(test)]
+            audio_site: crate::MissionAudioSite::PlayerDeath,
             sound_id: PLAYER_DEATH_SOUND,
             source_entity_index: player.entity_index,
             position: player.position,
@@ -10710,14 +10891,65 @@ impl Level1MissionState {
         self.finish_source_turn(player);
     }
 
+    fn begin_global_rng_pass(&mut self) {
+        #[cfg(test)]
+        {
+            self.global_rng_trace_current_pass = self.global_rng_trace_next_pass;
+            self.global_rng_trace_next_pass = self.global_rng_trace_next_pass.wrapping_add(1);
+        }
+    }
+
+    #[inline]
+    fn advance_global_rng(&mut self, source_slot: u16, site: GlobalRngSite) {
+        #[cfg(test)]
+        let before = self.global_rng;
+        self.global_rng = next_rng32(self.global_rng);
+        #[cfg(test)]
+        self.global_rng_trace.push(GlobalRngTraceEntry {
+            pass_index: self.global_rng_trace_current_pass,
+            source_slot,
+            site,
+            before,
+            after: self.global_rng,
+        });
+        #[cfg(not(test))]
+        let _ = (source_slot, site);
+    }
+
+    /// Execute the source-visible prefix of `UpdateEntities_57730` while the
+    /// game is paused. remc2 stores this draw before its pause gate; no entity
+    /// action body is dispatched afterward.
+    pub fn advance_paused_update_rng(&mut self) {
+        self.begin_global_rng_pass();
+        self.advance_global_rng(0, GlobalRngSite::UpdateEntities);
+    }
+
+    /// Start the outer presentation path that remains live while entity
+    /// dispatch is paused.
+    pub fn begin_paused_outer_presentation(&mut self) {
+        self.events.clear();
+        self.advance_exit_palette_frame();
+    }
+
+    /// Complete paused objectives and presentation after UpdateEntities has
+    /// consumed its pre-pause RNG draw. No entity action body runs.
+    pub fn finish_paused_outer_presentation(&mut self, player: &FlightState) {
+        let archers_present = self.class_5_model_present_at_turn_start(4);
+        let fireflies_present = self.count_alive(Level1ActorKind::Firefly) != 0;
+        self.evaluate_objective(player.position, archers_present, fireflies_present);
+        if self.objective_textbox_ticks != 0 {
+            // The 1 -> 0 edge calls `sub_88BA0`; its body is guarded by
+            // source `showHelp`, which is false in the canonical profile.
+            self.objective_textbox_ticks -= 1;
+        }
+        self.service_objective_presentation_normalized_speech_disabled(player.position);
+    }
+
     pub fn begin_source_turn(&mut self) {
         self.events.clear();
         self.pending_ambient_loop_5_distance = None;
         self.player_menu_close_requested = false;
         self.player_action0_prepared_for_flight = false;
-        if self.objective_textbox_ticks != 0 {
-            self.objective_textbox_ticks -= 1;
-        }
         self.source_turn_active = true;
         self.source_turn_counter = self.source_turn_counter.wrapping_add(1);
         self.source_color_phase_6 = (self.source_turn_counter / 6) & 1 != 0;
@@ -10725,7 +10957,8 @@ impl Level1MissionState {
         // `UpdateEntities_57730` advances the shared 32-bit generator before
         // its pause check and has no player-action guard. Action 2/3 suppress
         // only ordinary player input; every other source row keeps advancing.
-        self.global_rng = next_rng32(self.global_rng);
+        self.begin_global_rng_pass();
+        self.advance_global_rng(0, GlobalRngSite::UpdateEntities);
         self.archers_present_at_turn_start = self.class_5_model_present_at_turn_start(4);
         self.fireflies_present_at_turn_start = self.count_alive(Level1ActorKind::Firefly) != 0;
 
@@ -10890,7 +11123,7 @@ impl Level1MissionState {
                 true
             }
             Some(SourceOccupant::CastleConstruction(_)) => {
-                self.step_castle_construction_slot(source_slot);
+                self.step_castle_construction_slot(player, source_slot);
                 true
             }
             Some(SourceOccupant::CastleDefense(_)) => {
@@ -11206,7 +11439,7 @@ impl Level1MissionState {
                 },
                 |index| current_source_views[index].position,
             );
-        self.update_spell_jar_reward_slot(world, source_slot, source_position);
+        self.update_spell_jar_reward_slot(world, player, source_slot, source_position);
         let (occupant, handled, source_effects) =
             self.step_source_occupant(world, player, &current_source_views, source_slot);
         self.sync_dispatched_source_slot(source_slot, occupant, handled);
@@ -11296,7 +11529,10 @@ impl Level1MissionState {
             }
             if !impact.damage_submitted {
                 impact.damage_submitted = true;
+                mark_water_splash_action05_first_update();
                 self.events.push(Level1MissionEvent::WaterSplashed {
+                    #[cfg(test)]
+                    audio_site: crate::MissionAudioSite::WaterSplashFirstUpdate,
                     projectile_id: 0,
                     splash_id: impact.id,
                     position: impact.position,
@@ -11352,8 +11588,11 @@ impl Level1MissionState {
         }
         if fire.control_flags & 2 == 0 {
             fire.control_flags |= 2;
+            mark_source_audio_call(SourceAudioCallTag::AmbientFireAction01FirstEligibleSound);
             self.events.push(Level1MissionEvent::MissionSound {
-                sound_id: u16::MAX,
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::AmbientFireStart,
+                sound_id: 3,
                 source_entity_index: fire.source_entity_index,
                 position: fire.position,
                 random_state: self.global_rng,
@@ -11455,7 +11694,7 @@ impl Level1MissionState {
         // `AddParticleSmoke0A_3D_32420` calls SetParticleSmoke3C directly:
         // the stored draw precedes NewEvent whether allocation uses an
         // ordinary slot, replaces an eligible row, or fails completely.
-        self.global_rng = next_rng32(self.global_rng);
+        self.advance_global_rng(emitter.source_entity_index, GlobalRngSite::Model60Smoke);
         let Some(source_slot) = self.allocate_source_slot(SourceOccupant::Ambient(u16::MAX)) else {
             return false;
         };
@@ -11565,8 +11804,11 @@ impl Level1MissionState {
             child.entity_rng = next_rng16(child.entity_rng);
             child.vertical_velocity =
                 i16::try_from(child.entity_rng % 65).expect("ambient velocity fits i16") - 32;
+            mark_class10_action00_first_eligible_sound();
             self.events.push(Level1MissionEvent::MissionSound {
-                sound_id: u16::MAX,
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::AmbientChildStart,
+                sound_id: 3,
                 source_entity_index: child.source_entity_index,
                 position: child.position,
                 random_state: self.global_rng,
@@ -11672,7 +11914,14 @@ impl Level1MissionState {
                 source.control_flags = (source.control_flags & !0x0020_0000) | 0x0020_0000;
             }
         }
+        mark_source_audio_call(if payload == 0 {
+            SourceAudioCallTag::HousePossessionUnlatchedTransfer
+        } else {
+            SourceAudioCallTag::HousePossessionFlaggedTransfer
+        });
         self.events.push(Level1MissionEvent::MissionSound {
+            #[cfg(test)]
+            audio_site: crate::MissionAudioSite::PossessionResolution,
             sound_id: POSSESSION_SOUND,
             source_entity_index: owner_entity_index,
             position: player.position,
@@ -11684,11 +11933,20 @@ impl Level1MissionState {
         if !self.source_turn_active {
             return;
         }
+        // The objective textbox clock and presentation service live outside
+        // UpdateEntities, so speed-index 0/1/2 still service them once after
+        // the complete 1/4/8-pass batch.
         self.evaluate_objective(
             player.position,
             self.archers_present_at_turn_start,
             self.fireflies_present_at_turn_start,
         );
+        if self.objective_textbox_ticks != 0 {
+            // As above, the source expiry callback is a profile-proven no-op
+            // when `showHelp` is false.
+            self.objective_textbox_ticks -= 1;
+        }
+        self.service_objective_presentation_normalized_speech_disabled(player.position);
         self.clear_replaced_authored_projections();
         self.projectiles.retain(|projectile| projectile.active());
         self.impacts.retain(|impact| impact.active);
@@ -11696,10 +11954,44 @@ impl Level1MissionState {
         self.source_turn_active = false;
     }
 
+    /// Selected normalized conformance profile: single-player, outdoor,
+    /// ordinary/non-secret objective, speech disabled, and no CD lookup.
+    /// Selection is explicit and fail-closed because the owner package does
+    /// not serialize the speech/CD inputs.
+    /// remc2's `PresentObjective` clears the pending phase, installs the
+    /// 200-tick textbox, and prepares sound 61 for every objective after row
+    /// zero. It does not request the old objective palette effect in this
+    /// profile.
+    fn service_objective_presentation_normalized_speech_disabled(
+        &mut self,
+        player_position: Position,
+    ) {
+        if self.objective_presentation_phase == 0 || self.objective_presentation_palette_mod < 3 {
+            return;
+        }
+        self.objective_presentation_phase = 0;
+        self.objective_textbox_ticks = 200;
+        if self.current_stage != 0 {
+            mark_source_audio_call(SourceAudioCallTag::ObjectiveAnnouncementNoSpeech);
+            self.events.push(Level1MissionEvent::MissionSound {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::ObjectiveAnnouncement,
+                sound_id: OBJECTIVE_ANNOUNCEMENT_SOUND,
+                source_entity_index: 0,
+                position: player_position,
+                random_state: self.global_rng,
+            });
+        }
+    }
+
     /// Advance remc2's frame-level palette state. `PaletteChanges_47760` runs
     /// once before input/entity dispatch, independently from the number of
     /// source-entity passes in that rendered frame.
     pub fn advance_exit_palette_frame(&mut self) {
+        self.objective_presentation_palette_mod = self
+            .objective_presentation_palette_mod
+            .saturating_add(1)
+            .min(3);
         match self.exit_palette_submode {
             LEVEL1_PALETTE_HIT_REQUEST => {
                 self.begin_palette_fade_back(LEVEL1_PALETTE_EFFECT_HIT);
@@ -11875,7 +12167,10 @@ impl Level1MissionState {
         loop {
             match self.exit_sequence_phase {
                 0 => {
+                    mark_source_audio_call(SourceAudioCallTag::ExitSequenceSwitch);
                     self.events.push(Level1MissionEvent::MissionSound {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::ExitSequenceSwitch,
                         sound_id: EXIT_SWITCH_SOUND,
                         source_entity_index: player.entity_index,
                         position: player.position,
@@ -11973,7 +12268,10 @@ impl Level1MissionState {
                     player.actual_speed = 100;
                     self.exit_sequence_phase = 7;
                     self.exit_blur_mode = 2;
+                    mark_exit_acceleration_source_call();
                     self.events.push(Level1MissionEvent::MissionSound {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::ExitAccelerationPhase6,
                         sound_id: EXIT_ACCELERATION_SOUND,
                         source_entity_index: player.entity_index,
                         position: player.position,
@@ -12005,7 +12303,10 @@ impl Level1MissionState {
                     player.actual_speed = 100;
                     self.exit_sequence_phase = 9;
                     self.exit_blur_mode = 2;
+                    mark_exit_acceleration_source_call();
                     self.events.push(Level1MissionEvent::MissionSound {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::ExitAccelerationPhase8,
                         sound_id: EXIT_ACCELERATION_SOUND,
                         source_entity_index: player.entity_index,
                         position: player.position,
@@ -12321,7 +12622,10 @@ impl Level1MissionState {
             family,
             authored_index: collected_actor.authored_index,
         });
+        mark_source_audio_call(SourceAudioCallTag::SpeedPickup);
         self.events.push(Level1MissionEvent::MissionSound {
+            #[cfg(test)]
+            audio_site: crate::MissionAudioSite::SpeedPickup,
             sound_id: SPEED_PICKUP_SOUND,
             source_entity_index: eligible_player.source_entity_index,
             position: eligible_player.position,
@@ -12366,22 +12670,36 @@ impl Level1MissionState {
         ) {
             return;
         }
-        if self.has_fireball {
-            self.award_spell_experience(FIREBALL_SPELL_FAMILY, EXPERIENCE_SCROLL_AWARD);
-        }
-        if self.has_possession {
-            self.award_spell_experience(POSSESSION_SPELL_FAMILY, EXPERIENCE_SCROLL_AWARD);
-        }
-        if self.has_castle_spell {
-            self.award_spell_experience(CASTLE_SPELL_FAMILY, EXPERIENCE_SCROLL_AWARD);
-        }
-        if self.has_speed_spell {
-            self.award_spell_experience(SPEED_SPELL_FAMILY, EXPERIENCE_SCROLL_AWARD);
+        let mut improved_families = Vec::new();
+        // `UpdateScroll_59C80` adds experience first, emits sound 63, then
+        // `sub_6DB50` recomputes all source families in ascending order.
+        for family in [
+            FIREBALL_SPELL_FAMILY,
+            POSSESSION_SPELL_FAMILY,
+            SPEED_SPELL_FAMILY,
+            CASTLE_SPELL_FAMILY,
+        ] {
+            let enabled = match family {
+                FIREBALL_SPELL_FAMILY => self.has_fireball,
+                POSSESSION_SPELL_FAMILY => self.has_possession,
+                SPEED_SPELL_FAMILY => self.has_speed_spell,
+                CASTLE_SPELL_FAMILY => self.has_castle_spell,
+                _ => unreachable!("fixed Level 1 experience-scroll family"),
+            };
+            if enabled
+                && let Some(improved_family) =
+                    self.award_spell_experience(family, EXPERIENCE_SCROLL_AWARD)
+            {
+                improved_families.push(improved_family);
+            }
         }
         self.actors[index].collected = true;
         self.actors[index].active = false;
         self.actors[index].visible = false;
+        mark_source_audio_call(SourceAudioCallTag::ExperienceScrollPickup);
         self.events.push(Level1MissionEvent::MissionSound {
+            #[cfg(test)]
+            audio_site: crate::MissionAudioSite::ExperienceScroll,
             sound_id: EXPERIENCE_SCROLL_SOUND,
             // `GetScroll_69DB0` routes the local player's colour index through
             // `PrepareEventSound`; Level 1 player zero therefore uses the
@@ -12391,6 +12709,9 @@ impl Level1MissionState {
             position: player.position,
             random_state: self.global_rng,
         });
+        for improved_family in improved_families {
+            self.emit_ability_improved(improved_family, player.position);
+        }
         self.mark_allocation_pending_delete(actor.authored_index);
     }
 
@@ -12863,7 +13184,11 @@ impl Level1MissionState {
             return;
         }
 
-        let building_index = select_builder_building_index(&mut self.global_rng);
+        self.advance_global_rng(
+            resident.source_entity_index,
+            GlobalRngSite::BuilderSelection,
+        );
+        let building_index = select_builder_building_index(self.global_rng);
         let spec = builder_building_spec(building_index)
             .expect("pinned eligible/fallback BLDGPRM rows have BUILD/MSPRD data");
         let extent_x = i16::from(spec.sprite_width)
@@ -12956,7 +13281,10 @@ impl Level1MissionState {
             effects.push(Level1SourceEffect::CreateBuilderHouse {
                 house: construction.constructor,
             });
+            mark_source_audio_call(SourceAudioCallTag::BuilderBuildAction96);
             effects.push(Level1SourceEffect::MissionSound {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::BuilderBuild,
                 sound_id: BUILDER_BUILD_SOUND,
                 source_entity_index: resident.source_entity_index,
                 position: resident.position,
@@ -14306,7 +14634,10 @@ impl Level1MissionState {
                             }
                         }
                         if let Some(sound_id) = charge_sound {
+                            mark_source_audio_call(SourceAudioCallTag::FireflyChargeAction154);
                             self.events.push(Level1MissionEvent::FireflyChargeSound {
+                                #[cfg(test)]
+                                audio_site: crate::MissionAudioSite::FireflyCharge,
                                 firefly_authored_index: actor.authored_index,
                                 sound_id,
                                 random_state: self.global_rng,
@@ -14356,7 +14687,10 @@ impl Level1MissionState {
                                         projectile_id: projectile.id,
                                         firefly_authored_index: actor.authored_index,
                                     });
+                                mark_source_audio_call(SourceAudioCallTag::MultipartAttackAction26);
                                 self.events.push(Level1MissionEvent::MissionSound {
+                                    #[cfg(test)]
+                                    audio_site: crate::MissionAudioSite::MultipartAttack,
                                     sound_id: MULTIPART_ATTACK_SOUND,
                                     source_entity_index: actor.source_entity_index,
                                     position: actor.position,
@@ -14461,7 +14795,7 @@ impl Level1MissionState {
         {
             // `SetParticleSmoke3B_4E9E0` advances the shared generator before
             // `NewEvent_4A050`; the advance survives allocation exhaustion.
-            self.global_rng = next_rng32(self.global_rng);
+            self.advance_global_rng(parent_source_entity_index, GlobalRngSite::CheckpointSmoke);
             let smoke_id = self.next_effect_id;
             let Some(source_entity_index) = self
                 .source_pool
@@ -15078,6 +15412,23 @@ impl Level1MissionState {
                 (target.entity_index, source_id)
             })
             .collect::<Vec<_>>();
+        let archer_sound_source_slot =
+            self.projectiles
+                .iter()
+                .find_map(|projectile| match projectile {
+                    Level1Projectile::ArcherArrow(projectile)
+                        if projectile.source_entity_index == source_slot
+                            && projectile.active
+                            && !projectile.sound_initialized =>
+                    {
+                        Some(projectile.source_entity_index)
+                    }
+                    _ => None,
+                });
+        let archer_sound_random_state = archer_sound_source_slot.map(|source_entity_index| {
+            self.advance_global_rng(source_entity_index, GlobalRngSite::ArcherArrowSound);
+            self.global_rng
+        });
         let source_map_chains = &self.source_map_chains;
         let impacts = &mut self.impacts;
         let castle_associations = &mut self.castle_associations;
@@ -15260,13 +15611,21 @@ impl Level1MissionState {
                     }
                     if !projectile.sound_initialized {
                         projectile.sound_initialized = true;
-                        self.global_rng = next_rng32(self.global_rng);
+                        mark_source_audio_call(SourceAudioCallTag::ArcherArrowLaunch);
+                        debug_assert_eq!(
+                            archer_sound_source_slot,
+                            Some(projectile.source_entity_index)
+                        );
+                        let random_state = archer_sound_random_state
+                            .expect("active first Archer-arrow dispatch stores its sound draw");
                         events.push(Level1MissionEvent::ArcherArrowSound {
+                            #[cfg(test)]
+                            audio_site: crate::MissionAudioSite::ArcherArrow,
                             projectile_id: projectile.id,
-                            sound_id: 33 + (self.global_rng & 1) as u16,
+                            sound_id: 33 + (random_state & 1) as u16,
                             source_entity_index: projectile.source_entity_index,
                             position: projectile.position,
-                            random_state: self.global_rng,
+                            random_state,
                         });
                     }
 
@@ -15901,8 +16260,16 @@ impl Level1MissionState {
         if castle_rejected || castle_holder_reset {
             self.set_castle_holder_active_value(0);
         }
-        self.award_spell_experience(FIREBALL_SPELL_FAMILY, fireball_experience_awards);
-        self.award_spell_experience(POSSESSION_SPELL_FAMILY, possession_experience_awards);
+        if let Some(source_family) =
+            self.award_spell_experience(FIREBALL_SPELL_FAMILY, fireball_experience_awards)
+        {
+            self.emit_ability_improved(source_family, player.position);
+        }
+        if let Some(source_family) =
+            self.award_spell_experience(POSSESSION_SPELL_FAMILY, possession_experience_awards)
+        {
+            self.emit_ability_improved(source_family, player.position);
+        }
         self.projectile_accuracy_attempts = self
             .projectile_accuracy_attempts
             .wrapping_add(projectile_accuracy_attempt_awards);
@@ -15954,13 +16321,26 @@ impl Level1MissionState {
                         initialized: false,
                         active: true,
                     });
+                    mark_source_audio_call(SourceAudioCallTag::CastleConstruction);
                     self.events
                         .push(Level1MissionEvent::CastleConstructionSound {
+                            #[cfg(test)]
+                            audio_site: crate::MissionAudioSite::CastleConstruction,
                             sound_id: CASTLE_CONSTRUCTION_SOUND,
                             source_entity_index: source_slot,
                             position: self.castle_position,
                         });
                     self.castle_level = CASTLE_STAGE_ONE_LEVEL;
+                    let mut defense_position = self.castle_position;
+                    defense_position.z = world.ground_height(defense_position).wrapping_add(384);
+                    // `sub_60480` commits the child and stage before
+                    // `sub_613D0` tries the single stage-one offset (4,4).
+                    // Allocation failure is therefore committed and never
+                    // retried from construction completion.
+                    let _ = self.spawn_castle_defense_controller(
+                        defense_position,
+                        self.castle_owner_entity_index,
+                    );
                     self.castle_action = CASTLE_ROOT_ACTION;
                     self.castle_build_state = 4;
                     self.castle_life = CASTLE_STAGE_ONE_LIFE;
@@ -16032,7 +16412,10 @@ impl Level1MissionState {
                     self.castle_action = 4;
                     return;
                 }
+                mark_source_audio_call(SourceAudioCallTag::CastleDestruction);
                 self.events.push(Level1MissionEvent::MissionSound {
+                    #[cfg(test)]
+                    audio_site: crate::MissionAudioSite::CastleDestruction,
                     sound_id: CASTLE_DESTRUCTION_SOUND,
                     source_entity_index: self.castle_source_entity_index,
                     position: self.castle_position,
@@ -16334,7 +16717,7 @@ impl Level1MissionState {
             SOURCE_DISABLED_FLAG;
     }
 
-    fn step_castle_construction_slot(&mut self, source_slot: u16) {
+    fn step_castle_construction_slot(&mut self, player: &FlightState, source_slot: u16) {
         let (child_id, child_position) = {
             let Some(child) = self
                 .castle_construction
@@ -16376,7 +16759,9 @@ impl Level1MissionState {
         self.source_pool
             .disable_occupant(SourceOccupant::CastleConstruction(child_id));
         self.source_slots[usize::from(source_slot)].control_flags |= SOURCE_DISABLED_FLAG;
-        self.award_spell_experience(CASTLE_SPELL_FAMILY, 1);
+        if let Some(source_family) = self.award_spell_experience(CASTLE_SPELL_FAMILY, 1) {
+            self.emit_ability_improved(source_family, player.position);
+        }
     }
 
     fn castle_defense_candidate_eligible(
@@ -16674,6 +17059,17 @@ impl Level1MissionState {
             first_shot,
             active: true,
         });
+        if first_shot {
+            mark_projectile_delivery_source_call();
+            self.events.push(Level1MissionEvent::MissionSound {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::CastleDefenseFirstShot,
+                sound_id: profile.sound_id,
+                source_entity_index: self.castle_source_entity_index,
+                position: self.castle_position,
+                random_state: self.global_rng,
+            });
+        }
         self.events.push(Level1MissionEvent::CastleDefenseShot {
             controller_entity_index: controller.source_entity_index,
             target_entity_index: target.source_entity_index,
@@ -16839,7 +17235,14 @@ impl Level1MissionState {
                     if payload != 0 {
                         self.source_slots[source_slot].control_flags |= 0x0020_0000;
                     }
+                    mark_source_audio_call(if payload == 0 {
+                        SourceAudioCallTag::ManaSphereClaimUnlatchedTransfer
+                    } else {
+                        SourceAudioCallTag::ManaSphereClaimFlaggedTransfer
+                    });
                     self.events.push(Level1MissionEvent::ManaSphereClaimed {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::ManaSphereClaim,
                         sphere_id: self.mana_spheres[sphere_index].id,
                         owner_entity_index: pending_owner,
                         sound_id: POSSESSION_SOUND,
@@ -17579,7 +17982,10 @@ impl Level1MissionState {
             }
             if impact.model == WATER_SPLASH_MODEL {
                 if !impact.damage_submitted {
+                    mark_water_splash_action05_first_update();
                     self.events.push(Level1MissionEvent::WaterSplashed {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::WaterSplashFirstUpdate,
                         projectile_id: impact.source_projectile_id,
                         splash_id: impact.id,
                         position: impact.position,
@@ -17736,7 +18142,10 @@ impl Level1MissionState {
                     }
                 }
                 if !ground_fire {
+                    mark_class10_action00_first_eligible_sound();
                     self.events.push(Level1MissionEvent::FireballImpacted {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::FireballImpact,
                         projectile_id: impact.source_projectile_id,
                         impact_id: impact.id,
                         position: impact.position,
@@ -17766,7 +18175,7 @@ impl Level1MissionState {
         for (parent_source_entity_index, owner_entity_index, position) in ground_fire_smoke_spawns {
             // Factory input 14 advances the global generator before NewEvent;
             // that advance survives allocation exhaustion.
-            self.global_rng = next_rng32(self.global_rng);
+            self.advance_global_rng(parent_source_entity_index, GlobalRngSite::GroundFireSmoke);
             let Some(source_entity_index) =
                 self.allocate_source_slot(SourceOccupant::Ambient(u16::MAX))
             else {
@@ -17910,8 +18319,7 @@ impl Level1MissionState {
             .map_or(5, |index| {
                 u8::try_from(index).expect("five Level 1 objectives")
             });
-        self.objective_textbox_ticks = 200;
-        self.exit_palette_submode = LEVEL1_PALETTE_OBJECTIVE_REQUEST;
+        self.objective_presentation_phase = 1;
         if self.current_stage >= 5 {
             self.current_text_selector = 53;
             self.level_completed = true;
@@ -18048,7 +18456,7 @@ impl Level1MissionState {
                         self.authored_allocations[index].state_timer = 16;
                     } else if timer == 1 {
                         target_group = Some(allocation.stage_tag);
-                        self.emit_switch_sound(allocation);
+                        self.emit_switch_sound(model, allocation);
                     } else {
                         self.authored_allocations[index].state_timer -= 1;
                     }
@@ -18064,7 +18472,7 @@ impl Level1MissionState {
                     self.authored_allocations[index].state_timer = 16;
                 } else if timer == 1 {
                     target_group = Some(allocation.stage_tag);
-                    self.emit_switch_sound(allocation);
+                    self.emit_switch_sound(model, allocation);
                 } else {
                     self.authored_allocations[index].state_timer -= 1;
                 }
@@ -18103,7 +18511,19 @@ impl Level1MissionState {
                         })
                         .map_or(0, |actor| actor.source_entity_index);
                     self.exit_target_valid = self.exit_target_source_entity_index != 0;
-                    self.emit_switch_sound(allocation);
+                    // `InitSwitchChainZaxisAndSound_6F850` resolves the
+                    // overlapping model-0 player and passes that matched
+                    // entity to PrepareEventSound. The exit switch is only
+                    // the trigger; the immediate sound belongs to the player.
+                    mark_source_audio_call(SourceAudioCallTag::ExitOverlapSwitch);
+                    self.events.push(Level1MissionEvent::MissionSound {
+                        #[cfg(test)]
+                        audio_site: crate::MissionAudioSite::ExitOverlap,
+                        sound_id: EXIT_SWITCH_SOUND,
+                        source_entity_index: player.entity_index,
+                        position: player.position,
+                        random_state: self.global_rng,
+                    });
                     self.events.push(Level1MissionEvent::ExitSequenceStarted);
                     if let Some(target) = self
                         .actors
@@ -18151,14 +18571,18 @@ impl Level1MissionState {
         if overlap != expected_overlap {
             return false;
         }
-        if allocation.subtype as u8 > 3 {
-            self.emit_switch_sound(allocation);
-        }
         true
     }
 
-    fn emit_switch_sound(&mut self, allocation: AuthoredAllocation) {
+    fn emit_switch_sound(&mut self, model: u8, allocation: AuthoredAllocation) {
+        mark_source_audio_call(match model {
+            16 => SourceAudioCallTag::CountdownSwitchModel16,
+            17 => SourceAudioCallTag::CountdownSwitchModel17,
+            _ => unreachable!("only model-16/17 countdown switches emit this source call"),
+        });
         self.events.push(Level1MissionEvent::MissionSound {
+            #[cfg(test)]
+            audio_site: crate::MissionAudioSite::CountdownSwitch,
             sound_id: EXIT_SWITCH_SOUND,
             source_entity_index: allocation.source_entity_index,
             position: allocation.position,
@@ -19251,9 +19675,8 @@ fn builder_building_is_eligible(building_index: u8) -> bool {
     )
 }
 
-fn select_builder_building_index(global_rng: &mut u32) -> u8 {
-    *global_rng = next_rng32(*global_rng);
-    let mut building_index = ((*global_rng % 60) + 17) as u8;
+fn select_builder_building_index(global_rng: u32) -> u8 {
+    let mut building_index = ((global_rng % 60) + 17) as u8;
     let mut probes = 0_u8;
     while !builder_building_is_eligible(building_index) && probes < 77 {
         building_index = building_index.wrapping_add(1);
@@ -21406,38 +21829,91 @@ mod tests {
     use super::*;
 
     #[test]
-    fn objective_textbox_clock_matches_source_outer_turn_order() {
+    fn objective_presentation_gate_and_textbox_clock_match_unpaused_outer_turn_order() {
         let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
         let mut mission = template.session(10_000, 2_000);
-        assert_eq!(mission.objective_textbox_ticks, 33);
+        mission.objective_presentation_phase = 1;
+        mission.objective_presentation_palette_mod = 1;
+        mission.objective_textbox_ticks = 0;
+        let player = FlightState::default();
 
+        mission.advance_exit_palette_frame();
         mission.begin_source_turn();
+        mission.finish_source_turn(&player);
         assert_eq!(
-            mission.objective_textbox_ticks, 32,
-            "reset 33 is decremented once before the first stepped frame is drawn"
+            (
+                mission.objective_presentation_palette_mod,
+                mission.objective_presentation_phase,
+                mission.objective_textbox_ticks,
+            ),
+            (2, 1, 0),
+            "the first post-capture frame keeps presentation armed below paletteMod 3"
         );
+
+        mission.advance_exit_palette_frame();
+        mission.begin_source_turn();
+        mission.finish_source_turn(&player);
+        assert_eq!(
+            (
+                mission.objective_presentation_palette_mod,
+                mission.objective_presentation_phase,
+                mission.objective_textbox_ticks,
+            ),
+            (3, 0, 200),
+            "the second post-capture frame crosses the gate and presents objective row zero"
+        );
+        assert!(
+            mission.events().iter().all(|event| !matches!(
+                event,
+                Level1MissionEvent::MissionSound { sound_id: 61, .. }
+            ))
+        );
+
+        mission.advance_exit_palette_frame();
+        mission.begin_source_turn();
+        mission.finish_source_turn(&player);
+        assert_eq!(
+            mission.objective_textbox_ticks, 199,
+            "one complete outer turn performs exactly one textbox decrement"
+        );
+
         mission.objective_textbox_ticks = 1;
         mission.begin_source_turn();
-        assert_eq!(
-            mission.objective_textbox_ticks, 0,
-            "one remaining turn expires without a persistent textbox frame"
-        );
+        assert_eq!(mission.objective_textbox_ticks, 1);
+        mission.finish_source_turn(&player);
+        assert_eq!(mission.objective_textbox_ticks, 0);
 
-        mission.evaluate_objective(LEVEL1_FIRST_WAYPOINT, true, true);
+        let waypoint_player = FlightState {
+            position: LEVEL1_FIRST_WAYPOINT,
+            ..FlightState::default()
+        };
+        mission.begin_source_turn();
+        mission.finish_source_turn(&waypoint_player);
         assert_eq!(
             (
                 mission.current_stage,
                 mission.current_text_selector,
+                mission.objective_presentation_phase,
                 mission.objective_textbox_ticks,
+                mission.exit_palette_submode,
             ),
-            (1, 49, 200),
-            "objective advancement resets the same drawn frame to 200"
+            (1, 49, 0, 200, EXIT_PALETTE_NONE),
+            "objective evaluation arms presentation; the same outer frame services it without an objective palette flash"
         );
-        mission.begin_source_turn();
-        assert_eq!(
-            mission.objective_textbox_ticks, 199,
-            "the following outer turn performs the next single decrement"
-        );
+        assert!(matches!(
+            mission.events(),
+            [
+                Level1MissionEvent::ObjectiveAdvanced {
+                    completed_stage: 0,
+                    text_selector: 49,
+                },
+                Level1MissionEvent::MissionSound {
+                    sound_id: OBJECTIVE_ANNOUNCEMENT_SOUND,
+                    source_entity_index: 0,
+                    ..
+                }
+            ]
+        ));
     }
 
     #[test]
@@ -23566,9 +24042,9 @@ mod tests {
         let invalid_76_seed = (0_u32..)
             .find(|seed| next_rng32(*seed) % 60 + 17 == 76)
             .unwrap();
-        let mut invalid_rng = invalid_76_seed;
+        let invalid_rng = next_rng32(invalid_76_seed);
         assert_eq!(
-            select_builder_building_index(&mut invalid_rng),
+            select_builder_building_index(invalid_rng),
             19,
             "zero-initialized BLDGPRM row 76 wraps through fallback row 17 and selects first eligible row 19"
         );
@@ -23710,6 +24186,7 @@ mod tests {
         placement.source_slots[usize::from(builder_slot)].action = BUILDER_SEARCH_ACTION;
         placement.begin_source_turn_at(player.position);
         placement.global_rng = selected_19_seed;
+        placement.clear_global_rng_trace();
         let builder_rng_before = placement.dynamic_residents[usize::from(builder_slot)]
             .unwrap()
             .entity_rng;
@@ -23718,6 +24195,23 @@ mod tests {
             target_view(200, target_position),
         ];
         views.sort_unstable_by_key(|view| view.source_entity_index);
+        let mut omitted_selection = placement.clone();
+        omitted_selection.dynamic_residents[usize::from(builder_slot)]
+            .as_mut()
+            .unwrap()
+            .reset_counter = 4;
+        omitted_selection.dispatch_source_slot_with_views_and_look(
+            &FlatWorld,
+            &player,
+            &views,
+            builder_slot,
+            false,
+            false,
+            None,
+            0,
+            0,
+        );
+        assert!(omitted_selection.global_rng_trace().is_empty());
         let placement_effects = placement.dispatch_source_slot_with_views_and_look(
             &FlatWorld,
             &player,
@@ -23729,6 +24223,18 @@ mod tests {
             0,
             0,
         );
+        assert!(matches!(
+            placement.global_rng_trace(),
+            [GlobalRngTraceEntry {
+                pass_index: 0,
+                source_slot,
+                site: GlobalRngSite::BuilderSelection,
+                before,
+                after,
+            }] if *source_slot == builder_slot
+                && *before == selected_19_seed
+                && *after == next_rng32(selected_19_seed)
+        ));
         let placed_house = placement_effects
             .iter()
             .find_map(|effect| match effect {
@@ -23990,10 +24496,7 @@ mod tests {
         );
 
         let selected_40_seed = (0_u32..)
-            .find(|seed| {
-                let mut rng = *seed;
-                select_builder_building_index(&mut rng) == 40
-            })
+            .find(|seed| select_builder_building_index(next_rng32(*seed)) == 40)
             .unwrap();
         let spec_40 = builder_building_spec(40).unwrap();
         assert_eq!(
@@ -25953,6 +26456,28 @@ mod tests {
                 ARCHER_ARROW_PAYLOAD,
             )
         );
+        let mut second_dispatch = attack.clone();
+        let Level1Projectile::ArcherArrow(second_arrow) = second_dispatch
+            .projectiles
+            .iter_mut()
+            .find(|projectile| projectile.id() == arrow.id)
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        second_arrow.sound_initialized = true;
+        second_dispatch.clear_global_rng_trace();
+        second_dispatch.dispatch_source_slot(
+            &FlatWorld,
+            &attack_player,
+            arrow.source_entity_index,
+            false,
+            false,
+            None,
+        );
+        assert!(second_dispatch.global_rng_trace().is_empty());
+
+        attack.clear_global_rng_trace();
         attack.dispatch_source_slot(
             &FlatWorld,
             &attack_player,
@@ -25962,6 +26487,18 @@ mod tests {
             None,
         );
         let expected_sound_rng = next_rng32(global_before_arrow);
+        assert!(matches!(
+            attack.global_rng_trace(),
+            [GlobalRngTraceEntry {
+                source_slot,
+                site: GlobalRngSite::ArcherArrowSound,
+                before,
+                after,
+                ..
+            }] if *source_slot == arrow.source_entity_index
+                && *before == global_before_arrow
+                && *after == expected_sound_rng
+        ));
         assert!(attack.events().iter().any(|event| matches!(
             event,
             Level1MissionEvent::ArcherArrowSound {
@@ -26847,7 +27384,6 @@ mod tests {
                     Vec::new()
                 }
             );
-
             let mut observed_completion = None;
             let mut observed_stable = None;
             let mut observed_carrier = None;
@@ -26874,6 +27410,78 @@ mod tests {
             assert_eq!(mission.castle_build_state, 0);
             assert_eq!(mission.castle_action, 4);
         }
+    }
+
+    #[test]
+    fn stage_one_castle_creates_its_defender_immediately_and_never_retries_failure() {
+        let root_slot = 100_u16;
+        let child_slot = 200_u16;
+        let defender_slot = 300_u16;
+        let (mut mission, player) = isolated_constructing_castle(root_slot, Some(child_slot));
+        mission.source_pool.occupants[usize::from(defender_slot)] = None;
+        mission.source_pool.disabled[usize::from(defender_slot)] = false;
+        mission.source_pool.replaceable[usize::from(defender_slot)] = false;
+        mission.source_pool.free_stack.insert(0, defender_slot);
+        mission.begin_source_turn_at(player.position);
+
+        mission.step_castle_root_slot(&FlatWorld, root_slot);
+
+        assert_eq!(
+            mission.castle_construction().unwrap().source_entity_index,
+            child_slot,
+            "sub_60480 allocates the construction child first"
+        );
+        let defender = mission.castle_defense_controllers()[0];
+        assert_eq!(defender.source_entity_index, defender_slot);
+        assert_eq!(defender.owner_entity_index, player.entity_index);
+        assert_eq!(
+            defender.position,
+            Position {
+                x: 20 << 8,
+                y: 22 << 8,
+                z: 384,
+            }
+        );
+        assert_eq!(defender.max_life, CASTLE_DEFENSE_MAX_LIFE);
+        assert_eq!(defender.life, CASTLE_DEFENSE_MAX_LIFE);
+        assert_eq!(defender.variant, 0);
+        assert_eq!(defender.action_state, 0);
+        assert_eq!(
+            (
+                mission.source_slots()[usize::from(defender_slot)].class,
+                mission.source_slots()[usize::from(defender_slot)].model,
+                mission.source_slots()[usize::from(defender_slot)].action,
+            ),
+            (
+                CASTLE_DEFENSE_CLASS,
+                CASTLE_DEFENSE_MODEL,
+                CASTLE_DEFENSE_ACTION
+            )
+        );
+
+        mission.dispatch_source_slot(&FlatWorld, &player, defender_slot, false, false, None);
+        assert_eq!(
+            mission.castle_defense_controllers()[0].action_state,
+            1,
+            "the ordinary ascending source dispatcher executes action 86"
+        );
+
+        let (mut failed, failed_player) = isolated_constructing_castle(root_slot, Some(child_slot));
+        failed.begin_source_turn_at(failed_player.position);
+        failed.step_castle_root_slot(&FlatWorld, root_slot);
+        assert_eq!(failed.castle_level, CASTLE_STAGE_ONE_LEVEL);
+        assert!(failed.castle_construction().is_some());
+        assert!(failed.castle_defense_controllers().is_empty());
+        failed.source_pool.occupants[usize::from(defender_slot)] = None;
+        failed.source_pool.disabled[usize::from(defender_slot)] = false;
+        failed.source_pool.replaceable[usize::from(defender_slot)] = false;
+        failed.source_pool.free_stack.push(defender_slot);
+        for _ in 0..24 {
+            dispatch_isolated_source_turn(&mut failed, &failed_player);
+            let _ = failed.drain_castle_terrain_updates().count();
+        }
+        assert_eq!(failed.castle_action, 4);
+        assert!(failed.castle_defense_controllers().is_empty());
     }
 
     #[test]
@@ -27500,6 +28108,36 @@ mod tests {
         };
         mission.begin_source_turn();
         let global_before_emission = mission.global_rng;
+        mission.clear_global_rng_trace();
+        let mut exhausted = mission.clone();
+        exhausted.source_pool.free_stack.clear();
+        exhausted.source_pool.replaceable_stack.clear();
+        exhausted.source_pool.raw_replaceable_cursor = -2;
+        exhausted.dispatch_source_slot(
+            &FlatWorld,
+            &player,
+            emitter.source_entity_index,
+            false,
+            false,
+            None,
+        );
+        assert!(exhausted.impacts().is_empty());
+        assert!(
+            matches!(
+                exhausted.global_rng_trace(),
+                [GlobalRngTraceEntry {
+                    source_slot,
+                    site: GlobalRngSite::CheckpointSmoke,
+                    before,
+                    after,
+                    ..
+                }] if *source_slot == emitter.source_entity_index
+                    && *before == global_before_emission
+                    && *after == next_rng32(global_before_emission)
+            ),
+            "{:?}",
+            exhausted.global_rng_trace()
+        );
         mission.dispatch_source_slot(
             &FlatWorld,
             &player,
@@ -27507,6 +28145,22 @@ mod tests {
             false,
             false,
             None,
+        );
+        assert!(
+            matches!(
+                mission.global_rng_trace(),
+                [GlobalRngTraceEntry {
+                    source_slot,
+                    site: GlobalRngSite::CheckpointSmoke,
+                    before,
+                    after,
+                    ..
+                }] if *source_slot == emitter.source_entity_index
+                    && *before == global_before_emission
+                    && *after == next_rng32(global_before_emission)
+            ),
+            "{:?}",
+            mission.global_rng_trace()
         );
 
         let emitted = mission
@@ -28128,6 +28782,58 @@ mod tests {
             },
             ..FlightState::default()
         };
+        let omitted_seed = (0..=u16::MAX)
+            .find(|seed| !next_rng16(*seed).is_multiple_of(7))
+            .unwrap();
+        let mut omitted = mission.clone();
+        omitted.impacts[fire_index].entity_rng = omitted_seed;
+        let omitted_ambient_count = omitted.ambient_entities().count();
+        omitted.clear_global_rng_trace();
+        omitted.dispatch_source_slot(
+            &RaisedMaterialWorld {
+                ground_height: 50,
+                material_mask: 1,
+            },
+            &player,
+            fire.source_entity_index,
+            false,
+            false,
+            None,
+        );
+        assert!(omitted.global_rng_trace().is_empty());
+        assert_eq!(omitted.ambient_entities().count(), omitted_ambient_count);
+
+        let mut allocation_failure = mission.clone();
+        allocation_failure.source_pool.free_stack.clear();
+        allocation_failure.source_pool.replaceable_stack.clear();
+        allocation_failure.source_pool.raw_replaceable_cursor = -2;
+        let failure_ambient_count = allocation_failure.ambient_entities().count();
+        allocation_failure.clear_global_rng_trace();
+        allocation_failure.dispatch_source_slot(
+            &RaisedMaterialWorld {
+                ground_height: 50,
+                material_mask: 1,
+            },
+            &player,
+            fire.source_entity_index,
+            false,
+            false,
+            None,
+        );
+        assert_eq!(
+            allocation_failure.ambient_entities().count(),
+            failure_ambient_count
+        );
+        assert!(matches!(
+            allocation_failure.global_rng_trace(),
+            [GlobalRngTraceEntry {
+                source_slot,
+                site: GlobalRngSite::GroundFireSmoke,
+                ..
+            }] if *source_slot == fire.source_entity_index
+        ));
+
+        mission.clear_global_rng_trace();
         mission.dispatch_source_slot(
             &RaisedMaterialWorld {
                 ground_height: 50,
@@ -28139,6 +28845,14 @@ mod tests {
             false,
             None,
         );
+        assert!(matches!(
+            mission.global_rng_trace(),
+            [GlobalRngTraceEntry {
+                source_slot,
+                site: GlobalRngSite::GroundFireSmoke,
+                ..
+            }] if *source_slot == fire.source_entity_index
+        ));
         let quenched = mission.impacts[fire_index];
         assert_eq!(
             (
@@ -29094,6 +29808,17 @@ mod tests {
 
         assert!(mission.spawn_fireball_with_look(&player, 0, 0));
         let source_slot = mission.projectiles[0].source_entity_index();
+        let launch_position = mission.projectiles[0].position();
+        assert!(mission.events().iter().any(|event| matches!(
+            event,
+            Level1MissionEvent::MissionSound {
+                audio_site: crate::MissionAudioSite::FireballLaunch,
+                sound_id: FIREBALL_LAUNCH_SOUND,
+                source_entity_index,
+                position,
+                ..
+            } if *source_entity_index == source_slot && *position == launch_position
+        )));
         mission.step_projectile_slot(&FlatWorld, &player, source_slot);
         let Level1Projectile::PlayerFireball(first) = mission.projectiles[0] else {
             panic!("Fireball constructor must retain its projectile family");
@@ -30719,7 +31444,7 @@ mod tests {
     }
 
     #[test]
-    fn firefly_fireball_water_hit_creates_nine_update_sound_only_splash() {
+    fn firefly_fireball_water_hit_is_silent_until_the_first_splash_update() {
         let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
         let mut mission = template.session(10_000, 1_000);
         let projectile_id = 77;
@@ -30786,6 +31511,15 @@ mod tests {
             Some(SourceOccupant::FireflyFireball(projectile_id))
         );
         assert!(mission.source_pool.disabled[usize::from(projectile_slot)]);
+        assert_eq!(
+            mission
+                .events
+                .iter()
+                .filter(|event| matches!(event, Level1MissionEvent::WaterSplashed { .. }))
+                .count(),
+            0,
+            "selected-profile projectile water creation is structural and silent"
+        );
 
         mission.step_impact_slot(
             &RaisedMaterialWorld {
@@ -32432,6 +33166,17 @@ mod tests {
         let Level1Projectile::CastleBuild(projectile) = mission.projectiles()[0] else {
             panic!("Castle cast must create a build projectile");
         };
+        assert!(mission.events().iter().any(|event| matches!(
+            event,
+            Level1MissionEvent::CastleProjectileSpawned {
+                audio_site: crate::MissionAudioSite::InitialCastleLaunch,
+                sound_id: CASTLE_PROJECTILE_SOUND,
+                source_entity_index,
+                position,
+                ..
+            } if *source_entity_index == projectile.source_entity_index
+                && *position == projectile.position
+        )));
         projectile
     }
 
@@ -32972,6 +33717,14 @@ mod tests {
         player: &FlightState,
     ) -> CastleDefenseFixture {
         let mut defense = template.session(10_000, 1_000);
+        defense.castle_exists = true;
+        defense.castle_source_entity_index = 200;
+        defense.castle_owner_entity_index = player.entity_index;
+        defense.castle_position = Position {
+            x: 101 << 8,
+            y: 100 << 8,
+            z: 64,
+        };
         let controller_position = Position {
             x: 100 << 8,
             y: 100 << 8,
@@ -33171,7 +33924,7 @@ mod tests {
                     .iter_mut()
                     .find(|controller| controller.source_entity_index == fixture.controller_slot)
                     .unwrap();
-                controller.action_state = 8;
+                controller.action_state = 7;
                 controller.target_entity_index = 121;
                 controller.shot_family = spell_family;
                 controller.shot_subspell = subspell;
@@ -33365,6 +34118,35 @@ mod tests {
                     && *event_spell_family == spell_family
                     && *event_subspell == subspell
             )));
+            let sound_index = defense.events().iter().position(|event| matches!(
+                event,
+                Level1MissionEvent::MissionSound {
+                    audio_site: crate::MissionAudioSite::CastleDefenseFirstShot,
+                    sound_id,
+                    source_entity_index,
+                    position,
+                    ..
+                } if *sound_id == u16::try_from(generated_i64(expected, "sound_id")).unwrap()
+                    && *source_entity_index == defense.castle_source_entity_index
+                    && *position == defense.castle_position
+            )).expect("first action-86 shot emits from its Castle root");
+            let shot_index = defense
+                .events()
+                .iter()
+                .position(|event| {
+                    matches!(
+                        event,
+                        Level1MissionEvent::CastleDefenseShot {
+                            projectile_entity_index,
+                            ..
+                        } if *projectile_entity_index == projectile_slot
+                    )
+                })
+                .unwrap();
+            assert!(
+                sound_index < shot_index,
+                "source emits sound before journaling the typed shot"
+            );
         }
     }
 
@@ -33578,6 +34360,105 @@ mod tests {
             fixture.controller_position,
             fixture.candidate_position,
         );
+    }
+
+    #[test]
+    fn castle_defense_first_shot_audio_covers_every_profile_and_second_shots_are_silent() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let player = FlightState {
+            entity_index: 152,
+            position: Position {
+                x: 20_000,
+                y: 20_000,
+                z: 2_000,
+            },
+            ..FlightState::default()
+        };
+        for (spell_family, subspell, sound_id) in [
+            (0_u8, 1_u8, 9_u16),
+            (7, 0, 23),
+            (7, 1, 9),
+            (0, 2, 9),
+            (9, 0, 15),
+        ] {
+            let mut fixture = castle_defense_fixture(&template, &player);
+            let defense = &mut fixture.defense;
+            defense.source_pool.free_stack.clear();
+            defense.source_pool.replaceable_stack.clear();
+            for slot in [900_u16, 901_u16] {
+                defense.source_pool.occupants[usize::from(slot)] = None;
+                defense.source_pool.disabled[usize::from(slot)] = false;
+                defense.source_pool.replaceable[usize::from(slot)] = false;
+                defense.source_pool.free_stack.push(slot);
+            }
+            defense.begin_source_turn_at(player.position);
+            let controller = defense
+                .castle_defense_controllers
+                .iter_mut()
+                .find(|controller| controller.source_entity_index == fixture.controller_slot)
+                .unwrap();
+            controller.action_state = 7;
+            controller.target_entity_index = 121;
+            controller.shot_family = spell_family;
+            controller.shot_subspell = subspell;
+            controller.shots_remaining = 2;
+            let views = defense.source_entity_views(&player, &fixture.candidates);
+
+            defense.dispatch_source_slot_with_views_and_look(
+                &FlatWorld,
+                &player,
+                &views,
+                fixture.controller_slot,
+                false,
+                false,
+                None,
+                0,
+                0,
+            );
+            let first_events = defense.events().to_vec();
+            let sound_index = first_events
+                .iter()
+                .position(|event| {
+                    matches!(
+                        event,
+                        Level1MissionEvent::MissionSound {
+                            audio_site: crate::MissionAudioSite::CastleDefenseFirstShot,
+                            sound_id: event_sound,
+                            source_entity_index,
+                            position,
+                            ..
+                        } if *event_sound == sound_id
+                            && *source_entity_index == defense.castle_source_entity_index
+                            && *position == defense.castle_position
+                    )
+                })
+                .expect("first shot emits from the Castle root");
+            let shot_index = first_events
+                .iter()
+                .position(|event| matches!(event, Level1MissionEvent::CastleDefenseShot { .. }))
+                .unwrap();
+            assert!(sound_index < shot_index);
+
+            defense.events.clear();
+            defense.dispatch_source_slot_with_views_and_look(
+                &FlatWorld,
+                &player,
+                &views,
+                fixture.controller_slot,
+                false,
+                false,
+                None,
+                0,
+                0,
+            );
+            assert!(defense.events().iter().all(|event| !matches!(
+                event,
+                Level1MissionEvent::MissionSound {
+                    audio_site: crate::MissionAudioSite::CastleDefenseFirstShot,
+                    ..
+                }
+            )));
+        }
     }
 
     #[test]
@@ -34587,6 +35468,7 @@ mod tests {
                 source_entity_index,
                 position,
                 random_state,
+                ..
             }] if *source_entity_index == countdown_switch_slot
                 && *position == countdown.authored_allocations[countdown_switch].position
                 && *random_state == release_rng
@@ -34709,6 +35591,151 @@ mod tests {
             512,
             512,
         ));
+    }
+
+    #[test]
+    fn exit_audio_uses_the_matched_player_while_non_audio_switches_stay_silent() {
+        let private_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let world = crate::native_world::NativeWorld::load(
+            private_root.join("generated/level1-export-m"),
+            private_root.join("generated/level1-asset-closure.json"),
+        )
+        .expect("validated Level 1 owner package");
+        let template = world.level1_mission();
+
+        for group in 12_i16..=32 {
+            let mut mission = template.session(10_000, 2_000);
+            let index = mission
+                .authored_allocations
+                .iter()
+                .position(|allocation| {
+                    allocation.kind == 11
+                        && allocation.activation_group == 0
+                        && allocation.subtype == 0
+                        && allocation.stage_tag == group
+                })
+                .unwrap();
+            let source_slot = mission.authored_allocations[index].source_entity_index;
+            mission.authored_allocations[index].phase = 0;
+            let player = FlightState {
+                entity_index: 152,
+                position: mission.authored_allocations[index].position,
+                ..FlightState::default()
+            };
+            mission.step_switch_slot(&player, source_slot);
+            assert!(
+                mission
+                    .events()
+                    .iter()
+                    .all(|event| !matches!(event, Level1MissionEvent::MissionSound { .. }))
+            );
+        }
+
+        let mut objective = template.session(10_000, 2_000);
+        let objective_index = objective
+            .authored_allocations
+            .iter()
+            .position(|allocation| {
+                allocation.kind == 11
+                    && allocation.activation_group == 0
+                    && allocation.subtype == 0
+                    && allocation.stage_tag == 12
+            })
+            .unwrap();
+        let objective_slot = objective.authored_allocations[objective_index].source_entity_index;
+        objective.authored_allocations[objective_index].stage_tag = 2;
+        objective.source_slots[usize::from(objective_slot)].model = 32;
+        objective.source_slots[usize::from(objective_slot)].action = 32;
+        objective.objective_states[0] = 2;
+        objective.step_switch_slot(&FlightState::default(), objective_slot);
+        assert!(
+            objective
+                .events()
+                .iter()
+                .all(|event| !matches!(event, Level1MissionEvent::MissionSound { .. }))
+        );
+
+        for countdown_model in [16_u8, 17] {
+            let mut countdown = template.session(10_000, 2_000);
+            let index = countdown
+                .authored_allocations
+                .iter()
+                .position(|allocation| {
+                    allocation.kind == 11
+                        && allocation.activation_group == 0
+                        && allocation.subtype == 0
+                        && allocation.stage_tag == 12
+                })
+                .unwrap();
+            let source_slot = countdown.authored_allocations[index].source_entity_index;
+            countdown.authored_allocations[index].stage_tag = 10;
+            countdown.authored_allocations[index].state_timer = 1;
+            countdown.source_slots[usize::from(source_slot)].model = countdown_model;
+            countdown.source_slots[usize::from(source_slot)].action = countdown_model;
+            let switch_position = countdown.authored_allocations[index].position;
+            let rng = countdown.global_rng();
+            countdown.step_switch_slot(&FlightState::default(), source_slot);
+            assert!(matches!(
+                countdown.events(),
+                [Level1MissionEvent::MissionSound {
+                    sound_id: EXIT_SWITCH_SOUND,
+                    source_entity_index,
+                    position,
+                    random_state,
+                    ..
+                }] if *source_entity_index == source_slot
+                    && *position == switch_position
+                    && *random_state == rng
+            ));
+        }
+
+        let mut exit = template.session(10_000, 2_000);
+        exit.activate_group(4);
+        let exit_index = exit
+            .authored_allocations
+            .iter()
+            .position(|allocation| {
+                allocation.kind == 11
+                    && allocation.subtype == 12
+                    && allocation.state == AuthoredAllocationState::Active
+            })
+            .unwrap();
+        let exit_slot = exit.authored_allocations[exit_index].source_entity_index;
+        exit.authored_allocations[exit_index].phase = 0;
+        exit.source_slots[usize::from(exit_slot)].phase = 0;
+        let mut player = FlightState {
+            entity_index: 152,
+            position: exit.authored_allocations[exit_index].position,
+            ..FlightState::default()
+        };
+        let player_position = player.position;
+        let rng_before = exit.global_rng();
+        exit.events.clear();
+        exit.step_switch_slot(&player, exit_slot);
+        let mut context = FlightContext::default();
+        let mut camera_fov = 128;
+        exit.advance_exit_sequence(&FlatWorld, &mut player, &mut context, &mut camera_fov);
+        assert_eq!(exit.global_rng(), rng_before);
+        assert_eq!(
+            exit.events()
+                .iter()
+                .filter_map(|event| match event {
+                    Level1MissionEvent::MissionSound {
+                        sound_id: EXIT_SWITCH_SOUND,
+                        source_entity_index,
+                        position,
+                        random_state,
+                        ..
+                    } => Some((*source_entity_index, *position, *random_state)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [
+                (player.entity_index, player_position, rng_before),
+                (player.entity_index, player_position, rng_before),
+            ],
+            "the immediate overlap sound and later action-12 sound are both player-emitted"
+        );
     }
 
     #[test]
@@ -34976,6 +36003,7 @@ mod tests {
         assert_eq!(
             context.events,
             [crate::FlightEvent::PrepareSound {
+                audio_site: crate::MissionAudioSite::SpeedSpellActivation,
                 entity_index: 152,
                 player_index: -1,
                 sound_id: EXIT_ACCELERATION_SOUND,
@@ -35110,6 +36138,7 @@ mod tests {
             assert_eq!(
                 context.events,
                 [crate::FlightEvent::PrepareSound {
+                    audio_site: crate::MissionAudioSite::SpeedSpellActivation,
                     entity_index: 152,
                     player_index: -1,
                     sound_id: EXIT_ACCELERATION_SOUND,
@@ -35230,6 +36259,7 @@ mod tests {
         assert_eq!(
             retrigger_context.events,
             [FlightEvent::PrepareSound {
+                audio_site: crate::MissionAudioSite::SpeedSpellActivation,
                 entity_index: 152,
                 player_index: -1,
                 sound_id: EXIT_ACCELERATION_SOUND,
@@ -35312,6 +36342,7 @@ mod tests {
         assert_eq!(
             retrigger_context.events,
             [FlightEvent::PrepareSound {
+                audio_site: crate::MissionAudioSite::SpeedSpellActivation,
                 entity_index: 152,
                 player_index: -1,
                 sound_id: EXIT_ACCELERATION_SOUND,
@@ -35445,6 +36476,50 @@ mod tests {
                 ..
             }
         )));
+        assert_eq!(
+            (
+                mission.player_notification_active,
+                mission.player_notification_id,
+                mission.player_notification_state,
+                mission.player_notification_timer,
+            ),
+            (
+                true,
+                ABILITY_IMPROVED_NAME_SELECTOR_BASE + 16,
+                ABILITY_IMPROVED_NOTIFICATION_STATE,
+                ABILITY_IMPROVED_NOTIFICATION_TIMER,
+            ),
+            "ascending source-family refresh leaves Castle (family 16) as the final notification"
+        );
+        assert!(matches!(
+            mission.events.as_slice(),
+            [
+                Level1MissionEvent::MissionSound {
+                    sound_id: EXPERIENCE_SCROLL_SOUND,
+                    ..
+                },
+                Level1MissionEvent::AbilityImproved {
+                    source_family: 0,
+                    ..
+                },
+                Level1MissionEvent::MissionSound { sound_id: 61, .. },
+                Level1MissionEvent::AbilityImproved {
+                    source_family: 1,
+                    ..
+                },
+                Level1MissionEvent::MissionSound { sound_id: 61, .. },
+                Level1MissionEvent::AbilityImproved {
+                    source_family: 3,
+                    ..
+                },
+                Level1MissionEvent::MissionSound { sound_id: 61, .. },
+                Level1MissionEvent::AbilityImproved {
+                    source_family: 16,
+                    ..
+                },
+                Level1MissionEvent::MissionSound { sound_id: 61, .. },
+            ]
+        ));
 
         assert_eq!(SPELL_JAR_REWARD_EXPERIENCE, EXPECTED_SOURCE_EXPERIENCE);
         assert_eq!(
@@ -35760,6 +36835,7 @@ mod tests {
             assert_eq!(
                 reachable_context.events,
                 [FlightEvent::PrepareSound {
+                    audio_site: crate::MissionAudioSite::SpeedSpellActivation,
                     entity_index: reachable_state.entity_index,
                     player_index: -1,
                     sound_id: EXIT_ACCELERATION_SOUND,
@@ -35768,7 +36844,7 @@ mod tests {
         }
         let mut reward = full_reward.expect("three-success reward case");
         let reward_hash = reward.source_arena_hash_v1();
-        assert_eq!(reward_hash, 0xeb9a_19f9_57d9_c2d5);
+        assert_eq!(reward_hash, 0xb690_6cda_3d5d_11e3);
         let mut reordered_experience = reward.clone();
         reordered_experience
             .spell_jar_reward_experience_order
@@ -37426,6 +38502,7 @@ mod tests {
                 sphere_id: id,
                 owner_entity_index: 152,
                 sound_id: POSSESSION_SOUND,
+                ..
             } if *id == sphere_id
         )));
 
@@ -40126,7 +41203,7 @@ mod tests {
             matches!(
                 event,
                 Level1MissionEvent::MissionSound {
-                    sound_id: u16::MAX,
+                    sound_id: 3,
                     source_entity_index,
                     ..
                 } if *source_entity_index == fire_slot
@@ -40139,7 +41216,7 @@ mod tests {
                 matches!(
                     event,
                     Level1MissionEvent::MissionSound {
-                        sound_id: u16::MAX,
+                        sound_id: 3,
                         source_entity_index,
                         ..
                     } if *source_entity_index == fire_slot
@@ -40162,6 +41239,18 @@ mod tests {
             .unwrap();
         assert!(fire_audio_order < effect_audio_order);
         assert_eq!(lifecycle.minimap_marks(&player), minimap_before);
+        lifecycle.finish_source_turn(&player);
+
+        lifecycle.begin_source_turn();
+        lifecycle.dispatch_source_slot(&world, &player, fire_slot, false, false, None);
+        assert!(lifecycle.events().iter().all(|event| !matches!(
+            event,
+            Level1MissionEvent::MissionSound {
+                sound_id: 3,
+                source_entity_index,
+                ..
+            } if *source_entity_index == fire_slot
+        )));
         lifecycle.finish_source_turn(&player);
 
         for _ in 1..30 {
@@ -40631,6 +41720,7 @@ mod tests {
         let mut emitter = template.session(10_000, 2_000);
         let emitter_before = emitter.ambient_entities[113].unwrap();
         let global_before = emitter.global_rng;
+        emitter.clear_global_rng_trace();
         emitter.step_ambient_slot(&FlatWorld, 113);
         let emitter_after = emitter.ambient_entities[113].unwrap();
         let child = emitter.ambient_entities[178].unwrap();
@@ -40638,6 +41728,16 @@ mod tests {
         let parent_rng_2 = next_rng16(parent_rng_1);
         let parent_rng_3 = next_rng16(parent_rng_2);
         let global_after = next_rng32(global_before);
+        assert!(matches!(
+            emitter.global_rng_trace(),
+            [GlobalRngTraceEntry {
+                source_slot: 113,
+                site: GlobalRngSite::Model60Smoke,
+                before,
+                after,
+                ..
+            }] if *before == global_before && *after == global_after
+        ));
         assert_eq!(emitter.global_rng, global_after);
         assert_eq!(emitter_after.entity_rng, parent_rng_3);
         assert_eq!(
@@ -40665,7 +41765,9 @@ mod tests {
         let mut terminal_emitter = terminal.ambient_entities[113].unwrap();
         terminal_emitter.life = -1;
         let terminal_entity_rng = terminal_emitter.entity_rng;
+        terminal.clear_global_rng_trace();
         assert!(terminal.step_ambient_emitter(&mut terminal_emitter));
+        assert!(terminal.global_rng_trace().is_empty());
         assert_eq!(terminal.global_rng, 0xad6e_67d9);
         assert_eq!(terminal_emitter.entity_rng, terminal_entity_rng);
 
@@ -40676,6 +41778,7 @@ mod tests {
         replaceable.source_pool.replaceable_stack.push(122);
         replaceable.source_pool.raw_replaceable_cursor = 0;
         let replaceable_before = replaceable.ambient_entities[113].unwrap();
+        replaceable.clear_global_rng_trace();
         replaceable.step_ambient_slot(&FlatWorld, 113);
         let replaceable_after = replaceable.ambient_entities[113].unwrap();
         let replaced_child = replaceable.ambient_entities[122].unwrap();
@@ -40697,11 +41800,16 @@ mod tests {
             (122, 113, 14, 14)
         );
         assert_eq!(replaceable.ambient_entities().count(), 40);
+        assert_eq!(
+            replaceable.global_rng_trace()[0].site,
+            GlobalRngSite::Model60Smoke
+        );
 
         let mut exhausted = template.session(10_000, 2_000);
         exhausted.source_pool.free_stack.clear();
         exhausted.source_pool.replaceable_stack.clear();
         let exhausted_before = exhausted.ambient_entities[113].unwrap();
+        exhausted.clear_global_rng_trace();
         exhausted.step_ambient_slot(&FlatWorld, 113);
         let exhausted_after = exhausted.ambient_entities[113].unwrap();
         assert_eq!(
@@ -40714,6 +41822,10 @@ mod tests {
             "failed NewEvent skips only the post-allocation third entity draw"
         );
         assert_eq!(exhausted.ambient_entities().count(), 40);
+        assert_eq!(
+            exhausted.global_rng_trace()[0].site,
+            GlobalRngSite::Model60Smoke
+        );
 
         let seed = (0..=u16::MAX)
             .find(|seed| {
@@ -40759,6 +41871,35 @@ mod tests {
         );
 
         let mut material = template.session(10_000, 2_000);
+        let mut child_sound = template.session(10_000, 2_000);
+        let child_slot = 164_usize;
+        child_sound.ambient_entities[child_slot]
+            .as_mut()
+            .unwrap()
+            .control_flags &= !2;
+        child_sound.ambient_entities[child_slot]
+            .as_mut()
+            .unwrap()
+            .search_radius &= !3;
+        child_sound.step_ambient_slot(&FlatWorld, child_slot as u16);
+        assert!(child_sound.events().iter().any(|event| matches!(
+            event,
+            Level1MissionEvent::MissionSound {
+                sound_id: 3,
+                source_entity_index,
+                ..
+            } if *source_entity_index == child_slot as u16
+        )));
+        child_sound.events.clear();
+        child_sound.step_ambient_slot(&FlatWorld, child_slot as u16);
+        assert!(child_sound.events().iter().all(|event| !matches!(
+            event,
+            Level1MissionEvent::MissionSound {
+                sound_id: 3,
+                source_entity_index,
+                ..
+            } if *source_entity_index == child_slot as u16
+        )));
         for (mask, expected) in [
             (0x0001_0000, Some(20)),
             (0x0010_0000, Some(21)),
@@ -40820,14 +41961,14 @@ mod tests {
         assert_eq!(report.implemented_field_comparisons, 1_416);
         assert_eq!(report.implemented_source_byte_comparisons, 2_301);
         assert_eq!(report.reset_gap_entities, 0);
-        assert_eq!(report.canonical_matrix_gaps, 82);
+        assert_eq!(report.canonical_matrix_gaps, 78);
         assert_eq!(
             report.field_coverage,
             LEVEL1_RESET_COMPARATOR_FIELD_COVERAGE
         );
         assert_eq!(report.expected_family_census, report.observed_family_census);
         assert_eq!(report.expected_family_census.len(), 14);
-        assert_eq!(report.divergences.len(), 82);
+        assert_eq!(report.divergences.len(), 78);
         assert_eq!(
             report
                 .divergences

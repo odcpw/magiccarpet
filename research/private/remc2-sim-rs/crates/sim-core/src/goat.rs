@@ -6,12 +6,12 @@
 //! explicit.
 
 use crate::{
-    FlightWorld, Position, angle_distance, distance_3d_wrapped,
+    FlightWorld, Position, SourceAudioCallTag, angle_distance, distance_3d_wrapped,
     goat_map_chain::{GoatMapChains, GoatMapSeed},
     heading_for_positions,
     house::{HouseFamily, HouseResidentEntry, HouseState, HouseStepEvent},
     level1_mission::Level1SourceEntityView,
-    move_entity,
+    mark_source_audio_call, move_entity,
     native_world::EntitySnapshot,
     turn_toward,
     villager::{VillagerBehaviorConfig, VillagerFamily, VillagerState, VillagerStepEffect},
@@ -29,6 +29,17 @@ pub const GOAT_PATROL_ACTION: u8 = 15;
 pub const GOAT_PATROL_STAGE_MODE: i8 = 2;
 pub const GOAT_RENDER_PARAMETER_INDEX: u16 = 238;
 pub const GOAT_BASE_TMAP: u16 = 152;
+
+fn goat_bleat_source_call(action: u8) -> SourceAudioCallTag {
+    match action {
+        8 => SourceAudioCallTag::GoatAction08Bleat,
+        9 => SourceAudioCallTag::GoatAction09Bleat,
+        11 => SourceAudioCallTag::GoatAction11Bleat,
+        14 => SourceAudioCallTag::GoatAction14HitBleat,
+        15 => SourceAudioCallTag::GoatAction15ConstructorBleat,
+        _ => unreachable!("only remc2 Goat bleat actions have source-call identities"),
+    }
+}
 pub const GOAT_STAGE_POINT: Position = Position {
     x: 13_568,
     y: 8_192,
@@ -98,6 +109,8 @@ pub struct GoatPlayerTarget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GoatStepEvent {
     Bleat {
+        #[cfg(test)]
+        audio_site: crate::MissionAudioSite,
         entity_index: u16,
         sound_id: u16,
         position: Position,
@@ -796,7 +809,10 @@ impl GoatFamily {
         let goat = &mut self.goats[family_index];
         goat.rng = next_rng(goat.rng);
         if goat.rng.is_multiple_of(77) {
+            mark_source_audio_call(goat_bleat_source_call(15));
             events.push(GoatStepEvent::Bleat {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::GoatBleat,
                 entity_index: goat.entity_index,
                 sound_id: 46,
                 position: goat.position,
@@ -814,7 +830,10 @@ impl GoatFamily {
         let goat = &mut self.goats[family_index];
         goat.rng = next_rng(goat.rng);
         if goat.rng.is_multiple_of(77) {
+            mark_source_audio_call(goat_bleat_source_call(9));
             events.push(GoatStepEvent::Bleat {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::GoatBleat,
                 entity_index: goat.entity_index,
                 sound_id: 46,
                 position: goat.position,
@@ -833,7 +852,10 @@ impl GoatFamily {
         }
         goat.rng = next_rng(goat.rng);
         if goat.rng.is_multiple_of(43) {
+            mark_source_audio_call(goat_bleat_source_call(14));
             events.push(GoatStepEvent::Bleat {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::GoatBleat,
                 entity_index: goat.entity_index,
                 sound_id: 46,
                 position: goat.position,

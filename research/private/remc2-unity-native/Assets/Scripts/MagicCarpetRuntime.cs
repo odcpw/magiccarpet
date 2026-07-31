@@ -511,7 +511,7 @@ namespace MagicCarpet.Native
         internal const string ExpectedOwnerAssetClosureHash =
             "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719";
         internal const string ExpectedNativePluginHash =
-            "536c31fb1f97b7362327ee4007c7cd9feb5013c79a485a5890f906b754bd332a";
+            "b53fdc8010c2b8210dd64e8618680613a9443faf62bb5bf0c75dd9fa1303eeee";
 
         private NativeSession session;
         private PlaythroughRecorder playthroughRecorder;
@@ -752,6 +752,8 @@ namespace MagicCarpet.Native
         private string autoplayCaptureFailure;
         private float minimumCarpetTerrainClearanceSource = float.PositiveInfinity;
         private ulong eventCursor;
+        private readonly List<NativeSim.NativeEvent> deferredAudioEvents = new();
+        private ulong pausedNativeStepCount;
         private ulong fireEventsObserved;
         private ulong fireInputLatchedCount;
         private ulong fireFlagsSubmittedCount;
@@ -1984,10 +1986,20 @@ namespace MagicCarpet.Native
             if (entityGallery) return;
             if (nativePresentationGamePaused)
             {
-                // Pause owns the authoritative outer-turn boundary.  The
-                // presentation route remains live so input can unpause, but
-                // no command, clock, entity, mission, or simulation tick is
-                // advanced while the source pause state is active.
+                // remc2 still enters DrawAndEventsInGame while paused:
+                // objective palette/presentation and the pre-gate UpdateEntities
+                // RNG store run, while entity actions, source turn and the
+                // simulation tick remain frozen.
+                var pausedTick = snapshot.tick;
+                var pausedStateHash = snapshot.stateHash;
+                session.SetLevel1PlayerMenuState(CurrentNativePresentationMenuState());
+                snapshot = session.Step(0, 0, 0);
+                Require(
+                    snapshot.tick == pausedTick &&
+                    snapshot.stateHash == pausedStateHash,
+                    "paused native outer frame freezes authoritative simulation state");
+                pausedNativeStepCount++;
+                RefreshLiveMission();
                 if (updatePresentation)
                     RefreshFastForwardPresentation();
                 return;
@@ -6811,7 +6823,7 @@ namespace MagicCarpet.Native
             ApplyExitPalettePresentation();
             Debug.Log(
                 "MC_OWNER_HUD READY textures=80 " +
-                "objectives=selectors48-53/indexed-live-TABLESN-blend " +
+                "objectives=predicates48-52+completion53/indexed-live-TABLESN-blend " +
                 "minimap=128-native/TABLESN-aperture/fixed-rotation " +
                 "terrain/OwnerLevelStatic,entities/MissionStateLive," +
                 "playerPose/PlayerFlightLive objectiveMarks=SourceMappedLive " +
@@ -7632,6 +7644,100 @@ namespace MagicCarpet.Native
                 assetCache);
         }
 
+        internal bool QualificationDiscardResolvedAudioWithoutConsumer()
+        {
+            Require(
+                session != null && ownerAudio == null,
+                "no-consumer audio qualification starts with a live native session");
+            for (var index = 0; index < 12; index++)
+            {
+                session.SubmitAudioQualification(
+                    NativeSim.EventPrepareSound,
+                    37,
+                    0,
+                    0x7fff,
+                    0x7fff,
+                    NativeSim.AudioEntitySoundIfNotPlaying,
+                    out var nativeEvent,
+                    out var command);
+                Require(
+                    command.action == NativeSim.AudioActionStart &&
+                    command.voiceIndex == 0,
+                    $"no-consumer drain reclaims shared voice zero at pass {index}");
+                DrainEvents();
+                Require(
+                    !session.TryAudioCommand(nativeEvent, out _, out _),
+                    $"no-consumer drain releases sidecar at pass {index}");
+            }
+
+            session.SubmitAudioQualification(
+                NativeSim.EventPrepareSound,
+                2,
+                0,
+                0x7fff,
+                0x7fff,
+                NativeSim.AudioPlayIfNotPlaying,
+                out var loopStartEvent,
+                out var loopStart);
+            session.SubmitAudioQualification(
+                NativeSim.EventPrepareSound,
+                2,
+                0,
+                0x7fff,
+                0x7fff,
+                NativeSim.AudioPlayIfNotPlaying,
+                out var loopUpdateEvent,
+                out var loopUpdate);
+            Require(
+                loopStart.action == NativeSim.AudioActionStart &&
+                loopUpdate.action == NativeSim.AudioActionUpdateExisting,
+                "no-consumer qualification covers start and update sidecars");
+            DrainEvents();
+            Require(
+                !session.TryAudioCommand(loopStartEvent, out _, out _) &&
+                !session.TryAudioCommand(loopUpdateEvent, out _, out _),
+                "no-consumer drain releases every resolved loop sidecar");
+            session.SubmitAudioQualification(
+                NativeSim.EventPrepareSound,
+                2,
+                0,
+                0x7fff,
+                0x7fff,
+                NativeSim.AudioPlayIfNotPlaying,
+                out var reclaimedLoopEvent,
+                out var reclaimedLoop);
+            DrainEvents();
+            return
+                reclaimedLoop.action == NativeSim.AudioActionStart &&
+                reclaimedLoop.voiceIndex == 0 &&
+                !session.TryAudioCommand(reclaimedLoopEvent, out _, out _) &&
+                deferredAudioEvents.Count == 0;
+        }
+
+        internal void QualificationInitializeAudioDrainWithoutConsumer(
+            string package,
+            string closure,
+            string assetCache)
+        {
+            Require(
+                !gameObject.activeInHierarchy && session == null,
+                "EditMode no-consumer audio route starts before Awake");
+            disposed = false;
+            packagePath = Path.GetFullPath(package);
+            closurePath = Path.GetFullPath(closure);
+            ownerAssetCache = OwnerAssetCache.OpenAndValidate(
+                assetCache,
+                ExpectedPackageHash,
+                ExpectedOwnerAssetClosureHash);
+            session = OpenSessionWithAssetCache(
+                packagePath,
+                closurePath,
+                ownerAssetCache.RootPath);
+            snapshot = session.Snapshot();
+            eventCursor = 0;
+            ownerAudio = null;
+        }
+
         internal void QualificationInitializePresentationFromStartup(
             string[] arguments,
             string package,
@@ -7729,12 +7835,14 @@ namespace MagicCarpet.Native
             var pauseTick = snapshot.tick;
             var pauseStateHash = snapshot.stateHash;
             var pauseSimulationTick = simTick;
+            var pauseNativeSteps = pausedNativeStepCount;
             ApplyNativePresentationInput(
                 true, false, false, false, Vector2.zero, string.Empty);
             results.Add(RenderProductionState() ? 1 : 0);
             results.Add(snapshot.tick == pauseTick ? 1 : 0);
             results.Add(snapshot.stateHash == pauseStateHash ? 1 : 0);
             results.Add(simTick == pauseSimulationTick ? 1 : 0);
+            results.Add(pausedNativeStepCount == pauseNativeSteps + 2 ? 1 : 0);
 
             ApplyNativePresentationInput(
                 true, false, false, false, Vector2.zero, string.Empty);
@@ -8563,6 +8671,33 @@ namespace MagicCarpet.Native
         private void DrainEvents()
         {
             var buffer = new NativeSim.NativeEvent[64];
+            var pooledAudio = new List<(
+                NativeSim.NativeEvent nativeEvent,
+                NativeSim.AudioCommand command)>();
+            if (deferredAudioEvents.Count != 0)
+            {
+                var stillDeferred = new List<NativeSim.NativeEvent>();
+                foreach (var nativeEvent in deferredAudioEvents)
+                {
+                    if (!session.TryAudioCommand(nativeEvent, out var command, out _))
+                        throw new InvalidOperationException(
+                            $"deferred native audio event {nativeEvent.sequence} lost its sidecar");
+                    if (command.action == NativeSim.AudioActionPreparedPending)
+                    {
+                        stillDeferred.Add(nativeEvent);
+                    }
+                    else if (command.pooledFlushRank != 0)
+                    {
+                        pooledAudio.Add((nativeEvent, command));
+                    }
+                    else
+                    {
+                        ResolveAudioSidecar(nativeEvent, command);
+                    }
+                }
+                deferredAudioEvents.Clear();
+                deferredAudioEvents.AddRange(stillDeferred);
+            }
             while (true)
             {
                 var status = session.CopyEvents(
@@ -8603,32 +8738,9 @@ namespace MagicCarpet.Native
                     if (goatEvent)
                     {
                         HandleGoatEvent(nativeEvent);
-                        if (nativeEvent.kind == NativeSim.EventGoatSoundRequest &&
-                            ownerAudio != null)
-                        {
-                            NativeSim.AudioCommand? audioCommand = null;
-                            if (session.TryAudioCommand(
-                                nativeEvent, out var command, out _))
-                            {
-                                audioCommand = command;
-                            }
-                            ownerAudio.Consume(nativeEvent, audioCommand);
-                        }
                     }
-                    else if (ownerAudio != null &&
-                        EventUsesAudioSidecar(nativeEvent.kind) &&
-                        OwnerAudioPresentation.EventSoundId(
-                            nativeEvent.kind, nativeEvent.code) != 12)
-                    {
-                        NativeSim.AudioCommand? audioCommand = null;
-                        if (session.TryAudioCommand(
-                            nativeEvent, out var command, out _))
-                        {
-                            audioCommand = command;
-                        }
-                        ownerAudio.Consume(nativeEvent, audioCommand);
-                    }
-                    else
+                    var routedAudio = RouteAudioSidecar(nativeEvent, pooledAudio);
+                    if (!routedAudio && !goatEvent)
                     {
                         ownerAudio?.Consume(nativeEvent);
                     }
@@ -8653,6 +8765,86 @@ namespace MagicCarpet.Native
                 eventCursor = batch.nextCursor;
                 if (batch.hasMore == 0) break;
             }
+            pooledAudio.Sort((left, right) =>
+            {
+                var generationOrder = AudioFlushId(left.command).CompareTo(
+                    AudioFlushId(right.command));
+                if (generationOrder != 0) return generationOrder;
+                var rankOrder = left.command.pooledFlushRank.CompareTo(
+                    right.command.pooledFlushRank);
+                return rankOrder != 0
+                    ? rankOrder
+                    : left.nativeEvent.sequence.CompareTo(right.nativeEvent.sequence);
+            });
+            ulong rankedGeneration = 0;
+            byte expectedRank = 0;
+            foreach (var entry in pooledAudio)
+            {
+                var flushGeneration = AudioFlushId(entry.command);
+                if (flushGeneration != rankedGeneration)
+                {
+                    rankedGeneration = flushGeneration;
+                    expectedRank = 1;
+                }
+                if (entry.command.pooledFlushRank != expectedRank)
+                {
+                    throw new InvalidOperationException(
+                        $"native pooled audio rank is not contiguous in flush " +
+                        $"{rankedGeneration}: expected {expectedRank}, got " +
+                        $"{entry.command.pooledFlushRank}");
+                }
+                ResolveAudioSidecar(entry.nativeEvent, entry.command);
+                expectedRank++;
+            }
+        }
+
+        private bool RouteAudioSidecar(
+            NativeSim.NativeEvent nativeEvent,
+            List<(NativeSim.NativeEvent nativeEvent,
+                NativeSim.AudioCommand command)> pooledAudio)
+        {
+            if (!EventUsesAudioSidecar(nativeEvent.kind)) return false;
+            NativeSim.AudioCommand? audioCommand = null;
+            if (session.TryAudioCommand(nativeEvent, out var command, out _))
+            {
+                if (command.action == NativeSim.AudioActionPreparedPending)
+                {
+                    deferredAudioEvents.Add(nativeEvent);
+                    return true;
+                }
+                if (command.pooledFlushRank != 0)
+                {
+                    pooledAudio.Add((nativeEvent, command));
+                    return true;
+                }
+                audioCommand = command;
+            }
+            ResolveAudioSidecar(nativeEvent, audioCommand);
+            return true;
+        }
+
+        private void ResolveAudioSidecar(
+            NativeSim.NativeEvent nativeEvent,
+            NativeSim.AudioCommand? audioCommand)
+        {
+            var explicitNullSound =
+                OwnerAudioPresentation.EventSoundId(
+                    nativeEvent.kind, nativeEvent.code) == 12;
+            if (ownerAudio != null && !explicitNullSound)
+            {
+                ownerAudio.Consume(nativeEvent, audioCommand);
+                if (audioCommand.HasValue)
+                    session.ReleaseAudioCommand(nativeEvent);
+                return;
+            }
+            ownerAudio?.Consume(nativeEvent);
+            if (audioCommand.HasValue)
+                session.DiscardAudioCommand(nativeEvent);
+        }
+
+        private static ulong AudioFlushId(NativeSim.AudioCommand command)
+        {
+            return command.reserved[0] | ((ulong)command.reserved[1] << 32);
         }
 
         internal static bool EventUsesAudioSidecar(uint kind)
@@ -8729,6 +8921,8 @@ namespace MagicCarpet.Native
             playthroughRecorder?.RecordReset(snapshot);
             ownerAudio?.Reset();
             eventCursor = 0;
+            deferredAudioEvents.Clear();
+            pausedNativeStepCount = 0;
             qualificationGoatEvents.Clear();
             simTick = 0;
             CenterSteering();
@@ -8776,6 +8970,7 @@ namespace MagicCarpet.Native
         {
             snapshot = session.Reset();
             eventCursor = 0;
+            deferredAudioEvents.Clear();
             simTick = 0;
             Debug.Log(
                 $"MC_AUDIO_LOCAL_QUAL NATIVE_RESET generation={snapshot.generation}");

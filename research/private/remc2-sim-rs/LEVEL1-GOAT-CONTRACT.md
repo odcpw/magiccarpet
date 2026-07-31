@@ -134,6 +134,16 @@ entity update.
 
 ## Presentation and audio selection
 
+The audio sidecar distinguishes preparation from playback. Action `0` is a
+pending `PrepareEventSound` row, not an audible command. Paused outer frames in
+the qualified single-player/no-CD profile retain and coalesce those rows; the
+first unpaused `PlayEntitySounds` call resolves them. Ordinary winners expose a
+non-zero u64 flush ID (the minimum participating event sequence) and contiguous
+one-based rank, while direct and
+suppressed rows keep both fields zero. Sidecars remain queryable across bounded
+event-journal expiry and arbitrary step backlog until the client explicitly
+releases a resolved row; reset clears and invalidates the generation.
+
 The qualified owner presentation group uses:
 
 - TMAP bank `TMAPS1-0`;
@@ -169,17 +179,15 @@ feedback and deliberately remains on the exact base frame. Unity-local
 animation remains forbidden.
 
 Sound `46` is materialized in the private owner cache as the exact
-`GOAT.WAV` record, but playback remains disabled until its numeric pitch is
-qualified. It uses the positional “play if not already playing” path. The
+`GOAT.WAV` record and uses the positional “play if not already playing” path. The
 source varies its pitch by `+10..+29` while action 14 is active and `-10..+9`
 otherwise. The pitch source is not the Goat RNG: it computes
 `randVal = global_rng * 9377 + 9439` without storing `randVal` back, then uses
-`randVal % 20 + 10` for action 14 or `randVal % 20 - 10` otherwise. The exact
-global-RNG value at Goat dispatch is deferred until the other source-ordered
-Level 1 RNG consumers are mapped. The first state slice may emit a typed
-“Goat sound 46 requested” event and bind the exact owner asset, but may not
-fabricate a numeric pitch or play the sample as exact. Runtime sound ID `46`
-is one-based and therefore resolves
+`randVal % 20 + 10` for action 14 or `randVal % 20 - 10` otherwise. At reset
+slot 102 observes stored global RNG `0x9909f858`; the nonstored peek is
+`0xa631b437`, giving exact action-14 `+25` and other-action `+5` pitch deltas.
+The typed request binds and plays the exact owner asset without mutating the
+authoritative RNG. Runtime sound ID `46` is one-based and therefore resolves
 zero-based metadata slot `45`, `GOAT.WAV`, SHA-256
 `6038ceffaa2c54f9d4f7a93494fc713bc6bc3b76bc9a8ecc7dfc7f3fe4445b18`;
 metadata slot 46 is a different sample and must not be substituted. Extraction
@@ -297,7 +305,7 @@ The following remain absent or frozen unless separately proven:
 - the exact CPU draw-admission predicate that decides which qualified
   selector-local latch is set after presentation (the clock and its
   one-advance-per-unpaused-outer-turn service cadence are exact);
-- complete per-turn global-RNG scheduling and Goat sound pitch values;
+- global-RNG consumers outside the six reachable Level 1 stored-draw sites;
 - whole-program interactions with non-Goat creatures, buildings, villages,
   objectives, or multiplayer; and
 - public redistribution or successor transfer of reconstructed behavior or

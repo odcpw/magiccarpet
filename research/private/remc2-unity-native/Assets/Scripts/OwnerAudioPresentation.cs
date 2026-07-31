@@ -910,9 +910,14 @@ namespace MagicCarpet.Native
                  command.playType == NativeSim.AudioPlayIfNotPlaying ||
                  command.playType == NativeSim.AudioEntitySoundIfNotPlaying) &&
                 command.loopCount == expectedLoopCount &&
-                command.reserved0 == 0 &&
+                command.pooledFlushRank <= 70 &&
                 command.reserved != null &&
-                Array.TrueForAll(command.reserved, value => value == 0),
+                command.reserved.Length == 4 &&
+                (command.pooledFlushRank == 0
+                    ? (command.reserved[0] == 0 && command.reserved[1] == 0)
+                    : (command.reserved[0] != 0 || command.reserved[1] != 0)) &&
+                command.reserved[2] == 0 &&
+                command.reserved[3] == 0,
                 $"sound ID {expectedSoundId} complete shared-voice sidecar identity");
         }
 

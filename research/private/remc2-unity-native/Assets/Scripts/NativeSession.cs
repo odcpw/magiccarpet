@@ -787,7 +787,7 @@ namespace MagicCarpet.Native
                 lifecycle.playerTargetable > 1 ||
                 lifecycle.menuCloseRequested > 1 ||
                 lifecycle.notificationActive > 1 ||
-                lifecycle.notificationState > 1 ||
+                lifecycle.notificationState > 5 ||
                 lifecycle.banishedCameraActive > 1 ||
                 lifecycle.markerPresent > 1 ||
                 lifecycle.sourceColorPhase6 > 1 ||
@@ -1906,6 +1906,20 @@ namespace MagicCarpet.Native
                     $"read positional audio sidecar: status {status}: {error}");
             }
             return false;
+        }
+
+        internal void ReleaseAudioCommand(NativeSim.NativeEvent nativeEvent)
+        {
+            var status = NativeSim.mc_native_audio_command_release(
+                Handle, nativeEvent.generation, nativeEvent.sequence);
+            Check(status, $"release audio sidecar {nativeEvent.sequence}");
+        }
+
+        internal void DiscardAudioCommand(NativeSim.NativeEvent nativeEvent)
+        {
+            var status = NativeSim.mc_native_audio_command_discard(
+                Handle, nativeEvent.generation, nativeEvent.sequence);
+            Check(status, $"discard audio sidecar {nativeEvent.sequence}");
         }
 
         internal void CompleteAudioVoice(

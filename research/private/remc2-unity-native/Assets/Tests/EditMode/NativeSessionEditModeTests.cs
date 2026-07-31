@@ -347,7 +347,7 @@ namespace MagicCarpet.Native.Tests
             Assert.That(
                 cache.ContentHash,
                 Is.EqualTo(
-                    "ee063ce1d5f804c8efc412dff2bedb0800d6fd347b38a6d0376e2a2e4dccd9dc"));
+                    "a1dc7c3fca20da019807093530c601b872c3d81284a19d17d5e1aa1bccafd752"));
             Assert.That(
                 cache.ReadOutput("frame/source-frame-census.json"),
                 Is.Not.Empty);
@@ -3403,6 +3403,31 @@ namespace MagicCarpet.Native.Tests
 
         [Test]
         [Timeout(900_000)]
+        public void ResolvedAudioSidecarsAreDiscardedWithoutOwnerConsumer()
+        {
+            var root = new GameObject("no owner audio consumer");
+            root.SetActive(false);
+            try
+            {
+                var runtime = root.AddComponent<MagicCarpetRuntime>();
+                runtime.QualificationInitializeAudioDrainWithoutConsumer(
+                    PackagePath,
+                    ClosurePath,
+                    QualifiedAssetCachePath);
+                Assert.That(
+                    runtime.QualificationDiscardResolvedAudioWithoutConsumer(),
+                    Is.True,
+                    "resolved sidecars and their native logical voices are " +
+                    "discarded when no Unity owner-audio consumer exists");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        [Timeout(900_000)]
         public void PresentationFrameOwnsOneIndexedPlaneAndZeroManagedDuplicates()
         {
             var complete =
@@ -3453,9 +3478,10 @@ namespace MagicCarpet.Native.Tests
                     "adapted mode never claims native FINAL-MAIN ownership");
                 Assert.That(
                     runtime.QualificationDriveShippingPresentationState(),
-                    Is.EqualTo(Enumerable.Repeat(1, 12).ToArray()),
+                    Is.EqualTo(Enumerable.Repeat(1, 13).ToArray()),
                     "the initialized shipping update/state owners render " +
-                    "an authoritative held pause, resume, map, map options, " +
+                    "an authoritative held pause through two native outer frames " +
+                    "with frozen tick/state/source clock, resume, map, map options, " +
                     "map volume, map OK/cancel, " +
                     "and a reset with no managed presentation submission");
 

@@ -12,9 +12,11 @@ use sim_core::{
         IndexedOverlayStage, Level1FinalMainState,
     },
     level1_mission::{
-        LEVEL1_MINIMAP_ANCHOR_BOTTOM_CENTER, LEVEL1_MINIMAP_ANCHOR_BOTTOM_LEFT,
-        LEVEL1_MINIMAP_COMMAND_BLEND_PIXEL, LEVEL1_MINIMAP_COMMAND_DOT,
-        LEVEL1_MINIMAP_COMMAND_SPRITE, Level1MinimapEntityCommand, Level1MinimapMarks,
+        ABILITY_IMPROVED_NAME_SELECTOR_BASE, ABILITY_IMPROVED_NOTIFICATION_STATE,
+        ABILITY_IMPROVED_TEMPLATE_SELECTOR, LEVEL1_MINIMAP_ANCHOR_BOTTOM_CENTER,
+        LEVEL1_MINIMAP_ANCHOR_BOTTOM_LEFT, LEVEL1_MINIMAP_COMMAND_BLEND_PIXEL,
+        LEVEL1_MINIMAP_COMMAND_DOT, LEVEL1_MINIMAP_COMMAND_SPRITE, Level1MinimapEntityCommand,
+        Level1MinimapMarks,
     },
     native_world::TerrainPlanes,
 };
@@ -1051,6 +1053,30 @@ fn bytes_until_zero(bytes: &[u8]) -> &[u8] {
     &bytes[..end]
 }
 
+fn format_single_percent_s(
+    template: &[u8],
+    argument: &[u8],
+) -> Result<Vec<u8>, PresentationBridgeError> {
+    let Some(marker) = template.windows(2).position(|window| window == b"%s") else {
+        return Err(PresentationBridgeError(
+            "ability notification template has no %s marker".to_owned(),
+        ));
+    };
+    if template[marker + 2..]
+        .windows(2)
+        .any(|window| window == b"%s")
+    {
+        return Err(PresentationBridgeError(
+            "ability notification template has multiple %s markers".to_owned(),
+        ));
+    }
+    let mut formatted = Vec::with_capacity(template.len() - 2 + argument.len());
+    formatted.extend_from_slice(&template[..marker]);
+    formatted.extend_from_slice(argument);
+    formatted.extend_from_slice(&template[marker + 2..]);
+    Ok(formatted)
+}
+
 fn push_pause_or_end(
     assets: &IndexedOverlayAssets,
     live: &Level1PresentationLive<'_>,
@@ -1133,12 +1159,28 @@ fn push_pause_or_end(
             return Ok(Some((false, 0, next_timer)));
         }
         let name = bytes_until_zero(&live.notification_player_name);
-        let body = assets.localization(live.notification_id).ok_or_else(|| {
+        let notification_body = assets.localization(live.notification_id).ok_or_else(|| {
             PresentationBridgeError(format!(
                 "notification localization {} missing",
                 live.notification_id
             ))
         })?;
+        let body = if live.notification_state == ABILITY_IMPROVED_NOTIFICATION_STATE
+            && (ABILITY_IMPROVED_NAME_SELECTOR_BASE..ABILITY_IMPROVED_NAME_SELECTOR_BASE + 26)
+                .contains(&live.notification_id)
+        {
+            let template = assets
+                .localization(ABILITY_IMPROVED_TEMPLATE_SELECTOR)
+                .ok_or_else(|| {
+                    PresentationBridgeError(format!(
+                        "ability notification template {} missing",
+                        ABILITY_IMPROVED_TEMPLATE_SELECTOR
+                    ))
+                })?;
+            format_single_percent_s(template, notification_body)?
+        } else {
+            notification_body.to_vec()
+        };
         let mut text = Vec::new();
         let bracketed = matches!(live.notification_state, 2 | 4);
         if bracketed {
@@ -1149,7 +1191,7 @@ fn push_pause_or_end(
             text.extend_from_slice(name);
             text.push(b' ');
         }
-        text.extend_from_slice(body);
+        text.extend_from_slice(&body);
         let colour = match live.notification_state {
             1 | 3 | 5 => assets.palette_index(3840),
             2 if next_timer <= 100 => assets.palette_index(3840),
@@ -2236,6 +2278,8 @@ fn hud_width(value: i32, denominator: i32) -> u16 {
 
 #[cfg(test)]
 pub(crate) fn assert_independent_source_vectors(assets: &IndexedOverlayAssets) {
+    use sim_core::level1_mission::ABILITY_IMPROVED_NOTIFICATION_TIMER;
+
     // These vectors are a separate transcription from pinned remc2
     // 6806c720 GameUI.cpp 4591-5195 and EventsFunctions.cpp
     // 21647-22688/44696-44883. They intentionally do not read the cache
@@ -2451,6 +2495,48 @@ pub(crate) fn assert_independent_source_vectors(assets: &IndexedOverlayAssets) {
             ..
         } if bytes.as_ref() == b"Load Level?"
     )));
+
+    live.menu.selected_menu_item = 0;
+    live.notification_active = true;
+    live.notification_id = ABILITY_IMPROVED_NAME_SELECTOR_BASE + 16;
+    live.notification_state = ABILITY_IMPROVED_NOTIFICATION_STATE;
+    live.notification_timer = ABILITY_IMPROVED_NOTIFICATION_TIMER;
+    commands.clear();
+    let notification_feedback = push_pause_or_end(
+        assets,
+        &live,
+        PresentationBridgeQuery::default(),
+        false,
+        &mut commands,
+    )
+    .expect("independent ability-improved notification vector builds");
+    let expected_notification = format_single_percent_s(
+        assets
+            .localization(ABILITY_IMPROVED_TEMPLATE_SELECTOR)
+            .expect("ability-improved template localization"),
+        assets
+            .localization(ABILITY_IMPROVED_NAME_SELECTOR_BASE + 16)
+            .expect("ability-improved name localization"),
+    )
+    .expect("ability-improved template has one name placeholder");
+    assert_eq!(
+        notification_feedback,
+        Some((
+            true,
+            ABILITY_IMPROVED_NOTIFICATION_STATE,
+            ABILITY_IMPROVED_NOTIFICATION_TIMER - 1,
+        )),
+        "pinned notification state 5 remains active and decrements timer 200 to 199"
+    );
+    assert!(commands.iter().any(|command| matches!(
+        command,
+        IndexedOverlayCommand::Text { bytes, .. }
+            if bytes.as_ref() == expected_notification.as_slice()
+    )));
+    live.notification_active = false;
+    live.notification_id = 0;
+    live.notification_state = 0;
+    live.notification_timer = 0;
 
     let mut spell = LiveSpellMenu {
         selected_ui_index: 1,
@@ -2694,3 +2780,18 @@ pub(crate) fn assert_independent_source_vectors(assets: &IndexedOverlayAssets) {
 
 #[allow(dead_code)]
 const fn _position_is_live(_: Position) {}
+
+#[cfg(test)]
+mod ability_notification_tests {
+    use super::*;
+
+    #[test]
+    fn ability_notification_formats_exactly_one_name_placeholder() {
+        assert_eq!(
+            format_single_percent_s(b"ABILITY %s IMPROVED", b"CASTLE").unwrap(),
+            b"ABILITY CASTLE IMPROVED"
+        );
+        assert!(format_single_percent_s(b"ABILITY IMPROVED", b"CASTLE").is_err());
+        assert!(format_single_percent_s(b"%s %s", b"CASTLE").is_err());
+    }
+}

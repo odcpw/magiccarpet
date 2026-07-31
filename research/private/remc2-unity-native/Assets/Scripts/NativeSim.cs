@@ -53,6 +53,8 @@ namespace MagicCarpet.Native
         internal const uint EventLevel1ExitSequenceStarted = 35;
         internal const uint EventLevel1ExitSequenceCompleted = 36;
         internal const uint EventLevel1WaterSplashed = 37;
+        internal const uint EventLevel1AbilityImproved = 38;
+        internal const byte AudioActionPreparedPending = 0;
         internal const byte AudioActionStart = 1;
         internal const byte AudioActionRestart = 2;
         internal const byte AudioActionSuppressExisting = 3;
@@ -1431,7 +1433,7 @@ namespace MagicCarpet.Native
             internal byte playType;
             internal sbyte loopCount;
             internal byte action;
-            internal byte reserved0;
+            internal byte pooledFlushRank;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
             internal uint[] reserved;
         }
@@ -1836,6 +1838,18 @@ namespace MagicCarpet.Native
             uint commandSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_audio_command_release(
+            ulong handle,
+            ulong generation,
+            ulong eventSequence);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_audio_command_discard(
+            ulong handle,
+            ulong generation,
+            ulong eventSequence);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_audio_voice_complete(
             ulong handle,
             ulong generation,
@@ -2099,6 +2113,7 @@ namespace MagicCarpet.Native
             RequireOffset<AudioCommand>(nameof(AudioCommand.soundId), 52);
             RequireOffset<AudioCommand>(nameof(AudioCommand.volumeQ15), 60);
             RequireOffset<AudioCommand>(nameof(AudioCommand.playType), 68);
+            RequireOffset<AudioCommand>(nameof(AudioCommand.pooledFlushRank), 71);
             RequireOffset<AudioCommand>(nameof(AudioCommand.reserved), 72);
         }
 

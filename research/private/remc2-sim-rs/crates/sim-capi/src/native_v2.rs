@@ -263,7 +263,9 @@ pub const MC_EVENT_LEVEL1_MANA_SPHERE_COLLECTED: u32 = 34;
 pub const MC_EVENT_LEVEL1_EXIT_SEQUENCE_STARTED: u32 = 35;
 pub const MC_EVENT_LEVEL1_EXIT_SEQUENCE_COMPLETED: u32 = 36;
 pub const MC_EVENT_LEVEL1_WATER_SPLASHED: u32 = 37;
+pub const MC_EVENT_LEVEL1_ABILITY_IMPROVED: u32 = 38;
 
+pub const MC_AUDIO_ACTION_PREPARED_PENDING: u8 = 0;
 pub const MC_AUDIO_ACTION_START: u8 = 1;
 pub const MC_AUDIO_ACTION_RESTART: u8 = 2;
 pub const MC_AUDIO_ACTION_SUPPRESS_EXISTING: u8 = 3;
@@ -1277,7 +1279,9 @@ pub struct McAudioCommandV2 {
     pub play_type: u8,
     pub loop_count: i8,
     pub action: u8,
-    pub reserved_0: u8,
+    /// One-based order among audible ordinary pooled winners for this drain.
+    /// Direct/immediate and suppressed commands keep zero.
+    pub pooled_flush_rank: u8,
     pub reserved: [u32; 4],
 }
 
@@ -2066,10 +2070,9 @@ fn source_render_asset_digest(world: &NativeWorld, assets: &TerrainFrameAssets) 
 impl SessionRecord {
     fn set_game_paused(&mut self, paused: bool) {
         if paused && !self.game_paused {
-            // A pause entered between source turns presents the current live
-            // player state without advancing UpdateEntities.  Capture that
-            // state once at the pause boundary so presentation may continue
-            // while the authoritative turn remains held.
+            // Capture the current live player state once at the pause
+            // boundary so presentation may continue while entity action
+            // dispatch remains held.
             self.camera_history = CameraHistory::capture(
                 &self.state,
                 self.source_turn,
@@ -2129,6 +2132,9 @@ impl SessionRecord {
                 ));
             }
         }
+        let volume_preview = self.mission.player_menu_state == 10
+            && input.volume_target == 1
+            && self.presentation_ui.sound_volume != input.sound_volume;
         let chat_lines = std::array::from_fn(|index| {
             let start = index * 64;
             input.chat_lines[start..start + 64]
@@ -2191,7 +2197,22 @@ impl SessionRecord {
             self.debug_memory_used = 0;
             self.debug_memory_free = 0;
         }
+        if volume_preview {
+            self.emit_local_flight_sound(sim_core::volume_preview_audio_event(
+                self.state.entity_index,
+                i16::from(self.world.runtime().local_player_slot),
+            ));
+            // `AdjustVolume_1A070` synchronously calls PlayEntitySounds after
+            // preparing its preview, including while byte_38591 selects the
+            // sound slider during pause.
+            self.drain_pending_audio_commands();
+        }
         Ok(())
+    }
+
+    fn emit_local_flight_sound(&mut self, event: FlightEvent) {
+        let record = self.encode_flight_event(event, state_hash(&self.state));
+        self.append_event(record);
     }
 
     fn live_world_hash_v2(&self) -> u64 {
@@ -3774,7 +3795,10 @@ impl SessionRecord {
         if self.events.len() == EVENT_CAPACITY
             && let Some(expired) = self.events.pop_front()
         {
-            self.audio_commands.remove(&expired.sequence);
+            // Audio sidecars have an explicit client release lifecycle. They
+            // may outlive the bounded event journal while paused or while a
+            // client drains a multi-step backlog.
+            let _ = expired;
         }
         self.events.push_back(event);
     }
@@ -3827,6 +3851,21 @@ impl SessionRecord {
         #[cfg(test)]
         self.immediate_released_holder_handoff.clear();
         if self.game_paused {
+            self.mission.begin_paused_outer_presentation();
+            // `UpdateEntities_57730` stores its global-RNG draw before testing
+            // GAME_PAUSED. Preserve that source-visible prefix while keeping
+            // every post-gate entity action and unrelated turn clock frozen.
+            self.mission.advance_paused_update_rng();
+            self.mission.finish_paused_outer_presentation(&self.state);
+            let state_hash = state_hash(&self.state);
+            for event in self.mission.events().to_vec() {
+                let record = self.encode_mission_event(event, state_hash);
+                self.append_event(record);
+            }
+            // `PlayEntitySounds_6E150` is gated while the selected
+            // single-player/no-CD profile is paused (`byte_38591 == 0`).
+            // Keep prepared rows unresolved so the first unpaused flush
+            // coalesces them with that frame's rows using the source pool.
             return;
         }
         if let Some((_, active, state, timer)) = self.notification_draw_feedback.take() {
@@ -5184,8 +5223,27 @@ impl SessionRecord {
                 (command.action == 0).then_some((*sequence, *command))
             })
             .collect::<Vec<_>>();
+        let pooled_flush_id = unresolved
+            .iter()
+            .filter(|(_, command)| !matches!(command.sound_id, 1 | 2 | 5 | 31))
+            .map(|(sequence, _)| *sequence)
+            .min()
+            .unwrap_or(0);
         let mut pending = BTreeMap::<u16, u64>::new();
         for (sequence, command) in unresolved {
+            if matches!(command.sound_id, 1 | 2 | 5 | 31) {
+                let mut command = command;
+                let (action, voice_index) = self.allocate_audio_voice(command);
+                command.action = if action == MC_AUDIO_ACTION_SUPPRESS_EXISTING {
+                    MC_AUDIO_ACTION_UPDATE_EXISTING
+                } else {
+                    action
+                };
+                command.voice_index = voice_index;
+                command.pooled_flush_rank = 0;
+                self.audio_commands.insert(sequence, command);
+                continue;
+            }
             if let Some(current_sequence) = pending.get(&command.sound_id).copied() {
                 let current = self.audio_commands[&current_sequence];
                 if positional_sound_should_replace(
@@ -5207,19 +5265,55 @@ impl SessionRecord {
                 pending.insert(command.sound_id, sequence);
             }
         }
+        let mut pooled_flush_rank = 1_u8;
         for sequence in pending.into_values() {
             let mut command = self.audio_commands[&sequence];
             let (action, voice_index) = self.allocate_audio_voice(command);
-            command.action = if matches!(command.sound_id, 1 | 2 | 5 | 31)
-                && action == MC_AUDIO_ACTION_SUPPRESS_EXISTING
-            {
-                MC_AUDIO_ACTION_UPDATE_EXISTING
-            } else {
-                action
-            };
+            command.action = action;
             command.voice_index = voice_index;
+            if matches!(
+                command.action,
+                MC_AUDIO_ACTION_START | MC_AUDIO_ACTION_RESTART | MC_AUDIO_ACTION_UPDATE_EXISTING
+            ) {
+                command.pooled_flush_rank = pooled_flush_rank;
+                command.reserved[0] = pooled_flush_id as u32;
+                command.reserved[1] = (pooled_flush_id >> 32) as u32;
+                pooled_flush_rank = pooled_flush_rank
+                    .checked_add(1)
+                    .expect("ordinary sound pool has at most 70 winners");
+            } else {
+                command.pooled_flush_rank = 0;
+            }
             self.audio_commands.insert(sequence, command);
         }
+    }
+
+    fn insert_prepared_audio_command(&mut self, sequence: u64, mut command: McAudioCommandV2) {
+        if self.game_paused
+            && command.action == 0
+            && !matches!(command.sound_id, 1 | 2 | 5 | 31)
+            && let Some(current_sequence) =
+                self.audio_commands
+                    .iter()
+                    .find_map(|(candidate_sequence, candidate)| {
+                        (candidate.action == 0 && candidate.sound_id == command.sound_id)
+                            .then_some(*candidate_sequence)
+                    })
+        {
+            let current = self.audio_commands[&current_sequence];
+            if positional_sound_should_replace(
+                i32::from(command.volume_q15),
+                i32::from(current.volume_q15),
+            ) {
+                self.audio_commands
+                    .get_mut(&current_sequence)
+                    .expect("paused pending command remains present")
+                    .action = MC_AUDIO_ACTION_SUPPRESS_PENDING_REPLACED;
+            } else {
+                command.action = MC_AUDIO_ACTION_SUPPRESS_PENDING_REPLACED;
+            }
+        }
+        self.audio_commands.insert(sequence, command);
     }
 
     fn allocate_audio_voice(&mut self, command: McAudioCommandV2) -> (u8, u16) {
@@ -5285,7 +5379,7 @@ impl SessionRecord {
                     .sound_asset_ref(sound_id)
                     .unwrap_or(MC_ASSET_REF_NONE);
                 if let Some(command) = self.prepare_audio_command(&record) {
-                    self.audio_commands.insert(record.sequence, command);
+                    self.insert_prepared_audio_command(record.sequence, command);
                 }
                 record
             }
@@ -5433,6 +5527,21 @@ impl SessionRecord {
                 let mut record = self.next_event_base(MC_EVENT_LEVEL1_OBJECTIVE_ADVANCED, hash);
                 record.code = u32::from(text_selector);
                 record.value_0 = i32::from(completed_stage);
+                record
+            }
+            Level1MissionEvent::AbilityImproved {
+                source_family,
+                notification_template_selector,
+                ability_name_selector,
+                notification_state,
+                notification_timer,
+            } => {
+                let mut record = self.next_event_base(MC_EVENT_LEVEL1_ABILITY_IMPROVED, hash);
+                record.code = u32::from(source_family);
+                record.entity_index = ability_name_selector;
+                record.value_0 = i32::from(notification_state);
+                record.value_1 = i32::from(notification_timer);
+                record.reserved[0] = u32::from(notification_template_selector);
                 record
             }
             Level1MissionEvent::SpellCollected {
@@ -5817,7 +5926,7 @@ impl SessionRecord {
             source_id,
             source_action,
         ) {
-            self.audio_commands.insert(
+            self.insert_prepared_audio_command(
                 record.sequence,
                 audio_command_record(
                     record.generation,
@@ -5845,7 +5954,9 @@ impl SessionRecord {
             ));
         }
         if matches!(sound_id, 14 | 29) {
-            return Some(local_audio_command_record(event, sound_id, 0, 3));
+            // PrepareEventSound's local LevelIndex/-1 branch stores type 1
+            // for menu select and can't-use feedback.
+            return Some(local_audio_command_record(event, sound_id, 0, 1));
         }
         let source = self.world.entities().get(usize::from(event.entity_index))?;
         let source_position = if event.entity_index == self.state.entity_index {
@@ -6032,7 +6143,7 @@ fn audio_command_record(
         } else {
             MC_AUDIO_ACTION_SUPPRESS_DISTANCE_OR_VOLUME
         },
-        reserved_0: 0,
+        pooled_flush_rank: 0,
         reserved: [0; 4],
     }
 }
@@ -7217,7 +7328,14 @@ pub extern "C" fn mc_native_level1_player_lifecycle_snapshot(
 pub extern "C" fn mc_native_level1_player_menu_state(handle: u64, menu_state: u8) -> i32 {
     boundary(|| {
         with_session_mut(handle, |session| {
+            let current = session.mission.player_menu_state;
             session.mission.set_player_menu_state(menu_state);
+            if current != menu_state && menu_state != 8 && !matches!(current, 5 | 8) {
+                session.emit_local_flight_sound(sim_core::menu_cursor_transition_audio_event(
+                    session.state.entity_index,
+                    i16::from(session.world.runtime().local_player_slot),
+                ));
+            }
             Ok(())
         })
     })
@@ -8046,6 +8164,110 @@ pub extern "C" fn mc_native_audio_command_for_event(
                         format!("event sequence {event_sequence} has no positional audio command"),
                     )
                 })
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_audio_command_release(
+    handle: u64,
+    generation: u64,
+    event_sequence: u64,
+) -> i32 {
+    boundary(|| {
+        with_session_mut(handle, |session| {
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "audio release generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            let command = session.audio_commands.get(&event_sequence).ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_BOUNDS,
+                    format!("event sequence {event_sequence} has no positional audio command"),
+                )
+            })?;
+            if command.action == 0 {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    format!("event sequence {event_sequence} is still pending"),
+                ));
+            }
+            session.audio_commands.remove(&event_sequence);
+            Ok(())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_audio_command_discard(
+    handle: u64,
+    generation: u64,
+    event_sequence: u64,
+) -> i32 {
+    boundary(|| {
+        with_session_mut(handle, |session| {
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "audio discard generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            let command = session
+                .audio_commands
+                .get(&event_sequence)
+                .copied()
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_BOUNDS,
+                        format!("event sequence {event_sequence} has no positional audio command"),
+                    )
+                })?;
+            if command.action == MC_AUDIO_ACTION_PREPARED_PENDING {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    format!("event sequence {event_sequence} is still pending"),
+                ));
+            }
+            if matches!(
+                command.action,
+                MC_AUDIO_ACTION_START
+                    | MC_AUDIO_ACTION_RESTART
+                    | MC_AUDIO_ACTION_UPDATE_EXISTING
+                    | MC_AUDIO_ACTION_END_LOOP
+            ) {
+                let index = usize::from(command.voice_index);
+                let voice = session.audio_voices.get_mut(index).ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_BOUNDS,
+                        format!("audio voice {} is out of bounds", command.voice_index),
+                    )
+                })?;
+                let owns_voice = voice.is_some_and(|voice| {
+                    voice.sound_id == command.sound_id
+                        && voice.sound_flags == command.sound_flags
+                        && if matches!(
+                            command.action,
+                            MC_AUDIO_ACTION_UPDATE_EXISTING | MC_AUDIO_ACTION_END_LOOP
+                        ) {
+                            voice.event_sequence <= command.event_sequence
+                        } else {
+                            voice.event_sequence == command.event_sequence
+                        }
+                });
+                if owns_voice {
+                    *voice = None;
+                }
+            }
+            session.audio_commands.remove(&event_sequence);
+            Ok(())
         })
     })
 }
@@ -10352,7 +10574,13 @@ fn write_output<T>(pointer: *mut T, value: T) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sim_core::FlightWorld;
+    use sim_core::{
+        FlightWorld,
+        level1_mission::{
+            ABILITY_IMPROVED_NAME_SELECTOR_BASE, ABILITY_IMPROVED_NOTIFICATION_STATE,
+            ABILITY_IMPROVED_NOTIFICATION_TIMER, ABILITY_IMPROVED_TEMPLATE_SELECTOR,
+        },
+    };
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -10432,6 +10660,222 @@ mod tests {
             without_shadows & MC_TERRAIN_FRAME_SPRITE_SHADOWS_COMPOSITED,
             0
         );
+    }
+
+    #[test]
+    fn paused_native_steps_store_only_the_pre_gate_update_rng_draw() {
+        let handle = open_fixture();
+        let command = valid_command();
+        let mut before = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_snapshot(
+                handle,
+                &raw mut before,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let (start_rng, start_turn, emitter_life) = with_session(handle, |session| {
+            Ok((
+                session.mission.global_rng(),
+                session.mission.source_turn_counter(),
+                session
+                    .mission
+                    .ambient_entities()
+                    .find(|entity| entity.source_entity_index == 113)
+                    .expect("reset model-60 source slot 113")
+                    .life,
+            ))
+        })
+        .unwrap();
+        assert_eq!(mc_native_level1_game_paused(handle, 1), MC_STATUS_OK);
+
+        let mut expected_rng = start_rng;
+        for paused_index in 0..3 {
+            let mut paused = McSessionSnapshotV2::default();
+            assert_eq!(
+                mc_native_session_step(
+                    handle,
+                    &raw const command,
+                    &raw mut paused,
+                    struct_size::<McSessionSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+            expected_rng = expected_rng.wrapping_mul(9_377).wrapping_add(9_439);
+            assert_eq!(
+                (paused.tick, paused.state_hash, paused.event_head),
+                (before.tick, before.state_hash, before.event_head)
+            );
+            with_session(handle, |session| {
+                assert_eq!(session.mission.global_rng(), expected_rng);
+                assert_eq!(session.mission.source_turn_counter(), start_turn);
+                let expected_presentation = match paused_index {
+                    0 => (2, 1, 0),
+                    1 => (3, 0, 200),
+                    2 => (3, 0, 199),
+                    _ => unreachable!(),
+                };
+                assert_eq!(
+                    (
+                        session.mission.objective_presentation_palette_mod,
+                        session.mission.objective_presentation_phase,
+                        session.mission.objective_textbox_ticks,
+                    ),
+                    expected_presentation,
+                    "paused outer presentation remains live exactly once per frame"
+                );
+                assert_eq!(
+                    session
+                        .mission
+                        .ambient_entities()
+                        .find(|entity| entity.source_entity_index == 113)
+                        .unwrap()
+                        .life,
+                    emitter_life,
+                    "paused UpdateEntities must not dispatch the later model-60 row"
+                );
+                Ok(())
+            })
+            .unwrap();
+        }
+
+        assert_eq!(mc_native_level1_game_paused(handle, 0), MC_STATUS_OK);
+        let mut resumed = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut resumed,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        for _ in 0..10 {
+            expected_rng = expected_rng.wrapping_mul(9_377).wrapping_add(9_439);
+        }
+        with_session(handle, |session| {
+            assert_eq!(session.mission.global_rng(), expected_rng);
+            assert_eq!(session.mission.source_turn_counter(), start_turn + 1);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(resumed.tick, before.tick + 1);
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn paused_objective_sound_stays_prepared_until_the_first_unpaused_pool_flush() {
+        let handle = open_fixture();
+        let command = valid_command();
+        with_session_mut(handle, |session| {
+            session.mission.current_stage = 1;
+            session.mission.objective_presentation_phase = 1;
+            session.mission.objective_presentation_palette_mod = 2;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(mc_native_level1_game_paused(handle, 1), MC_STATUS_OK);
+        let mut paused = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut paused,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let (sequence, prepared) = with_session(handle, |session| {
+            let (sequence, command) = session
+                .audio_commands
+                .iter()
+                .find(|(_, command)| command.sound_id == 61)
+                .map(|(sequence, command)| (*sequence, *command))
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        "paused stage-one presentation did not prepare sound61",
+                    )
+                })?;
+            Ok((sequence, command))
+        })
+        .unwrap();
+        assert_eq!(
+            prepared.action, 0,
+            "paused PlayEntitySounds gate retains the row"
+        );
+        assert_eq!(prepared.pooled_flush_rank, 0);
+        assert_eq!(prepared.reserved, [0; 4]);
+
+        assert_eq!(mc_native_level1_game_paused(handle, 0), MC_STATUS_OK);
+        let mut resumed = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut resumed,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        with_session(handle, |session| {
+            let resolved = session.audio_commands[&sequence];
+            assert_ne!(resolved.action, 0);
+            assert_eq!(
+                resolved.pooled_flush_rank, 2,
+                "retained sound61 follows the lower-ID current-frame winner"
+            );
+            assert_ne!(resolved.reserved[0], 0);
+            assert_eq!(resolved.reserved[1..], [0; 3]);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn playable_menu_transition_and_sound_slider_preview_use_distinct_source_flushes() {
+        let handle = open_fixture();
+        let initial = source_presentation_input();
+        submit_source_presentation_input(handle, &initial);
+        assert_eq!(mc_native_level1_player_menu_state(handle, 6), MC_STATUS_OK);
+        let menu_sequence = with_session(handle, |session| {
+            let (sequence, command) = session
+                .audio_commands
+                .iter()
+                .find(|(_, command)| command.sound_id == 14)
+                .map(|(sequence, command)| (*sequence, *command))
+                .expect("menu transition prepares local sound14");
+            assert_eq!(command.action, 0);
+            Ok(sequence)
+        })
+        .unwrap();
+        with_session_mut(handle, |session| {
+            session.drain_pending_audio_commands();
+            assert_ne!(session.audio_commands[&menu_sequence].action, 0);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(mc_native_level1_player_menu_state(handle, 10), MC_STATUS_OK);
+        let mut changed = initial;
+        changed.sound_volume = 126;
+        submit_source_presentation_input(handle, &changed);
+        with_session(handle, |session| {
+            let preview = session
+                .audio_commands
+                .values()
+                .filter(|command| command.sound_id == 8)
+                .max_by_key(|command| command.event_sequence)
+                .expect("sound slider change prepares preview sound8");
+            assert_ne!(preview.action, 0);
+            assert_ne!(preview.pooled_flush_rank, 0);
+            assert_ne!(preview.reserved[0], 0);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 
     #[test]
@@ -12593,6 +13037,79 @@ mod tests {
         .expect("inspect the post-turn source discriminator");
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
         audio
+    }
+
+    #[test]
+    fn goat_sound_46_peeks_the_slot_102_stored_rng_without_consuming_it() {
+        const BLEATING_GOAT: u16 = 102;
+        let handle = open_fixture();
+        let (audio, stored_rng) = with_session_mut(handle, |session| {
+            let listener = session.state.position;
+            let mut entities = session.world.entities().to_vec();
+            let goat = &mut entities[usize::from(BLEATING_GOAT)];
+            goat.action = 14;
+            goat.position = listener;
+            session.live_world = LiveWorldState::from_entities(
+                &entities,
+                session.world.goat_stage_point(),
+                session.world.goat_config(),
+            )
+            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+            session
+                .live_world
+                .inject_damage(
+                    BLEATING_GOAT,
+                    1,
+                    i16::try_from(session.state.entity_index).unwrap(),
+                )
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+
+            session.mission.begin_source_turn_at(listener);
+            let stored_rng = session.mission.global_rng();
+            assert_eq!(stored_rng, 0x9909_f858);
+            let events = session.live_world.step_source_slot(
+                BLEATING_GOAT,
+                &session.terrain,
+                &[GoatPlayerTarget {
+                    entity_index: session.state.entity_index,
+                    position: listener,
+                    control_flags: 0,
+                }],
+            );
+            assert_eq!(session.mission.global_rng(), stored_rng);
+            let bleat = events
+                .into_iter()
+                .find(|event| matches!(event, GoatStepEvent::Bleat { sound_id: 46, .. }))
+                .ok_or_else(|| {
+                    AbiError::new(MC_STATUS_VALIDATION_FAILED, "slot 102 did not bleat")
+                })?;
+            let event = session.encode_goat_event(bleat, session.live_world_hash_v2(), stored_rng);
+            let audio = *session.audio_commands.get(&event.sequence).ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_VALIDATION_FAILED,
+                    "slot 102 bleat has no audio command",
+                )
+            })?;
+            assert_eq!(session.mission.global_rng(), stored_rng);
+            Ok((audio, stored_rng))
+        })
+        .unwrap();
+        assert_eq!(audio.rate_delta_percent, 25);
+        let nonstored = stored_rng.wrapping_mul(9_377).wrapping_add(9_439);
+        assert_eq!(nonstored, 0xa631_b437);
+        let other_action = prepare_event_sound_command(
+            Position::default(),
+            0,
+            Position::default(),
+            46,
+            stored_rng,
+            BLEATING_GOAT,
+            0,
+        )
+        .unwrap();
+        assert_eq!(other_action.command.rate_delta_percent, 5);
+        assert_eq!(stored_rng, 0x9909_f858, "the pitch peek is never stored");
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 
     #[test]
@@ -14822,12 +15339,140 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
                 ..McEventV2::default()
             };
             assert_eq!(
-                local_audio_command_record(&synthetic_event, 29, 0, 3,).loop_count,
+                local_audio_command_record(&synthetic_event, 29, 0, 1,).loop_count,
                 0
             );
             Ok(())
         })
         .unwrap();
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn audio_command_discard_reclaims_resolved_sidecar_and_logical_voice() {
+        let handle = open_fixture();
+        let generation = with_session(handle, |session| Ok(session.generation)).unwrap();
+        for sequence in 100..112 {
+            with_session_mut(handle, |session| {
+                let mut command = McAudioCommandV2 {
+                    generation,
+                    event_sequence: sequence,
+                    sound_id: 37,
+                    sound_flags: 0,
+                    play_type: 3,
+                    ..McAudioCommandV2::default()
+                };
+                let (action, voice_index) = session.allocate_audio_voice(command);
+                command.action = action;
+                command.voice_index = voice_index;
+                assert_eq!(command.action, MC_AUDIO_ACTION_START);
+                assert_eq!(command.voice_index, 0);
+                session.audio_commands.insert(sequence, command);
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(
+                mc_native_audio_command_discard(handle, generation, sequence),
+                MC_STATUS_OK
+            );
+            with_session(handle, |session| {
+                assert!(!session.audio_commands.contains_key(&sequence));
+                assert!(session.audio_voices.iter().all(Option::is_none));
+                Ok(())
+            })
+            .unwrap();
+        }
+
+        with_session_mut(handle, |session| {
+            session.audio_voices[0] = Some(AudioVoice {
+                sound_id: 2,
+                sound_flags: 0,
+                event_sequence: 200,
+            });
+            for (sequence, action) in [
+                (201, MC_AUDIO_ACTION_UPDATE_EXISTING),
+                (202, MC_AUDIO_ACTION_END_LOOP),
+            ] {
+                session.audio_commands.insert(
+                    sequence,
+                    McAudioCommandV2 {
+                        generation,
+                        event_sequence: sequence,
+                        sound_id: 2,
+                        sound_flags: 0,
+                        action,
+                        voice_index: 0,
+                        ..McAudioCommandV2::default()
+                    },
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            mc_native_audio_command_discard(handle, generation, 201),
+            MC_STATUS_OK
+        );
+        with_session_mut(handle, |session| {
+            assert!(session.audio_voices[0].is_none());
+            session.audio_voices[0] = Some(AudioVoice {
+                sound_id: 2,
+                sound_flags: 0,
+                event_sequence: 200,
+            });
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            mc_native_audio_command_discard(handle, generation, 202),
+            MC_STATUS_OK
+        );
+        with_session(handle, |session| {
+            assert!(session.audio_voices[0].is_none());
+            Ok(())
+        })
+        .unwrap();
+
+        for (sequence, action) in [
+            (300, MC_AUDIO_ACTION_START),
+            (301, MC_AUDIO_ACTION_UPDATE_EXISTING),
+            (302, MC_AUDIO_ACTION_END_LOOP),
+        ] {
+            with_session_mut(handle, |session| {
+                session.audio_voices[0] = Some(AudioVoice {
+                    sound_id: 2,
+                    sound_flags: 0,
+                    event_sequence: 400,
+                });
+                session.audio_commands.insert(
+                    sequence,
+                    McAudioCommandV2 {
+                        generation,
+                        event_sequence: sequence,
+                        sound_id: 2,
+                        sound_flags: 0,
+                        action,
+                        voice_index: 0,
+                        ..McAudioCommandV2::default()
+                    },
+                );
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(
+                mc_native_audio_command_discard(handle, generation, sequence),
+                MC_STATUS_OK
+            );
+            with_session(handle, |session| {
+                assert_eq!(
+                    session.audio_voices[0].map(|voice| voice.event_sequence),
+                    Some(400),
+                    "discarding stale start/update/end preserves a newer voice owner"
+                );
+                Ok(())
+            })
+            .unwrap();
+        }
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 
@@ -15146,6 +15791,9 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
             );
             assert_eq!(session.audio_commands[&2].action, MC_AUDIO_ACTION_START);
             assert_eq!(session.audio_commands[&2].voice_index, 0);
+            assert_eq!(session.audio_commands[&1].pooled_flush_rank, 0);
+            assert_eq!(session.audio_commands[&2].pooled_flush_rank, 1);
+            assert_eq!(session.audio_commands[&2].reserved[..2], [1, 0]);
 
             session.audio_commands.insert(3, command(3, 39, 30, 1_000));
             session.audio_commands.insert(4, command(4, 39, 31, 991));
@@ -15155,6 +15803,9 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
                 session.audio_commands[&4].action,
                 MC_AUDIO_ACTION_SUPPRESS_PENDING_REPLACED
             );
+            assert_eq!(session.audio_commands[&3].pooled_flush_rank, 1);
+            assert_eq!(session.audio_commands[&4].pooled_flush_rank, 0);
+            assert_eq!(session.audio_commands[&3].reserved[..2], [3, 0]);
 
             for index in 2..AUDIO_VOICE_COUNT {
                 let sequence = u64::try_from(index + 10).unwrap();
@@ -15219,12 +15870,102 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
             );
             assert_eq!(session.audio_commands[&restart_sequence].voice_index, 0);
 
+            session.audio_commands.clear();
+            session.audio_voices.fill(None);
+            session
+                .audio_commands
+                .insert(200, command(200, 63, 63, 0x7fff));
+            session
+                .audio_commands
+                .insert(201, command(201, 61, 61, 0x7fff));
+            session.drain_pending_audio_commands();
+            assert_eq!(session.audio_commands[&201].pooled_flush_rank, 1);
+            assert_eq!(session.audio_commands[&200].pooled_flush_rank, 2);
+            assert_eq!(session.audio_commands[&201].reserved[..2], [200, 0]);
+            assert_eq!(session.audio_commands[&200].reserved[..2], [200, 0]);
+
+            session.audio_commands.clear();
+            session.audio_voices.fill(None);
+            session.audio_commands.insert(210, command(210, 1, 0, 100));
+            session.audio_commands.insert(211, command(211, 1, 0, 200));
+            session.drain_pending_audio_commands();
+            assert_eq!(session.audio_commands[&210].pooled_flush_rank, 0);
+            assert_eq!(session.audio_commands[&211].pooled_flush_rank, 0);
+            assert_ne!(
+                session.audio_commands[&210].action,
+                MC_AUDIO_ACTION_SUPPRESS_PENDING_REPLACED
+            );
+            assert_ne!(
+                session.audio_commands[&211].action,
+                MC_AUDIO_ACTION_SUPPRESS_PENDING_REPLACED
+            );
+
             session.reset();
             assert!(session.audio_voices.iter().all(Option::is_none));
             assert!(session.audio_commands.is_empty());
             Ok(())
         })
         .unwrap();
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn paused_pending_audio_survives_ring_and_step_backlog_until_explicit_release() {
+        let handle = open_fixture();
+        let (generation, sequence) = with_session_mut(handle, |session| {
+            session.game_paused = true;
+            let mut event = session.next_event_base(MC_EVENT_PREPARE_SOUND, 1);
+            event.code = 61;
+            let command = local_audio_command_record(&event, 61, 0, 1);
+            let sequence = event.sequence;
+            session.insert_prepared_audio_command(sequence, command);
+            session.append_event(event);
+            for _ in 0..EVENT_CAPACITY {
+                let event = session.next_event_base(MC_EVENT_MOVEMENT_RESOLUTION, 1);
+                session.append_event(event);
+            }
+            assert!(
+                !session
+                    .events
+                    .iter()
+                    .any(|event| event.sequence == sequence)
+            );
+            assert_eq!(session.audio_commands[&sequence].action, 0);
+            assert!(session.audio_commands.len() <= EVENT_CAPACITY + 1);
+            Ok((session.generation, sequence))
+        })
+        .unwrap();
+        assert_eq!(
+            mc_native_audio_command_release(handle, generation, sequence),
+            MC_STATUS_INVALID_ARGUMENT,
+            "clients cannot release an unresolved source-pool row"
+        );
+
+        with_session_mut(handle, |session| {
+            session.game_paused = false;
+            session.drain_pending_audio_commands();
+            assert_ne!(session.audio_commands[&sequence].action, 0);
+            session.step(PlayerCommand::default());
+            session.step(PlayerCommand::default());
+            assert!(session.audio_commands.contains_key(&sequence));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            mc_native_audio_command_release(handle, generation, sequence),
+            MC_STATUS_OK
+        );
+        let mut released = McAudioCommandV2::default();
+        assert_eq!(
+            mc_native_audio_command_for_event(
+                handle,
+                generation,
+                sequence,
+                &raw mut released,
+                struct_size::<McAudioCommandV2>(),
+            ),
+            MC_STATUS_BOUNDS
+        );
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 
@@ -17203,6 +17944,45 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
         let projectile_count =
             with_session(handle, |session| Ok(session.mission.projectiles().len())).unwrap();
         assert_eq!(projectile_count, 0);
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn ability_improved_event_encodes_the_exact_notification_contract() {
+        let handle = open_fixture();
+        with_session_mut(handle, |session| {
+            let source_family = 16;
+            let event = session.encode_mission_event(
+                Level1MissionEvent::AbilityImproved {
+                    source_family,
+                    notification_template_selector: ABILITY_IMPROVED_TEMPLATE_SELECTOR,
+                    ability_name_selector: ABILITY_IMPROVED_NAME_SELECTOR_BASE
+                        + u16::from(source_family),
+                    notification_state: ABILITY_IMPROVED_NOTIFICATION_STATE,
+                    notification_timer: ABILITY_IMPROVED_NOTIFICATION_TIMER,
+                },
+                state_hash(&session.state),
+            );
+            assert_eq!(event.kind, MC_EVENT_LEVEL1_ABILITY_IMPROVED);
+            assert_eq!(event.code, u32::from(source_family));
+            assert_eq!(
+                event.entity_index,
+                ABILITY_IMPROVED_NAME_SELECTOR_BASE + u16::from(source_family)
+            );
+            assert_eq!(
+                (event.value_0, event.value_1),
+                (
+                    i32::from(ABILITY_IMPROVED_NOTIFICATION_STATE),
+                    i32::from(ABILITY_IMPROVED_NOTIFICATION_TIMER),
+                )
+            );
+            assert_eq!(
+                event.reserved,
+                [u32::from(ABILITY_IMPROVED_TEMPLATE_SELECTOR), 0, 0, 0]
+            );
+            Ok(())
+        })
+        .expect("ability-improved C ABI event");
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 

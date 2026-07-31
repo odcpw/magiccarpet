@@ -508,6 +508,8 @@ pub struct FlightContext {
     pub effects: Option<FlightEffectsContext>,
     pub spell_fire: Option<SpellFireContext>,
     pub events: Vec<FlightEvent>,
+    /// Opcode 0x2c clears the source chat/name edit buffer before sound 14.
+    pub chat_clear_requested: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -538,6 +540,8 @@ pub struct SpellFireContext {
     pub enabled_holder_indices: [u16; 26],
     /// Source per-family hand eligibility `array_0x3B5_949x`: 1 left, 2 right.
     pub spell_hand_eligibility: [u8; 26],
+    /// Source toolbar slot -> spell-family bytes written by opcode 0x17.
+    pub spell_toolbar_slots: [u8; 26],
     /// Source per-family current tier `array_0x437_1079x`.
     ///
     /// This is deliberately distinct from each holder's applied
@@ -570,11 +574,15 @@ pub enum SpellFireSource {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FlightEvent {
     PrepareSound {
+        #[cfg(test)]
+        audio_site: MissionAudioSite,
         entity_index: u16,
         player_index: i16,
         sound_id: u16,
     },
     EndLoop {
+        #[cfg(test)]
+        audio_site: MissionAudioSite,
         entity_index: u16,
         player_index: i16,
         sound_id: u16,
@@ -592,6 +600,784 @@ pub enum FlightEvent {
         hint_index: u16,
         state: u8,
     },
+}
+
+#[must_use]
+pub fn menu_cursor_transition_audio_event(entity_index: u16, player_index: i16) -> FlightEvent {
+    mark_source_audio_call(SourceAudioCallTag::MenuCursorTransition);
+    FlightEvent::PrepareSound {
+        #[cfg(test)]
+        audio_site: MissionAudioSite::MenuCursorTransition,
+        entity_index,
+        player_index,
+        sound_id: 14,
+    }
+}
+
+#[must_use]
+pub fn volume_preview_audio_event(entity_index: u16, player_index: i16) -> FlightEvent {
+    mark_source_audio_call(SourceAudioCallTag::VolumePreviewAdjustVolume);
+    FlightEvent::PrepareSound {
+        #[cfg(test)]
+        audio_site: MissionAudioSite::VolumePreview,
+        entity_index,
+        player_index,
+        sound_id: 8,
+    }
+}
+
+/// Test-build identity for every source-shaped audio emitter reachable from
+/// the Level 1 mission path, plus the two source branches excluded by the
+/// selected normalized outdoor/single-player profile.
+///
+/// The tag fields that carry this type are compiled out of release builds.
+/// This gives the conformance tests a compiler-enforced census without
+/// widening the C ABI or changing the production event layout.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
+pub enum MissionAudioSite {
+    SpellMenuAssignment,
+    PlayerToolbarSlotWrite,
+    PlayerChatClear,
+    MenuCursorTransition,
+    VolumePreview,
+    NotEnoughMana,
+    PeriodicSpellExcluded,
+    CaveAmbienceExcluded,
+    SurfaceWaterLoop,
+    SurfaceLandLoop,
+    DistanceLoop5,
+    DistanceLoop31,
+    SpeedSpellActivation,
+    GoatBleat,
+    FireballLaunch,
+    PossessionLaunch,
+    InitialCastleLaunch,
+    PlayerPain,
+    PlayerDeath,
+    AmbientFireStart,
+    AmbientChildStart,
+    PossessionResolution,
+    ExitSequenceSwitch,
+    ExitAccelerationPhase6,
+    ExitAccelerationPhase8,
+    SpeedPickup,
+    ExperienceScroll,
+    AbilityImproved,
+    ObjectiveAnnouncement,
+    BuilderBuild,
+    FireflyCharge,
+    MultipartAttack,
+    ArcherArrow,
+    CastleConstruction,
+    CastleDestruction,
+    ManaSphereClaim,
+    FireballImpact,
+    WaterSplashFirstUpdate,
+    ExitOverlap,
+    CountdownSwitch,
+    CastleDefenseFirstShot,
+    Count,
+}
+
+/// One-to-one identity for each reachable pinned remc2
+/// `PrepareEventSound_6E450` occurrence in the canonical Level 1 profile.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
+pub enum SourceAudioCallTag {
+    VolumePreviewAdjustVolume,
+    GoatAction08Bleat,
+    GoatAction09Bleat,
+    GoatAction11Bleat,
+    GoatAction14HitBleat,
+    GoatAction15ConstructorBleat,
+    MultipartAttackAction26,
+    BuilderBuildAction96,
+    FireflyChargeAction154,
+    Class10Action00FirstEligibleSound,
+    AmbientFireAction01FirstEligibleSound,
+    WaterSplashAction05FirstUpdate,
+    ManaSphereClaimFlaggedTransfer,
+    ManaSphereClaimUnlatchedTransfer,
+    HousePossessionFlaggedTransfer,
+    HousePossessionUnlatchedTransfer,
+    PlayerOpcode17ToolbarWrite,
+    PlayerOpcode1F20HandAssignment,
+    PlayerOpcode26EligibilityWrite,
+    PlayerOpcode2CClearChatName,
+    ObjectiveAnnouncementNoSpeech,
+    ExperienceScrollPickup,
+    AbilityImprovedTier,
+    ProjectileDeliveryLaunch,
+    ExitOverlapSwitch,
+    CountdownSwitchModel16,
+    CountdownSwitchModel17,
+    SpeedPickup,
+    PossessionLaunchTiered,
+    PossessionLaunchBasic,
+    InitialCastleLaunch,
+    SpeedSpellActivation,
+    ArcherArrowLaunch,
+    SurfaceWaterLoop,
+    SurfaceLandLoop,
+    DistanceLoop05,
+    DistanceLoop31,
+    PlayerDeath,
+    ExitSequenceSwitch,
+    ExitAcceleration,
+    PlayerPain,
+    NotEnoughManaImmediate,
+    NotEnoughManaFallback,
+    CastleConstruction,
+    CastleDestruction,
+    MenuCursorTransition,
+}
+
+/// Compiler-checked binding from every reachable source occurrence identity
+/// to the production tag used at its Rust call path.
+pub const SOURCE_AUDIO_CALL_BINDINGS: [(SourceAudioCallTag, &str); 46] = [
+    (
+        SourceAudioCallTag::VolumePreviewAdjustVolume,
+        "286982557778df1130f462a82b40225bf7e9cff0ef1a128b9d00f0a7a0d6ea2a",
+    ),
+    (
+        SourceAudioCallTag::GoatAction08Bleat,
+        "7f870dd57e8f6af332f57155d31403b38bb2abb5f7b34414a85b381edebf9421",
+    ),
+    (
+        SourceAudioCallTag::GoatAction09Bleat,
+        "a5bc1757ae53e535625ec192299a3bf15b05fec9a1e40df6785e35f2dbbf20e8",
+    ),
+    (
+        SourceAudioCallTag::GoatAction11Bleat,
+        "f3f3d032d98e88e37521f771935f8c8b266a96f22d3b9691b850a6c809b66b51",
+    ),
+    (
+        SourceAudioCallTag::GoatAction14HitBleat,
+        "34bc5537d72f5bd10286d7bdfe7a66383fff1ce3151209ff18aea4ada79f2037",
+    ),
+    (
+        SourceAudioCallTag::GoatAction15ConstructorBleat,
+        "ee8091e6791f4f854904ccf714a9e30086a5e7157957c779b6c63206c0f2cb2f",
+    ),
+    (
+        SourceAudioCallTag::MultipartAttackAction26,
+        "3111f5f836afcb5980c8634b79837d371971683ec6fd0e8ac4848b534e23e209",
+    ),
+    (
+        SourceAudioCallTag::BuilderBuildAction96,
+        "7fb2ca319b21448d2cc6082732be40d4a49a26f9e4ce42be947c35e16d221f3a",
+    ),
+    (
+        SourceAudioCallTag::FireflyChargeAction154,
+        "9939d4b873c02d67a41aa372eabba60d25afc45a3ff01f8644144ab2cc6af3d0",
+    ),
+    (
+        SourceAudioCallTag::Class10Action00FirstEligibleSound,
+        "d91d22ceb7c1208d6d0530942843c41933536dcfbf1d74151813e0a84778e7ba",
+    ),
+    (
+        SourceAudioCallTag::AmbientFireAction01FirstEligibleSound,
+        "ac35f9a0efc2e7b1105cd5d2b063e04ee4341e6e134de1c0141e63eb47bda9a9",
+    ),
+    (
+        SourceAudioCallTag::WaterSplashAction05FirstUpdate,
+        "020da55b4d42a559160d918b6018af36cc35fc6e32109b9728d0984fd279b228",
+    ),
+    (
+        SourceAudioCallTag::ManaSphereClaimFlaggedTransfer,
+        "8963e08b8055f98e2fc81186f402085810f1f4ecb745b4ec3268d062fdb2ac78",
+    ),
+    (
+        SourceAudioCallTag::ManaSphereClaimUnlatchedTransfer,
+        "b15d4e861446498abe1746ae72447384d7912f048bcd277328fff0277dad72d3",
+    ),
+    (
+        SourceAudioCallTag::HousePossessionFlaggedTransfer,
+        "cac0811953782b9212d03180debcd57c700efb72afdfcc9d5d07ef520a760997",
+    ),
+    (
+        SourceAudioCallTag::HousePossessionUnlatchedTransfer,
+        "8ea73bba2ee78440ec115784f179ed549094caca3e36f9541eaba9fca86de212",
+    ),
+    (
+        SourceAudioCallTag::PlayerOpcode17ToolbarWrite,
+        "a32668922aee8d452b64d01278a6ed5933452f6da65e9b5d32cf01be7daf1826",
+    ),
+    (
+        SourceAudioCallTag::PlayerOpcode1F20HandAssignment,
+        "a05ea31a5ef97b7e5bb19d0f76406f40ceb81ec0b38896ffd703e62874dd2920",
+    ),
+    (
+        SourceAudioCallTag::PlayerOpcode26EligibilityWrite,
+        "3a1c75288f08ff23a1085c4e7ca9a6b9140d396837f7c13d16208c3221e3124a",
+    ),
+    (
+        SourceAudioCallTag::PlayerOpcode2CClearChatName,
+        "6236b7feaced22a4455515c39bedb9f1de20ec72b4dbcae03bc4b1c4c75447a4",
+    ),
+    (
+        SourceAudioCallTag::ObjectiveAnnouncementNoSpeech,
+        "aa4c8fa1d00c2b299135de51ebfce2a43fb7d84d9468ffa1466a50136d723238",
+    ),
+    (
+        SourceAudioCallTag::ExperienceScrollPickup,
+        "a801373c898e6eb6b3729c51b72695a334a03b33a351c3e8e8f14d86ee0a6d5b",
+    ),
+    (
+        SourceAudioCallTag::AbilityImprovedTier,
+        "123646f1f5b25dde03f9f110e5c95243ccaa35c452421ffea9e1f146a9c9be64",
+    ),
+    (
+        SourceAudioCallTag::ProjectileDeliveryLaunch,
+        "14789ddae53163cfc0ea17ae80aad2bf9817551d26e3a9e335cd5a070006e178",
+    ),
+    (
+        SourceAudioCallTag::ExitOverlapSwitch,
+        "e1d44f6a3d054961fd0e86cc9fd1e6be18ac01dc66a7eb1ebe09b13b9fa45d98",
+    ),
+    (
+        SourceAudioCallTag::CountdownSwitchModel16,
+        "de95f5689d93053e2cb35ed20278024cb790084bbc9dbad17268181fb1c3798e",
+    ),
+    (
+        SourceAudioCallTag::CountdownSwitchModel17,
+        "cf09989e4b8bbf4bf23e5f267f7a53203cf7bfba48e31a1afc2effdb0c11ae85",
+    ),
+    (
+        SourceAudioCallTag::SpeedPickup,
+        "35a9f61e359f3b2c1eaa79c5cef0ccfa51c892800e2452cbdbbc16aaca45afc7",
+    ),
+    (
+        SourceAudioCallTag::PossessionLaunchTiered,
+        "aacda3758e98e45a4351dd35d70eb9dc70deed12096eec51b21541a2701e0fc3",
+    ),
+    (
+        SourceAudioCallTag::PossessionLaunchBasic,
+        "63edb1da751bd2be1222b2938d72ea366e99a89a29c2d6545d4b067eceb68932",
+    ),
+    (
+        SourceAudioCallTag::InitialCastleLaunch,
+        "6aec7d2bfaf186589280c854c2b15af0456d9da7502481a6f93c63291f132ed6",
+    ),
+    (
+        SourceAudioCallTag::SpeedSpellActivation,
+        "c6b694c0a1b64535d469458085a0e119bcaf323fb9e160a7987b0d985cee2e0d",
+    ),
+    (
+        SourceAudioCallTag::ArcherArrowLaunch,
+        "65fb54779566695f30c8e4f3d137f2348f13f6f08879194d4355463bb6c5a2db",
+    ),
+    (
+        SourceAudioCallTag::SurfaceWaterLoop,
+        "c161e969616f5441b9ea876d8fae797fd67c9e52a394708087a40e3cfff5e75c",
+    ),
+    (
+        SourceAudioCallTag::SurfaceLandLoop,
+        "a8fdf3052cfe2f51cb09144b238f0a889ad2729b0080b820d17a5ddf1da3f1e8",
+    ),
+    (
+        SourceAudioCallTag::DistanceLoop05,
+        "037c6976ac98582623cf21472dd890b6347529faa4f8bc081a54e4dc8f971cf5",
+    ),
+    (
+        SourceAudioCallTag::DistanceLoop31,
+        "914af17e9008fc2370c1cc668bd6c46fd5012e2f7b01d5a502605698b323106f",
+    ),
+    (
+        SourceAudioCallTag::PlayerDeath,
+        "1a8274b11b5140f6c939a34190b5690fe3ba1578b91ec3fe35cfc18839cf246e",
+    ),
+    (
+        SourceAudioCallTag::ExitSequenceSwitch,
+        "3da221ab8a35f8da74f829eca261a5a17b3c01a7e9def8fa334e2bd24a1ca4cc",
+    ),
+    (
+        SourceAudioCallTag::ExitAcceleration,
+        "637edc4d094d6ff4b51e0c64f50ed48c2128825b1803c2e048c51e7df325d7d3",
+    ),
+    (
+        SourceAudioCallTag::PlayerPain,
+        "4544ece689bb1eca18d56c6ea71cd43d4deb36366a3429d968a65bc6f5ed0ef2",
+    ),
+    (
+        SourceAudioCallTag::NotEnoughManaImmediate,
+        "467e5c361e5973cedc57a380dbcf17ea8f8be70f4ee3a5890529e88176a3c58c",
+    ),
+    (
+        SourceAudioCallTag::NotEnoughManaFallback,
+        "d82a33b9eb1aeff3b62a746b4e8b2e1baf614d561f4b3037ac82d5117bef3e36",
+    ),
+    (
+        SourceAudioCallTag::CastleConstruction,
+        "92b70b2b475ffa5d1201b730b462780b42fd95c98544b675b0f0a12870ecd181",
+    ),
+    (
+        SourceAudioCallTag::CastleDestruction,
+        "444a935744dda43a2a76ac528e115f10ec4a77780aa72f621736d5723357ca98",
+    ),
+    (
+        SourceAudioCallTag::MenuCursorTransition,
+        "5193f7cf7a2fb17aa2491272b35676b34c9d9b34439195d4b171a33fa6784856",
+    ),
+];
+
+#[inline(always)]
+pub fn mark_source_audio_call(_tag: SourceAudioCallTag) {}
+
+#[cfg(test)]
+impl SourceAudioCallTag {
+    pub const ALL: [Self; 46] = [
+        Self::VolumePreviewAdjustVolume,
+        Self::GoatAction08Bleat,
+        Self::GoatAction09Bleat,
+        Self::GoatAction11Bleat,
+        Self::GoatAction14HitBleat,
+        Self::GoatAction15ConstructorBleat,
+        Self::MultipartAttackAction26,
+        Self::BuilderBuildAction96,
+        Self::FireflyChargeAction154,
+        Self::Class10Action00FirstEligibleSound,
+        Self::AmbientFireAction01FirstEligibleSound,
+        Self::WaterSplashAction05FirstUpdate,
+        Self::ManaSphereClaimFlaggedTransfer,
+        Self::ManaSphereClaimUnlatchedTransfer,
+        Self::HousePossessionFlaggedTransfer,
+        Self::HousePossessionUnlatchedTransfer,
+        Self::PlayerOpcode17ToolbarWrite,
+        Self::PlayerOpcode1F20HandAssignment,
+        Self::PlayerOpcode26EligibilityWrite,
+        Self::PlayerOpcode2CClearChatName,
+        Self::ObjectiveAnnouncementNoSpeech,
+        Self::ExperienceScrollPickup,
+        Self::AbilityImprovedTier,
+        Self::ProjectileDeliveryLaunch,
+        Self::ExitOverlapSwitch,
+        Self::CountdownSwitchModel16,
+        Self::CountdownSwitchModel17,
+        Self::SpeedPickup,
+        Self::PossessionLaunchTiered,
+        Self::PossessionLaunchBasic,
+        Self::InitialCastleLaunch,
+        Self::SpeedSpellActivation,
+        Self::ArcherArrowLaunch,
+        Self::SurfaceWaterLoop,
+        Self::SurfaceLandLoop,
+        Self::DistanceLoop05,
+        Self::DistanceLoop31,
+        Self::PlayerDeath,
+        Self::ExitSequenceSwitch,
+        Self::ExitAcceleration,
+        Self::PlayerPain,
+        Self::NotEnoughManaImmediate,
+        Self::NotEnoughManaFallback,
+        Self::CastleConstruction,
+        Self::CastleDestruction,
+        Self::MenuCursorTransition,
+    ];
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MissionAudioContract {
+    pub site: MissionAudioSite,
+    pub sounds: &'static str,
+    pub owner: &'static str,
+    pub play_type: &'static str,
+    pub pitch: &'static str,
+    pub source_anchor: &'static str,
+    pub reachable: bool,
+}
+
+#[cfg(test)]
+impl MissionAudioSite {
+    pub const ALL: [Self; Self::Count as usize] = [
+        Self::SpellMenuAssignment,
+        Self::PlayerToolbarSlotWrite,
+        Self::PlayerChatClear,
+        Self::MenuCursorTransition,
+        Self::VolumePreview,
+        Self::NotEnoughMana,
+        Self::PeriodicSpellExcluded,
+        Self::CaveAmbienceExcluded,
+        Self::SurfaceWaterLoop,
+        Self::SurfaceLandLoop,
+        Self::DistanceLoop5,
+        Self::DistanceLoop31,
+        Self::SpeedSpellActivation,
+        Self::GoatBleat,
+        Self::FireballLaunch,
+        Self::PossessionLaunch,
+        Self::InitialCastleLaunch,
+        Self::PlayerPain,
+        Self::PlayerDeath,
+        Self::AmbientFireStart,
+        Self::AmbientChildStart,
+        Self::PossessionResolution,
+        Self::ExitSequenceSwitch,
+        Self::ExitAccelerationPhase6,
+        Self::ExitAccelerationPhase8,
+        Self::SpeedPickup,
+        Self::ExperienceScroll,
+        Self::AbilityImproved,
+        Self::ObjectiveAnnouncement,
+        Self::BuilderBuild,
+        Self::FireflyCharge,
+        Self::MultipartAttack,
+        Self::ArcherArrow,
+        Self::CastleConstruction,
+        Self::CastleDestruction,
+        Self::ManaSphereClaim,
+        Self::FireballImpact,
+        Self::WaterSplashFirstUpdate,
+        Self::ExitOverlap,
+        Self::CountdownSwitch,
+        Self::CastleDefenseFirstShot,
+    ];
+
+    #[must_use]
+    pub const fn contract(self) -> MissionAudioContract {
+        let (sounds, owner, play_type, pitch, source_anchor, reachable) = match self {
+            Self::SpellMenuAssignment => (
+                "14",
+                "local player",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:37748,37902,37952",
+                true,
+            ),
+            Self::PlayerToolbarSlotWrite => (
+                "14",
+                "local player",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:37739-37749",
+                true,
+            ),
+            Self::PlayerChatClear => (
+                "14",
+                "local player",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:38050-38054",
+                true,
+            ),
+            Self::MenuCursorTransition => (
+                "14",
+                "local player",
+                "1",
+                "fixed 0",
+                "GameUI.cpp:753-789",
+                true,
+            ),
+            Self::VolumePreview => (
+                "8",
+                "local player",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:8569-8651",
+                true,
+            ),
+            Self::NotEnoughMana => (
+                "29",
+                "local player",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:60949-61008",
+                true,
+            ),
+            Self::PeriodicSpellExcluded => (
+                "12/39/43/37",
+                "local player entity",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp:59816-59837; EXC-C15-FAMILIES",
+                false,
+            ),
+            Self::CaveAmbienceExcluded => (
+                "65-69",
+                "level-local",
+                "none in qualified outdoor profile",
+                "fixed 0",
+                "EventsFunctions.cpp:59840-59848",
+                false,
+            ),
+            Self::SurfaceWaterLoop => (
+                "prepare 1/end 2",
+                "level-local",
+                "2",
+                "fixed 0",
+                "EventsFunctions.cpp:59850-59854",
+                true,
+            ),
+            Self::SurfaceLandLoop => (
+                "prepare 2/end 1",
+                "level-local",
+                "2",
+                "fixed 0",
+                "EventsFunctions.cpp:59855-59859",
+                true,
+            ),
+            Self::DistanceLoop5 => (
+                "5",
+                "level-local",
+                "2",
+                "fixed 0",
+                "EventsFunctions.cpp:59860-59868",
+                true,
+            ),
+            Self::DistanceLoop31 => (
+                "31",
+                "level-local",
+                "2",
+                "fixed 0",
+                "EventsFunctions.cpp:59869-59877",
+                true,
+            ),
+            Self::SpeedSpellActivation => (
+                "19",
+                "local player",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:56262-56271",
+                true,
+            ),
+            Self::GoatBleat => (
+                "46",
+                "Goat entity",
+                "3",
+                "next global RNG %20, action14 +10 otherwise -10",
+                "EventsFunctions.cpp:11386-11458; Sound.cpp:6331-6344",
+                true,
+            ),
+            Self::FireballLaunch => (
+                "9",
+                "created projectile",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:57331-57356,57699-57721,58102-58126",
+                true,
+            ),
+            Self::PossessionLaunch => (
+                "40",
+                "created projectile",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:55970-56023,56080-56109",
+                true,
+            ),
+            Self::InitialCastleLaunch => (
+                "15",
+                "created projectile",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:56160-56198",
+                true,
+            ),
+            Self::PlayerPain => (
+                "54-57",
+                "local player",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp:60730-60754",
+                true,
+            ),
+            Self::PlayerDeath => (
+                "16",
+                "local player",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp:60050-60081",
+                true,
+            ),
+            Self::AmbientFireStart => (
+                "3",
+                "ambient-fire entity",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp ambient model-1/action-1 first update",
+                true,
+            ),
+            Self::AmbientChildStart => (
+                "3",
+                "ambient child",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp ambient model-0/action-0 first eligible update",
+                true,
+            ),
+            Self::PossessionResolution => (
+                "4",
+                "new owner",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:17512-17524,26075-26089,28021-28034",
+                true,
+            ),
+            Self::ExitSequenceSwitch => (
+                "41",
+                "local player",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:60370-60394",
+                true,
+            ),
+            Self::ExitAccelerationPhase6 => (
+                "19",
+                "local player",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:60570-60593",
+                true,
+            ),
+            Self::ExitAccelerationPhase8 => (
+                "19",
+                "local player",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:60570-60593",
+                true,
+            ),
+            Self::SpeedPickup => (
+                "18",
+                "matched local player",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:55720-55759",
+                true,
+            ),
+            Self::ExperienceScroll => (
+                "63",
+                "sentinel/local player",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:41168-41184",
+                true,
+            ),
+            Self::AbilityImproved => (
+                "61",
+                "entity-zero sentinel/full-volume",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:41168-41189,43898-44060; PlayerInput.cpp:2441-2476; Sound.cpp:6254,6282-6288,6406-6415",
+                true,
+            ),
+            Self::ObjectiveAnnouncement => (
+                "61",
+                "entity-zero sentinel/full-volume",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:31818,40881-40912,40965-41063; Sound.cpp:6254,6282-6288,6406-6415",
+                true,
+            ),
+            Self::BuilderBuild => (
+                "10",
+                "Builder entity",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:14096-14102",
+                true,
+            ),
+            Self::FireflyCharge => (
+                "42-44",
+                "Firefly entity",
+                "3",
+                "next global RNG %30 -15",
+                "EventsFunctions.cpp:16505-16513; Sound.cpp:6334-6339",
+                true,
+            ),
+            Self::MultipartAttack => (
+                "8",
+                "attacking actor",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp:11593-11597",
+                true,
+            ),
+            Self::ArcherArrow => (
+                "33/34",
+                "Arrow entity",
+                "3",
+                "fixed 0",
+                "EventsFunctions.cpp:58892-58907",
+                true,
+            ),
+            Self::CastleConstruction => (
+                "10",
+                "Castle root",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:61604-61619",
+                true,
+            ),
+            Self::CastleDestruction => (
+                "30",
+                "Castle root",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:61650-61668",
+                true,
+            ),
+            Self::ManaSphereClaim => (
+                "4",
+                "new owner",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:17512-17524,26075-26089",
+                true,
+            ),
+            Self::FireballImpact => (
+                "3",
+                "impact entity",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:22741-22750",
+                true,
+            ),
+            Self::WaterSplashFirstUpdate => (
+                "27",
+                "splash entity",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:23168-23178",
+                true,
+            ),
+            Self::ExitOverlap => (
+                "41",
+                "matched player",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:44570-44587",
+                true,
+            ),
+            Self::CountdownSwitch => (
+                "41",
+                "model16/17 switch",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:54497-54539",
+                true,
+            ),
+            Self::CastleDefenseFirstShot => (
+                "9/23/9/9/15",
+                "Castle root",
+                "1",
+                "fixed 0",
+                "EventsFunctions.cpp:30168-30169,30283-30289,44271-44282",
+                true,
+            ),
+            Self::Count => panic!("sentinel has no audio contract"),
+        };
+        MissionAudioContract {
+            site: self,
+            sounds,
+            owner,
+            play_type,
+            pitch,
+            source_anchor,
+            reachable,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -672,6 +1458,7 @@ pub fn latch_command_with_context(
     mut command: PlayerCommand,
     context: &mut FlightContext,
 ) -> LatchedCommand {
+    context.chat_clear_requested = false;
     if let Some(fire) = context.spell_fire.as_mut() {
         fire.accepted_models.clear();
     }
@@ -775,7 +1562,10 @@ fn apply_spell_menu_command(command: PlayerCommand, context: &mut FlightContext)
                         fire.right_subspell_index = raw_tier;
                     }
                     fire.spell_menu_stage = 0;
+                    mark_source_audio_call(SourceAudioCallTag::PlayerOpcode1F20HandAssignment);
                     context.events.push(FlightEvent::PrepareSound {
+                        #[cfg(test)]
+                        audio_site: MissionAudioSite::SpellMenuAssignment,
                         entity_index: 0,
                         player_index: i16::from(fire.caster.player_color_index),
                         sound_id: 14,
@@ -789,7 +1579,47 @@ fn apply_spell_menu_command(command: PlayerCommand, context: &mut FlightContext)
                 && spell_index < fire.spell_hand_eligibility.len()
             {
                 fire.spell_hand_eligibility[spell_index] = command.argument_2.cast_unsigned();
+                mark_source_audio_call(SourceAudioCallTag::PlayerOpcode26EligibilityWrite);
                 context.events.push(FlightEvent::PrepareSound {
+                    #[cfg(test)]
+                    audio_site: MissionAudioSite::SpellMenuAssignment,
+                    entity_index: 0,
+                    player_index: i16::from(fire.caster.player_color_index),
+                    sound_id: 14,
+                });
+            }
+        }
+        0x17 => {
+            if let Some(fire) = context.spell_fire.as_mut()
+                && let (Ok(slot), Ok(family)) = (
+                    usize::try_from(command.argument_1),
+                    u8::try_from(command.argument_2),
+                )
+                && slot < fire.spell_toolbar_slots.len()
+            {
+                for current in &mut fire.spell_toolbar_slots {
+                    if *current == family {
+                        *current = u8::MAX;
+                    }
+                }
+                fire.spell_toolbar_slots[slot] = family;
+                mark_source_audio_call(SourceAudioCallTag::PlayerOpcode17ToolbarWrite);
+                context.events.push(FlightEvent::PrepareSound {
+                    #[cfg(test)]
+                    audio_site: MissionAudioSite::PlayerToolbarSlotWrite,
+                    entity_index: 0,
+                    player_index: i16::from(fire.caster.player_color_index),
+                    sound_id: 14,
+                });
+            }
+        }
+        0x2c => {
+            context.chat_clear_requested = true;
+            if let Some(fire) = context.spell_fire.as_ref() {
+                mark_source_audio_call(SourceAudioCallTag::PlayerOpcode2CClearChatName);
+                context.events.push(FlightEvent::PrepareSound {
+                    #[cfg(test)]
+                    audio_site: MissionAudioSite::PlayerChatClear,
                     entity_index: 0,
                     player_index: i16::from(fire.caster.player_color_index),
                     sound_id: 14,
@@ -1084,6 +1914,8 @@ fn finish_flight_body<W: FlightWorld>(
             && let Some(sound_id) = periodic_spell_sound(effect)
         {
             events.push(FlightEvent::PrepareSound {
+                #[cfg(test)]
+                audio_site: MissionAudioSite::PeriodicSpellExcluded,
                 entity_index: state.entity_index,
                 player_index: -1,
                 sound_id,
@@ -1100,29 +1932,41 @@ fn finish_flight_body<W: FlightWorld>(
             let cave_sound = effects.global_rng % 0x83;
             if cave_sound < 5 && state.player_color_index == effects.local_player_index {
                 events.push(FlightEvent::PrepareSound {
+                    #[cfg(test)]
+                    audio_site: MissionAudioSite::CaveAmbienceExcluded,
                     entity_index: 0,
                     player_index: local_player,
                     sound_id: u16::try_from(cave_sound + 65).expect("cave sound fits u16"),
                 });
             }
         } else if world.material_mask(state.position) == WATER_AMBIENCE_MASK {
+            mark_source_audio_call(SourceAudioCallTag::SurfaceWaterLoop);
             events.push(FlightEvent::PrepareSound {
+                #[cfg(test)]
+                audio_site: MissionAudioSite::SurfaceWaterLoop,
                 entity_index: 0,
                 player_index: local_player,
                 sound_id: 1,
             });
             events.push(FlightEvent::EndLoop {
+                #[cfg(test)]
+                audio_site: MissionAudioSite::SurfaceWaterLoop,
                 entity_index: 0,
                 player_index: local_player,
                 sound_id: 2,
             });
         } else {
+            mark_source_audio_call(SourceAudioCallTag::SurfaceLandLoop);
             events.push(FlightEvent::PrepareSound {
+                #[cfg(test)]
+                audio_site: MissionAudioSite::SurfaceLandLoop,
                 entity_index: 0,
                 player_index: local_player,
                 sound_id: 2,
             });
             events.push(FlightEvent::EndLoop {
+                #[cfg(test)]
+                audio_site: MissionAudioSite::SurfaceLandLoop,
                 entity_index: 0,
                 player_index: local_player,
                 sound_id: 1,
@@ -1256,18 +2100,41 @@ fn journal_distance_loop(
     distance: i32,
     sound_id: u16,
 ) {
-    events.push(if distance >= 1_536 {
-        FlightEvent::EndLoop {
+    match sound_id {
+        5 => mark_source_audio_call(SourceAudioCallTag::DistanceLoop05),
+        31 => mark_source_audio_call(SourceAudioCallTag::DistanceLoop31),
+        _ => panic!("distance-loop census only admits sounds 5 and 31"),
+    }
+    events.push(match (distance >= 1_536, sound_id) {
+        (true, 5) => FlightEvent::EndLoop {
+            #[cfg(test)]
+            audio_site: MissionAudioSite::DistanceLoop5,
             entity_index: 0,
             player_index,
             sound_id,
-        }
-    } else {
-        FlightEvent::PrepareSound {
+        },
+        (false, 5) => FlightEvent::PrepareSound {
+            #[cfg(test)]
+            audio_site: MissionAudioSite::DistanceLoop5,
             entity_index: 0,
             player_index,
             sound_id,
-        }
+        },
+        (true, 31) => FlightEvent::EndLoop {
+            #[cfg(test)]
+            audio_site: MissionAudioSite::DistanceLoop31,
+            entity_index: 0,
+            player_index,
+            sound_id,
+        },
+        (false, 31) => FlightEvent::PrepareSound {
+            #[cfg(test)]
+            audio_site: MissionAudioSite::DistanceLoop31,
+            entity_index: 0,
+            player_index,
+            sound_id,
+        },
+        _ => panic!("distance-loop census only admits sounds 5 and 31"),
     });
 }
 
@@ -1671,6 +2538,9 @@ fn conformance_hash_with_spell_tiers(
         }
         None => feed(&[0]),
     }
+    if context.chat_clear_requested {
+        feed(b"chat-clear-requested\0");
+    }
     feed(
         &u64::try_from(context.events.len())
             .unwrap_or(u64::MAX)
@@ -1703,6 +2573,7 @@ fn feed_spell_fire(
                 .spell_hand_eligibility
                 .iter()
                 .any(|eligibility| *eligibility != 0)
+            || fire.spell_toolbar_slots.iter().any(|family| *family != 0)
         {
             // Backward-compatible v2 extension: preserve the exact reset byte
             // stream while making every future-affecting non-default menu
@@ -1714,6 +2585,7 @@ fn feed_spell_fire(
             for eligibility in fire.spell_hand_eligibility {
                 feed(&[eligibility]);
             }
+            feed(&fire.spell_toolbar_slots);
         }
     }
     for holder_index in fire.enabled_holder_indices {
@@ -1754,6 +2626,7 @@ fn feed_flight_event(feed: &mut impl FnMut(&[u8]), event: FlightEvent) {
             entity_index,
             player_index,
             sound_id,
+            ..
         } => {
             feed(&[0]);
             feed(&entity_index.to_le_bytes());
@@ -1764,6 +2637,7 @@ fn feed_flight_event(feed: &mut impl FnMut(&[u8]), event: FlightEvent) {
             entity_index,
             player_index,
             sound_id,
+            ..
         } => {
             feed(&[1]);
             feed(&entity_index.to_le_bytes());
@@ -2119,6 +2993,97 @@ fn low_u16(value: u32) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn production_audio_tag_count(sources: &[&str], site: MissionAudioSite) -> usize {
+        let test_module_marker = "\n#[cfg(test)]\nmod tests {";
+        let local_tag = format!("audio_site: MissionAudioSite::{site:?},");
+        let crate_tag = format!("audio_site: crate::MissionAudioSite::{site:?},");
+        sources
+            .iter()
+            .map(|source| {
+                let production = source
+                    .split_once(test_module_marker)
+                    .map_or(*source, |(production, _tests)| production);
+                let production = production.split_whitespace().collect::<String>();
+                let local_tag = local_tag.split_whitespace().collect::<String>();
+                let crate_tag = crate_tag.split_whitespace().collect::<String>();
+                production.matches(&local_tag).count() + production.matches(&crate_tag).count()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn mission_audio_census_is_unique_complete_and_compiler_bound() {
+        use std::collections::BTreeSet;
+
+        assert_eq!(
+            MissionAudioSite::ALL.len(),
+            MissionAudioSite::Count as usize
+        );
+        assert_eq!(
+            MissionAudioSite::ALL
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+                .len(),
+            MissionAudioSite::Count as usize,
+            "the census must contain every site exactly once"
+        );
+        let tagged_sources = [
+            include_str!("lib.rs"),
+            include_str!("level1_mission.rs"),
+            include_str!("spell_activation.rs"),
+            include_str!("goat.rs"),
+        ];
+        let metadata_only = concat!(
+            "Self::FireballLaunch,\n",
+            "#[cfg(test)]\nmod tests {\n",
+            "audio_site: crate::MissionAudioSite::FireballLaunch,\n",
+            "}\n",
+        );
+        assert_eq!(
+            production_audio_tag_count(&[metadata_only], MissionAudioSite::FireballLaunch),
+            0,
+            "metadata and test-only references must not satisfy production coverage"
+        );
+        assert_eq!(
+            production_audio_tag_count(
+                &["audio_site: crate::MissionAudioSite::FireballLaunch,"],
+                MissionAudioSite::FireballLaunch,
+            ),
+            1,
+            "an exact production event field must satisfy reverse binding"
+        );
+        for site in MissionAudioSite::ALL {
+            let contract = site.contract();
+            assert_eq!(contract.site, site);
+            assert!(!contract.sounds.is_empty());
+            assert!(!contract.owner.is_empty());
+            assert!(!contract.play_type.is_empty());
+            assert!(!contract.pitch.is_empty());
+            assert!(!contract.source_anchor.is_empty());
+            assert!(
+                production_audio_tag_count(&tagged_sources, site) > 0,
+                "{site:?} has metadata but no compiler-bound production tag"
+            );
+        }
+        assert_eq!(
+            MissionAudioSite::ALL
+                .into_iter()
+                .filter(|site| !site.contract().reachable)
+                .collect::<Vec<_>>(),
+            [
+                MissionAudioSite::PeriodicSpellExcluded,
+                MissionAudioSite::CaveAmbienceExcluded,
+            ]
+        );
+        assert_eq!(
+            MissionAudioSite::ALL
+                .into_iter()
+                .filter(|site| site.contract().sounds == "none")
+                .collect::<Vec<_>>(),
+            []
+        );
+    }
 
     #[derive(Clone, Copy)]
     struct FlatWorld {
@@ -2887,26 +3852,31 @@ mod tests {
             context.events,
             vec![
                 FlightEvent::PrepareSound {
+                    audio_site: MissionAudioSite::PeriodicSpellExcluded,
                     entity_index: 42,
                     player_index: -1,
                     sound_id: 12,
                 },
                 FlightEvent::PrepareSound {
+                    audio_site: MissionAudioSite::SurfaceLandLoop,
                     entity_index: 0,
                     player_index: 0,
                     sound_id: 2,
                 },
                 FlightEvent::EndLoop {
+                    audio_site: MissionAudioSite::SurfaceLandLoop,
                     entity_index: 0,
                     player_index: 0,
                     sound_id: 1,
                 },
                 FlightEvent::PrepareSound {
+                    audio_site: MissionAudioSite::DistanceLoop5,
                     entity_index: 0,
                     player_index: 0,
                     sound_id: 5,
                 },
                 FlightEvent::PrepareSound {
+                    audio_site: MissionAudioSite::DistanceLoop31,
                     entity_index: 0,
                     player_index: 0,
                     sound_id: 31,
@@ -2945,6 +3915,7 @@ mod tests {
         assert_eq!(
             context.events.first(),
             Some(&FlightEvent::PrepareSound {
+                audio_site: MissionAudioSite::CaveAmbienceExcluded,
                 entity_index: 0,
                 player_index: 0,
                 sound_id: 67,
@@ -2998,21 +3969,25 @@ mod tests {
             context.events,
             vec![
                 FlightEvent::PrepareSound {
+                    audio_site: MissionAudioSite::SurfaceWaterLoop,
                     entity_index: 0,
                     player_index: 0,
                     sound_id: 1,
                 },
                 FlightEvent::EndLoop {
+                    audio_site: MissionAudioSite::SurfaceWaterLoop,
                     entity_index: 0,
                     player_index: 0,
                     sound_id: 2,
                 },
                 FlightEvent::EndLoop {
+                    audio_site: MissionAudioSite::DistanceLoop5,
                     entity_index: 0,
                     player_index: 0,
                     sound_id: 5,
                 },
                 FlightEvent::EndLoop {
+                    audio_site: MissionAudioSite::DistanceLoop31,
                     entity_index: 0,
                     player_index: 0,
                     sound_id: 31,
@@ -3560,6 +4535,7 @@ mod tests {
         assert_eq!(
             context.events,
             vec![FlightEvent::PrepareSound {
+                audio_site: MissionAudioSite::SpellMenuAssignment,
                 entity_index: 0,
                 player_index: 0,
                 sound_id: 14,
@@ -3686,6 +4662,7 @@ mod tests {
         assert_eq!(
             context.events,
             vec![FlightEvent::PrepareSound {
+                audio_site: MissionAudioSite::SpellMenuAssignment,
                 entity_index: 0,
                 player_index: 0,
                 sound_id: 14,
@@ -3795,6 +4772,64 @@ mod tests {
         assert_right_family_stage(&mut state, &mut context);
         assert_raw_tier_no_op_and_eligibility(&mut state, &mut context);
         assert_spell_menu_cast_routes(&mut state, &mut context);
+    }
+
+    #[test]
+    fn player_toolbar_and_chat_commands_emit_their_distinct_local_sound_sites() {
+        let (mut state, mut context) = spell_menu_assignment_fixture();
+        latch_command_with_context(
+            &mut state,
+            PlayerCommand {
+                opcode: 0x17,
+                argument_1: 2,
+                argument_2: 7,
+                ..PlayerCommand::default()
+            },
+            &mut context,
+        );
+        latch_command_with_context(
+            &mut state,
+            PlayerCommand {
+                opcode: 0x17,
+                argument_1: 3,
+                argument_2: 7,
+                ..PlayerCommand::default()
+            },
+            &mut context,
+        );
+        let fire = context.spell_fire.as_ref().unwrap();
+        assert_eq!(
+            (fire.spell_toolbar_slots[2], fire.spell_toolbar_slots[3]),
+            (u8::MAX, 7)
+        );
+        assert!(context.events.iter().all(|event| matches!(
+            event,
+            FlightEvent::PrepareSound {
+                audio_site: MissionAudioSite::PlayerToolbarSlotWrite,
+                sound_id: 14,
+                ..
+            }
+        )));
+
+        context.events.clear();
+        latch_command_with_context(
+            &mut state,
+            PlayerCommand {
+                opcode: 0x2c,
+                ..PlayerCommand::default()
+            },
+            &mut context,
+        );
+        assert!(context.chat_clear_requested);
+        assert_eq!(
+            context.events,
+            [FlightEvent::PrepareSound {
+                audio_site: MissionAudioSite::PlayerChatClear,
+                entity_index: 0,
+                player_index: 0,
+                sound_id: 14,
+            }]
+        );
     }
 
     #[test]

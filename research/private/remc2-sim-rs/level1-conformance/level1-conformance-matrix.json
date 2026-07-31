@@ -58,14 +58,14 @@
   ],
   "test_inventory": {
    "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked -- --list",
-   "count": 442
+    "count": 458
   },
   "census_method": "independent traversal from Level 1 load/reset state: typed owner authored-table census (authored_census: 308 non-zero rows, partition-proved), reset arena census (177 actives, 14 class/model/action families), activation-graph traversal (load-time G-1, G0 at start, switch-driven groups incl. proximity ids 12-33), and typed dispatch census (dispatch_census: all 845 mechanical slots partitioned between rows and exclusions), with per-handler source reads at the pinned commit",
   "totals": {
    "rows": 182,
    "by_classification": {
-    "Exact": 101,
-    "Partial": 47,
+    "Exact": 104,
+    "Partial": 44,
     "Wrong": 1,
     "Missing": 31,
     "Unproved": 2
@@ -74,9 +74,8 @@
     "activation": {
      "Partial": 3
     },
-    "audio": {
-     "Exact": 1,
-     "Partial": 1
+     "audio": {
+      "Exact": 2
     },
     "authored": {
      "Partial": 6,
@@ -112,12 +111,11 @@
     "reset": {
      "Exact": 8
     },
-    "rng": {
-     "Partial": 1
+     "rng": {
+      "Exact": 1
     },
-    "scheduler": {
-     "Exact": 3,
-     "Partial": 1
+     "scheduler": {
+      "Exact": 4
     },
     "targeting": {
      "Partial": 1
@@ -127,7 +125,7 @@
     }
    },
    "reachable_rows": 181,
-   "exclusions": 18,
+   "exclusions": 22,
    "plan_items": 22
   }
  },
@@ -4703,7 +4701,7 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "global 16-bit RNG advances as seed*9377+9439 wrapping",
+    "global 32-bit RNG advances as seed*9377+9439 wrapping; entity-local constructor seeds remain independently 16-bit",
     "each entity carries an independent 16-bit RNG seed from authored constructor"
    ],
    "implementation": {
@@ -4743,9 +4741,7 @@
    "negative_coverage_required": [],
    "plan_item": null,
    "confidence": "high",
-   "unresolved": [
-    "complete per-turn global-RNG draw census is only partially source-mapped (see RNG-001)"
-   ]
+   "unresolved": []
   },
   {
    "id": "RST-006",
@@ -4827,7 +4823,7 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "objective slots initialised from level data; six Level 1 objectives; textbox selectors 48-53",
+    "objective slots initialised from level data; five Level 1 objective predicates use textbox selectors 48-52, while selector 53 is the completion message after all five are done",
     "per-player stage state bytes stage_0x3659F[]; ObjectiveDone flags cleared"
    ],
    "implementation": {
@@ -4846,13 +4842,13 @@
      "file": "research/private/remc2-sim-rs",
      "test": "level1_mission::tests::complete_level1_route_reaches_every_objective_and_exit_result_10",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked complete_level1_route_reaches_every_objective_and_exit_result_10",
-     "proves": "all six objectives progress in route"
+     "proves": "all five objective predicates progress in route before selector 53 presents the completion message"
     },
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
-     "test": "level1_mission::tests::objective_textbox_clock_matches_source_outer_turn_order",
-     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked objective_textbox_clock_matches_source_outer_turn_order",
+     "test": "level1_mission::tests::objective_presentation_gate_and_textbox_clock_match_unpaused_outer_turn_order",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked objective_presentation_gate_and_textbox_clock_match_unpaused_outer_turn_order",
      "proves": "textbox timing"
     }
    ],
@@ -5132,54 +5128,66 @@
    "id": "SCH-004",
    "subsystem": "scheduler",
    "family": "rng-budget",
-   "title": "Per-turn global RNG draw census (ten advances per outer turn on preserved Level 1 sequence)",
+   "title": "Quiet-reset speedIndex 0 global RNG schedule",
    "reachability": {
     "status": "reachable",
-    "chain": "every outer turn"
+    "chain": "quiet Level 1 reset -> speedIndex 0 -> one UpdateEntities_57730 pass"
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
     "symbols": [
-     "UpdateEntities_57730 + consumers"
+     "DrawAndEventsInGame_47560",
+     "UpdateEntities_57730",
+     "AddParticleSmoke0A_3D_32420",
+     "SetParticleSmoke3C_4EA20"
     ],
     "path": "remc2/engine/EventsFunctions.cpp",
-    "lines": "39928-40179 pinned + per-consumer sites",
+    "lines": "31724 (DrawAndEventsInGame_47560); 31796-31815 (1/4/8 scheduler); 39928-40184 (pre-pause UpdateEntities); 23666-23690 and 35625-35628 (quiet model-60 smoke draws)",
     "dispatch": null
    },
    "preconditions": [],
    "behavior_ordered": [
-    "preserved Level 1 sequence proves ten global-RNG advances per outer turn",
-    "only the UpdateEntities advance plus mission-slice consumers are currently source-mapped; the full ordered draw list is required for global-RNG-inclusive hashing"
+    "speedIndex 0 schedules exactly one complete UpdateEntities pass",
+    "the quiet reset pass stores the UpdateEntities draw at source slot 0, then model-60 smoke draws at slots 113 through 121",
+    "the exact reset transition is 0xad6e67d9 -> 0x9909f858 -> 0xa631b437 -> 0x829a3776 -> 0xd2c99e15 -> 0xeb078414 -> 0xde4d0573 -> 0xa334be32 -> 0x0eeaca51 -> 0x661cc5d0 -> 0x43e9ccaf",
+    "GAME_PAUSED retains the pre-gate UpdateEntities draw while suppressing later entity dispatch"
    ],
    "implementation": {
     "rust": [
      "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs",
-     "research/private/remc2-sim-rs/crates/sim-core/src/goat.rs"
+     "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs"
     ],
-    "capi": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs"
+    ],
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "ordered draw-site list incomplete; goat sound pitch RNG value at dispatch unqualified"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
-     "kind": "qualification-record",
-     "file": "research/private/remc2-sim-rs/LEVEL1-GOAT-CONTRACT.md",
-     "test": "sequence-002285FF-00356038.bin ten-advance observation",
-     "command": "none (documentation record, not executable evidence)",
-     "non_executable": true,
-     "proves": "record only: advance count only, not full ordered draw sites"
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_world::tests::production_speed_sweeps_preserve_the_complete_quiet_reset_rng_schedule",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked production_speed_sweeps_preserve_the_complete_quiet_reset_rng_schedule",
+     "proves": "speedIndex 0 has one complete pass with the exact ten-entry source-slot/site/value trace; the same test discriminates the production 1/4/8 scheduler"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_v2::tests::paused_native_steps_store_only_the_pre_gate_update_rng_draw",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked paused_native_steps_store_only_the_pre_gate_update_rng_draw",
+     "proves": "each paused native step stores only the pre-gate UpdateEntities draw while tick, event head, source turn, and model-60 life remain frozen"
     }
    ],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-26",
-   "confidence": "medium",
-   "unresolved": [
-    "which consumers own the remaining advances each turn"
-   ]
+   "negative_coverage_required": [
+    "paused post-gate dispatch omitted",
+    "zero extra or missing draws in the scheduled pass"
+   ],
+   "plan_item": null,
+   "confidence": "high",
+   "unresolved": []
   },
   {
    "id": "ACT-001",
@@ -7282,7 +7290,7 @@
    "title": "Command layout, latching and delta truncation (ten-byte Type_PlayerInput_0x6E3E)",
    "reachability": {
     "status": "reachable",
-    "chain": "every outer turn -> class 3 action 0 player body"
+    "chain": "class 3 action 0 PlayerEvents handler when opcode 0x27 or opcode 6 is consumed"
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -7299,7 +7307,8 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "see BRANCH-COVERAGE.md leaf ledger for the per-branch ordered behavior; the declared class-3/action-0 gate is closed with 518 exact whole-projection transitions"
+    "opcode 0x27 clears rotation and, when its speed-reset argument is present, zeroes movement plus the exact active speed holder; without that argument it preserves speed and holder",
+    "opcode 6 resolves the selected spell before dispatching the selected-fire path"
    ],
    "implementation": {
     "rust": [
@@ -7366,7 +7375,8 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "see BRANCH-COVERAGE.md leaf ledger for the per-branch ordered behavior; the declared class-3/action-0 gate is closed with 518 exact whole-projection transitions"
+    "opcode 0x27 always clears the submitted roll and pitch before deriving input deltas; with a nonzero argument it also clears actual/target speed and the exact active speed-spell holder, while a zero argument preserves speed and holder state",
+    "opcode 6 with flag 0x40 resolves the selected UI spell through spellIndex_D94FF and installs its enabled holder before selected-fire dispatch"
    ],
    "implementation": {
     "rust": [
@@ -8046,7 +8056,8 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "see BRANCH-COVERAGE.md leaf ledger for the per-branch ordered behavior; the declared class-3/action-0 gate is closed with 518 exact whole-projection transitions"
+    "see BRANCH-COVERAGE.md leaf ledger for the per-branch ordered behavior; the declared class-3/action-0 gate is closed with 518 exact whole-projection transitions",
+    "the generic family-4 periodic switch maps owned life values 0x02/0x10/0x13/0x19 to sounds 12/39/43/37, but canonical Level 1 has SpellEnabled[4]==0 and only class-15 families 0/1, so this subbranch is excluded by EXC-C15-FAMILIES"
    ],
    "implementation": {
     "rust": [
@@ -8061,6 +8072,13 @@
    "classification": "Exact",
    "mismatch_detail": [],
    "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_world::tests::level_one_package_excludes_the_family_four_periodic_sound_branch",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked level_one_package_excludes_the_family_four_periodic_sound_branch",
+     "proves": "canonical player relation 4, complete active class-15 holder census, live session projection, and production event journal all exclude the periodic branch"
+    },
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
@@ -12964,8 +12982,8 @@
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
-     "test": "level1_mission::tests::firefly_fireball_water_hit_creates_nine_update_sound_only_splash",
-     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked firefly_fireball_water_hit_creates_nine_update_sound_only_splash",
+     "test": "level1_mission::tests::firefly_fireball_water_hit_is_silent_until_the_first_splash_update",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked firefly_fireball_water_hit_is_silent_until_the_first_splash_update",
      "proves": "splash lifecycle"
     }
    ],
@@ -13733,10 +13751,14 @@
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
     "symbols": [
-     "class-10 slot 86"
+     "sub_60480",
+     "sub_613D0",
+     "sub_3A8B0",
+     "sub_3AF00_castle_defend_event",
+     "sub_6DCA0"
     ],
     "path": "remc2/engine/EventsFunctions.cpp",
-    "lines": "class-10 table 1601-1796 pinned; handler per atlas anchor -8",
+    "lines": "61614-61643 (child-first stage-one creation and one defender); 62282-62375 (defender offsets/tuple); 29749-30320 (action-86 state machine and root-owned shot); 44075-44282 (five shot constructors and first-shot sounds)",
     "dispatch": {
      "class": 10,
      "model": null,
@@ -13745,7 +13767,10 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "target acquisition; launch/tracking; collision; damage; reset and impact"
+    "successful castle build state 0 allocates and commits the construction child first, increments stage, then creates exactly one stage-one defender at root x/y and ground+384; defender failure does not roll back or retry at completion",
+    "the ordinary ascending source dispatcher advances the class-10/model-79/action-86 controller from initialization through acquisition and one of five exact projectile profiles",
+    "the first shot emits profile sound 9/23/9/9/15 from the Castle root before the typed shot; repeat shots are silent",
+    "target validation, launch/tracking, collision, damage, reset, and impact preserve the source state machine"
    ],
    "implementation": {
     "rust": [
@@ -13757,21 +13782,34 @@
    },
    "classification": "Partial",
    "mismatch_detail": [
-    "per-branch acquisition/tracking ordering not focused-tested; folded into route evidence"
+    "the Castle-defense profile cache is not yet exported/validated as an owner-backed immutable artifact, so exact cache provenance remains a PLAN-29 closure blocker"
    ],
    "evidence_bindings": [
     {
-     "kind": "qualification-record",
-     "file": "research/private/remc2-unity-native/LEVEL1-READINESS.md",
-     "test": "castle projectiles rendered in compositor and route-exercised",
-     "command": "none (documentation record, not executable evidence)",
-     "non_executable": true,
-     "proves": "record only: castle projectiles rendered in compositor and route-exercised"
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::stage_one_castle_creates_its_defender_immediately_and_never_retries_failure",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked stage_one_castle_creates_its_defender_immediately_and_never_retries_failure",
+     "proves": "child-before-defender allocation, exact initial tuple/position/owner/variant, ordinary action-86 dispatch, and committed no-retry failure"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_world::tests::native_session_dispatches_an_ordinary_castle_defender_from_action_zero_to_one",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked native_session_dispatches_an_ordinary_castle_defender_from_action_zero_to_one",
+     "proves": "the production NativeSession ascending dispatcher executes an ordinary action-86 controller"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::castle_defense_first_shot_audio_covers_every_profile_and_second_shots_are_silent",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked castle_defense_first_shot_audio_covers_every_profile_and_second_shots_are_silent",
+     "proves": "all five root-owned first-shot sounds precede typed shots and repeats remain silent"
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-19",
-   "confidence": "medium",
+   "plan_item": "PLAN-29",
+   "confidence": "high",
    "unresolved": []
   },
   {
@@ -14885,30 +14923,34 @@
    "id": "CMB-004",
    "subsystem": "combat",
    "family": "xp-score",
-   "title": "Experience, spell-tier progression and score accounting",
+   "title": "Experience-scroll awards and owned spell-tier threshold recomputation",
    "reachability": {
     "status": "reachable",
-    "chain": "kills, scroll pickups, spell use"
+    "chain": "experience scroll pickup -> enabled Level 1 spell awards -> tier recomputation"
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
     "symbols": [
-     "GetScroll_69DB0",
-     "XP accounting"
+     "UpdateScroll_59C80",
+     "sub_6D9C0"
     ],
     "path": "remc2/engine/EventsFunctions.cpp",
-    "lines": "41158-41196 pinned + consumers",
+    "lines": "41158-41196 and 43899-43944 pinned",
     "dispatch": null
    },
    "preconditions": [],
    "behavior_ordered": [
-    "XP awards per source events; tier thresholds from owned SPELLS.DAT; score fields"
+    "experience-scroll pickup awards every enabled Level 1 spell family in source order",
+    "each affected spell tier is recomputed against the owned SPELLS.DAT thresholds",
+    "an improved tier emits source family plus localization selectors 159 and 160+family, notification state 5, timer 200, and sound 61 through the native event contract"
    ],
    "implementation": {
     "rust": [
      "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs"
     ],
-    "capi": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs"
+    ],
     "unity": [],
     "absent": false
    },
@@ -14928,6 +14970,13 @@
      "test": "level1_mission::tests::level_one_spell_tiers_use_qualified_owned_spells_dat_thresholds",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked level_one_spell_tiers_use_qualified_owned_spells_dat_thresholds",
      "proves": "thresholds"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_v2::tests::ability_improved_event_encodes_the_exact_notification_contract",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked ability_improved_event_encodes_the_exact_notification_contract",
+     "proves": "the production C ABI event preserves family, selectors 159 and 160+family, state 5, and timer 200"
     }
    ],
    "negative_coverage_required": [],
@@ -15066,7 +15115,7 @@
    "id": "OBJ-001",
    "subsystem": "objective",
    "family": "predicates",
-   "title": "Six Level 1 objective predicates and stage progression",
+   "title": "Five Level 1 objective predicates, completion message, and stage progression",
    "reachability": {
     "status": "reachable",
     "chain": "route play"
@@ -15083,7 +15132,7 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "objective completion sets stage byte 2; switches translate completion into group activation; one-objective-pass pause"
+    "five objective predicates set their stage bytes to 2 and use textbox selectors 48-52; switches translate completion into group activation with a one-objective-pass pause; selector 53 is the completion message after all five predicates are done"
    ],
    "implementation": {
     "rust": [
@@ -15193,41 +15242,106 @@
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
     "symbols": [
-     "global RNG consumers"
+     "UpdateEntities_57730",
+     "GenerateLevelMap",
+     "ApplyEvents",
+     "sub_232C0",
+     "sub_28FF0",
+     "sub_31120",
+     "SetParticleSmoke3B_4E9E0",
+     "SetParticleSmoke3C_4EA20",
+     "sub_4EA60",
+     "sub_58630",
+     "AddArcherArrow_672E0",
+     "sub_5D530",
+     "PrepareEventSound_6E450"
     ],
-    "path": "remc2/engine/EventsFunctions.cpp",
-    "lines": "multiple; UpdateEntities + sound pitch draws",
+    "path": "remc2/engine/EventsFunctions.cpp + remc2/engine/GameUI.cpp + remc2/engine/Events.cpp + remc2/engine/Sound.cpp",
+    "lines": "Terrain.cpp:22 (GenerateLevelMap seed); Events.cpp:420 (ApplyEvents LCG), 578/604 (entity-local read/derive); EventsFunctions.cpp:14482 (Builder), 19346 (excluded c05-action-210), 22843 (excluded c10-action-93), 35620 (shared checkpoint/ground-fire smoke), 35627 (model-60 smoke), 35634 (excluded c10 constructor 87), 39947 (UpdateEntities), 40496/40521/40526 (excluded cave/multiplayer), 58905 (Archer arrow), 59842-59843 (excluded cave LCG/salt); Basic.cpp:2997/3190 (snapshot restore/serialization); Sound.cpp:6333 (nonstored pitch peek)",
     "dispatch": null
    },
    "preconditions": [],
    "behavior_ordered": [
-    "ten advances per outer turn observed on preserved Level 1 sequence; consumers must be enumerated in dispatch order incl. goat sound-pitch draw (randVal=rng*9377+9439 without store-back)"
+    "every reachable stored global-RNG mutation uses one source-labeled helper and records test-only pass index, source slot, site, before, and after",
+    "the six reachable logical stored families are UpdateEntities, Builder selection, model-60 smoke, checkpoint smoke, ground-fire smoke, and first Archer-arrow sound; checkpoint and ground-fire share the single physical SetParticleSmoke3B_4E9E0 mutation site",
+    "load/reset storage is limited to GenerateLevelMap and ApplyEvents; Basic.cpp restore/serialization and Events.cpp entity-local derivations do not add a per-turn stored global draw",
+    "concrete non-Level-1 sites are c05-action-210/sub_28FF0 (EXC-C5-MODELS), c10-action-93/sub_31120 and c10-constructor-87/sub_4EA60 (EXC-C10-REST), plus cave-only sub_58630/sub_5D530 and the multiplayer branch (EXC-MULTIPLAYER)",
+    "Builder, model-60, checkpoint, Archer, and ground-fire sites retain or omit their draw at the exact source condition and allocation boundary",
+    "Goat sound 46 at slot 102 observes stored 0x9909f858 and peeks nonstored 0xa631b437; action 14 yields +25 and other actions +5 without changing authoritative RNG",
+    "global RNG remains excluded from live_world_hash_v1 for byte compatibility and included by the established live_world_hash_v2 composite"
    ],
    "implementation": {
     "rust": [
      "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs",
-     "research/private/remc2-sim-rs/crates/sim-core/src/goat.rs"
+     "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs"
     ],
-    "capi": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs"
+    ],
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "global RNG excluded from live_world_hash_v1 until all consumers mapped; goat pitch value unqualified"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
-     "kind": "qualification-record",
-     "file": "research/private/remc2-sim-rs/LEVEL1-GOAT-CONTRACT.md",
-     "test": "ten-advance observation",
-     "command": "none (documentation record, not executable evidence)",
-     "non_executable": true,
-     "proves": "record only: count only"
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_world::tests::production_speed_sweeps_preserve_the_complete_quiet_reset_rng_schedule",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked production_speed_sweeps_preserve_the_complete_quiet_reset_rng_schedule",
+     "proves": "production speedIndex 0/1/2 schedules 1/4/8 complete passes with ten exact reset draws per eligible pass and no unassigned entries"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::house_resident_constructors_own_exact_source_slots_and_hit_actions",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked house_resident_constructors_own_exact_source_slots_and_hit_actions",
+     "proves": "Builder omit/retain and Archer first/second sound-draw discriminators"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::checkpoint_emitters_and_model_thirteen_smoke_follow_source_rng_and_lifecycle",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked checkpoint_emitters_and_model_thirteen_smoke_follow_source_rng_and_lifecycle",
+     "proves": "checkpoint smoke stores its draw before successful or failed allocation"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::tree_damage_dying_and_stump_threshold_follow_class_two_actions",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked tree_damage_dying_and_stump_threshold_follow_class_two_actions",
+     "proves": "ground-fire modulo-seven omission plus retained draw on successful and failed smoke allocation"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "proves": "model-60 terminal omission and ordinary, replaceable, and failed-allocation retained draws"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_v2::tests::goat_sound_46_peeks_the_slot_102_stored_rng_without_consuming_it",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked goat_sound_46_peeks_the_slot_102_stored_rng_without_consuming_it",
+     "proves": "slot-102 shared stored peek, nonstored next value, action-14/other numeric pitch, and unchanged authoritative RNG"
     }
    ],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-26",
+   "negative_coverage_required": [
+    "Builder precondition omission",
+    "model-60 terminal omission",
+    "model-60 ordinary, replacement, and failed allocation",
+    "checkpoint failed allocation",
+    "Archer second dispatch",
+    "ground-fire modulo-seven omission and failed allocation",
+    "Goat pitch peek is not stored",
+    "c05-action-210 is excluded by EXC-C5-MODELS",
+    "c10-action-93 and c10-constructor-87 are excluded by EXC-C10-REST",
+    "sub_58630/sub_5D530 cave-only draws are absent from the qualified Level 1 profile",
+    "multiplayer-only draw is excluded by EXC-MULTIPLAYER",
+    "snapshot restore, serialization, and entity-local derivations are not per-turn stored global draws"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -15357,6 +15471,20 @@
      "test": "native_v2::tests::positional_audio_qualification_vectors_cross_the_typed_sidecar_exactly",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked positional_audio_qualification_vectors_cross_the_typed_sidecar_exactly",
      "proves": "positional command payloads"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_v2::tests::audio_command_discard_reclaims_resolved_sidecar_and_logical_voice",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked audio_command_discard_reclaims_resolved_sidecar_and_logical_voice",
+     "proves": "a missing presentation consumer atomically releases each resolved sidecar and retires only the logical voice it owns or updates"
+    },
+    {
+     "kind": "unity-test",
+     "file": "research/private/remc2-unity-native/Assets/Tests/EditMode/NativeSessionEditModeTests.cs",
+     "test": "MagicCarpet.Native.Tests.NativeSessionEditModeTests.ResolvedAudioSidecarsAreDiscardedWithoutOwnerConsumer",
+     "command": "Unity EditMode test filter MagicCarpet.Native.Tests.NativeSessionEditModeTests.ResolvedAudioSidecarsAreDiscardedWithoutOwnerConsumer",
+     "proves": "production event drains query, order, discard, and reclaim resolved audio sidecars when the optional owner-audio consumer is absent"
     }
    ],
    "negative_coverage_required": [],
@@ -15368,7 +15496,7 @@
    "id": "AUD-002",
    "subsystem": "audio",
    "family": "emitters",
-   "title": "Reachable mission sound-emitter census with pitch families and play types",
+   "title": "Exhaustive pinned sound-call ledger and reachable mission emitter contract",
    "reachability": {
     "status": "reachable",
     "chain": "route play"
@@ -15376,40 +15504,123 @@
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
     "symbols": [
-     "per-emitter PrepareEventSound sites"
+     "PlayerEvents_51BB0",
+     "sub_5F660",
+     "sub_5D530",
+     "GetScroll_69DB0",
+     "sub_1F340",
+     "sub_6B610",
+     "sub_6C170",
+     "sub_6CD20",
+     "sub_69640",
+     "sub_69AB0",
+     "sub_5EFA0",
+     "AddPlayer03_00_5E010",
+     "sub_26D20",
+     "TransformArcherToMana_35940",
+     "AddHouse0A_2D_38330",
+     "sub_5E8C0_endGameSeq",
+     "sub_68E50",
+     "UpdateScroll_59C80",
+     "sub_22760",
+     "HitFirebug_25610",
+     "sub_1F990",
+     "sub_60480",
+     "sub_30D50",
+     "AddAsh0A_05_318B0",
+     "CheckpointArrived_6F070",
+     "sub_6F2B0",
+     "sub_3AF00_castle_defend_event",
+     "sub_6DCA0",
+     "PrepareEventSound_6E450"
     ],
-    "path": "remc2/engine/Sound.cpp",
-    "lines": "6254-6345",
+    "path": "remc2/engine/EventsFunctions.cpp + remc2/engine/Sound.cpp",
+    "lines": "all 119 PrepareEventSound_6E450 occurrences in EventsFunctions.cpp (117), GameUI.cpp (1), and Events.cpp (1), mechanically extracted at the pinned commit; reachable emitter behavior additionally anchors Sound.cpp:6254-6452",
     "dispatch": null
    },
    "preconditions": [],
    "behavior_ordered": [
-    "every reachable mission sound tied to remc2 emitter, listener-relative command, pitch family, play type"
+    "the repository ledger freshly re-extracts all 119 pinned source occurrences with real function boundaries, partitions them into 46 selected-profile reachable and 73 explicit exclusions, and binds every reachable occurrence hash one-to-one to a compiled SourceAudioCallTag production marker",
+    "every reachable mission sound is tied to its remc2 emitter, listener-relative command, pitch family, and play type",
+    "the generic family-4 periodic mapping remains table-tested, while the selected normalized Level 1 profile has SpellEnabled[4]==0 and class-15 families outside 0/1 are explicitly excluded by EXC-C15-FAMILIES",
+    "Goat sound 46 peeks the next global-RNG value without storing it and uses exact action-14/other pitch families",
+    "model-0 group switches 12 through 32 and model/action-32 objective switches remain silent",
+    "the immediate exit overlap and later player action 12 emit sound 41 from the matched player position; model-16/17 countdown release remains switch-emitted"
    ],
    "implementation": {
     "rust": [
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs"
+     "research/private/remc2-sim-rs/crates/sim-core/src/lib.rs",
+     "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs",
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs",
+     "research/private/remc2-sim-rs/crates/sim-core/src/goat.rs",
+     "research/private/remc2-sim-rs/crates/sim-core/src/spell_activation.rs"
     ],
-    "capi": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs"
+    ],
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "goat sound-46 numeric pitch unqualified (RNG value at dispatch unknown); sound-41 switch release sites for ids 12-32 absent with their switches"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
-     "kind": "qualification-record",
-     "file": "research/private/remc2-unity-native/LEVEL1-READINESS.md",
-     "test": "readiness: every reachable mission sound tied to its remc2 emitter",
-     "command": "none (documentation record, not executable evidence)",
-     "non_executable": true,
-     "proves": "record only: readiness: every reachable mission sound tied to its remc2 emitter"
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_world::tests::level_one_package_excludes_the_family_four_periodic_sound_branch",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked level_one_package_excludes_the_family_four_periodic_sound_branch",
+     "proves": "the only generic periodic emitter outside Level 1 is package-grounded and production-negative"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "tests::mission_audio_census_is_unique_complete_and_compiler_bound",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked mission_audio_census_is_unique_complete_and_compiler_bound",
+     "proves": "every census row is unique, metadata-complete, and compiler-bound to a production event constructor"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::castle_defense_first_shot_audio_covers_every_profile_and_second_shots_are_silent",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked castle_defense_first_shot_audio_covers_every_profile_and_second_shots_are_silent",
+     "proves": "all five first-shot sound IDs emit from the Castle root before the typed shot and repeat shots stay silent"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::exit_audio_uses_the_matched_player_while_non_audio_switches_stay_silent",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked exit_audio_uses_the_matched_player_while_non_audio_switches_stay_silent",
+     "proves": "model-0 groups 12-32 and objective model/action 32 are silent; immediate and action-12 exit sounds are source-ordered, player-emitted, and RNG-neutral"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_v2::tests::goat_sound_46_peeks_the_slot_102_stored_rng_without_consuming_it",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked goat_sound_46_peeks_the_slot_102_stored_rng_without_consuming_it",
+     "proves": "Goat sound-46 exact stored/nonstored pitch and play-if-not-playing command"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_v2::tests::session_audio_sidecar_is_keyed_to_event_generation_and_cleared_on_reset",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked session_audio_sidecar_is_keyed_to_event_generation_and_cleared_on_reset",
+     "proves": "reachable emitter sidecars preserve source snapshot, pitch family, generation, and reset lifecycle"
+    },
+    {
+     "kind": "python-test",
+     "file": "research/private/remc2-sim-rs/tools/test_validate_level1_matrix.py",
+     "test": "test_validate_level1_matrix.Level1MatrixValidatorTests.test_audio_ledger_mutations_are_rejected",
+     "command": "cd research/private/remc2-sim-rs && python -m unittest tools.test_validate_level1_matrix.Level1MatrixValidatorTests.test_audio_ledger_mutations_are_rejected",
+     "proves": "fresh 119-call extraction, actual function boundaries, accepted 46/73 partition, exclusion-registry closure, compiled tag-to-occurrence ownership, and fail-closed mutation rejection"
     }
    ],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-26",
+   "negative_coverage_required": [
+    "model-0 group switches 12-32 emit no sound",
+    "objective model/action 32 emits no sound",
+    "exit sound release does not advance global RNG",
+    "family-4 periodic sound is excluded by EXC-C15-FAMILIES"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -15537,7 +15748,7 @@
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
     "symbols": [
-     "sim-capi v2 exports (49)"
+     "sim-capi v2 exports (50)"
     ],
     "path": "remc2/engine/EventsFunctions.cpp",
     "lines": "n/a (implementation boundary; source-shaped payloads)",
@@ -15799,7 +16010,7 @@
    "id": "PRS-002",
    "subsystem": "presentation-abi",
    "family": "hud-minimap",
-   "title": "Minimap, HUD, objective textbox, palette sidecar",
+   "title": "Minimap, HUD, objective textbox, notifications, palette sidecar",
    "reachability": {
     "status": "reachable",
     "chain": "every rendered frame"
@@ -15808,23 +16019,37 @@
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
     "symbols": [
      "DrawMinimapEntities_B_61A00",
-     "HSPRN/TABLESN/HFONT3 draws"
+     "HSPRN/TABLESN/HFONT3 draws",
+     "DrawAndEventsInGame_47560",
+     "PresentObjective_59820",
+     "PlayEntitySounds_6E150",
+     "DrawTextPauseEndOfLevel_2CE30",
+     "sub_6DC40_improve_ability"
     ],
-    "path": "remc2/engine/GameUI.cpp",
-    "lines": "minimap/HUD regions",
+    "path": "remc2/engine/GameUI.cpp + remc2/engine/EventsFunctions.cpp",
+    "lines": "GameUI minimap/HUD regions; EventsFunctions.cpp:22062-22195,31796-32095,40957-41064,44061-44069,44343-44500 pinned",
     "dispatch": null
    },
    "preconditions": [],
    "behavior_ordered": [
-    "night-map classifier filters/colors/phases/anchors; single-player reveal rules; textbox 33-turn timing and draw order; palette RGB6 rules"
+    "exact scope is the fail-closed selected normalized preservation profile: outdoor Night map, one populated local player, ordinary/non-secret objective, no-CD/speech-disabled branch; selection is explicit rather than inferred from host or package state",
+    "night-map classifier filters/colors/phases/anchors; single-player reveal rules; objective phase is retained until the palette gate, textbox installs 200 then decrements once per outer frame, and palette RGB6 rules remain authoritative",
+    "tier improvement notification state 5 formats localization template 159 with name selector 160+family, presents the resulting owner-data text, and decrements timer 200 to 199 on its first presentation frame",
+    "speech-enabled PresentObjective and CD speech lookup are explicitly outside this profile under EXC-OWNER-NO-CD-SPEECH"
    ],
    "implementation": {
     "rust": [
      "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs"
     ],
-    "capi": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs",
+     "research/private/remc2-sim-rs/crates/sim-capi/src/presentation_bridge.rs"
+    ],
     "unity": [
-     "research/private/remc2-unity-native"
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSim.cs",
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs",
+     "research/private/remc2-unity-native/Assets/Scripts/MagicCarpetRuntime.cs",
+     "research/private/remc2-unity-native/Assets/Scripts/OwnerAudioPresentation.cs"
     ],
     "absent": false
    },
@@ -15841,8 +16066,8 @@
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
-     "test": "level1_mission::tests::objective_textbox_clock_matches_source_outer_turn_order",
-     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked objective_textbox_clock_matches_source_outer_turn_order",
+     "test": "level1_mission::tests::objective_presentation_gate_and_textbox_clock_match_unpaused_outer_turn_order",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked objective_presentation_gate_and_textbox_clock_match_unpaused_outer_turn_order",
      "proves": "textbox clock"
     },
     {
@@ -15851,6 +16076,34 @@
      "test": "level1_mission::tests::level_one_hit_slowing_and_objective_palettes_preserve_rgb6_integer_rules",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked level_one_hit_slowing_and_objective_palettes_preserve_rgb6_integer_rules",
      "proves": "palette"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_v2::tests::paused_native_steps_store_only_the_pre_gate_update_rng_draw",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked paused_native_steps_store_only_the_pre_gate_update_rng_draw",
+     "proves": "paused native frames preserve the source pre-gate RNG service while simulation tick and state remain frozen"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_v2::tests::paused_objective_sound_stays_prepared_until_the_first_unpaused_pool_flush",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked paused_objective_sound_stays_prepared_until_the_first_unpaused_pool_flush",
+     "proves": "objective presentation sound is prepared during pause and enters the first unpaused source-pool flush exactly once"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_v2::tests::presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed",
+     "command": "cd research/private/remc2-sim-rs && MC_OWNER_ASSET_CACHE=../generated/level1-unity-asset-cache-plan28-cp4-correction2 cargo test --workspace --locked presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed",
+     "proves": "the production owner-cache bridge formats the state-5 tier-improvement text from selectors 159 and 160+family and returns timer feedback 200 to 199"
+    },
+    {
+     "kind": "unity-test",
+     "file": "research/private/remc2-unity-native/Assets/Tests/EditMode/NativeSessionEditModeTests.cs",
+     "test": "MagicCarpet.Native.Tests.NativeSessionEditModeTests.PresentationFrameOwnsOneIndexedPlaneAndZeroManagedDuplicates",
+     "command": "Unity EditMode test filter MagicCarpet.Native.Tests.NativeSessionEditModeTests.PresentationFrameOwnsOneIndexedPlaneAndZeroManagedDuplicates",
+     "proves": "presentation ownership remains one indexed native plane with zero managed duplicate submissions"
     }
    ],
    "negative_coverage_required": [],
@@ -15984,12 +16237,53 @@
   },
   {
    "id": "EXC-C10-REST",
-   "scope": "class 10 remaining slots (3,4,7-11,15,17-28,30-40,43,46-51 except listed,54-57,60,61,63,66-69,71-76,78-97 except listed)",
+   "scope": "class 10 remaining slots (3,4,7-11,15,17-28,30-40,43,46-51 except listed,54-57,60-63,66-69,71-76,78-97 except listed)",
    "description": "Effect slots with no Level 1 spawner",
    "mechanical_proof": "each slot's creators are spell carriers or handlers excluded above (non-enabled spells: volcano, meteor, crater, lightning, gravity well, tremor, whirlwind, magic mine, cave-in, teleport, summon army, alliance, metamorph, duel, steal-mana) or cave-only commands (Level 1 is an outdoor Night map); conditional slots 6/16/35/38/59/70 are tracked in DSP-10-COND pending mechanical spawner scan",
    "source_anchors": [
     "class-15 exclusion above",
     "map type Night outdoor (owner manifest)"
+   ],
+   "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+  },
+  {
+   "id": "EXC-HOST-PLATFORM-TRAMPOLINE",
+   "scope": "non-Linux/non-Apple generic NewEvent address trampoline",
+   "description": "Platform-specific fallback sound preparation omitted by the selected Linux x64 build",
+   "mechanical_proof": "Events.cpp line 3922 is in the #else branch of defined(__linux__) || defined(__APPLE__); the selected Linux x64 target compiles the diagnostic #if branch and cannot compile or execute this call",
+   "source_anchors": [
+    "Events.cpp:3893-3923 pinned"
+   ],
+   "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+  },
+  {
+   "id": "EXC-L1-OBJECTIVE-SOUND41-PROFILE",
+   "scope": "speech-enabled phase-7 or secret-objective PresentObjective sound-41 label",
+   "description": "Objective presentation branch outside the selected ordinary/non-secret speech-off profile",
+   "mechanical_proof": "the shared label at line 41058 has only two incoming branches: speech-enabled objective phase 7 or speech-off secret objective byte_0x36E0B bit 0; the explicitly selected normalized profile is speech-off and ordinary/non-secret",
+   "source_anchors": [
+    "EventsFunctions.cpp:41019-41064 pinned"
+   ],
+   "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+  },
+  {
+   "id": "EXC-L1-OUTDOOR-CAVE-AUDIO",
+   "scope": "cave-only global ambience and balloon sound branches",
+   "description": "Audio calls gated out by the explicitly selected outdoor Night profile",
+   "mechanical_proof": "sub_5D530 line 59847 requires terrain_2FECE.MapType == MapType_t::Cave; sub_60D50 line 61952 is reached only from AddBallon_60AB0's isCaveLevel_D41B6 branch; the selected profile is outdoor",
+   "source_anchors": [
+    "EventsFunctions.cpp:59847 pinned",
+    "EventsFunctions.cpp:61952 pinned"
+   ],
+   "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+  },
+  {
+   "id": "EXC-OWNER-NO-CD-SPEECH",
+   "scope": "speech-enabled/CD-backed objective presentation",
+   "description": "Speech branch excluded by the explicitly selected speech-off/no-CD normalized profile",
+   "mechanical_proof": "PresentObjective line 41019 is reached only from its speech-enabled state-8 branch; runtime profile selection is explicit and fail-closed rather than inferred from host or package state",
+   "source_anchors": [
+    "EventsFunctions.cpp:41004-41020 pinned"
    ],
    "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"
   },
@@ -16340,7 +16634,6 @@
     "any seeker acquisition order remains unproven"
    ],
    "owned_rows": [
-    "DSP-10-86",
     "TGT-001"
    ]
   },
@@ -16480,13 +16773,13 @@
   },
   {
    "id": "PLAN-26",
-   "title": "Global RNG draw-order census and goat sound-pitch qualification",
+   "title": "Global RNG draw-order and exhaustive mission-audio census qualification",
    "depends_on": [
     "PLAN-18",
     "PLAN-13"
    ],
    "acceptance": [
-    "ordered per-turn draw list documented and asserted; goat sound-46 pitch value qualified; global RNG admitted into live_world_hash"
+    "ordered per-turn draw list documented and asserted; goat sound-46 pitch value qualified; global RNG admitted into live_world_hash; every source-reachable periodic holder is projected from the ordinary Level 1 session"
    ],
    "allowed_surfaces": [
     "sim-core"
@@ -16494,11 +16787,7 @@
    "not_done_if": [
     "RNG stays excluded from the live hash"
    ],
-   "owned_rows": [
-    "AUD-002",
-    "RNG-001",
-    "SCH-004"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-27",
@@ -16574,7 +16863,9 @@
     "any Exact row lacks a resolvable executable binding",
     "gates pass only in a warm workspace"
    ],
-   "owned_rows": []
+   "owned_rows": [
+    "DSP-10-86"
+   ]
   }
  ],
  "validator_contract": {
@@ -16614,6 +16905,10 @@
    {
     "id": "dispatch-census",
     "rule": "slot_to_row and slot_to_exclusion are disjoint, union to slots (845); every mapped row/exclusion ID exists"
+   },
+   {
+    "id": "audio-call-ledger",
+    "rule": "all 119 pinned PrepareEventSound occurrences freshly re-extract with real function boundaries; 46 reachable tags bind bijectively to production SourceAudioCallTag markers; 73 exclusions resolve to this registry; accepted selected profile is explicit"
    }
   ]
  }

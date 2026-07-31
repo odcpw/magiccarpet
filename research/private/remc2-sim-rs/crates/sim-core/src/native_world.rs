@@ -111,6 +111,10 @@ const CP4_CORRECTION2_CACHE_MANIFEST_SHA256: &str =
     "3909be6b29c1f879208f0a15ec2bccee58d65311cefd6698f0870d16c9742a8d";
 const CP4_CORRECTION2_CACHE_CONTENT_SHA256: &str =
     "ee063ce1d5f804c8efc412dff2bedb0800d6fd347b38a6d0376e2a2e4dccd9dc";
+const CP4_CORRECTION6_CACHE_MANIFEST_SHA256: &str =
+    "474d4b24c157896ce98f0a8baa1593f98762fc314f081600c44a94f97743fad8";
+const CP4_CORRECTION6_CACHE_CONTENT_SHA256: &str =
+    "a1dc7c3fca20da019807093530c601b872c3d81284a19d17d5e1aa1bccafd752";
 const RESET_SCHEMA: &str = "mc2-flight-reset-projection/v1";
 const ENTITY_COUNT: usize = 1_000;
 const ENTITY_COUNT_U32: u32 = 1_000;
@@ -1782,6 +1786,8 @@ pub struct RuntimeSnapshot {
     pub player_count: u8,
     pub maptype_music: i32,
     pub stage_index: u8,
+    /// `byte_0x36E02`, consumed by remc2's objective-presentation service.
+    pub objective_presentation_phase: u8,
     /// Remaining objective-textbox presentation ticks. The atlas identifies
     /// source byte `byte_counter_current_objective_box_0x36E04` as a countdown,
     /// not an objective row selector.
@@ -2111,6 +2117,8 @@ impl NativeWorld {
                 &initial_building_blockers,
                 &initial_possession_targets,
                 &initial_source_collision_targets,
+                runtime.objective_presentation_phase,
+                runtime.objective_textbox_ticks,
                 cache_assets.castle_stage_one_footprint,
             )
             .map_err(NativeWorldError::new)?;
@@ -4400,7 +4408,8 @@ fn parse_runtime(bytes: &[u8]) -> Result<RuntimeSnapshot> {
         player_count: u8::try_from(player_count).expect("validated player count"),
         maptype_music: read_i32(bytes, 32, "runtime maptype music")?,
         stage_index: read_u8(bytes, 65, "runtime stage index")?,
-        objective_textbox_ticks: read_u8(bytes, 70, "runtime objective textbox ticks")?,
+        objective_presentation_phase: read_u8(bytes, 67, "runtime objective presentation phase")?,
+        objective_textbox_ticks: read_u8(bytes, 69, "runtime objective textbox ticks")?,
         stages: stages.into_boxed_slice(),
         stage_variables: stage_variables.into_boxed_slice(),
         objectives: objectives.into_boxed_slice(),
@@ -5222,6 +5231,7 @@ fn append_level_one_cache_assets(
             | CP4_CACHE_MANIFEST_SHA256
             | CP4_CORRECTION1_CACHE_MANIFEST_SHA256
             | CP4_CORRECTION2_CACHE_MANIFEST_SHA256
+            | CP4_CORRECTION6_CACHE_MANIFEST_SHA256
     ) {
         return Err(NativeWorldError::new(
             "owner audio cache manifest is not the qualified Level 1 manifest",
@@ -5246,6 +5256,10 @@ fn append_level_one_cache_assets(
             | (
                 CP4_CORRECTION2_CACHE_MANIFEST_SHA256,
                 CP4_CORRECTION2_CACHE_CONTENT_SHA256
+            )
+            | (
+                CP4_CORRECTION6_CACHE_MANIFEST_SHA256,
+                CP4_CORRECTION6_CACHE_CONTENT_SHA256
             )
     );
     if require_string(manifest, "schema", "audio cache manifest")? != AUDIO_CACHE_SCHEMA
@@ -6386,6 +6400,91 @@ mod tests {
     }
 
     #[test]
+    fn production_speed_sweeps_preserve_the_complete_quiet_reset_rng_schedule() {
+        use crate::level1_mission::GlobalRngSite;
+
+        let (package, closure) = fixture_paths();
+        let world = NativeWorld::load(package, closure).expect("validated package M");
+        for (speed_index, expected_passes) in [(0_u8, 1_u16), (1, 4), (2, 8)] {
+            let mut session = world.session();
+            session.mission.clear_global_rng_trace();
+            let evidence = session.step_with_speed_index(PlayerCommand::default(), speed_index);
+            let trace = session.mission.global_rng_trace();
+            assert_eq!(evidence.len(), usize::from(expected_passes));
+            assert_eq!(trace.len(), usize::from(expected_passes) * 10);
+            for pass_index in 0..expected_passes {
+                let pass = &trace[usize::from(pass_index) * 10..usize::from(pass_index + 1) * 10];
+                assert_eq!(
+                    pass.iter()
+                        .map(|entry| entry.pass_index)
+                        .collect::<Vec<_>>(),
+                    vec![pass_index; 10],
+                    "no draw may escape or enter scheduled pass {pass_index}"
+                );
+                assert_eq!(
+                    pass.iter()
+                        .map(|entry| entry.source_slot)
+                        .collect::<Vec<_>>(),
+                    [0_u16, 113, 114, 115, 116, 117, 118, 119, 120, 121]
+                );
+                assert_eq!(pass[0].site, GlobalRngSite::UpdateEntities);
+                assert!(
+                    pass[1..]
+                        .iter()
+                        .all(|entry| entry.site == GlobalRngSite::Model60Smoke)
+                );
+            }
+            assert_eq!(trace[0].before, 0xad6e_67d9);
+            assert_eq!(
+                trace[..10]
+                    .iter()
+                    .map(|entry| entry.after)
+                    .collect::<Vec<_>>(),
+                [
+                    0x9909_f858,
+                    0xa631_b437,
+                    0x829a_3776,
+                    0xd2c9_9e15,
+                    0xeb07_8414,
+                    0xde4d_0573,
+                    0xa334_be32,
+                    0x0eea_ca51,
+                    0x661c_c5d0,
+                    0x43e9_ccaf,
+                ]
+            );
+            for (index, entry) in trace.iter().enumerate() {
+                assert_eq!(
+                    entry.after,
+                    entry.before.wrapping_mul(9_377).wrapping_add(9_439)
+                );
+                if let Some(next) = trace.get(index + 1) {
+                    assert_eq!(next.before, entry.after);
+                }
+            }
+            assert_eq!(
+                (
+                    session.mission.objective_presentation_palette_mod,
+                    session.mission.objective_presentation_phase,
+                    session.mission.objective_textbox_ticks,
+                ),
+                (2, 1, 0),
+                "speed index {speed_index} advances presentation once, not once per entity pass"
+            );
+            session.step_with_speed_index(PlayerCommand::default(), speed_index);
+            assert_eq!(
+                (
+                    session.mission.objective_presentation_palette_mod,
+                    session.mission.objective_presentation_phase,
+                    session.mission.objective_textbox_ticks,
+                ),
+                (3, 0, 200),
+                "speed index {speed_index} services initial objective once on the second outer frame"
+            );
+        }
+    }
+
+    #[test]
     fn package_m_loads_the_exact_native_world() {
         let (package, closure) = fixture_paths();
         let world = NativeWorld::load(package, closure).expect("validated package M");
@@ -6414,7 +6513,8 @@ mod tests {
         );
         assert_eq!(world.players.len(), 8);
         assert_eq!(world.asset_refs.len(), 76);
-        assert_eq!(world.runtime.objective_textbox_ticks, 33);
+        assert_eq!(world.runtime.objective_presentation_phase, 1);
+        assert_eq!(world.runtime.objective_textbox_ticks, 0);
         assert_eq!(world.runtime.objectives.len(), 8);
         assert_eq!(
             world.runtime.objectives[0],
@@ -7660,6 +7760,85 @@ mod tests {
         first.reset();
         assert_eq!(first.state, *world.reset_state());
         assert_eq!(first.context, world.session_context());
+    }
+
+    #[test]
+    fn level_one_package_excludes_the_family_four_periodic_sound_branch() {
+        let (package, closure) = fixture_paths();
+        let world = NativeWorld::load(package, closure).expect("validated package M");
+        let player = &world.players[usize::from(world.runtime.local_player_slot)];
+        assert_eq!(player.enabled_spell_holders[4], 0);
+        assert_eq!(
+            world
+                .entities
+                .iter()
+                .filter(|entity| entity.active && entity.class == 15)
+                .map(|entity| entity.model)
+                .collect::<Vec<_>>(),
+            [0, 1],
+            "the canonical Level 1 package exposes only Fireball and Possession holders"
+        );
+
+        let mut session = world.session();
+        assert_eq!(
+            session
+                .context
+                .spell_fire
+                .as_ref()
+                .unwrap()
+                .enabled_holder_indices[4],
+            0
+        );
+        assert_eq!(
+            session
+                .context
+                .effects
+                .as_ref()
+                .unwrap()
+                .periodic_spell_effect,
+            None
+        );
+        session.state.entity_phase = 0;
+        session.step(PlayerCommand::default());
+        assert!(session.context.events.iter().all(|event| !matches!(
+            event,
+            crate::FlightEvent::PrepareSound {
+                audio_site: crate::MissionAudioSite::PeriodicSpellExcluded,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn native_session_dispatches_an_ordinary_castle_defender_from_action_zero_to_one() {
+        let (package, closure) = fixture_paths();
+        let world = NativeWorld::load(package, closure).expect("validated package M");
+        let mut session = world.session();
+        let controller_slot = session
+            .mission
+            .spawn_castle_defense_controller(
+                Position {
+                    x: 100 << 8,
+                    y: 100 << 8,
+                    z: 384,
+                },
+                session.state.entity_index,
+            )
+            .expect("ordinary Level 1 source pool has a controller slot");
+        assert_eq!(
+            session.mission.castle_defense_controllers()[0].action_state,
+            0
+        );
+
+        session.step(PlayerCommand::default());
+
+        let controller = session
+            .mission
+            .castle_defense_controllers()
+            .iter()
+            .find(|controller| controller.source_entity_index == controller_slot)
+            .unwrap();
+        assert_eq!(controller.action_state, 1);
     }
 
     #[test]

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import collections
+import hashlib
 import json
 import os
 import re
@@ -29,6 +30,7 @@ EXPECTED_CHECK_IDS = {
     "plan-acyclic",
     "authored-census",
     "dispatch-census",
+    "audio-call-ledger",
 }
 CLASSIFICATIONS = {"Exact", "Partial", "Missing", "Wrong", "Unproved"}
 CONFIDENCE_LEVELS = {"high", "medium", "low"}
@@ -43,6 +45,16 @@ CSHARP_TEST_RE = re.compile(
     re.MULTILINE,
 )
 REPO_ROOT = Path(__file__).resolve().parents[4]
+SIM_WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
+AUDIO_LEDGER_PATH = (
+    SIM_WORKSPACE_ROOT / "level1-conformance" / "remc2-audio-call-ledger.json"
+)
+AUDIO_SOURCE_PATHS = (
+    "remc2/engine/EventsFunctions.cpp",
+    "remc2/engine/GameUI.cpp",
+    "remc2/engine/Events.cpp",
+)
+AUDIO_TARGET = "PrepareEventSound_6E450"
 
 ROOT_KEYS = {
     "schema",
@@ -172,6 +184,248 @@ def load_matrix(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         fail(f"{path}: cannot load canonical JSON: {error}")
     return expect_object(value, "$")
+
+
+def mask_cpp_noncode(text: str) -> str:
+    """Preserve offsets/newlines while masking C++ comments and literals."""
+    output = list(text)
+    index = 0
+    state = "code"
+    while index < len(text):
+        char = text[index]
+        following = text[index + 1] if index + 1 < len(text) else ""
+        if state == "code":
+            if char == "/" and following == "/":
+                output[index] = output[index + 1] = " "
+                index += 2
+                state = "line"
+                continue
+            if char == "/" and following == "*":
+                output[index] = output[index + 1] = " "
+                index += 2
+                state = "block"
+                continue
+            if char == '"':
+                output[index] = " "
+                state = "string"
+            elif char == "'":
+                output[index] = " "
+                state = "char"
+        elif state == "line":
+            if char == "\n":
+                state = "code"
+            else:
+                output[index] = " "
+        elif state == "block":
+            if char == "*" and following == "/":
+                output[index] = output[index + 1] = " "
+                index += 2
+                state = "code"
+                continue
+            if char != "\n":
+                output[index] = " "
+        else:
+            quote = '"' if state == "string" else "'"
+            if char == "\\":
+                output[index] = " "
+                if index + 1 < len(text):
+                    if text[index + 1] != "\n":
+                        output[index + 1] = " "
+                    index += 2
+                    continue
+            if char == quote:
+                state = "code"
+            if char != "\n":
+                output[index] = " "
+        index += 1
+    return "".join(output)
+
+
+def matching_cpp_paren(masked: str, open_offset: int) -> int:
+    depth = 0
+    for index in range(open_offset, len(masked)):
+        if masked[index] == "(":
+            depth += 1
+        elif masked[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    fail(f"pinned remc2 source has an unclosed parenthesis at offset {open_offset}")
+
+
+def cpp_function_starts(masked: str) -> list[tuple[int, str]]:
+    """Find real top-level definitions, including functions lacking IDA banners."""
+    starts: list[tuple[int, str]] = []
+    candidate = re.compile(
+        r"(?m)^(?:[A-Za-z_][\w:<>,]*[ \t*&]+)+"
+        r"(?P<name>[A-Za-z_~]\w*(?:::\w+)*)[ \t]*\("
+    )
+    for match in candidate.finditer(masked):
+        open_offset = masked.find("(", match.start(), match.end())
+        close_offset = matching_cpp_paren(masked, open_offset)
+        cursor = close_offset + 1
+        while cursor < len(masked) and masked[cursor].isspace():
+            cursor += 1
+        if masked.startswith("const", cursor):
+            cursor += len("const")
+            while cursor < len(masked) and masked[cursor].isspace():
+                cursor += 1
+        if cursor < len(masked) and masked[cursor] == "{":
+            starts.append((match.start(), match.group("name")))
+    return starts
+
+
+def enclosing_cpp_function(starts: list[tuple[int, str]], offset: int) -> str:
+    enclosing = "<file-scope-or-unknown>"
+    for start, symbol in starts:
+        if start > offset:
+            break
+        enclosing = symbol
+    return enclosing
+
+
+def normalize_cpp_expression(expression: str) -> str:
+    clean = mask_cpp_noncode(expression)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    clean = re.sub(r"\s*([(),;\[\]])\s*", r"\1", clean)
+    return re.sub(r"\s*(->|::)\s*", r"\1", clean)
+
+
+def split_cpp_arguments(masked: str, raw: str) -> list[str]:
+    cuts: list[int] = []
+    paren = bracket = brace = 0
+    for index, char in enumerate(masked):
+        if char == "(":
+            paren += 1
+        elif char == ")":
+            paren -= 1
+        elif char == "[":
+            bracket += 1
+        elif char == "]":
+            bracket -= 1
+        elif char == "{":
+            brace += 1
+        elif char == "}":
+            brace -= 1
+        elif char == "," and paren == bracket == brace == 0:
+            cuts.append(index)
+    bounds = [-1, *cuts, len(raw)]
+    return [raw[bounds[i] + 1 : bounds[i + 1]].strip() for i in range(len(bounds) - 1)]
+
+
+def cpp_preprocessor_contexts(text: str) -> dict[int, list[dict[str, str]]]:
+    result: dict[int, list[dict[str, str]]] = {}
+    stack: list[dict[str, str]] = []
+    for line_number, line in enumerate(text.splitlines(), 1):
+        stripped = line.lstrip()
+        if stripped.startswith(("#if ", "#ifdef ", "#ifndef ")):
+            kind, _, condition = stripped[1:].partition(" ")
+            stack.append(
+                {
+                    "kind": kind,
+                    "condition": condition.split("//", 1)[0].strip(),
+                    "branch": "if",
+                }
+            )
+        elif stripped.startswith("#elif ") and stack:
+            stack[-1] = {
+                "kind": "elif",
+                "condition": stripped[6:].split("//", 1)[0].strip(),
+                "branch": "elif",
+            }
+        elif stripped.startswith("#else") and stack:
+            stack[-1] = {**stack[-1], "branch": "else"}
+        elif stripped.startswith("#endif") and stack:
+            stack.pop()
+        result[line_number] = [dict(item) for item in stack]
+    return result
+
+
+def pinned_audio_source(path: str) -> str:
+    upstream = REPO_ROOT / "upstream" / "magic-carpet-2-hd"
+    command = [
+        "git",
+        "-C",
+        str(upstream),
+        "show",
+        f"{PINNED_REMC2_COMMIT}:{path}",
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        fail(f"cannot read pinned remc2 audio source {path}: {error}")
+    if completed.returncode != 0:
+        fail(f"cannot read pinned remc2 audio source {path}: {completed.stderr.strip()}")
+    return completed.stdout
+
+
+def extract_pinned_audio_calls() -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for path in AUDIO_SOURCE_PATHS:
+        text = pinned_audio_source(path)
+        masked = mask_cpp_noncode(text)
+        functions = cpp_function_starts(masked)
+        preprocessor = cpp_preprocessor_contexts(text)
+        file_ordinal = 0
+        cursor = 0
+        while True:
+            start = masked.find(AUDIO_TARGET, cursor)
+            if start < 0:
+                break
+            cursor = start + len(AUDIO_TARGET)
+            open_offset = cursor
+            while open_offset < len(masked) and masked[open_offset].isspace():
+                open_offset += 1
+            if open_offset >= len(masked) or masked[open_offset] != "(":
+                continue
+            close_offset = matching_cpp_paren(masked, open_offset)
+            file_ordinal += 1
+            line = text.count("\n", 0, start) + 1
+            symbol = enclosing_cpp_function(functions, start)
+            normalized = normalize_cpp_expression(text[start : close_offset + 1])
+            raw_inside = text[open_offset + 1 : close_offset]
+            masked_inside = masked[open_offset + 1 : close_offset]
+            arguments = split_cpp_arguments(masked_inside, raw_inside)
+            if len(arguments) != 3:
+                fail(f"{path}:{line}: expected three PrepareEventSound arguments")
+            records.append(
+                {
+                    "path": path,
+                    "enclosing_symbol": symbol,
+                    "file_ordinal_1based": file_ordinal,
+                    "symbol_ordinal_1based": 0,
+                    "pinned_line": line,
+                    "normalized_call_expression": normalized,
+                    "stable_occurrence_hash_sha256": "",
+                    "preprocessor_context": preprocessor[line],
+                    "entity_owner_expression": normalize_cpp_expression(arguments[0]),
+                    "auxiliary_owner_expression": normalize_cpp_expression(arguments[1]),
+                    "sound_expression": normalize_cpp_expression(arguments[2]),
+                }
+            )
+    ordinals: collections.Counter[tuple[str, str]] = collections.Counter()
+    for record in records:
+        key = (record["path"], record["enclosing_symbol"])
+        ordinals[key] += 1
+        record["symbol_ordinal_1based"] = ordinals[key]
+        identity = "\n".join(
+            (
+                record["path"],
+                record["enclosing_symbol"],
+                str(record["symbol_ordinal_1based"]),
+                record["normalized_call_expression"],
+            )
+        )
+        record["stable_occurrence_hash_sha256"] = hashlib.sha256(
+            identity.encode()
+        ).hexdigest()
+    return records
 
 
 def capture_cargo_test_inventory(workspace_root: Path) -> collections.Counter[str]:
@@ -939,6 +1193,359 @@ def validate_validator_contract(value: Any) -> None:
         )
 
 
+def validate_audio_call_ledger(
+    matrix: dict[str, Any],
+) -> dict[str, int]:
+    exclusions = {exclusion["id"]: exclusion for exclusion in matrix["exclusions"]}
+    exclusion_ids = set(exclusions)
+    row_ids = {row["id"] for row in matrix["rows"]}
+    slot_to_row = matrix["dispatch_census"]["slot_to_row"]
+    slot_to_exclusion = matrix["dispatch_census"]["slot_to_exclusion"]
+    ledger = load_matrix(AUDIO_LEDGER_PATH)
+    expect_keys(
+        ledger,
+        "audio ledger",
+        {
+            "schema",
+            "pinned_commit",
+            "target",
+            "ordinal_convention",
+            "hash_convention",
+            "counts",
+            "records",
+            "validation",
+            "classification_scope_profile",
+        },
+    )
+    for field in ("ordinal_convention", "hash_convention"):
+        expect_string(ledger[field], f"audio ledger.{field}")
+    if ledger.get("schema") != "plan26-remc2-prepare-event-sound-ledger-v1":
+        fail("audio ledger: unexpected schema")
+    if ledger.get("pinned_commit") != PINNED_REMC2_COMMIT:
+        fail("audio ledger: pinned commit differs from the matrix")
+    if ledger.get("target") != AUDIO_TARGET:
+        fail("audio ledger: unexpected source-call target")
+    profile = expect_object(
+        ledger.get("classification_scope_profile"),
+        "audio ledger.classification_scope_profile",
+    )
+    expect_keys(
+        profile,
+        "audio ledger.classification_scope_profile",
+        {"mission", "players", "map", "speech", "objective_kind", "host", "status"},
+    )
+    for field in profile:
+        expect_string(profile[field], f"audio ledger.classification_scope_profile.{field}")
+    if profile.get("status") != (
+        "accepted after independent writer/reviewer reconciliation; "
+        "extraction fields are mechanical"
+    ):
+        fail("audio ledger: classifications are not accepted closure evidence")
+    if profile.get("objective_kind") != "ordinary / non-secret":
+        fail("audio ledger: selected profile does not close the objective-kind axis")
+    if "selected normatively" not in str(profile.get("speech", "")):
+        fail("audio ledger: speech/CD profile must be selected normatively")
+    if AUDIO_LEDGER_PATH.stat().st_mode & 0o777 != 0o644:
+        fail("audio ledger: repository permissions must be 0644")
+
+    records = expect_array(ledger.get("records"), "audio ledger.records")
+    record_keys = {
+        "path",
+        "enclosing_symbol",
+        "file_ordinal_1based",
+        "symbol_ordinal_1based",
+        "pinned_line",
+        "normalized_call_expression",
+        "stable_occurrence_hash_sha256",
+        "preprocessor_context",
+        "entity_owner_expression",
+        "auxiliary_owner_expression",
+        "sound_expression",
+        "classification",
+        "dispatch_bindings",
+        "exclusion_registry_evidence",
+        "canonical_linux_x64_preprocessor_state",
+    }
+    for index, record_value in enumerate(records):
+        path = f"audio ledger.records[{index}]"
+        record = expect_keys(record_value, path, record_keys)
+        for field in (
+            "path",
+            "enclosing_symbol",
+            "normalized_call_expression",
+            "entity_owner_expression",
+            "auxiliary_owner_expression",
+            "sound_expression",
+            "canonical_linux_x64_preprocessor_state",
+        ):
+            expect_string(record[field], f"{path}.{field}")
+        for field in ("file_ordinal_1based", "symbol_ordinal_1based", "pinned_line"):
+            expect_int(record[field], f"{path}.{field}", minimum=1)
+        occurrence_hash = expect_string(
+            record["stable_occurrence_hash_sha256"],
+            f"{path}.stable_occurrence_hash_sha256",
+        )
+        if re.fullmatch(r"[0-9a-f]{64}", occurrence_hash) is None:
+            fail(f"{path}.stable_occurrence_hash_sha256: expected lowercase SHA-256")
+        for context_index, context_value in enumerate(
+            expect_array(record["preprocessor_context"], f"{path}.preprocessor_context")
+        ):
+            context_path = f"{path}.preprocessor_context[{context_index}]"
+            context = expect_keys(context_value, context_path, {"kind", "condition", "branch"})
+            for field in context:
+                expect_string(context[field], f"{context_path}.{field}")
+        classification = expect_keys(
+            record["classification"],
+            f"{path}.classification",
+            {
+                "disposition",
+                "proposed_distinct_production_tag",
+                "current_rust_tag",
+                "exclusion_id",
+                "producer_or_profile_proof",
+            },
+            {"mapping_warning"},
+        )
+        expect_string(
+            classification["producer_or_profile_proof"],
+            f"{path}.classification.producer_or_profile_proof",
+        )
+        disposition = expect_string(
+            classification["disposition"], f"{path}.classification.disposition"
+        )
+        if disposition not in {"reachable", "excluded"}:
+            fail(f"{path}.classification.disposition: expected reachable or excluded")
+        for field in ("proposed_distinct_production_tag", "exclusion_id"):
+            if classification[field] is not None:
+                expect_string(classification[field], f"{path}.classification.{field}")
+        current_tag = classification["current_rust_tag"]
+        if current_tag is not None:
+            if isinstance(current_tag, str):
+                expect_string(current_tag, f"{path}.classification.current_rust_tag")
+            else:
+                string_array(
+                    current_tag,
+                    f"{path}.classification.current_rust_tag",
+                    unique=True,
+                )
+                if not current_tag:
+                    fail(f"{path}.classification.current_rust_tag: array cannot be empty")
+        if "mapping_warning" in classification:
+            expect_string(
+                classification["mapping_warning"],
+                f"{path}.classification.mapping_warning",
+            )
+        for binding_index, binding_value in enumerate(
+            expect_array(record["dispatch_bindings"], f"{path}.dispatch_bindings")
+        ):
+            binding_path = f"{path}.dispatch_bindings[{binding_index}]"
+            binding = expect_keys(
+                binding_value,
+                binding_path,
+                {"slot", "rows", "exclusion", "semantic_label"},
+            )
+            expect_string(binding["slot"], f"{binding_path}.slot")
+            binding_rows = string_array(
+                binding["rows"], f"{binding_path}.rows", unique=True
+            )
+            if any(row_id not in row_ids for row_id in binding_rows):
+                fail(f"{binding_path}.rows: unknown matrix row")
+            if binding["exclusion"] is not None:
+                expect_string(binding["exclusion"], f"{binding_path}.exclusion")
+                if binding["exclusion"] not in exclusion_ids:
+                    fail(f"{binding_path}.exclusion: unknown exclusion")
+            expect_string(binding["semantic_label"], f"{binding_path}.semantic_label")
+            slot = binding["slot"]
+            if slot not in slot_to_row and slot not in slot_to_exclusion:
+                fail(f"{binding_path}.slot: unknown dispatch-census slot")
+            if binding_rows != slot_to_row.get(slot, []):
+                fail(f"{binding_path}.rows: disagrees with dispatch census")
+            if binding["exclusion"] != slot_to_exclusion.get(slot):
+                fail(f"{binding_path}.exclusion: disagrees with dispatch census")
+        evidence = record["exclusion_registry_evidence"]
+        if evidence is not None:
+            evidence_path = f"{path}.exclusion_registry_evidence"
+            evidence = expect_keys(
+                evidence,
+                evidence_path,
+                {"id", "scope", "description", "mechanical_proof", "source_anchors", "commit"},
+            )
+            for field in ("id", "scope", "description", "mechanical_proof", "commit"):
+                expect_string(evidence[field], f"{evidence_path}.{field}")
+            string_array(evidence["source_anchors"], f"{evidence_path}.source_anchors")
+            if evidence["commit"] != PINNED_REMC2_COMMIT:
+                fail(f"{evidence_path}.commit: expected pinned remc2 commit")
+            if evidence["id"] != classification["exclusion_id"]:
+                fail(f"{evidence_path}.id: does not match the record exclusion")
+            if evidence != exclusions.get(evidence["id"]):
+                fail(f"{evidence_path}: does not exactly match the matrix registry")
+
+    validation = expect_keys(
+        ledger["validation"],
+        "audio ledger.validation",
+        {
+            "expected_total",
+            "expected_by_path",
+            "fresh_extraction_set_equality_basis",
+            "all_classified",
+            "unclassified_keys",
+        },
+    )
+    if validation["expected_total"] != 119:
+        fail("audio ledger.validation.expected_total: expected 119")
+    if validation["expected_by_path"] != {
+        "remc2/engine/EventsFunctions.cpp": 117,
+        "remc2/engine/GameUI.cpp": 1,
+        "remc2/engine/Events.cpp": 1,
+    }:
+        fail("audio ledger.validation.expected_by_path: expected 117+1+1")
+    expect_string(
+        validation["fresh_extraction_set_equality_basis"],
+        "audio ledger.validation.fresh_extraction_set_equality_basis",
+    )
+    if validation["all_classified"] is not True or validation["unclassified_keys"] != []:
+        fail("audio ledger.validation: accepted ledger must have zero unclassified calls")
+    fresh = extract_pinned_audio_calls()
+    mechanical_fields = tuple(fresh[0])
+    if len(records) != len(fresh):
+        fail(f"audio ledger: expected {len(fresh)} source calls, got {len(records)}")
+    for index, (record, expected) in enumerate(zip(records, fresh, strict=True)):
+        actual_mechanical = {field: record.get(field) for field in mechanical_fields}
+        if actual_mechanical != expected:
+            fail(
+                "audio ledger: fresh pinned extraction disagrees at record "
+                f"{index + 1} ({expected['path']}:{expected['pinned_line']})"
+            )
+
+    expected_by_path = collections.Counter(record["path"] for record in fresh)
+    if expected_by_path != collections.Counter(
+        {
+            "remc2/engine/EventsFunctions.cpp": 117,
+            "remc2/engine/GameUI.cpp": 1,
+            "remc2/engine/Events.cpp": 1,
+        }
+    ):
+        fail("audio ledger: pinned denominator changed from 117+1+1")
+    dispositions = collections.Counter(
+        expect_object(record.get("classification"), f"audio ledger.records[{index}]")
+        .get("disposition")
+        for index, record in enumerate(records)
+    )
+    if dispositions != {"reachable": 46, "excluded": 73}:
+        fail(
+            "audio ledger: accepted classification partition must be "
+            "46 reachable / 73 excluded"
+        )
+    reachable_tags: list[str] = []
+    for index, record in enumerate(records):
+        classification = expect_object(
+            record["classification"], f"audio ledger.records[{index}].classification"
+        )
+        if classification["disposition"] == "reachable":
+            if record["exclusion_registry_evidence"] is not None:
+                fail(f"audio ledger: reachable record {index + 1} claims exclusion evidence")
+            tag = classification.get("proposed_distinct_production_tag")
+            if not isinstance(tag, str) or not tag.startswith("SourceAudioCallTag::"):
+                fail(f"audio ledger: reachable record {index + 1} has no source-call tag")
+            if classification.get("exclusion_id") is not None:
+                fail(f"audio ledger: reachable record {index + 1} names an exclusion")
+            reachable_tags.append(tag.removeprefix("SourceAudioCallTag::"))
+        else:
+            if record["exclusion_registry_evidence"] is None:
+                fail(f"audio ledger: excluded record {index + 1} lacks registry evidence")
+            exclusion_id = classification.get("exclusion_id")
+            if exclusion_id not in exclusion_ids:
+                fail(
+                    f"audio ledger: excluded record {index + 1} has unknown "
+                    f"exclusion {exclusion_id!r}"
+                )
+            if classification.get("proposed_distinct_production_tag") is not None:
+                fail(f"audio ledger: excluded record {index + 1} retains a source tag")
+        expected_platform_state = (
+            "active (no local conditional directive)"
+            if not record["preprocessor_context"]
+            else "inactive (#else of defined(__linux__) || defined(__APPLE__))"
+        )
+        if record["canonical_linux_x64_preprocessor_state"] != expected_platform_state:
+            fail(
+                f"audio ledger: record {index + 1} platform state disagrees with "
+                "its pinned preprocessor context"
+            )
+    if len(reachable_tags) != len(set(reachable_tags)):
+        fail("audio ledger: reachable source-call tags are not one-to-one")
+
+    core_root = SIM_WORKSPACE_ROOT / "crates" / "sim-core" / "src"
+    lib_source = (core_root / "lib.rs").read_text(encoding="utf-8")
+    enum_match = re.search(
+        r"pub enum SourceAudioCallTag\s*\{(?P<body>.*?)\n\}",
+        lib_source,
+        re.DOTALL,
+    )
+    if enum_match is None:
+        fail("audio ledger: SourceAudioCallTag enum is missing")
+    enum_tags = [
+        line.strip().removesuffix(",")
+        for line in enum_match.group("body").splitlines()
+        if line.strip()
+    ]
+    if set(reachable_tags) != set(enum_tags) or len(enum_tags) != 46:
+        fail("audio ledger: ledger tags and SourceAudioCallTag enum are not bijective")
+    binding_match = re.search(
+        r"pub const SOURCE_AUDIO_CALL_BINDINGS:.*?=\s*\[(?P<body>.*?)\n\];",
+        lib_source,
+        re.DOTALL,
+    )
+    if binding_match is None:
+        fail("audio ledger: compiled source occurrence binding table is missing")
+    compiled_bindings = dict(
+        re.findall(
+            r"SourceAudioCallTag::(\w+)\s*,\s*\"([0-9a-f]{64})\"",
+            binding_match.group("body"),
+        )
+    )
+    ledger_bindings = {
+        record["classification"]["proposed_distinct_production_tag"].removeprefix(
+            "SourceAudioCallTag::"
+        ): record["stable_occurrence_hash_sha256"]
+        for record in records
+        if record["classification"]["disposition"] == "reachable"
+    }
+    if compiled_bindings != ledger_bindings or len(compiled_bindings) != 46:
+        fail("audio ledger: compiled tag-to-occurrence ownership map disagrees")
+    all_impl = re.compile(
+        r"#\[cfg\(test\)\]\s*impl SourceAudioCallTag\s*\{.*?\n\}", re.DOTALL
+    )
+    production_lib = all_impl.sub("", lib_source)
+    production_lib = production_lib.replace(binding_match.group(0), "")
+    production_sources = [production_lib]
+    production_sources.extend(
+        (core_root / filename).read_text(encoding="utf-8")
+        for filename in ("goat.rs", "level1_mission.rs", "spell_activation.rs")
+    )
+    production_text = "\n".join(production_sources)
+    for tag in enum_tags:
+        count = len(re.findall(rf"\bSourceAudioCallTag::{re.escape(tag)}\b", production_text))
+        if count != 1:
+            fail(
+                f"audio ledger: source-call tag {tag!r} has {count} production bindings, "
+                "expected exactly one"
+            )
+    counts = expect_object(ledger.get("counts"), "audio ledger.counts")
+    expected_counts = {
+        "total": 119,
+        "by_path": dict(expected_by_path),
+        "unique_occurrence_hashes": 119,
+        "unique_keys": 119,
+        "reachable": 46,
+        "excluded": 73,
+        "unclassified": 0,
+        "classification_ids_unique_per_reachable_occurrence": 46,
+    }
+    if counts != expected_counts:
+        fail("audio ledger: stored counts do not equal the accepted recomputed counts")
+    return {"audio_calls": 119, "audio_reachable_calls": 46, "audio_excluded_calls": 73}
+
+
 def validate_document(
     document: Any,
     inventory: collections.Counter[str],
@@ -1000,7 +1607,10 @@ def validate_file(
     matrix_path: Path,
     inventory: collections.Counter[str],
 ) -> dict[str, int | bool]:
-    return validate_document(load_matrix(matrix_path), inventory)
+    document = load_matrix(matrix_path)
+    summary = validate_document(document, inventory)
+    summary.update(validate_audio_call_ledger(document))
+    return summary
 
 
 def parse_args(arguments: list[str]) -> argparse.Namespace:

@@ -75,7 +75,8 @@ finished.
   scaled 640×480 owner HUD reference: Night MSPRN panels, live life/mana
   bars, live Fireball/Possess/Castle/Speed icons 123–126, the source 2×13
   Control-held hand-assignment menu, source-mapped
-  objective selectors 48–53 using HFONT3 and HSPRN 171/172/173, task
+  five objective selectors 48–52 plus completion selector 53 using HFONT3
+  and HSPRN 171/172/173, task
   guidance, player-death/restart, departure, fade, and completion state.
   Each objective box uses its exact source layout and 33-turn clock, blends
   the live indexed world through TABLESN selector 61, then overwrites text
@@ -105,6 +106,16 @@ finished.
   37/39/43 all use the original shared ten-effect-voice pool.
   Positional commands arrive in a separate 88-byte sidecar; a missing or
   invalid sidecar is silent.
+  Sidecar action `0` means prepared but not yet passed through remc2's
+  `PlayEntitySounds` pool and must not be rendered. In the qualified
+  single-player/no-CD profile, pause retains those rows; the first unpaused
+  outer frame coalesces them with current rows. Ordinary audible winners carry
+  a non-zero u64 flush ID in `reserved[0..1]` (the minimum participating event
+  sequence) and a contiguous one-based
+  `pooledFlushRank`; Unity consumes winners in that order. An event that ages
+  out of the 4,096-row journal keeps its sidecar across arbitrary step backlog;
+  Unity explicitly releases every resolved row after consuming it. Reset
+  invalidates and clears all sidecars.
   Ambient loops start at volume zero, move one integer unit per 60 Hz callback
   toward targets 70/70/120/85, do not restart on repeated prepare events, and
   fade to zero on `EndLoop`. Their original loop count is -1: at zero they
@@ -242,8 +253,10 @@ Goat and villager TMAPs retain their complete four-frame delta streams. Rust
 owns the three Goat and twelve villager selector-global clocks, mutable
 indexed pixels, preceding-draw latches, wrap, reset, and unpaused service
 order. Native CPU draw admission supplies the feedback; unseen selectors
-freeze. Typed sound-46 requests still stay silent until the source numeric
-pitch is qualified. No presentation behavior is guessed.
+freeze. Typed sound-46 requests use the qualified source numeric pitch:
+slot 102 observes stored `0x9909f858`, peeks nonstored `0xa631b437`, and emits
+action-14 `+25` or other-action `+5` without changing authoritative RNG. No
+presentation behavior is guessed.
 
 Owner packages are never copied into `Assets`, `StreamingAssets`, or the built
 player. A player must receive paths explicitly:
@@ -252,7 +265,7 @@ player. A player must receive paths explicitly:
 -mc-qualified
 -mc-package /absolute/path/to/level1-export-m
 -mc-closure /absolute/path/to/level1-asset-closure.json
--mc-asset-cache /absolute/path/to/level1-unity-asset-cache-plan28-cp4-correction2
+-mc-asset-cache /absolute/path/to/level1-unity-asset-cache-plan28-cp4-correction6
 ```
 
 `MC_PACKAGE_PATH` and `MC_CLOSURE_PATH` are equivalent environment fallbacks.
@@ -265,11 +278,11 @@ optional only for the explicit `-mc-debug` fallback. Pass
 bindings, every size and SHA-256, and its aggregate content identity before
 accepting it. The cache remains external; raw DAT/TAB files are never loaded.
 The current qualified identity is 1,248 outputs, manifest SHA-256
-`3909be6b29c1f879208f0a15ec2bccee58d65311cefd6698f0870d16c9742a8d`
+`474d4b24c157896ce98f0a8baa1593f98762fc314f081600c44a94f97743fad8`
 and content SHA-256
-`ee063ce1d5f804c8efc412dff2bedb0800d6fd347b38a6d0376e2a2e4dccd9dc`.
+`a1dc7c3fca20da019807093530c601b872c3d81284a19d17d5e1aa1bccafd752`.
 Its `frame/source-frame-census.json` SHA-256 is
-`3ca66e8258fb239c51aa728d321029e2f5364b61d674abb3499e86c92f5f6e59`
+`57188c96853bfd9964c978c8ac9561fe69f69610d3e95aa3c7bbb0b2e5222722`
 and is part of the exact FINAL MAIN admission contract.
 
 TMAP actor selection and native indexed presentation are qualified and loaded.

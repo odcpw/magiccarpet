@@ -1,7 +1,9 @@
 //! Exact renderer-free reconstruction of remc2 `sub_5F660` and its two small
 //! state helpers (`sub_5F7B0`, `sub_5F7E0`).
 
-use crate::FlightEvent;
+#[cfg(test)]
+use crate::MissionAudioSite;
+use crate::{FlightEvent, SourceAudioCallTag, mark_source_audio_call};
 
 const DIRECTION_BITS: u32 = 0x0300;
 const POINTER_ACTION_BIT: u32 = 0x0020;
@@ -65,7 +67,7 @@ pub fn activate_spell(
         }
         2 if holder.active_value > 0 => {
             if !special_caster {
-                journal_mana_sound(caster, events);
+                journal_mana_sound(caster, events, SourceAudioCallTag::NotEnoughManaImmediate);
             }
             return false;
         }
@@ -89,7 +91,7 @@ pub fn activate_spell(
                     state: 6,
                 });
             }
-            journal_mana_sound(caster, events);
+            journal_mana_sound(caster, events, SourceAudioCallTag::NotEnoughManaFallback);
         }
         return false;
     }
@@ -110,8 +112,15 @@ fn clear_pointer_action(caster: &mut SpellCasterState, holder_model: u8) {
     }
 }
 
-fn journal_mana_sound(caster: &SpellCasterState, events: &mut Vec<FlightEvent>) {
+fn journal_mana_sound(
+    caster: &SpellCasterState,
+    events: &mut Vec<FlightEvent>,
+    source_call: SourceAudioCallTag,
+) {
+    mark_source_audio_call(source_call);
     events.push(FlightEvent::PrepareSound {
+        #[cfg(test)]
+        audio_site: MissionAudioSite::NotEnoughMana,
         entity_index: 0,
         player_index: i16::from(caster.player_color_index),
         sound_id: NOT_ENOUGH_MANA_SOUND,
@@ -213,6 +222,7 @@ mod tests {
         assert_eq!(
             events,
             vec![FlightEvent::PrepareSound {
+                audio_site: MissionAudioSite::NotEnoughMana,
                 entity_index: 0,
                 player_index: 3,
                 sound_id: 29,
@@ -317,6 +327,7 @@ mod tests {
                     state: 6,
                 },
                 FlightEvent::PrepareSound {
+                    audio_site: MissionAudioSite::NotEnoughMana,
                     entity_index: 0,
                     player_index: 3,
                     sound_id: 29,

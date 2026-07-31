@@ -842,7 +842,7 @@ def verify_runtime_logs(
         ),
         (
             "MC_OWNER_HUD READY textures=80 "
-            "objectives=selectors48-53/indexed-live-TABLESN-blend"
+            "objectives=predicates48-52+completion53/indexed-live-TABLESN-blend"
         ),
         (
             "MC_OBJECTIVE_INDEXED_BLEND LIVE selector=48 ticks=33 "
