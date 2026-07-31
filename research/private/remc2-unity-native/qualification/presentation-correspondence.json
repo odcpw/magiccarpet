@@ -88,6 +88,13 @@
       "authority": "content-addressed-owner-assets",
       "clock_domain": "timeless",
       "checkpoints": []
+    },
+    {
+      "timeline_id": "native-final-main-fixed-profile",
+      "authority": "pinned-source-executable-contract",
+      "clock_domain": "native-generation-tick",
+      "checkpoints": [],
+      "claim_limit": "executable fixed-profile correspondence only; no pairing with historical remc2 or managed Unity capture clocks"
     }
   ],
   "layers": [
@@ -284,25 +291,44 @@
     },
     {
       "id": "sprite.source_hotspot_anchor",
-      "classification": "deferred",
-      "present": false,
-      "authority_domain": "owner-cache",
-      "reason": "source DrawSprite centering depends on camera trigonometry and dimensions absent from the particle descriptor",
-      "follow_on": "capture and qualify the original DrawSprite anchor path",
-      "evidence": ["entities/presentation.json source_anchor_status"],
-      "comparison_policy": "deferred-no-pixels",
-      "not_claimed": ["exact hotspot or anchor"]
+      "classification": "exact",
+      "present": true,
+      "authority_domain": "native-final-main-fixed-profile",
+      "exact_domain": "normal and special fixed-profile sprite hotspots, roll and mirror signs, reflection/shadow half-width projection, and four-edge fixed-point clipping",
+      "exact_against": "pinned remc2 fixed-profile DrawSprite raster contract",
+      "evidence": [
+        "native_final_main.components.hotspot_reflection_shadow",
+        "native_final_main.cache.source_frame_census_sha256"
+      ],
+      "comparison_policy": "within-timeline-identity",
+      "not_claimed": [
+        "controlled gallery bottom-centre pivot is source-exact",
+        "unsupported source sprite modes",
+        "cross-timeline pixel equality"
+      ]
     },
     {
       "id": "renderer.dos_depth_interleaving_aspect",
-      "classification": "deferred",
-      "present": false,
-      "authority_domain": "original-remc2-hook-002285ff",
-      "reason": "the source 4:3 display rectangle and projection scale are present, but whole-world software depth, sprite/particle interleaving, fog, and clipping are not yet reproduced",
-      "follow_on": "renderer correspondence qualification",
-      "evidence": [],
-      "comparison_policy": "deferred-no-pixels",
-      "not_claimed": ["DOS renderer equivalence"]
+      "classification": "exact",
+      "present": true,
+      "authority_domain": "native-final-main-fixed-profile",
+      "exact_domain": "supported COMPLETE states of the fixed 320x200 Night Level 1 FINAL MAIN source-chain traversal, reflection-before-primary, shadow-primary adjacency, dynamic lighting, temporal or spatial postprocess, source overlays, atomic finalization, C ABI copy, and one-plane Unity upload",
+      "exact_against": "pinned remc2 fixed-profile FINAL MAIN contract",
+      "evidence": [
+        "native_final_main.components",
+        "native_final_main.complete_receipt",
+        "native_final_main.unity_one_plane"
+      ],
+      "comparison_policy": "within-timeline-identity",
+      "not_claimed": [
+        "historical remc2 or managed Unity capture pixel equality",
+        "historical remc2 or managed Unity capture clock equality",
+        "active-DAC RGB",
+        "stereo or alternate-resolution presentation",
+        "hostile or remote player presentation",
+        "unsupported source branches",
+        "active tutorial/briefing, recursive help popup, immobilization spider-web, and menu-state-7 score-writer states"
+      ]
     },
     {
       "id": "palette.transient_runtime",
@@ -372,6 +398,8 @@
     "base-PALN review decode is exact active-DAC RGB",
     "controlled debug gallery is an original or qualified simulation view",
     "adapted billboard pivot is an exact source hotspot",
+    "fixed-profile native FINAL MAIN implies historical capture pixel equality",
+    "fixed-profile native FINAL MAIN covers stereo, alternate resolution, hostile players, or remote players",
     "omitted or deferred layers are present in qualified mode"
   ],
   "forbidden_placeholder_selectors": [
@@ -414,17 +442,19 @@
         "six terrain planes",
         "BL32N selector and D4 orientation inputs",
         "TABLESN static shade lookup",
-        "native indexed terrain output"
+        "native indexed terrain output",
+        "fixed-profile FINAL MAIN source-chain traversal, dynamic lighting, postprocess, overlays, and atomic commit"
       ],
       "frozen": [],
       "adapted": [
         "indexed result uploaded into a 1600x900 Unity composition"
       ],
       "omitted": [
-        "whole-world software sprite and particle interleaving"
+        "none within the fixed Level 1 Night single-local-player profile"
       ],
       "deferred": [
-        "whole-world source depth and software interleaving behavior"
+        "stereo and alternate-resolution renderer branches",
+        "hostile and remote player presentation branches"
       ]
     },
     {
@@ -451,7 +481,8 @@
       "id": "sprite_hotspot",
       "exact": [
         "descriptor proof that type_particle_str contains no per-sprite hotspot",
-        "qualified native sprite families use the recovered source projection anchors"
+        "qualified native sprite families use the recovered source projection anchors",
+        "normal and special hotspot signs, roll, mirror, reflection and shadow half-width, and four-edge clipping phase"
       ],
       "frozen": [],
       "adapted": [
@@ -540,6 +571,121 @@
       ]
     }
   ],
+  "native_final_main": {
+    "schema": "mc2-level1-native-final-main-correspondence/v1",
+    "source_commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+    "cache": {
+      "manifest_sha256": "3909be6b29c1f879208f0a15ec2bccee58d65311cefd6698f0870d16c9742a8d",
+      "content_sha256": "ee063ce1d5f804c8efc412dff2bedb0800d6fd347b38a6d0376e2a2e4dccd9dc",
+      "output_count": 1248,
+      "source_frame_census_path": "frame/source-frame-census.json",
+      "source_frame_census_sha256": "3ca66e8258fb239c51aa728d321029e2f5364b61d674abb3499e86c92f5f6e59"
+    },
+    "profile": {
+      "level": 1,
+      "environment": "Night",
+      "width": 320,
+      "height": 200,
+      "screen_size": 0,
+      "stereo": false,
+      "player_scope": "one local player"
+    },
+    "source_anchors": [
+      {"path": "remc2/engine/GameRenderOriginal.cpp", "lines": "9-238", "symbols": ["DrawWorld_411A0 postprocess gate"]},
+      {"path": "remc2/engine/GameRenderOriginal.cpp", "lines": "810-1843", "symbols": ["world cell traversal", "reflection-before-primary"]},
+      {"path": "remc2/engine/GameRenderOriginal.cpp", "lines": "1855-4033", "symbols": ["sub_3FD60", "DrawSprites_3E360", "normal hotspot"]},
+      {"path": "remc2/engine/GameRenderOriginal.cpp", "lines": "4924-4978", "symbols": ["special hotspot", "clipping"]},
+      {"path": "remc2/engine/EventsFunctions.cpp", "lines": "21496-22062,31823-31823", "symbols": ["DrawGameFrame_2BE30 definition and call"]},
+      {"path": "remc2/engine/EventsFunctions.cpp", "lines": "31798-31816,47260-47720", "symbols": ["sub_848A0, sub_84B80, and sub_84EA0 calls and definitions"]},
+      {"path": "remc2/engine/GameUI.cpp", "lines": "123-610,4591-5194", "symbols": ["fixed-profile HUD and menu writers"]},
+      {"path": "remc2/engine/EventsFunctions.cpp", "lines": "21647-22688", "symbols": ["supported fixed-profile map, bottom, and end writers; tutorial and score states fail closed"]},
+      {"path": "remc2/engine/EventsFunctions.cpp", "lines": "31851-31866,44615-44881,48218-48260", "symbols": ["DrawHelpPopUps_871F0 and DrawGameDebugText_6FEC0 gates, calls, and definitions; active help fails closed"]}
+    ],
+    "preconditions": [
+      "the exact owner package and closure identities validate",
+      "the CP4 1248-output owner cache and source-frame census validate",
+      "every reachable source occupant is Render or explicitly Excluded; unknown tuples hard-error",
+      "generation and tick are current and contiguous, or the same tick is an idempotent read",
+      "the fixed 320x200 Night single-local-player screen-size-0 profile is active",
+      "all source, lighting, postprocess, overlay, and compositor execution receipts validate before commit",
+      "active tutorial/briefing, recursive help popup, immobilization spider-web, and menu-state-7 score-writer states are reachable but fail closed and cannot earn COMPLETE"
+    ],
+    "ordered_closure": [
+      "classify the complete typed source-tuple census",
+      "retain source linked map-chain order across rendered and excluded occupants",
+      "draw reflection terrain and linked reflections before primary terrain and linked primaries for each cell",
+      "draw each entity shadow immediately before its primary sprite",
+      "apply normal or special hotspot, mirror, roll, and fixed-point clipping",
+      "subtract prior lights, update entities, retire or move lights, recompute the 25-cell contribution, then draw",
+      "render world once and execute exactly one temporal or spatial TABLESN postprocess branch",
+      "consume the supported fixed-profile source overlay command sequence in pinned order; reject active tutorial/briefing, recursive help popup, immobilization spider web, and menu-state-7 score writer before COMPLETE",
+      "validate receipts and atomically commit one indexed FINAL MAIN, provenance plane, history, and cache entry",
+      "copy the revisioned C ABI frame and upload one row-flipped point-filtered R8 plane in Unity"
+    ],
+    "components": {
+      "source_tuple_and_tmap": {
+        "files": ["research/private/remc2-sim-rs/crates/sim-core/src/source_sprite_tmap.rs", "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs"],
+        "tests": ["source_sprite_tmap::tests::castle_defense_shot_profiles_are_exact_and_unknown_choices_fail_closed", "native_v2::tests::source_ordered_world_frame_exposes_supported_families_without_changing_terrain_contract"]
+      },
+      "map_chain": {
+        "files": ["research/private/remc2-sim-rs/crates/sim-core/src/renderable_map_chain.rs"],
+        "tests": ["renderable_map_chain::tests::reset_filter_preserves_cross_family_order_through_unsupported_links", "renderable_map_chain::tests::activation_and_cross_tile_motion_use_source_head_insertion", "renderable_map_chain::tests::same_tile_motion_preserves_order_and_retain_removes_reused_slots"]
+      },
+      "hotspot_reflection_shadow": {
+        "files": ["research/private/remc2-sim-rs/crates/sim-core/src/terrain_frame.rs", "research/private/remc2-sim-rs/crates/sim-core/src/source_sprite_tmap.rs"],
+        "tests": ["terrain_frame::tests::owner_cache_goat_world_frame_is_interleaved_and_deterministic", "native_v2::tests::source_ordered_world_frame_exposes_supported_families_without_changing_terrain_contract"]
+      },
+      "lighting": {
+        "files": ["research/private/remc2-sim-rs/crates/sim-core/src/dynamic_lighting.rs"],
+        "tests": ["dynamic_lighting::tests::fixed_light_array_preserves_history_and_source_walk_order", "dynamic_lighting::tests::admission_schedule_movement_retirement_and_hash_are_source_bounded"]
+      },
+      "postprocess": {
+        "files": ["research/private/remc2-sim-rs/crates/sim-core/src/indexed_postprocess.rs"],
+        "tests": ["indexed_postprocess::tests::temporal_modes_pin_source_gates_vectors_asymmetry_stride_and_tail", "indexed_postprocess::tests::spatial_path_is_exact_and_exclusive_with_temporal_history", "indexed_postprocess::tests::temporal_requires_primed_main_and_uses_additive_tablesn_offset"]
+      },
+      "overlay": {
+        "files": ["research/private/remc2-sim-rs/crates/sim-core/src/indexed_overlay.rs", "research/private/remc2-sim-rs/crates/sim-capi/src/presentation_bridge.rs"],
+        "tests": ["indexed_overlay::tests::reachable_fixed_overlay_tree_is_ordered_and_fail_closed", "indexed_overlay::tests::overlay_marks_only_actual_writes_and_help_recurses_from_prior_main"]
+      },
+      "atomic_finalization": {
+        "files": ["research/private/remc2-sim-rs/crates/sim-core/src/presentation_frame.rs"],
+        "tests": ["presentation_frame::tests::final_main_is_contiguous_idempotent_recursive_and_reset_unprimed", "presentation_frame::tests::changed_stale_out_of_order_and_incomplete_reject_atomically", "presentation_frame::tests::temporal_reads_prior_final_main_including_overlay_pixels"]
+      },
+      "capi": {
+        "files": ["research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs", "research/private/remc2-sim-rs/crates/sim-capi/include/mc_sim.h"],
+        "tests": ["native_v2::tests::presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed"]
+      },
+      "unity_one_plane": {
+        "files": ["research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs", "research/private/remc2-unity-native/Assets/Scripts/MagicCarpetRuntime.cs"],
+        "tests": ["MagicCarpet.Native.Tests.NativeSessionEditModeTests.PresentationFrameOwnsOneIndexedPlaneAndZeroManagedDuplicates"]
+      }
+    },
+    "complete_receipt": {
+      "required_flags": ["MC_PRESENTATION_FRAME_COMPOSITOR_COMPLETE", "MC_PRESENTATION_FRAME_HAS_PROVENANCE", "MC_PRESENTATION_FRAME_OVERLAYS_COMPOSITED", "MC_PRESENTATION_FRAME_POSTPROCESS_COMPLETE", "MC_PRESENTATION_FRAME_LIGHTING_COMPLETE"],
+      "forbidden_flags": ["MC_TERRAIN_FRAME_NON_TERRAIN_OMITTED"],
+      "failure_semantics": "reject before MAIN, history, receipt cache, or selector-clock mutation"
+    },
+    "unity_one_plane": {
+      "endpoint_calls": 1,
+      "top_down_row_flips": 1,
+      "r8_point_uploads": 1,
+      "managed_duplicate_submissions": 0,
+      "suppression_gate": "current successful COMPLETE receipt only"
+    },
+    "explicit_exclusions": [
+      "stereo double render",
+      "alternate resolution",
+      "active-DAC RGB for historical captures",
+      "hostile or remote player presentation",
+      "unsupported source sprite modes and malformed or unknown tuples",
+      "cross-timeline pixel equality",
+      "cross-timeline clock equality",
+      "active tutorial/briefing is reachable but fail-closed before COMPLETE",
+      "recursive help popup is reachable but fail-closed before COMPLETE",
+      "immobilization spider-web writer is reachable but fail-closed before COMPLETE",
+      "menu-state-7 score writer is reachable but fail-closed before COMPLETE"
+    ]
+  },
   "required_gates": [
     "reference_corpus",
     "owner_asset_cache",
@@ -548,7 +694,8 @@
     "entity_gallery",
     "no_magenta",
     "no_placeholder_claim",
-    "independent_timeline_labels"
+    "independent_timeline_labels",
+    "native_final_main_contract"
   ],
   "privacy": "all generated images and HTML remain in a caller-selected system-temporary directory"
 }

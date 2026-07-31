@@ -5,7 +5,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     mem::size_of,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -24,6 +24,7 @@ use sim_core::{
         FIREBALL_PAYLOAD_SHA256, FireballTmapClock, POSSESSION_PAYLOAD_SHA256, PossessionTmapClock,
     },
     conformance_hash, conformance_hash_v2,
+    dynamic_lighting::DynamicLightingExecutionReceipt,
     economy_tmap::{
         CASTLE_ROOT_PAYLOAD_BYTES, CASTLE_ROOT_PAYLOAD_SHA256, CastleTmapClock, EconomyTmapBank,
         MANA_CARRIER_PAYLOAD_BYTES, MANA_CARRIER_PAYLOAD_SHA256, MANA_SPHERE_NEUTRAL_PAYLOAD_BYTES,
@@ -38,8 +39,8 @@ use sim_core::{
         VILLAGER_PAYLOAD_SHA256, VillagerTmapClocks,
     },
     goat::{
-        GOAT_BASE_TMAP, GOAT_CLASS, GOAT_MODEL, GoatPlayerTarget, GoatState, GoatStepEvent,
-        LEVEL_ONE_GOAT_INDICES, LiveWorldState,
+        GOAT_BASE_TMAP, GOAT_CLASS, GOAT_MODEL, GOAT_PATROL_ACTION, GoatPlayerTarget, GoatState,
+        GoatStepEvent, LEVEL_ONE_GOAT_INDICES, LiveWorldState,
     },
     goat_draw_admission::{
         GoatDrawAdmission, GoatDrawCamera, evaluate_goat_draw_admission,
@@ -49,6 +50,8 @@ use sim_core::{
         GOAT_TMAP_DRAW_MASK, GOAT_TMAP_SELECTORS, GoatTmapBank, GoatTmapClock, GoatTmapClocks,
     },
     house::{HouseState, HouseStepEvent},
+    indexed_overlay::IndexedOverlayAssets,
+    indexed_postprocess::{IndexedPostprocessBranch, IndexedPostprocessInput},
     level1_mission::{
         ARCHER_ARROW_BASE_TMAP, ARCHER_ARROW_LOGICAL_HEIGHT, ARCHER_ARROW_PROJECTILE_CLASS,
         ARCHER_ARROW_PROJECTILE_MODEL, ARCHER_ARROW_RENDER_INDEX, ARCHER_ARROW_RENDER_MODE,
@@ -57,15 +60,16 @@ use sim_core::{
         CASTLE_ROOT_ACTION, CASTLE_ROOT_BASE_TMAP, CASTLE_ROOT_CLASS, CASTLE_ROOT_LOGICAL_HEIGHT,
         CASTLE_ROOT_MODEL, CASTLE_ROOT_RENDER_INDEX, CASTLE_SPELL_FAMILY,
         CHECKPOINT_SMOKE_BASE_TMAP, CHECKPOINT_SMOKE_CLASS, CHECKPOINT_SMOKE_FIRST_RENDER_INDEX,
-        CHECKPOINT_SMOKE_MODEL, CHECKPOINT_SMOKE_RENDER_MODE, FIREBALL_BASE_TMAP,
-        FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_CLASS, FIREBALL_IMPACT_LOGICAL_HEIGHT,
-        FIREBALL_IMPACT_RENDER_INDEX, FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LOGICAL_HEIGHT,
-        FIREBALL_PROJECTILE_CLASS, FIREBALL_PROJECTILE_MODEL, FIREBALL_RENDER_INDEX,
-        FIREBALL_RENDER_MODE, FireballImpact, GROUND_FIRE_BASE_TMAP, GROUND_FIRE_MODEL,
-        GROUND_FIRE_RENDER_MODE, LEVEL1_MINIMAP_COMMAND_BLEND_PIXEL,
+        CHECKPOINT_SMOKE_MODEL, CHECKPOINT_SMOKE_RENDER_MODE, DynamicResidentState,
+        FIREBALL_BASE_TMAP, FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_CLASS,
+        FIREBALL_IMPACT_LOGICAL_HEIGHT, FIREBALL_IMPACT_RENDER_INDEX, FIREBALL_IMPACT_RENDER_MODE,
+        FIREBALL_LOGICAL_HEIGHT, FIREBALL_PROJECTILE_CLASS, FIREBALL_PROJECTILE_MODEL,
+        FIREBALL_RENDER_INDEX, FIREBALL_RENDER_MODE, FireballImpact, GROUND_FIRE_BASE_TMAP,
+        GROUND_FIRE_MODEL, GROUND_FIRE_RENDER_MODE, LEVEL1_MINIMAP_COMMAND_BLEND_PIXEL,
         LEVEL1_MINIMAP_MAX_ENTITY_COMMANDS, LEVEL1_MINIMAP_MAX_MARKS, Level1Actor, Level1ActorKind,
-        Level1AmbientEntity, Level1CollisionTarget, Level1MinimapEntityInput, Level1MinimapMarks,
-        Level1MissionEvent, Level1MissionState, Level1MultipartSegment, Level1Projectile,
+        Level1AmbientEntity, Level1CollisionTarget, Level1MinimapEntityCommand,
+        Level1MinimapEntityInput, Level1MinimapMarks, Level1MissionEvent, Level1MissionState,
+        Level1MultipartSegment, Level1PossessedBuilding, Level1Projectile, Level1ResetSourceSlot,
         MANA_CARRIER_ACTION, MANA_CARRIER_BASE_TMAP, MANA_CARRIER_CLASS,
         MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_MAX_LIFE, MANA_CARRIER_MAX_MANA,
         MANA_CARRIER_MODEL, MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_SPEED, MANA_SPHERE_ACTION,
@@ -81,7 +85,8 @@ use sim_core::{
         POSSESSION_PROJECTILE_MODEL, POSSESSION_PROJECTILE_RENDER_INDEX,
         POSSESSION_PROJECTILE_RENDER_MODE, POSSESSION_STRONG_IMPACT_MODEL, WATER_SPLASH_BASE_TMAP,
         WATER_SPLASH_LOGICAL_HEIGHT, WATER_SPLASH_MODEL, WATER_SPLASH_RENDER_INDEX,
-        WATER_SPLASH_RENDER_MODE, ground_fire_presentation, level1_minimap_castle_rope_pixels,
+        WATER_SPLASH_RENDER_MODE, ground_fire_presentation, level1_map_castle_rope_pixels,
+        level1_map_entity_command, level1_minimap_castle_rope_pixels,
         level1_minimap_entity_command, mana_sphere_size_ordinal,
     },
     native_world::{
@@ -90,9 +95,20 @@ use sim_core::{
         refresh_level1_current_source_view,
     },
     positional_sound_should_replace, prepare_event_sound_command,
+    presentation_frame::{
+        MainHistory, PresentationFrameError, PresentationFrameInput, PresentationFrameState,
+        SourceRenderedFrame,
+    },
     render_camera::{TerrainSlopeCamera, TerrainSlopeCameraSample},
     renderable_map_chain::{RenderableMapChains, RenderableMapSeed},
-    source_projection_hash, state_hash,
+    source_projection_hash,
+    source_sprite_tmap::{
+        ImportedResetSpriteTuple, SourceSpriteContractRoute, SourceSpriteContractRow,
+        SourceSpriteDisposition, SourceSpriteLegacyFamily, SourceSpriteTemplateDisposition,
+        SourceSpriteWorldResources, imported_reset_sprite_disposition, source_sprite_dispositions,
+        unknown_source_sprite_tuple,
+    },
+    state_hash,
     static_world_tmap::{
         EXIT_TARGET_PAYLOAD_BYTES, EXIT_TARGET_PAYLOAD_SHA256, LEVEL1_AMBIENT_SELECTORS,
         LEVEL1_SCENERY_SELECTORS, SPELL_JAR_PAYLOAD_BYTES, SPELL_JAR_PAYLOAD_SHA256,
@@ -103,11 +119,18 @@ use sim_core::{
         LEVEL1_SKY_BYTES, LEVEL1_TERRAIN_ATLAS_BYTES, LEVEL1_VIEW_HEIGHT, LEVEL1_VIEW_PIXELS,
         LEVEL1_VIEW_WIDTH, Level1CastleRootRender, Level1FrozenActorRender, Level1TerrainFrame,
         Level1TerrainFrameCamera, Level1TerrainFrameResources, Level1WorldFrameResources,
+        render_level1_source_world_frame, render_level1_source_world_map_frame_composed,
         render_level1_terrain_frame, render_level1_world_frame,
     },
     terrain_grid::{OUTDOOR_GRID_VERTICES, OutdoorGridInput, outdoor_grid},
     terrain_presentation::outdoor_terrain_pnt5,
-    villager::VillagerState,
+    villager::{VILLAGER_CLASS, VILLAGER_MODEL, VillagerState},
+};
+
+use crate::presentation_bridge::{
+    LIVE_MENU_AUTH_ALL, LIVE_MENU_AUTH_DEBUG_METRICS, Level1PresentationLive, LiveDebugEntity,
+    LiveHud, LiveMenuState, LiveSpellMenu, LiveSpellSlot, PresentationBridgeQuery,
+    build_level1_final_main,
 };
 
 #[cfg(test)]
@@ -117,6 +140,13 @@ use sim_core::level1_mission::FIREBALL_IMPACT_MODEL;
 use sim_core::level1_mission::CASTLE_PROJECTILE_SOUND;
 
 pub const MC_NATIVE_ABI_VERSION: u32 = 2;
+
+// Pinned remc2 sub_83B50 fixes the owned game heap at 0x400000 plus
+// 0x1000000. Its retained Level-1 source has no writer for the two allocator
+// diagnostic globals, so their exact simulation-domain values remain zero.
+const LEVEL1_SOURCE_HEAP_SIZE: u32 = 0x0140_0000;
+const LEVEL1_SOURCE_MEMORY_USED: u32 = 0;
+const LEVEL1_SOURCE_MEMORY_FREE: u32 = 0;
 
 pub const MC_STATUS_OK: i32 = 0;
 pub const MC_STATUS_NULL_POINTER: i32 = 1;
@@ -265,6 +295,11 @@ pub const MC_TERRAIN_FRAME_ECONOMY_COMPOSITED: u32 = 0x0200;
 pub const MC_TERRAIN_FRAME_REFLECTED_SPRITES_COMPOSITED: u32 = 0x0400;
 pub const MC_TERRAIN_FRAME_SPRITE_SHADOWS_COMPOSITED: u32 = 0x0800;
 pub const MC_TERRAIN_FRAME_FROZEN_ACTORS_COMPOSITED: u32 = 0x1000;
+pub const MC_PRESENTATION_FRAME_COMPOSITOR_COMPLETE: u32 = 0x2000;
+pub const MC_PRESENTATION_FRAME_HAS_PROVENANCE: u32 = 0x4000;
+pub const MC_PRESENTATION_FRAME_OVERLAYS_COMPOSITED: u32 = 0x8000;
+pub const MC_PRESENTATION_FRAME_POSTPROCESS_COMPLETE: u32 = 0x1_0000;
+pub const MC_PRESENTATION_FRAME_LIGHTING_COMPLETE: u32 = 0x2_0000;
 
 fn world_frame_flags(reflected_sprites_composited: bool, sprite_shadows_composited: bool) -> u32 {
     let mut flags = MC_TERRAIN_FRAME_ISOLATED_SKY_TERRAIN
@@ -285,6 +320,20 @@ fn world_frame_flags(reflected_sprites_composited: bool, sprite_shadows_composit
         flags |= MC_TERRAIN_FRAME_SPRITE_SHADOWS_COMPOSITED;
     }
     flags
+}
+
+fn source_sprite_disposition_index(disposition: &SourceSpriteDisposition) -> u16 {
+    match disposition {
+        SourceSpriteDisposition::Render(submission) => submission.source_entity_index,
+        SourceSpriteDisposition::Legacy {
+            source_entity_index,
+            ..
+        }
+        | SourceSpriteDisposition::Excluded {
+            source_entity_index,
+            ..
+        } => *source_entity_index,
+    }
 }
 
 const EVENT_CAPACITY: usize = 4_096;
@@ -1369,6 +1418,155 @@ pub struct McTerrainFrameInfoV2 {
     pub reserved: [u32; 2],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McPresentationFrameQueryV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub tick: u64,
+    pub presentation_revision: u64,
+    pub viewport_width: u16,
+    pub viewport_height: u16,
+    pub screen_stride: u16,
+    pub reserved_0: u16,
+    pub configured_blur_mode: u8,
+    pub blur_capability: u8,
+    pub high_speed_system: u8,
+    pub scratch_present: u8,
+    pub vga_resolution: u8,
+    pub spatial_smoothing: u8,
+    pub minimap_enabled: u8,
+    pub top_bar_enabled: u8,
+    pub menu_overlay: u8,
+    pub game_paused: u8,
+    pub level_end: u8,
+    pub objective_selector: u8,
+    pub objective_textbox: u8,
+    pub tutorial_or_briefing: u8,
+    pub help_popup: u8,
+    pub debug_text: u8,
+    pub reserved: [u32; 2],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct McLevel1PresentationInputV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub authority_mask: u32,
+    pub selected_menu_item: u8,
+    pub pause_menu_suppressed: u8,
+    pub pause_text_suppressed: u8,
+    pub level_end_text_suppressed: u8,
+    pub recursive_pause_writer: u8,
+    pub load_available: u8,
+    pub sound_available: u8,
+    pub music_available: u8,
+    pub options_enabled_mask: u32,
+    pub options_selected_mask: u32,
+    pub sound_volume: u8,
+    pub music_volume: u8,
+    pub volume_target: u8,
+    pub chat_recipient: u8,
+    pub chat_mode: u8,
+    pub chat_player_mask: u8,
+    pub local_player_index: u8,
+    pub frame_timing_index: u8,
+    pub cursor_visible: u8,
+    pub reserved_0: u8,
+    pub mouse_x: i16,
+    pub mouse_y: i16,
+    pub joystick: i16,
+    pub text_colour_phase: u8,
+    pub reserved_1: u8,
+    pub chat_lines: [u8; 8 * 64],
+    pub chat_names: [u8; 8 * 16],
+    pub notification_player_name: [u8; 16],
+    pub debug_clock_bucket: u32,
+    pub sound_number: i16,
+    pub reserved_2: u16,
+    pub debug_heap_size: u32,
+    pub debug_memory_used: u32,
+    pub debug_memory_free: u32,
+    pub reserved: [u32; 4],
+}
+
+impl Default for McLevel1PresentationInputV2 {
+    fn default() -> Self {
+        Self {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<Self>(),
+            authority_mask: 0,
+            selected_menu_item: 0,
+            pause_menu_suppressed: 0,
+            pause_text_suppressed: 0,
+            level_end_text_suppressed: 0,
+            recursive_pause_writer: 0,
+            load_available: 0,
+            sound_available: 0,
+            music_available: 0,
+            options_enabled_mask: 0,
+            options_selected_mask: 0,
+            sound_volume: 0,
+            music_volume: 0,
+            volume_target: 0,
+            chat_recipient: 0,
+            chat_mode: 0,
+            chat_player_mask: 0,
+            local_player_index: 0,
+            frame_timing_index: 0,
+            cursor_visible: 0,
+            reserved_0: 0,
+            mouse_x: 0,
+            mouse_y: 0,
+            joystick: 0,
+            text_colour_phase: 0,
+            reserved_1: 0,
+            chat_lines: [0; 8 * 64],
+            chat_names: [0; 8 * 16],
+            notification_player_name: [0; 16],
+            debug_clock_bucket: 0,
+            sound_number: 0,
+            reserved_2: 0,
+            debug_heap_size: 0,
+            debug_memory_used: 0,
+            debug_memory_free: 0,
+            reserved: [0; 4],
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McPresentationFrameInfoV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub tick: u64,
+    pub presentation_revision: u64,
+    pub immutable_input_hash: u64,
+    pub width: u16,
+    pub height: u16,
+    pub stride: u16,
+    pub viewport_width: u16,
+    pub index_bytes: u32,
+    pub provenance_bytes: u32,
+    pub flags: u32,
+    pub effective_postprocess_mode: u8,
+    pub history_state: u8,
+    pub newly_committed: u8,
+    pub reserved_0: u8,
+    pub index_hash: u64,
+    pub provenance_hash: u64,
+    pub lighting_hash: u64,
+    pub source_arena_hash: u64,
+    pub overlay_pixels_written: u32,
+    pub overlay_stage_count: u16,
+    pub reserved_1: u16,
+    pub reserved: [u32; 6],
+}
+
 #[derive(Debug)]
 struct AbiError {
     status: i32,
@@ -1415,6 +1613,31 @@ struct TerrainFrameAssets {
     combat_tmap_bank: CombatTmapBank,
     static_world_tmap_bank: StaticWorldTmapBank,
     economy_tmap_bank: EconomyTmapBank,
+    indexed_overlays: IndexedOverlayAssets,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceRenderInputs {
+    map_right_viewport: bool,
+    camera: Level1TerrainFrameCamera,
+    generation_asset_digest: u64,
+    local_player_entity_index: u16,
+    goats: Vec<GoatState>,
+    frozen_actors: Vec<Level1FrozenActorRender>,
+    ambient_entities: Vec<Level1AmbientEntity>,
+    mission_actors: Vec<Level1Actor>,
+    dynamic_residents: Vec<DynamicResidentState>,
+    mission_segments: Vec<Level1MultipartSegment>,
+    castle_root: Option<Level1CastleRootRender>,
+    mana_spheres: Vec<ManaSphere>,
+    mana_carrier: Option<ManaCarrier>,
+    map_chains: RenderableMapChains,
+    projectiles: Vec<Level1Projectile>,
+    impacts: Vec<FireballImpact>,
+    possessed_buildings: Vec<Level1PossessedBuilding>,
+    source_slots: Vec<Level1ResetSourceSlot>,
+    dispositions: Vec<SourceSpriteDisposition>,
+    night: bool,
 }
 
 impl CameraHistory {
@@ -1463,6 +1686,7 @@ struct SessionRecord {
     castle_selector_frame: Option<CastleTmapClock>,
     renderable_map_chains: RenderableMapChains,
     selector_draw_feedback: Option<(u64, u8)>,
+    notification_draw_feedback: Option<(u64, bool, u8, i16)>,
     goat_draw_admission: Option<GoatDrawAdmission>,
     generation: u64,
     event_head: u64,
@@ -1480,6 +1704,19 @@ struct SessionRecord {
     camera_slope: TerrainSlopeCamera,
     camera_slope_sample: TerrainSlopeCameraSample,
     terrain_frame_assets: Option<Arc<TerrainFrameAssets>>,
+    source_render_asset_digest: Option<u64>,
+    presentation_frame: PresentationFrameState,
+    lighting_receipt: DynamicLightingExecutionReceipt,
+    presentation_ui: LiveMenuState,
+    debug_clock_bucket: Option<u32>,
+    debug_previous_turn: i32,
+    debug_fps: i32,
+    sound_number: i16,
+    game_timer_turn: i32,
+    debug_heap_size: u32,
+    debug_memory_used: u32,
+    debug_memory_free: u32,
+    game_paused: bool,
     pending_house_effects: Vec<HouseStepEvent>,
     #[cfg(test)]
     immediate_released_holder_handoff: Vec<(u8, u16, u8, u8)>,
@@ -1740,9 +1977,438 @@ struct AudioVoice {
     event_sequence: u64,
 }
 
+fn append_source_render_records<T: std::fmt::Debug>(
+    bytes: &mut Vec<u8>,
+    family: &[u8],
+    records: &[T],
+) {
+    bytes.extend_from_slice(
+        &u16::try_from(family.len())
+            .expect("source-render family tag fits u16")
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(family);
+    bytes.extend_from_slice(
+        &u32::try_from(records.len())
+            .expect("source-render record extent fits u32")
+            .to_le_bytes(),
+    );
+    for record in records {
+        // These source projections derive Debug with declaration-order field
+        // names. Length-prefixing that lossless representation avoids struct
+        // padding/host-endian dependence while covering every mutable field.
+        let encoded = format!("{record:?}");
+        bytes.extend_from_slice(
+            &u32::try_from(encoded.len())
+                .expect("source-render record fits u32")
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(encoded.as_bytes());
+    }
+}
+
+fn source_render_asset_digest(world: &NativeWorld, assets: &TerrainFrameAssets) -> AbiResult<u64> {
+    let source_bank = world.source_sprite_tmap_bank().ok_or_else(|| {
+        AbiError::new(
+            MC_STATUS_GENERATION_MISMATCH,
+            "source-render generation has no CP1 source TMAP bank",
+        )
+    })?;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"mc2-source-render-assets-v1\0");
+    for payload in [&assets.terrain_atlas, &assets.tablesn, &assets.sky] {
+        bytes.extend_from_slice(
+            &u32::try_from(payload.len())
+                .expect("renderer asset payload fits u32")
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(payload);
+    }
+    append_source_render_records(
+        &mut bytes,
+        b"archer-bank",
+        std::slice::from_ref(&assets.archer_tmap_bank),
+    );
+    append_source_render_records(
+        &mut bytes,
+        b"firefly-bank",
+        std::slice::from_ref(&assets.firefly_tmap_bank),
+    );
+    append_source_render_records(
+        &mut bytes,
+        b"frozen-bank",
+        std::slice::from_ref(&assets.frozen_actor_tmap_bank),
+    );
+    append_source_render_records(
+        &mut bytes,
+        b"combat-bank",
+        std::slice::from_ref(&assets.combat_tmap_bank),
+    );
+    append_source_render_records(
+        &mut bytes,
+        b"static-bank",
+        std::slice::from_ref(&assets.static_world_tmap_bank),
+    );
+    append_source_render_records(
+        &mut bytes,
+        b"economy-bank",
+        std::slice::from_ref(&assets.economy_tmap_bank),
+    );
+    append_source_render_records(
+        &mut bytes,
+        b"source-bank",
+        std::slice::from_ref(source_bank),
+    );
+    append_source_render_records(&mut bytes, b"particles", &world.presentation().particles);
+    Ok(sim_core::presentation_frame::byte_hash(&bytes))
+}
+
 impl SessionRecord {
+    fn set_game_paused(&mut self, paused: bool) {
+        if paused && !self.game_paused {
+            // A pause entered between source turns presents the current live
+            // player state without advancing UpdateEntities.  Capture that
+            // state once at the pause boundary so presentation may continue
+            // while the authoritative turn remains held.
+            self.camera_history = CameraHistory::capture(
+                &self.state,
+                self.source_turn,
+                self.camera_fov,
+                self.camera_look_yaw,
+                self.camera_look_pitch,
+            );
+            self.camera_slope_sample = self.camera_slope.update(
+                self.terrain.ground_heights(),
+                self.camera_history.x,
+                self.camera_history.y,
+            );
+        }
+        self.game_paused = paused;
+    }
+
+    fn apply_presentation_input(&mut self, input: McLevel1PresentationInputV2) -> AbiResult<()> {
+        validate_reserved(&input.reserved, "Level 1 presentation input")?;
+        if input.reserved_0 != 0 || input.reserved_1 != 0 || input.reserved_2 != 0 {
+            return Err(AbiError::new(
+                MC_STATUS_RESERVED_NONZERO,
+                "Level 1 presentation input reserved fields must be zero",
+            ));
+        }
+        if input.authority_mask & !LIVE_MENU_AUTH_ALL != 0 {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                format!(
+                    "Level 1 presentation authority mask {:#x} has unknown bits",
+                    input.authority_mask
+                ),
+            ));
+        }
+        if input.debug_heap_size != 0
+            || input.debug_memory_used != 0
+            || input.debug_memory_free != 0
+        {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "Level 1 source allocator metrics are simulation-owned and input fields must be zero",
+            ));
+        }
+        for (name, value) in [
+            ("pause_menu_suppressed", input.pause_menu_suppressed),
+            ("pause_text_suppressed", input.pause_text_suppressed),
+            ("level_end_text_suppressed", input.level_end_text_suppressed),
+            ("recursive_pause_writer", input.recursive_pause_writer),
+            ("load_available", input.load_available),
+            ("sound_available", input.sound_available),
+            ("music_available", input.music_available),
+            ("cursor_visible", input.cursor_visible),
+        ] {
+            if value > 1 {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    format!("{name} must be zero or one"),
+                ));
+            }
+        }
+        let chat_lines = std::array::from_fn(|index| {
+            let start = index * 64;
+            input.chat_lines[start..start + 64]
+                .try_into()
+                .expect("fixed chat line extent")
+        });
+        let chat_names = std::array::from_fn(|index| {
+            let start = index * 16;
+            input.chat_names[start..start + 16]
+                .try_into()
+                .expect("fixed chat name extent")
+        });
+        self.presentation_ui = LiveMenuState {
+            authority_mask: input.authority_mask,
+            selected_menu_item: input.selected_menu_item,
+            pause_menu_suppressed: input.pause_menu_suppressed != 0,
+            pause_text_suppressed: input.pause_text_suppressed != 0,
+            level_end_text_suppressed: input.level_end_text_suppressed != 0,
+            recursive_pause_writer: input.recursive_pause_writer != 0,
+            load_available: input.load_available != 0,
+            sound_available: input.sound_available != 0,
+            music_available: input.music_available != 0,
+            options_enabled_mask: input.options_enabled_mask,
+            options_selected_mask: input.options_selected_mask,
+            sound_volume: input.sound_volume,
+            music_volume: input.music_volume,
+            volume_target: input.volume_target,
+            chat_recipient: input.chat_recipient,
+            chat_mode: input.chat_mode,
+            chat_player_mask: input.chat_player_mask,
+            local_player_index: input.local_player_index,
+            frame_timing_index: input.frame_timing_index,
+            chat_lines,
+            chat_names,
+            notification_player_name: input.notification_player_name,
+            cursor_visible: input.cursor_visible != 0,
+            mouse_x: input.mouse_x,
+            mouse_y: input.mouse_y,
+            joystick: input.joystick,
+            text_colour_phase: input.text_colour_phase,
+        };
+        if input.authority_mask & LIVE_MENU_AUTH_DEBUG_METRICS != 0 {
+            if self.debug_clock_bucket != Some(input.debug_clock_bucket) {
+                if self.debug_clock_bucket.is_some() {
+                    self.debug_fps = self.source_turn.wrapping_sub(self.debug_previous_turn);
+                }
+                self.debug_clock_bucket = Some(input.debug_clock_bucket);
+                self.debug_previous_turn = self.source_turn;
+            }
+            self.sound_number = input.sound_number;
+            self.debug_heap_size = LEVEL1_SOURCE_HEAP_SIZE;
+            self.debug_memory_used = LEVEL1_SOURCE_MEMORY_USED;
+            self.debug_memory_free = LEVEL1_SOURCE_MEMORY_FREE;
+        } else {
+            self.debug_clock_bucket = None;
+            self.debug_previous_turn = self.source_turn;
+            self.debug_fps = 0;
+            self.sound_number = 0;
+            self.debug_heap_size = 0;
+            self.debug_memory_used = 0;
+            self.debug_memory_free = 0;
+        }
+        Ok(())
+    }
+
     fn live_world_hash_v2(&self) -> u64 {
         self.live_world.hash_v2(self.mission.global_rng())
+    }
+
+    #[cfg(test)]
+    fn source_render_input_hash(&self) -> AbiResult<u64> {
+        let map_right_viewport = matches!(self.mission.player_menu_state, 6 | 7 | 8 | 11 | 12 | 14);
+        let inputs = self.source_render_inputs(map_right_viewport)?;
+        self.source_render_input_hash_for(&inputs)
+    }
+
+    fn source_render_input_hash_for(&self, inputs: &SourceRenderInputs) -> AbiResult<u64> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"mc2-source-render-input-v1\0");
+        bytes.extend_from_slice(&self.terrain.deterministic_hash().to_le_bytes());
+        bytes.extend_from_slice(&self.live_world_hash_v2().to_le_bytes());
+        bytes.push(u8::from(inputs.map_right_viewport));
+        bytes.extend_from_slice(&inputs.camera.render_x.to_le_bytes());
+        bytes.extend_from_slice(&inputs.camera.render_y.to_le_bytes());
+        bytes.extend_from_slice(&inputs.camera.eye_z.to_le_bytes());
+        bytes.extend_from_slice(&inputs.camera.yaw.to_le_bytes());
+        bytes.extend_from_slice(&inputs.camera.pitch.to_le_bytes());
+        bytes.extend_from_slice(&inputs.camera.roll.to_le_bytes());
+        bytes.extend_from_slice(&inputs.camera.fov.to_le_bytes());
+        bytes.extend_from_slice(&inputs.camera.source_turn.to_le_bytes());
+        bytes.push(u8::from(inputs.camera.reflections));
+        bytes.extend_from_slice(&inputs.generation_asset_digest.to_le_bytes());
+        bytes.extend_from_slice(&inputs.local_player_entity_index.to_le_bytes());
+        for value in [
+            self.camera_slope_sample.target_x,
+            self.camera_slope_sample.target_y,
+            self.camera_slope_sample.offset_x,
+            self.camera_slope_sample.offset_y,
+        ] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes.extend_from_slice(
+            &u32::try_from(inputs.frozen_actors.len())
+                .expect("frozen render count fits u32")
+                .to_le_bytes(),
+        );
+        for actor in &inputs.frozen_actors {
+            bytes.extend_from_slice(&actor.source_entity_index.to_le_bytes());
+            bytes.extend_from_slice(&actor.position.x.to_le_bytes());
+            bytes.extend_from_slice(&actor.position.y.to_le_bytes());
+            bytes.extend_from_slice(&actor.position.z.to_le_bytes());
+            bytes.extend_from_slice(&actor.yaw.to_le_bytes());
+            bytes.extend_from_slice(&actor.render_parameter_index.to_le_bytes());
+        }
+        append_source_render_records(&mut bytes, b"goats", &inputs.goats);
+        append_source_render_records(&mut bytes, b"ambient", &inputs.ambient_entities);
+        append_source_render_records(&mut bytes, b"actors", &inputs.mission_actors);
+        append_source_render_records(&mut bytes, b"residents", &inputs.dynamic_residents);
+        append_source_render_records(&mut bytes, b"segments", &inputs.mission_segments);
+        append_source_render_records(&mut bytes, b"castle", inputs.castle_root.as_slice());
+        append_source_render_records(&mut bytes, b"spheres", &inputs.mana_spheres);
+        append_source_render_records(&mut bytes, b"carrier", inputs.mana_carrier.as_slice());
+        append_source_render_records(&mut bytes, b"projectiles", &inputs.projectiles);
+        append_source_render_records(&mut bytes, b"impacts", &inputs.impacts);
+        append_source_render_records(&mut bytes, b"possessed", &inputs.possessed_buildings);
+        append_source_render_records(&mut bytes, b"source-slots", &inputs.source_slots);
+        append_source_render_records(&mut bytes, b"dispositions", &inputs.dispositions);
+        let topology = inputs.map_chains.canonical_topology_bytes();
+        bytes.extend_from_slice(
+            &u32::try_from(topology.len())
+                .expect("source map topology fits u32")
+                .to_le_bytes(),
+        );
+        bytes.extend_from_slice(&topology);
+        bytes.push(u8::from(inputs.night));
+        let mut frame = |selector: u16,
+                         state: u8,
+                         frame_index: u8,
+                         cursor: u32,
+                         width: u16,
+                         height: u16,
+                         pixels: &[u8]| {
+            bytes.extend_from_slice(&selector.to_le_bytes());
+            bytes.push(state);
+            bytes.push(frame_index);
+            bytes.extend_from_slice(&cursor.to_le_bytes());
+            bytes.extend_from_slice(&width.to_le_bytes());
+            bytes.extend_from_slice(&height.to_le_bytes());
+            bytes.extend_from_slice(
+                &u32::try_from(pixels.len())
+                    .expect("TMAP payload fits u32")
+                    .to_le_bytes(),
+            );
+            bytes.extend_from_slice(pixels);
+        };
+        for clock in self
+            .selector_frames
+            .as_ref()
+            .ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    "source-render input has no Goat TMAP clocks",
+                )
+            })?
+            .states()
+        {
+            frame(
+                clock.selector(),
+                clock.state_ordinal(),
+                clock.frame_index(),
+                clock.stream_cursor(),
+                clock.width(),
+                clock.height(),
+                clock.pixels(),
+            );
+        }
+        for clock in self
+            .archer_selector_frames
+            .as_ref()
+            .ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    "source-render input has no Archer TMAP clocks",
+                )
+            })?
+            .states()
+        {
+            frame(
+                clock.selector(),
+                clock.state_ordinal(),
+                clock.frame_index(),
+                clock.stream_cursor(),
+                clock.width(),
+                clock.height(),
+                clock.pixels(),
+            );
+        }
+        for clock in self
+            .firefly_selector_frames
+            .as_ref()
+            .ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    "source-render input has no Firefly TMAP clocks",
+                )
+            })?
+            .states()
+        {
+            frame(
+                clock.selector(),
+                clock.state_ordinal(),
+                clock.frame_index(),
+                clock.stream_cursor(),
+                clock.width(),
+                clock.height(),
+                clock.pixels(),
+            );
+        }
+        for clock in self
+            .villager_selector_frames
+            .as_ref()
+            .ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    "source-render input has no villager TMAP clocks",
+                )
+            })?
+            .states()
+        {
+            frame(
+                clock.selector(),
+                clock.state_ordinal(),
+                0,
+                0,
+                clock.width(),
+                clock.height(),
+                clock.pixels(),
+            );
+        }
+        for animated in [
+            self.fireball_selector_frame
+                .as_ref()
+                .map(FireballTmapClock::frame),
+            self.possession_selector_frame
+                .as_ref()
+                .map(PossessionTmapClock::frame),
+        ] {
+            let animated = animated.ok_or_else(|| {
+                AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    "source-render input has no combat TMAP clock",
+                )
+            })?;
+            frame(
+                animated.selector,
+                animated.state_ordinal,
+                animated.frame_index,
+                animated.stream_cursor,
+                animated.width,
+                animated.height,
+                &animated.pixels,
+            );
+        }
+        let castle = self.castle_selector_frame.as_ref().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                "source-render input has no Castle TMAP clock",
+            )
+        })?;
+        let castle_frame = castle.frame();
+        frame(
+            castle_frame.selector,
+            castle.state_ordinal(),
+            0,
+            0,
+            castle_frame.width,
+            castle_frame.height,
+            &castle_frame.pixels,
+        );
+        Ok(sim_core::presentation_frame::byte_hash(&bytes))
     }
 
     fn new(world: NativeWorld) -> AbiResult<Self> {
@@ -1794,8 +2460,16 @@ impl SessionRecord {
             camera_history.x,
             camera_history.y,
         );
+        let terrain = SessionTerrain::from_world(world.as_ref());
+        let lighting_receipt = mission
+            .dynamic_lighting_execution_receipt(&terrain.planes().shading)
+            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+        let source_render_asset_digest = terrain_frame_assets
+            .as_ref()
+            .map(|assets| source_render_asset_digest(world.as_ref(), assets))
+            .transpose()?;
         Ok(Self {
-            terrain: SessionTerrain::from_world(world.as_ref()),
+            terrain,
             state,
             context: world.session_context(),
             live_world: world.reset_live_world().clone(),
@@ -1810,6 +2484,7 @@ impl SessionRecord {
             castle_selector_frame,
             renderable_map_chains,
             selector_draw_feedback: None,
+            notification_draw_feedback: None,
             goat_draw_admission: None,
             world,
             generation: 1,
@@ -1828,6 +2503,19 @@ impl SessionRecord {
             camera_slope,
             camera_slope_sample,
             terrain_frame_assets,
+            source_render_asset_digest,
+            presentation_frame: PresentationFrameState::new(1),
+            lighting_receipt,
+            presentation_ui: LiveMenuState::default(),
+            debug_clock_bucket: None,
+            debug_previous_turn: source_turn,
+            debug_fps: 0,
+            sound_number: 0,
+            game_timer_turn: 0,
+            debug_heap_size: 0,
+            debug_memory_used: 0,
+            debug_memory_free: 0,
+            game_paused: false,
             pending_house_effects: Vec::new(),
             #[cfg(test)]
             immediate_released_holder_handoff: Vec::new(),
@@ -1874,8 +2562,10 @@ impl SessionRecord {
             reset_renderable_map_chains(self.world.as_ref(), self.frozen_actors.as_ref())
                 .expect("validated world reset renderable chains remain valid");
         self.selector_draw_feedback = None;
+        self.notification_draw_feedback = None;
         self.goat_draw_admission = None;
         self.generation = next_nonzero(self.generation);
+        self.presentation_frame.reset(self.generation);
         self.event_head = 0;
         self.events.clear();
         self.audio_commands.clear();
@@ -1883,11 +2573,25 @@ impl SessionRecord {
         self.music_start_armed = true;
         self.fire_sequence = 0;
         self.last_resolution = 0;
+        self.presentation_ui = LiveMenuState::default();
+        self.debug_clock_bucket = None;
+        self.debug_previous_turn = self.source_turn;
+        self.debug_fps = 0;
+        self.sound_number = 0;
+        self.game_timer_turn = 0;
+        self.debug_heap_size = 0;
+        self.debug_memory_used = 0;
+        self.debug_memory_free = 0;
+        self.game_paused = false;
         let player = &self.world.players()[usize::from(self.world.runtime().local_player_slot)];
         let record = player.record_bytes();
         self.source_turn = player.turn;
         self.mission
             .set_source_turn_counter(self.source_turn.cast_unsigned());
+        self.lighting_receipt = self
+            .mission
+            .dynamic_lighting_execution_receipt(&self.terrain.planes().shading)
+            .expect("reset dynamic-light state and authored shading have fixed extents");
         self.camera_fov = 128;
         self.camera_look_yaw = i16::from_le_bytes([record[28], record[29]]);
         self.camera_look_pitch = i16::from_le_bytes([record[30], record[31]]);
@@ -2154,9 +2858,334 @@ impl SessionRecord {
         .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))
     }
 
+    fn source_sprite_dispositions(&self) -> AbiResult<Vec<SourceSpriteDisposition>> {
+        let mut dispositions = self
+            .mission
+            .source_sprite_dispositions(&self.state)
+            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+        let mut qualified = dispositions
+            .iter()
+            .map(source_sprite_disposition_index)
+            .collect::<BTreeSet<_>>();
+        let legacy = self
+            .mission
+            .source_sprite_legacy_dispositions(&qualified)
+            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+        qualified.extend(legacy.iter().map(source_sprite_disposition_index));
+        dispositions.extend(legacy);
+
+        let mut imported_rows = Vec::new();
+        for source_entity_index in self.mission.source_map_chains().linked_entity_indices() {
+            if qualified.contains(&source_entity_index) {
+                continue;
+            }
+            let entity = self
+                .world
+                .entities()
+                .get(usize::from(source_entity_index))
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        unknown_source_sprite_tuple(source_entity_index, 0, 0, 0, 0),
+                    )
+                })?;
+            let source = self
+                .mission
+                .source_slots()
+                .get(usize::from(source_entity_index))
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        unknown_source_sprite_tuple(source_entity_index, 0, 0, 0, 0),
+                    )
+                })?;
+            let route = if entity.authority == EntityAuthority::GoatLive {
+                if (source.class, source.model) != (GOAT_CLASS, GOAT_MODEL)
+                    || !matches!(source.action, 9 | 12 | 13 | 14 | GOAT_PATROL_ACTION)
+                {
+                    return Err(AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        format!(
+                            "live Goat source row mismatch: slot={source_entity_index} source={}/{}/{} phase={} rng={} flags={:#x}",
+                            source.class,
+                            source.model,
+                            source.action,
+                            source.phase,
+                            source.entity_rng,
+                            source.control_flags,
+                        ),
+                    ));
+                }
+                SourceSpriteContractRoute::Legacy(SourceSpriteLegacyFamily::Goat)
+            } else if entity.authority == EntityAuthority::VillagerLive {
+                if (source.class, source.model) != (VILLAGER_CLASS, VILLAGER_MODEL)
+                    || !matches!(source.action, 104..=111)
+                {
+                    return Err(AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        format!(
+                            "live Villager source row mismatch: slot={source_entity_index} source={}/{}/{} phase={} rng={} flags={:#x}",
+                            source.class,
+                            source.model,
+                            source.action,
+                            source.phase,
+                            source.entity_rng,
+                            source.control_flags,
+                        ),
+                    ));
+                }
+                SourceSpriteContractRoute::Legacy(SourceSpriteLegacyFamily::Resident)
+            } else {
+                let tuple = ImportedResetSpriteTuple {
+                    class: source.class,
+                    model: source.model,
+                    action: source.action,
+                    entity_parameter_index: entity.parameter_relation.unwrap_or(0),
+                    particle_parameter_index: entity.particle_parameter_index.unwrap_or(0),
+                    animation_frame: entity.animation_frame(),
+                    control_flags: entity.control_flags,
+                };
+                match imported_reset_sprite_disposition(tuple).map_err(|_| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        unknown_source_sprite_tuple(
+                            source_entity_index,
+                            source.class,
+                            source.model,
+                            source.action,
+                            entity.particle_parameter_index.unwrap_or(0),
+                        ),
+                    )
+                })? {
+                    SourceSpriteTemplateDisposition::Render(_) => {
+                        SourceSpriteContractRoute::Legacy(SourceSpriteLegacyFamily::ImportedReset)
+                    }
+                    SourceSpriteTemplateDisposition::Excluded(reason) => {
+                        SourceSpriteContractRoute::Excluded(reason)
+                    }
+                }
+            };
+            imported_rows.push(SourceSpriteContractRow {
+                source_entity_index,
+                position: entity.position,
+                yaw: entity.yaw,
+                pitch: entity.pitch,
+                roll: 0,
+                control_flags: source.control_flags,
+                class: source.class,
+                model: source.model,
+                action: source.action,
+                xclass: 0,
+                xmodel: 0,
+                route,
+            });
+        }
+        let imported = source_sprite_dispositions(imported_rows)
+            .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+        qualified.extend(imported.iter().map(source_sprite_disposition_index));
+        dispositions.extend(imported);
+        dispositions.sort_unstable_by_key(source_sprite_disposition_index);
+        for source_entity_index in self.mission.source_map_chains().linked_entity_indices() {
+            if !qualified.contains(&source_entity_index) {
+                let (class, model, action) = self
+                    .mission
+                    .source_slots()
+                    .get(usize::from(source_entity_index))
+                    .map_or((0, 0, 0), |source| {
+                        (source.class, source.model, source.action)
+                    });
+                return Err(AbiError::new(
+                    MC_STATUS_VALIDATION_FAILED,
+                    unknown_source_sprite_tuple(source_entity_index, class, model, action, 0),
+                ));
+            }
+        }
+        Ok(dispositions)
+    }
+
+    fn source_render_inputs(&self, map_right_viewport: bool) -> AbiResult<SourceRenderInputs> {
+        let dispositions = self.source_sprite_dispositions()?;
+        let mut map_chains = self.mission.source_map_chains().clone();
+        for disposition in &dispositions {
+            let SourceSpriteDisposition::Render(submission) = disposition else {
+                continue;
+            };
+            if submission.source_entity_index == self.state.entity_index {
+                map_chains
+                    .sync_entity(RenderableMapSeed {
+                        entity_index: submission.source_entity_index,
+                        active: true,
+                        x: submission.position.x,
+                        y: submission.position.y,
+                    })
+                    .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+            }
+        }
+        let assets = self.terrain_frame_assets.as_ref().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                "source-render generation has no qualified asset banks",
+            )
+        })?;
+        let generation_asset_digest = source_render_asset_digest(self.world.as_ref(), assets)?;
+        if Some(generation_asset_digest) != self.source_render_asset_digest {
+            return Err(AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                "source-render asset banks changed within the active generation",
+            ));
+        }
+        let camera = Level1TerrainFrameCamera {
+            render_x: self
+                .camera_history
+                .x
+                .wrapping_add(self.camera_slope_sample.offset_x.cast_unsigned()),
+            render_y: self
+                .camera_history
+                .y
+                .wrapping_add(self.camera_slope_sample.offset_y.cast_unsigned()),
+            eye_z: i32::from(self.camera_history.z).wrapping_add(if map_right_viewport {
+                128
+            } else {
+                0
+            }),
+            yaw: i16::try_from(self.camera_history.yaw.cast_unsigned() & 0x07ff)
+                .expect("masked source yaw fits i16"),
+            pitch: self.camera_history.pitch,
+            roll: self.camera_history.roll,
+            fov: self.camera_history.fov,
+            source_turn: self.camera_history.source_turn,
+            reflections: true,
+        };
+        Ok(SourceRenderInputs {
+            map_right_viewport,
+            camera,
+            generation_asset_digest,
+            local_player_entity_index: self.state.entity_index,
+            goats: self.live_world.goats().to_vec(),
+            frozen_actors: self.frozen_actors.to_vec(),
+            ambient_entities: self.mission.ambient_entities().copied().collect(),
+            mission_actors: self.mission.actors().to_vec(),
+            dynamic_residents: self.mission.dynamic_residents().copied().collect(),
+            mission_segments: self.mission.multipart_segments().to_vec(),
+            castle_root: self
+                .mission
+                .castle_exists
+                .then_some(Level1CastleRootRender {
+                    source_entity_index: self.mission.castle_source_entity_index,
+                    position: self.mission.castle_position,
+                    active: true,
+                }),
+            mana_spheres: self.mission.mana_spheres().to_vec(),
+            mana_carrier: self.mission.mana_carrier().copied(),
+            map_chains,
+            projectiles: self.mission.projectiles().to_vec(),
+            impacts: self.mission.impacts().to_vec(),
+            possessed_buildings: self.mission.possessed_buildings().to_vec(),
+            source_slots: self.mission.source_slots().to_vec(),
+            dispositions,
+            night: self.world.metadata().map_type == sim_core::native_world::MapType::Night,
+        })
+    }
+
+    fn render_source_world_frame(
+        &self,
+        inputs: &SourceRenderInputs,
+    ) -> AbiResult<Level1TerrainFrame> {
+        let unavailable = |message| AbiError::new(MC_STATUS_VALIDATION_FAILED, message);
+        let assets = self.terrain_frame_assets.as_ref().ok_or_else(|| {
+            unavailable(
+                "source world frame unavailable: MC_ASSET_CACHE_PATH was not supplied when the session opened",
+            )
+        })?;
+        let source_bank = self.world.source_sprite_tmap_bank().ok_or_else(|| {
+            unavailable("source world frame unavailable without the CP1 source TMAP bank")
+        })?;
+        let tmap_clocks = self.selector_frames.as_ref().ok_or_else(|| {
+            unavailable("source world frame unavailable without Goat TMAP clocks")
+        })?;
+        let archer_tmap_clocks = self.archer_selector_frames.as_ref().ok_or_else(|| {
+            unavailable("source world frame unavailable without Archer TMAP clocks")
+        })?;
+        let firefly_tmap_clocks = self.firefly_selector_frames.as_ref().ok_or_else(|| {
+            unavailable("source world frame unavailable without Firefly TMAP clocks")
+        })?;
+        let villager_tmap_clocks = self.villager_selector_frames.as_ref().ok_or_else(|| {
+            unavailable("source world frame unavailable without villager TMAP clocks")
+        })?;
+        let fireball_tmap_clock = self.fireball_selector_frame.as_ref().ok_or_else(|| {
+            unavailable("source world frame unavailable without Fireball TMAP clock")
+        })?;
+        let possession_tmap_clock = self.possession_selector_frame.as_ref().ok_or_else(|| {
+            unavailable("source world frame unavailable without Possession TMAP clock")
+        })?;
+        let castle_tmap_clock = self.castle_selector_frame.as_ref().ok_or_else(|| {
+            unavailable("source world frame unavailable without Castle TMAP clock")
+        })?;
+        let planes = self.terrain.planes();
+        let render = if inputs.map_right_viewport {
+            render_level1_source_world_map_frame_composed
+        } else {
+            render_level1_source_world_frame
+        };
+        render(
+            inputs.camera,
+            Level1TerrainFrameResources {
+                terrain_types: &planes.terrain_types,
+                ground_heights: &planes.ground_heights,
+                shading: &planes.shading,
+                angles: &planes.angles,
+                terrain_atlas: &assets.terrain_atlas,
+                tablesn: &assets.tablesn,
+                sky: &assets.sky,
+            },
+            Level1WorldFrameResources {
+                local_player_entity_index: inputs.local_player_entity_index,
+                goats: &inputs.goats,
+                frozen_actors: &inputs.frozen_actors,
+                ambient_entities: &inputs.ambient_entities,
+                frozen_actor_tmap_bank: Some(&assets.frozen_actor_tmap_bank),
+                villager_tmap_clocks: Some(villager_tmap_clocks),
+                mission_actors: &inputs.mission_actors,
+                dynamic_residents: &inputs.dynamic_residents,
+                mission_segments: &inputs.mission_segments,
+                castle_root: inputs.castle_root,
+                mana_spheres: &inputs.mana_spheres,
+                mana_carrier: inputs.mana_carrier.as_ref(),
+                map_chains: &inputs.map_chains,
+                goat_tmap_clocks: tmap_clocks,
+                archer_tmap_bank: &assets.archer_tmap_bank,
+                archer_tmap_clocks,
+                firefly_tmap_bank: &assets.firefly_tmap_bank,
+                firefly_tmap_clocks,
+                projectiles: &inputs.projectiles,
+                impacts: &inputs.impacts,
+                possessed_buildings: &inputs.possessed_buildings,
+                combat_tmap_bank: &assets.combat_tmap_bank,
+                static_world_tmap_bank: &assets.static_world_tmap_bank,
+                economy_tmap_bank: &assets.economy_tmap_bank,
+                fireball_tmap_clock,
+                possession_tmap_clock,
+                castle_tmap_clock,
+                particle_parameters: &self.world.presentation().particles,
+                source_slots: &inputs.source_slots,
+                night: inputs.night,
+            },
+            SourceSpriteWorldResources {
+                dispositions: &inputs.dispositions,
+                tmap_bank: source_bank,
+            },
+        )
+        .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))
+    }
+
     fn world_frame(&mut self) -> AbiResult<Level1TerrainFrame> {
         let ambient_entities = self.mission.ambient_entities().copied().collect::<Vec<_>>();
         let frame = self.render_world_frame(&ambient_entities, &self.renderable_map_chains)?;
+        self.commit_world_frame_feedback(&frame)?;
+        Ok(frame)
+    }
+
+    fn commit_world_frame_feedback(&mut self, frame: &Level1TerrainFrame) -> AbiResult<()> {
         let mask = frame.goat_selector_mask;
         self.selector_frames
             .as_mut()
@@ -2195,7 +3224,401 @@ impl SessionRecord {
             .filter(|(tick, _)| *tick == feedback_tick)
             .map_or(mask, |(_, prior_mask)| prior_mask | mask);
         self.selector_draw_feedback = Some((feedback_tick, combined_mask));
-        Ok(frame)
+        Ok(())
+    }
+
+    fn presentation_frame(
+        &mut self,
+        query: McPresentationFrameQueryV2,
+    ) -> AbiResult<sim_core::presentation_frame::PresentationFrameResult> {
+        let assets = Arc::clone(self.terrain_frame_assets.as_ref().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                "presentation frame unavailable without qualified owner cache",
+            )
+        })?);
+        if query.menu_overlay > 6 {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                format!(
+                    "presentation menu overlay {} is not supported",
+                    query.menu_overlay
+                ),
+            ));
+        }
+        let hud = level1_hud_snapshot(self);
+        let spell_menu = level1_spell_menu_snapshot(self);
+        let minimap_entities_abi = level1_minimap_entity_commands(self);
+        let minimap_entities = minimap_entities_abi
+            .iter()
+            .map(|command| Level1MinimapEntityCommand {
+                source_slot: command.source_slot,
+                x: command.x,
+                y: command.y,
+                selector: command.selector,
+                kind: command.kind,
+                palette_index: command.palette_index,
+                size: command.size,
+                anchor: command.anchor,
+                help_selector: command.help_selector,
+            })
+            .collect::<Vec<_>>();
+        let map_entities = level1_map_entity_commands(self);
+        let spell_slot = |slot: McLevel1HudSpellSlotV2| LiveSpellSlot {
+            holder_entity_index: slot.holder_entity_index,
+            model: slot.model,
+            tier: slot.tier,
+            enabled_flags: slot.enabled_flags,
+            active_value: slot.active_value,
+            max_mana: slot.max_mana,
+            mana_regen: slot.mana_regen,
+            caster_mana: slot.caster_mana,
+            frame_selector: slot.frame_selector,
+            icon_selector: slot.icon_selector,
+        };
+        let fire = self.context.spell_fire.as_ref();
+        let mut family_available = std::array::from_fn(|family| {
+            u8::from(
+                assets
+                    .indexed_overlays
+                    .spell_menu_profile(family)
+                    .expect("qualified cache has all 26 spell families")
+                    .family_header_tier_count
+                    != 0,
+            )
+        });
+        // DrawBottomSpellsMenu suppresses the cave-only family in the outdoor
+        // Level 1 profile even though the source descriptor itself is live.
+        family_available[25] = 0;
+        let holder_entity_index = fire.map_or([0_u16; 26], |fire| fire.enabled_holder_indices);
+        let family_unlocked_tier = fire.map_or([0_i8; 26], |fire| fire.spell_levels);
+        let family_selected_tier = fire.map_or([0_i8; 26], |fire| fire.family_selected_tiers);
+        let family_hand_eligibility = fire.map_or([0_u8; 26], |fire| fire.spell_hand_eligibility);
+        let family_experience = fire.map_or([0_i32; 26], |fire| fire.spell_experience);
+        let family_enabled_flags = std::array::from_fn(|family| {
+            assets
+                .indexed_overlays
+                .spell_menu_profile(family)
+                .expect("qualified cache has all 26 spell families")
+                .family_flags
+        });
+        let family_active_value = std::array::from_fn(|family| {
+            let holder = holder_entity_index[family];
+            fire.and_then(|fire| {
+                fire.holders
+                    .iter()
+                    .find(|candidate| candidate.entity_index == holder)
+            })
+            .map_or(0, |holder| holder.active_value)
+        });
+        let family_mana_cost = std::array::from_fn(|family| {
+            assets
+                .indexed_overlays
+                .spell_menu_profile(family)
+                .expect("qualified cache has all 26 spell families")
+                .mana_cost
+        });
+        let family_max_mana_limit = std::array::from_fn(|family| {
+            assets
+                .indexed_overlays
+                .spell_menu_profile(family)
+                .expect("qualified cache has all 26 spell families")
+                .max_mana_limit
+        });
+        let debug_source = &self.world.entities()[usize::from(self.state.entity_index)];
+        let debug_record = debug_source.record_bytes();
+        let read_i16 =
+            |offset: usize| i16::from_le_bytes([debug_record[offset], debug_record[offset + 1]]);
+        let read_u16 =
+            |offset: usize| u16::from_le_bytes([debug_record[offset], debug_record[offset + 1]]);
+        let read_i32 = |offset: usize| {
+            i32::from_le_bytes([
+                debug_record[offset],
+                debug_record[offset + 1],
+                debug_record[offset + 2],
+                debug_record[offset + 3],
+            ])
+        };
+        let map_mode = matches!(self.mission.player_menu_state, 6 | 7 | 8 | 11 | 12 | 14);
+        let bridge = build_level1_final_main(
+            &assets.indexed_overlays,
+            Level1PresentationLive {
+                flight: self.state,
+                menu_state: self.mission.player_menu_state,
+                player_life: self.mission.player_life,
+                player_immobilize_ticks: self.state.immobilize_counter.cast_unsigned().into(),
+                terrain: self.terrain.planes(),
+                hud: LiveHud {
+                    mana_color_index: hud.mana_color_index,
+                    mana_max_color_index: hud.mana_max_color_index,
+                    life_color_index: hud.life_color_index,
+                    color_phase_1: hud.color_phase_1,
+                    color_phase_2: hud.color_phase_2,
+                    player_hit_frame_ticks: hud.player_hit_frame_ticks,
+                    castle_hit_frame_ticks: hud.castle_hit_frame_ticks,
+                    global_mana_denominator: hud.global_mana_denominator,
+                    secured_mana_component: hud.secured_mana_component,
+                    goal_percent: hud.goal_percent,
+                    player_life: self.mission.player_life,
+                    player_max_life: self.mission.player_max_life,
+                    player_mana: self.mission.player_mana,
+                    player_max_mana: self.mission.player_max_mana,
+                    castle_active: self.mission.castle_exists,
+                    castle_level: self.mission.castle_level,
+                    castle_life: self.mission.castle_life,
+                    castle_max_life: self.mission.castle_max_life,
+                    castle_mana: self.mission.castle_mana,
+                    castle_mana_capacity: self.mission.castle_mana_capacity,
+                    player_status_flags: hud.player_status_flags,
+                    player_status_word: u16::from(self.mission.exit_player_status_flags),
+                    balloon_level: 0,
+                    balloon_life: [0; 3],
+                    balloon_max_life: [0; 3],
+                    balloon_mana: [0; 3],
+                    balloon_max_mana: [0; 3],
+                    left: spell_slot(hud.left),
+                    right: spell_slot(hud.right),
+                },
+                spell_menu: LiveSpellMenu {
+                    selected_ui_index: spell_menu.selected_ui_index,
+                    selected_tier: spell_menu.selected_tier,
+                    left_family: spell_menu.left_family,
+                    right_family: spell_menu.right_family,
+                    family_available,
+                    holder_entity_index,
+                    family_unlocked_tier,
+                    family_selected_tier,
+                    family_hand_eligibility,
+                    family_enabled_flags,
+                    family_active_value,
+                    family_experience,
+                    family_mana_cost,
+                    family_max_mana_limit,
+                    castle_mana: self.mission.castle_mana,
+                    caster_mana: self.mission.player_mana,
+                    player_colour_0: hud.mana_color_index,
+                    player_colour_1: hud.mana_max_color_index,
+                    active_suppression_phase: hud.color_phase_1 != 0,
+                    cursor_visible: self.presentation_ui.cursor_visible
+                        && matches!(self.presentation_ui.joystick, 4 | 5 | 6 | 8 | 11 | 12 | 13),
+                    cursor_x: self.presentation_ui.mouse_x / 2,
+                    cursor_y: self.presentation_ui.mouse_y / 2,
+                },
+                menu: self.presentation_ui,
+                debug_entity: LiveDebugEntity {
+                    pointer_value: u32::from_le_bytes([
+                        debug_record[0],
+                        debug_record[1],
+                        debug_record[2],
+                        debug_record[3],
+                    ]),
+                    source_slot: debug_source.index,
+                    class: debug_source.class,
+                    model: debug_source.model,
+                    action: debug_source.action,
+                    life: debug_source.life,
+                    max_life: debug_source.max_life,
+                    actual_speed: debug_source.actual_speed,
+                    min_speed: read_i16(132),
+                    max_speed: read_i16(134),
+                    position: self.state.position,
+                    source_id: debug_source.source_id,
+                    parent_id: read_u16(40),
+                    mana: debug_source.mana,
+                    max_mana: read_i32(140),
+                },
+                minimap_entities: &minimap_entities,
+                minimap_marks: self.mission.minimap_marks(&self.state),
+                map_entities: &map_entities,
+                map_marks: self.mission.map_marks(&self.state),
+                objective_selector: self.mission.current_text_selector,
+                objective_ticks: u16::from(self.mission.objective_textbox_ticks),
+                level_completed: self.mission.level_completed,
+                exit_sequence_active: self.mission.exit_sequence_active,
+                exit_display_blank: self.mission.exit_display_blank,
+                exit_blur_mode: self.mission.exit_blur_mode,
+                notification_active: self.mission.player_notification_active,
+                notification_id: self.mission.player_notification_id,
+                notification_state: self.mission.player_notification_state,
+                notification_timer: self.mission.player_notification_timer,
+                notification_player_name: self.presentation_ui.notification_player_name,
+                level_number: 1,
+                player_turn: self.source_turn,
+                sound_number: self.sound_number,
+                game_timer_turn: self.game_timer_turn,
+                debug_fps: self.debug_fps,
+                active_entity_count: u16::try_from(
+                    self.mission
+                        .source_slots()
+                        .iter()
+                        .filter(|slot| slot.active)
+                        .count(),
+                )
+                .expect("source arena count fits u16"),
+                heap_size: self.debug_heap_size,
+                memory_used: self.debug_memory_used,
+                memory_free: self.debug_memory_free,
+            },
+            PresentationBridgeQuery {
+                minimap_enabled: query.minimap_enabled != 0,
+                top_bar_enabled: query.top_bar_enabled != 0,
+                menu_overlay: query.menu_overlay,
+                game_paused: query.game_paused != 0,
+                level_end: query.level_end != 0,
+                objective_selector: (query.objective_selector != u8::MAX)
+                    .then_some(query.objective_selector),
+                objective_textbox: query.objective_textbox != 0,
+                tutorial_or_briefing: query.tutorial_or_briefing != 0,
+                help_popup: query.help_popup != 0,
+                debug_flags: query.debug_text,
+            },
+        )
+        .map_err(|error| AbiError::new(MC_STATUS_GENERATION_MISMATCH, error.0))?;
+        let current_lighting_receipt = self
+            .mission
+            .dynamic_lighting_execution_receipt(&self.terrain.planes().shading)
+            .map_err(|error| AbiError::new(MC_STATUS_GENERATION_MISMATCH, error))?;
+        if current_lighting_receipt != self.lighting_receipt {
+            return Err(AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                "dynamic-light state/shading changed without an executed scheduler receipt",
+            ));
+        }
+        let source_render_inputs = self.source_render_inputs(map_mode)?;
+        let notification_feedback = bridge.notification_feedback;
+        let input = PresentationFrameInput {
+            generation: query.generation,
+            tick: query.tick,
+            presentation_revision: query.presentation_revision,
+            state_hash: state_hash(&self.state),
+            source_arena_hash: self.mission.source_arena_hash_v2(),
+            source_render_input_hash: self.source_render_input_hash_for(&source_render_inputs)?,
+            lighting_hash: self.mission.dynamic_lighting_hash_v1(),
+            camera_hash: camera_history_hash(self.camera_history),
+            source_reflections_expected: i32::from(self.camera_history.z)
+                < sim_core::terrain_reflection::REFLECTION_EYE_Z_LIMIT,
+            postprocess: IndexedPostprocessInput {
+                configured_mode: if self.mission.exit_sequence_active {
+                    self.mission.exit_blur_mode
+                } else {
+                    query.configured_blur_mode
+                },
+                blur_capability: query.blur_capability != 0,
+                high_speed_system: query.high_speed_system != 0,
+                scratch_present: query.scratch_present != 0,
+                vga_resolution: query.vga_resolution,
+                menu_state: self.mission.player_menu_state,
+                viewport_width: query.viewport_width,
+                viewport_height: query.viewport_height,
+                screen_stride: query.screen_stride,
+                actual_speed: self.state.actual_speed,
+                spatial_smoothing: query.spatial_smoothing != 0,
+            },
+            overlay: bridge.overlay,
+            lighting_receipt: Some(self.lighting_receipt),
+        };
+        let mut goat_candidate = self.selector_frames.clone().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                "presentation source renderer has no Goat selector clocks",
+            )
+        })?;
+        let mut archer_candidate = self.archer_selector_frames.clone().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                "presentation source renderer has no Archer selector clocks",
+            )
+        })?;
+        let mut firefly_candidate = self.firefly_selector_frames.clone().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                "presentation source renderer has no Firefly selector clocks",
+            )
+        })?;
+        let mut villager_candidate = self.villager_selector_frames.clone().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                "presentation source renderer has no villager selector clocks",
+            )
+        })?;
+        let mut fireball_candidate = self.fireball_selector_frame.clone().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                "presentation source renderer has no Fireball selector clock",
+            )
+        })?;
+        let mut possession_candidate = self.possession_selector_frame.clone().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                "presentation source renderer has no Possession selector clock",
+            )
+        })?;
+        let mut castle_candidate = self.castle_selector_frame.clone().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                "presentation source renderer has no Castle selector clock",
+            )
+        })?;
+        let mut presentation =
+            std::mem::replace(&mut self.presentation_frame, PresentationFrameState::new(0));
+        let mut feedback_candidate = None;
+        let result =
+            presentation.finalize(input, &assets.tablesn, &assets.indexed_overlays, || {
+                let frame = self
+                    .render_source_world_frame(&source_render_inputs)
+                    .map_err(|error| PresentationFrameError(error.message))?;
+                let receipt = frame
+                    .source_execution_receipt()
+                    .map_err(|error| PresentationFrameError(error.0))?;
+                goat_candidate
+                    .latch_draw_attempts(frame.goat_selector_mask)
+                    .map_err(PresentationFrameError)?;
+                archer_candidate
+                    .latch_draw_attempts(frame.archer_selector_mask)
+                    .map_err(PresentationFrameError)?;
+                firefly_candidate.latch_draw_attempts(frame.firefly_selector_mask);
+                villager_candidate
+                    .latch_draw_attempts(frame.frozen_actor_selector_mask)
+                    .map_err(PresentationFrameError)?;
+                fireball_candidate.latch_draw_attempt(frame.fireball_draw_attempted);
+                possession_candidate.latch_draw_attempt(frame.possession_draw_attempted);
+                castle_candidate.latch_draw_attempt(frame.castle_draw_attempted);
+                feedback_candidate = Some((
+                    goat_candidate,
+                    archer_candidate,
+                    firefly_candidate,
+                    villager_candidate,
+                    fireball_candidate,
+                    possession_candidate,
+                    castle_candidate,
+                    frame.goat_selector_mask,
+                ));
+                Ok(SourceRenderedFrame {
+                    map_world: map_mode.then(|| frame.indices.clone()),
+                    indices: frame.indices,
+                    receipt,
+                })
+            });
+        self.presentation_frame = presentation;
+        let result =
+            result.map_err(|error| AbiError::new(MC_STATUS_GENERATION_MISMATCH, error.0))?;
+        if result.newly_committed {
+            let (goat, archer, firefly, villager, fireball, possession, castle, goat_mask) =
+                feedback_candidate
+                    .expect("newly committed presentation owns validated clock candidates");
+            self.selector_frames = Some(goat);
+            self.archer_selector_frames = Some(archer);
+            self.firefly_selector_frames = Some(firefly);
+            self.villager_selector_frames = Some(villager);
+            self.fireball_selector_frame = Some(fireball);
+            self.possession_selector_frame = Some(possession);
+            self.castle_selector_frame = Some(castle);
+            self.selector_draw_feedback = Some((self.state.tick, goat_mask));
+            if let Some((active, state, timer)) = notification_feedback {
+                self.notification_draw_feedback = Some((self.state.tick, active, state, timer));
+            }
+        }
+        Ok(result)
     }
 
     fn selector_frame_batch(
@@ -2403,6 +3826,17 @@ impl SessionRecord {
     fn step(&mut self, command: PlayerCommand) {
         #[cfg(test)]
         self.immediate_released_holder_handoff.clear();
+        if self.game_paused {
+            return;
+        }
+        if let Some((_, active, state, timer)) = self.notification_draw_feedback.take() {
+            self.mission.player_notification_active = active;
+            self.mission.player_notification_state = state;
+            self.mission.player_notification_timer = timer;
+            if !active {
+                self.mission.player_notification_id = 0;
+            }
+        }
         self.mission.finish_hud_draw(self.state.tick);
         if let (Some(frames), Some(bank)) =
             (self.selector_frames.as_mut(), self.world.goat_tmap_bank())
@@ -2451,6 +3885,7 @@ impl SessionRecord {
         }
         self.mission.advance_exit_palette_frame();
         self.source_turn = self.source_turn.wrapping_add(1);
+        self.game_timer_turn = self.game_timer_turn.wrapping_add(1);
         if !self.mission.exit_sequence_owns_player_action()
             && self.mission.player_action == sim_core::level1_mission::PLAYER_ACTION_ACTIVE
         {
@@ -2506,6 +3941,11 @@ impl SessionRecord {
                 )
                 .chain(self.live_world.houses().iter().map(house_collision_target)),
         );
+        {
+            let (_, shading) = self.terrain.dynamic_lighting_planes();
+            self.mission
+                .subtract_dynamic_lighting_before_updates(shading);
+        }
         self.mission.begin_source_turn_at(self.state.position);
         let mut goat_events = self
             .reclaim_imported_source_slots()
@@ -2823,6 +4263,19 @@ impl SessionRecord {
             );
         }
         self.live_world.finish_source_turn();
+        {
+            let (ground_heights, shading) = self.terrain.dynamic_lighting_planes();
+            self.mission.service_dynamic_lighting_after_updates(
+                &self.state,
+                &source_views,
+                ground_heights,
+                shading,
+            );
+            self.lighting_receipt = self
+                .mission
+                .dynamic_lighting_execution_receipt(shading)
+                .expect("qualified C ABI dynamic-light execution has fixed shading extent");
+        }
         self.mission.finish_source_turn(&self.state);
         self.sync_supported_renderable_records()
             .expect("validated final source renderable map update");
@@ -2840,6 +4293,8 @@ impl SessionRecord {
         }
         self.finalize_supported_renderable_records()
             .expect("validated source renderable active set");
+        self.mission
+            .set_source_map_chains(self.renderable_map_chains.clone());
         if let Some(fire) = self.context.spell_fire.as_mut() {
             // The class-15 handlers consume one active tick after their
             // same-turn projectile factories: model 0 in `sub_693F0` and
@@ -4446,6 +5901,21 @@ fn selector_state_hash_v1(frames: &GoatTmapClocks, feedback: Option<(u64, u8)>) 
     hash
 }
 
+fn camera_history_hash(camera: CameraHistory) -> u64 {
+    let mut bytes = Vec::with_capacity(64);
+    bytes.extend_from_slice(b"mc2-presentation-camera-v1\0");
+    bytes.extend_from_slice(&camera.tick.to_le_bytes());
+    bytes.extend_from_slice(&camera.source_turn.to_le_bytes());
+    bytes.extend_from_slice(&camera.x.to_le_bytes());
+    bytes.extend_from_slice(&camera.y.to_le_bytes());
+    bytes.extend_from_slice(&camera.z.to_le_bytes());
+    bytes.extend_from_slice(&camera.yaw.to_le_bytes());
+    bytes.extend_from_slice(&camera.pitch.to_le_bytes());
+    bytes.extend_from_slice(&camera.roll.to_le_bytes());
+    bytes.extend_from_slice(&camera.fov.to_le_bytes());
+    sim_core::presentation_frame::byte_hash(&bytes)
+}
+
 fn selector_frame_state(
     ordinal: usize,
     clock: &GoatTmapClock,
@@ -4780,7 +6250,12 @@ pub extern "C" fn mc_native_session_open(
                 "package_dir and closure_path must be non-empty",
             ));
         }
-        let world = NativeWorld::load(&package, &closure).map_err(|error| {
+        let world = if let Some(cache_root) = std::env::var_os("MC_ASSET_CACHE_PATH") {
+            NativeWorld::load_with_owner_cache(&package, &closure, PathBuf::from(cache_root))
+        } else {
+            NativeWorld::load(&package, &closure)
+        }
+        .map_err(|error| {
             let message = error.to_string();
             let status = if message.starts_with("cannot read ") {
                 MC_STATUS_IO_ERROR
@@ -5172,6 +6647,223 @@ pub extern "C" fn mc_native_session_world_frame_copy(
     })
 }
 
+/// Copy the revisioned compositor-complete fixed-profile FINAL MAIN.
+///
+/// Unlike the stable 96-byte terrain/world endpoints, this additive endpoint
+/// owns temporal MAIN history, indexed overlays, and per-byte provenance.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_session_presentation_frame_copy(
+    handle: u64,
+    query: *const McPresentationFrameQueryV2,
+    index_buffer: *mut u8,
+    index_capacity: u32,
+    provenance_buffer: *mut u8,
+    provenance_capacity: u32,
+    out_info: *mut McPresentationFrameInfoV2,
+    out_info_size: u32,
+) -> i32 {
+    boundary_value(out_info, out_info_size, || {
+        let query = read_versioned_input(query, "presentation frame query")?;
+        validate_reserved(&query.reserved, "presentation frame query")?;
+        if query.reserved_0 != 0 {
+            return Err(AbiError::new(
+                MC_STATUS_RESERVED_NONZERO,
+                "presentation frame query reserved_0 must be zero",
+            ));
+        }
+        for (name, value) in [
+            ("blur_capability", query.blur_capability),
+            ("high_speed_system", query.high_speed_system),
+            ("scratch_present", query.scratch_present),
+            ("spatial_smoothing", query.spatial_smoothing),
+            ("minimap_enabled", query.minimap_enabled),
+            ("top_bar_enabled", query.top_bar_enabled),
+            ("game_paused", query.game_paused),
+            ("level_end", query.level_end),
+            ("objective_textbox", query.objective_textbox),
+            ("tutorial_or_briefing", query.tutorial_or_briefing),
+            ("help_popup", query.help_popup),
+        ] {
+            if value > 1 {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    format!("presentation frame {name} must be 0 or 1"),
+                ));
+            }
+        }
+        if query.debug_text & !0x48 != 0 {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "presentation frame debug_text accepts source flags 0x08 and 0x40 only",
+            ));
+        }
+        if query.configured_blur_mode > 2
+            || query.viewport_width > LEVEL1_VIEW_WIDTH as u16
+            || query.viewport_height > LEVEL1_VIEW_HEIGHT as u16
+            || query.screen_stride < query.viewport_width
+        {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "presentation blur mode or viewport/stride is invalid",
+            ));
+        }
+        let required =
+            u32::try_from(LEVEL1_VIEW_PIXELS).expect("qualified presentation extent fits u32");
+        if index_capacity < required || provenance_capacity < required {
+            return Err(AbiError::new(
+                MC_STATUS_BUFFER_TOO_SMALL,
+                format!(
+                    "presentation frame requires {required} index and provenance bytes, got {index_capacity} and {provenance_capacity}"
+                ),
+            ));
+        }
+        if index_buffer.is_null() || provenance_buffer.is_null() {
+            return Err(AbiError::new(
+                MC_STATUS_NULL_POINTER,
+                "presentation index and provenance buffers must be non-null",
+            ));
+        }
+        with_session_mut(handle, |session| {
+            if query.generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "presentation generation {} does not match {}",
+                        query.generation, session.generation
+                    ),
+                ));
+            }
+            if query.tick != session.camera_history.tick {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "presentation tick {} does not match camera history {}",
+                        query.tick, session.camera_history.tick
+                    ),
+                ));
+            }
+            if (query.game_paused != 0) != session.game_paused {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    "presentation paused query does not match authoritative session state",
+                ));
+            }
+            let result = session.presentation_frame(query)?;
+            let frame = &result.frame;
+            // SAFETY: both caller buffers were checked non-null with the
+            // exact fixed-profile capacity.
+            unsafe {
+                index_buffer.copy_from_nonoverlapping(frame.indices.as_ptr(), LEVEL1_VIEW_PIXELS);
+                provenance_buffer
+                    .copy_from_nonoverlapping(frame.provenance.as_ptr(), LEVEL1_VIEW_PIXELS);
+            }
+            let effective_postprocess_mode = match frame.postprocess_branch {
+                IndexedPostprocessBranch::Direct { .. } => 0,
+                IndexedPostprocessBranch::Temporal { mode } => mode,
+            };
+            let source = frame.source_receipt;
+            let family = source.family_mask;
+            let source_flags = if source.sky_seeded {
+                MC_TERRAIN_FRAME_SKY_SEEDED
+            } else {
+                0
+            } | if source.has_coverage {
+                MC_TERRAIN_FRAME_HAS_COVERAGE
+            } else {
+                0
+            } | if family & 1 != 0 {
+                MC_TERRAIN_FRAME_GOATS_COMPOSITED
+            } else {
+                0
+            } | if family & (1 << 1) != 0 {
+                MC_TERRAIN_FRAME_FROZEN_ACTORS_COMPOSITED
+            } else {
+                0
+            } | if family & (1 << 3) != 0 {
+                MC_TERRAIN_FRAME_ARCHERS_COMPOSITED
+            } else {
+                0
+            } | if family & (1 << 4) != 0 {
+                MC_TERRAIN_FRAME_FIREFLIES_COMPOSITED
+            } else {
+                0
+            } | if family & (1 << 5) != 0 {
+                MC_TERRAIN_FRAME_COMBAT_COMPOSITED
+            } else {
+                0
+            } | if family & (1 << 6) != 0 {
+                MC_TERRAIN_FRAME_OBJECTIVE_PROPS_COMPOSITED
+            } else {
+                0
+            } | if family & (1 << 7) != 0 {
+                MC_TERRAIN_FRAME_ECONOMY_COMPOSITED
+            } else {
+                0
+            } | if family & (1 << 8) != 0 {
+                MC_TERRAIN_FRAME_SPRITE_SHADOWS_COMPOSITED
+            } else {
+                0
+            } | if source.reflected_sprites_composited {
+                MC_TERRAIN_FRAME_REFLECTED_SPRITES_COMPOSITED
+            } else {
+                0
+            };
+            let presentation_flags = if frame.has_provenance() {
+                MC_PRESENTATION_FRAME_HAS_PROVENANCE
+            } else {
+                0
+            } | if frame.compositor_complete() {
+                MC_PRESENTATION_FRAME_COMPOSITOR_COMPLETE
+            } else {
+                0
+            } | if frame.overlays_complete() {
+                MC_PRESENTATION_FRAME_OVERLAYS_COMPOSITED
+            } else {
+                0
+            } | if frame.postprocess_complete() {
+                MC_PRESENTATION_FRAME_POSTPROCESS_COMPLETE
+            } else {
+                0
+            } | if frame.lighting_complete() {
+                MC_PRESENTATION_FRAME_LIGHTING_COMPLETE
+            } else {
+                0
+            };
+            Ok(McPresentationFrameInfoV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McPresentationFrameInfoV2>(),
+                generation: frame.generation,
+                tick: frame.tick,
+                presentation_revision: frame.presentation_revision,
+                immutable_input_hash: frame.immutable_input_hash,
+                width: LEVEL1_VIEW_WIDTH as u16,
+                height: LEVEL1_VIEW_HEIGHT as u16,
+                stride: LEVEL1_VIEW_WIDTH as u16,
+                viewport_width: query.viewport_width,
+                index_bytes: required,
+                provenance_bytes: required,
+                flags: source_flags | presentation_flags,
+                effective_postprocess_mode,
+                history_state: match session.presentation_frame.history() {
+                    MainHistory::Unprimed => 0,
+                    MainHistory::Primed => 1,
+                },
+                newly_committed: u8::from(result.newly_committed),
+                reserved_0: 0,
+                index_hash: frame.index_hash,
+                provenance_hash: frame.provenance_hash,
+                lighting_hash: session.mission.dynamic_lighting_hash_v1(),
+                source_arena_hash: session.mission.source_arena_hash_v2(),
+                overlay_pixels_written: frame.overlay_pixels_written,
+                overlay_stage_count: u16::try_from(frame.overlay_receipts.len())
+                    .expect("fixed overlay stage count fits u16"),
+                reserved_1: 0,
+                reserved: [0; 6],
+            })
+        })
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_native_world_info(
     handle: u64,
@@ -5528,6 +7220,33 @@ pub extern "C" fn mc_native_level1_player_menu_state(handle: u64, menu_state: u8
             session.mission.set_player_menu_state(menu_state);
             Ok(())
         })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_level1_game_paused(handle: u64, paused: u8) -> i32 {
+    boundary(|| {
+        if paused > 1 {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "Level 1 paused state must be zero or one",
+            ));
+        }
+        with_session_mut(handle, |session| {
+            session.set_game_paused(paused != 0);
+            Ok(())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_level1_presentation_input(
+    handle: u64,
+    input: *const McLevel1PresentationInputV2,
+) -> i32 {
+    boundary(|| {
+        let input = read_versioned_input(input, "Level 1 presentation input")?;
+        with_session_mut(handle, |session| session.apply_presentation_input(input))
     })
 }
 
@@ -7098,7 +8817,7 @@ fn record_u16(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
 }
 
-fn level1_minimap_entity_commands(session: &SessionRecord) -> Vec<McLevel1MinimapEntityCommandV2> {
+fn level1_minimap_entity_inputs(session: &SessionRecord) -> [Level1MinimapEntityInput; 1_000] {
     const SOURCE_EXTENT: usize = 1_000;
     let local_player = session.state.entity_index;
     let mut inputs = [Level1MinimapEntityInput::default(); SOURCE_EXTENT];
@@ -7302,7 +9021,11 @@ fn level1_minimap_entity_commands(session: &SessionRecord) -> Vec<McLevel1Minima
             );
         }
     }
+    inputs
+}
 
+fn level1_minimap_entity_commands(session: &SessionRecord) -> Vec<McLevel1MinimapEntityCommandV2> {
+    let inputs = level1_minimap_entity_inputs(session);
     let mut commands = Vec::with_capacity(LEVEL1_MINIMAP_MAX_ENTITY_COMMANDS);
     if session.mission.castle_exists {
         for (order, (x, y)) in
@@ -7344,6 +9067,39 @@ fn level1_minimap_entity_commands(session: &SessionRecord) -> Vec<McLevel1Minima
     assert!(
         commands.len() <= LEVEL1_MINIMAP_MAX_ENTITY_COMMANDS,
         "Level 1 minimap command extent"
+    );
+    commands
+}
+
+fn level1_map_entity_commands(session: &SessionRecord) -> Vec<Level1MinimapEntityCommand> {
+    let inputs = level1_minimap_entity_inputs(session);
+    let mut commands = Vec::with_capacity(LEVEL1_MINIMAP_MAX_ENTITY_COMMANDS);
+    if session.mission.castle_exists {
+        commands.extend(
+            level1_map_castle_rope_pixels(&session.state, session.mission.castle_position)
+                .into_iter()
+                .map(|(x, y)| Level1MinimapEntityCommand {
+                    source_slot: session.mission.castle_source_entity_index,
+                    x,
+                    y,
+                    selector: 0,
+                    kind: LEVEL1_MINIMAP_COMMAND_BLEND_PIXEL,
+                    palette_index: 176,
+                    size: 1,
+                    anchor: sim_core::level1_mission::LEVEL1_MINIMAP_ANCHOR_TOP_LEFT,
+                    help_selector: 0,
+                }),
+        );
+    }
+    commands.extend(
+        inputs
+            .into_iter()
+            .skip(1)
+            .filter_map(|input| level1_map_entity_command(&session.state, input)),
+    );
+    assert!(
+        commands.len() <= LEVEL1_MINIMAP_MAX_ENTITY_COMMANDS,
+        "Level 1 map entity command extent"
     );
     commands
 }
@@ -8027,30 +9783,34 @@ fn load_optional_terrain_frame_assets() -> AbiResult<Option<TerrainFrameAssets>>
     let Some(root) = std::env::var_os("MC_ASSET_CACHE_PATH") else {
         return Ok(None);
     };
-    let root = PathBuf::from(root);
+    load_terrain_frame_assets(&PathBuf::from(root)).map(Some)
+}
+
+fn load_terrain_frame_assets(root: &Path) -> AbiResult<TerrainFrameAssets> {
     let terrain_atlas = read_qualified_cache_file(
-        &root,
+        root,
         "terrain/bl32n.atlas.indices.u8",
         LEVEL1_TERRAIN_ATLAS_BYTES,
         TERRAIN_ATLAS_SHA256,
     )?;
     let tablesn = read_qualified_cache_file(
-        &root,
+        root,
         "palette/tablesn.u8",
         sim_core::mode26_raster::NIGHT_TABLES_BYTES,
         TABLESN_SHA256,
     )?;
     let sky =
-        read_qualified_cache_file(&root, "sky/skyn.indices.u8", LEVEL1_SKY_BYTES, SKYN_SHA256)?;
-    let palette_rgb6 =
-        read_qualified_cache_file(&root, "palette/paln.rgb6", 768, PALN_RGB6_SHA256)?;
-    let archer_tmap_bank = load_qualified_archer_tmap_bank(&root)?;
-    let firefly_tmap_bank = load_qualified_firefly_tmap_bank(&root)?;
-    let frozen_actor_tmap_bank = load_qualified_frozen_actor_tmap_bank(&root)?;
-    let combat_tmap_bank = load_qualified_combat_tmap_bank(&root)?;
-    let static_world_tmap_bank = load_qualified_static_world_tmap_bank(&root)?;
-    let economy_tmap_bank = load_qualified_economy_tmap_bank(&root)?;
-    Ok(Some(TerrainFrameAssets {
+        read_qualified_cache_file(root, "sky/skyn.indices.u8", LEVEL1_SKY_BYTES, SKYN_SHA256)?;
+    let palette_rgb6 = read_qualified_cache_file(root, "palette/paln.rgb6", 768, PALN_RGB6_SHA256)?;
+    let archer_tmap_bank = load_qualified_archer_tmap_bank(root)?;
+    let firefly_tmap_bank = load_qualified_firefly_tmap_bank(root)?;
+    let frozen_actor_tmap_bank = load_qualified_frozen_actor_tmap_bank(root)?;
+    let combat_tmap_bank = load_qualified_combat_tmap_bank(root)?;
+    let static_world_tmap_bank = load_qualified_static_world_tmap_bank(root)?;
+    let economy_tmap_bank = load_qualified_economy_tmap_bank(root)?;
+    let indexed_overlays = IndexedOverlayAssets::load(root)
+        .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+    Ok(TerrainFrameAssets {
         terrain_atlas: terrain_atlas.into_boxed_slice(),
         tablesn: tablesn.into_boxed_slice(),
         sky: sky.into_boxed_slice(),
@@ -8061,7 +9821,8 @@ fn load_optional_terrain_frame_assets() -> AbiResult<Option<TerrainFrameAssets>>
         combat_tmap_bank,
         static_world_tmap_bank,
         economy_tmap_bank,
-    }))
+        indexed_overlays,
+    })
 }
 
 fn load_qualified_frozen_actor_tmap_bank(root: &Path) -> AbiResult<FrozenActorTmapBank> {
@@ -8603,6 +10364,53 @@ mod tests {
         struct_size: u32,
     }
 
+    fn source_presentation_input() -> McLevel1PresentationInputV2 {
+        let mut input = McLevel1PresentationInputV2 {
+            authority_mask: LIVE_MENU_AUTH_ALL,
+            load_available: 1,
+            sound_available: 1,
+            music_available: 1,
+            options_enabled_mask: 0x1ffff,
+            sound_volume: 127,
+            music_volume: 127,
+            volume_target: 1,
+            text_colour_phase: 1,
+            debug_clock_bucket: 17,
+            sound_number: 46,
+            debug_heap_size: 0,
+            debug_memory_used: 0,
+            debug_memory_free: 0,
+            ..McLevel1PresentationInputV2::default()
+        };
+        for (index, name) in [
+            b"Zanzamar".as_slice(),
+            b"Nyphur",
+            b"Rahn",
+            b"Belix",
+            b"Jark",
+            b"Elyssia",
+            b"Yragore",
+            b"Prish",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let start = index * 16;
+            input.chat_names[start..start + name.len()].copy_from_slice(name);
+        }
+        input.notification_player_name[..8].copy_from_slice(b"Zanzamar");
+        input
+    }
+
+    fn submit_source_presentation_input(handle: u64, input: &McLevel1PresentationInputV2) {
+        assert_eq!(
+            mc_native_level1_presentation_input(handle, input),
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+    }
+
     #[test]
     fn world_frame_capability_flags_follow_the_passes_that_actually_ran() {
         let without_reflection = world_frame_flags(false, true);
@@ -8624,6 +10432,1938 @@ mod tests {
             without_shadows & MC_TERRAIN_FRAME_SPRITE_SHADOWS_COMPOSITED,
             0
         );
+    }
+
+    #[test]
+    fn presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed() {
+        assert_eq!(size_of::<McPresentationFrameQueryV2>(), 64);
+        assert_eq!(size_of::<McLevel1PresentationInputV2>(), 740);
+        assert_eq!(size_of::<McPresentationFrameInfoV2>(), 128);
+        assert_eq!(
+            std::mem::offset_of!(McPresentationFrameQueryV2, configured_blur_mode),
+            40
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1PresentationInputV2, mouse_x),
+            38
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1PresentationInputV2, debug_clock_bucket),
+            704
+        );
+        assert_eq!(
+            std::mem::offset_of!(McPresentationFrameInfoV2, immutable_input_hash),
+            32
+        );
+        assert_eq!(
+            std::mem::offset_of!(McPresentationFrameInfoV2, index_hash),
+            64
+        );
+        assert_eq!(
+            std::mem::offset_of!(McPresentationFrameInfoV2, reserved),
+            104
+        );
+
+        let handle = open_fixture_with_presentation_cache();
+        let mut query = McPresentationFrameQueryV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McPresentationFrameQueryV2>(),
+            generation: 1,
+            tick: 0,
+            presentation_revision: 1,
+            viewport_width: LEVEL1_VIEW_WIDTH as u16,
+            viewport_height: LEVEL1_VIEW_HEIGHT as u16,
+            screen_stride: LEVEL1_VIEW_WIDTH as u16,
+            reserved_0: 0,
+            configured_blur_mode: 0,
+            blur_capability: 0,
+            high_speed_system: 1,
+            scratch_present: 1,
+            vga_resolution: 1,
+            spatial_smoothing: 0,
+            minimap_enabled: 1,
+            top_bar_enabled: 1,
+            menu_overlay: 0,
+            game_paused: 0,
+            level_end: 0,
+            objective_selector: u8::MAX,
+            objective_textbox: 0,
+            tutorial_or_briefing: 0,
+            help_popup: 0,
+            debug_text: 0,
+            reserved: [0; 2],
+        };
+        let mut indices = vec![0_u8; LEVEL1_VIEW_PIXELS];
+        let mut provenance = vec![0_u8; LEVEL1_VIEW_PIXELS];
+        let mut info = McPresentationFrameInfoV2::default();
+        let copy = |query: &McPresentationFrameQueryV2,
+                    indices: &mut [u8],
+                    provenance: &mut [u8],
+                    info: &mut McPresentationFrameInfoV2| {
+            mc_native_session_presentation_frame_copy(
+                handle,
+                query,
+                indices.as_mut_ptr(),
+                indices.len() as u32,
+                provenance.as_mut_ptr(),
+                provenance.len() as u32,
+                info,
+                struct_size::<McPresentationFrameInfoV2>(),
+            )
+        };
+        let capture = |capture_handle: u64, capture_query: &McPresentationFrameQueryV2| {
+            let mut capture_indices = vec![0_u8; LEVEL1_VIEW_PIXELS];
+            let mut capture_provenance = vec![0_u8; LEVEL1_VIEW_PIXELS];
+            let mut capture_info = McPresentationFrameInfoV2::default();
+            let status = mc_native_session_presentation_frame_copy(
+                capture_handle,
+                capture_query,
+                capture_indices.as_mut_ptr(),
+                capture_indices.len() as u32,
+                capture_provenance.as_mut_ptr(),
+                capture_provenance.len() as u32,
+                &raw mut capture_info,
+                struct_size::<McPresentationFrameInfoV2>(),
+            );
+            (status, capture_indices, capture_provenance, capture_info)
+        };
+        let semantic_vectors = with_session(handle, |session| {
+            crate::presentation_bridge::assert_independent_source_vectors(
+                &session
+                    .terrain_frame_assets
+                    .as_ref()
+                    .expect("qualified presentation cache")
+                    .indexed_overlays,
+            );
+            Ok(session
+                .terrain_frame_assets
+                .as_ref()
+                .expect("qualified presentation cache")
+                .indexed_overlays
+                .source_semantic_vectors()
+                .clone())
+        })
+        .expect("source-semantic vector ledger");
+        assert_eq!(
+            semantic_vectors["palette_indirection"]["indexed_values"]
+                .as_array()
+                .expect("palette vector")
+                .iter()
+                .map(|value| value.as_i64().expect("palette integer"))
+                .collect::<Vec<_>>(),
+            [61, 23, 171, 87, 177, 119, 176]
+        );
+        assert_eq!(
+            semantic_vectors["pause"]["selector_order"]
+                .as_array()
+                .expect("pause vector")
+                .iter()
+                .map(|value| value.as_i64().expect("pause selector integer"))
+                .collect::<Vec<_>>(),
+            [174, 175, 176, 177, 178]
+        );
+        let button_rows = semantic_vectors["chat"]["button_order"]
+            .as_array()
+            .expect("button vector rows");
+        assert_eq!(
+            button_rows
+                .iter()
+                .flat_map(|row| {
+                    row.as_array()
+                        .expect("button tuple")
+                        .iter()
+                        .map(|value| value.as_i64().expect("button integer"))
+                })
+                .collect::<Vec<_>>(),
+            [259, 192, 166, 261, 237, 166, 260, 282, 166]
+        );
+        assert_eq!(
+            semantic_vectors["options"]["on_ids"]
+                .as_array()
+                .map(Vec::len),
+            Some(17)
+        );
+        assert_eq!(
+            semantic_vectors["volume"]["source_bar"]
+                .as_array()
+                .expect("volume vector")
+                .iter()
+                .map(|value| value.as_i64().expect("volume integer"))
+                .collect::<Vec<_>>(),
+            [274, 210, 90, 12]
+        );
+        assert_eq!(
+            semantic_vectors["ok_cancel"]["fixed_prompts"]
+                .as_array()
+                .expect("prompt vector")
+                .iter()
+                .map(|value| value.as_str().expect("prompt string"))
+                .collect::<Vec<_>>(),
+            ["Abandon level.?", "Load Level?", "Save Level?"]
+        );
+        assert_eq!(
+            semantic_vectors["pause_or_end"]["end_text"],
+            "Tasks completed. Fly to the exit point.."
+        );
+        assert_eq!(
+            semantic_vectors["map"]["divider_order"]
+                .as_array()
+                .expect("divider vector")
+                .iter()
+                .map(|value| value.as_i64().expect("divider integer"))
+                .collect::<Vec<_>>(),
+            [192, 191]
+        );
+        assert_eq!(semantic_vectors["bottom"]["tier_spacing"], 33);
+        assert_eq!(semantic_vectors["debug"]["version"], "Beta");
+        assert_eq!(semantic_vectors["cursor"]["active_policy"], "fail_closed");
+        assert_eq!(
+            copy(&query, &mut indices, &mut provenance, &mut info),
+            MC_STATUS_OK
+        );
+        let complete_flags = MC_PRESENTATION_FRAME_COMPOSITOR_COMPLETE
+            | MC_PRESENTATION_FRAME_HAS_PROVENANCE
+            | MC_PRESENTATION_FRAME_OVERLAYS_COMPOSITED
+            | MC_PRESENTATION_FRAME_POSTPROCESS_COMPLETE
+            | MC_PRESENTATION_FRAME_LIGHTING_COMPLETE;
+        assert_eq!(info.flags & complete_flags, complete_flags);
+        assert_eq!(
+            info.flags
+                & (MC_TERRAIN_FRAME_ISOLATED_SKY_TERRAIN | MC_TERRAIN_FRAME_NON_TERRAIN_OMITTED),
+            0
+        );
+        assert_eq!((info.history_state, info.newly_committed), (1, 1));
+        assert_eq!(
+            sim_core::presentation_frame::byte_hash(&indices),
+            info.index_hash
+        );
+        assert_eq!(
+            sim_core::presentation_frame::byte_hash(&provenance),
+            info.provenance_hash
+        );
+        assert!(provenance.iter().any(|value| value & 1 != 0));
+        assert!(provenance.iter().any(|value| value & 8 != 0));
+        assert_ne!(info.immutable_input_hash, 0);
+        let first_indices = indices.clone();
+        let first_provenance = provenance.clone();
+        let first_info = info;
+
+        assert_eq!(
+            copy(&query, &mut indices, &mut provenance, &mut info),
+            MC_STATUS_OK
+        );
+        assert_eq!(info.newly_committed, 0);
+        assert_eq!(indices, first_indices);
+        assert_eq!(provenance, first_provenance);
+        assert_eq!(info.immutable_input_hash, first_info.immutable_input_hash);
+
+        let baseline_source_render_hash =
+            with_session(handle, |session| session.source_render_input_hash())
+                .expect("baseline source-render hash");
+        with_session(handle, |session| {
+            let baseline = session.source_render_inputs(false)?;
+            let assert_changed = |label: &str, changed: SourceRenderInputs| -> AbiResult<()> {
+                assert_ne!(
+                    session.source_render_input_hash_for(&changed)?,
+                    baseline_source_render_hash,
+                    "{label} participates in the complete source-render key"
+                );
+                Ok(())
+            };
+
+            let mut changed = baseline.clone();
+            changed.map_right_viewport = !changed.map_right_viewport;
+            assert_changed("map render branch", changed)?;
+            for (label, mutate) in [
+                ("composed camera render_x", 0_u8),
+                ("composed camera render_y", 1),
+                ("composed camera eye_z", 2),
+                ("composed camera yaw", 3),
+                ("composed camera pitch", 4),
+                ("composed camera roll", 5),
+                ("composed camera fov", 6),
+                ("composed camera source_turn", 7),
+                ("composed camera reflections", 8),
+            ] {
+                let mut changed = baseline.clone();
+                match mutate {
+                    0 => changed.camera.render_x ^= 1,
+                    1 => changed.camera.render_y ^= 1,
+                    2 => changed.camera.eye_z ^= 1,
+                    3 => changed.camera.yaw ^= 1,
+                    4 => changed.camera.pitch ^= 1,
+                    5 => changed.camera.roll ^= 1,
+                    6 => changed.camera.fov ^= 1,
+                    7 => changed.camera.source_turn ^= 1,
+                    8 => changed.camera.reflections = !changed.camera.reflections,
+                    _ => unreachable!(),
+                }
+                assert_changed(label, changed)?;
+            }
+            let mut changed = baseline.clone();
+            changed.generation_asset_digest ^= 1;
+            assert_changed("generation renderer-asset digest", changed)?;
+            let mut changed = baseline.clone();
+            changed.local_player_entity_index ^= 1;
+            assert_changed("local player identity", changed)?;
+            let mut changed = baseline.clone();
+            changed.goats[0].position.x ^= 1;
+            assert_changed("Goat record", changed)?;
+            let mut changed = baseline.clone();
+            changed.frozen_actors[0].position.y ^= 1;
+            assert_changed("frozen actor record", changed)?;
+            let mut changed = baseline.clone();
+            changed.ambient_entities[0].phase ^= 1;
+            assert_changed("ambient record", changed)?;
+            let mut changed = baseline.clone();
+            changed.dynamic_residents.push(DynamicResidentState {
+                source_entity_index: 983,
+                source_id: 983,
+                kind: sim_core::level1_mission::DynamicResidentKind::Builder,
+                class: 5,
+                model: 4,
+                action: 96,
+                position: Position {
+                    x: 0x1212,
+                    y: 0x3434,
+                    z: 56,
+                },
+                max_life: 100,
+                life: 90,
+                pending_damage: 0,
+                pending_attacker: 0,
+                current_attacker: 0,
+                kill_credit_entity: 0,
+                entity_rng: 17,
+                yaw: 18,
+                desired_heading: 19,
+                minimum_speed: 20,
+                actual_speed: 21,
+                maximum_speed: 22,
+                target_entity_index: 0,
+                linked_entity_index: 0,
+                owner_entity_index: 1,
+                reset_counter: 23,
+                mana: 24,
+                stage_var_2: 0,
+                builder_placement_latch: 0,
+                movement_blocked: false,
+                suppress_death_burst: false,
+                phase: 25,
+                collision_half_width: 26,
+                collision_vertical_offset: 27,
+                collision_half_height: 28,
+                render_parameter_index: 83,
+                base_tmap: 80,
+                render_mode: 20,
+                logical_height: 200,
+                active: true,
+                visible: true,
+            });
+            assert_changed("dynamic resident record", changed)?;
+
+            let mut changed = baseline.clone();
+            changed.mission_actors[0].position.x ^= 1;
+            changed.mission_actors[0].yaw ^= 1;
+            changed.mission_actors[0].visible = !changed.mission_actors[0].visible;
+            assert_changed("actor position/yaw/visibility", changed)?;
+
+            let mut changed = baseline.clone();
+            changed.mission_segments.push(Level1MultipartSegment {
+                source_entity_index: 991,
+                head_authored_index: 9,
+                head_source_entity_index: 990,
+                predecessor_source_entity_index: 990,
+                successor_source_entity_index: 0,
+                ordinal: 1,
+                class: 5,
+                model: 3,
+                action: 0,
+                owner_id: 1,
+                position: Position {
+                    x: 0x1234,
+                    y: 0x5678,
+                    z: 90,
+                },
+                life: 100,
+                pending_damage: 0,
+                pending_attacker: 0,
+                yaw: 321,
+                pitch: -17,
+                phase: 4,
+                trailing_distance: 64,
+                collision_half_width: 30,
+                collision_half_height: 40,
+                render_parameter_index: 83,
+                base_tmap: 80,
+                render_mode: 20,
+                logical_height: 200,
+                active: true,
+                visible: true,
+            });
+            assert_changed("multipart segment", changed)?;
+
+            let mut changed = baseline.clone();
+            changed.castle_root = Some(Level1CastleRootRender {
+                source_entity_index: 989,
+                position: Position {
+                    x: 0x4321,
+                    y: 0x8765,
+                    z: 111,
+                },
+                active: true,
+            });
+            assert_changed("castle root", changed)?;
+
+            let mut changed = baseline.clone();
+            changed.mana_spheres.push(ManaSphere {
+                id: 988,
+                source_entity_index: 988,
+                entity_rng: 17,
+                position: Position {
+                    x: 0x1111,
+                    y: 0x2222,
+                    z: 33,
+                },
+                velocity_x: 1,
+                velocity_y: 2,
+                vertical_velocity: 3,
+                yaw: 4,
+                mana: 5,
+                owner_entity_index: 0,
+                incoming_owner_entity_index: 0,
+                incoming_possession_payload: 0,
+                assigned_carrier_id: 0,
+                phase: 6,
+                active: true,
+                pending_delete: false,
+            });
+            assert_changed("mana sphere", changed)?;
+
+            let mut changed = baseline.clone();
+            changed.mana_carrier = Some(ManaCarrier {
+                id: 987,
+                source_entity_index: 987,
+                entity_rng: 18,
+                owner_entity_index: 1,
+                position: Position {
+                    x: 0x3333,
+                    y: 0x4444,
+                    z: 55,
+                },
+                yaw: 6,
+                pitch: 7,
+                speed: 8,
+                life: 9,
+                max_life: 10,
+                max_mana: 11,
+                target_sphere_id: 988,
+                carried_mana: 12,
+                returning_to_castle: false,
+                pending_damage: 13,
+                pending_attacker_entity_index: 14,
+                active: true,
+            });
+            assert_changed("mana carrier", changed)?;
+
+            let mut changed = baseline.clone();
+            changed.projectiles.push(Level1Projectile::PlayerFireball(
+                sim_core::level1_mission::FireballProjectile {
+                    id: 1,
+                    source_entity_index: 986,
+                    owner_entity_index: 1,
+                    position: Position {
+                        x: 0x5555,
+                        y: 0x6666,
+                        z: 77,
+                    },
+                    yaw: 8,
+                    pitch: 9,
+                    speed: 10,
+                    life_ticks: 11,
+                    payload: 12,
+                    target_entity_index: 0,
+                    acquisition_initialized: true,
+                    active: true,
+                },
+            ));
+            assert_changed("projectile", changed)?;
+
+            let mut changed = baseline.clone();
+            changed.impacts.push(FireballImpact {
+                id: 2,
+                source_entity_index: 985,
+                source_projectile_id: 1,
+                owner_entity_index: 1,
+                external_target_entity_index: 0,
+                model: FIREBALL_IMPACT_MODEL,
+                position: Position {
+                    x: 0x7777,
+                    y: 0x8888,
+                    z: 99,
+                },
+                payload: 14,
+                life_ticks: 15,
+                entity_rng: 16,
+                vertical_velocity: 17,
+                phase: 18,
+                animation_frame: 19,
+                damage_submitted: false,
+                active: true,
+            });
+            assert_changed("impact", changed)?;
+
+            let mut changed = baseline.clone();
+            changed.possessed_buildings.push(Level1PossessedBuilding {
+                entity_index: 984,
+                position: Position {
+                    x: 0x9999,
+                    y: 0xaaaa,
+                    z: 121,
+                },
+                owner_entity_index: 1,
+                player_color_index: 2,
+                render_parameter_index: 177,
+                base_tmap: 96,
+                render_mode: 20,
+                logical_height: 250,
+                active: true,
+            });
+            assert_changed("possessed building", changed)?;
+
+            let mut changed = baseline.clone();
+            changed.source_slots[0].phase ^= 1;
+            assert_changed("source-slot record", changed)?;
+
+            let mut changed = baseline.clone();
+            changed.dispositions.push(SourceSpriteDisposition::Legacy {
+                source_entity_index: 983,
+                family: SourceSpriteLegacyFamily::ImportedReset,
+            });
+            assert_changed("normalized source disposition", changed)?;
+
+            let mut ordered = baseline.clone();
+            for entity_index in [980_u16, 981] {
+                ordered
+                    .map_chains
+                    .sync_entity(RenderableMapSeed {
+                        entity_index,
+                        active: true,
+                        x: 0x2222,
+                        y: 0x3333,
+                    })
+                    .expect("synthetic same-tile source-map insert");
+            }
+            let ordered_hash = session.source_render_input_hash_for(&ordered)?;
+            let mut reordered = ordered.clone();
+            reordered
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: 980,
+                    active: true,
+                    x: 0x2322,
+                    y: 0x3333,
+                })
+                .expect("temporary adjacent-tile move");
+            reordered
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: 980,
+                    active: true,
+                    x: 0x2222,
+                    y: 0x3333,
+                })
+                .expect("same-tile head reinsert");
+            assert_ne!(
+                session.source_render_input_hash_for(&reordered)?,
+                ordered_hash,
+                "same membership and positions with different source-map head order changes the key"
+            );
+            assert_changed("same-tile source-map painter order", reordered)?;
+
+            let mut changed = baseline;
+            changed.night = !changed.night;
+            assert_changed("night palette profile", changed)?;
+            Ok(())
+        })
+        .expect("complete source-render projection mutation vectors");
+        let generation_asset_digest = with_session_mut(handle, |session| {
+            let digest = session
+                .source_render_asset_digest
+                .expect("qualified generation binds its renderer assets");
+            session.source_render_asset_digest = Some(digest ^ 1);
+            Ok(digest)
+        })
+        .expect("mutate only the generation-bound renderer digest");
+        assert_eq!(
+            copy(&query, &mut indices, &mut provenance, &mut info),
+            MC_STATUS_GENERATION_MISMATCH,
+            "renderer asset-bank drift rejects before cached return"
+        );
+        with_session(handle, |session| {
+            assert_eq!(
+                session
+                    .presentation_frame
+                    .cached()
+                    .expect("asset drift preserves the prior COMPLETE cache")
+                    .immutable_input_hash,
+                first_info.immutable_input_hash
+            );
+            Ok(())
+        })
+        .expect("asset drift is atomic");
+        with_session_mut(handle, |session| {
+            session.source_render_asset_digest = Some(generation_asset_digest);
+            Ok(())
+        })
+        .expect("restore generation-bound renderer digest");
+        assert_eq!(
+            copy(&query, &mut indices, &mut provenance, &mut info),
+            MC_STATUS_OK,
+            "restored renderer identity permits the exact cached retry"
+        );
+        assert_eq!(info.newly_committed, 0);
+        with_session_mut(handle, |session| {
+            let baseline = session.terrain.clone();
+            session.terrain.dynamic_lighting_planes().1[0] ^= 1;
+            assert_ne!(
+                session.source_render_input_hash()?,
+                baseline_source_render_hash,
+                "terrain content participates in the source-render key"
+            );
+            session.terrain = baseline;
+
+            let baseline = session.live_world.clone();
+            session.live_world.release_villager_stage_group_7();
+            assert_ne!(
+                session.source_render_input_hash()?,
+                baseline_source_render_hash,
+                "live-world content participates in the source-render key"
+            );
+            session.live_world = baseline;
+
+            let baseline = session.camera_slope_sample;
+            session.camera_slope_sample.offset_x ^= 1;
+            assert_ne!(
+                session.source_render_input_hash()?,
+                baseline_source_render_hash,
+                "camera-slope input participates in the source-render key"
+            );
+            session.camera_slope_sample = baseline;
+
+            let baseline = session.frozen_actors.clone();
+            session.frozen_actors[0].position.x ^= 1;
+            assert_ne!(
+                session.source_render_input_hash()?,
+                baseline_source_render_hash,
+                "frozen render records participate in the source-render key"
+            );
+            session.frozen_actors = baseline;
+
+            let assets = Arc::clone(
+                session
+                    .terrain_frame_assets
+                    .as_ref()
+                    .expect("qualified source banks"),
+            );
+            let goat_bank = session
+                .world
+                .goat_tmap_bank()
+                .expect("qualified Goat bank")
+                .clone();
+            let baseline = session.selector_frames.clone();
+            session
+                .selector_frames
+                .as_mut()
+                .expect("Goat clocks")
+                .latch_draw_attempts(GOAT_TMAP_DRAW_MASK)
+                .expect("valid Goat draw mask");
+            session
+                .selector_frames
+                .as_mut()
+                .expect("Goat clocks")
+                .service_unpaused_outer_turn(&goat_bank);
+            assert_ne!(
+                session.source_render_input_hash()?,
+                baseline_source_render_hash,
+                "Goat current TMAP participates in the source-render key"
+            );
+            session.selector_frames = baseline;
+
+            let baseline = session.archer_selector_frames.clone();
+            session
+                .archer_selector_frames
+                .as_mut()
+                .expect("Archer clocks")
+                .latch_draw_attempts(sim_core::archer_tmap::ARCHER_TMAP_DRAW_MASK)
+                .expect("valid Archer draw mask");
+            session
+                .archer_selector_frames
+                .as_mut()
+                .expect("Archer clocks")
+                .service_unpaused_outer_turn(&assets.archer_tmap_bank);
+            assert_ne!(
+                session.source_render_input_hash()?,
+                baseline_source_render_hash,
+                "Archer current TMAP participates in the source-render key"
+            );
+            session.archer_selector_frames = baseline;
+
+            let baseline = session.firefly_selector_frames.clone();
+            session
+                .firefly_selector_frames
+                .as_mut()
+                .expect("Firefly clocks")
+                .latch_draw_attempts(sim_core::firefly_tmap::FIREFLY_TMAP_DRAW_MASK);
+            session
+                .firefly_selector_frames
+                .as_mut()
+                .expect("Firefly clocks")
+                .service_unpaused_outer_turn(&assets.firefly_tmap_bank);
+            assert_ne!(
+                session.source_render_input_hash()?,
+                baseline_source_render_hash,
+                "Firefly current TMAP participates in the source-render key"
+            );
+            session.firefly_selector_frames = baseline;
+
+            let baseline = session.villager_selector_frames.clone();
+            session
+                .villager_selector_frames
+                .as_mut()
+                .expect("villager clocks")
+                .latch_draw_attempts(sim_core::frozen_actor_tmap::VILLAGER_TMAP_DRAW_MASK)
+                .expect("valid villager draw mask");
+            session
+                .villager_selector_frames
+                .as_mut()
+                .expect("villager clocks")
+                .service_unpaused_outer_turn(&assets.frozen_actor_tmap_bank);
+            assert_ne!(
+                session.source_render_input_hash()?,
+                baseline_source_render_hash,
+                "villager current TMAP participates in the source-render key"
+            );
+            session.villager_selector_frames = baseline;
+
+            let baseline = session.fireball_selector_frame.clone();
+            session
+                .fireball_selector_frame
+                .as_mut()
+                .expect("Fireball clock")
+                .latch_draw_attempt(true);
+            session
+                .fireball_selector_frame
+                .as_mut()
+                .expect("Fireball clock")
+                .service_unpaused_outer_turn(&assets.combat_tmap_bank);
+            assert_ne!(
+                session.source_render_input_hash()?,
+                baseline_source_render_hash,
+                "Fireball current TMAP participates in the source-render key"
+            );
+            session.fireball_selector_frame = baseline;
+
+            let baseline = session.possession_selector_frame.clone();
+            session
+                .possession_selector_frame
+                .as_mut()
+                .expect("Possession clock")
+                .latch_draw_attempt(true);
+            session
+                .possession_selector_frame
+                .as_mut()
+                .expect("Possession clock")
+                .service_unpaused_outer_turn(&assets.combat_tmap_bank);
+            assert_ne!(
+                session.source_render_input_hash()?,
+                baseline_source_render_hash,
+                "Possession current TMAP participates in the source-render key"
+            );
+            session.possession_selector_frame = baseline;
+
+            let baseline = session.castle_selector_frame.clone();
+            session
+                .castle_selector_frame
+                .as_mut()
+                .expect("Castle clock")
+                .latch_draw_attempt(true);
+            session
+                .castle_selector_frame
+                .as_mut()
+                .expect("Castle clock")
+                .service_unpaused_outer_turn(&assets.economy_tmap_bank);
+            assert_ne!(
+                session.source_render_input_hash()?,
+                baseline_source_render_hash,
+                "Castle current TMAP participates in the source-render key"
+            );
+            session.castle_selector_frame = baseline;
+            assert_eq!(
+                session.source_render_input_hash()?,
+                baseline_source_render_hash,
+                "restoring every renderer input restores the exact key"
+            );
+            Ok(())
+        })
+        .expect("source-render domain mutation witnesses");
+
+        let baseline_slope = with_session(handle, |session| Ok(session.camera_slope_sample))
+            .expect("baseline slope");
+        with_session_mut(handle, |session| {
+            session.camera_slope_sample.offset_y ^= 1;
+            Ok(())
+        })
+        .expect("same-tick slope mutation");
+        assert_eq!(
+            copy(&query, &mut indices, &mut provenance, &mut info),
+            MC_STATUS_GENERATION_MISMATCH,
+            "same-tick source-render drift rejects before cached reuse"
+        );
+        with_session(handle, |session| {
+            assert_eq!(
+                session
+                    .presentation_frame
+                    .cached()
+                    .expect("prior COMPLETE frame remains cached")
+                    .immutable_input_hash,
+                first_info.immutable_input_hash
+            );
+            Ok(())
+        })
+        .expect("same-tick rejection preserves the prior cache");
+        with_session_mut(handle, |session| {
+            session.camera_slope_sample = baseline_slope;
+            Ok(())
+        })
+        .expect("restore slope input");
+        assert_eq!(
+            copy(&query, &mut indices, &mut provenance, &mut info),
+            MC_STATUS_OK,
+            "restored same-tick source input permits exact cached retry"
+        );
+        assert_eq!(info.newly_committed, 0);
+
+        let chain_handle = open_fixture_with_presentation_cache();
+        let mut ordered_chains = with_session(chain_handle, |session| {
+            Ok(session.mission.source_map_chains().clone())
+        })
+        .expect("isolated baseline source-map topology");
+        for entity_index in [113_u16, 114] {
+            ordered_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index,
+                    active: true,
+                    x: 0x2222,
+                    y: 0x3333,
+                })
+                .expect("live same-tile source-map insert");
+        }
+        with_session_mut(chain_handle, |session| {
+            session
+                .mission
+                .set_source_map_chains(ordered_chains.clone());
+            Ok(())
+        })
+        .expect("install ordered live source map");
+        let mut chain_indices = vec![0_u8; LEVEL1_VIEW_PIXELS];
+        let mut chain_provenance = vec![0_u8; LEVEL1_VIEW_PIXELS];
+        let mut chain_info = McPresentationFrameInfoV2::default();
+        let chain_copy =
+            |indices: &mut [u8], provenance: &mut [u8], info: &mut McPresentationFrameInfoV2| {
+                mc_native_session_presentation_frame_copy(
+                    chain_handle,
+                    &raw const query,
+                    indices.as_mut_ptr(),
+                    indices.len() as u32,
+                    provenance.as_mut_ptr(),
+                    provenance.len() as u32,
+                    info,
+                    struct_size::<McPresentationFrameInfoV2>(),
+                )
+            };
+        assert_eq!(
+            chain_copy(&mut chain_indices, &mut chain_provenance, &mut chain_info),
+            MC_STATUS_OK,
+            "ordered same-tile live map establishes the immutable baseline"
+        );
+        let ordered_info = chain_info;
+        let mut reordered_chains = ordered_chains.clone();
+        reordered_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: 113,
+                active: true,
+                x: 0x2322,
+                y: 0x3333,
+            })
+            .expect("temporary live adjacent-tile move");
+        reordered_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: 113,
+                active: true,
+                x: 0x2222,
+                y: 0x3333,
+            })
+            .expect("live same-tile head reinsert");
+        with_session_mut(chain_handle, |session| {
+            session.mission.set_source_map_chains(reordered_chains);
+            Ok(())
+        })
+        .expect("install reordered live source map");
+        assert_eq!(
+            chain_copy(&mut chain_indices, &mut chain_provenance, &mut chain_info),
+            MC_STATUS_GENERATION_MISMATCH,
+            "same-tick painter order drift rejects before cached return"
+        );
+        with_session(chain_handle, |session| {
+            assert_eq!(
+                session
+                    .presentation_frame
+                    .cached()
+                    .expect("prior frame survives chain rejection")
+                    .immutable_input_hash,
+                ordered_info.immutable_input_hash
+            );
+            Ok(())
+        })
+        .expect("chain rejection preserves history/cache/clocks");
+        with_session_mut(chain_handle, |session| {
+            session.mission.set_source_map_chains(ordered_chains);
+            Ok(())
+        })
+        .expect("restore source-map order");
+        assert_eq!(
+            chain_copy(&mut chain_indices, &mut chain_provenance, &mut chain_info),
+            MC_STATUS_OK,
+            "restored same-tile order returns the exact cached frame"
+        );
+        assert_eq!(chain_info.newly_committed, 0);
+        assert_eq!(
+            mc_native_session_destroy(chain_handle),
+            MC_STATUS_OK,
+            "isolated source-map reorder session closes"
+        );
+
+        let baseline_castle = with_session(handle, |session| {
+            Ok((
+                session.mission.castle_exists,
+                session.mission.castle_source_entity_index,
+                session.mission.castle_position,
+            ))
+        })
+        .expect("baseline castle root");
+        with_session_mut(handle, |session| {
+            session.mission.castle_exists = true;
+            session.mission.castle_source_entity_index = 989;
+            session.mission.castle_position = Position {
+                x: 0x3456,
+                y: 0x789a,
+                z: 88,
+            };
+            Ok(())
+        })
+        .expect("mutate a typed castle render record");
+        assert_eq!(
+            copy(&query, &mut indices, &mut provenance, &mut info),
+            MC_STATUS_GENERATION_MISMATCH,
+            "same-tick typed castle record drift rejects before cached return"
+        );
+        with_session_mut(handle, |session| {
+            (
+                session.mission.castle_exists,
+                session.mission.castle_source_entity_index,
+                session.mission.castle_position,
+            ) = baseline_castle;
+            Ok(())
+        })
+        .expect("restore typed castle render record");
+        assert_eq!(
+            copy(&query, &mut indices, &mut provenance, &mut info),
+            MC_STATUS_OK
+        );
+        assert_eq!(info.newly_committed, 0);
+
+        let isolated_handle = open_fixture_with_presentation_cache();
+        let mut isolated_indices = vec![0_u8; LEVEL1_VIEW_PIXELS];
+        let mut isolated_provenance = vec![0_u8; LEVEL1_VIEW_PIXELS];
+        let mut isolated_info = McPresentationFrameInfoV2::default();
+        assert_eq!(
+            mc_native_session_presentation_frame_copy(
+                isolated_handle,
+                &raw const query,
+                isolated_indices.as_mut_ptr(),
+                isolated_indices.len() as u32,
+                isolated_provenance.as_mut_ptr(),
+                isolated_provenance.len() as u32,
+                &raw mut isolated_info,
+                struct_size::<McPresentationFrameInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(isolated_indices, first_indices);
+        assert_eq!(isolated_provenance, first_provenance);
+        assert_eq!(
+            isolated_info.immutable_input_hash,
+            first_info.immutable_input_hash
+        );
+
+        let unauthoritative_debug_handle = open_fixture_with_presentation_cache();
+        let mut unauthoritative_debug_query = query;
+        unauthoritative_debug_query.debug_text = 8;
+        assert_eq!(
+            capture(unauthoritative_debug_handle, &unauthoritative_debug_query).0,
+            MC_STATUS_GENERATION_MISMATCH,
+            "active debug metrics cannot earn COMPLETE from reset zeros"
+        );
+        assert_eq!(
+            mc_native_session_destroy(unauthoritative_debug_handle),
+            MC_STATUS_OK
+        );
+
+        let debug_handle = open_fixture_with_presentation_cache();
+        let mut debug_input = source_presentation_input();
+        submit_source_presentation_input(debug_handle, &debug_input);
+        with_session_mut(debug_handle, |session| {
+            session.source_turn = session.source_turn.wrapping_add(37);
+            Ok(())
+        })
+        .expect("advance authoritative source turn within the next clock bucket");
+        debug_input.debug_clock_bucket += 1;
+        submit_source_presentation_input(debug_handle, &debug_input);
+        with_session(debug_handle, |session| {
+            assert_eq!(
+                session.debug_fps, 37,
+                "source clock bucket transition records turn delta as FPS"
+            );
+            assert_eq!(session.debug_heap_size, 0x0140_0000);
+            assert_eq!(session.debug_memory_used, 0);
+            assert_eq!(session.debug_memory_free, 0);
+            Ok(())
+        })
+        .expect("debug FPS transition is authoritative");
+        let mut debug_query = query;
+        debug_query.debug_text = 8;
+        let (status, debug_indices, debug_provenance, debug_info) =
+            capture(debug_handle, &debug_query);
+        assert_eq!(
+            status,
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_ne!(
+            debug_info.immutable_input_hash,
+            first_info.immutable_input_hash
+        );
+        assert_ne!(debug_info.index_hash, first_info.index_hash);
+        assert_ne!(debug_indices, first_indices);
+        assert_ne!(debug_provenance, first_provenance);
+        assert_eq!(mc_native_session_destroy(debug_handle), MC_STATUS_OK);
+
+        let entity_debug_handle = open_fixture_with_presentation_cache();
+        let mut entity_debug_query = query;
+        entity_debug_query.debug_text = 0x40;
+        let (entity_debug_status, entity_debug_indices, _, _) =
+            capture(entity_debug_handle, &entity_debug_query);
+        assert_eq!(
+            entity_debug_status,
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_ne!(
+            entity_debug_indices, first_indices,
+            "debug flag0x40 traverses the selected live entity rows"
+        );
+        assert_eq!(mc_native_session_destroy(entity_debug_handle), MC_STATUS_OK);
+
+        let hud_handle = open_fixture_with_presentation_cache();
+        with_session_mut(hud_handle, |session| {
+            session.mission.player_mana -= 16_384;
+            Ok(())
+        })
+        .expect("mutate live HUD mana before the production bridge");
+        let (status, hud_indices, _, hud_info) = capture(hud_handle, &query);
+        assert_eq!(status, MC_STATUS_OK);
+        assert_ne!(
+            hud_info.immutable_input_hash,
+            first_info.immutable_input_hash
+        );
+        assert_ne!(hud_info.index_hash, first_info.index_hash);
+        assert_ne!(hud_indices, first_indices);
+        assert_eq!(mc_native_session_destroy(hud_handle), MC_STATUS_OK);
+
+        let objective_48 = open_fixture_with_presentation_cache();
+        let objective_49 = open_fixture_with_presentation_cache();
+        for (handle, selector) in [(objective_48, 48_u8), (objective_49, 49_u8)] {
+            with_session_mut(handle, |session| {
+                session.mission.current_text_selector = selector;
+                session.mission.objective_textbox_ticks = 33;
+                Ok(())
+            })
+            .expect("configure a live objective textbox");
+        }
+        let (status_48, objective_indices_48, objective_provenance_48, info_48) =
+            capture(objective_48, &query);
+        let (status_49, objective_indices_49, objective_provenance_49, info_49) =
+            capture(objective_49, &query);
+        assert_eq!(
+            (status_48, status_49),
+            (MC_STATUS_OK, MC_STATUS_OK),
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_ne!(info_48.immutable_input_hash, info_49.immutable_input_hash);
+        assert_ne!(info_48.index_hash, info_49.index_hash);
+        assert_ne!(objective_indices_48, objective_indices_49);
+        assert_ne!(objective_provenance_48, objective_provenance_49);
+        assert_eq!(mc_native_session_destroy(objective_48), MC_STATUS_OK);
+        assert_eq!(mc_native_session_destroy(objective_49), MC_STATUS_OK);
+
+        let menu_handle = open_fixture_with_presentation_cache();
+        assert_eq!(
+            mc_native_level1_player_menu_state(menu_handle, 5),
+            MC_STATUS_OK
+        );
+        let (menu_status, menu_indices, _, menu_info) = capture(menu_handle, &query);
+        assert_eq!(menu_status, MC_STATUS_OK);
+        assert_ne!(
+            menu_info.immutable_input_hash,
+            first_info.immutable_input_hash
+        );
+        assert_ne!(menu_info.index_hash, first_info.index_hash);
+        assert_ne!(menu_indices, first_indices);
+        assert_eq!(mc_native_session_destroy(menu_handle), MC_STATUS_OK);
+
+        let unauthoritative_chat_handle = open_fixture_with_presentation_cache();
+        assert_eq!(
+            mc_native_level1_player_menu_state(unauthoritative_chat_handle, 3),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            capture(unauthoritative_chat_handle, &query).0,
+            MC_STATUS_GENERATION_MISMATCH,
+            "active chat cannot earn COMPLETE from the inert reset UI state"
+        );
+        assert_eq!(
+            mc_native_session_destroy(unauthoritative_chat_handle),
+            MC_STATUS_OK
+        );
+
+        let acquired_handle = open_fixture_with_presentation_cache();
+        assert_eq!(
+            mc_native_level1_player_menu_state(acquired_handle, 5),
+            MC_STATUS_OK
+        );
+        with_session_mut(acquired_handle, |session| {
+            let fire = session
+                .context
+                .spell_fire
+                .as_mut()
+                .expect("Level 1 spell registry");
+            fire.selected_spell_ui_index = 4;
+            fire.spell_experience[4] = 1;
+            fire.enabled_holder_indices[4] = 0;
+            Ok(())
+        })
+        .expect("configure acquired family without a holder");
+        let (acquired_status, _, _, _) = capture(acquired_handle, &query);
+        assert_eq!(
+            acquired_status,
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_eq!(mc_native_session_destroy(acquired_handle), MC_STATUS_OK);
+
+        let cannot_handle = open_fixture_with_presentation_cache();
+        assert_eq!(
+            mc_native_level1_player_menu_state(cannot_handle, 5),
+            MC_STATUS_OK
+        );
+        with_session_mut(cannot_handle, |session| {
+            let fire = session
+                .context
+                .spell_fire
+                .as_mut()
+                .expect("Level 1 spell registry");
+            let mut holder = fire.holders[0];
+            holder.entity_index = 990;
+            holder.model = 4;
+            holder.active_value = 0;
+            fire.holders.push(holder);
+            fire.enabled_holder_indices[4] = holder.entity_index;
+            fire.selected_spell_ui_index = 4;
+            fire.selected_subspell_index = 0;
+            fire.family_selected_tiers[4] = 0;
+            fire.spell_levels[4] = 2;
+            session.mission.castle_mana = 0;
+            Ok(())
+        })
+        .expect("configure existing holder below its Castle-mana gate");
+        let (cannot_status, _, _, _) = capture(cannot_handle, &query);
+        assert_eq!(
+            cannot_status,
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_eq!(mc_native_session_destroy(cannot_handle), MC_STATUS_OK);
+
+        for (menu_state, expected_stages) in [
+            (3_u8, 13_u16),
+            (9, 13),
+            (10, 13),
+            (13, 13),
+            (6, 14),
+            (8, 15),
+            (11, 14),
+            (12, 14),
+            (14, 14),
+        ] {
+            let branch_handle = open_fixture_with_presentation_cache();
+            assert_eq!(
+                mc_native_level1_player_menu_state(branch_handle, menu_state),
+                MC_STATUS_OK
+            );
+            submit_source_presentation_input(branch_handle, &source_presentation_input());
+            let (status, _, _, branch_info) = capture(branch_handle, &query);
+            assert_eq!(
+                status,
+                MC_STATUS_OK,
+                "menu state {menu_state}: {}",
+                LAST_ERROR.with(|value| value.borrow().clone())
+            );
+            assert_eq!(
+                branch_info.overlay_stage_count, expected_stages,
+                "menu state {menu_state} consumes its source-ledger receipt census"
+            );
+            assert_eq!(mc_native_session_destroy(branch_handle), MC_STATUS_OK);
+        }
+        let map_frame = |pitch_delta: i16, fov_delta: i16| {
+            let map_handle = open_fixture_with_presentation_cache();
+            assert_eq!(
+                mc_native_level1_player_menu_state(map_handle, 6),
+                MC_STATUS_OK
+            );
+            with_session_mut(map_handle, |session| {
+                session.camera_history.pitch =
+                    session.camera_history.pitch.wrapping_add(pitch_delta);
+                session.camera_history.fov = session.camera_history.fov.wrapping_add(fov_delta);
+                Ok(())
+            })
+            .expect("configure the real map DrawWorld camera");
+            let result = capture(map_handle, &query);
+            assert_eq!(
+                result.0,
+                MC_STATUS_OK,
+                "map pitch {pitch_delta} fov {fov_delta}: {}",
+                LAST_ERROR.with(|value| value.borrow().clone())
+            );
+            assert_eq!(mc_native_session_destroy(map_handle), MC_STATUS_OK);
+            result.1
+        };
+        let map_base = map_frame(0, 0);
+        for (label, changed) in [("pitch", map_frame(64, 0)), ("fov", map_frame(0, 16))] {
+            let base_left = map_base
+                .chunks_exact(LEVEL1_VIEW_WIDTH)
+                .flat_map(|row| &row[..191])
+                .copied()
+                .collect::<Vec<_>>();
+            let changed_left = changed
+                .chunks_exact(LEVEL1_VIEW_WIDTH)
+                .flat_map(|row| &row[..191])
+                .copied()
+                .collect::<Vec<_>>();
+            let base_right = map_base
+                .chunks_exact(LEVEL1_VIEW_WIDTH)
+                .flat_map(|row| &row[192..])
+                .copied()
+                .collect::<Vec<_>>();
+            let changed_right = changed
+                .chunks_exact(LEVEL1_VIEW_WIDTH)
+                .flat_map(|row| &row[192..])
+                .copied()
+                .collect::<Vec<_>>();
+            assert_eq!(
+                changed_left, base_left,
+                "map {label} changes only the real second-world viewport"
+            );
+            assert_ne!(
+                changed_right, base_right,
+                "map {label} must reach the real 128x200 DrawWorld projection"
+            );
+        }
+        let scores_handle = open_fixture_with_presentation_cache();
+        assert_eq!(
+            mc_native_level1_player_menu_state(scores_handle, 7),
+            MC_STATUS_OK
+        );
+        let (scores_status, _, _, _) = capture(scores_handle, &query);
+        assert_eq!(
+            scores_status, MC_STATUS_GENERATION_MISMATCH,
+            "scores fail closed until the live all-player/help-RNG matrix is typed"
+        );
+        assert_eq!(mc_native_session_destroy(scores_handle), MC_STATUS_OK);
+
+        let chat_handle = open_fixture_with_presentation_cache();
+        assert_eq!(
+            mc_native_level1_player_menu_state(chat_handle, 3),
+            MC_STATUS_OK
+        );
+        let mut chat_input = source_presentation_input();
+        chat_input.chat_lines[5 * 64..5 * 64 + 5].copy_from_slice(b"HELLO");
+        chat_input.chat_mode = 3;
+        chat_input.chat_player_mask = 1 << 1;
+        // Source coordinates (20,376) enter fixed recipient cell 5 after the
+        // VGA1 divide, overriding the stored recipient.
+        chat_input.mouse_x = 20;
+        chat_input.mouse_y = 376;
+        submit_source_presentation_input(chat_handle, &chat_input);
+        let (chat_status, chat_indices, _, _) = capture(chat_handle, &query);
+        assert_eq!(
+            chat_status,
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_ne!(
+            chat_indices, first_indices,
+            "the selected live chat buffer traverses the exact source writer"
+        );
+        assert_eq!(mc_native_session_destroy(chat_handle), MC_STATUS_OK);
+
+        let cursor_handle = open_fixture_with_presentation_cache();
+        assert_eq!(
+            mc_native_level1_player_menu_state(cursor_handle, 3),
+            MC_STATUS_OK
+        );
+        let mut cursor_input = source_presentation_input();
+        cursor_input.cursor_visible = 1;
+        cursor_input.joystick = 8;
+        submit_source_presentation_input(cursor_handle, &cursor_input);
+        let (cursor_status, _, _, _) = capture(cursor_handle, &query);
+        assert_eq!(
+            cursor_status, MC_STATUS_GENERATION_MISMATCH,
+            "active selector9 must fail closed until its source bank is proven"
+        );
+        with_session(cursor_handle, |session| {
+            assert_eq!(session.presentation_frame.history(), MainHistory::Unprimed);
+            assert!(session.presentation_frame.cached().is_none());
+            Ok(())
+        })
+        .expect("cursor provenance rejection is atomic");
+        assert_eq!(mc_native_session_destroy(cursor_handle), MC_STATUS_OK);
+
+        let options_handle = open_fixture_with_presentation_cache();
+        assert_eq!(
+            mc_native_level1_player_menu_state(options_handle, 9),
+            MC_STATUS_OK
+        );
+        let mut options_input = source_presentation_input();
+        options_input.options_selected_mask = 1;
+        options_input.options_enabled_mask &= !1;
+        options_input.mouse_x = 2 * 120;
+        options_input.mouse_y = 2 * 36;
+        submit_source_presentation_input(options_handle, &options_input);
+        let (options_status, _, _, _) = capture(options_handle, &query);
+        assert_eq!(
+            options_status,
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_eq!(mc_native_session_destroy(options_handle), MC_STATUS_OK);
+
+        let volume_handle = open_fixture_with_presentation_cache();
+        assert_eq!(
+            mc_native_level1_player_menu_state(volume_handle, 10),
+            MC_STATUS_OK
+        );
+        let mut volume_input = source_presentation_input();
+        volume_input.volume_target = 2;
+        volume_input.music_volume = 63;
+        submit_source_presentation_input(volume_handle, &volume_input);
+        let (volume_status, _, _, _) = capture(volume_handle, &query);
+        assert_eq!(
+            volume_status,
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_eq!(mc_native_session_destroy(volume_handle), MC_STATUS_OK);
+
+        let invalid_volume_handle = open_fixture_with_presentation_cache();
+        assert_eq!(
+            mc_native_level1_player_menu_state(invalid_volume_handle, 10),
+            MC_STATUS_OK
+        );
+        let mut invalid_volume_input = source_presentation_input();
+        invalid_volume_input.volume_target = 0;
+        submit_source_presentation_input(invalid_volume_handle, &invalid_volume_input);
+        let (invalid_volume_status, _, _, _) = capture(invalid_volume_handle, &query);
+        assert_eq!(
+            invalid_volume_status, MC_STATUS_GENERATION_MISMATCH,
+            "volume target outside sound/music fails before history mutation"
+        );
+        with_session(invalid_volume_handle, |session| {
+            assert_eq!(session.presentation_frame.history(), MainHistory::Unprimed);
+            assert!(session.presentation_frame.cached().is_none());
+            Ok(())
+        })
+        .expect("invalid volume rejection is atomic");
+        assert_eq!(
+            mc_native_session_destroy(invalid_volume_handle),
+            MC_STATUS_OK
+        );
+
+        for selected_item in 1..=3 {
+            let ok_handle = open_fixture_with_presentation_cache();
+            assert_eq!(
+                mc_native_level1_player_menu_state(ok_handle, 13),
+                MC_STATUS_OK
+            );
+            let mut ok_input = source_presentation_input();
+            ok_input.selected_menu_item = selected_item;
+            submit_source_presentation_input(ok_handle, &ok_input);
+            let (ok_status, _, _, _) = capture(ok_handle, &query);
+            assert_eq!(
+                ok_status,
+                MC_STATUS_OK,
+                "OK/cancel item {selected_item}: {}",
+                LAST_ERROR.with(|value| value.borrow().clone())
+            );
+            assert_eq!(mc_native_session_destroy(ok_handle), MC_STATUS_OK);
+        }
+
+        let pause_handle = open_fixture_with_presentation_cache();
+        let mut pause_query = query;
+        let mut before_pause_step = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_snapshot(
+                pause_handle,
+                &raw mut before_pause_step,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(mc_native_level1_game_paused(pause_handle, 1), MC_STATUS_OK);
+        let mut paused_step = McSessionSnapshotV2::default();
+        let paused_command = valid_command();
+        assert_eq!(
+            mc_native_session_step(
+                pause_handle,
+                &raw const paused_command,
+                &raw mut paused_step,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(paused_step.tick, before_pause_step.tick);
+        assert_eq!(paused_step.state_hash, before_pause_step.state_hash);
+        assert_eq!(paused_step.event_head, before_pause_step.event_head);
+        pause_query.game_paused = 1;
+        let mut pause_input = source_presentation_input();
+        pause_input.load_available = 0;
+        pause_input.sound_available = 0;
+        pause_input.music_available = 0;
+        submit_source_presentation_input(pause_handle, &pause_input);
+        let (pause_status, pause_indices, _, pause_info) = capture(pause_handle, &pause_query);
+        assert_eq!(pause_status, MC_STATUS_OK);
+        assert_eq!(pause_info.overlay_stage_count, 13);
+        assert_ne!(pause_indices, first_indices, "Pause writes its source text");
+        assert_eq!(mc_native_level1_game_paused(pause_handle, 0), MC_STATUS_OK);
+        let mut resumed_step = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                pause_handle,
+                &raw const paused_command,
+                &raw mut resumed_step,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(resumed_step.tick, paused_step.tick + 1);
+        assert_eq!(mc_native_session_destroy(pause_handle), MC_STATUS_OK);
+
+        let recursive_pause_handle = open_fixture_with_presentation_cache();
+        assert_eq!(
+            mc_native_level1_game_paused(recursive_pause_handle, 1),
+            MC_STATUS_OK
+        );
+        let mut recursive_pause_input = source_presentation_input();
+        recursive_pause_input.recursive_pause_writer = 1;
+        submit_source_presentation_input(recursive_pause_handle, &recursive_pause_input);
+        let (recursive_pause_status, _, _, _) = capture(recursive_pause_handle, &pause_query);
+        assert_eq!(
+            recursive_pause_status, MC_STATUS_GENERATION_MISMATCH,
+            "recursive sub_30870 state fails closed rather than fabricating output"
+        );
+        with_session(recursive_pause_handle, |session| {
+            assert_eq!(session.presentation_frame.history(), MainHistory::Unprimed);
+            assert!(session.presentation_frame.cached().is_none());
+            Ok(())
+        })
+        .expect("recursive pause rejection is atomic");
+        assert_eq!(
+            mc_native_session_destroy(recursive_pause_handle),
+            MC_STATUS_OK
+        );
+
+        let fabricated_end_handle = open_fixture_with_presentation_cache();
+        let mut level_end_query = query;
+        level_end_query.level_end = 1;
+        let (fabricated_status, _, _, _) = capture(fabricated_end_handle, &level_end_query);
+        assert_eq!(
+            fabricated_status, MC_STATUS_GENERATION_MISMATCH,
+            "a render-side query cannot fabricate authoritative completion"
+        );
+        with_session(fabricated_end_handle, |session| {
+            assert_eq!(session.presentation_frame.history(), MainHistory::Unprimed);
+            assert!(session.presentation_frame.cached().is_none());
+            Ok(())
+        })
+        .expect("fabricated completion rejection is atomic");
+        assert_eq!(
+            mc_native_session_destroy(fabricated_end_handle),
+            MC_STATUS_OK
+        );
+
+        let completed_handle = open_fixture_with_presentation_cache();
+        with_session_mut(completed_handle, |session| {
+            session.mission.level_completed = true;
+            Ok(())
+        })
+        .expect("configure authoritative completion");
+        submit_source_presentation_input(completed_handle, &source_presentation_input());
+        let (completed_status, completed_indices, _, completed_info) =
+            capture(completed_handle, &level_end_query);
+        assert_eq!(completed_status, MC_STATUS_OK);
+        assert_eq!(completed_info.overlay_stage_count, 13);
+        assert_ne!(
+            completed_indices, first_indices,
+            "authoritative completion writes the two source strings"
+        );
+        assert_eq!(mc_native_session_destroy(completed_handle), MC_STATUS_OK);
+
+        let notification_handle = open_fixture_with_presentation_cache();
+        with_session_mut(notification_handle, |session| {
+            session.mission.player_notification_active = true;
+            session.mission.player_notification_id =
+                sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_ID;
+            session.mission.player_notification_state =
+                sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_STATE;
+            session.mission.player_notification_timer =
+                sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_TIMER;
+            Ok(())
+        })
+        .expect("configure the source player notification");
+        submit_source_presentation_input(notification_handle, &source_presentation_input());
+        let (notification_status, notification_indices, _, notification_info) =
+            capture(notification_handle, &query);
+        assert_eq!(notification_status, MC_STATUS_OK);
+        assert_eq!(notification_info.overlay_stage_count, 13);
+        assert_ne!(
+            notification_indices, first_indices,
+            "the live source notification writes its fixed-profile text"
+        );
+        with_session(notification_handle, |session| {
+            assert_eq!(
+                session.notification_draw_feedback,
+                Some((
+                    session.state.tick,
+                    true,
+                    sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_STATE,
+                    sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_TIMER - 1,
+                )),
+                "the source text writer stages one decrement only after COMPLETE"
+            );
+            assert_eq!(
+                (
+                    session.mission.player_notification_state,
+                    session.mission.player_notification_timer
+                ),
+                (
+                    sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_STATE,
+                    sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_TIMER,
+                ),
+                "same-tick immutable state remains stable until the next outer turn"
+            );
+            Ok(())
+        })
+        .expect("notification feedback committed");
+        let (repeat_status, _, _, repeat_info) = capture(notification_handle, &query);
+        assert_eq!(repeat_status, MC_STATUS_OK);
+        assert_eq!(repeat_info.newly_committed, 0);
+        with_session(notification_handle, |session| {
+            assert_eq!(
+                session.notification_draw_feedback,
+                Some((
+                    session.state.tick,
+                    true,
+                    sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_STATE,
+                    sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_TIMER - 1,
+                )),
+                "same-key cached retry cannot stage a second decrement"
+            );
+            Ok(())
+        })
+        .expect("notification retry is atomic");
+        with_session_mut(notification_handle, |session| {
+            session.step(player_command(valid_command()).expect("valid native command"));
+            assert_eq!(
+                session.mission.player_notification_timer,
+                sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_TIMER - 1,
+                "the next outer turn applies the single accepted writer feedback"
+            );
+            Ok(())
+        })
+        .expect("notification feedback applies once");
+        assert_eq!(mc_native_session_destroy(notification_handle), MC_STATUS_OK);
+
+        for state in 1..=5 {
+            let state_handle = open_fixture_with_presentation_cache();
+            with_session_mut(state_handle, |session| {
+                session.mission.player_notification_active = true;
+                session.mission.player_notification_id =
+                    sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_ID;
+                session.mission.player_notification_state = state;
+                session.mission.player_notification_timer = 1;
+                Ok(())
+            })
+            .expect("configure one exact notification state");
+            submit_source_presentation_input(state_handle, &source_presentation_input());
+            let (state_status, _, _, _) = capture(state_handle, &query);
+            assert_eq!(
+                state_status,
+                MC_STATUS_OK,
+                "notification state {state}: {}",
+                LAST_ERROR.with(|value| value.borrow().clone())
+            );
+            with_session(state_handle, |session| {
+                assert_eq!(
+                    session.notification_draw_feedback,
+                    Some((session.state.tick, true, state, 0)),
+                    "old timer 1 draws once and stages post-decrement zero"
+                );
+                Ok(())
+            })
+            .expect("notification edge feedback");
+            assert_eq!(mc_native_session_destroy(state_handle), MC_STATUS_OK);
+        }
+
+        let expired_notification_handle = open_fixture_with_presentation_cache();
+        with_session_mut(expired_notification_handle, |session| {
+            session.mission.player_notification_active = true;
+            session.mission.player_notification_id =
+                sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_ID;
+            session.mission.player_notification_state = 1;
+            session.mission.player_notification_timer = 0;
+            Ok(())
+        })
+        .expect("configure notification timer zero");
+        submit_source_presentation_input(expired_notification_handle, &source_presentation_input());
+        let (expired_status, _, _, _) = capture(expired_notification_handle, &query);
+        assert_eq!(expired_status, MC_STATUS_OK);
+        with_session(expired_notification_handle, |session| {
+            assert_eq!(
+                session.notification_draw_feedback,
+                Some((session.state.tick, false, 0, -1)),
+                "old timer zero clears the source state without drawing"
+            );
+            Ok(())
+        })
+        .expect("expired notification feedback");
+        assert_eq!(
+            mc_native_session_destroy(expired_notification_handle),
+            MC_STATUS_OK
+        );
+
+        let phase_notification = |timer: i16| {
+            let phase_handle = open_fixture_with_presentation_cache();
+            with_session_mut(phase_handle, |session| {
+                session.mission.player_notification_active = true;
+                session.mission.player_notification_id =
+                    sim_core::level1_mission::PLAYER_DIED_NOTIFICATION_ID;
+                session.mission.player_notification_state = 2;
+                session.mission.player_notification_timer = timer;
+                Ok(())
+            })
+            .expect("configure state2 timer/phase edge");
+            submit_source_presentation_input(phase_handle, &source_presentation_input());
+            let result = capture(phase_handle, &query);
+            assert_eq!(
+                result.0,
+                MC_STATUS_OK,
+                "state2 timer {timer}: {}",
+                LAST_ERROR.with(|value| value.borrow().clone())
+            );
+            assert_eq!(mc_native_session_destroy(phase_handle), MC_STATUS_OK);
+            result
+        };
+        let (_, timer_101_indices, _, _) = phase_notification(101);
+        let (_, timer_102_phase_indices, _, _) = phase_notification(102);
+        assert_ne!(
+            timer_101_indices, timer_102_phase_indices,
+            "state2 uses CLRN3840 through post-decrement 100 then the phase colour above it"
+        );
+
+        let help_handle = open_fixture_with_presentation_cache();
+        let mut help_query = query;
+        help_query.help_popup = 1;
+        let (help_status, _, _, _) = capture(help_handle, &help_query);
+        assert_eq!(
+            help_status, MC_STATUS_GENERATION_MISMATCH,
+            "help cannot earn COMPLETE without cached E2A74 recursive state"
+        );
+        with_session(help_handle, |session| {
+            assert_eq!(session.presentation_frame.history(), MainHistory::Unprimed);
+            assert!(session.presentation_frame.cached().is_none());
+            Ok(())
+        })
+        .expect("help prerequisite rejection is atomic");
+        let (help_retry_status, _, _, help_retry_info) = capture(help_handle, &query);
+        assert_eq!(
+            help_retry_status, MC_STATUS_OK,
+            "clearing the public help query retries the rejected tick"
+        );
+        assert_eq!(
+            (
+                help_retry_info.history_state,
+                help_retry_info.newly_committed
+            ),
+            (1, 1),
+            "a failed help request does not mutate its sentinel/history before the valid retry"
+        );
+        assert_eq!(mc_native_session_destroy(help_handle), MC_STATUS_OK);
+
+        for label in ["tutorial sentinel stream", "spider sprite sheet"] {
+            let prerequisite_handle = open_fixture_with_presentation_cache();
+            let mut prerequisite_query = query;
+            if label == "tutorial sentinel stream" {
+                prerequisite_query.tutorial_or_briefing = 1;
+            } else {
+                with_session_mut(prerequisite_handle, |session| {
+                    session.state.immobilize_counter = 1;
+                    Ok(())
+                })
+                .expect(label);
+            }
+            let (status, _, _, _) = capture(prerequisite_handle, &prerequisite_query);
+            assert_eq!(
+                status, MC_STATUS_GENERATION_MISMATCH,
+                "{label} must fail closed until the independent prerequisite is cached"
+            );
+            with_session(prerequisite_handle, |session| {
+                assert_eq!(session.presentation_frame.history(), MainHistory::Unprimed);
+                assert!(session.presentation_frame.cached().is_none());
+                Ok(())
+            })
+            .expect("missing prerequisite is atomic");
+            assert_eq!(mc_native_session_destroy(prerequisite_handle), MC_STATUS_OK);
+        }
+
+        let missing_source_handle = open_fixture_with_presentation_cache();
+        with_session_mut(missing_source_handle, |session| {
+            session.selector_frames = None;
+            Ok(())
+        })
+        .expect("remove one current source compositor producer");
+        let (missing_status, _, _, _) = capture(missing_source_handle, &query);
+        assert_eq!(missing_status, MC_STATUS_GENERATION_MISMATCH);
+        with_session(missing_source_handle, |session| {
+            assert_eq!(session.presentation_frame.history(), MainHistory::Unprimed);
+            assert!(session.presentation_frame.cached().is_none());
+            Ok(())
+        })
+        .expect("missing producer fails before committing history");
+        assert_eq!(
+            mc_native_session_destroy(missing_source_handle),
+            MC_STATUS_OK
+        );
+
+        query.presentation_revision = 2;
+        assert_eq!(
+            copy(&query, &mut indices, &mut provenance, &mut info),
+            MC_STATUS_GENERATION_MISMATCH,
+            "same finalized tick with a changed revision rejects"
+        );
+        query.presentation_revision = 1;
+        query.tick = 2;
+        assert_eq!(
+            copy(&query, &mut indices, &mut provenance, &mut info),
+            MC_STATUS_GENERATION_MISMATCH,
+            "out-of-order presentation rejects before rendering"
+        );
+
+        let command = valid_command();
+        let mut stepped = McSessionSnapshotV2::default();
+        for _ in 0..2 {
+            assert_eq!(
+                mc_native_session_step(
+                    handle,
+                    &raw const command,
+                    &raw mut stepped,
+                    struct_size::<McSessionSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+        }
+        with_session(handle, |session| {
+            assert_eq!(
+                session.mission.source_map_chains().linked_entity_indices(),
+                session.renderable_map_chains.linked_entity_indices(),
+                "the finalized production painter chain replaces the per-dispatch snapshot so reclaimed rows cannot reach FINAL MAIN"
+            );
+            Ok(())
+        })
+        .expect("registered C API session");
+        query.tick = 1;
+        query.configured_blur_mode = 2;
+        query.blur_capability = 1;
+        let temporal_status = copy(&query, &mut indices, &mut provenance, &mut info);
+        assert_eq!(
+            temporal_status,
+            MC_STATUS_OK,
+            "the next contiguous stored camera tick consumes prior finalized MAIN: {}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_eq!(
+            (info.effective_postprocess_mode, info.newly_committed),
+            (2, 1)
+        );
+        assert!(
+            provenance.iter().any(|value| value & 2 != 0),
+            "temporal provenance records prior finalized MAIN"
+        );
+        query.tick = 0;
+        assert_eq!(
+            copy(&query, &mut indices, &mut provenance, &mut info),
+            MC_STATUS_GENERATION_MISMATCH,
+            "a stale tick rejects after contiguous advancement"
+        );
+
+        let mut snapshot = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_reset(
+                handle,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        query.generation = snapshot.generation;
+        query.tick = 0;
+        query.configured_blur_mode = 2;
+        query.blur_capability = 1;
+        assert_eq!(
+            copy(&query, &mut indices, &mut provenance, &mut info),
+            MC_STATUS_GENERATION_MISMATCH,
+            "reset restores Unprimed and rejects a temporal first frame"
+        );
+        query.configured_blur_mode = 0;
+        query.blur_capability = 0;
+        assert_eq!(
+            copy(&query, &mut indices, &mut provenance, &mut info),
+            MC_STATUS_OK
+        );
+        assert_eq!((info.history_state, info.newly_committed), (1, 1));
+        let mut isolated_snapshot = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_reset(
+                isolated_handle,
+                &raw mut isolated_snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_native_level1_player_menu_state(isolated_handle, 6),
+            MC_STATUS_OK
+        );
+        let mut incomplete_query = query;
+        incomplete_query.generation = isolated_snapshot.generation;
+        incomplete_query.configured_blur_mode = 0;
+        incomplete_query.blur_capability = 0;
+        assert_eq!(
+            mc_native_session_presentation_frame_copy(
+                isolated_handle,
+                &raw const incomplete_query,
+                isolated_indices.as_mut_ptr(),
+                isolated_indices.len() as u32,
+                isolated_provenance.as_mut_ptr(),
+                isolated_provenance.len() as u32,
+                &raw mut isolated_info,
+                struct_size::<McPresentationFrameInfoV2>(),
+            ),
+            MC_STATUS_OK,
+            "{}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_eq!(isolated_info.overlay_stage_count, 14);
+        with_session(isolated_handle, |session| {
+            assert_eq!(session.presentation_frame.history(), MainHistory::Primed);
+            assert!(session.presentation_frame.cached().is_some());
+            Ok(())
+        })
+        .expect("map source branch commits only after all typed receipts");
+
+        let zero_life_handle = open_fixture_with_presentation_cache();
+        with_session_mut(zero_life_handle, |session| {
+            session.mission.player_life = 0;
+            Ok(())
+        })
+        .expect("configure exact source alive boundary");
+        let mut boundary_query = query;
+        boundary_query.generation = 1;
+        boundary_query.tick = 0;
+        let (zero_status, _, _, zero_info) = capture(zero_life_handle, &boundary_query);
+        assert_eq!(
+            zero_status,
+            MC_STATUS_OK,
+            "life zero remains alive: {}",
+            LAST_ERROR.with(|value| value.borrow().clone())
+        );
+        assert_eq!(zero_info.overlay_stage_count, 13);
+        assert_eq!(mc_native_session_destroy(zero_life_handle), MC_STATUS_OK);
+
+        let dead_handle = open_fixture_with_presentation_cache();
+        with_session_mut(dead_handle, |session| {
+            session.mission.player_life = -1;
+            Ok(())
+        })
+        .expect("configure dead source branch");
+        let (dead_status, _, _, dead_info) = capture(dead_handle, &boundary_query);
+        assert_eq!(dead_status, MC_STATUS_OK);
+        assert_eq!(
+            dead_info.overlay_stage_count, 5,
+            "dead ordinary branch is menu then objective/tutorial/help/debug only"
+        );
+        assert_eq!(mc_native_session_destroy(dead_handle), MC_STATUS_OK);
+        for menu_state in [9_u8, 10, 13] {
+            let dead_menu_handle = open_fixture_with_presentation_cache();
+            with_session_mut(dead_menu_handle, |session| {
+                session.mission.player_life = -1;
+                session.mission.player_menu_state = menu_state;
+                Ok(())
+            })
+            .expect("configure dead source menu branch");
+            submit_source_presentation_input(dead_menu_handle, &source_presentation_input());
+            let (status, _, _, dead_menu_info) = capture(dead_menu_handle, &boundary_query);
+            assert_eq!(
+                status,
+                MC_STATUS_OK,
+                "dead menu state {menu_state}: {}",
+                LAST_ERROR.with(|value| value.borrow().clone())
+            );
+            assert_eq!(
+                dead_menu_info.overlay_stage_count, 5,
+                "dead menu state {menu_state} closes its source-ledger receipt sequence"
+            );
+            assert_eq!(mc_native_session_destroy(dead_menu_handle), MC_STATUS_OK);
+        }
+        assert_eq!(mc_native_session_destroy(isolated_handle), MC_STATUS_OK);
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 
     #[test]
@@ -8905,6 +12645,10 @@ mod tests {
         session.possession_selector_frame =
             Some(PossessionTmapClock::from_bank(&assets.combat_tmap_bank));
         session.castle_selector_frame = Some(CastleTmapClock::from_bank(&assets.economy_tmap_bank));
+        session.source_render_asset_digest = Some(
+            source_render_asset_digest(session.world.as_ref(), &assets)
+                .expect("fixture source-render asset digest"),
+        );
         session.terrain_frame_assets = Some(assets);
         with_registry_mut(|registry| registry.insert(session)).expect("fixture session registers")
     }
@@ -8937,6 +12681,10 @@ mod tests {
                 .expect("qualified static world TMAP fixture"),
             economy_tmap_bank: load_qualified_economy_tmap_bank(&cache)
                 .expect("qualified economy TMAP fixture"),
+            indexed_overlays: IndexedOverlayAssets::load(
+                private.join("generated/plan28-cp2-revise.fTjahZ/cache"),
+            )
+            .expect("CP1 fixed indexed overlay fixture"),
         }
     }
 
@@ -8952,6 +12700,42 @@ mod tests {
         let session = SessionRecord::new(world).expect("owner-cache fixture session constructs");
         with_registry_mut(|registry| registry.insert(session))
             .expect("owner-cache fixture session registers")
+    }
+
+    fn open_fixture_with_presentation_cache() -> u64 {
+        let (package, closure) = fixture_paths();
+        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let cache = std::env::var_os("MC_OWNER_ASSET_CACHE").map_or_else(
+            || private.join("generated/level1-unity-asset-cache"),
+            PathBuf::from,
+        );
+        let world = NativeWorld::load_with_owner_cache(package, closure, &cache)
+            .expect("package M and CP1/CP2 owner cache load");
+        let mut session = SessionRecord::new(world).expect("presentation session constructs");
+        let assets = Arc::new(load_terrain_frame_assets(&cache).expect("presentation assets load"));
+        session.selector_frames = session
+            .world
+            .goat_tmap_bank()
+            .map(GoatTmapClocks::from_bank);
+        session.archer_selector_frames =
+            Some(ArcherTmapClocks::from_bank(&assets.archer_tmap_bank));
+        session.firefly_selector_frames =
+            Some(FireflyTmapClocks::from_bank(&assets.firefly_tmap_bank));
+        session.villager_selector_frames = Some(VillagerTmapClocks::from_bank(
+            &assets.frozen_actor_tmap_bank,
+        ));
+        session.fireball_selector_frame =
+            Some(FireballTmapClock::from_bank(&assets.combat_tmap_bank));
+        session.possession_selector_frame =
+            Some(PossessionTmapClock::from_bank(&assets.combat_tmap_bank));
+        session.castle_selector_frame = Some(CastleTmapClock::from_bank(&assets.economy_tmap_bank));
+        session.source_render_asset_digest = Some(
+            source_render_asset_digest(session.world.as_ref(), &assets)
+                .expect("fixture source-render asset digest"),
+        );
+        session.terrain_frame_assets = Some(assets);
+        with_registry_mut(|registry| registry.insert(session))
+            .expect("presentation session registers")
     }
 
     fn open_fixture_with_owner_cache_and_terrain_frame_assets() -> u64 {
@@ -8978,6 +12762,10 @@ mod tests {
         session.possession_selector_frame =
             Some(PossessionTmapClock::from_bank(&assets.combat_tmap_bank));
         session.castle_selector_frame = Some(CastleTmapClock::from_bank(&assets.economy_tmap_bank));
+        session.source_render_asset_digest = Some(
+            source_render_asset_digest(session.world.as_ref(), &assets)
+                .expect("fixture source-render asset digest"),
+        );
         session.terrain_frame_assets = Some(assets);
         with_registry_mut(|registry| registry.insert(session))
             .expect("complete owner-cache fixture session registers")
@@ -9007,6 +12795,10 @@ mod tests {
         session.possession_selector_frame =
             Some(PossessionTmapClock::from_bank(&assets.combat_tmap_bank));
         session.castle_selector_frame = Some(CastleTmapClock::from_bank(&assets.economy_tmap_bank));
+        session.source_render_asset_digest = Some(
+            source_render_asset_digest(session.world.as_ref(), &assets)
+                .expect("fixture source-render asset digest"),
+        );
         session.terrain_frame_assets = Some(assets);
         with_registry_mut(|registry| registry.insert(session))
             .expect("world-frame fixture session registers")
@@ -9092,6 +12884,8 @@ mod tests {
         assert_eq!(size_of::<McTerrainGridVertexV2>(), 64);
         assert_eq!(size_of::<McTerrainFrameQueryV2>(), 40);
         assert_eq!(size_of::<McTerrainFrameInfoV2>(), 96);
+        assert_eq!(size_of::<McPresentationFrameQueryV2>(), 64);
+        assert_eq!(size_of::<McPresentationFrameInfoV2>(), 128);
         assert_eq!(std::mem::offset_of!(McWorldInfoV2, reset_state_hash), 40);
         assert_eq!(std::mem::offset_of!(McCommandV2, requested_spell), 14);
         assert_eq!(std::mem::offset_of!(McCameraInputV2, look_yaw), 8);
@@ -9350,6 +13144,22 @@ mod tests {
         assert_eq!(std::mem::offset_of!(McTerrainFrameInfoV2, index_bytes), 40);
         assert_eq!(std::mem::offset_of!(McTerrainFrameInfoV2, index_hash), 64);
         assert_eq!(std::mem::offset_of!(McTerrainFrameInfoV2, reserved), 88);
+        assert_eq!(
+            std::mem::offset_of!(McPresentationFrameQueryV2, configured_blur_mode),
+            40
+        );
+        assert_eq!(
+            std::mem::offset_of!(McPresentationFrameInfoV2, immutable_input_hash),
+            32
+        );
+        assert_eq!(
+            std::mem::offset_of!(McPresentationFrameInfoV2, index_hash),
+            64
+        );
+        assert_eq!(
+            std::mem::offset_of!(McPresentationFrameInfoV2, reserved),
+            104
+        );
 
         let weak_marker = FireballImpact {
             id: 1,
@@ -9948,6 +13758,9 @@ _Static_assert(sizeof(McTerrainPnt5VectorV2) == 56, "McTerrainPnt5VectorV2 size"
 _Static_assert(sizeof(McTerrainGridVertexV2) == 64, "McTerrainGridVertexV2 size");
 _Static_assert(sizeof(McTerrainFrameQueryV2) == 40, "McTerrainFrameQueryV2 size");
 _Static_assert(sizeof(McTerrainFrameInfoV2) == 96, "McTerrainFrameInfoV2 size");
+_Static_assert(sizeof(McPresentationFrameQueryV2) == 64, "McPresentationFrameQueryV2 size");
+_Static_assert(sizeof(McLevel1PresentationInputV2) == 740, "McLevel1PresentationInputV2 size");
+_Static_assert(sizeof(McPresentationFrameInfoV2) == 128, "McPresentationFrameInfoV2 size");
 _Static_assert(offsetof(McWorldInfoV2, reset_state_hash) == 40, "world hash offset");
 _Static_assert(offsetof(McCommandV2, requested_spell) == 14, "spell offset");
 _Static_assert(offsetof(McCameraInputV2, look_yaw) == 8, "camera yaw offset");
@@ -10054,6 +13867,12 @@ _Static_assert(offsetof(McTerrainFrameInfoV2, width) == 24, "terrain frame width
 _Static_assert(offsetof(McTerrainFrameInfoV2, index_bytes) == 40, "terrain frame bytes offset");
 _Static_assert(offsetof(McTerrainFrameInfoV2, index_hash) == 64, "terrain frame hash offset");
 _Static_assert(offsetof(McTerrainFrameInfoV2, reserved) == 88, "terrain frame reserved offset");
+_Static_assert(offsetof(McPresentationFrameQueryV2, configured_blur_mode) == 40, "presentation frame blur offset");
+_Static_assert(offsetof(McLevel1PresentationInputV2, mouse_x) == 38, "presentation input mouse offset");
+_Static_assert(offsetof(McLevel1PresentationInputV2, debug_clock_bucket) == 704, "presentation input debug clock offset");
+_Static_assert(offsetof(McPresentationFrameInfoV2, immutable_input_hash) == 32, "presentation frame input hash offset");
+_Static_assert(offsetof(McPresentationFrameInfoV2, index_hash) == 64, "presentation frame index hash offset");
+_Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentation frame reserved offset");
 "#,
         )
         .unwrap();

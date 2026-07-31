@@ -14,8 +14,9 @@ The cache contains:
   Unity mappings;
 - the full `TABLESN` and `CLRN-0` payloads, including the qualified 256×256
   static shade lookup `TABLESN[(brightness << 8) | source index]`;
-- all 172 Level 1 scene/live-mission `TMAPS1-0` records: 161 exact decoded
-  streams and 11 source-verified one-byte `b'0'` placeholders;
+- all 180 Level 1 scene/live-mission and fixed-profile FINAL MAIN
+  `TMAPS1-0` dependencies, including the source-family closure added for the
+  native compositor;
 - the exact four mutable indexed states for Goat selectors 152, 153, and 154,
   decoded through the qualified type-7 SS2 subset and checked against the
   pinned remc2 before/after oracle. Frame 4 restores reset, the next update
@@ -43,6 +44,17 @@ The cache contains:
   authority badge; and
 - canonical spell family/tier icon indices. Fireball, Possession, Castle, and
   Speed big icons 123–126 are materialized from HSPRN; and
+- `frame/source-frame-census.json`, a pinned remc2 writer/asset/branch census
+  for the accepted 320×200 Night, screen-size-0, single-local-player native
+  FINAL MAIN. It binds source-tuple disposition, map-chain order, hotspots,
+  reflection/shadow adjacency, dynamic lighting, temporal/spatial
+  postprocess, supported overlays, atomic COMPLETE receipts, the revisioned C ABI, and
+  Unity's one-row-flip/one-R8-plane ownership. Stereo, alternate resolution,
+  active-DAC RGB for historical captures, hostile/remote players, unsupported
+  branches, and cross-timeline pixel/clock equality remain explicit
+  nonclaims. Active tutorial/briefing, recursive help popup, immobilization
+  spider-web, and menu-state-7 score-writer states are recorded as reachable
+  but fail closed before COMPLETE; and
 - a deterministic music dynamic-control census: playback-slot-0 `C2GAME1`
   has no controller-119 tags, while loop-scan-pointer-slot-1 `C2GAME2` tags
   channels 7 and 8. The descriptor records the 90 Hz `30 * 3` envelope and
@@ -72,8 +84,9 @@ the indexed world, sprites, HUD, minimap, and objective graphics. Ordinary
 single-player death does not enter the multiplayer/banishment monochrome
 path, so no unsupported grayscale effect is invented for this slice.
 Speed Up changes the source countdown speed and emits its model-2 no-draw
-trail; it does not request a palette tint. Exact high-speed whole-frame blur
-remains explicit presentation work.
+trail; it does not request a palette tint. The fixed-profile native FINAL
+MAIN now implements the exact high-speed temporal branch, including its
+first-four-pixel asymmetry and recursive prior-MAIN history.
 
 The HUD authority contract is deliberately mixed:
 
@@ -137,6 +150,16 @@ The materializer checks every sprite and glyph against both the proven atlas
 decoder and the qualified owner catalog hashes. The canonical manifest records
 source asset identities, decoder and generator hashes, output hashes, exact
 bindings, inclusion reasons, and palette status.
+
+The PLAN28 CP4 correction-2 cache identity is 1,248 outputs, manifest SHA-256
+`3909be6b29c1f879208f0a15ec2bccee58d65311cefd6698f0870d16c9742a8d`,
+content SHA-256
+`ee063ce1d5f804c8efc412dff2bedb0800d6fd347b38a6d0376e2a2e4dccd9dc`,
+and source-frame-census SHA-256
+`3ca66e8258fb239c51aa728d321029e2f5364b61d674abb3499e86c92f5f6e59`.
+Earlier cache identities remain accepted only on the historical native load
+paths that explicitly name them; qualified current Unity presentation pins
+this CP4 pair.
 
 ## Build and validate
 

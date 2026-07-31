@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using UnityEngine;
@@ -131,12 +132,17 @@ namespace MagicCarpet.Native
                 float logicalX,
                 float logicalY,
                 NativeSim.Level1SpellMenuSnapshot snapshot,
-                SpellMenuGeometry geometry)
+                SpellMenuGeometry geometry,
+                int menuState = 5)
             {
-                MenuState = 5;
+                if (menuState is not 5 and not 8)
+                    throw new ArgumentOutOfRangeException(nameof(menuState));
+                MenuState = menuState;
                 ClearChoice();
                 UpdateFamilyHover(logicalX, logicalY, snapshot, geometry);
             }
+
+            private bool IsOpen => MenuState is 5 or 8;
 
             internal void Close()
             {
@@ -151,7 +157,7 @@ namespace MagicCarpet.Native
                 NativeSim.Level1SpellMenuSnapshot snapshot,
                 SpellMenuGeometry geometry)
             {
-                if (MenuState != 5 || SelectedUiIndex >= 0)
+                if (!IsOpen || SelectedUiIndex >= 0)
                 {
                     return;
                 }
@@ -171,7 +177,7 @@ namespace MagicCarpet.Native
                 command = default;
                 UpdateFamilyHover(logicalX, logicalY, snapshot, geometry);
                 if (
-                    MenuState != 5 ||
+                    !IsOpen ||
                     SelectedUiIndex >= 0 ||
                     HoverUiIndex < 0 ||
                     mouseButton is < 0 or > 1)
@@ -211,7 +217,7 @@ namespace MagicCarpet.Native
             {
                 command = default;
                 if (
-                    MenuState != 5 ||
+                    !IsOpen ||
                     SelectedUiIndex < 0 ||
                     mouseButton != pressedMouseButton)
                 {
@@ -249,7 +255,7 @@ namespace MagicCarpet.Native
                 command = default;
                 UpdateFamilyHover(logicalX, logicalY, snapshot, geometry);
                 if (
-                    MenuState != 5 ||
+                    !IsOpen ||
                     SelectedUiIndex >= 0 ||
                     HoverUiIndex < 0 ||
                     mouseButton is < 0 or > 1)
@@ -308,7 +314,7 @@ namespace MagicCarpet.Native
             {
                 command = default;
                 if (
-                    MenuState != 5 ||
+                    !IsOpen ||
                     SelectedUiIndex < 0 ||
                     mouseButton != pressedMouseButton)
                 {
@@ -585,10 +591,36 @@ namespace MagicCarpet.Native
         private Material terrainDepthOnlyMaterial;
         private CommandBuffer terrainFrameCommandBuffer;
         private NativeSim.TerrainFrameInfo terrainFrameInfo;
+        private NativeSim.PresentationFrameInfo presentationFrameInfo;
         private bool terrainFrameCompositeLive;
+        private bool nativeFinalPresentationOwned;
+        private ulong nativeFinalOwnedGeneration;
+        private ulong nativeFinalOwnedTick;
+        private ulong nativeFinalOwnedIndexHash;
+        private uint nativeFinalOwnedReceiptFlags;
+        private readonly Dictionary<Renderer, bool> nativeSuppressedRendererStates =
+            new();
         private bool terrainFrameLiveLogged;
         private bool terrainFrameGpuValidated;
+        private bool qualificationAdaptedPresentation;
         private bool terrainFrameRouteGpuValidated;
+        private int nativeFinalEndpointCount;
+        private int nativeFinalRowFlipCount;
+        private int nativeFinalPlaneUploadCount;
+        private int managedTerrainSubmissionCount;
+        private int managedWorldSubmissionCount;
+        private int managedEntitySubmissionCount;
+        private int managedMissionSubmissionCount;
+        private int managedParticleSubmissionCount;
+        private int managedBillboardSubmissionCount;
+        private int managedMinimapSubmissionCount;
+        private int managedObjectiveSubmissionCount;
+        private int managedHudSubmissionCount;
+        private int managedMenuSubmissionCount;
+        private int managedLiveImpactSubmissionCount;
+        private int nativeFinalOnGuiSuppressionCount;
+        private bool qualificationTrackManagedFallbackRoute;
+        private readonly int[] qualificationManagedFallbackVisits = new int[4];
         private int ownerObjectiveVisibleSelector = -1;
         private bool ownerObjectiveBlendLogged;
         private readonly float[] terrainPnt5Rows =
@@ -637,6 +669,7 @@ namespace MagicCarpet.Native
         private readonly Dictionary<uint, MissionMarker> manaSphereRegistry = new();
         private MissionMarker castleMarker;
         private MissionMarker manaCarrierMarker;
+        private Transform entityPresentationRoot;
         private Transform missionPresentationRoot;
         private readonly List<Transform> terrainTiles = new();
         private readonly Queue<string> recentEventDiagnostics = new();
@@ -682,6 +715,25 @@ namespace MagicCarpet.Native
         private bool qualifiedMode;
         private bool debugMode;
         private bool debugEntities;
+        private bool nativePresentationTutorialOrBriefing;
+        private bool nativePresentationHelpPopup;
+        private bool nativePresentationGamePaused;
+        private byte nativePresentationMenuState;
+        private byte nativePresentationSelectedMenuItem;
+        private uint nativePresentationOptionsEnabledMask = 0x1ffff;
+        private uint nativePresentationOptionsSelectedMask;
+        private byte nativePresentationVolumeTarget = 1;
+        private byte nativePresentationChatRecipient;
+        private byte nativePresentationChatMode;
+        private byte nativePresentationChatPlayerMask = 1;
+        private short nativePresentationSoundNumber = -1;
+        private short nativePresentationControlMode = 7;
+        private readonly string[] nativePresentationChatLines = new string[8];
+        private readonly string[] nativePresentationPlayerNames =
+        {
+            "Zanzamar", "Nyphur", "Rahn", "Belix",
+            "Jark", "Elyssia", "Yragore", "Prish"
+        };
         private bool entityGallery;
         private bool entityGalleryCaptured;
         private bool hudCaptureRequested;
@@ -689,6 +741,7 @@ namespace MagicCarpet.Native
         private bool hudComparisonCaptured;
         private bool level1StageFourCaptured;
         private bool runtimeExitRequested;
+        private bool qualificationSuppressAutoplayTerminalDispose;
         private bool disposed;
         private bool autoplayCapturePending;
         private int simTick;
@@ -1733,58 +1786,7 @@ namespace MagicCarpet.Native
             try
             {
                 var arguments = Environment.GetCommandLineArgs();
-                autoplay = HasArgument(arguments, "-mc-autoplay");
-                autoplayQuit = HasArgument(arguments, "-mc-autoplay-quit");
-                level1Autoplay = HasArgument(arguments, "-mc-level1-autoplay");
-                level1AutoplayQuit =
-                    HasArgument(arguments, "-mc-level1-autoplay-quit");
-                level1AutoplayFast =
-                    HasArgument(arguments, "-mc-level1-autoplay-fast");
-                level1AutoplayPostgame =
-                    HasArgument(arguments, "-mc-level1-autoplay-postgame");
-                if (autoplay && level1Autoplay)
-                {
-                    throw new InvalidDataException(
-                        "synthetic autoplay and Level 1 autoplay are mutually exclusive");
-                }
-                if (level1AutoplayFast && !level1Autoplay)
-                {
-                    throw new InvalidDataException(
-                        "-mc-level1-autoplay-fast requires -mc-level1-autoplay");
-                }
-                if (level1AutoplayPostgame && !level1Autoplay)
-                {
-                    throw new InvalidDataException(
-                        "-mc-level1-autoplay-postgame requires -mc-level1-autoplay");
-                }
-                if (level1AutoplayFast)
-                {
-                    Debug.Log(
-                        "MC_LEVEL1_AUTOPLAY fast fixed-tick pump enabled");
-                }
-                localAudioQualificationMode =
-                    HasArgument(arguments, "-mc-audio-qualify-local");
-                positionalAudioQualificationMode =
-                    HasArgument(arguments, "-mc-audio-qualify-positional");
-                qualifiedMode = HasArgument(arguments, "-mc-qualified");
-                debugMode = HasArgument(arguments, "-mc-debug");
-                debugEntities = HasArgument(arguments, "-mc-debug-entities");
-                entityGallery = HasArgument(arguments, "-mc-entity-gallery");
-                if (qualifiedMode == debugMode)
-                {
-                    throw new InvalidDataException(
-                        "select exactly one presentation mode: -mc-qualified or -mc-debug");
-                }
-                if (qualifiedMode && (debugEntities || entityGallery))
-                {
-                    throw new InvalidDataException(
-                        "qualified mode rejects debug entities and entity gallery");
-                }
-                if (!debugMode && debugEntities)
-                {
-                    throw new InvalidDataException(
-                        "-mc-debug-entities requires explicit -mc-debug");
-                }
+                ConfigureStartupArguments(arguments);
                 var requestedAudioCapture =
                     Environment.GetEnvironmentVariable("MC_AUDIO_CAPTURE_PATH");
                 if ((localAudioQualificationMode ||
@@ -1804,7 +1806,7 @@ namespace MagicCarpet.Native
                 if (qualifiedMode && assetCachePath == null)
                 {
                     throw new InvalidDataException(
-                        "qualified mode requires the exact owner asset cache");
+                        "exact presentation mode requires the owner asset cache");
                 }
                 if (assetCachePath != null)
                 {
@@ -1833,7 +1835,7 @@ namespace MagicCarpet.Native
                         "music=C2GAME1-adlmidi-bank59.wav");
                 }
                 Debug.Log(
-                    $"MC_PRESENTATION_MODE mode={(qualifiedMode ? "qualified" : "debug")} " +
+                    $"MC_PRESENTATION_MODE mode={(debugMode ? "debug" : "qualified")} " +
                     $"ownerCache={(ownerAssetCache != null)}");
 
                 var playthroughDisabled =
@@ -1913,7 +1915,7 @@ namespace MagicCarpet.Native
                     autoplayInitialFireEvents = fireEventsObserved;
                     ReleaseMouse();
                     Debug.Log(
-                        $"MC_AUTOPLAY BEGIN mode={(qualifiedMode ? "qualified" : "debug")} " +
+                        $"MC_AUTOPLAY BEGIN mode={(debugMode ? "debug" : "qualified")} " +
                         $"position={snapshot.x}," +
                         $"{snapshot.y},{snapshot.z} yaw={snapshot.yaw} " +
                         $"registry={entityRegistry.Count} debugEntities={debugEntities}");
@@ -1956,6 +1958,7 @@ namespace MagicCarpet.Native
             try
             {
                 FixedUpdateCore(true);
+                FixedUpdateCore(true);
             }
             catch (Exception exception)
             {
@@ -1979,6 +1982,16 @@ namespace MagicCarpet.Native
         {
             if (localAudioQualificationMode || positionalAudioQualificationMode) return;
             if (entityGallery) return;
+            if (nativePresentationGamePaused)
+            {
+                // Pause owns the authoritative outer-turn boundary.  The
+                // presentation route remains live so input can unpause, but
+                // no command, clock, entity, mission, or simulation tick is
+                // advanced while the source pause state is active.
+                if (updatePresentation)
+                    RefreshFastForwardPresentation();
+                return;
+            }
             int flags;
             short selectedSpell;
             sbyte opcode = 0;
@@ -2065,7 +2078,7 @@ namespace MagicCarpet.Native
             {
                 AppendAutoplayCommand(appliedRoll, appliedPitch, unchecked((sbyte)flags));
             }
-            session.SetLevel1PlayerMenuState(spellMenuController.MenuState);
+            session.SetLevel1PlayerMenuState(CurrentNativePresentationMenuState());
             snapshot = session.Step(
                 appliedRoll,
                 appliedPitch,
@@ -2106,7 +2119,11 @@ namespace MagicCarpet.Native
                 FinishLevel1AutoplayIfTerminal();
             }
             var terrainRouteIndex = Array.IndexOf(AutoplayCaptureTicks, simTick);
-            if (autoplay && terrainFrameCompositeLive && terrainRouteIndex >= 0)
+            if (
+                autoplay &&
+                terrainFrameCompositeLive &&
+                terrainRouteIndex >= 0 &&
+                !qualifiedMode)
             {
                 Debug.Log(
                     $"MC_TERRAIN_ROUTE_OBSERVED tick={simTick} " +
@@ -2191,7 +2208,11 @@ namespace MagicCarpet.Native
                          tick < ticksPerRenderedFrame && !runtimeExitRequested;
                          tick++)
                     {
-                        FixedUpdateCore(false);
+                        // FINAL MAIN history is tick-contiguous.  The exact
+                        // fast route must therefore execute and commit each
+                        // authoritative frame; only the adapted world-only
+                        // route may defer presentation until the outer visit.
+                        FixedUpdateCore(qualifiedMode);
                     }
                     if (!runtimeExitRequested)
                     {
@@ -2209,16 +2230,28 @@ namespace MagicCarpet.Native
                 }
                 return;
             }
+            if (!AutomatedInput)
+            {
+                var presentationPointer =
+                    ScreenToSpellLogical(Input.mousePosition);
+                ApplyNativePresentationInput(
+                    Input.GetKeyDown(KeyCode.P),
+                    Input.GetKeyDown(KeyCode.Escape) && !spellMenuOpen,
+                    Input.GetKeyDown(KeyCode.Backspace),
+                    Input.GetMouseButtonDown(0),
+                    presentationPointer,
+                    Input.inputString,
+                    Input.GetKeyDown(KeyCode.M),
+                    Input.GetKeyDown(KeyCode.Tab),
+                    Input.GetKeyDown(KeyCode.O),
+                    Input.GetKeyDown(KeyCode.V),
+                    Input.GetKeyDown(KeyCode.LeftControl) ||
+                    Input.GetKeyDown(KeyCode.RightControl));
+            }
             var controlHeld =
                 Input.GetKey(KeyCode.LeftControl) ||
                 Input.GetKey(KeyCode.RightControl);
             var spellLogical = ScreenToSpellLogical(Input.mousePosition);
-            if (!AutomatedInput && !spellMenuOpen &&
-                (Input.GetKeyDown(KeyCode.LeftControl) ||
-                 Input.GetKeyDown(KeyCode.RightControl)))
-            {
-                OpenSpellMenu(spellLogical.x, spellLogical.y);
-            }
             if (!AutomatedInput && spellMenuOpen)
             {
                 ProcessSpellMenuInput(
@@ -2305,10 +2338,6 @@ namespace MagicCarpet.Native
                 {
                     CloseSpellMenu(false);
                 }
-                else
-                {
-                    ReleaseMouse();
-                }
             }
             if (!AutomatedInput && Input.GetMouseButtonDown(0) &&
                 !spellMenuOpen &&
@@ -2318,6 +2347,159 @@ namespace MagicCarpet.Native
             if (Input.GetKeyDown(KeyCode.R)) ResetSession();
         }
 
+        private int CurrentNativePresentationMenuState()
+        {
+            return spellMenuController.MenuState != 0
+                ? spellMenuController.MenuState
+                : nativePresentationMenuState;
+        }
+
+        private void ApplyNativePresentationInput(
+            bool pausePressed,
+            bool escapePressed,
+            bool chatPressed,
+            bool pointerPressed,
+            Vector2 logicalPointer,
+            string typedText,
+            bool mapPressed = false,
+            bool scoresPressed = false,
+            bool optionsPressed = false,
+            bool volumePressed = false,
+            bool bottomSpellsPressed = false)
+        {
+            if (pausePressed)
+            {
+                nativePresentationGamePaused = !nativePresentationGamePaused;
+                session.SetLevel1GamePaused(nativePresentationGamePaused);
+                nativePresentationMenuState = 0;
+                nativePresentationSelectedMenuItem = 0;
+                if (nativePresentationGamePaused)
+                    ReleaseMouse();
+                else
+                    CaptureMouse();
+            }
+
+            var mapFamily = nativePresentationMenuState is
+                6 or 7 or 8 or 11 or 12 or 14;
+            if (!nativePresentationGamePaused && mapPressed)
+            {
+                nativePresentationMenuState = mapFamily ? (byte)0 : (byte)6;
+                nativePresentationSelectedMenuItem = 0;
+                mapFamily = nativePresentationMenuState == 6;
+            }
+            if (!nativePresentationGamePaused && scoresPressed && mapFamily)
+                nativePresentationMenuState = 7;
+            if (!nativePresentationGamePaused && optionsPressed)
+                nativePresentationMenuState = mapFamily ? (byte)11 : (byte)9;
+            if (!nativePresentationGamePaused && volumePressed)
+                nativePresentationMenuState = mapFamily ? (byte)12 : (byte)10;
+            if (!nativePresentationGamePaused && bottomSpellsPressed && !spellMenuOpen)
+                OpenSpellMenu(logicalPointer.x, logicalPointer.y);
+
+            if (escapePressed)
+            {
+                if (nativePresentationMenuState is 13 or 14)
+                {
+                    nativePresentationMenuState = 0;
+                    nativePresentationSelectedMenuItem = 0;
+                }
+                else
+                {
+                    nativePresentationMenuState = mapFamily ? (byte)14 : (byte)13;
+                    nativePresentationSelectedMenuItem = 1;
+                    ReleaseMouse();
+                }
+            }
+
+            if (
+                chatPressed &&
+                !nativePresentationGamePaused &&
+                nativePresentationMenuState == 0)
+            {
+                nativePresentationMenuState = 3;
+                nativePresentationChatMode = 3;
+                nativePresentationChatRecipient = 0;
+                ReleaseMouse();
+            }
+
+            if (
+                nativePresentationMenuState == 3 &&
+                !string.IsNullOrEmpty(typedText))
+            {
+                var recipient = nativePresentationChatRecipient;
+                var line = nativePresentationChatLines[recipient] ?? string.Empty;
+                foreach (var character in typedText)
+                {
+                    if (character == '\b')
+                    {
+                        if (line.Length != 0)
+                            line = line.Substring(0, line.Length - 1);
+                    }
+                    else if (
+                        character is >= ' ' and <= '~' &&
+                        line.Length < 63)
+                    {
+                        line += character;
+                    }
+                }
+                nativePresentationChatLines[recipient] = line;
+            }
+
+            if (!pointerPressed || !nativePresentationGamePaused)
+                return;
+
+            var x = Mathf.RoundToInt(logicalPointer.x);
+            var y = Mathf.RoundToInt(logicalPointer.y);
+            if (
+                nativePresentationMenuState == 9 &&
+                x is >= 109 and < 210 &&
+                y is >= 33 and < 186)
+            {
+                var ordinal = (y - 33) / 9;
+                if (ordinal < 17)
+                {
+                    var bit = 1u << ordinal;
+                    if ((nativePresentationOptionsEnabledMask & bit) != 0)
+                        nativePresentationOptionsSelectedMask ^= bit;
+                }
+                return;
+            }
+            if (
+                nativePresentationMenuState == 10 &&
+                x is >= 137 and < 182 &&
+                y is >= 105 and < 111)
+            {
+                AudioListener.volume =
+                    Mathf.Clamp01((x - 137) / 45f);
+                return;
+            }
+            if (x is < 134 or >= 185 || y is < 38 or >= 102)
+                return;
+
+            var row = (y - 38) / 16;
+            switch (row)
+            {
+                case 0:
+                    nativePresentationMenuState = 13;
+                    nativePresentationSelectedMenuItem = 3;
+                    break;
+                case 1:
+                    nativePresentationMenuState = 13;
+                    nativePresentationSelectedMenuItem = 2;
+                    break;
+                case 2:
+                    nativePresentationMenuState = 10;
+                    nativePresentationSelectedMenuItem = 0;
+                    nativePresentationVolumeTarget =
+                        checked((byte)(x < 160 ? 1 : 2));
+                    break;
+                case 3:
+                    nativePresentationMenuState = 9;
+                    nativePresentationSelectedMenuItem = 0;
+                    break;
+            }
+        }
+
         private void RefreshFastForwardPresentation()
         {
             session.EvaluateGoatDrawAdmission(snapshot.generation, snapshot.tick);
@@ -2325,7 +2507,8 @@ namespace MagicCarpet.Native
             RefreshLivePlayerRow();
             DrainEvents();
             ReadAuthoritativePose(false);
-            UpdateExactTerrainGrid();
+            if (!CurrentNativeFinalPresentationOwns())
+                UpdateExactTerrainGrid();
         }
 
         private void LateUpdate()
@@ -2671,7 +2854,7 @@ namespace MagicCarpet.Native
 
                 var manifest = new FullFrameCaptureManifest {
                     schema = "mc2-private-qualified-full-frame-v2",
-                    presentation_mode = qualifiedMode ? "qualified" : "debug",
+                    presentation_mode = debugMode ? "debug" : "qualified",
                     evidence_authority = "synthetic-native-unity-regression",
                     oracle_status = "no-dynamic-remc2-route-capture",
                     checkpoint_tick = checkpointTick,
@@ -3068,23 +3251,21 @@ namespace MagicCarpet.Native
                     "Qualified", StringComparison.Ordinal),
                 "qualified Level 1 HSPRN owner HUD reference layout");
 
-            var expectedSelectors = new[]
-            {
-                1, 2, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
-                51, 52, 53, 54, 55, 58, 66, 83, 84, 88, 89, 90, 91,
-                97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107,
-                108, 109, 110, 111, 112, 113, 114, 115, 116, 117,
-                118, 119, 120, 121, 122, 123, 124, 125, 126, 149, 150,
-                161, 162, 163, 164, 165, 166, 167, 171, 172, 173,
-                179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189,
-                190,
-            };
+            var expectedSelectors = new List<int> { 1, 2, 9 };
+            for (var selector = 40; selector <= 55; selector++)
+                expectedSelectors.Add(selector);
+            expectedSelectors.Add(58);
+            expectedSelectors.Add(66);
+            for (var selector = 74; selector <= 91; selector++)
+                expectedSelectors.Add(selector);
+            for (var selector = 97; selector <= 261; selector++)
+                expectedSelectors.Add(selector);
             Require(
                 hudDescriptor.bitmap_assets != null &&
-                hudDescriptor.bitmap_assets.Length == expectedSelectors.Length,
+                hudDescriptor.bitmap_assets.Length == expectedSelectors.Count,
                 "complete Level 1 HUD bitmap descriptor set");
             hudBitmapDescriptors.Clear();
-            for (var index = 0; index < expectedSelectors.Length; index++)
+            for (var index = 0; index < expectedSelectors.Count; index++)
             {
                 var row = hudDescriptor.bitmap_assets[index];
                 Require(
@@ -3325,7 +3506,7 @@ namespace MagicCarpet.Native
                     "SourceMappedLive", StringComparison.Ordinal),
                 "qualified live mixed-authority minimap descriptor");
             Debug.Log(
-                "MC_HUD_DESCRIPTOR VERIFIED bitmaps=80 bank=HSPRN-native " +
+                "MC_HUD_DESCRIPTOR VERIFIED bitmaps=204 bank=HSPRN-native " +
                 "objectives=48-53/indexed-live-framebuffer " +
                 "blend=TABLESN:0x4000+61x256+dst tint=CLRN3840:119:252,36,36 " +
                 "spells=123-126/MissionStateLive+activationLive " +
@@ -3351,6 +3532,19 @@ namespace MagicCarpet.Native
                 moon.shadows = LightShadows.Soft;
             }
 
+            if (qualifiedMode || qualificationAdaptedPresentation)
+            {
+                CreateExactOwnerPaletteTexture("palette/paln.rgb8");
+                LoadOwnerTmapDescriptorsForManagedFallback();
+                // Keep the real managed entity/mission fallback available
+                // until a current COMPLETE native frame suppresses it.
+                CreateEntityRegistry();
+                CreateMissionPresentationRegistry();
+                if (ownerAssetCache != null) CreateOwnerHud();
+                else CreateMinimap();
+                return;
+            }
+
             typeTexture = CreatePlaneTexture("Terrain Types", terrainTypes);
             heightTexture = CreatePlaneTexture("Ground Heights", groundHeights);
             shadeTexture = CreatePlaneTexture("Terrain Shade", terrainShade);
@@ -3363,12 +3557,40 @@ namespace MagicCarpet.Native
             else CreateMinimap();
         }
 
+        private void LoadOwnerTmapDescriptorsForManagedFallback()
+        {
+            var descriptor = JsonUtility.FromJson<TerrainMaterialDescriptor>(
+                ownerAssetCache.ReadOutputText("terrain/materials.json"));
+            Require(
+                descriptor != null &&
+                descriptor.schema == "mc2-level1-night-materials/v1" &&
+                descriptor.tmaps1 != null &&
+                descriptor.tmaps1.scene_reachable_selectors != null &&
+                descriptor.tmaps1.scene_reachable_selectors.Length == 180 &&
+                descriptor.tmaps1.textures != null &&
+                descriptor.tmaps1.textures.Length == 180,
+                "qualified managed-fallback TMAP descriptor closure");
+            tmapDescriptors.Clear();
+            foreach (var row in descriptor.tmaps1.textures)
+            {
+                Require(
+                    row != null &&
+                    !tmapDescriptors.ContainsKey(row.index),
+                    $"qualified managed-fallback TMAP row {row?.index}");
+                tmapDescriptors.Add(row.index, row);
+            }
+        }
+
         private void ConfigureCameraAndCarpet()
         {
             presentationRig = new GameObject("Presentation Rig").transform;
             flightCamera = new GameObject("Flight Camera").AddComponent<Camera>();
             flightCamera.gameObject.AddComponent<AudioListener>();
-            audioCapture = flightCamera.gameObject.AddComponent<AudioQualificationCapture>();
+            if (localAudioQualificationMode || positionalAudioQualificationMode)
+            {
+                audioCapture =
+                    flightCamera.gameObject.AddComponent<AudioQualificationCapture>();
+            }
             flightCamera.transform.SetParent(presentationRig, false);
             flightCamera.transform.localPosition = Vector3.zero;
             // Unity needs a positive geometric near plane. MC2 did not have
@@ -3446,9 +3668,14 @@ namespace MagicCarpet.Native
                 "GPU support for indexed R8 terrain frame");
 
             terrainFrameIndexTexture = CreateTerrainFrameTexture(
-                "Exact isolated MC2 sky and terrain indices");
-            terrainFrameCoverageTexture = CreateTerrainFrameTexture(
-                "Exact isolated MC2 terrain coverage");
+                qualifiedMode
+                    ? "Exact native MC2 FINAL MAIN indices"
+                    : "Exact isolated MC2 sky and terrain indices");
+            if (!qualifiedMode)
+            {
+                terrainFrameCoverageTexture = CreateTerrainFrameTexture(
+                    "Exact isolated MC2 terrain coverage");
+            }
 
             var compositeShader = Resources.Load<Shader>("TerrainIndexedFrame");
             Require(compositeShader != null, "indexed terrain frame composite shader");
@@ -3459,7 +3686,10 @@ namespace MagicCarpet.Native
             terrainFrameCompositeMaterial.SetTexture(
                 "_Indices", terrainFrameIndexTexture);
             terrainFrameCompositeMaterial.SetTexture(
-                "_Coverage", terrainFrameCoverageTexture);
+                "_Coverage",
+                qualifiedMode
+                    ? Texture2D.whiteTexture
+                    : terrainFrameCoverageTexture);
             terrainFrameCompositeMaterial.SetTexture("_Palette", ownerPaletteTexture);
 
             terrainFrameCommandBuffer = new CommandBuffer
@@ -3477,7 +3707,9 @@ namespace MagicCarpet.Native
 
             if (qualifiedMode)
             {
-                DisableTerrainMeshRenderers();
+                // The configured exact route owns nothing until one current
+                // COMPLETE frame has passed native validation, row flip, and
+                // the R8 upload below.
                 return;
             }
 
@@ -3511,6 +3743,40 @@ namespace MagicCarpet.Native
             }
         }
 
+        private void DisableManagedPresentationRenderers()
+        {
+            foreach (var renderer in GetComponentsInChildren<Renderer>(true))
+            {
+                if (!nativeSuppressedRendererStates.ContainsKey(renderer))
+                    nativeSuppressedRendererStates.Add(renderer, renderer.enabled);
+                renderer.enabled = false;
+            }
+        }
+
+        private void ClearNativeFinalPresentationOwnership()
+        {
+            nativeFinalPresentationOwned = false;
+            nativeFinalOwnedGeneration = 0;
+            nativeFinalOwnedTick = 0;
+            nativeFinalOwnedIndexHash = 0;
+            nativeFinalOwnedReceiptFlags = 0;
+            foreach (var pair in nativeSuppressedRendererStates)
+            {
+                if (pair.Key != null) pair.Key.enabled = pair.Value;
+            }
+            nativeSuppressedRendererStates.Clear();
+        }
+
+        private void PublishNativeFinalPresentationOwnership()
+        {
+            nativeFinalPresentationOwned = true;
+            nativeFinalOwnedGeneration = presentationFrameInfo.generation;
+            nativeFinalOwnedTick = presentationFrameInfo.tick;
+            nativeFinalOwnedIndexHash = presentationFrameInfo.indexHash;
+            nativeFinalOwnedReceiptFlags = presentationFrameInfo.flags;
+            DisableManagedPresentationRenderers();
+        }
+
         private static Texture2D CreateTerrainFrameTexture(string name)
         {
             return new Texture2D(
@@ -3529,37 +3795,109 @@ namespace MagicCarpet.Native
         private void UpdateExactTerrainFrame()
         {
             if (terrainFrameCompositeMaterial == null) return;
-            terrainFrameInfo = session.WorldFrame(
-                renderCameraState,
-                terrainFrameIndices,
-                terrainFrameCoverage);
+            if (
+                ReuseFinalizedPresentation(
+                    qualifiedMode,
+                    nativeFinalPresentationOwned,
+                    nativeFinalOwnedGeneration,
+                    nativeFinalOwnedTick,
+                    renderCameraState.generation,
+                    renderCameraState.tick))
+            {
+                // PlayerEvents captured this render history before the
+                // simulation body changed its state. A second render-side
+                // visit cannot revise the already finalized source tick.
+                return;
+            }
+            if (qualifiedMode)
+            {
+                ClearNativeFinalPresentationOwnership();
+                nativeFinalEndpointCount++;
+                ConfigureNativePresentationState();
+                presentationFrameInfo = session.PresentationFrame(
+                    renderCameraState,
+                    terrainFrameIndices,
+                    terrainFrameCoverage);
+                Require(
+                    NativeFinalFrameOwnsPresentation(
+                        true,
+                        presentationFrameInfo.flags) &&
+                    presentationFrameInfo.generation ==
+                        renderCameraState.generation &&
+                    presentationFrameInfo.tick == renderCameraState.tick,
+                    "current native FINAL MAIN COMPLETE receipt");
+                terrainFrameInfo = new NativeSim.TerrainFrameInfo
+                {
+                    abiVersion = presentationFrameInfo.abiVersion,
+                    structSize = 96,
+                    generation = presentationFrameInfo.generation,
+                    tick = presentationFrameInfo.tick,
+                    width = presentationFrameInfo.width,
+                    height = presentationFrameInfo.height,
+                    stride = presentationFrameInfo.stride,
+                    viewportWidth = presentationFrameInfo.viewportWidth,
+                    viewportHeight = presentationFrameInfo.height,
+                    indexBytes = presentationFrameInfo.indexBytes,
+                    coverageBytes = presentationFrameInfo.provenanceBytes,
+                    flags = presentationFrameInfo.flags,
+                    indexHash = presentationFrameInfo.indexHash,
+                    coverageHash = presentationFrameInfo.provenanceHash
+                };
+            }
+            else
+            {
+                terrainFrameInfo = session.WorldFrame(
+                    renderCameraState,
+                    terrainFrameIndices,
+                    terrainFrameCoverage);
+            }
 
             // Native rows are source top-to-bottom. Unity raw texture row zero
             // is the bottom row. Reverse row order exactly once before upload;
             // the source buffers and their native hashes remain unchanged.
             FlipTerrainFrameRows(terrainFrameIndices, terrainFrameUploadIndices);
-            FlipTerrainFrameRows(terrainFrameCoverage, terrainFrameUploadCoverage);
+            if (qualifiedMode) nativeFinalRowFlipCount++;
             terrainFrameIndexTexture.LoadRawTextureData(terrainFrameUploadIndices);
-            terrainFrameCoverageTexture.LoadRawTextureData(terrainFrameUploadCoverage);
             terrainFrameIndexTexture.Apply(false, false);
-            terrainFrameCoverageTexture.Apply(false, false);
-            if (!terrainFrameGpuValidated)
+            nativeFinalPlaneUploadCount++;
+            if (!qualifiedMode)
             {
-                var first = ValidateTerrainFrameGpuGolden(
-                    "reset-world-supported-families",
-                    0xad0386b8aca8afbd,
-                    0x77fdd7ddf04bb56d,
-                    true);
-                var repeated = ValidateTerrainFrameGpuGolden(
-                    "reset-world-supported-families-repeat",
-                    0xad0386b8aca8afbd,
-                    0x77fdd7ddf04bb56d,
-                    false);
-                Require(first == repeated, "same-tick terrain GPU readback stability");
-                terrainFrameGpuValidated = true;
+                FlipTerrainFrameRows(
+                    terrainFrameCoverage,
+                    terrainFrameUploadCoverage);
+                terrainFrameCoverageTexture.LoadRawTextureData(
+                    terrainFrameUploadCoverage);
+                terrainFrameCoverageTexture.Apply(false, false);
+                if (!qualificationAdaptedPresentation &&
+                    !terrainFrameGpuValidated)
+                {
+                    var first = ValidateTerrainFrameGpuGolden(
+                        "reset-world-supported-families",
+                        0xad0386b8aca8afbd,
+                        0x77fdd7ddf04bb56d,
+                        true);
+                    var repeated = ValidateTerrainFrameGpuGolden(
+                        "reset-world-supported-families-repeat",
+                        0xad0386b8aca8afbd,
+                        0x77fdd7ddf04bb56d,
+                        false);
+                    Require(
+                        first == repeated,
+                        "same-tick terrain GPU readback stability");
+                    terrainFrameGpuValidated = true;
+                }
             }
             terrainFrameCompositeLive = true;
-            UpdateOwnerObjectiveTextbox();
+            if (qualifiedMode)
+            {
+                Require(
+                    ByteHash(terrainFrameIndices) ==
+                        presentationFrameInfo.indexHash &&
+                    ByteHash(terrainFrameCoverage) ==
+                        presentationFrameInfo.provenanceHash,
+                    "current native FINAL MAIN upload source hashes");
+                PublishNativeFinalPresentationOwnership();
+            }
 
             if (!terrainFrameLiveLogged)
             {
@@ -3571,19 +3909,151 @@ namespace MagicCarpet.Native
                     $"extent={terrainFrameInfo.width}x{terrainFrameInfo.height} " +
                     $"indexHash=0x{terrainFrameInfo.indexHash:x16} " +
                     $"coverageHash=0x{terrainFrameInfo.coverageHash:x16} " +
-                    $"triangles={terrainFrameInfo.reflectedTriangles}+" +
-                    $"{terrainFrameInfo.primaryMode5Triangles}+" +
-                    $"{terrainFrameInfo.primaryMode26Triangles} " +
-                    $"writes={terrainFrameInfo.terrainPixelWrites} " +
-                    "layer=source-ordered-terrain-actors-projectiles-economy " +
-                    "frozenActors=villagers-dolmens-native " +
-                    "remainingNonTerrain=omitted " +
-                    "upload=R8-point-top-down-row-flip-once");
+                    $"provenanceHash=0x{terrainFrameInfo.coverageHash:x16} " +
+                    $"complete={qualifiedMode.ToString().ToLowerInvariant()} " +
+                    "layer=native-final-main " +
+                    "managedDuplicates=0 " +
+                    "upload=one-R8-point-top-down-row-flip");
             }
+        }
+
+        private void ConfigureNativePresentationState()
+        {
+            session.SetLevel1GamePaused(nativePresentationGamePaused);
+            var query = NativeSim.PresentationFrameQuery.Create(
+                renderCameraState.generation,
+                renderCameraState.tick);
+            var menuState = checked((byte)CurrentNativePresentationMenuState());
+            // The query field is a bounded provenance lane (0..6), while the
+            // authoritative source menu branch remains the full mission menu
+            // state submitted below.  Preserve live variation without
+            // conflating the two domains.
+            query.menuOverlay = (byte)Mathf.Clamp(menuState, 0, 6);
+            query.gamePaused =
+                nativePresentationGamePaused ? (byte)1 : (byte)0;
+            query.levelEnd = mission.tasksCompleted != 0 ? (byte)1 : (byte)0;
+            query.objectiveSelector = mission.objectiveTextboxTicks > 0
+                ? mission.textSelector
+                : byte.MaxValue;
+            query.objectiveTextbox =
+                mission.objectiveTextboxTicks > 0 ? (byte)1 : (byte)0;
+            query.tutorialOrBriefing =
+                nativePresentationTutorialOrBriefing ? (byte)1 : (byte)0;
+            query.helpPopup =
+                nativePresentationHelpPopup ? (byte)1 : (byte)0;
+            query.debugText = debugMode
+                ? (debugEntities ? (byte)0x48 : (byte)0x08)
+                : (byte)0;
+
+            var input = NativeSim.Level1PresentationInput.Create();
+            var pointer = ScreenToSpellLogical(Input.mousePosition);
+            input.authorityMask =
+                NativeSim.PresentationInputPause |
+                NativeSim.PresentationInputPointer;
+            if (menuState == 3)
+                input.authorityMask |= NativeSim.PresentationInputChat;
+            if (menuState is 9 or 11)
+                input.authorityMask |= NativeSim.PresentationInputOptions;
+            if (menuState is 10 or 12)
+                input.authorityMask |= NativeSim.PresentationInputVolume;
+            if (menuState is 13 or 14)
+                input.authorityMask |= NativeSim.PresentationInputOkCancel;
+            if (playerLifecycle.notificationActive != 0)
+            {
+                input.authorityMask |=
+                    NativeSim.PresentationInputNotificationName;
+            }
+            if (debugMode)
+            {
+                input.authorityMask |=
+                    NativeSim.PresentationInputDebugMetrics;
+            }
+            input.selectedMenuItem = nativePresentationSelectedMenuItem;
+            input.loadAvailable = 0;
+            input.soundAvailable = ownerAudio != null ? (byte)1 : (byte)0;
+            input.musicAvailable = ownerAudio != null ? (byte)1 : (byte)0;
+            input.optionsEnabledMask = nativePresentationOptionsEnabledMask;
+            input.optionsSelectedMask = nativePresentationOptionsSelectedMask;
+            var liveVolume = checked((byte)Mathf.Clamp(
+                Mathf.RoundToInt(AudioListener.volume * 127f),
+                0,
+                127));
+            input.soundVolume = liveVolume;
+            input.musicVolume = liveVolume;
+            input.volumeTarget = nativePresentationVolumeTarget;
+            input.chatRecipient = nativePresentationChatRecipient;
+            input.chatMode = nativePresentationChatMode;
+            input.chatPlayerMask = nativePresentationChatPlayerMask;
+            input.localPlayerIndex = 0;
+            input.frameTimingIndex = unchecked((byte)Time.frameCount);
+            input.cursorVisible = Cursor.visible ? (byte)1 : (byte)0;
+            input.mouseX = checked((short)Mathf.Clamp(
+                Mathf.RoundToInt(pointer.x * 2f),
+                short.MinValue,
+                short.MaxValue));
+            input.mouseY = checked((short)Mathf.Clamp(
+                Mathf.RoundToInt(pointer.y * 2f),
+                short.MinValue,
+                short.MaxValue));
+            input.joystick = nativePresentationControlMode;
+            input.textColourPhase = playerLifecycle.sourceColorPhase6;
+            for (var player = 0; player < 8; player++)
+            {
+                CopyPresentationText(
+                    nativePresentationChatLines[player],
+                    input.chatLines,
+                    player * 64,
+                    64);
+                CopyPresentationText(
+                    nativePresentationPlayerNames[player],
+                    input.chatNames,
+                    player * 16,
+                    16);
+            }
+            CopyPresentationText(
+                nativePresentationPlayerNames[0],
+                input.notificationPlayerName,
+                0,
+                input.notificationPlayerName.Length);
+            input.debugClockBucket = checked((uint)Math.Max(
+                0,
+                Math.Floor(Time.realtimeSinceStartupAsDouble * 10.0)));
+            input.soundNumber = nativePresentationSoundNumber;
+            // Source allocator diagnostics belong to the simulation.  Zero
+            // here is the required input sentinel; the native session writes
+            // the pinned Level-1 heap values into the debug overlay.
+            input.debugHeapSize = 0;
+            input.debugMemoryUsed = 0;
+            input.debugMemoryFree = 0;
+            session.ConfigurePresentationState(query, input);
+        }
+
+        private static void CopyPresentationText(
+            string text,
+            byte[] destination,
+            int offset,
+            int extent)
+        {
+            if (string.IsNullOrEmpty(text))
+                return;
+            var bytes = Encoding.ASCII.GetBytes(text);
+            Array.Copy(
+                bytes,
+                0,
+                destination,
+                offset,
+                Math.Min(bytes.Length, extent - 1));
+        }
+
+        internal void SetNativePresentationHelpPopup(bool active)
+        {
+            nativePresentationHelpPopup = active;
         }
 
         private void UpdateOwnerObjectiveTextbox()
         {
+            if (CurrentNativeFinalPresentationOwns())
+                managedObjectiveSubmissionCount++;
             if (
                 hudDescriptor?.objective?.background_blend == null ||
                 ownerObjectiveRows.Count == 0)
@@ -4215,6 +4685,12 @@ namespace MagicCarpet.Native
 
         private void ApplyLiveTerrainPresentation()
         {
+            // While a COMPLETE native frame owns presentation, keep the live
+            // CPU planes current but do not submit them to the disabled
+            // managed terrain route. A failed native request clears ownership
+            // and ReadAuthoritativePose applies these planes before restoring
+            // managed fallback.
+            if (CurrentNativeFinalPresentationOwns()) return;
             UploadPlaneTexture(typeTexture, terrainTypes);
             UploadPlaneTexture(heightTexture, groundHeights);
             UploadPlaneTexture(shadeTexture, terrainShade);
@@ -4528,9 +5004,9 @@ namespace MagicCarpet.Native
                 descriptor.tmaps1.frame_used_selectors[2] == 54 &&
                 descriptor.tmaps1.frame_used_selectors[3] == 63 &&
                 descriptor.tmaps1.scene_reachable_selectors != null &&
-                descriptor.tmaps1.scene_reachable_selectors.Length == 172 &&
+                descriptor.tmaps1.scene_reachable_selectors.Length == 180 &&
                 descriptor.tmaps1.textures != null &&
-                descriptor.tmaps1.textures.Length == 172,
+                descriptor.tmaps1.textures.Length == 180,
                 "qualified Level 1 TMAP selector closure");
             terrainMaterialDescriptor = descriptor;
             tmapDescriptors.Clear();
@@ -4564,21 +5040,8 @@ namespace MagicCarpet.Native
                     $"qualified frame-used TMAP bytes {selector}");
             }
 
-            var paletteRgb8 = ownerAssetCache.ReadOutput(descriptor.palette.rgb8_path);
-            Require(
-                paletteRgb8.Length == 256 * 3 && Array.TrueForAll(
-                    paletteRgb8, value => value <= 252),
-                "qualified PALN exact RGB6-times-four palette bytes");
-            ownerOriginalPaletteRgb8 = (byte[])paletteRgb8.Clone();
-            ownerPaletteTexture = new Texture2D(
-                256, 1, TextureFormat.RGB24, false, false)
-            {
-                name = "Exact owner PALN-0 ordered palette",
-                filterMode = FilterMode.Point,
-                wrapMode = TextureWrapMode.Clamp
-            };
-            ownerPaletteTexture.LoadRawTextureData(paletteRgb8);
-            ownerPaletteTexture.Apply(false, false);
+            var paletteRgb8 =
+                CreateExactOwnerPaletteTexture(descriptor.palette.rgb8_path);
 
             var shadeLut = ownerAssetCache.ReadOutput(descriptor.palette.shade_lut_path);
             Require(shadeLut.Length == 256 * 256, "qualified TABLESN shade LUT bytes");
@@ -4649,10 +5112,31 @@ namespace MagicCarpet.Native
             Debug.Log(
                 "MC_MATERIAL_BRIDGE VERIFIED bl32=152 selectors_used=65 " +
                 "palette=PALN shade=TABLESN-live-pnt5 uv=UVTable-D4 " +
-                "tmaps_frame=40,41,54,63 sceneTmaps=172 decoded=161 placeholders=11 " +
+                "tmaps_frame=40,41,54,63 sceneTmaps=180 decoded=169 placeholders=11 " +
                 "grid=40x21 water=source-order fog=source-distance " +
                 "deferred=screen-linear-mode5-raster");
             return material;
+        }
+
+        private byte[] CreateExactOwnerPaletteTexture(string path)
+        {
+            Require(ownerAssetCache != null, "owner cache for exact PALN texture");
+            var paletteRgb8 = ownerAssetCache.ReadOutput(path);
+            Require(
+                paletteRgb8.Length == 256 * 3 && Array.TrueForAll(
+                    paletteRgb8, value => value <= 252),
+                "qualified PALN exact RGB6-times-four palette bytes");
+            ownerOriginalPaletteRgb8 = (byte[])paletteRgb8.Clone();
+            ownerPaletteTexture = new Texture2D(
+                256, 1, TextureFormat.RGB24, false, false)
+            {
+                name = "Exact owner PALN-0 ordered palette",
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            ownerPaletteTexture.LoadRawTextureData(paletteRgb8);
+            ownerPaletteTexture.Apply(false, false);
+            return paletteRgb8;
         }
 
         private static Texture2D CreateDynamicTerrainTexture(
@@ -4669,6 +5153,8 @@ namespace MagicCarpet.Native
 
         private void UpdateExactTerrainGrid()
         {
+            if (CurrentNativeFinalPresentationOwns())
+                managedTerrainSubmissionCount++;
             if (ownerTerrainMaterial == null) return;
             var grid = session.TerrainGrid();
             Require(grid.Length == 840, "exact outdoor terrain grid count");
@@ -4964,6 +5450,9 @@ namespace MagicCarpet.Native
 
         private void CreateEntityRegistry()
         {
+            entityPresentationRoot =
+                new GameObject("Managed entity presentation fallback").transform;
+            entityPresentationRoot.SetParent(transform, false);
             var groupByEntity = new Dictionary<int, EntityPresentationGroup>();
             if (ownerAssetCache != null)
             {
@@ -5026,6 +5515,7 @@ namespace MagicCarpet.Native
             var qualifiedFrozenActorCount = 0;
             var resetEffectDebugCount = 0;
             var unresolvedDebugCount = 0;
+            var managedDebugEntities = debugEntities && !qualifiedMode;
             foreach (var entity in entities)
             {
                 if (entity.active == 0) continue;
@@ -5051,17 +5541,18 @@ namespace MagicCarpet.Native
                         group.qualified_view_entity_indices,
                         (int)entity.entityIndex) >= 0;
                 var resetEffectDebug =
-                    ownerAssetCache != null && debugEntities && group != null &&
+                    ownerAssetCache != null && managedDebugEntities && group != null &&
                     Array.IndexOf(
                         group.reset_chain_drawable_entity_indices,
                         (int)entity.entityIndex) >= 0 &&
                     !qualifiedSprite;
-                var visible = qualifiedSprite || resetEffectDebug || debugEntities ||
+                var visible = qualifiedSprite || resetEffectDebug || managedDebugEntities ||
                               (ownerAssetCache == null && semantic != null &&
                                entity.authority != NativeSim.PlayerFlightLive);
                 var authority = AuthorityLabel(entity);
                 var node = new GameObject(
                     $"Entity {entity.entityIndex:D3} {semantic ?? "unresolved"} [{authority}]");
+                node.transform.SetParent(entityPresentationRoot, false);
                 Renderer renderer = null;
                 Transform spriteVisual = null;
                 var ownerSprite = qualifiedSprite || resetEffectDebug;
@@ -5114,7 +5605,7 @@ namespace MagicCarpet.Native
                 });
             }
             Require(entityRegistry.Count == 177, "177 entity registry nodes");
-            if (!debugEntities)
+            if (!managedDebugEntities)
             {
                 Require(
                     entityRegistry.Find(marker => marker.Index == 152)?.Renderer == null,
@@ -5141,9 +5632,9 @@ namespace MagicCarpet.Native
                 $"frozenOwnerSprites={qualifiedFrozenActorCount} " +
                 $"resetEffectDebug={resetEffectDebugCount} " +
                 $"unresolvedDebug={unresolvedDebugCount} " +
-                $"mode={(qualifiedMode ? "qualified" : "debug")} " +
+                $"mode={(debugMode ? "debug" : "qualified")} " +
                 "qualifiedSpriteAuthority=33-GoatLive+28-VillagerLive+3-FrozenObserved " +
-                "managedFallbacks=native-capability-gated " +
+                "managedFallbacks=current-COMPLETE-gated " +
                 "nativeAnimatedFamilies=Goat,Archer,Villager nativeStaticFamilies=Dolmen " +
                 "pivot=source-indexed-compositor noPhysics=true");
             UpdateEntityPresentation();
@@ -5201,6 +5692,16 @@ namespace MagicCarpet.Native
 
         private void UpdateMissionPresentation()
         {
+            var suppressionFlags = CurrentNativeFinalPresentationOwns()
+                ? terrainFrameInfo.flags
+                : 0u;
+            if (CurrentNativeFinalPresentationOwns())
+            {
+                managedWorldSubmissionCount++;
+                managedMissionSubmissionCount++;
+                managedBillboardSubmissionCount++;
+                managedParticleSubmissionCount += fireballImpacts.Length;
+            }
             if (ownerAssetCache == null || missionPresentationRoot == null) return;
 
             foreach (var actor in missionActors)
@@ -5231,7 +5732,7 @@ namespace MagicCarpet.Native
                         actor.kind,
                         actor.active,
                         actor.visible,
-                        terrainFrameInfo.flags));
+                        suppressionFlags));
             }
 
             var liveSegmentIds = new HashSet<ushort>();
@@ -5259,7 +5760,7 @@ namespace MagicCarpet.Native
                     false,
                     segment.active != 0 &&
                     segment.visible != 0 &&
-                    (terrainFrameInfo.flags &
+                    (suppressionFlags &
                      NativeSim.TerrainFrameFirefliesComposited) == 0);
             }
             RemoveMissingMultipartMarkers(liveSegmentIds);
@@ -5275,7 +5776,7 @@ namespace MagicCarpet.Native
                 false,
                 ManagedEconomyVisible(
                     castleLifecycle.rootActive,
-                    terrainFrameInfo.flags));
+                    suppressionFlags));
 
             manaCarrierMarker ??=
                 CreateMissionMarker("Level 1 mana carrier", ulong.MaxValue - 2);
@@ -5287,7 +5788,7 @@ namespace MagicCarpet.Native
                 manaCarrier.baseTmap,
                 manaCarrier.logicalHeight,
                 false,
-                ManagedEconomyVisible(manaCarrier.active, terrainFrameInfo.flags));
+                ManagedEconomyVisible(manaCarrier.active, suppressionFlags));
 
             var liveSpheres = new HashSet<uint>();
             foreach (var sphere in manaSpheres)
@@ -5310,7 +5811,7 @@ namespace MagicCarpet.Native
                     sphere.baseTmap,
                     sphere.logicalHeight,
                     false,
-                    ManagedEconomyVisible(sphere.active, terrainFrameInfo.flags));
+                    ManagedEconomyVisible(sphere.active, suppressionFlags));
             }
             RemoveMissingMissionMarkers(manaSphereRegistry, liveSpheres);
 
@@ -5383,7 +5884,7 @@ namespace MagicCarpet.Native
                     ManagedMissionProjectileVisible(
                         projectile.projectileKind,
                         projectile.active,
-                        terrainFrameInfo.flags));
+                        suppressionFlags));
             }
             RemoveMissingMissionMarkers(
                 missionProjectileRegistry, liveProjectiles);
@@ -5446,6 +5947,8 @@ namespace MagicCarpet.Native
                 {
                     continue;
                 }
+                if (CurrentNativeFinalPresentationOwns())
+                    managedLiveImpactSubmissionCount++;
                 liveImpacts.Add(impact.impactId);
                 if (!missionImpactRegistry.TryGetValue(
                     impact.impactId, out var marker))
@@ -5471,7 +5974,7 @@ namespace MagicCarpet.Native
                     ManagedMissionImpactVisible(
                         impact.model,
                         impact.active,
-                        terrainFrameInfo.flags));
+                        suppressionFlags));
             }
             RemoveMissingMissionMarkers(missionImpactRegistry, liveImpacts);
         }
@@ -5953,9 +6456,9 @@ namespace MagicCarpet.Native
         {
             if (
                 ownerOriginalPaletteRgb8 == null ||
-                ownerHudPaletteRgb8 == null ||
                 ownerPaletteTexture == null ||
-                ownerAuthorityBadgeTexture == null)
+                level1EffectivePaletteRgb8 == null ||
+                level1EffectivePaletteRgb8.Length != 256 * 3)
                 return;
             if (
                 appliedExitPaletteEffect == level1Palette.effect &&
@@ -5967,24 +6470,32 @@ namespace MagicCarpet.Native
             // Rust materializes PaletteChanges from the exact PALN RGB6 bytes.
             // Every indexed Unity consumer receives the same atomic RGB8
             // palette; Unity does not recreate or time the effect.
-            Buffer.BlockCopy(
-                level1EffectivePaletteRgb8,
-                0,
-                ownerHudPaletteRgb8,
-                0,
-                ownerHudPaletteRgb8.Length);
-            ownerPaletteTexture.LoadRawTextureData(ownerHudPaletteRgb8);
+            ownerPaletteTexture.LoadRawTextureData(level1EffectivePaletteRgb8);
             ownerPaletteTexture.Apply(false, false);
 
-            foreach (var pair in ownerHudBasePixels)
+            if (ownerHudPaletteRgb8 != null)
+            {
+                Buffer.BlockCopy(
+                    level1EffectivePaletteRgb8,
+                    0,
+                    ownerHudPaletteRgb8,
+                    0,
+                    ownerHudPaletteRgb8.Length);
+                foreach (var pair in ownerHudBasePixels)
+                {
+                    ApplyNativePaletteToTexture(
+                        hudBitmapTextures[pair.Key],
+                        pair.Value);
+                }
+            }
+            if (
+                ownerAuthorityBadgeTexture != null &&
+                ownerAuthorityBadgeBasePixels != null)
             {
                 ApplyNativePaletteToTexture(
-                    hudBitmapTextures[pair.Key],
-                    pair.Value);
+                    ownerAuthorityBadgeTexture,
+                    ownerAuthorityBadgeBasePixels);
             }
-            ApplyNativePaletteToTexture(
-                ownerAuthorityBadgeTexture,
-                ownerAuthorityBadgeBasePixels);
 
             appliedExitPaletteEffect = level1Palette.effect;
             appliedExitPaletteWeight = level1Palette.weight;
@@ -6339,6 +6850,8 @@ namespace MagicCarpet.Native
 
         private void UpdateOwnerMinimap()
         {
+            if (CurrentNativeFinalPresentationOwns())
+                managedMinimapSubmissionCount++;
             if (
                 minimapTexture == null ||
                 ownerHudTables == null ||
@@ -6969,7 +7482,19 @@ namespace MagicCarpet.Native
             ValidatePresentationState(presentationState);
             renderCameraState = session.RenderCameraState();
             ValidateRenderCameraState(renderCameraState, presentationState);
-            UpdateExactTerrainFrame();
+            Exception presentationError = null;
+            try
+            {
+                UpdateExactTerrainFrame();
+            }
+            catch (Exception error)
+            {
+                // The native request cleared ownership before executing. Keep
+                // the managed path current for this pose, then surface the
+                // original fatal; an incomplete receipt never leaves a blank
+                // scene or earns GUI suppression.
+                presentationError = error;
+            }
             if (!snap)
             {
                 unwrappedSourceX += ModularDelta(presentationState.cameraX, priorRawX);
@@ -7009,10 +7534,645 @@ namespace MagicCarpet.Native
             {
                 presentationRig.SetPositionAndRotation(targetPosition, targetRotation);
             }
-            RepositionTerrainCopies();
-            UpdateEntityPresentation();
-            UpdateMissionPresentation();
-            if (hudDescriptor != null) UpdateOwnerMinimap();
+            var nativeFinalOwnsPresentation =
+                CurrentNativeFinalPresentationOwns();
+            if (!nativeFinalOwnsPresentation)
+            {
+                if (qualificationTrackManagedFallbackRoute)
+                {
+                    qualificationManagedFallbackVisits[0]++;
+                }
+                ApplyLiveTerrainPresentation();
+                RepositionTerrainCopies();
+                if (qualificationTrackManagedFallbackRoute)
+                {
+                    qualificationManagedFallbackVisits[1]++;
+                }
+                UpdateEntityPresentation();
+                if (qualificationTrackManagedFallbackRoute)
+                {
+                    qualificationManagedFallbackVisits[2]++;
+                    qualificationManagedFallbackVisits[3]++;
+                }
+                UpdateMissionPresentation();
+                if (hudDescriptor != null) UpdateOwnerMinimap();
+            }
+            else
+            {
+                Require(
+                    managedTerrainSubmissionCount == 0 &&
+                    managedWorldSubmissionCount == 0 &&
+                    managedEntitySubmissionCount == 0 &&
+                    managedMissionSubmissionCount == 0 &&
+                    managedParticleSubmissionCount == 0 &&
+                    managedBillboardSubmissionCount == 0 &&
+                    managedMinimapSubmissionCount == 0 &&
+                    managedObjectiveSubmissionCount == 0 &&
+                    managedHudSubmissionCount == 0 &&
+                    managedMenuSubmissionCount == 0 &&
+                    managedLiveImpactSubmissionCount == 0,
+                    "native FINAL MAIN has zero managed duplicate submissions");
+            }
+            if (presentationError != null) throw presentationError;
+        }
+
+        internal static bool NativeFinalFrameOwnsPresentation(
+            bool qualified,
+            uint flags)
+        {
+            var required =
+                NativeSim.PresentationFrameCompositorComplete |
+                NativeSim.PresentationFrameHasProvenance |
+                NativeSim.PresentationFrameOverlaysComposited |
+                NativeSim.PresentationFramePostprocessComplete |
+                NativeSim.PresentationFrameLightingComplete;
+            return qualified &&
+                (flags & required) == required &&
+                (flags &
+                    (NativeSim.TerrainFrameIsolatedSkyTerrain |
+                     NativeSim.TerrainFrameNonTerrainOmitted)) == 0;
+        }
+
+        private bool CurrentNativeFinalPresentationOwns()
+        {
+            return
+                nativeFinalPresentationOwned &&
+                NativeFinalFrameOwnsPresentation(
+                    qualifiedMode,
+                    nativeFinalOwnedReceiptFlags) &&
+                nativeFinalOwnedGeneration == renderCameraState.generation &&
+                nativeFinalOwnedTick == renderCameraState.tick &&
+                nativeFinalOwnedIndexHash != 0 &&
+                nativeFinalOwnedIndexHash == presentationFrameInfo.indexHash;
+        }
+
+        internal static bool ReuseFinalizedPresentation(
+            bool qualified,
+            bool live,
+            ulong finalizedGeneration,
+            ulong finalizedTick,
+            ulong requestedGeneration,
+            ulong requestedTick)
+        {
+            return qualified &&
+                live &&
+                finalizedGeneration == requestedGeneration &&
+                finalizedTick == requestedTick;
+        }
+
+        internal void QualificationInitializeExactPresentation(
+            string package,
+            string closure,
+            string assetCache)
+        {
+            QualificationInitializePresentationFromStartup(
+                new[] { "-mc-qualified", "-mc-control-mode", "7" },
+                package,
+                closure,
+                assetCache);
+        }
+
+        internal void QualificationInitializePresentationFromStartup(
+            string[] arguments,
+            string package,
+            string closure,
+            string assetCache)
+        {
+            Require(
+                !gameObject.activeInHierarchy && session == null,
+                "EditMode exact-presentation route starts before Awake");
+            ConfigureStartupArguments(arguments);
+            nativePresentationTutorialOrBriefing = false;
+            nativePresentationHelpPopup = false;
+            disposed = false;
+            packagePath = Path.GetFullPath(package);
+            closurePath = Path.GetFullPath(closure);
+            ownerAssetCache = OwnerAssetCache.OpenAndValidate(
+                assetCache,
+                ExpectedPackageHash,
+                ExpectedOwnerAssetClosureHash);
+            session = OpenSessionWithAssetCache(
+                packagePath,
+                closurePath,
+                ownerAssetCache.RootPath);
+            LoadAndValidateExactWorld();
+            LoadAndValidateOwnerHudDescriptor();
+            ConfigureWorld();
+            ConfigureCameraAndCarpet();
+            InitializeUnwrappedPose();
+            ConfigureExactTerrainFrameComposite();
+            if (level1Autoplay)
+                level1AutopilotDriver = new Level1Autopilot(level1AutoplayPostgame);
+            if (AutomatedInput)
+                ReleaseMouse();
+            else
+                CaptureMouse();
+
+            // Traverse the same production presentation endpoint, event drain,
+            // repeated render-side visit, and OnGUI ownership branch used by
+            // the initialized qualified runtime.
+            ReadAuthoritativePose(true);
+            DrainEvents();
+            ReadAuthoritativePose(false);
+            TrySuppressNativeFinalOnGui();
+        }
+
+        internal int[] QualificationDriveShippingPresentationState()
+        {
+            Require(
+                session != null && CurrentNativeFinalPresentationOwns(),
+                "shipping presentation-state route starts initialized and COMPLETE");
+            var complete =
+                NativeSim.PresentationFrameCompositorComplete |
+                NativeSim.PresentationFrameHasProvenance |
+                NativeSim.PresentationFrameOverlaysComposited |
+                NativeSim.PresentationFramePostprocessComplete |
+                NativeSim.PresentationFrameLightingComplete;
+
+            bool RenderProductionState(bool expectComplete = true)
+            {
+                // The actual player advances this state through FixedUpdateCore
+                // and consumes it through that method's normal presentation
+                // refresh. Qualification uses that same production method,
+                // not a synthetic session query or direct public-ABI constants.
+                //
+                // PlayerEvents captures the render camera before UpdateEntities
+                // advances the player tick. The first fixed visit therefore
+                // legitimately reuses the already-finalized source tick; the
+                // next visit finalizes the contiguous tick with the same live
+                // UI/input state.
+                try
+                {
+                    FixedUpdateCore(true);
+                    FixedUpdateCore(true);
+                    return expectComplete &&
+                        (presentationFrameInfo.flags & complete) == complete;
+                }
+                catch (InvalidOperationException error)
+                {
+                    Debug.Log(
+                        $"MC_PRESENTATION_EXPECTED_FAIL_CLOSE " +
+                        $"menu={CurrentNativePresentationMenuState()} " +
+                        $"error={error.Message}");
+                    return !expectComplete &&
+                        !CurrentNativeFinalPresentationOwns() &&
+                        (error.Message.Contains("score writer is incomplete") ||
+                         error.Message.Contains(
+                             "spell-menu cursor is active but selector-9 " +
+                             "sprite-bank provenance is not proven"));
+                }
+            }
+
+            var results = new List<int>();
+            FixedUpdateCore(true);
+            FixedUpdateCore(true);
+            var pauseTick = snapshot.tick;
+            var pauseStateHash = snapshot.stateHash;
+            var pauseSimulationTick = simTick;
+            ApplyNativePresentationInput(
+                true, false, false, false, Vector2.zero, string.Empty);
+            results.Add(RenderProductionState() ? 1 : 0);
+            results.Add(snapshot.tick == pauseTick ? 1 : 0);
+            results.Add(snapshot.stateHash == pauseStateHash ? 1 : 0);
+            results.Add(simTick == pauseSimulationTick ? 1 : 0);
+
+            ApplyNativePresentationInput(
+                true, false, false, false, Vector2.zero, string.Empty);
+            results.Add(
+                RenderProductionState() && snapshot.tick > pauseTick ? 1 : 0);
+
+            ApplyNativePresentationInput(
+                false, false, false, false, Vector2.zero, string.Empty,
+                mapPressed: true);
+            results.Add(
+                RenderProductionState() &&
+                CurrentNativePresentationMenuState() == 6 ? 1 : 0);
+
+            ApplyNativePresentationInput(
+                false, false, false, false, Vector2.zero, string.Empty,
+                optionsPressed: true);
+            results.Add(
+                RenderProductionState() &&
+                CurrentNativePresentationMenuState() == 11 ? 1 : 0);
+
+            ApplyNativePresentationInput(
+                false, false, false, false, Vector2.zero, string.Empty,
+                mapPressed: true);
+            ApplyNativePresentationInput(
+                false, false, false, false, Vector2.zero, string.Empty,
+                mapPressed: true);
+            ApplyNativePresentationInput(
+                false, false, false, false, Vector2.zero, string.Empty,
+                volumePressed: true);
+            results.Add(
+                RenderProductionState() &&
+                CurrentNativePresentationMenuState() == 12 ? 1 : 0);
+
+            ApplyNativePresentationInput(
+                false, false, false, false, Vector2.zero, string.Empty,
+                mapPressed: true);
+            ApplyNativePresentationInput(
+                false, false, false, false, Vector2.zero, string.Empty,
+                mapPressed: true);
+            ApplyNativePresentationInput(
+                false, true, false, false, Vector2.zero, string.Empty);
+            results.Add(
+                RenderProductionState() &&
+                CurrentNativePresentationMenuState() == 14 ? 1 : 0);
+
+            var generationBeforeReset = snapshot.generation;
+            var countersBeforeReset = QualificationPresentationOwnershipCounters();
+            ResetSession();
+            var countersAfterReset = QualificationPresentationOwnershipCounters();
+            results.Add(snapshot.generation != generationBeforeReset ? 1 : 0);
+            results.Add(CurrentNativeFinalPresentationOwns() ? 1 : 0);
+            results.Add(
+                countersAfterReset.Skip(3).Take(11).SequenceEqual(
+                    countersBeforeReset.Skip(3).Take(11)) ? 1 : 0);
+            return results.ToArray();
+        }
+
+        internal int[] QualificationDriveShippingMapFailClose(int menuState)
+        {
+            Require(
+                menuState is 7 or 8 && CurrentNativeFinalPresentationOwns(),
+                "map fail-close starts from initialized source menu state zero");
+            ApplyNativePresentationInput(
+                false, false, false, false, Vector2.zero, string.Empty,
+                mapPressed: true);
+            if (menuState == 7)
+            {
+                ApplyNativePresentationInput(
+                    false, false, false, false, Vector2.zero, string.Empty,
+                    scoresPressed: true);
+            }
+            else
+            {
+                ApplyNativePresentationInput(
+                    false, false, false, false, Vector2.zero, string.Empty,
+                    bottomSpellsPressed: true);
+            }
+            string failure = null;
+            try
+            {
+                FixedUpdateCore(true);
+                FixedUpdateCore(true);
+            }
+            catch (InvalidOperationException error)
+            {
+                failure = error.Message;
+            }
+            var exactFailure = menuState == 7
+                ? failure?.Contains("score writer is incomplete") == true
+                : failure == null;
+            return new[]
+            {
+                CurrentNativePresentationMenuState() == menuState ? 1 : 0,
+                (menuState == 7
+                    ? !CurrentNativeFinalPresentationOwns()
+                    : CurrentNativeFinalPresentationOwns()) ? 1 : 0,
+                exactFailure ? 1 : 0
+            };
+        }
+
+        internal int[] QualificationDriveDebugStartup()
+        {
+            Require(debugMode && debugEntities, "debug startup flags were parsed");
+            FixedUpdateCore(true);
+            FixedUpdateCore(true);
+            var query = session.QualificationConfiguredPresentationQuery;
+            var input = session.QualificationConfiguredPresentationInput;
+            return new[]
+            {
+                CurrentNativeFinalPresentationOwns() ? 1 : 0,
+                query.debugText == 0x48 ? 1 : 0,
+                (input.authorityMask & NativeSim.PresentationInputDebugMetrics) != 0
+                    ? 1 : 0,
+                input.debugHeapSize == 0 &&
+                input.debugMemoryUsed == 0 &&
+                input.debugMemoryFree == 0 ? 1 : 0,
+                input.joystick == nativePresentationControlMode ? 1 : 0
+            };
+        }
+
+        internal int[] QualificationDriveRealCompletion()
+        {
+            Require(
+                level1Autoplay && level1AutoplayFast,
+                "completion qualification uses startup-authorized fast Level 1 autoplay");
+            var initialHash = presentationFrameInfo.indexHash;
+            const int maximumRenderedFrames = 500;
+            var frames = 0;
+            while (mission.tasksCompleted == 0 && frames++ < maximumRenderedFrames)
+                Update();
+            Require(mission.tasksCompleted != 0, "production Level 1 completion reached");
+            RefreshFastForwardPresentation();
+            // Capture the final accepted COMPLETE FINAL MAIN presentation state
+            // and endpoint pixels/provenance before the exit sequence advances
+            // through phases 6-12 (blur, palette blank, exit_display_blank) and
+            // retires the last production frame that carries them.
+            var capturedOwnsFinal = CurrentNativeFinalPresentationOwns();
+            var capturedIndexHash = presentationFrameInfo.indexHash;
+            var capturedProvenanceHash = presentationFrameInfo.provenanceHash;
+            var capturedOverlayStages = presentationFrameInfo.overlayStageCount;
+            var capturedNativeOwnedIndexHash = nativeFinalOwnedIndexHash;
+            var query = session.QualificationConfiguredPresentationQuery;
+            var capturedLevelEnd = query.levelEnd;
+            var endTextPixels = 0;
+            for (var y = 25; y < 32; y++)
+            for (var x = 66; x < NativeSim.TerrainFrameWidth; x++)
+            {
+                var offset = y * NativeSim.TerrainFrameWidth + x;
+                if (terrainFrameIndices[offset] == 119 &&
+                    (terrainFrameCoverage[offset] & 0x08) != 0)
+                    endTextPixels++;
+            }
+            // Drive the real production path through the true remc2 terminal:
+            // exit_sequence_complete becomes true with exit_result_code == 10
+            // at exit_sequence_phase == 12, and FinishLevel1AutoplayIfTerminal
+            // invokes the runtime terminal/exit-request path.  The suppression
+            // flag keeps the batch-mode DisposeSession/Application.Quit branch
+            // from tearing down the captured state before the assertions run.
+            qualificationSuppressAutoplayTerminalDispose = true;
+            const int maximumTerminalFrames = 500;
+            var terminalFrames = 0;
+            while (!runtimeExitRequested && terminalFrames++ < maximumTerminalFrames)
+                Update();
+            Require(
+                runtimeExitRequested,
+                "production Level 1 autoplay reaches the runtime terminal/exit-request path");
+            Require(
+                mission.exitSequenceComplete != 0 && mission.exitResultCode == 10,
+                "terminal exit sequence completes with result 10");
+            return new[]
+            {
+                mission.tasksCompleted,
+                capturedLevelEnd,
+                capturedOwnsFinal ? 1 : 0,
+                capturedOverlayStages > 0 ? 1 : 0,
+                capturedIndexHash != initialHash ? 1 : 0,
+                endTextPixels > 0 ? 1 : 0,
+                mission.exitSequenceComplete,
+                mission.exitResultCode == 10 ? 1 : 0,
+                runtimeExitRequested ? 1 : 0,
+                capturedNativeOwnedIndexHash != 0 &&
+                    capturedNativeOwnedIndexHash == capturedIndexHash ? 1 : 0,
+                capturedProvenanceHash != 0 ? 1 : 0
+            };
+        }
+
+        internal void QualificationInitializeIncompletePresentation(
+            string package,
+            string closure,
+            string assetCache)
+        {
+            Require(
+                !gameObject.activeInHierarchy && session == null,
+                "EditMode incomplete-presentation route starts before Awake");
+            qualifiedMode = true;
+            debugMode = false;
+            nativePresentationTutorialOrBriefing = false;
+            nativePresentationHelpPopup = true;
+            disposed = false;
+            packagePath = Path.GetFullPath(package);
+            closurePath = Path.GetFullPath(closure);
+            ownerAssetCache = OwnerAssetCache.OpenAndValidate(
+                assetCache,
+                ExpectedPackageHash,
+                ExpectedOwnerAssetClosureHash);
+            session = OpenSessionWithAssetCache(
+                packagePath,
+                closurePath,
+                ownerAssetCache.RootPath);
+            LoadAndValidateExactWorld();
+            LoadAndValidateOwnerHudDescriptor();
+            ConfigureWorld();
+            ConfigureCameraAndCarpet();
+            InitializeUnwrappedPose();
+            ConfigureExactTerrainFrameComposite();
+            try
+            {
+                ReadAuthoritativePose(true);
+                throw new InvalidOperationException(
+                    "missing help receipt unexpectedly earned COMPLETE");
+            }
+            catch (InvalidOperationException error)
+            {
+                fatalError = error.Message;
+            }
+        }
+
+        internal int[] QualificationTransitionOwnedFrameToMissingHelpFailure()
+        {
+            Require(
+                session != null && CurrentNativeFinalPresentationOwns(),
+                "qualification transition starts from current COMPLETE ownership");
+            var rowFlips = nativeFinalRowFlipCount;
+            var uploads = nativeFinalPlaneUploadCount;
+            var guiSuppressions = nativeFinalOnGuiSuppressionCount;
+            // PlayerEvents captures the pre-update camera tick. Advance only
+            // until the production render-camera source exposes the next tick;
+            // a runtime that has already stepped may need one turn, while the
+            // reset route needs two. Never skip a finalization tick.
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                var candidate = session.RenderCameraState();
+                if (
+                    candidate.generation != nativeFinalOwnedGeneration ||
+                    candidate.tick != nativeFinalOwnedTick)
+                {
+                    break;
+                }
+                session.Step(0, 0, 0);
+            }
+            SetNativePresentationHelpPopup(true);
+            Array.Clear(
+                qualificationManagedFallbackVisits,
+                0,
+                qualificationManagedFallbackVisits.Length);
+            qualificationTrackManagedFallbackRoute = true;
+            try
+            {
+                ReadAuthoritativePose(false);
+                throw new InvalidOperationException(
+                    "changed-tick missing-help receipt unexpectedly earned COMPLETE");
+            }
+            catch (InvalidOperationException error)
+            {
+                fatalError = error.Message;
+            }
+            finally
+            {
+                qualificationTrackManagedFallbackRoute = false;
+            }
+            TrySuppressNativeFinalOnGui();
+            return new[]
+            {
+                nativeFinalPresentationOwned ? 1 : 0,
+                GetComponentsInChildren<Renderer>(true)
+                    .Count(renderer => renderer.enabled),
+                fatalError != null ? 1 : 0,
+                nativeFinalRowFlipCount - rowFlips,
+                nativeFinalPlaneUploadCount - uploads,
+                nativeFinalOnGuiSuppressionCount - guiSuppressions,
+                qualificationManagedFallbackVisits[0],
+                qualificationManagedFallbackVisits[1],
+                qualificationManagedFallbackVisits[2],
+                qualificationManagedFallbackVisits[3],
+                nativeSuppressedRendererStates.Count
+            };
+        }
+
+        internal int[] QualificationRetryAfterMissingHelpFailure()
+        {
+            Require(
+                session != null &&
+                !nativeFinalPresentationOwned &&
+                nativePresentationHelpPopup &&
+                fatalError != null,
+                "help retry starts from the visible fail-closed transition");
+            var rowFlips = nativeFinalRowFlipCount;
+            var uploads = nativeFinalPlaneUploadCount;
+            var guiSuppressions = nativeFinalOnGuiSuppressionCount;
+            SetNativePresentationHelpPopup(false);
+            fatalError = null;
+            ReadAuthoritativePose(false);
+            TrySuppressNativeFinalOnGui();
+            return new[]
+            {
+                CurrentNativeFinalPresentationOwns() ? 1 : 0,
+                fatalError != null ? 1 : 0,
+                nativeFinalRowFlipCount - rowFlips,
+                nativeFinalPlaneUploadCount - uploads,
+                nativeFinalOnGuiSuppressionCount - guiSuppressions,
+                nativeSuppressedRendererStates.Count
+            };
+        }
+
+        internal void QualificationInitializeAdaptedPresentation(
+            string package,
+            string closure,
+            string assetCache)
+        {
+            Require(
+                !gameObject.activeInHierarchy && session == null,
+                "EditMode adapted-presentation route starts before Awake");
+            qualifiedMode = false;
+            debugMode = false;
+            nativePresentationTutorialOrBriefing = false;
+            nativePresentationHelpPopup = false;
+            qualificationAdaptedPresentation = true;
+            disposed = false;
+            packagePath = Path.GetFullPath(package);
+            closurePath = Path.GetFullPath(closure);
+            ownerAssetCache = OwnerAssetCache.OpenAndValidate(
+                assetCache,
+                ExpectedPackageHash,
+                ExpectedOwnerAssetClosureHash);
+            session = OpenSessionWithAssetCache(
+                packagePath,
+                closurePath,
+                ownerAssetCache.RootPath);
+            LoadAndValidateExactWorld();
+            LoadAndValidateOwnerHudDescriptor();
+            ConfigureWorld();
+            ConfigureCameraAndCarpet();
+            InitializeUnwrappedPose();
+            ConfigureExactTerrainFrameComposite();
+            ReadAuthoritativePose(true);
+        }
+
+        internal bool QualificationPresentationIsFailClosed(bool expectFatal)
+        {
+            var state = QualificationPresentationFailClosedState();
+            return
+                state[0] == 0 &&
+                state[1] == 0 &&
+                state[2] > 0 &&
+                state[3] == (expectFatal ? 1 : 0) &&
+                state[4] == 0;
+        }
+
+        internal int[] QualificationPresentationFailClosedState()
+        {
+            return new[]
+            {
+                nativeFinalPresentationOwned ? 1 : 0,
+                nativeFinalOnGuiSuppressionCount,
+                GetComponentsInChildren<Renderer>(true)
+                    .Count(renderer => renderer.enabled),
+                fatalError != null ? 1 : 0,
+                nativeSuppressedRendererStates.Count
+            };
+        }
+
+        internal bool QualificationPresentationRouteIsExact()
+        {
+            if (
+                session == null ||
+                ownerAssetCache == null ||
+                !terrainFrameCompositeLive ||
+                terrainFrameIndexTexture == null ||
+                terrainFrameIndexTexture.format != TextureFormat.R8 ||
+                terrainFrameIndexTexture.width != NativeSim.TerrainFrameWidth ||
+                terrainFrameIndexTexture.height != NativeSim.TerrainFrameHeight ||
+                terrainFrameIndexTexture.mipmapCount != 1 ||
+                terrainFrameIndexTexture.filterMode != FilterMode.Point ||
+                terrainFrameIndexTexture.wrapMode != TextureWrapMode.Clamp ||
+                !CurrentNativeFinalPresentationOwns() ||
+                missionImpactRegistry.Count != 0)
+            {
+                return false;
+            }
+            foreach (var renderer in GetComponentsInChildren<Renderer>(true))
+            {
+                if (renderer.enabled) return false;
+            }
+            var uploaded =
+                terrainFrameIndexTexture.GetRawTextureData<byte>();
+            if (uploaded.Length != terrainFrameUploadIndices.Length)
+                return false;
+            for (var offset = 0; offset < uploaded.Length; offset++)
+            {
+                if (
+                    uploaded[offset] != terrainFrameUploadIndices[offset] ||
+                    terrainFrameUploadIndices[offset] != terrainFrameIndices[
+                        (NativeSim.TerrainFrameHeight - 1 -
+                         offset / NativeSim.TerrainFrameWidth) *
+                            NativeSim.TerrainFrameWidth +
+                        offset % NativeSim.TerrainFrameWidth])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        internal uint QualificationPresentationFrameFlags()
+        {
+            return presentationFrameInfo.flags;
+        }
+
+        internal int[] QualificationPresentationOwnershipCounters()
+        {
+            return new[]
+            {
+                nativeFinalEndpointCount,
+                nativeFinalRowFlipCount,
+                nativeFinalPlaneUploadCount,
+                managedTerrainSubmissionCount,
+                managedWorldSubmissionCount,
+                managedEntitySubmissionCount,
+                managedMissionSubmissionCount,
+                managedParticleSubmissionCount,
+                managedBillboardSubmissionCount,
+                managedMinimapSubmissionCount,
+                managedObjectiveSubmissionCount,
+                managedHudSubmissionCount,
+                managedMenuSubmissionCount,
+                managedLiveImpactSubmissionCount,
+                nativeFinalOnGuiSuppressionCount
+            };
         }
 
         private static void ValidatePresentationState(NativeSim.PresentationState state)
@@ -7088,6 +8248,9 @@ namespace MagicCarpet.Native
 
         private void RepositionTerrainCopies()
         {
+            if (CurrentNativeFinalPresentationOwns())
+                managedTerrainSubmissionCount++;
+            if (terrainTiles.Count == 0) return;
             var centerX = Mathf.Floor((float)unwrappedSourceX / 65536f) * MapUnitySize;
             var centerY = Mathf.Floor((float)unwrappedSourceY / 65536f) * MapUnitySize;
             var index = 0;
@@ -7105,6 +8268,11 @@ namespace MagicCarpet.Native
 
         private void UpdateEntityPresentation()
         {
+            var suppressionFlags = CurrentNativeFinalPresentationOwns()
+                ? terrainFrameInfo.flags
+                : 0u;
+            if (CurrentNativeFinalPresentationOwns())
+                managedEntitySubmissionCount++;
             if (entityRegistry.Count == 0) return;
             foreach (var marker in entityRegistry)
             {
@@ -7159,14 +8327,14 @@ namespace MagicCarpet.Native
                         !retiredOrReplacedImportedActor &&
                         active && drawingEnabled &&
                         !(liveGoat &&
-                          (terrainFrameInfo.flags &
+                          (suppressionFlags &
                            NativeSim.TerrainFrameGoatsComposited) != 0) &&
                         !(nativeFrozenActor &&
                           !ManagedFrozenActorVisible(
                               1,
                               marker.QualifiedFrozenActor,
-                              terrainFrameInfo.flags)) &&
-                        (debugEntities || distanceSquared >= 1f);
+                              suppressionFlags)) &&
+                        ((debugEntities && !qualifiedMode) || distanceSquared >= 1f);
                     if (marker.OwnerSprite && marker.Group != null &&
                         marker.SpriteVisual != null)
                     {
@@ -7422,6 +8590,13 @@ namespace MagicCarpet.Native
                     AddEventDiagnostic(
                         $"{nativeEvent.sequence}:kind={nativeEvent.kind} " +
                         $"code={nativeEvent.code} asset={nativeEvent.assetRefIndex}");
+                    if (
+                        EventUsesAudioSidecar(nativeEvent.kind) &&
+                        nativeEvent.code <= short.MaxValue)
+                    {
+                        nativePresentationSoundNumber =
+                            checked((short)nativeEvent.code);
+                    }
                     var goatEvent =
                         nativeEvent.kind >= NativeSim.EventGoatSoundRequest &&
                         nativeEvent.kind <= NativeSim.EventGoatEngagementBoundary;
@@ -7567,6 +8742,19 @@ namespace MagicCarpet.Native
             spellMenuHoverTier = -1;
             spellMenuController.Close();
             spellMenuCommands.Clear();
+            nativePresentationGamePaused = false;
+            nativePresentationMenuState = 0;
+            nativePresentationSelectedMenuItem = 0;
+            nativePresentationOptionsSelectedMask = 0;
+            nativePresentationVolumeTarget = 1;
+            nativePresentationChatRecipient = 0;
+            nativePresentationChatMode = 0;
+            nativePresentationChatPlayerMask = 1;
+            nativePresentationSoundNumber = -1;
+            Array.Clear(
+                nativePresentationChatLines,
+                0,
+                nativePresentationChatLines.Length);
             terrainFrameGpuValidated = false;
             terrainFrameRouteGpuValidated = false;
             qualifiedTerrainRouteTicks.Clear();
@@ -7582,7 +8770,6 @@ namespace MagicCarpet.Native
             RefreshLiveVillagers(requireResetIdentity: true);
             RefreshLiveMission();
             ReadAuthoritativePose(true);
-            UpdateExactTerrainGrid();
         }
 
         private ulong ResetNativeGenerationForAudioQualification()
@@ -8417,6 +9604,8 @@ namespace MagicCarpet.Native
 
         private void DrawOwnerHud()
         {
+            if (CurrentNativeFinalPresentationOwns())
+                managedHudSubmissionCount++;
             Require(
                 hudDescriptor != null &&
                 minimapTexture != null &&
@@ -8486,6 +9675,8 @@ namespace MagicCarpet.Native
 
         private void DrawOwnerSpellMenu()
         {
+            if (CurrentNativeFinalPresentationOwns())
+                managedMenuSubmissionCount++;
             var menu = hudDescriptor.spells.menu;
             DrawOwnerHudBitmap(menu.edge_selector, 0, menu.reference_y);
             DrawOwnerHudBitmap(
@@ -8766,8 +9957,44 @@ namespace MagicCarpet.Native
             GUI.color = prior;
         }
 
+        private bool TrySuppressNativeFinalOnGui()
+        {
+            if (fatalError != null)
+            {
+                return false;
+            }
+            if (session != null && CurrentNativeFinalPresentationOwns())
+            {
+                // Only the current, fully uploaded receipt-bearing FINAL MAIN
+                // suppresses Unity's managed GUI.
+                nativeFinalOnGuiSuppressionCount++;
+                return true;
+            }
+            return false;
+        }
+
         private void OnGUI()
         {
+            if (TrySuppressNativeFinalOnGui())
+            {
+                return;
+            }
+            if (fatalError != null)
+            {
+                hudStyle ??= new GUIStyle(GUI.skin.label)
+                {
+                    fontSize = Mathf.Max(14, Screen.height / 58),
+                    normal = { textColor = new Color(0.95f, 0.88f, 0.68f) }
+                };
+                titleStyle ??= new GUIStyle(hudStyle)
+                {
+                    fontSize = Mathf.Max(21, Screen.height / 38),
+                    fontStyle = FontStyle.Bold
+                };
+                GUI.Label(new Rect(20, 20, Screen.width - 40, Screen.height - 40),
+                    "MC LEVEL 1 VIEWER FAILED\n" + fatalError, titleStyle);
+                return;
+            }
             hudStyle ??= new GUIStyle(GUI.skin.label)
             {
                 fontSize = Mathf.Max(14, Screen.height / 58),
@@ -8778,12 +10005,6 @@ namespace MagicCarpet.Native
                 fontSize = Mathf.Max(21, Screen.height / 38),
                 fontStyle = FontStyle.Bold
             };
-            if (fatalError != null)
-            {
-                GUI.Label(new Rect(20, 20, Screen.width - 40, Screen.height - 40),
-                    "MC LEVEL 1 VIEWER FAILED\n" + fatalError, titleStyle);
-                return;
-            }
             if (session == null) return;
             if (entityGallery)
             {
@@ -8809,12 +10030,6 @@ namespace MagicCarpet.Native
                     "TEST-ONLY VIEW · 1 source unit = 1/64 Unity unit · " +
                     "camera-facing · no simulation mutation · no Unity physics",
                     hudStyle);
-                return;
-            }
-
-            if (qualifiedMode)
-            {
-                DrawOwnerHud();
                 return;
             }
 
@@ -8961,7 +10176,11 @@ namespace MagicCarpet.Native
             value.name = name;
             if (parent != null) value.transform.SetParent(parent, false);
             var collider = value.GetComponent<Collider>();
-            if (collider != null) Destroy(collider);
+            if (collider != null)
+            {
+                if (Application.isPlaying) Destroy(collider);
+                else DestroyImmediate(collider);
+            }
             value.GetComponent<Renderer>().material = CreateMaterial(color, 0.25f, 0.05f);
             return value;
         }
@@ -9011,7 +10230,8 @@ namespace MagicCarpet.Native
                 $"result={mission.exitResultCode} playerDead={mission.playerDead} " +
                 $"life={mission.playerLife} mana={mission.playerMana} " +
                 $"phase={level1AutoplayPhase} postgame={level1AutoplayPostgame}");
-            if (level1AutoplayQuit || Application.isBatchMode)
+            if ((level1AutoplayQuit || Application.isBatchMode) &&
+                !qualificationSuppressAutoplayTerminalDispose)
             {
                 DisposeSession();
                 Application.Quit(passed ? 0 : 4);
@@ -9067,6 +10287,72 @@ namespace MagicCarpet.Native
         private static bool HasArgument(string[] arguments, string name)
         {
             return Array.Exists(arguments, argument => argument == name);
+        }
+
+        private void ConfigureStartupArguments(string[] arguments)
+        {
+            autoplay = HasArgument(arguments, "-mc-autoplay");
+            autoplayQuit = HasArgument(arguments, "-mc-autoplay-quit");
+            level1Autoplay = HasArgument(arguments, "-mc-level1-autoplay");
+            level1AutoplayQuit =
+                HasArgument(arguments, "-mc-level1-autoplay-quit");
+            level1AutoplayFast =
+                HasArgument(arguments, "-mc-level1-autoplay-fast");
+            level1AutoplayPostgame =
+                HasArgument(arguments, "-mc-level1-autoplay-postgame");
+            if (autoplay && level1Autoplay)
+            {
+                throw new InvalidDataException(
+                    "synthetic autoplay and Level 1 autoplay are mutually exclusive");
+            }
+            if (level1AutoplayFast && !level1Autoplay)
+            {
+                throw new InvalidDataException(
+                    "-mc-level1-autoplay-fast requires -mc-level1-autoplay");
+            }
+            if (level1AutoplayPostgame && !level1Autoplay)
+            {
+                throw new InvalidDataException(
+                    "-mc-level1-autoplay-postgame requires -mc-level1-autoplay");
+            }
+            if (level1AutoplayFast)
+                Debug.Log("MC_LEVEL1_AUTOPLAY fast fixed-tick pump enabled");
+
+            localAudioQualificationMode =
+                HasArgument(arguments, "-mc-audio-qualify-local");
+            positionalAudioQualificationMode =
+                HasArgument(arguments, "-mc-audio-qualify-positional");
+            var qualifiedRequested = HasArgument(arguments, "-mc-qualified");
+            debugMode = HasArgument(arguments, "-mc-debug");
+            debugEntities = HasArgument(arguments, "-mc-debug-entities");
+            entityGallery = HasArgument(arguments, "-mc-entity-gallery");
+            if (qualifiedRequested == debugMode)
+            {
+                throw new InvalidDataException(
+                    "select exactly one presentation mode: -mc-qualified or -mc-debug");
+            }
+            if (qualifiedRequested && (debugEntities || entityGallery))
+            {
+                throw new InvalidDataException(
+                    "qualified mode rejects debug entities and entity gallery");
+            }
+            if (!debugMode && debugEntities)
+            {
+                throw new InvalidDataException(
+                    "-mc-debug-entities requires explicit -mc-debug");
+            }
+            // Both public presentation modes use the one source-exact native
+            // FINAL MAIN.  Debug changes only the requested source overlay.
+            qualifiedMode = true;
+
+            var controlMode = ArgumentValue(arguments, "-mc-control-mode");
+            if (controlMode != null &&
+                (!short.TryParse(controlMode, out nativePresentationControlMode) ||
+                 nativePresentationControlMode is < 1 or > 13))
+            {
+                throw new InvalidDataException(
+                    "-mc-control-mode requires a source control mode in 1..13");
+            }
         }
 
         private static string ArgumentValue(string[] arguments, string name)
@@ -9203,20 +10489,26 @@ namespace MagicCarpet.Native
 
         private void OpenSpellMenu(float logicalX, float logicalY)
         {
+            var fromMap = CurrentNativePresentationMenuState() is
+                6 or 7 or 8 or 11 or 12 or 14;
             spellMenuOpen = true;
             spellMenuController.Open(
                 logicalX,
                 logicalY,
                 level1SpellMenu,
-                CurrentSpellMenuGeometry());
+                CurrentSpellMenuGeometry(),
+                fromMap ? 8 : 5);
             SyncSpellMenuControllerState();
             ReleaseMouse();
         }
 
         private void CloseSpellMenu(bool captureMouse)
         {
+            var returnToMap = spellMenuController.MenuState == 8;
             spellMenuOpen = false;
             spellMenuController.Close();
+            if (returnToMap)
+                nativePresentationMenuState = 6;
             SyncSpellMenuControllerState();
             if (captureMouse)
             {

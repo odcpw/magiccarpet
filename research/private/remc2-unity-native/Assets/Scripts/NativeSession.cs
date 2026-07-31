@@ -19,6 +19,8 @@ namespace MagicCarpet.Native
         private readonly NativeSim.GoatSnapshot[] goats;
         private readonly NativeSim.SelectorFrameState[] selectorFrames;
         private NativeSim.TerrainFrameQuery terrainFrameQuery;
+        private NativeSim.PresentationFrameQuery presentationFrameQuery;
+        private NativeSim.Level1PresentationInput presentationInput;
 
         static NativeSession()
         {
@@ -35,6 +37,9 @@ namespace MagicCarpet.Native
             goats = new NativeSim.GoatSnapshot[33];
             selectorFrames = new NativeSim.SelectorFrameState[3];
             terrainFrameQuery = NativeSim.TerrainFrameQuery.Create(0, 0);
+            presentationFrameQuery =
+                NativeSim.PresentationFrameQuery.Create(0, 0);
+            presentationInput = NativeSim.Level1PresentationInput.Create();
             lock (RegistryLock)
             {
                 Sessions.Add(this);
@@ -317,6 +322,162 @@ namespace MagicCarpet.Native
             return info;
         }
 
+        internal NativeSim.PresentationFrameInfo PresentationFrame(
+            NativeSim.RenderCameraState camera,
+            byte[] indices,
+            byte[] provenance)
+        {
+            if (indices == null || indices.Length != NativeSim.TerrainFramePixels)
+            {
+                throw new ArgumentException(
+                    $"presentation frame indices must contain exactly " +
+                    $"{NativeSim.TerrainFramePixels} bytes",
+                    nameof(indices));
+            }
+            if (provenance == null ||
+                provenance.Length != NativeSim.TerrainFramePixels)
+            {
+                throw new ArgumentException(
+                    $"presentation frame provenance must contain exactly " +
+                    $"{NativeSim.TerrainFramePixels} bytes",
+                    nameof(provenance));
+            }
+            presentationFrameQuery.generation = camera.generation;
+            presentationFrameQuery.tick = camera.tick;
+            Check(
+                NativeSim.mc_native_level1_presentation_input(
+                    Handle,
+                    ref presentationInput),
+                "submit authoritative Level 1 presentation input");
+            var status = NativeSim.mc_native_session_presentation_frame_copy(
+                Handle,
+                ref presentationFrameQuery,
+                indices,
+                checked((uint)indices.Length),
+                provenance,
+                checked((uint)provenance.Length),
+                out var info,
+                128);
+            Check(status, "read compositor-complete indexed FINAL MAIN");
+            var sourceFlags =
+                NativeSim.TerrainFrameSkySeeded |
+                NativeSim.TerrainFrameHasCoverage |
+                NativeSim.TerrainFrameGoatsComposited |
+                NativeSim.TerrainFrameArchersComposited |
+                NativeSim.TerrainFrameFirefliesComposited |
+                NativeSim.TerrainFrameCombatComposited |
+                NativeSim.TerrainFrameObjectivePropsComposited |
+                NativeSim.TerrainFrameEconomyComposited |
+                NativeSim.TerrainFrameSpriteShadowsComposited |
+                NativeSim.TerrainFrameFrozenActorsComposited;
+            var presentationFlags =
+                NativeSim.PresentationFrameCompositorComplete |
+                NativeSim.PresentationFrameHasProvenance |
+                NativeSim.PresentationFrameOverlaysComposited |
+                NativeSim.PresentationFramePostprocessComplete |
+                NativeSim.PresentationFrameLightingComplete;
+            var reflectionExpected =
+                camera.eyeZ < NativeSim.ReflectionEyeZLimit;
+            if (
+                info.abiVersion != NativeSim.AbiVersion ||
+                info.structSize != 128 ||
+                info.generation != presentationFrameQuery.generation ||
+                info.tick != presentationFrameQuery.tick ||
+                info.presentationRevision !=
+                    presentationFrameQuery.presentationRevision ||
+                info.width != NativeSim.TerrainFrameWidth ||
+                info.height != NativeSim.TerrainFrameHeight ||
+                info.stride != NativeSim.TerrainFrameWidth ||
+                info.viewportWidth != NativeSim.TerrainFrameWidth ||
+                info.indexBytes != NativeSim.TerrainFramePixels ||
+                info.provenanceBytes != NativeSim.TerrainFramePixels ||
+                (info.flags & sourceFlags) != sourceFlags ||
+                (info.flags & presentationFlags) != presentationFlags ||
+                (info.flags &
+                    (NativeSim.TerrainFrameIsolatedSkyTerrain |
+                     NativeSim.TerrainFrameNonTerrainOmitted)) != 0 ||
+                ((info.flags &
+                  NativeSim.TerrainFrameReflectedSpritesComposited) != 0) !=
+                    reflectionExpected ||
+                info.historyState != 1 ||
+                info.reserved0 != 0 ||
+                info.reserved1 != 0 ||
+                info.reserved2 != 0 ||
+                info.reserved3 != 0 ||
+                info.reserved4 != 0 ||
+                info.reserved5 != 0 ||
+                info.reserved6 != 0 ||
+                info.reserved7 != 0)
+            {
+                throw new InvalidOperationException(
+                    "native presentation frame returned invalid complete " +
+                    "layout, extent, history, flags, or reserved state");
+            }
+            if (info.indexHash != ByteHash(indices) ||
+                info.provenanceHash != ByteHash(provenance))
+            {
+                throw new InvalidOperationException(
+                    "native presentation hashes do not match copied bytes");
+            }
+            return info;
+        }
+
+        internal void ConfigurePresentationState(
+            NativeSim.PresentationFrameQuery query,
+            NativeSim.Level1PresentationInput input)
+        {
+            if (
+                query.abiVersion != NativeSim.AbiVersion ||
+                query.structSize != 64 ||
+                input.abiVersion != NativeSim.AbiVersion ||
+                input.structSize != 740)
+            {
+                throw new ArgumentException(
+                    "presentation state must use the current native ABI layout");
+            }
+            presentationFrameQuery = query;
+            presentationInput = input;
+            presentationInput.chatLines =
+                (byte[])input.chatLines?.Clone() ??
+                throw new ArgumentException(
+                    "presentation chat lines are required", nameof(input));
+            presentationInput.chatNames =
+                (byte[])input.chatNames?.Clone() ??
+                throw new ArgumentException(
+                    "presentation chat names are required", nameof(input));
+            presentationInput.notificationPlayerName =
+                (byte[])input.notificationPlayerName?.Clone() ??
+                throw new ArgumentException(
+                    "presentation notification name is required", nameof(input));
+            presentationInput.reserved =
+                (uint[])input.reserved?.Clone() ??
+                throw new ArgumentException(
+                    "presentation reserved words are required", nameof(input));
+            if (
+                presentationInput.chatLines.Length != 8 * 64 ||
+                presentationInput.chatNames.Length != 8 * 16 ||
+                presentationInput.notificationPlayerName.Length != 16 ||
+                presentationInput.reserved.Length != 4)
+            {
+                throw new ArgumentException(
+                    "presentation fixed buffers have invalid extents",
+                    nameof(input));
+            }
+        }
+
+        internal NativeSim.PresentationFrameQuery
+            QualificationConfiguredPresentationQuery =>
+                presentationFrameQuery;
+
+        internal NativeSim.Level1PresentationInput
+            QualificationConfiguredPresentationInput =>
+                presentationInput;
+
+        internal void SetPresentationHelpPopup(bool active)
+        {
+            presentationFrameQuery.helpPopup = active ? (byte)1 : (byte)0;
+        }
+
         private static ulong ByteHash(byte[] bytes)
         {
             const ulong Offset = 0xcbf29ce484222325UL;
@@ -568,6 +729,14 @@ namespace MagicCarpet.Native
                 NativeSim.mc_native_level1_player_menu_state(
                     Handle, checked((byte)menuState)),
                 "set live Level 1 player menu state");
+        }
+
+        internal void SetLevel1GamePaused(bool paused)
+        {
+            Check(
+                NativeSim.mc_native_level1_game_paused(
+                    Handle, paused ? (byte)1 : (byte)0),
+                "set live Level 1 paused state");
         }
 
         internal void InjectLevel1PlayerDamageForQualification(

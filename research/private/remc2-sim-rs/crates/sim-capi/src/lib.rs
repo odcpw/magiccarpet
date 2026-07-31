@@ -20,6 +20,7 @@ use sim_core::{
 };
 
 mod native_v2;
+mod presentation_bridge;
 
 const ABI_VERSION: u32 = 1;
 #[cfg(test)]

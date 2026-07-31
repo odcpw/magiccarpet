@@ -5,7 +5,7 @@
 //! bytes, or treats observed entities as simulated entities.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt, fs,
     path::{Component, Path, PathBuf},
     sync::OnceLock,
@@ -16,17 +16,25 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     FlightContext, FlightEffectsContext, FlightProfile, FlightState, FlightWorld, PlayerCommand,
-    Position, SOURCE_SPELL_INDEX_MAP, SpellFireContext, conformance_hash,
+    Position, SOURCE_SPELL_INDEX_MAP, SpellFireContext,
+    archer_tmap::{ArcherTmapBank, ArcherTmapClocks},
+    combat_tmap::{CombatTmapBank, FireballTmapClock, PossessionTmapClock},
+    conformance_hash,
+    economy_tmap::{CastleTmapClock, EconomyTmapBank},
+    entity_passes_for_speed_index,
+    firefly_tmap::{FireflyTmapBank, FireflyTmapClocks},
+    frozen_actor_tmap::{FrozenActorTmapBank, VillagerTmapClocks},
     goat::{
-        GOAT_BASE_TMAP, GOAT_CLASS, GOAT_MODEL, GOAT_RENDER_PARAMETER_INDEX, GOAT_STAGE_POINT,
-        GoatBehaviorConfig, GoatPlayerTarget, GoatState, GoatStepEvent, LEVEL_ONE_GOAT_INDICES,
-        LiveWorldState,
+        GOAT_BASE_TMAP, GOAT_CLASS, GOAT_MODEL, GOAT_PATROL_ACTION, GOAT_RENDER_PARAMETER_INDEX,
+        GOAT_STAGE_POINT, GoatBehaviorConfig, GoatPlayerTarget, GoatState, GoatStepEvent,
+        LEVEL_ONE_GOAT_INDICES, LiveWorldState,
     },
     goat_tmap::{
         GOAT_TMAP_SELECTORS, GOAT_TMAP_STATE_COUNT, GoatTmapBank, GoatTmapClocks, GoatTmapFrame,
         GoatTmapSelectorBank,
     },
     house::{HOUSE_CLASS, HOUSE_MODEL, HouseResidentEntry, HouseState, HouseStepEvent},
+    latch_command_with_context,
     legacy_terrain::{
         LEGACY_MAP_CELLS, LegacyTerrain, interpolate_cave, interpolate_ground, material_mask,
     },
@@ -50,9 +58,22 @@ use crate::{
         POSSESSION_IMPACT_RENDER_MODE, SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT,
         SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE,
     },
-    renderable_map_chain::RenderableMapSeed,
+    renderable_map_chain::{RenderableMapChains, RenderableMapSeed, raw_source_map_chain_entries},
+    source_sprite_tmap::{
+        ImportedResetSpriteTuple, SourceSpriteContractRoute, SourceSpriteContractRow,
+        SourceSpriteDisposition, SourceSpriteLegacyFamily, SourceSpriteTemplateDisposition,
+        SourceSpriteTmapBank, SourceSpriteTmapFrame, imported_reset_sprite_disposition,
+        source_sprite_dispositions, unknown_source_sprite_tuple,
+    },
     spell_activation::{SpellActivationHolder, SpellCasterState},
-    state_hash, step_entity_body_with_context, step_outer_turn_with_context,
+    state_hash,
+    static_world_tmap::StaticWorldTmapBank,
+    step_entity_body_with_context, step_entity_pass_with_context,
+    terrain_frame::{
+        Level1CastleRootRender, Level1FrozenActorRender, Level1TerrainFrame,
+        Level1TerrainFrameCamera, Level1TerrainFrameResources, Level1WorldFrameResources,
+        TerrainFrameError, render_level1_source_world_frame,
+    },
     villager::{
         LEVEL_ONE_VILLAGER_INDICES, VILLAGER_CLASS, VILLAGER_MODEL, VillagerBehaviorConfig,
         VillagerState,
@@ -66,6 +87,30 @@ const AUDIO_CACHE_MANIFEST_SHA256: &str =
     "e3aaf1cf03e390850c5da44ed4b3880352b425bd063657e3cdbbcb8086a4d7ee";
 const AUDIO_CACHE_CONTENT_SHA256: &str =
     "d299990e300117d065eb3a75008f6a69911b1ba356e4e06452c0a826450a01e5";
+const CP1_CACHE_MANIFEST_SHA256: &str =
+    "4c399e3f0c351893d94d619401769c01be7bcccc3dd16c5258ce722f2d98925e";
+const CP1_CACHE_CONTENT_SHA256: &str =
+    "d23f9a0972e910c78756ca4a59d6bc2f8b63d96adf02a695d1402ed9c1141d94";
+const CP2_CACHE_MANIFEST_SHA256: &str =
+    "328a1e2725b6d32d5f01fbc8117b10014fb8b593955c15382c23a9a5cfcabf17";
+const CP2_CACHE_CONTENT_SHA256: &str =
+    "99331dafb639a693b16ba9482012e9d197b256ae23619416f6bec78fedb72a2e";
+const CP3_CACHE_MANIFEST_SHA256: &str =
+    "03217301d152546a4d69e3e99c43d425a5a73030d6b0d8715115fbf45068a1cb";
+const CP3_CACHE_CONTENT_SHA256: &str =
+    "f3eb5bf87d0fc8f0ea12a986c30c74e97f9f5fa8f48f299ead2233348f2f2faa";
+const CP4_CACHE_MANIFEST_SHA256: &str =
+    "5b226745eb6d63bb098f41be1d22f6b52eef66c467291c8c09059613e24c55f2";
+const CP4_CACHE_CONTENT_SHA256: &str =
+    "a2d72aac353be23a2cc598a6db7ac66f059b1aed86eae4f0f3237cf897e8ca16";
+const CP4_CORRECTION1_CACHE_MANIFEST_SHA256: &str =
+    "1729afa00604b64960e73acbf18d93c00c89d67949033380d57534ffeb6e62e3";
+const CP4_CORRECTION1_CACHE_CONTENT_SHA256: &str =
+    "fc86d3ec774427441563a37c7f8d62f23c4585d66f910842fef516c326dfe47e";
+const CP4_CORRECTION2_CACHE_MANIFEST_SHA256: &str =
+    "3909be6b29c1f879208f0a15ec2bccee58d65311cefd6698f0870d16c9742a8d";
+const CP4_CORRECTION2_CACHE_CONTENT_SHA256: &str =
+    "ee063ce1d5f804c8efc412dff2bedb0800d6fd347b38a6d0376e2a2e4dccd9dc";
 const RESET_SCHEMA: &str = "mc2-flight-reset-projection/v1";
 const ENTITY_COUNT: usize = 1_000;
 const ENTITY_COUNT_U32: u32 = 1_000;
@@ -408,6 +453,15 @@ impl SessionTerrain {
     #[must_use]
     pub fn ground_heights(&self) -> &[u8] {
         &self.planes.ground_heights
+    }
+
+    /// Borrow the immutable ground plane and mutable shading plane together
+    /// for the source outer-turn dynamic-light subtraction/service boundary.
+    pub fn dynamic_lighting_planes(&mut self) -> (&[u8], &mut [u8]) {
+        (
+            self.planes.ground_heights.as_ref(),
+            self.planes.shading.as_mut(),
+        )
     }
 
     #[must_use]
@@ -1810,6 +1864,9 @@ pub struct NativeWorld {
     sound_asset_refs: BTreeMap<u16, u32>,
     music_asset_ref: Option<u32>,
     goat_tmap_bank: Option<GoatTmapBank>,
+    source_sprite_tmap_bank: Option<SourceSpriteTmapBank>,
+    reset_source_map_chains: RenderableMapChains,
+    raw_source_entity_indices: Box<[u16]>,
     house_build_footprints: BTreeMap<u8, CastleBuildFootprint>,
     reset_state: FlightState,
     reset_context: FlightContext,
@@ -2057,6 +2114,39 @@ impl NativeWorld {
                 cache_assets.castle_stage_one_footprint,
             )
             .map_err(NativeWorldError::new)?;
+        let raw_source_entries =
+            raw_source_map_chain_entries(&terrain_planes.entity_indices, |source_entity_index| {
+                entities
+                    .get(usize::from(source_entity_index))
+                    .map(EntitySnapshot::old_map_entity)
+            })
+            .map_err(NativeWorldError::new)?;
+        let raw_source_entity_indices = raw_source_entries
+            .iter()
+            .map(|entry| entry.entity_index)
+            .collect::<Vec<_>>();
+        let reset_source_map_seeds = raw_source_entries
+            .iter()
+            .map(|entry| {
+                let entity = &entities[usize::from(entry.entity_index)];
+                RenderableMapSeed {
+                    entity_index: entry.entity_index,
+                    active: entity.active,
+                    x: entity.position.x,
+                    y: entity.position.y,
+                }
+            })
+            .collect::<Vec<_>>();
+        let reset_source_map_chains = RenderableMapChains::from_reset(
+            &reset_source_map_seeds,
+            &terrain_planes.entity_indices,
+            |source_entity_index| {
+                entities
+                    .get(usize::from(source_entity_index))
+                    .map(EntitySnapshot::old_map_entity)
+            },
+        )
+        .map_err(NativeWorldError::new)?;
 
         let profile = metadata.map_type.profile();
         Ok(Self {
@@ -2074,6 +2164,9 @@ impl NativeWorld {
             sound_asset_refs: cache_assets.sound_asset_refs,
             music_asset_ref: cache_assets.music_asset_ref,
             goat_tmap_bank: cache_assets.goat_tmap_bank,
+            source_sprite_tmap_bank: cache_assets.source_sprite_tmap_bank,
+            reset_source_map_chains,
+            raw_source_entity_indices: raw_source_entity_indices.into_boxed_slice(),
             house_build_footprints: cache_assets.house_build_footprints,
             reset_state,
             reset_context,
@@ -2157,6 +2250,16 @@ impl NativeWorld {
     #[must_use]
     pub const fn goat_tmap_bank(&self) -> Option<&GoatTmapBank> {
         self.goat_tmap_bank.as_ref()
+    }
+
+    #[must_use]
+    pub const fn source_sprite_tmap_bank(&self) -> Option<&SourceSpriteTmapBank> {
+        self.source_sprite_tmap_bank.as_ref()
+    }
+
+    #[must_use]
+    pub fn raw_source_entity_indices(&self) -> &[u16] {
+        &self.raw_source_entity_indices
     }
 
     #[must_use]
@@ -2255,6 +2358,7 @@ impl NativeWorld {
                 .turn
                 .cast_unsigned(),
         );
+        mission.set_source_map_chains(self.reset_source_map_chains.clone());
         NativeSession {
             world: self,
             terrain: SessionTerrain::from_world(self),
@@ -2289,6 +2393,22 @@ impl FlightWorld for NativeWorld {
     fn angle_flags(&self, tile: crate::Tile) -> u8 {
         self.terrain.angle_flags(tile)
     }
+}
+
+/// Per-play-session mutable state, independent from the immutable world.
+pub struct NativeSourceFrameResources<'a> {
+    pub frozen_actor_tmap_bank: Option<&'a FrozenActorTmapBank>,
+    pub villager_tmap_clocks: Option<&'a VillagerTmapClocks>,
+    pub archer_tmap_bank: &'a ArcherTmapBank,
+    pub archer_tmap_clocks: &'a ArcherTmapClocks,
+    pub firefly_tmap_bank: &'a FireflyTmapBank,
+    pub firefly_tmap_clocks: &'a FireflyTmapClocks,
+    pub combat_tmap_bank: &'a CombatTmapBank,
+    pub static_world_tmap_bank: &'a StaticWorldTmapBank,
+    pub economy_tmap_bank: &'a EconomyTmapBank,
+    pub fireball_tmap_clock: &'a FireballTmapClock,
+    pub possession_tmap_clock: &'a PossessionTmapClock,
+    pub castle_tmap_clock: &'a CastleTmapClock,
 }
 
 /// Per-play-session mutable state, independent from the immutable world.
@@ -2589,6 +2709,20 @@ fn villager_collision_target(villager: &VillagerState) -> Level1CollisionTarget 
     }
 }
 
+fn source_sprite_disposition_index(disposition: &SourceSpriteDisposition) -> u16 {
+    match disposition {
+        SourceSpriteDisposition::Render(submission) => submission.source_entity_index,
+        SourceSpriteDisposition::Legacy {
+            source_entity_index,
+            ..
+        }
+        | SourceSpriteDisposition::Excluded {
+            source_entity_index,
+            ..
+        } => *source_entity_index,
+    }
+}
+
 fn house_collision_target(house: &HouseState) -> Level1CollisionTarget {
     Level1CollisionTarget {
         entity_index: house.entity_index,
@@ -2606,6 +2740,304 @@ impl NativeSession<'_> {
     #[must_use]
     pub fn live_world_hash_v2(&self) -> u64 {
         self.live_world.hash_v2(self.mission.global_rng())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn first_goat_source_view_for_test(&self) -> Level1SourceEntityView {
+        goat_source_entity_view(&self.live_world.goats()[0])
+    }
+
+    #[must_use]
+    pub fn source_sprite_dispositions(
+        &self,
+    ) -> std::result::Result<Vec<crate::source_sprite_tmap::SourceSpriteDisposition>, String> {
+        let mut dispositions = self.mission.source_sprite_dispositions(&self.state)?;
+        let mut qualified = dispositions
+            .iter()
+            .map(source_sprite_disposition_index)
+            .collect::<BTreeSet<_>>();
+        let legacy = self.mission.source_sprite_legacy_dispositions(&qualified)?;
+        qualified.extend(legacy.iter().map(source_sprite_disposition_index));
+        dispositions.extend(legacy);
+
+        let mut imported_rows = Vec::new();
+        for source_entity_index in self.mission.source_map_chains().linked_entity_indices() {
+            if qualified.contains(&source_entity_index) {
+                continue;
+            }
+            let entity = self
+                .world
+                .entities
+                .get(usize::from(source_entity_index))
+                .ok_or_else(|| unknown_source_sprite_tuple(source_entity_index, 0, 0, 0, 0))?;
+            let source = self
+                .mission
+                .source_slots()
+                .get(usize::from(source_entity_index))
+                .ok_or_else(|| unknown_source_sprite_tuple(source_entity_index, 0, 0, 0, 0))?;
+            let route = if entity.authority == EntityAuthority::GoatLive {
+                if (source.class, source.model) != (GOAT_CLASS, GOAT_MODEL)
+                    || !matches!(source.action, 9 | 12 | 13 | 14 | GOAT_PATROL_ACTION)
+                {
+                    return Err(format!(
+                        "live Goat source row mismatch: slot={source_entity_index} source={}/{}/{} phase={} rng={} flags={:#x}",
+                        source.class,
+                        source.model,
+                        source.action,
+                        source.phase,
+                        source.entity_rng,
+                        source.control_flags,
+                    ));
+                }
+                SourceSpriteContractRoute::Legacy(SourceSpriteLegacyFamily::Goat)
+            } else if entity.authority == EntityAuthority::VillagerLive {
+                if (source.class, source.model) != (VILLAGER_CLASS, VILLAGER_MODEL)
+                    || !matches!(source.action, 104..=111)
+                {
+                    return Err(format!(
+                        "live Villager source row mismatch: slot={source_entity_index} source={}/{}/{} phase={} rng={} flags={:#x}",
+                        source.class,
+                        source.model,
+                        source.action,
+                        source.phase,
+                        source.entity_rng,
+                        source.control_flags,
+                    ));
+                }
+                SourceSpriteContractRoute::Legacy(SourceSpriteLegacyFamily::Resident)
+            } else {
+                let tuple = ImportedResetSpriteTuple {
+                    class: source.class,
+                    model: source.model,
+                    action: source.action,
+                    entity_parameter_index: entity.parameter_relation.unwrap_or(0),
+                    particle_parameter_index: entity.particle_parameter_index.unwrap_or(0),
+                    animation_frame: entity.animation_frame(),
+                    control_flags: entity.control_flags,
+                };
+                match imported_reset_sprite_disposition(tuple).map_err(|_| {
+                    unknown_source_sprite_tuple(
+                        source_entity_index,
+                        source.class,
+                        source.model,
+                        source.action,
+                        entity.particle_parameter_index.unwrap_or(0),
+                    )
+                })? {
+                    SourceSpriteTemplateDisposition::Render(_) => {
+                        SourceSpriteContractRoute::Legacy(SourceSpriteLegacyFamily::ImportedReset)
+                    }
+                    SourceSpriteTemplateDisposition::Excluded(reason) => {
+                        SourceSpriteContractRoute::Excluded(reason)
+                    }
+                }
+            };
+            imported_rows.push(SourceSpriteContractRow {
+                source_entity_index,
+                position: entity.position,
+                yaw: entity.yaw,
+                pitch: entity.pitch,
+                roll: 0,
+                control_flags: source.control_flags,
+                class: source.class,
+                model: source.model,
+                action: source.action,
+                xclass: 0,
+                xmodel: 0,
+                route,
+            });
+        }
+        let imported = source_sprite_dispositions(imported_rows)?;
+        qualified.extend(imported.iter().map(source_sprite_disposition_index));
+        dispositions.extend(imported);
+        dispositions.sort_unstable_by_key(source_sprite_disposition_index);
+
+        for source_entity_index in self.mission.source_map_chains().linked_entity_indices() {
+            if !qualified.contains(&source_entity_index) {
+                let Some(source) = self
+                    .mission
+                    .source_slots()
+                    .get(usize::from(source_entity_index))
+                else {
+                    return Err(unknown_source_sprite_tuple(source_entity_index, 0, 0, 0, 0));
+                };
+                return Err(unknown_source_sprite_tuple(
+                    source_entity_index,
+                    source.class,
+                    source.model,
+                    source.action,
+                    0,
+                ));
+            }
+        }
+        Ok(dispositions)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clone_for_source_frame_test(&self) -> Self {
+        Self {
+            world: self.world,
+            terrain: self.terrain.clone(),
+            state: self.state,
+            context: self.context.clone(),
+            live_world: self.live_world.clone(),
+            goat_tmap_clocks: self.goat_tmap_clocks.clone(),
+            camera_fov: self.camera_fov,
+            pending_house_effects: self.pending_house_effects.clone(),
+            mission: self.mission.clone(),
+        }
+    }
+
+    /// Render the complete source-ordered frame from this session's actual
+    /// production state and the cache-backed CP1 source TMAP bank.
+    ///
+    /// Callers supply only the established immutable legacy selector banks;
+    /// source rows, map chains, live families, particle parameters, and the
+    /// local player are always projected from this session.
+    pub fn render_source_world_frame(
+        &self,
+        camera: Level1TerrainFrameCamera,
+        terrain: Level1TerrainFrameResources<'_>,
+        banks: NativeSourceFrameResources<'_>,
+    ) -> std::result::Result<Level1TerrainFrame, TerrainFrameError> {
+        self.render_source_world_frame_inner(camera, terrain, banks, None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn render_source_world_frame_with_typed_no_draw_for_test(
+        &self,
+        camera: Level1TerrainFrameCamera,
+        terrain: Level1TerrainFrameResources<'_>,
+        banks: NativeSourceFrameResources<'_>,
+        source_entity_index: u16,
+    ) -> std::result::Result<Level1TerrainFrame, TerrainFrameError> {
+        self.render_source_world_frame_inner(camera, terrain, banks, Some(source_entity_index))
+    }
+
+    fn render_source_world_frame_inner(
+        &self,
+        camera: Level1TerrainFrameCamera,
+        terrain: Level1TerrainFrameResources<'_>,
+        banks: NativeSourceFrameResources<'_>,
+        typed_no_draw_source: Option<u16>,
+    ) -> std::result::Result<Level1TerrainFrame, TerrainFrameError> {
+        let source_bank = self.world.source_sprite_tmap_bank.as_ref().ok_or_else(|| {
+            TerrainFrameError("production source frame has no qualified owner TMAP bank".to_owned())
+        })?;
+        let goat_tmap_clocks = self.goat_tmap_clocks.as_ref().ok_or_else(|| {
+            TerrainFrameError("production source frame has no live Goat TMAP clocks".to_owned())
+        })?;
+        let mut dispositions = self
+            .source_sprite_dispositions()
+            .map_err(TerrainFrameError)?;
+        if let Some(source_entity_index) = typed_no_draw_source {
+            let disposition = dispositions
+                .iter_mut()
+                .find(|disposition| {
+                    source_sprite_disposition_index(disposition) == source_entity_index
+                })
+                .ok_or_else(|| {
+                    TerrainFrameError(format!(
+                        "typed no-draw source slot {source_entity_index} has no disposition"
+                    ))
+                })?;
+            if !matches!(disposition, SourceSpriteDisposition::Render(_)) {
+                return Err(TerrainFrameError(format!(
+                    "typed no-draw source slot {source_entity_index} is not renderable"
+                )));
+            }
+            *disposition = SourceSpriteDisposition::Excluded {
+                source_entity_index,
+                reason: crate::source_sprite_tmap::SourceSpriteExclusionReason::SourceNoDrawFlags,
+            };
+        }
+        let mut source_map_chains = self.mission.source_map_chains().clone();
+        for disposition in &dispositions {
+            let SourceSpriteDisposition::Render(submission) = disposition else {
+                continue;
+            };
+            if submission.source_entity_index != self.state.entity_index {
+                continue;
+            }
+            source_map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: submission.source_entity_index,
+                    active: true,
+                    x: submission.position.x,
+                    y: submission.position.y,
+                })
+                .map_err(TerrainFrameError)?;
+        }
+        let frozen_actors = self
+            .world
+            .entities
+            .iter()
+            .filter(|entity| {
+                entity.active
+                    && ((entity.class == 2 && entity.model == 2)
+                        || (entity.class == 5 && entity.model == 13))
+            })
+            .map(|entity| Level1FrozenActorRender {
+                source_entity_index: entity.index,
+                position: entity.position,
+                yaw: entity.yaw,
+                render_parameter_index: entity.particle_parameter_index.unwrap_or(0),
+            })
+            .collect::<Vec<_>>();
+        let ambient_entities = self.mission.ambient_entities().copied().collect::<Vec<_>>();
+        let dynamic_residents = self
+            .mission
+            .dynamic_residents()
+            .copied()
+            .collect::<Vec<_>>();
+        let castle_root = self
+            .mission
+            .castle_exists
+            .then_some(Level1CastleRootRender {
+                source_entity_index: self.mission.castle_source_entity_index,
+                position: self.mission.castle_position,
+                active: true,
+            });
+        render_level1_source_world_frame(
+            camera,
+            terrain,
+            Level1WorldFrameResources {
+                local_player_entity_index: self.state.entity_index,
+                goats: self.live_world.goats(),
+                frozen_actors: &frozen_actors,
+                ambient_entities: &ambient_entities,
+                frozen_actor_tmap_bank: banks.frozen_actor_tmap_bank,
+                villager_tmap_clocks: banks.villager_tmap_clocks,
+                mission_actors: self.mission.actors(),
+                dynamic_residents: &dynamic_residents,
+                mission_segments: self.mission.multipart_segments(),
+                castle_root,
+                mana_spheres: self.mission.mana_spheres(),
+                mana_carrier: self.mission.mana_carrier(),
+                map_chains: &source_map_chains,
+                goat_tmap_clocks,
+                archer_tmap_bank: banks.archer_tmap_bank,
+                archer_tmap_clocks: banks.archer_tmap_clocks,
+                firefly_tmap_bank: banks.firefly_tmap_bank,
+                firefly_tmap_clocks: banks.firefly_tmap_clocks,
+                projectiles: self.mission.projectiles(),
+                impacts: self.mission.impacts(),
+                possessed_buildings: self.mission.possessed_buildings(),
+                combat_tmap_bank: banks.combat_tmap_bank,
+                static_world_tmap_bank: banks.static_world_tmap_bank,
+                economy_tmap_bank: banks.economy_tmap_bank,
+                fireball_tmap_clock: banks.fireball_tmap_clock,
+                possession_tmap_clock: banks.possession_tmap_clock,
+                castle_tmap_clock: banks.castle_tmap_clock,
+                particle_parameters: &self.world.presentation.particles,
+                source_slots: self.mission.source_slots(),
+                night: self.world.metadata.map_type != MapType::Day,
+            },
+            crate::source_sprite_tmap::SourceSpriteWorldResources {
+                dispositions: &dispositions,
+                tmap_bank: source_bank,
+            },
+        )
     }
 
     pub fn reset(&mut self) {
@@ -2629,9 +3061,21 @@ impl NativeSession<'_> {
                 .turn
                 .cast_unsigned(),
         );
+        self.mission
+            .set_source_map_chains(self.world.reset_source_map_chains.clone());
     }
 
     pub fn step(&mut self, command: PlayerCommand) -> Vec<crate::StepEvidence> {
+        self.step_with_speed_index(command, 0)
+    }
+
+    /// Execute one source outer turn with the exact 1/4/8 complete
+    /// `UpdateEntities` sweep selected by remc2's speed index.
+    pub fn step_with_speed_index(
+        &mut self,
+        command: PlayerCommand,
+        speed_index: u8,
+    ) -> Vec<crate::StepEvidence> {
         self.mission.finish_hud_draw(self.state.tick);
         if let (Some(clocks), Some(bank)) = (
             self.goat_tmap_clocks.as_mut(),
@@ -2643,17 +3087,14 @@ impl NativeSession<'_> {
         self.mission.sync_collected_spell_holders(&mut self.context);
         self.mission
             .sync_speed_holder_projection(&mut self.state, &mut self.context);
-        let holders_before = self
+        let mut holders_before = self
             .context
             .spell_fire
             .as_ref()
             .map_or_else(Vec::new, |fire| fire.holders.clone());
         self.context.events.clear();
-        let initial_target = [GoatPlayerTarget {
-            entity_index: self.state.entity_index,
-            position: self.state.position,
-            control_flags: 0,
-        }];
+        let latched_command =
+            latch_command_with_context(&mut self.state, command, &mut self.context);
         self.mission.set_external_collision_targets(
             self.live_world
                 .goats()
@@ -2666,235 +3107,273 @@ impl NativeSession<'_> {
                         .map(villager_collision_target),
                 ),
         );
-        self.mission.begin_source_turn();
-        self.reclaim_imported_source_slots();
-        if self.mission.take_group_7_villager_release() {
-            let released = self.live_world.release_villager_stage_group_7();
-            debug_assert_eq!(released, 28);
+        {
+            let (_, shading) = self.terrain.dynamic_lighting_planes();
+            self.mission
+                .subtract_dynamic_lighting_before_updates(shading);
         }
-        let begin_goat_events = self.live_world.begin_source_turn(&initial_target);
-        self.process_goat_events(&begin_goat_events);
         let mut source_views =
             level1_turn_start_source_views(&self.mission, &self.state, &self.live_world);
         let mut evidence = Vec::new();
-        for source_slot in 1..ENTITY_COUNT {
-            let source_slot = u16::try_from(source_slot).expect("source cursor fits u16");
-            if let Some((owner_entity_index, payload)) =
-                self.mission.take_building_possession_mailbox(source_slot)
-            {
-                self.live_world
-                    .submit_house_possession(source_slot, owner_entity_index, payload)
-                    .expect("possession mailbox targets a live eligible house");
+        for _ in 0..entity_passes_for_speed_index(speed_index) {
+            self.mission.begin_source_turn();
+            self.reclaim_imported_source_slots();
+            if self.mission.take_group_7_villager_release() {
+                let released = self.live_world.release_villager_stage_group_7();
+                debug_assert_eq!(released, 28);
             }
-            let house_state_before_dispatch = self
-                .live_world
-                .houses()
-                .iter()
-                .find(|house| house.entity_index == source_slot && house.active)
-                .is_some_and(|house| {
-                    house.action == crate::house::HOUSE_REMOVE_ACTION
-                        || (house.action == crate::house::HOUSE_LIVE_ACTION
-                            && house.parameter.produces_villagers()
-                            && ((house.pending_attacker != 0 && house.occupants > 2)
-                                || (house.phase & 0x1f == 0
-                                    && house.capacity > 5
-                                    && i32::from(house.capacity) == house.occupants)))
-                })
-                .then(|| self.live_world.clone());
-            let house_events = self
-                .live_world
-                .step_house_source_slot(source_slot, &self.terrain);
-            if !self.process_house_events(&house_events) {
-                self.live_world =
-                    house_state_before_dispatch.expect("failed house dispatch was staged");
-            }
-            let player_target = [GoatPlayerTarget {
+            let current_player_target = [GoatPlayerTarget {
                 entity_index: self.state.entity_index,
                 position: self.state.position,
                 control_flags: 0,
             }];
-            let goat_events =
-                self.live_world
-                    .step_source_slot(source_slot, &self.terrain, &player_target);
-            let villager_effects = self.live_world.step_villager_source_slot(
-                source_slot,
-                &self.terrain,
-                &source_views,
-            );
-            self.mission
-                .apply_imported_villager_effects(&villager_effects);
-            self.process_goat_events(&goat_events);
-            if let Some(house) = self
-                .live_world
-                .houses()
-                .iter()
-                .find(|house| house.entity_index == source_slot)
-            {
-                self.mission
-                    .update_external_collision_target(house_collision_target(house));
-                self.mission.sync_imported_source_slot(
-                    house.entity_index,
-                    house.active,
-                    house.action,
-                    house.phase,
-                    house.rng,
-                    house.control_flags,
-                );
-            } else if let Some(goat) = self
-                .live_world
-                .goats()
-                .iter()
-                .find(|goat| goat.entity_index == source_slot)
-            {
-                self.mission
-                    .update_external_collision_target(goat_collision_target(goat));
-                self.mission.sync_imported_source_slot(
-                    goat.entity_index,
-                    goat.active,
-                    goat.action,
-                    goat.phase,
-                    goat.rng,
-                    goat.control_flags,
-                );
-            } else if let Some(villager) = self
-                .live_world
-                .villagers()
-                .iter()
-                .find(|villager| villager.entity_index == source_slot)
-            {
-                self.mission
-                    .update_external_collision_target(villager_collision_target(villager));
-                self.mission.sync_imported_source_slot(
-                    villager.entity_index,
-                    villager.active,
-                    villager.action,
-                    villager.phase,
-                    villager.rng,
-                    villager.control_flags,
-                );
-            }
-            refresh_level1_current_source_view(&mut source_views, &self.live_world, source_slot);
-            if let Some(dolmen) =
-                self.world
-                    .entities
-                    .get(usize::from(source_slot))
-                    .filter(|entity| {
-                        entity.active
-                            && entity.class == 2
-                            && entity.model == 2
-                            && entity.action == 6
-                    })
-            {
-                self.mission.step_dolmen_source_slot(
-                    &self.state,
-                    source_slot,
-                    dolmen.collision_target(),
-                );
-            }
-
-            let (fireball_activated, possession_activated, castle_cast_yaw) = if source_slot
-                == self.state.entity_index
-            {
-                self.mission
-                    .prepare_player_action_before_flight(&mut self.state);
-                evidence = if self.mission.exit_sequence_owns_player_action() {
-                    self.state.tick = self.state.tick.wrapping_add(1);
-                    Vec::new()
-                } else {
-                    match self.mission.player_action {
-                        crate::level1_mission::PLAYER_ACTION_ACTIVE => {
-                            step_outer_turn_with_context(
-                                &mut self.state,
-                                command,
-                                0,
-                                self.world.profile,
-                                &self.terrain,
-                                &mut self.context,
-                            )
-                        }
-                        crate::level1_mission::PLAYER_ACTION_DYING => {
-                            vec![step_entity_body_with_context(
-                                &mut self.state,
-                                self.world.profile,
-                                &self.terrain,
-                                &mut self.context,
-                            )]
-                        }
-                        _ => Vec::new(),
-                    }
-                };
-                if !self.mission.exit_sequence_owns_player_action() {
-                    let flight_proposed = evidence
-                        .last()
-                        .map_or(self.state.position, |pass| pass.proposed);
-                    self.mission
-                        .advance_player_lifecycle_after_flight_with_proposed(
-                            &self.terrain,
-                            &mut self.state,
-                            &mut self.context,
-                            flight_proposed,
-                        );
+            let begin_goat_events = self.live_world.begin_source_turn(&current_player_target);
+            self.process_goat_events(&begin_goat_events);
+            source_views =
+                level1_turn_start_source_views(&self.mission, &self.state, &self.live_world);
+            for source_slot in 1..ENTITY_COUNT {
+                let source_slot = u16::try_from(source_slot).expect("source cursor fits u16");
+                if let Some((owner_entity_index, payload)) =
+                    self.mission.take_building_possession_mailbox(source_slot)
+                {
+                    self.live_world
+                        .submit_house_possession(source_slot, owner_entity_index, payload)
+                        .expect("possession mailbox targets a live eligible house");
                 }
-                let activated_model = |model| {
-                    self.context.spell_fire.as_ref().is_some_and(|fire| {
-                        fire.holders.iter().any(|holder| {
-                            holder.model == model
-                                && holder.activation_value != 0
-                                && holder.active_value == holder.activation_value.cast_signed()
-                                && holders_before
-                                    .iter()
-                                    .find(|before| before.entity_index == holder.entity_index)
-                                    .is_none_or(|before| before.active_value != holder.active_value)
-                        })
+                let house_state_before_dispatch = self
+                    .live_world
+                    .houses()
+                    .iter()
+                    .find(|house| house.entity_index == source_slot && house.active)
+                    .is_some_and(|house| {
+                        house.action == crate::house::HOUSE_REMOVE_ACTION
+                            || (house.action == crate::house::HOUSE_LIVE_ACTION
+                                && house.parameter.produces_villagers()
+                                && ((house.pending_attacker != 0 && house.occupants > 2)
+                                    || (house.phase & 0x1f == 0
+                                        && house.capacity > 5
+                                        && i32::from(house.capacity) == house.occupants)))
                     })
-                };
-                let fireball = activated_model(0);
-                let possession = activated_model(1);
-                let castle = activated_model(CASTLE_SPELL_FAMILY);
-                self.mission
-                    .capture_spell_holder_active_values(&self.context);
-                (fireball, possession, castle.then_some(self.state.yaw))
-            } else {
-                (false, false, None)
-            };
-            let mission_event_start = self.mission.events().len();
-            if !self.mission.exit_sequence_owns_player_action()
-                && self.mission.player_action == crate::level1_mission::PLAYER_ACTION_ACTIVE
-            {
-                self.mission.dispatch_speed_holder_slot(
+                    .then(|| self.live_world.clone());
+                let house_events = self
+                    .live_world
+                    .step_house_source_slot(source_slot, &self.terrain);
+                if !self.process_house_events(&house_events) {
+                    self.live_world =
+                        house_state_before_dispatch.expect("failed house dispatch was staged");
+                }
+                let player_target = [GoatPlayerTarget {
+                    entity_index: self.state.entity_index,
+                    position: self.state.position,
+                    control_flags: 0,
+                }];
+                let goat_events =
+                    self.live_world
+                        .step_source_slot(source_slot, &self.terrain, &player_target);
+                let villager_effects = self.live_world.step_villager_source_slot(
                     source_slot,
-                    &mut self.state,
-                    &mut self.context,
+                    &self.terrain,
+                    &source_views,
                 );
+                self.mission
+                    .apply_imported_villager_effects(&villager_effects);
+                self.process_goat_events(&goat_events);
+                if let Some(house) = self
+                    .live_world
+                    .houses()
+                    .iter()
+                    .find(|house| house.entity_index == source_slot)
+                {
+                    self.mission
+                        .update_external_collision_target(house_collision_target(house));
+                    self.mission.sync_imported_source_slot(
+                        house.entity_index,
+                        house.active,
+                        house.action,
+                        house.phase,
+                        house.rng,
+                        house.control_flags,
+                    );
+                } else if let Some(goat) = self
+                    .live_world
+                    .goats()
+                    .iter()
+                    .find(|goat| goat.entity_index == source_slot)
+                {
+                    self.mission
+                        .update_external_collision_target(goat_collision_target(goat));
+                    self.mission.sync_imported_source_slot(
+                        goat.entity_index,
+                        goat.active,
+                        goat.action,
+                        goat.phase,
+                        goat.rng,
+                        goat.control_flags,
+                    );
+                } else if let Some(villager) = self
+                    .live_world
+                    .villagers()
+                    .iter()
+                    .find(|villager| villager.entity_index == source_slot)
+                {
+                    self.mission
+                        .update_external_collision_target(villager_collision_target(villager));
+                    self.mission.sync_imported_source_slot(
+                        villager.entity_index,
+                        villager.active,
+                        villager.action,
+                        villager.phase,
+                        villager.rng,
+                        villager.control_flags,
+                    );
+                }
+                refresh_level1_current_source_view(
+                    &mut source_views,
+                    &self.live_world,
+                    source_slot,
+                );
+                if let Some(dolmen) =
+                    self.world
+                        .entities
+                        .get(usize::from(source_slot))
+                        .filter(|entity| {
+                            entity.active
+                                && entity.class == 2
+                                && entity.model == 2
+                                && entity.action == 6
+                        })
+                {
+                    self.mission.step_dolmen_source_slot(
+                        &self.state,
+                        source_slot,
+                        dolmen.collision_target(),
+                    );
+                }
+
+                let (fireball_activated, possession_activated, castle_cast_yaw) = if source_slot
+                    == self.state.entity_index
+                {
+                    self.mission
+                        .prepare_player_action_before_flight(&mut self.state);
+                    let pass_evidence = if self.mission.exit_sequence_owns_player_action() {
+                        self.state.tick = self.state.tick.wrapping_add(1);
+                        Vec::new()
+                    } else {
+                        match self.mission.player_action {
+                            crate::level1_mission::PLAYER_ACTION_ACTIVE => {
+                                vec![step_entity_pass_with_context(
+                                    &mut self.state,
+                                    latched_command,
+                                    self.world.profile,
+                                    &self.terrain,
+                                    &mut self.context,
+                                )]
+                            }
+                            crate::level1_mission::PLAYER_ACTION_DYING => {
+                                vec![step_entity_body_with_context(
+                                    &mut self.state,
+                                    self.world.profile,
+                                    &self.terrain,
+                                    &mut self.context,
+                                )]
+                            }
+                            _ => Vec::new(),
+                        }
+                    };
+                    if !self.mission.exit_sequence_owns_player_action() {
+                        let flight_proposed = pass_evidence
+                            .last()
+                            .map_or(self.state.position, |pass| pass.proposed);
+                        self.mission
+                            .advance_player_lifecycle_after_flight_with_proposed(
+                                &self.terrain,
+                                &mut self.state,
+                                &mut self.context,
+                                flight_proposed,
+                            );
+                    }
+                    evidence.extend(pass_evidence);
+                    let activated_model = |model| {
+                        self.context.spell_fire.as_ref().is_some_and(|fire| {
+                            fire.holders.iter().any(|holder| {
+                                holder.model == model
+                                    && holder.activation_value != 0
+                                    && holder.active_value == holder.activation_value.cast_signed()
+                                    && holders_before
+                                        .iter()
+                                        .find(|before| before.entity_index == holder.entity_index)
+                                        .is_none_or(|before| {
+                                            before.active_value != holder.active_value
+                                        })
+                            })
+                        })
+                    };
+                    let fireball = activated_model(0);
+                    let possession = activated_model(1);
+                    let castle = activated_model(CASTLE_SPELL_FAMILY);
+                    self.mission
+                        .capture_spell_holder_active_values(&self.context);
+                    holders_before = self
+                        .context
+                        .spell_fire
+                        .as_ref()
+                        .map_or_else(Vec::new, |fire| fire.holders.clone());
+                    (fireball, possession, castle.then_some(self.state.yaw))
+                } else {
+                    (false, false, None)
+                };
+                let mission_event_start = self.mission.events().len();
+                if !self.mission.exit_sequence_owns_player_action()
+                    && self.mission.player_action == crate::level1_mission::PLAYER_ACTION_ACTIVE
+                {
+                    self.mission.dispatch_speed_holder_slot(
+                        source_slot,
+                        &mut self.state,
+                        &mut self.context,
+                    );
+                }
+                let source_effects = self.mission.dispatch_source_slot_with_views_and_look(
+                    &self.terrain,
+                    &self.state,
+                    &source_views,
+                    source_slot,
+                    fireball_activated,
+                    possession_activated,
+                    castle_cast_yaw,
+                    0,
+                    0,
+                );
+                self.mission
+                    .apply_pending_player_transients(&mut self.state);
+                apply_level1_source_effects(
+                    &mut self.mission,
+                    &mut self.live_world,
+                    &source_effects,
+                )
+                .expect("resident source effects apply after slot dispatch");
+                if source_slot == self.state.entity_index && self.mission.exit_sequence_active {
+                    self.mission.advance_exit_sequence(
+                        &self.terrain,
+                        &mut self.state,
+                        &mut self.context,
+                        &mut self.camera_fov,
+                    );
+                }
+                self.apply_castle_terrain_updates();
+                self.inject_new_fireball_impacts(mission_event_start);
+                self.reclaim_imported_source_slots();
             }
-            let source_effects = self.mission.dispatch_source_slot_with_views_and_look(
-                &self.terrain,
+            self.live_world.finish_source_turn();
+        }
+        {
+            let (ground_heights, shading) = self.terrain.dynamic_lighting_planes();
+            self.mission.service_dynamic_lighting_after_updates(
                 &self.state,
                 &source_views,
-                source_slot,
-                fireball_activated,
-                possession_activated,
-                castle_cast_yaw,
-                0,
-                0,
+                ground_heights,
+                shading,
             );
-            self.mission
-                .apply_pending_player_transients(&mut self.state);
-            apply_level1_source_effects(&mut self.mission, &mut self.live_world, &source_effects)
-                .expect("resident source effects apply after slot dispatch");
-            if source_slot == self.state.entity_index && self.mission.exit_sequence_active {
-                self.mission.advance_exit_sequence(
-                    &self.terrain,
-                    &mut self.state,
-                    &mut self.context,
-                    &mut self.camera_fov,
-                );
-            }
-            self.apply_castle_terrain_updates();
-            self.inject_new_fireball_impacts(mission_event_start);
-            self.reclaim_imported_source_slots();
         }
-        self.live_world.finish_source_turn();
         self.mission.finish_source_turn(&self.state);
         if let Some(fire) = self.context.spell_fire.as_mut() {
             // The class-15 handlers consume one active tick after their
@@ -4721,6 +5200,7 @@ struct LevelOneCacheAssets {
     sound_asset_refs: BTreeMap<u16, u32>,
     music_asset_ref: Option<u32>,
     goat_tmap_bank: Option<GoatTmapBank>,
+    source_sprite_tmap_bank: Option<SourceSpriteTmapBank>,
     castle_stage_one_footprint: Option<CastleBuildFootprint>,
     house_build_footprints: BTreeMap<u8, CastleBuildFootprint>,
 }
@@ -4732,7 +5212,17 @@ fn append_level_one_cache_assets(
     refs: &mut Vec<AssetRef>,
 ) -> Result<LevelOneCacheAssets> {
     let manifest_bytes = read_owner_cache_output(root, "manifest.json")?;
-    if sha256_hex(&manifest_bytes) != AUDIO_CACHE_MANIFEST_SHA256 {
+    let manifest_sha256 = sha256_hex(&manifest_bytes);
+    if !matches!(
+        manifest_sha256.as_str(),
+        AUDIO_CACHE_MANIFEST_SHA256
+            | CP1_CACHE_MANIFEST_SHA256
+            | CP2_CACHE_MANIFEST_SHA256
+            | CP3_CACHE_MANIFEST_SHA256
+            | CP4_CACHE_MANIFEST_SHA256
+            | CP4_CORRECTION1_CACHE_MANIFEST_SHA256
+            | CP4_CORRECTION2_CACHE_MANIFEST_SHA256
+    ) {
         return Err(NativeWorldError::new(
             "owner audio cache manifest is not the qualified Level 1 manifest",
         ));
@@ -4740,11 +5230,28 @@ fn append_level_one_cache_assets(
     let manifest: Value = serde_json::from_slice(&manifest_bytes)
         .map_err(|error| NativeWorldError::new(format!("invalid audio manifest JSON: {error}")))?;
     let manifest = as_object(&manifest, "audio cache manifest")?;
+    let cache_content_sha256 =
+        require_hash_string(manifest, "cache_content_sha256", "audio cache manifest")?;
+    let qualified_identity = matches!(
+        (manifest_sha256.as_str(), cache_content_sha256),
+        (AUDIO_CACHE_MANIFEST_SHA256, AUDIO_CACHE_CONTENT_SHA256)
+            | (CP1_CACHE_MANIFEST_SHA256, CP1_CACHE_CONTENT_SHA256)
+            | (CP2_CACHE_MANIFEST_SHA256, CP2_CACHE_CONTENT_SHA256)
+            | (CP3_CACHE_MANIFEST_SHA256, CP3_CACHE_CONTENT_SHA256)
+            | (CP4_CACHE_MANIFEST_SHA256, CP4_CACHE_CONTENT_SHA256)
+            | (
+                CP4_CORRECTION1_CACHE_MANIFEST_SHA256,
+                CP4_CORRECTION1_CACHE_CONTENT_SHA256
+            )
+            | (
+                CP4_CORRECTION2_CACHE_MANIFEST_SHA256,
+                CP4_CORRECTION2_CACHE_CONTENT_SHA256
+            )
+    );
     if require_string(manifest, "schema", "audio cache manifest")? != AUDIO_CACHE_SCHEMA
         || require_string(manifest, "scope", "audio cache manifest")?
             != "PRIVATE_TRACK_P_OWNER_DATA"
-        || require_hash_string(manifest, "cache_content_sha256", "audio cache manifest")?
-            != AUDIO_CACHE_CONTENT_SHA256
+        || !qualified_identity
     {
         return Err(NativeWorldError::new(
             "owner audio cache identity or private scope mismatch",
@@ -4804,6 +5311,53 @@ fn append_level_one_cache_assets(
             )));
         }
         Ok(bytes)
+    };
+    let source_sprite_tmap_bank = if assets.contains_key("source_frame_census") {
+        let terrain_assets = require_object(assets, "terrain_materials", "owner cache assets")?;
+        let terrain_path = require_string(terrain_assets, "path", "owner terrain cache asset")?;
+        let terrain_bytes = load_output(terrain_path)?;
+        let terrain: Value = serde_json::from_slice(&terrain_bytes).map_err(|error| {
+            NativeWorldError::new(format!("invalid owner terrain descriptor: {error}"))
+        })?;
+        let terrain = as_object(&terrain, "owner terrain descriptor")?;
+        let tmaps = require_object(terrain, "tmaps1", "owner terrain descriptor")?;
+        let mut frames = Vec::new();
+        for texture in require_array(tmaps, "textures", "owner TMAP descriptor")? {
+            let texture = as_object(texture, "owner TMAP row")?;
+            if require_string(texture, "status", "owner TMAP row")? != "decoded_indexed_texture" {
+                continue;
+            }
+            let selector = as_u16(
+                require_value(texture, "index", "owner TMAP row")?,
+                "owner TMAP selector",
+            )?;
+            let width = as_u16(
+                require_value(texture, "width", "owner TMAP row")?,
+                "owner TMAP width",
+            )?;
+            let height = as_u16(
+                require_value(texture, "height", "owner TMAP row")?,
+                "owner TMAP height",
+            )?;
+            let path = require_string(texture, "indices_path", "owner TMAP row")?;
+            frames.push(SourceSpriteTmapFrame {
+                selector,
+                width,
+                height,
+                pixels: load_output(path)?.into_boxed_slice(),
+            });
+        }
+        let bank = SourceSpriteTmapBank::new(frames).map_err(NativeWorldError::new)?;
+        for selector in [54_u16, 64, 80, 81, 138, 141, 151, 463] {
+            if bank.frame(selector).is_none() {
+                return Err(NativeWorldError::new(format!(
+                    "owner source TMAP bank is missing selector {selector}"
+                )));
+            }
+        }
+        Some(bank)
+    } else {
+        None
     };
 
     let castle_descriptor_bytes = load_output(castle_descriptor_path)?;
@@ -5358,6 +5912,7 @@ fn append_level_one_cache_assets(
         sound_asset_refs: sound_refs,
         music_asset_ref: Some(music_index),
         goat_tmap_bank: Some(bank),
+        source_sprite_tmap_bank,
         castle_stage_one_footprint: Some(castle_stage_one_footprint),
         house_build_footprints,
     })
@@ -5924,6 +6479,231 @@ mod tests {
             let entity = &world.entities[usize::from(target.entity_index)];
             !matches!(entity.level_gate, 17 | 51 | 52 | 53) && *target == entity.collision_target()
         }));
+
+        let mut first_session = world.session();
+        let second_session = world.session();
+        let reset_lighting_hash = first_session.mission.dynamic_lighting_hash_v1();
+        assert_eq!(
+            (
+                first_session.mission.dynamic_light_active_count(),
+                second_session.mission.dynamic_light_active_count(),
+                reset_lighting_hash,
+            ),
+            (0, 0, second_session.mission.dynamic_lighting_hash_v1()),
+            "each production session starts from the same complete 50-slot lighting domain"
+        );
+        first_session
+            .mission
+            .spawn_death_burst_from_death(
+                first_session.state.entity_index,
+                first_session.state.position,
+            )
+            .expect("production death-burst light admission");
+        assert_eq!(first_session.mission.dynamic_light_active_count(), 1);
+        assert_eq!(
+            (
+                first_session.mission.dynamic_lights()[0].intensity,
+                first_session.mission.dynamic_lights()[0].jitter_range,
+                first_session.mission.dynamic_lights()[0].life_scaled,
+            ),
+            (
+                crate::level1_mission::PLAYER_DEATH_BURST_DYNAMIC_LIGHT_RADIUS,
+                crate::level1_mission::PLAYER_DEATH_BURST_DYNAMIC_LIGHT_KIND,
+                true,
+            )
+        );
+        assert_ne!(
+            first_session.mission.dynamic_lighting_hash_v1(),
+            reset_lighting_hash
+        );
+        assert_eq!(
+            second_session.mission.dynamic_lighting_hash_v1(),
+            reset_lighting_hash,
+            "one production session cannot mutate another session's lighting RNG/history"
+        );
+        first_session.step(PlayerCommand::default());
+        assert_eq!(
+            first_session.mission.dynamic_light_active_count(),
+            0,
+            "production dispatch expires the one-tick burst before the post-update light service"
+        );
+        assert_eq!(
+            first_session.mission.dynamic_lights()[0].history,
+            [0; crate::dynamic_lighting::DYNAMIC_LIGHT_HISTORY_CELLS],
+            "the production subtract/update/service schedule retains no stale one-tick burst footprint"
+        );
+        first_session.reset();
+        assert_eq!(
+            (
+                first_session.mission.dynamic_light_active_count(),
+                first_session.mission.dynamic_lighting_hash_v1(),
+            ),
+            (0, reset_lighting_hash),
+            "production reset restores RNG, count, inactive payloads, and retained histories"
+        );
+
+        let scheduled = [0_u8, 1, 2].map(|speed_index| {
+            let mut session = world.session();
+            assert_eq!(
+                session.mission.admit_linked_dynamic_light_for_test(
+                    session.state.entity_index,
+                    session.state.position,
+                ),
+                Some(0)
+            );
+            let evidence = session.step_with_speed_index(
+                PlayerCommand {
+                    flags: 1,
+                    ..PlayerCommand::default()
+                },
+                speed_index,
+            );
+            assert_eq!(
+                session.mission.dynamic_lighting_rng_for_test(),
+                0x84ca_7cd2,
+                "one live light consumes exactly one RNG draw after the final source pass"
+            );
+            assert_eq!(
+                session.mission.dynamic_lights()[0].position,
+                session.state.position,
+                "light service must observe the final player position after every full pass"
+            );
+            (
+                evidence.len(),
+                session.state.position,
+                session.state.target_speed,
+                session.state.actual_speed,
+                session.state.tick,
+                session.mission.source_turn_counter(),
+            )
+        });
+        assert_eq!(
+            scheduled,
+            [
+                (
+                    1,
+                    Position {
+                        x: 19_840,
+                        y: 56_944,
+                        z: 5_024,
+                    },
+                    16,
+                    16,
+                    1,
+                    2,
+                ),
+                (
+                    4,
+                    Position {
+                        x: 19_840,
+                        y: 56_800,
+                        z: 5_028,
+                    },
+                    64,
+                    64,
+                    4,
+                    5,
+                ),
+                (
+                    8,
+                    Position {
+                        x: 19_840,
+                        y: 56_480,
+                        z: 5_040,
+                    },
+                    80,
+                    80,
+                    8,
+                    9,
+                ),
+            ],
+            "production 1/4/8 full source sweeps must preserve exact final state and position"
+        );
+
+        let mut threshold_world = world.clone();
+        let threshold_goat_index = usize::from(LEVEL_ONE_GOAT_INDICES[0]);
+        let initial_player_position = threshold_world.reset_state.position;
+        let threshold_goat_position = Position {
+            x: initial_player_position.x,
+            y: initial_player_position.y.wrapping_sub(6_144),
+            z: initial_player_position.z,
+        };
+        let mut threshold_goat = threshold_world.entities[threshold_goat_index]
+            .clone()
+            .with_record_byte(0x003d, 0)
+            .with_record_byte(0x003e, 0);
+        threshold_goat.position = threshold_goat_position;
+        threshold_goat.action = 0;
+        threshold_goat.control_flags &= !1;
+        threshold_world.entities[threshold_goat_index] = threshold_goat;
+        threshold_world.reset_live_world = LiveWorldState::from_entities(
+            &threshold_world.entities,
+            threshold_world.goat_stage_point,
+            threshold_world.goat_config,
+        )
+        .expect("threshold-crossing production Goat family");
+        assert_eq!(
+            i32::from(initial_player_position.y)
+                .wrapping_sub(i32::from(threshold_goat_position.y))
+                .pow(2),
+            0x0240_0000,
+            "the outer-turn starting player position is exactly outside the strict Goat threshold"
+        );
+        assert!(
+            i32::from(56_944_u16)
+                .wrapping_sub(i32::from(threshold_goat_position.y))
+                .pow(2)
+                < 0x0240_0000,
+            "pass-one movement crosses into the strict Goat threshold"
+        );
+        let threshold_crossings = [1_u8, 2].map(|speed_index| {
+            let mut threshold_session = threshold_world.session();
+            threshold_session.step_with_speed_index(
+                PlayerCommand {
+                    flags: 1,
+                    ..PlayerCommand::default()
+                },
+                speed_index,
+            );
+            let threshold_goat = threshold_session
+                .live_world
+                .goats()
+                .iter()
+                .find(|goat| goat.entity_index == LEVEL_ONE_GOAT_INDICES[0])
+                .expect("threshold Goat remains live");
+            (
+                threshold_session.state.position,
+                threshold_goat.position,
+                threshold_goat.proximity_countdown,
+                threshold_goat.proximity_subcounter,
+            )
+        });
+        assert_eq!(
+            threshold_crossings,
+            [
+                (
+                    Position {
+                        x: 19_840,
+                        y: 56_800,
+                        z: 5_028,
+                    },
+                    threshold_goat_position,
+                    14,
+                    0,
+                ),
+                (
+                    Position {
+                        x: 19_840,
+                        y: 56_480,
+                        z: 5_040,
+                    },
+                    threshold_goat_position,
+                    10,
+                    0,
+                ),
+            ],
+            "speed-index 1/2 later passes must observe pass-one player movement at Goat begin-turn proximity"
+        );
     }
 
     #[test]
@@ -6785,6 +7565,34 @@ mod tests {
                 .count(),
             823
         );
+        let session = world.session();
+        let dispositions = session
+            .source_sprite_dispositions()
+            .expect("startup-valid live Villagers have typed source dispositions");
+        for source_entity_index in LEVEL_ONE_VILLAGER_INDICES {
+            assert!(
+                dispositions.iter().any(|disposition| matches!(
+                    disposition,
+                    SourceSpriteDisposition::Legacy {
+                        source_entity_index: index,
+                        family: SourceSpriteLegacyFamily::Resident,
+                    } if *index == source_entity_index
+                )),
+                "live Villager slot {source_entity_index} must use its authority-aware resident renderer"
+            );
+        }
+        for source_entity_index in LEVEL_ONE_GOAT_INDICES {
+            assert!(
+                dispositions.iter().any(|disposition| matches!(
+                    disposition,
+                    SourceSpriteDisposition::Legacy {
+                        source_entity_index: index,
+                        family: SourceSpriteLegacyFamily::Goat,
+                    } if *index == source_entity_index
+                )),
+                "live Goat slot {source_entity_index} must use its authority-aware Goat renderer"
+            );
+        }
     }
 
     #[test]

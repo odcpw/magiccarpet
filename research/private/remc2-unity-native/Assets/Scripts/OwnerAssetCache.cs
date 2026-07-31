@@ -12,9 +12,9 @@ namespace MagicCarpet.Native
     {
         public const string Schema = "mc2-owner-unity-asset-cache/v1";
         private const string ExactManifestFileHash =
-            "e3aaf1cf03e390850c5da44ed4b3880352b425bd063657e3cdbbcb8086a4d7ee";
+            "3909be6b29c1f879208f0a15ec2bccee58d65311cefd6698f0870d16c9742a8d";
         private const string ExactContentHash =
-            "d299990e300117d065eb3a75008f6a69911b1ba356e4e06452c0a826450a01e5";
+            "ee063ce1d5f804c8efc412dff2bedb0800d6fd347b38a6d0376e2a2e4dccd9dc";
 
         [Serializable]
         private sealed class Manifest

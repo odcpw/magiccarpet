@@ -2,7 +2,7 @@
  "schema": {
   "id": "mc2-level1-conformance-matrix",
   "version": 2,
-  "description": "Canonical Level 1 conformance row schema (v2: typed censuses + resolved bindings)",
+  "description": "Canonical Level 1 conformance row schema (v2: typed censuses + resolved Rust, Unity, and Python bindings)",
   "row_fields": {
    "id": "stable row ID",
    "subsystem": "bucket",
@@ -30,7 +30,7 @@
    },
    "classification": "Exact|Partial|Missing|Wrong|Unproved",
    "mismatch_detail": "field-level gaps",
-   "evidence_bindings": "[{kind, file, test (full cargo path for rust-test), command, proves, non_executable?}]",
+   "evidence_bindings": "[{kind, file, test (full inventory ID), command, proves, non_executable?}]",
    "negative_coverage_required": "edge coverage needed",
    "plan_item": "owning plan item (required unless Exact)",
    "confidence": "high|medium|low",
@@ -39,13 +39,15 @@
   },
   "binding_rules": {
    "rust-test": "test must equal a full name from `cd research/private/remc2-sim-rs && cargo test --workspace --locked -- --list`",
+   "unity-test": "test must equal a fully-qualified [Test] method parsed from the bound C# source file",
+   "python-test": "test must equal a module.class.method unittest ID parsed from the bound Python source file",
    "exact_rows": "every Exact row must carry >=1 resolving rust-test binding and no non_executable binding",
    "qualification-record": "explicitly non-executable; allowed only on non-Exact rows; never counts as proof"
   },
   "classification_rule": "Exact requires direct source-to-code evidence plus automated behavioral assertions able to distinguish the specified ordering/branch/state mutation; anything not actually proved is Unproved."
  },
  "meta": {
-  "generated": "2026-07-28",
+  "generated": "2026-07-31",
   "remc2_commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
   "upstream_checkout": "upstream/magic-carpet-2-hd (local quit-only patches; all line spans cite the committed revision; working tree adds +3/+5/+8 lines in EventsFunctions.cpp after pinned lines 31305/31482/31625)",
   "owner_package": "research/private/generated/level1-export-m (mc2-owner-level-export/v2, Night map, 1,200 authored records, 177 active reset entities)",
@@ -56,14 +58,14 @@
   ],
   "test_inventory": {
    "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked -- --list",
-   "count": 429
+   "count": 442
   },
   "census_method": "independent traversal from Level 1 load/reset state: typed owner authored-table census (authored_census: 308 non-zero rows, partition-proved), reset arena census (177 actives, 14 class/model/action families), activation-graph traversal (load-time G-1, G0 at start, switch-driven groups incl. proximity ids 12-33), and typed dispatch census (dispatch_census: all 845 mechanical slots partitioned between rows and exclusions), with per-handler source reads at the pinned commit",
   "totals": {
    "rows": 182,
    "by_classification": {
-    "Exact": 100,
-    "Partial": 48,
+    "Exact": 101,
+    "Partial": 47,
     "Wrong": 1,
     "Missing": 31,
     "Unproved": 2
@@ -105,8 +107,7 @@
      "Exact": 2
     },
     "presentation-abi": {
-     "Exact": 2,
-     "Partial": 1
+     "Exact": 3
     },
     "reset": {
      "Exact": 8
@@ -15616,56 +15617,181 @@
    "title": "Indexed world compositor: source-slot order, reflection-before-primary, shadows, clipping",
    "reachability": {
     "status": "reachable",
-    "chain": "every rendered frame"
+    "chain": "every rendered frame; active tutorial/briefing, recursive help popup, immobilization spider-web, and menu-state-7 score-writer branches are reachable but fail closed before COMPLETE"
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
     "symbols": [
-     "GameRender* draw order"
+     "DrawWorld_411A0",
+     "sub_3FD60",
+     "DrawSprites_3E360"
     ],
     "path": "remc2/engine/GameRenderOriginal.cpp",
-    "lines": "sprite interleave region",
-    "dispatch": null
+    "lines": "9-238,810-1843,1855-4033,4924-4978",
+    "dispatch": null,
+    "related": [
+     {
+      "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+      "symbols": [
+       "DrawGameFrame_2BE30"
+      ],
+      "path": "remc2/engine/EventsFunctions.cpp",
+      "lines": "21496-22062,31823-31823"
+     },
+     {
+      "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+      "symbols": [
+       "sub_848A0",
+       "sub_84B80",
+       "sub_84EA0"
+      ],
+      "path": "remc2/engine/EventsFunctions.cpp",
+      "lines": "31798-31816,47260-47720"
+     },
+     {
+      "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+      "symbols": [
+       "DrawHelpPopUps_871F0",
+       "DrawGameDebugText_6FEC0"
+      ],
+      "path": "remc2/engine/EventsFunctions.cpp",
+      "lines": "31851-31866,44615-44881,48218-48260"
+     },
+     {
+      "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+      "symbols": [
+       "fixed-profile HUD and menu writers"
+      ],
+      "path": "remc2/engine/GameUI.cpp",
+      "lines": "123-610,4591-5194"
+     }
+    ]
    },
-   "preconditions": [],
+   "preconditions": [
+    "exact owner package 730d2fa084265df839f3f2b55ed766ac167a8b152ca4631b5ded9d0bb9104ac8 and closure 878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719 validate",
+    "the accepted CP4 owner cache validates 1248 outputs and an Exact source-frame census before FINAL MAIN initialization",
+    "Level 1 Night fixed profile is 320x200, screen size 0, non-stereo, one local player",
+    "every reachable source occupant is Render or explicitly Excluded; unknown source tuples hard-error before rasterization",
+    "presentation generation/tick is current and contiguous, or the same tick is an idempotent cached read",
+    "source render, lighting, postprocess, overlay, and compositor execution receipts all validate before COMPLETE or mutation",
+    "active tutorial/briefing, recursive help popup, immobilization spider-web, and menu-state-7 score-writer states are reachable fail-closed states and cannot earn COMPLETE"
+   ],
    "behavior_ordered": [
-    "source-slot draw order for all covered families; reflection before primary; terrain-projected shadows; source clipping"
+    "classify the complete typed source-tuple/TMAP census, preserving explicit exclusions and rejecting unknown reachable tuples",
+    "retain source linked map-chain order across rendered and excluded occupants; activation and cross-tile motion insert at the source head while same-tile motion preserves order",
+    "for every cell draw reflection terrain and the linked reflection chain before primary terrain and the linked primary chain; reject reflection indices >=1000 and visibility-mask 0x21 rows",
+    "draw each entity's terrain-projected shadow immediately before its primary sprite in linked-list order",
+    "apply normal bottom-centre-plus-roll or special pivot hotspot, mirror and reflection signs, shadow/reflection half-width projection, left/top fixed-point phase advance, and right/bottom truncation",
+    "subtract prior 25-byte dynamic-light contributions, update entities, retire/move/recompute first-free bounded lights with source RNG, then render from the updated shade plane",
+    "render the world once; execute the exact mutually exclusive temporal or spatial TABLESN branch, including prior finalized MAIN history and first-four mode-1 asymmetry",
+    "consume the supported source-frame census overlay sequence for ordinary, dead, map, pause/end, bottom, objective, debug, notification, and cursor writers; active tutorial/briefing, recursive help popup, immobilization spider web, and menu-state-7 score writer reject before COMPLETE",
+    "validate every execution receipt and atomically commit one generation/tick FINAL MAIN, provenance plane, history, and cache entry; incomplete/stale/changed same-tick input cannot mutate them",
+    "copy the revisioned compositor-complete C ABI frame without NON_TERRAIN_OMITTED and upload exactly one top-down-row-flipped point-filtered R8 plane; managed suppression follows only the current COMPLETE receipt"
    ],
    "implementation": {
     "rust": [
-     "research/private/remc2-sim-rs/crates/sim-core/src/goat_sprite_raster.rs",
-     "research/private/remc2-sim-rs/crates/sim-core/src/terrain_reflection.rs"
+     "research/private/remc2-sim-rs/crates/sim-core/src/source_sprite_tmap.rs",
+     "research/private/remc2-sim-rs/crates/sim-core/src/renderable_map_chain.rs",
+     "research/private/remc2-sim-rs/crates/sim-core/src/terrain_frame.rs",
+     "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs",
+     "research/private/remc2-sim-rs/crates/sim-core/src/dynamic_lighting.rs",
+     "research/private/remc2-sim-rs/crates/sim-core/src/indexed_postprocess.rs",
+     "research/private/remc2-sim-rs/crates/sim-core/src/indexed_overlay.rs",
+     "research/private/remc2-sim-rs/crates/sim-core/src/presentation_frame.rs"
     ],
-    "capi": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/presentation_bridge.rs",
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs",
+     "research/private/remc2-sim-rs/crates/sim-capi/include/mc_sim.h"
+    ],
     "unity": [
-     "research/private/remc2-unity-native"
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSim.cs",
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs",
+     "research/private/remc2-unity-native/Assets/Scripts/MagicCarpetRuntime.cs",
+     "research/private/remc2-unity-native/Assets/Tests/EditMode/NativeSessionEditModeTests.cs"
     ],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "exact sprite hotspots and complete whole-frame source interleaving (incl. high-speed blur) remain registered presentation work"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
-     "kind": "qualification-record",
-     "file": "research/private/remc2-unity-native/LEVEL1-READINESS.md",
-     "test": "five 1600x900 checkpoints, two byte-identical runs, zero magenta",
-     "command": "none (documentation record, not executable evidence)",
-     "non_executable": true,
-     "proves": "record only: five 1600x900 checkpoints, two byte-identical runs, zero magenta"
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "renderable_map_chain::tests::reset_filter_preserves_cross_family_order_through_unsupported_links",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked reset_filter_preserves_cross_family_order_through_unsupported_links",
+     "proves": "source map-chain order survives excluded occupants and unknown links reject"
     },
     {
-     "kind": "qualification-record",
-     "file": "research/private/remc2-unity-native/LEVEL1-READINESS.md",
-     "test": "presentation correspondence: 23 typed layers, no false cross-timeline claims",
-     "command": "none (documentation record, not executable evidence)",
-     "non_executable": true,
-     "proves": "record only: presentation correspondence: 23 typed layers, no false cross-timeline claims"
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_v2::tests::source_ordered_world_frame_exposes_supported_families_without_changing_terrain_contract",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked source_ordered_world_frame_exposes_supported_families_without_changing_terrain_contract",
+     "proves": "typed family census, source order, hotspot/clipping trace, reflection, shadow, and terrain contract"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "dynamic_lighting::tests::admission_schedule_movement_retirement_and_hash_are_source_bounded",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked admission_schedule_movement_retirement_and_hash_are_source_bounded",
+     "proves": "dynamic-light admission, schedule, movement, retirement, RNG and history hash"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "indexed_postprocess::tests::temporal_modes_pin_source_gates_vectors_asymmetry_stride_and_tail",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked temporal_modes_pin_source_gates_vectors_asymmetry_stride_and_tail",
+     "proves": "temporal gates, modes, TABLESN direction, first-four asymmetry, stride and tail"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "indexed_overlay::tests::reachable_fixed_overlay_tree_is_ordered_and_fail_closed",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked reachable_fixed_overlay_tree_is_ordered_and_fail_closed",
+     "proves": "fixed-profile overlay writer census, exact branch order and fail-close negatives"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "presentation_frame::tests::changed_stale_out_of_order_and_incomplete_reject_atomically",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked changed_stale_out_of_order_and_incomplete_reject_atomically",
+     "proves": "atomic finalization, continuity, same-tick identity, and incomplete receipt rejection"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_v2::tests::presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed",
+     "proves": "revisioned COMPLETE C ABI, provenance, no NON_TERRAIN_OMITTED, idempotence and fail-close"
+    },
+    {
+     "kind": "unity-test",
+     "file": "research/private/remc2-unity-native/Assets/Tests/EditMode/NativeSessionEditModeTests.cs",
+     "test": "MagicCarpet.Native.Tests.NativeSessionEditModeTests.PresentationFrameOwnsOneIndexedPlaneAndZeroManagedDuplicates",
+     "command": "Unity EditMode test filter MagicCarpet.Native.Tests.NativeSessionEditModeTests.PresentationFrameOwnsOneIndexedPlaneAndZeroManagedDuplicates",
+     "proves": "current COMPLETE ownership uploads one indexed plane and suppresses every managed duplicate submission"
+    },
+    {
+     "kind": "python-test",
+     "file": "research/private/remc2-unity-asset-cache/tests/test_cache.py",
+     "test": "test_cache.OwnerCacheTests.test_source_frame_census_binds_accepted_native_final_main",
+     "command": "python3 -m unittest discover -s research/private/remc2-unity-asset-cache/tests -p 'test_cache.py' -v",
+     "proves": "the independently materialized CP4 cache census records the bounded accepted FINAL MAIN contract"
+    },
+    {
+     "kind": "python-test",
+     "file": "research/private/remc2-unity-native/qualification/tests/test_presentation_correspondence.py",
+     "test": "test_presentation_correspondence.PresentationContractTests.test_native_final_main_composed_gate_binds_qualified_cache",
+     "command": "python3 -m unittest discover -s research/private/remc2-unity-native/qualification/tests -p 'test_presentation_correspondence.py' -v",
+     "proves": "the composed correspondence gate binds the qualified CP4 manifest, content, output count, census, and executable test inventories"
     }
    ],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-28",
+   "negative_coverage_required": [
+    "unknown reachable tuple, missing source asset, reordered chain, wrong hotspot/clipping phase, stale light history, postprocess gate or TABLESN direction mutation, overlay omission/reorder, stale or changed same-tick input, absent execution receipt, and incomplete C ABI flags all reject before FINAL MAIN commit",
+    "active tutorial/briefing, recursive help popup, immobilization spider-web, and menu-state-7 score-writer states each reject atomically and cannot earn COMPLETE",
+    "stereo, alternate resolution, hostile/remote players, active-DAC RGB, unsupported branches, and cross-timeline pixel/clock equality remain explicit nonclaims"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -16401,7 +16527,7 @@
     "PLAN-01"
    ],
    "acceptance": [
-    "registered presentation work items closed with correspondence captures; no unlabeled placeholder"
+    "registered fixed-profile presentation work is Exact with resolving cache/source-frame/correspondence/Rust/CAPI/Unity bindings; no unlabeled placeholder or profile overclaim"
    ],
    "allowed_surfaces": [
     "unity-native",
@@ -16410,9 +16536,7 @@
    "not_done_if": [
     "hotspot/interleave register still open"
    ],
-   "owned_rows": [
-    "PRS-001"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-29",
@@ -16467,10 +16591,14 @@
     "id": "exact-evidence",
     "rule": "every Exact row has >=1 rust-test binding whose test is in the Cargo --list inventory, and zero non_executable bindings"
    },
-   {
-    "id": "rust-test-resolution",
-    "rule": "every rust-test binding on every row resolves exactly against the inventory"
-   },
+  {
+   "id": "rust-test-resolution",
+   "rule": "every rust-test binding on every row resolves exactly against the inventory"
+  },
+  {
+   "id": "external-test-resolution",
+   "rule": "every unity-test and python-test binding resolves exactly against the bound repository source file"
+  },
    {
     "id": "non-exact-ownership",
     "rule": "every non-Exact row names exactly one plan_item that exists; owned_rows lists reproduce this mapping bijectively"

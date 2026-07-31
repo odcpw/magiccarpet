@@ -68,14 +68,20 @@ registry currently accounts for 43 `Partial`, 359
 `StructuralOnly`, and 14,094 `MappedOnly` rows. No mapping is labeled
 `Implemented` or `Verified`.
 
-The private Level 1 renderer slice now reproduces exact sky seeding, the
-40×21 slope-adjusted lattice, projection, UV/BL32N addressing,
-reflection-before-primary ordering, mode 5, framebuffer-dependent mode 26,
-and deterministic 320×200 index/coverage outputs. Reset, consecutive
-low-water wave turns, reflection-off, near/fog/far/D4/parity census, and both
-sides of the toroidal Y seam are hash-pinned. This is explicitly an isolated
-sky-and-terrain result; original sprite/particle interleaving and whole-frame
-presentation remain outside the claim.
+The private Level 1 renderer now closes the fixed 320×200 Night,
+screen-size-0, single-local-player FINAL MAIN. Beyond exact sky and terrain,
+it classifies the complete reachable source-tuple/TMAP census, retains linked
+map-chain order, draws reflections before primaries and each terrain shadow
+immediately before its sprite, applies normal/special hotspot and clipping
+math, advances source-ordered dynamic lighting, executes the exact temporal
+or spatial TABLESN branch, consumes the supported overlay writer tree, and
+atomically commits a receipt/provenance-bound FINAL MAIN. The revisioned C ABI
+feeds exactly one row-flipped point-filtered R8 Unity plane. Stereo, alternate
+resolution, active-DAC RGB for historical captures, hostile/remote players,
+unsupported branches, and cross-timeline pixel/clock equality remain explicit
+nonclaims. Active tutorial/briefing, recursive help popup, immobilization
+spider-web, and menu-state-7 score-writer states are reachable but deliberately
+fail closed before COMPLETE until their missing live source state is typed.
 
 The live Level 1 mission slice decodes four Archers, five Fireflies, the
 Castle-spell jar, and the Speed-spell jar from owner data. Player Fireball,
@@ -111,8 +117,9 @@ source clipping, and managed-fallback capability.
 
 `COVERAGE.md` records the tested surface, `BRANCH-COVERAGE.md` maps each
 bounded source leaf to its focused test, and `DISCREPANCIES.md` records every
-known divergence. The workspace currently runs 378 tests: 4 atlas-registry,
-49 sim-capi, 321 sim-core, and 4 sim-wasm. In particular,
+known divergence. The canonical locked Cargo inventory now contains 442
+tests: 4 atlas-registry, 57 sim-capi, 377 sim-core, and 4 sim-wasm. In
+particular,
 material class `1` (strongly identified water) remains distinct from exact
 movement-redirection class `0x100`.
 

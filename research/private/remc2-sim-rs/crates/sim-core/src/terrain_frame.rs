@@ -70,6 +70,9 @@ use crate::{
     mode26_raster::{NIGHT_TABLES_BYTES, rasterize_mode26_triangle_from_atlas_into_framebuffer},
     native_world::ParticleParameter,
     renderable_map_chain::RenderableMapChains,
+    source_sprite_tmap::{
+        SourceSpriteDisposition, SourceSpriteSubmission, SourceSpriteWorldResources,
+    },
     static_world_tmap::StaticWorldTmapBank,
     terrain_grid::{OutdoorGridInput, OutdoorGridVertex, outdoor_grid},
     terrain_reflection::{
@@ -260,6 +263,84 @@ pub struct Level1TerrainFrame {
     pub shadow_sprite_raster_stats: Mode20SpriteRasterStats,
     pub reflected_sprites_composited: bool,
     pub sprite_shadows_composited: bool,
+    /// Present only when the cache-backed typed source compositor completed
+    /// its actual sky, reflected, and primary execution sequence.
+    source_execution_order_hash: Option<u64>,
+}
+
+pub const SOURCE_RENDER_REQUIRED_FAMILY_MASK: u16 = 0x01ff;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceRenderExecutionReceipt {
+    pub family_mask: u16,
+    pub order_hash: u64,
+    pub index_hash: u64,
+    pub coverage_hash: u64,
+    pub terrain_pixel_writes: u64,
+    pub sky_seeded: bool,
+    pub has_coverage: bool,
+    pub reflected_sprites_composited: bool,
+}
+
+impl SourceRenderExecutionReceipt {
+    #[must_use]
+    pub fn is_complete(self) -> bool {
+        self.family_mask == SOURCE_RENDER_REQUIRED_FAMILY_MASK
+            && self.order_hash == source_render_order_hash()
+            && self.sky_seeded
+            && self.has_coverage
+    }
+}
+
+impl Level1TerrainFrame {
+    pub fn source_execution_receipt(
+        &self,
+    ) -> Result<SourceRenderExecutionReceipt, TerrainFrameError> {
+        if self.indices.len() != LEVEL1_VIEW_PIXELS
+            || self.terrain_coverage.len() != LEVEL1_VIEW_PIXELS
+            || byte_hash(&self.indices) != self.index_hash
+            || byte_hash(&self.terrain_coverage) != self.coverage_hash
+        {
+            return Err(TerrainFrameError(
+                "source renderer output/hash extent mismatch".to_owned(),
+            ));
+        }
+        let family_mask = u16::from(self.goats_composited)
+            | u16::from(self.frozen_actors_composited) << 1
+            | u16::from(self.ambient_entities_composited) << 2
+            | u16::from(self.archers_composited) << 3
+            | u16::from(self.fireflies_composited) << 4
+            | u16::from(self.combat_composited) << 5
+            | u16::from(self.objective_props_composited) << 6
+            | u16::from(self.economy_composited) << 7
+            | u16::from(self.sprite_shadows_composited) << 8;
+        let order_hash = self.source_execution_order_hash.ok_or_else(|| {
+            TerrainFrameError(
+                "source-render receipt requested from a frame without typed execution".to_owned(),
+            )
+        })?;
+        let receipt = SourceRenderExecutionReceipt {
+            family_mask,
+            order_hash,
+            index_hash: self.index_hash,
+            coverage_hash: self.coverage_hash,
+            terrain_pixel_writes: self.stats.terrain_pixel_writes,
+            sky_seeded: true,
+            has_coverage: true,
+            reflected_sprites_composited: self.reflected_sprites_composited,
+        };
+        if !receipt.is_complete() {
+            return Err(TerrainFrameError(format!(
+                "source renderer receipt family mask {family_mask:#06x} does not close {SOURCE_RENDER_REQUIRED_FAMILY_MASK:#06x}"
+            )));
+        }
+        Ok(receipt)
+    }
+}
+
+#[must_use]
+pub fn source_render_order_hash() -> u64 {
+    byte_hash(b"mc2-source-render-execution-v2\0\x01\x02\x03")
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -282,7 +363,7 @@ pub fn render_level1_terrain_frame(
     camera: Level1TerrainFrameCamera,
     resources: Level1TerrainFrameResources<'_>,
 ) -> Result<Level1TerrainFrame, TerrainFrameError> {
-    render_level1_frame(camera, resources, None)
+    render_level1_frame(camera, resources, None, None, false)
 }
 
 /// Render the bounded Level 1 world frame with source-ordered mode-20 Goats.
@@ -294,16 +375,65 @@ pub fn render_level1_world_frame(
     resources: Level1TerrainFrameResources<'_>,
     world: Level1WorldFrameResources<'_>,
 ) -> Result<Level1TerrainFrame, TerrainFrameError> {
-    render_level1_frame(camera, resources, Some(world))
+    render_level1_frame(camera, resources, Some(world), None, false)
+}
+
+/// Render the same source-ordered world compositor while requiring a typed
+/// CP1 disposition for every linked source row. This is the production
+/// fail-closed entry used by the complete presentation path.
+pub fn render_level1_source_world_frame(
+    camera: Level1TerrainFrameCamera,
+    resources: Level1TerrainFrameResources<'_>,
+    world: Level1WorldFrameResources<'_>,
+    source_sprites: SourceSpriteWorldResources<'_>,
+) -> Result<Level1TerrainFrame, TerrainFrameError> {
+    render_level1_frame(camera, resources, Some(world), Some(source_sprites), false)
+}
+
+/// Render the map branch's real second `DrawWorld_411A0` call.  The fixed
+/// profile viewport is source `(384, 0, 256, 400)`, therefore VGA1 pixels
+/// occupy columns 192..319 with a 128 by 200 projection.  The returned frame
+/// keeps the normal 320 by 200 backing so the overlay writer can copy that
+/// exact viewport after the map clear/terrain/entity passes.
+pub fn render_level1_source_world_map_frame(
+    mut camera: Level1TerrainFrameCamera,
+    resources: Level1TerrainFrameResources<'_>,
+    world: Level1WorldFrameResources<'_>,
+    source_sprites: SourceSpriteWorldResources<'_>,
+) -> Result<Level1TerrainFrame, TerrainFrameError> {
+    // The map branch calls DrawWorld with the live player Z plus 128 before
+    // installing the fixed right-hand viewport.
+    camera.eye_z = camera.eye_z.wrapping_add(128);
+    render_level1_source_world_map_frame_composed(camera, resources, world, source_sprites)
+}
+
+/// Render the map branch from the already-composed camera consumed by
+/// `DrawWorld_411A0`.
+///
+/// This entry keeps the map Z bias inside the immutable presentation input
+/// projection rather than applying a hidden renderer-side transformation.
+pub fn render_level1_source_world_map_frame_composed(
+    camera: Level1TerrainFrameCamera,
+    resources: Level1TerrainFrameResources<'_>,
+    world: Level1WorldFrameResources<'_>,
+    source_sprites: SourceSpriteWorldResources<'_>,
+) -> Result<Level1TerrainFrame, TerrainFrameError> {
+    render_level1_frame(camera, resources, Some(world), Some(source_sprites), true)
 }
 
 fn render_level1_frame(
     camera: Level1TerrainFrameCamera,
     resources: Level1TerrainFrameResources<'_>,
     world: Option<Level1WorldFrameResources<'_>>,
+    source_sprites: Option<SourceSpriteWorldResources<'_>>,
+    map_right_viewport: bool,
 ) -> Result<Level1TerrainFrame, TerrainFrameError> {
     validate_resources(&resources)?;
-    let projection = level1_projection(camera);
+    let projection = if map_right_viewport {
+        level1_map_projection(camera)
+    } else {
+        level1_projection(camera)
+    };
     let lattice = outdoor_grid(OutdoorGridInput {
         render_x: camera.render_x,
         render_y: camera.render_y,
@@ -344,7 +474,17 @@ fn render_level1_frame(
         i32::MAX
     };
     let plan = submit_outdoor_grid(eye_for_submission, &lattice, &projected);
-    let mut indices = draw_level1_sky(camera, resources.sky)?;
+    let mut indices = if map_right_viewport {
+        draw_level1_map_sky(camera, resources.sky)?
+    } else {
+        draw_level1_sky(camera, resources.sky)?
+    };
+    let mut source_execution = source_sprites
+        .as_ref()
+        .map(|_| b"mc2-source-render-execution-v2\0".to_vec());
+    if let Some(execution) = source_execution.as_mut() {
+        execution.push(1);
+    }
     let mut terrain_coverage = vec![0; LEVEL1_VIEW_PIXELS];
     let mut stats = TerrainFrameStats::default();
     let mut goat_raster_stats = Mode20SpriteRasterStats::default();
@@ -394,6 +534,7 @@ fn render_level1_frame(
                 &lattice,
                 &resources,
                 world,
+                source_sprites.as_ref(),
                 &mut indices,
                 &mut goat_raster_stats,
                 &mut goat_selector_mask,
@@ -433,6 +574,9 @@ fn render_level1_frame(
             )?;
         }
     }
+    if let Some(execution) = source_execution.as_mut() {
+        execution.push(2);
+    }
     if let Some(world) = world.as_ref() {
         let mut primary_index = 0;
         for owner_index in primary_owner_schedule(&lattice) {
@@ -459,6 +603,7 @@ fn render_level1_frame(
                 &lattice,
                 &resources,
                 world,
+                source_sprites.as_ref(),
                 &mut indices,
                 &mut goat_raster_stats,
                 &mut goat_selector_mask,
@@ -498,6 +643,10 @@ fn render_level1_frame(
             )?;
         }
     }
+    if let Some(execution) = source_execution.as_mut() {
+        execution.push(3);
+    }
+    let source_execution_order_hash = source_execution.as_deref().map(byte_hash);
 
     Ok(Level1TerrainFrame {
         width: LEVEL1_VIEW_WIDTH as u16,
@@ -536,6 +685,7 @@ fn render_level1_frame(
             && camera.reflections
             && camera.eye_z < crate::terrain_reflection::REFLECTION_EYE_Z_LIMIT,
         sprite_shadows_composited: world.is_some(),
+        source_execution_order_hash,
     })
 }
 
@@ -599,6 +749,7 @@ fn raster_world_chain(
     lattice: &[OutdoorGridVertex; 840],
     resources: &Level1TerrainFrameResources<'_>,
     world_resources: &Level1WorldFrameResources<'_>,
+    source_sprites: Option<&SourceSpriteWorldResources<'_>>,
     indices: &mut [u8],
     goat_aggregate: &mut Mode20SpriteRasterStats,
     goat_selector_mask: &mut u8,
@@ -645,8 +796,54 @@ fn raster_world_chain(
                     "renderable map-chain entity {entity_index} has no source-arena row"
                 ))
             })?;
+        if let Some(source_sprites) = source_sprites {
+            let disposition =
+                source_sprites
+                    .dispositions
+                    .iter()
+                    .find(|disposition| match disposition {
+                        SourceSpriteDisposition::Render(submission) => {
+                            submission.source_entity_index == entity_index
+                        }
+                        SourceSpriteDisposition::Legacy {
+                            source_entity_index,
+                            ..
+                        }
+                        | SourceSpriteDisposition::Excluded {
+                            source_entity_index,
+                            ..
+                        } => *source_entity_index == entity_index,
+                    });
+            match disposition {
+                Some(SourceSpriteDisposition::Excluded { .. }) => continue,
+                Some(SourceSpriteDisposition::Render(submission)) => {
+                    raster_source_sprite_submission(
+                        pass,
+                        *submission,
+                        camera,
+                        projection,
+                        resources,
+                        world_resources,
+                        source_sprites,
+                        indices,
+                        shadow_surface,
+                        combat_aggregate,
+                        reflected_aggregate,
+                        shadow_aggregate,
+                    )?;
+                    continue;
+                }
+                Some(SourceSpriteDisposition::Legacy { .. }) => {}
+                None => {
+                    return Err(TerrainFrameError(format!(
+                        "unknown Level 1 source sprite tuple: slot={entity_index} class={} model={} action={}",
+                        source_slot.class, source_slot.model, source_slot.action
+                    )));
+                }
+            }
+        }
         let control_flags = source_slot.control_flags;
-        if control_flags & 0x21 != 0 {
+        if source_sprites.is_none() && control_flags & 0x21 != 0 {
             continue;
         }
         if let Some(ambient) = world_resources
@@ -670,7 +867,12 @@ fn raster_world_chain(
                 (0, 0) => (7, 38, 36),
                 (1, 1) => (41, 54, 21),
                 (14, 14) => (9, 63, 21),
-                _ => continue,
+                _ => {
+                    return Err(TerrainFrameError(format!(
+                        "ambient entity {entity_index} has unknown source tuple class={} model={} action={}",
+                        source_slot.class, source_slot.model, source_slot.action
+                    )));
+                }
             };
             if (
                 ambient.render_parameter_index,
@@ -1878,7 +2080,8 @@ fn raster_world_chain(
             .find(|actor| actor.source_entity_index == entity_index)
         else {
             return Err(TerrainFrameError(format!(
-                "renderable map chain references unsupported or missing entity {entity_index}"
+                "unknown Level 1 source sprite tuple: slot={entity_index} class={} model={} action={}",
+                source_slot.class, source_slot.model, source_slot.action
             )));
         };
         if !actor.active || !actor.visible || actor.life < 0 {
@@ -2321,6 +2524,143 @@ fn raster_world_chain(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn raster_source_sprite_submission(
+    pass: WorldChainPass,
+    submission: SourceSpriteSubmission,
+    camera: Level1TerrainFrameCamera,
+    projection: OutdoorProjection,
+    resources: &Level1TerrainFrameResources<'_>,
+    world_resources: &Level1WorldFrameResources<'_>,
+    source_sprites: &SourceSpriteWorldResources<'_>,
+    indices: &mut [u8],
+    shadow_surface: bool,
+    aggregate: &mut Mode20SpriteRasterStats,
+    reflected_aggregate: &mut Mode20SpriteRasterStats,
+    shadow_aggregate: &mut Mode20SpriteRasterStats,
+) -> Result<(), TerrainFrameError> {
+    if pass == WorldChainPass::Reflection && !submission.reflection_eligible {
+        return Ok(());
+    }
+    let selector = match submission.render_mode {
+        17 => mode17_selector_for_base(submission.base_tmap, submission.yaw, camera.yaw).1,
+        19 => mode19_selector_for_base(submission.base_tmap, submission.yaw, camera.yaw).1,
+        20 => mode20_selector_for_base(submission.base_tmap, submission.yaw, camera.yaw).1,
+        0 | 1 | 11 | 21 | 36 => {
+            if submission.selected_frame == 0 {
+                submission.base_tmap
+            } else {
+                submission.selected_frame
+            }
+        }
+        mode => {
+            return Err(TerrainFrameError(format!(
+                "source sprite slot {} uses unsupported render mode {mode}",
+                submission.source_entity_index
+            )));
+        }
+    };
+    let frame = source_sprites.tmap_bank.frame(selector).ok_or_else(|| {
+        TerrainFrameError(format!(
+            "source sprite slot {} selector {selector} has no qualified TMAP frame",
+            submission.source_entity_index
+        ))
+    })?;
+    let sprite_camera = Mode20SpriteCamera {
+        render_x: camera.render_x,
+        render_y: camera.render_y,
+        eye_z: camera.eye_z,
+        yaw: camera.yaw,
+        projection,
+    };
+    let entity = Mode20SpriteEntity {
+        x: submission.position.x,
+        y: submission.position.y,
+        z: submission.position.z,
+        yaw: submission.yaw,
+    };
+    let definition = Mode20SpriteDefinition {
+        base_selector: selector,
+        logical_height: i32::from(submission.logical_height),
+    };
+    let placement = match submission.render_mode {
+        17 => project_mode17_sprite_with_definition(
+            Mode20SpriteDefinition {
+                base_selector: submission.base_tmap,
+                logical_height: definition.logical_height,
+            },
+            sprite_camera,
+            entity,
+            frame.width,
+            frame.height,
+        ),
+        19 => project_mode19_sprite_with_definition(
+            Mode20SpriteDefinition {
+                base_selector: submission.base_tmap,
+                logical_height: definition.logical_height,
+            },
+            sprite_camera,
+            entity,
+            frame.width,
+            frame.height,
+        ),
+        20 => project_mode20_sprite_with_definition(
+            Mode20SpriteDefinition {
+                base_selector: submission.base_tmap,
+                logical_height: definition.logical_height,
+            },
+            sprite_camera,
+            entity,
+            frame.width,
+            frame.height,
+        ),
+        _ => project_fixed_sprite_with_definition(
+            definition,
+            None,
+            matches!(submission.render_mode, 21 | 36),
+            sprite_camera,
+            entity,
+            frame.width,
+            frame.height,
+        ),
+    };
+    let Ok(placement) = placement else {
+        return Ok(());
+    };
+    let control_flags = if submission.shadow_eligible {
+        submission.control_flags
+    } else {
+        submission.control_flags | 0x0808_0000
+    };
+    raster_world_sprite_pass(
+        pass,
+        indices,
+        placement,
+        sprite_camera,
+        submission.position,
+        submission.render_parameter_index,
+        interpolate_ground(
+            resources.ground_heights,
+            submission.position.x,
+            submission.position.y,
+        ),
+        frame.width,
+        frame.height,
+        &frame.pixels,
+        resources.tablesn,
+        camera.roll.wrapping_add(submission.roll),
+        control_flags,
+        shadow_surface,
+        world_resources.night,
+        submission.render_parameter_index == POSSESSION_PROJECTILE_RENDER_INDEX,
+        world_resources.particle_parameters,
+        aggregate,
+        reflected_aggregate,
+        shadow_aggregate,
+    )
+    .map_err(TerrainFrameError)
+}
+
 fn accumulate_sprite_stats(
     aggregate: &mut Mode20SpriteRasterStats,
     stats: Mode20SpriteRasterStats,
@@ -2468,10 +2808,47 @@ pub fn level1_projection(camera: Level1TerrainFrameCamera) -> OutdoorProjection 
     }
 }
 
+#[must_use]
+fn level1_map_projection(camera: Level1TerrainFrameCamera) -> OutdoorProjection {
+    const WIDTH: i32 = 128;
+    const HEIGHT: i32 = 200;
+    let diagonal = legacy_sqrt(u32::try_from(WIDTH * WIDTH + HEIGHT * HEIGHT).unwrap()) as i32;
+    OutdoorProjection {
+        scale: 7_i32
+            .wrapping_mul(diagonal)
+            .wrapping_mul(i32::from(camera.fov))
+            >> 11,
+        pitch_offset: i32::from(camera.pitch).wrapping_mul(WIDTH) >> 8,
+        roll: camera.roll,
+        center_x: 192 + WIDTH / 2,
+        center_y: HEIGHT / 2,
+        // Rasterizers target the shared 320x200 backing.  Pixels left of the
+        // fixed map viewport are discarded by the later exact viewport copy.
+        viewport_width: LEVEL1_VIEW_WIDTH as i32,
+        viewport_height: HEIGHT,
+    }
+}
+
 /// Reproduce `DrawSky_40950` for the qualified 320×200 Level 1 viewport.
 pub fn draw_level1_sky(
     camera: Level1TerrainFrameCamera,
     sky: &[u8],
+) -> Result<Vec<u8>, TerrainFrameError> {
+    draw_level1_sky_viewport(camera, sky, LEVEL1_VIEW_WIDTH, 0)
+}
+
+fn draw_level1_map_sky(
+    camera: Level1TerrainFrameCamera,
+    sky: &[u8],
+) -> Result<Vec<u8>, TerrainFrameError> {
+    draw_level1_sky_viewport(camera, sky, 128, 192)
+}
+
+fn draw_level1_sky_viewport(
+    camera: Level1TerrainFrameCamera,
+    sky: &[u8],
+    viewport_width: usize,
+    viewport_x: usize,
 ) -> Result<Vec<u8>, TerrainFrameError> {
     if sky.len() != LEVEL1_SKY_BYTES {
         return Err(TerrainFrameError(format!(
@@ -2479,20 +2856,31 @@ pub fn draw_level1_sky(
             sky.len()
         )));
     }
-    let projection = level1_projection(camera);
+    if viewport_width == 0 || viewport_x + viewport_width > LEVEL1_VIEW_WIDTH {
+        return Err(TerrainFrameError(format!(
+            "Level 1 sky viewport {viewport_x}+{viewport_width} is outside {LEVEL1_VIEW_WIDTH}"
+        )));
+    }
+    let projection = if viewport_width == LEVEL1_VIEW_WIDTH {
+        level1_projection(camera)
+    } else {
+        level1_map_projection(camera)
+    };
     let roll = i32::from(camera.roll) & 0x07ff;
     let cos = SIN_16_16[usize::try_from(512 + roll).expect("masked sky cosine index")];
     let sin = SIN_16_16[usize::try_from(roll).expect("masked sky sine index")];
-    let cos_step = cos.wrapping_shl(8) / LEVEL1_VIEW_WIDTH as i32;
-    let sin_step = sin.wrapping_shl(8) / LEVEL1_VIEW_WIDTH as i32;
+    let cos_step = cos.wrapping_shl(8)
+        / i32::try_from(viewport_width).expect("fixed sky viewport width fits i32");
+    let sin_step = sin.wrapping_shl(8)
+        / i32::try_from(viewport_width).expect("fixed sky viewport width fits i32");
 
-    let mut x_deltas = [0_u8; LEVEL1_VIEW_WIDTH];
-    let mut y_deltas = [0_u8; LEVEL1_VIEW_WIDTH];
+    let mut x_deltas = vec![0_u8; viewport_width];
+    let mut y_deltas = vec![0_u8; viewport_width];
     let mut error_x = 0_i32;
     let mut error_y = 0_i32;
     let mut previous_x = 0_u8;
     let mut previous_y = 0_u8;
-    for column in 0..LEVEL1_VIEW_WIDTH {
+    for column in 0..viewport_width {
         let current_x = byte2(error_x);
         let current_y = byte2(error_y);
         x_deltas[column] = current_x.wrapping_sub(previous_x);
@@ -2521,8 +2909,9 @@ pub fn draw_level1_sky(
     for row in 0..LEVEL1_VIEW_HEIGHT {
         let mut u = byte2(row_u);
         let mut v = byte2(row_v);
-        for column in 0..LEVEL1_VIEW_WIDTH {
-            frame[row * LEVEL1_VIEW_WIDTH + column] = sky[(usize::from(v) << 8) | usize::from(u)];
+        for column in 0..viewport_width {
+            frame[row * LEVEL1_VIEW_WIDTH + viewport_x + column] =
+                sky[(usize::from(v) << 8) | usize::from(u)];
             u = u.wrapping_add(x_deltas[column]);
             v = v.wrapping_add(y_deltas[column]);
         }
@@ -2728,9 +3117,10 @@ const fn byte2(value: i32) -> u8 {
 mod tests {
     use super::*;
     use crate::{
+        Position,
         frozen_actor_tmap::{LEVEL1_FROZEN_ACTOR_ENTITY_INDICES, VILLAGER_ANIMATED_SELECTORS},
         goat_tmap::GoatTmapClocks,
-        native_world::NativeWorld,
+        native_world::{NativeSourceFrameResources, NativeWorld},
     };
     use std::path::PathBuf;
 
@@ -2919,6 +3309,86 @@ mod tests {
         assert!(first.stats.primary_mode5_triangles > 0);
         assert!(first.terrain_coverage.contains(&255));
 
+        let light_position = crate::Position {
+            x: camera.render_x & 0xff00 | 0x80,
+            y: (camera.render_y & 0xff00)
+                .wrapping_sub(10 << 8)
+                .wrapping_add(0x80),
+            z: i16::try_from(interpolate_ground(
+                &planes.ground_heights,
+                camera.render_x & 0xff00 | 0x80,
+                (camera.render_y & 0xff00)
+                    .wrapping_sub(10 << 8)
+                    .wrapping_add(0x80),
+            ))
+            .expect("qualified Level 1 light altitude"),
+        };
+        let mut lighting = crate::dynamic_lighting::DynamicLightingState::reset();
+        assert_eq!(
+            lighting.admit(true, true, 152, light_position, 128, 7, false),
+            Some(0)
+        );
+        let mut lit_shading = planes.shading.to_vec();
+        lighting.service_recompute(
+            &mut lit_shading,
+            true,
+            |_| {
+                Some(crate::dynamic_lighting::DynamicLightLinkedEntity {
+                    position: light_position,
+                    life: 31,
+                    disabled: false,
+                })
+            },
+            |x, y| {
+                i16::try_from(interpolate_ground(&planes.ground_heights, x, y))
+                    .expect("qualified Level 1 ground altitude")
+            },
+        );
+        let lighting_hash = lighting.hash_v1();
+        let lit_render = || {
+            render_level1_terrain_frame(
+                camera,
+                Level1TerrainFrameResources {
+                    terrain_types: &planes.terrain_types,
+                    ground_heights: &planes.ground_heights,
+                    shading: &lit_shading,
+                    angles: &planes.angles,
+                    terrain_atlas: &atlas,
+                    tablesn: &tablesn,
+                    sky: &sky,
+                },
+            )
+            .expect("qualified dynamically lit terrain frame")
+        };
+        let lit_first = lit_render();
+        let lit_repeated = lit_render();
+        assert_eq!(lit_repeated, lit_first);
+        assert_eq!(lighting.hash_v1(), lighting_hash);
+        assert_ne!(lit_first.index_hash, first.index_hash);
+        assert_eq!(
+            (
+                light_position,
+                lighting.rng(),
+                lighting.slots()[0].history,
+                byte_hash(&lit_shading),
+                lit_first.index_hash,
+            ),
+            (
+                crate::Position {
+                    x: 19_840,
+                    y: 54_400,
+                    z: 4_896,
+                },
+                0x84ca_7cd2,
+                [
+                    0, 0, 3, 0, 0, 0, 0, 24, 0, 0, 0, 3, 31, 0, 0, 0, 0, 24, 17, 0, 0, 0, 0, 0, 0,
+                ],
+                0xeb19_63c7_e822_72e3,
+                0x65ba_6566_350d_f608,
+            ),
+            "exact 25-cell shade bytes reach exact final production terrain pixels"
+        );
+
         let low_camera = Level1TerrainFrameCamera {
             render_x: 16 << 8,
             render_y: 0,
@@ -3049,7 +3519,10 @@ mod tests {
     #[test]
     fn owner_cache_goat_world_frame_is_interleaved_and_deterministic() {
         let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let cache = private.join("generated/level1-unity-asset-cache");
+        let source_cache = std::env::var_os("MC_PLAN28_SOURCE_CACHE_PATH").map(PathBuf::from);
+        let cache = source_cache
+            .clone()
+            .unwrap_or_else(|| private.join("generated/level1-unity-asset-cache"));
         let world = NativeWorld::load_with_owner_cache(
             private.join("generated/level1-export-m"),
             private.join("generated/level1-asset-closure.json"),
@@ -4203,6 +4676,942 @@ mod tests {
         );
         assert!(
             matches!(unsupported_color, Err(TerrainFrameError(message)) if message.contains("no qualified Level 1 color selector"))
+        );
+
+        use crate::source_sprite_tmap::{
+            CASTLE_DEFENSE_SHOT_PROFILES, SourceSpriteAnimationOwner, SourceSpriteExclusionReason,
+            SourceSpriteLegacyFamily, SourceSpritePaletteOwner, SourceSpriteTemplate,
+            SourceSpriteTmapBank, SourceSpriteTmapFrame,
+        };
+        let source_frame = |selector: u16, color: u8| SourceSpriteTmapFrame {
+            selector,
+            width: 16,
+            height: 16,
+            pixels: vec![color; 16 * 16].into_boxed_slice(),
+        };
+        let patterned_source_frame =
+            |selector: u16, width: u16, height: u16| SourceSpriteTmapFrame {
+                selector,
+                width,
+                height,
+                pixels: (0..usize::from(width) * usize::from(height))
+                    .map(|index| {
+                        u8::try_from(index % 31)
+                            .expect("bounded synthetic source index")
+                            .wrapping_add(1)
+                    })
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            };
+        let source_bank = SourceSpriteTmapBank::new(vec![
+            source_frame(54, 17),
+            source_frame(64, 19),
+            source_frame(80, 21),
+            source_frame(81, 23),
+            source_frame(138, 25),
+            source_frame(139, 25),
+            source_frame(140, 25),
+            source_frame(141, 27),
+            source_frame(142, 27),
+            source_frame(143, 27),
+            source_frame(151, 29),
+            source_frame(463, 31),
+            patterned_source_frame(300, 15, 16),
+            patterned_source_frame(301, 16, 15),
+            patterned_source_frame(310, 15, 16),
+            patterned_source_frame(311, 15, 16),
+            patterned_source_frame(312, 15, 16),
+        ])
+        .expect("synthetic exact-selector CP2 TMAP bank");
+        let source_template = |parameter, selector, mode, height| SourceSpriteTemplate {
+            render_parameter_index: parameter,
+            base_tmap: selector,
+            render_mode: mode,
+            logical_height: height,
+            animation_owner: SourceSpriteAnimationOwner::SourceEntity,
+            palette_owner: SourceSpritePaletteOwner::NightLevel,
+            shadow_eligible: true,
+            reflection_eligible: true,
+        };
+        let make_submission =
+            |slot, position, class, model, action, parameter, selector, mode, height| {
+                SourceSpriteSubmission::from_template(
+                    slot,
+                    position,
+                    0,
+                    0,
+                    0,
+                    0,
+                    class,
+                    model,
+                    action,
+                    0,
+                    0,
+                    source_template(parameter, selector, mode, height),
+                    selector,
+                )
+            };
+        let source_camera = Level1TerrainFrameCamera {
+            reflections: false,
+            ..archer_camera
+        };
+        let source_terrain = render_level1_terrain_frame(source_camera, render_resources())
+            .expect("CP2 source-compositor terrain baseline");
+        let mut source_slots = mission.source_slots().to_vec();
+        let mut family_submissions = vec![
+            (
+                "local-player",
+                make_submission(980, goat.position, 3, 0, 0, 66, 80, 0, 200),
+            ),
+            (
+                "death-burst",
+                make_submission(980, goat.position, 10, 1, 1, 41, 54, 21, 250),
+            ),
+            (
+                "death-marker",
+                make_submission(980, goat.position, 10, 40, 42, 65, 81, 0, 200),
+            ),
+            (
+                "castle-association",
+                make_submission(980, goat.position, 10, 43, 45, 41, 54, 21, 250),
+            ),
+            (
+                "castle-defense-controller",
+                make_submission(980, goat.position, 10, 79, 86, 66, 80, 0, 200),
+            ),
+            (
+                "resident-builder",
+                make_submission(980, goat.position, 5, 12, 97, 221, 141, 20, 250),
+            ),
+            (
+                "resident-trader",
+                make_submission(980, goat.position, 5, 14, 113, 219, 138, 20, 250),
+            ),
+        ];
+        family_submissions.extend(
+            CASTLE_DEFENSE_SHOT_PROFILES
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(ordinal, profile)| {
+                    (
+                        match ordinal {
+                            0 => "castle-shot-fireball",
+                            1 => "castle-shot-arrow",
+                            2 => "castle-shot-arrow-return",
+                            3 => "castle-shot-fireball-alternate",
+                            4 => "castle-shot-lightning",
+                            _ => unreachable!(),
+                        },
+                        profile.submission(980, goat.position, 0, 0, 0, 0),
+                    )
+                }),
+        );
+        let mut family_hashes = Vec::new();
+        let lighting_hash_before_source_render = mission.dynamic_lighting_hash_v1();
+        for (ordinal, (family, mut submission)) in family_submissions.into_iter().enumerate() {
+            submission.position.x = submission
+                .position
+                .x
+                .wrapping_add(u16::try_from(ordinal * 7).unwrap());
+            source_slots[980] = crate::level1_mission::Level1ResetSourceSlot {
+                index: 980,
+                active: true,
+                class: submission.class,
+                model: submission.model,
+                action: submission.action,
+                phase: 0,
+                entity_rng: 0,
+                control_flags: 0,
+            };
+            let mut source_chain = RenderableMapChains::empty();
+            source_chain
+                .sync_entity(crate::renderable_map_chain::RenderableMapSeed {
+                    entity_index: 980,
+                    active: true,
+                    x: submission.position.x,
+                    y: submission.position.y,
+                })
+                .unwrap();
+            let frame = render_level1_source_world_frame(
+                source_camera,
+                render_resources(),
+                Level1WorldFrameResources {
+                    local_player_entity_index: local_player,
+                    goats: &[],
+                    frozen_actors: &[],
+                    ambient_entities: &[],
+                    frozen_actor_tmap_bank: None,
+                    villager_tmap_clocks: None,
+                    mission_actors: &[],
+                    dynamic_residents: &[],
+                    mission_segments: &[],
+                    castle_root: None,
+                    mana_spheres: &[],
+                    mana_carrier: None,
+                    map_chains: &source_chain,
+                    goat_tmap_clocks: &clocks,
+                    archer_tmap_bank: &archer_bank,
+                    archer_tmap_clocks: &archer_clocks,
+                    firefly_tmap_bank: &firefly_bank,
+                    firefly_tmap_clocks: &firefly_clocks,
+                    projectiles: &[],
+                    impacts: &[],
+                    possessed_buildings: &[],
+                    combat_tmap_bank: &combat_bank,
+                    static_world_tmap_bank: &static_world_bank,
+                    economy_tmap_bank: &economy_bank,
+                    fireball_tmap_clock: &fireball_clock,
+                    possession_tmap_clock: &possession_clock,
+                    castle_tmap_clock: &castle_clock,
+                    particle_parameters: &world.presentation().particles,
+                    source_slots: &source_slots,
+                    night: true,
+                },
+                SourceSpriteWorldResources {
+                    dispositions: &[SourceSpriteDisposition::Render(submission)],
+                    tmap_bank: &source_bank,
+                },
+            )
+            .unwrap_or_else(|error| panic!("{family}: {error}"));
+            assert!(
+                frame.combat_raster_stats.framebuffer_writes > 0,
+                "{family} must reach the production indexed compositor"
+            );
+            assert_ne!(
+                frame.indices, source_terrain.indices,
+                "{family} must write nonzero production pixels"
+            );
+            family_hashes.push((family, frame.index_hash));
+        }
+        assert_eq!(family_hashes.len(), 12);
+        assert_eq!(
+            family_hashes
+                .iter()
+                .map(|(_, hash)| *hash)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            family_hashes.len(),
+            "every supported family must produce a distinguishing indexed framebuffer"
+        );
+
+        let overlap_position = goat.position;
+        let front = make_submission(980, overlap_position, 3, 0, 0, 66, 80, 0, 200);
+        let back = make_submission(982, overlap_position, 10, 40, 42, 65, 81, 0, 200);
+        source_slots[980] = crate::level1_mission::Level1ResetSourceSlot {
+            index: 980,
+            active: true,
+            class: front.class,
+            model: front.model,
+            action: front.action,
+            phase: 0,
+            entity_rng: 0,
+            control_flags: 0,
+        };
+        source_slots[981] = crate::level1_mission::Level1ResetSourceSlot {
+            index: 981,
+            active: true,
+            class: 11,
+            model: 0,
+            action: 0,
+            phase: 0,
+            entity_rng: 0,
+            control_flags: 0,
+        };
+        source_slots[982] = crate::level1_mission::Level1ResetSourceSlot {
+            index: 982,
+            active: true,
+            class: back.class,
+            model: back.model,
+            action: back.action,
+            phase: 0,
+            entity_rng: 0,
+            control_flags: 0,
+        };
+        let order_dispositions = [
+            SourceSpriteDisposition::Render(front),
+            SourceSpriteDisposition::Excluded {
+                source_entity_index: 981,
+                reason: SourceSpriteExclusionReason::SpriteLessSwitch,
+            },
+            SourceSpriteDisposition::Render(back),
+        ];
+        let neighbour_dispositions = [order_dispositions[0], order_dispositions[2]];
+        let render_order_case = |insertion_order: &[u16], include_excluded: bool| {
+            let mut chains = RenderableMapChains::empty();
+            for entity_index in insertion_order {
+                chains
+                    .sync_entity(crate::renderable_map_chain::RenderableMapSeed {
+                        entity_index: *entity_index,
+                        active: true,
+                        x: overlap_position.x,
+                        y: overlap_position.y,
+                    })
+                    .unwrap();
+            }
+            render_level1_source_world_frame(
+                source_camera,
+                render_resources(),
+                Level1WorldFrameResources {
+                    local_player_entity_index: local_player,
+                    goats: &[],
+                    frozen_actors: &[],
+                    ambient_entities: &[],
+                    frozen_actor_tmap_bank: None,
+                    villager_tmap_clocks: None,
+                    mission_actors: &[],
+                    dynamic_residents: &[],
+                    mission_segments: &[],
+                    castle_root: None,
+                    mana_spheres: &[],
+                    mana_carrier: None,
+                    map_chains: &chains,
+                    goat_tmap_clocks: &clocks,
+                    archer_tmap_bank: &archer_bank,
+                    archer_tmap_clocks: &archer_clocks,
+                    firefly_tmap_bank: &firefly_bank,
+                    firefly_tmap_clocks: &firefly_clocks,
+                    projectiles: &[],
+                    impacts: &[],
+                    possessed_buildings: &[],
+                    combat_tmap_bank: &combat_bank,
+                    static_world_tmap_bank: &static_world_bank,
+                    economy_tmap_bank: &economy_bank,
+                    fireball_tmap_clock: &fireball_clock,
+                    possession_tmap_clock: &possession_clock,
+                    castle_tmap_clock: &castle_clock,
+                    particle_parameters: &world.presentation().particles,
+                    source_slots: &source_slots,
+                    night: true,
+                },
+                SourceSpriteWorldResources {
+                    dispositions: if include_excluded {
+                        &order_dispositions
+                    } else {
+                        &neighbour_dispositions
+                    },
+                    tmap_bank: &source_bank,
+                },
+            )
+            .expect("typed source-order overlap frame")
+        };
+        let excluded_middle = render_order_case(&[980, 981, 982], true);
+        let same_neighbours = render_order_case(&[980, 982], false);
+        let reversed_neighbours = render_order_case(&[982, 980], false);
+        assert_eq!(
+            excluded_middle.indices, same_neighbours.indices,
+            "an excluded middle raw node cannot reorder its renderable neighbours"
+        );
+        assert_ne!(
+            excluded_middle.index_hash, reversed_neighbours.index_hash,
+            "overlapping indexed pixels, not a trace alone, discriminate source chain order"
+        );
+        assert_eq!(
+            (
+                excluded_middle.index_hash,
+                same_neighbours.index_hash,
+                reversed_neighbours.index_hash,
+                excluded_middle
+                    .shadow_sprite_raster_stats
+                    .framebuffer_writes,
+            ),
+            (
+                0xd680_f6a6_6f8c_4d56,
+                0xd680_f6a6_6f8c_4d56,
+                0x32d2_dd45_0a14_76aa,
+                5_886,
+            ),
+            "raw-chain neighbour order and immediately-before-primary shadow writes are framebuffer-pinned"
+        );
+
+        let mut unknown_chain = RenderableMapChains::empty();
+        unknown_chain
+            .sync_entity(crate::renderable_map_chain::RenderableMapSeed {
+                entity_index: 981,
+                active: true,
+                x: overlap_position.x,
+                y: overlap_position.y,
+            })
+            .unwrap();
+        let unknown = render_level1_source_world_frame(
+            source_camera,
+            render_resources(),
+            Level1WorldFrameResources {
+                local_player_entity_index: local_player,
+                goats: &[],
+                frozen_actors: &[],
+                ambient_entities: &[],
+                frozen_actor_tmap_bank: None,
+                villager_tmap_clocks: None,
+                mission_actors: &[],
+                dynamic_residents: &[],
+                mission_segments: &[],
+                castle_root: None,
+                mana_spheres: &[],
+                mana_carrier: None,
+                map_chains: &unknown_chain,
+                goat_tmap_clocks: &clocks,
+                archer_tmap_bank: &archer_bank,
+                archer_tmap_clocks: &archer_clocks,
+                firefly_tmap_bank: &firefly_bank,
+                firefly_tmap_clocks: &firefly_clocks,
+                projectiles: &[],
+                impacts: &[],
+                possessed_buildings: &[],
+                combat_tmap_bank: &combat_bank,
+                static_world_tmap_bank: &static_world_bank,
+                economy_tmap_bank: &economy_bank,
+                fireball_tmap_clock: &fireball_clock,
+                possession_tmap_clock: &possession_clock,
+                castle_tmap_clock: &castle_clock,
+                particle_parameters: &world.presentation().particles,
+                source_slots: &source_slots,
+                night: true,
+            },
+            SourceSpriteWorldResources {
+                dispositions: &[],
+                tmap_bank: &source_bank,
+            },
+        );
+        assert!(
+            matches!(unknown, Err(TerrainFrameError(message)) if message.contains("slot=981 class=11 model=0 action=0"))
+        );
+
+        let source_schedule = primary_owner_schedule(&outdoor_grid(OutdoorGridInput {
+            render_x: source_camera.render_x,
+            render_y: source_camera.render_y,
+            yaw: source_camera.yaw,
+            turn: source_camera.source_turn,
+            shading: &planes.shading,
+            angles: &planes.angles,
+        }));
+        assert_eq!(source_schedule.len(), 20 * 39);
+        for (chunk, expected_row) in source_schedule.chunks_exact(39).zip((1..=20).rev()) {
+            assert!(
+                chunk
+                    .iter()
+                    .all(|owner| *owner >= expected_row * 40 && *owner < (expected_row + 1) * 40),
+                "source raw-chain traversal must complete row {expected_row}, including its seam, before the next row"
+            );
+        }
+
+        let render_source_vector =
+            |camera: Level1TerrainFrameCamera, submission: SourceSpriteSubmission| {
+                let mut vector_slots = mission.source_slots().to_vec();
+                vector_slots[usize::from(submission.source_entity_index)] =
+                    crate::level1_mission::Level1ResetSourceSlot {
+                        index: submission.source_entity_index,
+                        active: true,
+                        class: submission.class,
+                        model: submission.model,
+                        action: submission.action,
+                        phase: 0,
+                        entity_rng: 0,
+                        control_flags: submission.control_flags,
+                    };
+                let mut vector_chain = RenderableMapChains::empty();
+                vector_chain
+                    .sync_entity(crate::renderable_map_chain::RenderableMapSeed {
+                        entity_index: submission.source_entity_index,
+                        active: true,
+                        x: submission.position.x,
+                        y: submission.position.y,
+                    })
+                    .expect("synthetic hotspot source-chain insertion");
+                render_level1_source_world_frame(
+                    camera,
+                    render_resources(),
+                    Level1WorldFrameResources {
+                        local_player_entity_index: local_player,
+                        goats: &[],
+                        frozen_actors: &[],
+                        ambient_entities: &[],
+                        frozen_actor_tmap_bank: None,
+                        villager_tmap_clocks: None,
+                        mission_actors: &[],
+                        dynamic_residents: &[],
+                        mission_segments: &[],
+                        castle_root: None,
+                        mana_spheres: &[],
+                        mana_carrier: None,
+                        map_chains: &vector_chain,
+                        goat_tmap_clocks: &clocks,
+                        archer_tmap_bank: &archer_bank,
+                        archer_tmap_clocks: &archer_clocks,
+                        firefly_tmap_bank: &firefly_bank,
+                        firefly_tmap_clocks: &firefly_clocks,
+                        projectiles: &[],
+                        impacts: &[],
+                        possessed_buildings: &[],
+                        combat_tmap_bank: &combat_bank,
+                        static_world_tmap_bank: &static_world_bank,
+                        economy_tmap_bank: &economy_bank,
+                        fireball_tmap_clock: &fireball_clock,
+                        possession_tmap_clock: &possession_clock,
+                        castle_tmap_clock: &castle_clock,
+                        particle_parameters: &world.presentation().particles,
+                        source_slots: &vector_slots,
+                        night: true,
+                    },
+                    SourceSpriteWorldResources {
+                        dispositions: &[SourceSpriteDisposition::Render(submission)],
+                        tmap_bank: &source_bank,
+                    },
+                )
+                .expect("qualified CP2 hotspot vector")
+            };
+        if source_cache.is_some() {
+            let mut production_session = world.session();
+            let production_player = production_session.state;
+            assert_ne!(
+                production_session
+                    .mission
+                    .player_source_control_flags(production_player.entity_index)
+                    & 0x21,
+                0,
+                "reset self-view is source-hidden before the production family probe"
+            );
+            production_session
+                .mission
+                .reveal_player_source_sprite_for_test(production_player.entity_index);
+            let offset_position = |offset_x: i16, offset_y: i16| Position {
+                x: production_player.position.x.wrapping_add_signed(offset_x),
+                y: production_player.position.y.wrapping_add_signed(offset_y),
+                z: production_player.position.z,
+            };
+            let production_burst = production_session
+                .mission
+                .spawn_death_burst_from_death(
+                    production_player.entity_index,
+                    offset_position(-210, 0),
+                )
+                .expect("production death-burst submission");
+            let production_marker = production_session
+                .mission
+                .spawn_player_death_marker_for_test(&production_player)
+                .expect("production death-marker constructor");
+            let production_association = production_session
+                .mission
+                .spawn_castle_association_for_test(
+                    production_player.entity_index,
+                    offset_position(-140, 30),
+                )
+                .expect("production Castle-association constructor");
+            let production_builder = production_session
+                .mission
+                .spawn_house_resident(offset_position(-70, 60), 12, 97, 0)
+                .expect("production Builder constructor")
+                .expect("production Builder source slot");
+            let production_trader = production_session
+                .mission
+                .spawn_house_resident(offset_position(70, 90), 14, 113, 0)
+                .expect("production Trader constructor")
+                .expect("production Trader source slot");
+            let target = production_session.first_goat_source_view_for_test();
+            let mut actual_sources = vec![
+                ("production-local-player", production_player.entity_index),
+                ("production-death-burst", production_burst),
+                ("production-death-marker", production_marker),
+                ("production-castle-association", production_association),
+                ("production-builder", production_builder),
+                ("production-trader", production_trader),
+            ];
+            for (ordinal, profile) in CASTLE_DEFENSE_SHOT_PROFILES.iter().copied().enumerate() {
+                let offset = i16::try_from(ordinal).expect("five shot rows fit i16");
+                let controller = production_session
+                    .mission
+                    .spawn_castle_defense_controller(
+                        offset_position(140 + offset * 55, 120 + offset * 35),
+                        production_player.entity_index,
+                    )
+                    .expect("production defense-controller source slot");
+                if ordinal == 0 {
+                    actual_sources.push(("production-defense-controller", controller));
+                }
+                let shot = production_session
+                    .mission
+                    .fire_castle_defense_shot_for_test(
+                        &production_player,
+                        controller,
+                        target,
+                        profile.spell_family,
+                        profile.subspell,
+                    )
+                    .expect("production action-86 shot allocation");
+                actual_sources.push((
+                    match ordinal {
+                        0 => "production-shot-fireball",
+                        1 => "production-shot-arrow",
+                        2 => "production-shot-arrow-return",
+                        3 => "production-shot-fireball-alternate",
+                        4 => "production-shot-lightning",
+                        _ => unreachable!(),
+                    },
+                    shot,
+                ));
+            }
+            let production_dispositions = production_session
+                .source_sprite_dispositions()
+                .expect("complete production typed source sprites");
+            let production_submissions = actual_sources
+                .iter()
+                .map(|(family, source_entity_index)| {
+                    let submission = production_dispositions
+                    .iter()
+                    .find_map(|disposition| match disposition {
+                        SourceSpriteDisposition::Render(submission)
+                            if submission.source_entity_index == *source_entity_index =>
+                        {
+                            Some(*submission)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{family} slot {source_entity_index} has no production typed submission; source={:?}, disposition={:?}",
+                            production_session
+                                .mission
+                                .source_slots()
+                                .get(usize::from(*source_entity_index)),
+                            production_dispositions.iter().find(|disposition| {
+                                match disposition {
+                                    SourceSpriteDisposition::Render(submission) => {
+                                        submission.source_entity_index == *source_entity_index
+                                    }
+                                    SourceSpriteDisposition::Legacy {
+                                        source_entity_index: index,
+                                        ..
+                                    }
+                                    | SourceSpriteDisposition::Excluded {
+                                        source_entity_index: index,
+                                        ..
+                                    } => *index == *source_entity_index,
+                                }
+                            })
+                        )
+                    });
+                    (*family, *source_entity_index, submission)
+                })
+                .collect::<Vec<_>>();
+            let production_camera = Level1TerrainFrameCamera {
+                render_x: production_player.position.x.wrapping_add(75),
+                render_y: production_player.position.y.wrapping_add(430),
+                eye_z: i32::from(production_player.position.z),
+                reflections: false,
+                ..source_camera
+            };
+            let production_resources = || NativeSourceFrameResources {
+                frozen_actor_tmap_bank: Some(&frozen_actor_bank),
+                villager_tmap_clocks: Some(&villager_clocks),
+                archer_tmap_bank: &archer_bank,
+                archer_tmap_clocks: &archer_clocks,
+                firefly_tmap_bank: &firefly_bank,
+                firefly_tmap_clocks: &firefly_clocks,
+                combat_tmap_bank: &combat_bank,
+                static_world_tmap_bank: &static_world_bank,
+                economy_tmap_bank: &economy_bank,
+                fireball_tmap_clock: &fireball_clock,
+                possession_tmap_clock: &possession_clock,
+                castle_tmap_clock: &castle_clock,
+            };
+            let mut production_deltas = Vec::new();
+            for (family, source_entity_index, submission) in production_submissions {
+                let mut source_chain = production_session.mission.source_map_chains().clone();
+                source_chain
+                    .retain_entities(&[])
+                    .expect("start an exact per-source attribution chain");
+                source_chain
+                    .sync_entity(crate::renderable_map_chain::RenderableMapSeed {
+                        entity_index: source_entity_index,
+                        active: true,
+                        x: submission.position.x,
+                        y: submission.position.y,
+                    })
+                    .expect("actual production source slot fits the attribution chain");
+                let mut visible_session = production_session.clone_for_source_frame_test();
+                visible_session.mission.set_source_map_chains(source_chain);
+                let production_frame = visible_session
+                    .render_source_world_frame(
+                        production_camera,
+                        render_resources(),
+                        production_resources(),
+                    )
+                    .unwrap_or_else(|error| panic!("{family}: {error}"));
+                let no_draw_frame = visible_session
+                    .render_source_world_frame_with_typed_no_draw_for_test(
+                        production_camera,
+                        render_resources(),
+                        production_resources(),
+                        source_entity_index,
+                    )
+                    .unwrap_or_else(|error| panic!("{family}: {error}"));
+                let mut delta_bytes = Vec::new();
+                for (index, (visible, no_draw)) in production_frame
+                    .indices
+                    .iter()
+                    .zip(&no_draw_frame.indices)
+                    .enumerate()
+                {
+                    if visible == no_draw {
+                        continue;
+                    }
+                    delta_bytes.extend_from_slice(
+                        &u32::try_from(index)
+                            .expect("source frame index fits u32")
+                            .to_le_bytes(),
+                    );
+                    delta_bytes.push(*visible);
+                    delta_bytes.push(*no_draw);
+                }
+                let delta_count = delta_bytes.len() / 6;
+                assert!(
+                    delta_count > 0,
+                    "{family} slot {source_entity_index} must change visible pixels against its otherwise-identical typed no-draw baseline"
+                );
+                production_deltas.push((family, delta_count, byte_hash(&delta_bytes)));
+            }
+            assert_eq!(production_deltas.len(), 12);
+            assert_eq!(
+                production_deltas.as_slice(),
+                &[
+                    ("production-local-player", 5_254, 0xb87d_8215_f6f4_e988),
+                    ("production-death-burst", 7_820, 0xc376_917b_edea_b473),
+                    ("production-death-marker", 10_714, 0x8be3_f05b_eb2f_8254),
+                    (
+                        "production-castle-association",
+                        7_353,
+                        0xc324_4182_a670_4375,
+                    ),
+                    ("production-builder", 2_383, 0xa5a9_6cbd_45c8_8cf0),
+                    ("production-trader", 4_067, 0x9846_bd8e_67d3_329e),
+                    (
+                        "production-defense-controller",
+                        7_734,
+                        0x7c55_a9b3_6ca7_42bc,
+                    ),
+                    ("production-shot-fireball", 1_894, 0xb19a_5ef6_2cf0_c3a2),
+                    ("production-shot-arrow", 504, 0x3c9e_d920_cced_2b78),
+                    ("production-shot-arrow-return", 678, 0xeb33_807f_e7ba_4b26,),
+                    (
+                        "production-shot-fireball-alternate",
+                        653,
+                        0xc4ea_b5dc_4b7f_4aa5,
+                    ),
+                    ("production-shot-lightning", 380, 0xb0cd_3914_6a6a_b7b9),
+                ],
+                "production source pixel-delta count/hash vector changed"
+            );
+            assert_eq!(
+                production_deltas
+                    .iter()
+                    .map(|(_, _, hash)| *hash)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len(),
+                12,
+                "all twelve actual producers must have distinct target-only pixel deltas: {production_deltas:?}"
+            );
+            let imported_slot = production_dispositions
+                .iter()
+                .find_map(|disposition| match disposition {
+                    SourceSpriteDisposition::Legacy {
+                        source_entity_index,
+                        family: SourceSpriteLegacyFamily::ImportedReset,
+                    } => Some(*source_entity_index),
+                    _ => None,
+                })
+                .expect("the complete reset chain contains a typed imported row");
+            production_session
+                .mission
+                .set_source_no_draw_for_test(imported_slot);
+            assert!(
+                production_session
+                    .source_sprite_dispositions()
+                    .expect("known live tuple with a source no-draw bit remains typed")
+                    .iter()
+                    .any(|disposition| {
+                        matches!(
+                            disposition,
+                            SourceSpriteDisposition::Excluded {
+                                source_entity_index,
+                                reason: SourceSpriteExclusionReason::SourceNoDrawFlags,
+                            } if *source_entity_index == imported_slot
+                        )
+                    }),
+                "a recognized live tuple may become a typed source no-draw exclusion"
+            );
+            production_session
+                .mission
+                .replace_source_tuple_for_test(imported_slot, 254, 253, 252);
+            let error = production_session
+                .source_sprite_dispositions()
+                .expect_err("an unknown live raw-chain tuple must fail before rasterization");
+            assert!(
+                error.starts_with(&format!(
+                    "unknown Level 1 source sprite tuple: slot={imported_slot} class=254 model=253 action=252"
+                )),
+                "production fail-closed diagnostic must carry the live slot/class/model/action tuple: {error}"
+            );
+        }
+
+        let normal = make_submission(979, goat.position, 3, 0, 0, 66, 300, 0, 200);
+        let special = make_submission(979, goat.position, 10, 1, 1, 41, 300, 21, 200);
+        let normal_frame = render_source_vector(source_camera, normal);
+        let special_frame = render_source_vector(source_camera, special);
+        assert_ne!(
+            normal_frame.index_hash, special_frame.index_hash,
+            "normal and quarter-sum special hotspots must produce different indexed pixels"
+        );
+        let mut rolled = normal;
+        rolled.roll = 96;
+        let rolled_frame = render_source_vector(source_camera, rolled);
+        assert_ne!(
+            normal_frame.index_hash, rolled_frame.index_hash,
+            "entity roll must reach the production source raster"
+        );
+
+        let unmirrored = make_submission(979, goat.position, 5, 12, 97, 221, 310, 20, 250);
+        let mut mirrored = unmirrored;
+        mirrored.yaw = 1_024;
+        let unmirrored_frame = render_source_vector(source_camera, unmirrored);
+        let mirrored_frame = render_source_vector(source_camera, mirrored);
+        assert_ne!(
+            unmirrored_frame.index_hash, mirrored_frame.index_hash,
+            "mode-20 mirror selection must preserve asymmetric source pixels"
+        );
+
+        let odd_width = normal;
+        let mut odd_height = normal;
+        odd_height.base_tmap = 301;
+        odd_height.selected_frame = 301;
+        let odd_width_frame = render_source_vector(source_camera, odd_width);
+        let odd_height_frame = render_source_vector(source_camera, odd_height);
+        assert_ne!(
+            odd_width_frame.index_hash, odd_height_frame.index_hash,
+            "odd/even source extents must retain distinct hotspot arithmetic"
+        );
+        assert_eq!(
+            (
+                normal_frame.index_hash,
+                special_frame.index_hash,
+                rolled_frame.index_hash,
+                unmirrored_frame.index_hash,
+                mirrored_frame.index_hash,
+                odd_width_frame.index_hash,
+                odd_height_frame.index_hash,
+            ),
+            (
+                0xe01c_88b1_1836_ddfe,
+                0x23ca_6253_9d54_0943,
+                0xfead_34af_a907_ba86,
+                0xdddd_e4a9_2d70_9b2d,
+                0x5c2d_84bb_ed97_a9c9,
+                0xe01c_88b1_1836_ddfe,
+                0x705a_7344_080d_4656,
+            ),
+            "normal/special hotspot, roll, mirror, and odd/even extent vectors are exact"
+        );
+
+        let mut reflected = normal;
+        reflected.position = frozen_subject.position;
+        let reflected_frame = render_source_vector(frozen_camera, reflected);
+        assert!(
+            reflected_frame
+                .reflected_sprite_raster_stats
+                .framebuffer_writes
+                > 0
+        );
+        assert!(reflected_frame.combat_raster_stats.framebuffer_writes > 0);
+        assert!(
+            reflected_frame
+                .shadow_sprite_raster_stats
+                .framebuffer_writes
+                > 0
+        );
+        assert_ne!(
+            reflected_frame.index_hash, normal_frame.index_hash,
+            "complete reflection sweep, then terrain, shadow and primary writes are framebuffer-visible"
+        );
+        assert_eq!(
+            (
+                reflected_frame.index_hash,
+                reflected_frame.reflected_sprite_raster_stats,
+                reflected_frame.shadow_sprite_raster_stats,
+                reflected_frame.combat_raster_stats,
+            ),
+            (
+                0xf100_ad2c_4b0d_4a6a,
+                Mode20SpriteRasterStats {
+                    candidate_pixels: 2_068,
+                    transparent_pixels: 0,
+                    clipped_pixels: 1_247,
+                    framebuffer_writes: 731,
+                },
+                Mode20SpriteRasterStats {
+                    candidate_pixels: 516,
+                    transparent_pixels: 0,
+                    clipped_pixels: 275,
+                    framebuffer_writes: 187,
+                },
+                Mode20SpriteRasterStats {
+                    candidate_pixels: 2_068,
+                    transparent_pixels: 0,
+                    clipped_pixels: 1_196,
+                    framebuffer_writes: 782,
+                },
+            ),
+            "the complete reflected sweep precedes the exact shadow/primary source writes"
+        );
+
+        let mut clip_vectors = Vec::new();
+        for (label, delta_x, delta_z) in [
+            ("left", -285_i32, 0_i32),
+            ("right", 285, 0),
+            ("top", 0, 100),
+            ("bottom", 0, -300),
+        ] {
+            let mut clipped = normal;
+            clipped.position.x = u16::try_from(i32::from(clipped.position.x).wrapping_add(delta_x))
+                .expect("bounded CP2 clipping x");
+            clipped.position.z = i16::try_from(i32::from(clipped.position.z).wrapping_add(delta_z))
+                .expect("bounded CP2 clipping altitude");
+            let frame = render_source_vector(source_camera, clipped);
+            assert!(
+                frame.combat_raster_stats.clipped_pixels > 0
+                    && frame.combat_raster_stats.framebuffer_writes > 0,
+                "{label} vector must partially clip, not reject, through the production raster: {:?}",
+                frame.combat_raster_stats
+            );
+            clip_vectors.push((
+                label,
+                frame.index_hash,
+                frame.combat_raster_stats.clipped_pixels,
+                frame.combat_raster_stats.framebuffer_writes,
+            ));
+        }
+        assert_eq!(
+            clip_vectors,
+            [
+                ("left", 0xfd9f_dafc_d6e9_25e5, 5_630, 5_700),
+                ("right", 0x0030_baa6_4431_99df, 5_730, 5_600),
+                ("top", 0x72bd_ab3b_7f84_6772, 6_592, 4_738),
+                ("bottom", 0x658c_b8c7_2f1f_58ba, 6_592, 4_738),
+            ],
+            "four-side clipping pins left/top source-phase advance and right/bottom bounds"
+        );
+        assert_eq!(
+            render_source_vector(source_camera, normal),
+            normal_frame,
+            "repeated production rendering is pure and byte-deterministic"
+        );
+        assert_eq!(
+            render_order_case(&[980, 981, 982], true),
+            excluded_middle,
+            "overlap ordering and shadow/primary placement are stable across repeated draws"
+        );
+        assert_eq!(
+            mission.dynamic_lighting_hash_v1(),
+            lighting_hash_before_source_render,
+            "rendering cannot advance lighting RNG or mutate retained light history"
         );
     }
 }

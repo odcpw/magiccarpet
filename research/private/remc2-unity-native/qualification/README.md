@@ -100,7 +100,7 @@ does not turn that route into a remc2 or DOS capture.
 ## Presentation correspondence gate
 
 `presentation-correspondence.json` is the typed presentation contract. It
-defines four independent authority timelines, 23 classified layers, explicit
+defines five independent authority timelines, 23 classified layers, explicit
 structural-only comparisons, and forbidden claims. In particular:
 
 - the original frames 0, 8, and 19 remain exact indexed bytes on the remc2
@@ -111,9 +111,21 @@ structural-only comparisons, and forbidden claims. In particular:
   route and are exact only against the same-build Unity regression;
 - the controlled eight-view entity gallery is cache-bound debug evidence,
   has no simulation clock, and is never called an original or qualified view;
-- unsupported sprite raster modes, remaining animation clocks, native carpet
-  presentation, multiplayer minimap reveal, and wider simulation remain
-  deferred. The source-mapped transient palette, 4:3
+- the fifth timeline is executable fixed-profile native FINAL MAIN
+  correspondence, not a capture pairing. It binds the pinned source anchors,
+  CP4 cache/source-frame census, source tuple and linked map chain, exact
+  hotspot/clipping and reflection/shadow order, dynamic lighting,
+  temporal/spatial postprocess, supported overlay receipts, atomic finalization,
+  revisioned C ABI, and current-COMPLETE-gated one-R8-plane Unity ownership;
+- its Exact claim covers supported COMPLETE states only. Active
+  tutorial/briefing, recursive help popup, immobilization spider-web, and
+  menu-state-7 score-writer states remain reachable but fail closed before
+  COMPLETE;
+- unsupported source branches and animation modes, native carpet
+  presentation, multiplayer reveal, stereo/alternate resolution,
+  hostile/remote players, and wider simulation remain excluded. Active-DAC
+  RGB for historical captures and all cross-timeline pixel/clock equality
+  remain explicit nonclaims. The source-mapped transient palette, 4:3
   projection, HSPRN HUD,
   Level 1 minimap entity/mark pass, and live indexed objective textbox are
   registered adapted layers. The textbox preserves exact source geometry,
@@ -135,6 +147,7 @@ Then run the composed gate:
 ```bash
 python3 qualification/verify_presentation_correspondence.py \
   /tmp/magiccarpet-presentation \
+  --owner-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache-plan28-cp4-correction2 \
   --unity-captures /tmp/magiccarpet-level1-qual-v5-a \
   --second-unity-captures /tmp/magiccarpet-level1-qual-v5-b \
   --unity-log-a /tmp/magiccarpet-autoplay-v5-a.log \
@@ -143,7 +156,12 @@ python3 qualification/verify_presentation_correspondence.py \
   --gallery-log /tmp/magiccarpet-entity-gallery-v5.log
 ```
 
-The composed gate re-runs the corpus and cache checks; proves the two Unity
+The composed gate requires the qualified native cache explicitly (or through
+`MC_OWNER_ASSET_CACHE`) and verifies its manifest, content, 1,248-output count,
+source-frame census, and executable Rust/Unity test inventories before any
+native FINAL MAIN claim. The separate historical gallery check remains bound
+to the registered 570-output managed-gallery cache and is never reused as the
+native cache. The gate also re-runs the corpus checks; proves the two Unity
 runs are byte-identical; verifies HUD and cache-bound owner TMAP gallery
 pixels; requires clean qualified-mode runtime markers from both logs; rejects
 visible placeholder selectors; and writes
@@ -159,8 +177,10 @@ python3 -m unittest discover \
 ```
 
 It rejects cross-timeline pixel equality, numeric-clock pairing, exact-RGB
-claims for the base-PALN review decode, exact hotspot claims, present omitted
-proxies, and unregistered layers.
+claims for the base-PALN review decode, substituted hotspot targets, missing
+FINAL MAIN components or COMPLETE flags, `NON_TERRAIN_OMITTED` acceptance,
+non-atomic failure semantics, duplicate Unity planes, missing profile
+exclusions, present omitted proxies, and unregistered layers.
 
 ## Unity lifecycle, bulk ABI, and privacy gate
 

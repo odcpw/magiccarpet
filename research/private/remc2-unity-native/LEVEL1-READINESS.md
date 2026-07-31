@@ -103,8 +103,8 @@ and `Space` also casts the left hand. `Esc` releases capture, click recaptures,
 
 | Gate | Result |
 |---|---|
-| Rust workspace | 429 passed: atlas 4, C ABI 56, sim core 365, WASM proof 4 |
-| Owner cache | 17/17 passed; 570 outputs from 23 source files; deterministic rebuild and corruption negatives |
+| Rust workspace | 442 tests in the locked Cargo inventory: atlas 4, C ABI 57, sim core 377, WASM proof 4; exact row bindings resolve against that list |
+| Owner cache | 1,248 outputs; deterministic rebuild, accepted native FINAL MAIN source-frame census, and corruption negatives |
 | Unity EditMode | 29/29 passed |
 | Unity PlayMode | 1/1 passed |
 | Built-player route | Stage 5, result 10 at tick 14,720 in the rebuilt desktop player |
@@ -112,7 +112,7 @@ and `Space` also casts the left hand. `Esc` releases capture, click recaptures,
 | Native self-test | Five checkpoints, two sessions, reset replay, stale-generation rejection, and `fidelity_gap_flags=0x00` |
 | Lifecycle/privacy | Zero bulk managed allocations; seven negative launches; no embedded owner payload |
 | Full-frame presentation | Five 1600x900 checkpoints; two byte-identical runs; zero magenta |
-| Presentation correspondence | 3 registered original indexed captures, 5 registered Unity captures, 23 typed layers, 8 gallery records, no missing references, placeholders, or false cross-timeline pixel/clock claims |
+| Presentation correspondence | 3 historical original indexed captures, 5 historical managed Unity captures, 23 typed layers, 8 gallery records, plus a separate exact executable native FINAL MAIN timeline; no false cross-timeline pixel/clock or active-DAC RGB claims |
 | Reference corpus | Idle 3, active-forward 8, supporting 24, Unity regression 5 |
 
 The ordinary-input determinism run completed at tick 14,720 with:
@@ -153,9 +153,11 @@ Current local artifact identities:
   `8abee05c17b175ff5f5b089ac2fd131f61041b1f320e47891678e07c829ae1d6`;
 - Unity build GUID: `ca97e2bdb3044fcf8514f2ad7db0fdf8`;
 - owner-cache content SHA-256:
-  `d299990e300117d065eb3a75008f6a69911b1ba356e4e06452c0a826450a01e5`;
+  `ee063ce1d5f804c8efc412dff2bedb0800d6fd347b38a6d0376e2a2e4dccd9dc`;
 - owner-cache manifest SHA-256:
-  `e3aaf1cf03e390850c5da44ed4b3880352b425bd063657e3cdbbcb8086a4d7ee`.
+  `3909be6b29c1f879208f0a15ec2bccee58d65311cefd6698f0870d16c9742a8d`;
+- owner-cache source-frame census SHA-256:
+  `3ca66e8258fb239c51aa728d321029e2f5364b61d674abb3499e86c92f5f6e59`.
 
 Current evidence from the final rebuilt player:
 
@@ -205,11 +207,14 @@ The owner cache exposes 30 materialized effect records, the explicit silent
 sound-12 contract, and the Level 1 music stream. The complete ordinary-input
 route reaches Stage 5 without an unknown or unsupported audio command.
 
-Input and presentation fidelity remain separate, visible registers after the
-simulation mask reaches zero: multiplayer-only minimap reveal, exact sprite
-hotspots and remaining animation clocks, and complete original whole-frame
-depth/interleaving, including exact high-speed whole-frame blur. The native
-hit, slowing/impairment, objective, exit, fade-back, and
-black-fade palette states, the single-player source-ordered minimap pass,
-high-resolution HSPRN HUD, live indexed objective textbox, and the shared 4:3
-output rectangle are no longer in that deferred register.
+Input and presentation fidelity remain separately scoped after the simulation
+mask reaches zero. PRS-001 is now exact for the fixed 320×200 Night,
+screen-size-0, single-local-player native FINAL MAIN supported COMPLETE states: source tuple and map
+chain, hotspot/clipping, reflection/shadow order, dynamic lighting,
+temporal/spatial postprocess, overlays, atomic COMPLETE/provenance, C ABI, and
+one-plane Unity ownership. Active tutorial/briefing, recursive help popup,
+immobilization spider-web, and menu-state-7 score-writer states are reachable
+but fail closed before COMPLETE. Remaining presentation nonclaims are
+multiplayer-only reveal and hostile/remote players, stereo and alternate
+resolution, unsupported source branches and animation modes, active-DAC RGB
+for the historical captures, and any cross-timeline pixel or clock equality.

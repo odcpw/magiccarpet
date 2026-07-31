@@ -9,6 +9,85 @@
 pub const SOURCE_MAP_CELLS: usize = 256 * 256;
 pub const SOURCE_ENTITY_SLOTS: usize = 1_000;
 
+/// One source entity reached by the unfiltered reset `oldMapEntity` walk.
+///
+/// `ordinal` is the zero-based position within the terrain cell. Keeping this
+/// census separate from [`RenderableMapChains`] lets presentation
+/// qualification prove that excluded middle nodes do not reorder their
+/// renderable neighbours.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RawMapChainEntry {
+    pub tile: u16,
+    pub ordinal: u16,
+    pub entity_index: u16,
+}
+
+/// Traverse every raw reset map chain before presentation-family filtering.
+///
+/// # Errors
+///
+/// Rejects malformed extents, invalid identities/links, cycles, and duplicate
+/// membership across terrain cells.
+pub fn raw_source_map_chain_entries(
+    terrain_heads: &[i16],
+    mut old_map_entity: impl FnMut(u16) -> Option<u16>,
+) -> Result<Vec<RawMapChainEntry>, String> {
+    if terrain_heads.len() != SOURCE_MAP_CELLS {
+        return Err(format!(
+            "raw source map chain requires {SOURCE_MAP_CELLS} terrain heads, got {}",
+            terrain_heads.len()
+        ));
+    }
+    let mut entries = Vec::new();
+    let mut membership = [false; SOURCE_ENTITY_SLOTS];
+    let mut seen_generation = [0_u32; SOURCE_ENTITY_SLOTS];
+    let mut generation = 0_u32;
+    for (tile, raw_head) in terrain_heads.iter().copied().enumerate() {
+        if raw_head <= 0 {
+            continue;
+        }
+        generation = generation.wrapping_add(1);
+        if generation == 0 {
+            seen_generation.fill(0);
+            generation = 1;
+        }
+        let mut source_entity = raw_head.cast_unsigned();
+        let mut ordinal = 0_u16;
+        while source_entity != 0 {
+            let source_ordinal = usize::from(source_entity);
+            if source_ordinal >= SOURCE_ENTITY_SLOTS {
+                return Err(format!(
+                    "terrain tile {tile} links invalid entity {source_entity}"
+                ));
+            }
+            if seen_generation[source_ordinal] == generation {
+                return Err(format!(
+                    "terrain tile {tile} contains an entity-chain cycle at {source_entity}"
+                ));
+            }
+            if membership[source_ordinal] {
+                return Err(format!(
+                    "source entity {source_entity} occurs in multiple terrain chains"
+                ));
+            }
+            seen_generation[source_ordinal] = generation;
+            membership[source_ordinal] = true;
+            entries.push(RawMapChainEntry {
+                tile: u16::try_from(tile).expect("source terrain tile fits u16"),
+                ordinal,
+                entity_index: source_entity,
+            });
+            ordinal = ordinal.checked_add(1).ok_or_else(|| {
+                format!("terrain tile {tile} contains more than 65,536 source entities")
+            })?;
+            source_entity = old_map_entity(source_entity).ok_or_else(|| {
+                format!("entity {source_entity} has no exported oldMapEntity link")
+            })?;
+        }
+    }
+    Ok(entries)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RenderableMapSeed {
     pub entity_index: u16,
@@ -43,7 +122,7 @@ impl RenderableMapChains {
     pub fn from_reset(
         seeds: &[RenderableMapSeed],
         terrain_heads: &[i16],
-        mut old_map_entity: impl FnMut(u16) -> Option<u16>,
+        old_map_entity: impl FnMut(u16) -> Option<u16>,
     ) -> Result<Self, String> {
         if terrain_heads.len() != SOURCE_MAP_CELLS {
             return Err(format!(
@@ -58,33 +137,14 @@ impl RenderableMapChains {
             result.tracked[ordinal] = true;
             result.tiles[ordinal] = seed.tile_index();
         }
-        let mut seen_generation = [0_u32; SOURCE_ENTITY_SLOTS];
-        let mut generation = 0_u32;
-
-        for (tile, raw_head) in terrain_heads.iter().copied().enumerate() {
-            if raw_head <= 0 {
-                continue;
-            }
-            generation = generation.wrapping_add(1);
-            if generation == 0 {
-                seen_generation.fill(0);
-                generation = 1;
-            }
-            let mut source_entity = raw_head.cast_unsigned();
+        let raw_entries = raw_source_map_chain_entries(terrain_heads, old_map_entity)?;
+        let mut cursor = 0;
+        while cursor < raw_entries.len() {
+            let tile = usize::from(raw_entries[cursor].tile);
             let mut previous_renderable = None;
-            while source_entity != 0 {
+            while cursor < raw_entries.len() && usize::from(raw_entries[cursor].tile) == tile {
+                let source_entity = raw_entries[cursor].entity_index;
                 let source_ordinal = usize::from(source_entity);
-                if source_ordinal >= SOURCE_ENTITY_SLOTS {
-                    return Err(format!(
-                        "terrain tile {tile} links invalid entity {source_entity}"
-                    ));
-                }
-                if seen_generation[source_ordinal] == generation {
-                    return Err(format!(
-                        "terrain tile {tile} contains an entity-chain cycle at {source_entity}"
-                    ));
-                }
-                seen_generation[source_ordinal] = generation;
                 if result.tracked[source_ordinal] {
                     if result.linked[source_ordinal] {
                         return Err(format!(
@@ -106,9 +166,7 @@ impl RenderableMapChains {
                     }
                     previous_renderable = Some(source_entity);
                 }
-                source_entity = old_map_entity(source_entity).ok_or_else(|| {
-                    format!("entity {source_entity} has no exported oldMapEntity link")
-                })?;
+                cursor += 1;
             }
         }
 
@@ -202,6 +260,58 @@ impl RenderableMapChains {
     #[must_use]
     pub fn tracks(&self, entity_index: u16) -> bool {
         usize::from(entity_index) < SOURCE_ENTITY_SLOTS && self.tracked[usize::from(entity_index)]
+    }
+
+    #[must_use]
+    pub fn linked_entity_indices(&self) -> Vec<u16> {
+        (1_u16..SOURCE_ENTITY_SLOTS as u16)
+            .filter(|entity_index| self.linked[usize::from(*entity_index)])
+            .collect()
+    }
+
+    /// Lossless canonical encoding of the complete mutable chain topology.
+    ///
+    /// Presentation caching must distinguish not only linked membership but
+    /// also source painter order.  Encoding every head/link/tile and both
+    /// membership flags makes same-tile head reinsertions observable without
+    /// exposing mutable implementation storage.
+    #[must_use]
+    pub fn canonical_topology_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(
+            32 + self.heads.len() * 2
+                + self.next.len() * 2
+                + self.tiles.len() * 2
+                + self.tracked.len()
+                + self.linked.len(),
+        );
+        bytes.extend_from_slice(b"mc2-renderable-map-topology-v1\0");
+        bytes.extend_from_slice(
+            &u32::try_from(self.heads.len())
+                .expect("source map head extent fits u32")
+                .to_le_bytes(),
+        );
+        for value in &self.heads {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        for values in [&self.next, &self.tiles] {
+            bytes.extend_from_slice(
+                &u32::try_from(values.len())
+                    .expect("source entity extent fits u32")
+                    .to_le_bytes(),
+            );
+            for value in values.iter() {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        for values in [&self.tracked, &self.linked] {
+            bytes.extend_from_slice(
+                &u32::try_from(values.len())
+                    .expect("source entity flag extent fits u32")
+                    .to_le_bytes(),
+            );
+            bytes.extend(values.iter().map(|value| u8::from(*value)));
+        }
+        bytes
     }
 
     fn insert_at_head(&mut self, entity_index: u16, tile: u16) {
@@ -344,6 +454,43 @@ mod tests {
         })
         .expect("valid filtered reset chains");
         assert_eq!(chains.entity_chain(4, 5), [50, 81, 90]);
+        let raw = raw_source_map_chain_entries(&heads, |entity| {
+            links
+                .iter()
+                .find_map(|(index, next)| (*index == entity).then_some(*next))
+        })
+        .expect("valid raw reset chains");
+        assert_eq!(
+            raw,
+            [
+                RawMapChainEntry {
+                    tile: 0x0504,
+                    ordinal: 0,
+                    entity_index: 50,
+                },
+                RawMapChainEntry {
+                    tile: 0x0504,
+                    ordinal: 1,
+                    entity_index: 17,
+                },
+                RawMapChainEntry {
+                    tile: 0x0504,
+                    ordinal: 2,
+                    entity_index: 81,
+                },
+                RawMapChainEntry {
+                    tile: 0x0504,
+                    ordinal: 3,
+                    entity_index: 22,
+                },
+                RawMapChainEntry {
+                    tile: 0x0504,
+                    ordinal: 4,
+                    entity_index: 90,
+                },
+            ],
+            "the pre-filter census retains excluded middle nodes and exact source order"
+        );
     }
 
     #[test]

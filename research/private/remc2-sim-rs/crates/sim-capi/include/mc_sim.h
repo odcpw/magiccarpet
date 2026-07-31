@@ -157,6 +157,11 @@ extern "C" {
 #define MC_TERRAIN_FRAME_REFLECTED_SPRITES_COMPOSITED 0x0400u
 #define MC_TERRAIN_FRAME_SPRITE_SHADOWS_COMPOSITED 0x0800u
 #define MC_TERRAIN_FRAME_FROZEN_ACTORS_COMPOSITED 0x1000u
+#define MC_PRESENTATION_FRAME_COMPOSITOR_COMPLETE 0x2000u
+#define MC_PRESENTATION_FRAME_HAS_PROVENANCE 0x4000u
+#define MC_PRESENTATION_FRAME_OVERLAYS_COMPOSITED 0x8000u
+#define MC_PRESENTATION_FRAME_POSTPROCESS_COMPLETE 0x10000u
+#define MC_PRESENTATION_FRAME_LIGHTING_COMPLETE 0x20000u
 
 #define MC_ASSET_REF_NONE UINT32_MAX
 #define MC_PARAMETER_RECORD_NONE UINT16_MAX
@@ -1130,6 +1135,104 @@ typedef struct McTerrainFrameInfoV2 {
     uint32_t reserved[2];
 } McTerrainFrameInfoV2;
 
+typedef struct McPresentationFrameQueryV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint64_t presentation_revision;
+    uint16_t viewport_width;
+    uint16_t viewport_height;
+    uint16_t screen_stride;
+    uint16_t reserved_0;
+    uint8_t configured_blur_mode;
+    uint8_t blur_capability;
+    uint8_t high_speed_system;
+    uint8_t scratch_present;
+    uint8_t vga_resolution;
+    uint8_t spatial_smoothing;
+    uint8_t minimap_enabled;
+    uint8_t top_bar_enabled;
+    uint8_t menu_overlay;
+    uint8_t game_paused;
+    uint8_t level_end;
+    uint8_t objective_selector;
+    uint8_t objective_textbox;
+    uint8_t tutorial_or_briefing;
+    uint8_t help_popup;
+    uint8_t debug_text;
+    uint32_t reserved[2];
+} McPresentationFrameQueryV2;
+
+typedef struct McLevel1PresentationInputV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint32_t authority_mask;
+    uint8_t selected_menu_item;
+    uint8_t pause_menu_suppressed;
+    uint8_t pause_text_suppressed;
+    uint8_t level_end_text_suppressed;
+    uint8_t recursive_pause_writer;
+    uint8_t load_available;
+    uint8_t sound_available;
+    uint8_t music_available;
+    uint32_t options_enabled_mask;
+    uint32_t options_selected_mask;
+    uint8_t sound_volume;
+    uint8_t music_volume;
+    uint8_t volume_target;
+    uint8_t chat_recipient;
+    uint8_t chat_mode;
+    uint8_t chat_player_mask;
+    uint8_t local_player_index;
+    uint8_t frame_timing_index;
+    uint8_t cursor_visible;
+    uint8_t reserved_0;
+    int16_t mouse_x;
+    int16_t mouse_y;
+    int16_t joystick;
+    uint8_t text_colour_phase;
+    uint8_t reserved_1;
+    uint8_t chat_lines[8 * 64];
+    uint8_t chat_names[8 * 16];
+    uint8_t notification_player_name[16];
+    uint32_t debug_clock_bucket;
+    int16_t sound_number;
+    uint16_t reserved_2;
+    uint32_t debug_heap_size;
+    uint32_t debug_memory_used;
+    uint32_t debug_memory_free;
+    uint32_t reserved[4];
+} McLevel1PresentationInputV2;
+
+typedef struct McPresentationFrameInfoV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint64_t presentation_revision;
+    uint64_t immutable_input_hash;
+    uint16_t width;
+    uint16_t height;
+    uint16_t stride;
+    uint16_t viewport_width;
+    uint32_t index_bytes;
+    uint32_t provenance_bytes;
+    uint32_t flags;
+    uint8_t effective_postprocess_mode;
+    uint8_t history_state;
+    uint8_t newly_committed;
+    uint8_t reserved_0;
+    uint64_t index_hash;
+    uint64_t provenance_hash;
+    uint64_t lighting_hash;
+    uint64_t source_arena_hash;
+    uint32_t overlay_pixels_written;
+    uint16_t overlay_stage_count;
+    uint16_t reserved_1;
+    uint32_t reserved[6];
+} McPresentationFrameInfoV2;
+
 /*
  * Legacy ABI v1. Each call contains Rust panics and returns a type-appropriate
  * zero sentinel if containment is needed. Successful signatures and values
@@ -1176,6 +1279,9 @@ int32_t mc_native_session_source_arena_hash(uint64_t handle,
                                             uint64_t *out_hash);
 int32_t mc_native_level1_player_menu_state(uint64_t handle,
                                            uint8_t menu_state);
+int32_t mc_native_level1_game_paused(uint64_t handle, uint8_t paused);
+int32_t mc_native_level1_presentation_input(
+    uint64_t handle, const McLevel1PresentationInputV2 *input);
 int32_t mc_native_level1_player_inject_damage_for_qualification(
     uint64_t handle, int32_t damage, uint16_t attacker_entity_index);
 int32_t mc_native_presentation_state(uint64_t handle,
@@ -1202,6 +1308,11 @@ int32_t mc_native_session_world_frame_copy(
     uint8_t *index_buffer, uint32_t index_capacity,
     uint8_t *coverage_buffer, uint32_t coverage_capacity,
     McTerrainFrameInfoV2 *out_info, uint32_t out_info_size);
+int32_t mc_native_session_presentation_frame_copy(
+    uint64_t handle, const McPresentationFrameQueryV2 *query,
+    uint8_t *index_buffer, uint32_t index_capacity,
+    uint8_t *provenance_buffer, uint32_t provenance_capacity,
+    McPresentationFrameInfoV2 *out_info, uint32_t out_info_size);
 int32_t mc_native_session_step(uint64_t handle, const McCommandV2 *command,
                                McSessionSnapshotV2 *out_snapshot,
                                uint32_t out_snapshot_size);

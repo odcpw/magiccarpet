@@ -119,19 +119,19 @@ finished.
   controller state, and rearms that same gate. This is an owner-local
   presentation adaptation, not exact DOS sound-card timbre.
 
-## What is diagnostic
+## Exact fixed-profile frame and diagnostic exclusions
 
-The indexed layer is deliberately narrower than the complete original world
-frame. It contains sky and terrain plus source-derived Goats, Archers,
-Fireflies, Fireballs, Archer arrows, the castle projectile, Possession,
-both spell jars, the authored exit target, Fireball impacts, and water
-splashes in one source-slot-ordered native compositor. Supported sprites also
-use the shared remc2 reflection-before-primary pass and terrain-projected
-shadow pass. Other terrain-linked sprites and particles, unsupported entity
-families, the carpet, remaining spell effects, and HUD are not interleaved
-into it yet.
-Capability flags make the supported families machine-readable; the viewer
-never calls this a complete original frame.
+The indexed layer is the accepted FINAL MAIN for supported COMPLETE states in
+the registered fixed Level 1 profile. It contains sky and terrain plus every
+reachable typed source occupant or an explicit source-derived exclusion, and
+it consumes the supported HUD/menu/map/objective/debug writer tree before
+COMPLETE. Active tutorial/briefing, recursive help popup, immobilization
+spider-web, and menu-state-7 score-writer states are reachable but fail closed
+before COMPLETE because their independent live source inputs are not yet typed. The
+execution receipt makes this bounded claim machine-readable. It does not
+silently widen that claim to the debug carpet, unsupported sprite/overlay
+branches, stereo or alternate resolution, hostile/remote players, historical
+capture RGB, or cross-timeline pixels and clocks.
 
 The source mode-5 software-raster contract now has a renderer-independent Rust
 CPU reference under `sim-core::mode5_raster`. It preserves the original
@@ -150,15 +150,18 @@ threshold, maximum blend address, clipped first sample, repeated submission,
 complete triangle, and qualified owner TABLESN vectors.
 
 In explicit debug mode, the former Unity terrain shader remains available as
-a depth-only aid for diagnostic object markers. Qualified mode disables all
-nine Unity terrain mesh renderers because the native frame does not yet expose
-source depth and no approximate occlusion is silently substituted. Qualified
-mode also omits the primitive carpet, trim, overlay camera, moon light, and
-spell-event visual. Current owner entity placement and the 1600×900 stretch of
-the logical 320×200 buffer remain presentation adaptations. A reviewed 4:3 DOS
-pixel-aspect
-presentation and exact whole-world interleaving are separate work. The
-spell-event sphere/trail exists only in explicit debug mode.
+a depth-only aid for diagnostic object markers. Qualified native presentation
+instead owns the accepted fixed-profile 320×200 Night FINAL MAIN, including
+source linked-map traversal, reflection-before-primary and shadow-primary
+adjacency, hotspot/clipping, dynamic lighting, exact temporal or spatial
+TABLESN postprocess, and the supported source overlay writer tree. Unity
+uploads that result as exactly one row-flipped point-filtered R8 plane and
+suppresses managed presentation only while the current COMPLETE receipt owns
+the frame. The historical 1600×900 managed captures and controlled gallery
+remain presentation adaptations, not retroactive pixel or clock matches. The
+primitive carpet and spell-event sphere/trail remain debug-only. Stereo,
+alternate resolution, active-DAC RGB for historical captures, hostile/remote
+players, and unsupported source branches remain explicit nonclaims.
 
 Only explicit `-mc-debug` may run without the owner cache. With
 `-mc-debug-entities`, numerical/default-font diagnostics and entity labels
@@ -249,7 +252,7 @@ player. A player must receive paths explicitly:
 -mc-qualified
 -mc-package /absolute/path/to/level1-export-m
 -mc-closure /absolute/path/to/level1-asset-closure.json
--mc-asset-cache /absolute/path/to/level1-unity-asset-cache
+-mc-asset-cache /absolute/path/to/level1-unity-asset-cache-plan28-cp4-correction2
 ```
 
 `MC_PACKAGE_PATH` and `MC_CLOSURE_PATH` are equivalent environment fallbacks.
@@ -261,6 +264,13 @@ optional only for the explicit `-mc-debug` fallback. Pass
 `MC_ASSET_CACHE_PATH`. Unity validates its schema, exact package/closure
 bindings, every size and SHA-256, and its aggregate content identity before
 accepting it. The cache remains external; raw DAT/TAB files are never loaded.
+The current qualified identity is 1,248 outputs, manifest SHA-256
+`3909be6b29c1f879208f0a15ec2bccee58d65311cefd6698f0870d16c9742a8d`
+and content SHA-256
+`ee063ce1d5f804c8efc412dff2bedb0800d6fd347b38a6d0376e2a2e4dccd9dc`.
+Its `frame/source-frame-census.json` SHA-256 is
+`3ca66e8258fb239c51aa728d321029e2f5364b61d674abb3499e86c92f5f6e59`
+and is part of the exact FINAL MAIN admission contract.
 
 TMAP actor selection and native indexed presentation are qualified and loaded.
 The cache preserves all TMAP animation groups and complete delta streams and
@@ -493,9 +503,11 @@ The later Level 1 reference-corpus qualification is recorded in:
   schema-v2 graphical runs are byte-identical at all five exact checkpoints
   with zero magenta pixels. The full-frame gate also binds entity/profile,
   terrain generation/layout/viewport, exact Unity version and build GUID.
-- `/tmp/magiccarpet-presentation-v4.tmkwl0/`: private two-timeline review
+- `/tmp/magiccarpet-presentation-v4.tmkwl0/`: historical capture review
   evidence with three base-PALN original-frame decodes, five independently
-  clocked Unity captures, a typed 23-layer correspondence contract, and
+  clocked managed Unity captures, a typed 23-layer correspondence contract,
+  and a separate fifth executable native FINAL MAIN timeline; the historical
+  managed/gallery layers remain adapted, and
   `MC_LEVEL1_PRESENTATION PASS` with zero cross-timeline pixel/clock claims,
   placeholders, missing owner references, or magenta pixels.
 

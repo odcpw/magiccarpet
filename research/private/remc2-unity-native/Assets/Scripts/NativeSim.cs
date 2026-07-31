@@ -112,6 +112,20 @@ namespace MagicCarpet.Native
         internal const uint TerrainFrameReflectedSpritesComposited = 0x400;
         internal const uint TerrainFrameSpriteShadowsComposited = 0x800;
         internal const uint TerrainFrameFrozenActorsComposited = 0x1000;
+        internal const uint PresentationFrameCompositorComplete = 0x2000;
+        internal const uint PresentationFrameHasProvenance = 0x4000;
+        internal const uint PresentationFrameOverlaysComposited = 0x8000;
+        internal const uint PresentationFramePostprocessComplete = 0x10000;
+        internal const uint PresentationFrameLightingComplete = 0x20000;
+        internal const uint PresentationInputPause = 0x01;
+        internal const uint PresentationInputChat = 0x02;
+        internal const uint PresentationInputOptions = 0x04;
+        internal const uint PresentationInputVolume = 0x08;
+        internal const uint PresentationInputOkCancel = 0x10;
+        internal const uint PresentationInputPointer = 0x20;
+        internal const uint PresentationInputNotificationName = 0x40;
+        internal const uint PresentationInputDebugMetrics = 0x80;
+        internal const uint PresentationInputAll = 0xff;
         internal const int TerrainFrameWidth = 320;
         internal const int TerrainFrameHeight = 200;
         internal const int TerrainFramePixels = TerrainFrameWidth * TerrainFrameHeight;
@@ -1174,6 +1188,156 @@ namespace MagicCarpet.Native
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct PresentationFrameQuery
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal ulong tick;
+            internal ulong presentationRevision;
+            internal ushort viewportWidth;
+            internal ushort viewportHeight;
+            internal ushort screenStride;
+            internal ushort reserved0;
+            internal byte configuredBlurMode;
+            internal byte blurCapability;
+            internal byte highSpeedSystem;
+            internal byte scratchPresent;
+            internal byte vgaResolution;
+            internal byte spatialSmoothing;
+            internal byte minimapEnabled;
+            internal byte topBarEnabled;
+            internal byte menuOverlay;
+            internal byte gamePaused;
+            internal byte levelEnd;
+            internal byte objectiveSelector;
+            internal byte objectiveTextbox;
+            internal byte tutorialOrBriefing;
+            internal byte helpPopup;
+            internal byte debugText;
+            internal uint reserved1;
+            internal uint reserved2;
+
+            internal static PresentationFrameQuery Create(
+                ulong generation,
+                ulong tick)
+            {
+                return new PresentationFrameQuery
+                {
+                    abiVersion = AbiVersion,
+                    structSize = 64,
+                    generation = generation,
+                    tick = tick,
+                    presentationRevision = 1,
+                    viewportWidth = TerrainFrameWidth,
+                    viewportHeight = TerrainFrameHeight,
+                    screenStride = TerrainFrameWidth,
+                    highSpeedSystem = 1,
+                    scratchPresent = 1,
+                    vgaResolution = 1,
+                    minimapEnabled = 1,
+                    topBarEnabled = 1,
+                    objectiveSelector = byte.MaxValue
+                };
+            }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct Level1PresentationInput
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal uint authorityMask;
+            internal byte selectedMenuItem;
+            internal byte pauseMenuSuppressed;
+            internal byte pauseTextSuppressed;
+            internal byte levelEndTextSuppressed;
+            internal byte recursivePauseWriter;
+            internal byte loadAvailable;
+            internal byte soundAvailable;
+            internal byte musicAvailable;
+            internal uint optionsEnabledMask;
+            internal uint optionsSelectedMask;
+            internal byte soundVolume;
+            internal byte musicVolume;
+            internal byte volumeTarget;
+            internal byte chatRecipient;
+            internal byte chatMode;
+            internal byte chatPlayerMask;
+            internal byte localPlayerIndex;
+            internal byte frameTimingIndex;
+            internal byte cursorVisible;
+            internal byte reserved0;
+            internal short mouseX;
+            internal short mouseY;
+            internal short joystick;
+            internal byte textColourPhase;
+            internal byte reserved1;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 8 * 64)]
+            internal byte[] chatLines;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 8 * 16)]
+            internal byte[] chatNames;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
+            internal byte[] notificationPlayerName;
+            internal uint debugClockBucket;
+            internal short soundNumber;
+            internal ushort reserved2;
+            internal uint debugHeapSize;
+            internal uint debugMemoryUsed;
+            internal uint debugMemoryFree;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal uint[] reserved;
+
+            internal static Level1PresentationInput Create()
+            {
+                return new Level1PresentationInput
+                {
+                    abiVersion = AbiVersion,
+                    structSize = 740,
+                    chatLines = new byte[8 * 64],
+                    chatNames = new byte[8 * 16],
+                    notificationPlayerName = new byte[16],
+                    reserved = new uint[4]
+                };
+            }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct PresentationFrameInfo
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal ulong tick;
+            internal ulong presentationRevision;
+            internal ulong immutableInputHash;
+            internal ushort width;
+            internal ushort height;
+            internal ushort stride;
+            internal ushort viewportWidth;
+            internal uint indexBytes;
+            internal uint provenanceBytes;
+            internal uint flags;
+            internal byte effectivePostprocessMode;
+            internal byte historyState;
+            internal byte newlyCommitted;
+            internal byte reserved0;
+            internal ulong indexHash;
+            internal ulong provenanceHash;
+            internal ulong lightingHash;
+            internal ulong sourceArenaHash;
+            internal uint overlayPixelsWritten;
+            internal ushort overlayStageCount;
+            internal ushort reserved1;
+            internal uint reserved2;
+            internal uint reserved3;
+            internal uint reserved4;
+            internal uint reserved5;
+            internal uint reserved6;
+            internal uint reserved7;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct AssetInfo
         {
             internal uint abiVersion;
@@ -1363,6 +1527,22 @@ namespace MagicCarpet.Native
             uint infoSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_session_presentation_frame_copy(
+            ulong handle,
+            ref PresentationFrameQuery query,
+            [Out] byte[] indexBuffer,
+            uint indexCapacity,
+            [Out] byte[] provenanceBuffer,
+            uint provenanceCapacity,
+            out PresentationFrameInfo info,
+            uint infoSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_level1_presentation_input(
+            ulong handle,
+            ref Level1PresentationInput input);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_session_step(
             ulong handle,
             ref Command command,
@@ -1463,6 +1643,11 @@ namespace MagicCarpet.Native
         internal static extern int mc_native_level1_player_menu_state(
             ulong handle,
             byte menuState);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_level1_game_paused(
+            ulong handle,
+            byte paused);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_level1_player_inject_damage_for_qualification(
@@ -1728,6 +1913,9 @@ namespace MagicCarpet.Native
             RequireSize<TerrainGridVertex>(64);
             RequireSize<TerrainFrameQuery>(40);
             RequireSize<TerrainFrameInfo>(96);
+            RequireSize<PresentationFrameQuery>(64);
+            RequireSize<Level1PresentationInput>(740);
+            RequireSize<PresentationFrameInfo>(128);
             RequireSize<AssetInfo>(32);
             RequireSize<EventQuery>(40);
             RequireSize<EventBatch>(56);
@@ -1893,6 +2081,18 @@ namespace MagicCarpet.Native
             RequireOffset<TerrainFrameInfo>(nameof(TerrainFrameInfo.indexBytes), 40);
             RequireOffset<TerrainFrameInfo>(nameof(TerrainFrameInfo.indexHash), 64);
             RequireOffset<TerrainFrameInfo>(nameof(TerrainFrameInfo.reserved1), 88);
+            RequireOffset<PresentationFrameQuery>(
+                nameof(PresentationFrameQuery.configuredBlurMode), 40);
+            RequireOffset<Level1PresentationInput>(
+                nameof(Level1PresentationInput.mouseX), 38);
+            RequireOffset<Level1PresentationInput>(
+                nameof(Level1PresentationInput.debugClockBucket), 704);
+            RequireOffset<PresentationFrameInfo>(
+                nameof(PresentationFrameInfo.immutableInputHash), 32);
+            RequireOffset<PresentationFrameInfo>(
+                nameof(PresentationFrameInfo.indexHash), 64);
+            RequireOffset<PresentationFrameInfo>(
+                nameof(PresentationFrameInfo.reserved2), 104);
             RequireOffset<NativeEvent>(nameof(NativeEvent.stateHash), 24);
             RequireOffset<NativeEvent>(nameof(NativeEvent.reserved), 56);
             RequireOffset<AudioCommand>(nameof(AudioCommand.playbackRateHz), 48);

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import collections
 import json
 import os
@@ -23,6 +24,7 @@ EXPECTED_CHECK_IDS = {
     "totals",
     "exact-evidence",
     "rust-test-resolution",
+    "external-test-resolution",
     "non-exact-ownership",
     "plan-acyclic",
     "authored-census",
@@ -33,6 +35,14 @@ CONFIDENCE_LEVELS = {"high", "medium", "low"}
 REACHABILITY_STATUSES = {"reachable", "conditional"}
 SLOT_ID_RE = re.compile(r"^c\d{2}-(?:action|constructor)-\d{3}$")
 TEST_LINE_RE = re.compile(r"^(.+): test$")
+CSHARP_NAMESPACE_RE = re.compile(r"\bnamespace\s+([A-Za-z_][A-Za-z0-9_.]*)")
+CSHARP_CLASS_RE = re.compile(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)")
+CSHARP_TEST_RE = re.compile(
+    r"\[Test\](?:\s*\[[^\]]+\])*\s*(?:public\s+)?(?:unsafe\s+)?void\s+"
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+    re.MULTILINE,
+)
+REPO_ROOT = Path(__file__).resolve().parents[4]
 
 ROOT_KEYS = {
     "schema",
@@ -199,6 +209,63 @@ def capture_cargo_test_inventory(workspace_root: Path) -> collections.Counter[st
     return inventory
 
 
+def capture_unity_test_inventory(source_path: Path) -> collections.Counter[str]:
+    try:
+        source = source_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        fail(f"cannot read Unity test source {source_path}: {error}")
+    namespace_match = CSHARP_NAMESPACE_RE.search(source)
+    class_match = CSHARP_CLASS_RE.search(source)
+    if namespace_match is None or class_match is None:
+        fail(f"Unity test source {source_path} has no namespace/class")
+    prefix = f"{namespace_match.group(1)}.{class_match.group(1)}"
+    inventory = collections.Counter(
+        f"{prefix}.{method}" for method in CSHARP_TEST_RE.findall(source)
+    )
+    if not inventory:
+        fail(f"Unity test source {source_path} contains no [Test] methods")
+    duplicates = sorted(name for name, count in inventory.items() if count != 1)
+    if duplicates:
+        fail(f"Unity test source contains ambiguous duplicate {duplicates[0]!r}")
+    return inventory
+
+
+def capture_python_test_inventory(source_path: Path) -> collections.Counter[str]:
+    try:
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), source_path)
+    except (OSError, UnicodeError, SyntaxError) as error:
+        fail(f"cannot parse Python test source {source_path}: {error}")
+    inventory: collections.Counter[str] = collections.Counter()
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for member in node.body:
+            if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) and member.name.startswith(
+                "test_"
+            ):
+                inventory[f"{source_path.stem}.{node.name}.{member.name}"] += 1
+    if not inventory:
+        fail(f"Python test source {source_path} contains no test methods")
+    duplicates = sorted(name for name, count in inventory.items() if count != 1)
+    if duplicates:
+        fail(f"Python test source contains ambiguous duplicate {duplicates[0]!r}")
+    return inventory
+
+
+def resolve_binding_source(file_value: str, kind: str) -> Path:
+    candidate = REPO_ROOT / file_value
+    if candidate.is_symlink():
+        fail(f"{kind} binding file cannot be a symlink: {file_value!r}")
+    source = candidate.resolve()
+    try:
+        source.relative_to(REPO_ROOT)
+    except ValueError:
+        fail(f"{kind} binding file escapes the repository: {file_value!r}")
+    if not source.is_file():
+        fail(f"{kind} binding file is not a regular repository file: {file_value!r}")
+    return source
+
+
 def validate_schema(value: Any) -> None:
     schema = expect_keys(
         value,
@@ -233,7 +300,13 @@ def validate_schema(value: Any) -> None:
     rules = expect_keys(
         schema["binding_rules"],
         "$.schema.binding_rules",
-        {"rust-test", "exact_rows", "qualification-record"},
+        {
+            "rust-test",
+            "unity-test",
+            "python-test",
+            "exact_rows",
+            "qualification-record",
+        },
     )
     for key, rule in rules.items():
         expect_string(rule, f"$.schema.binding_rules.{key}")
@@ -250,7 +323,7 @@ def validate_evidence_binding(
     common_keys = {"kind", "file", "test", "command", "proves"}
     initial = expect_object(value, path)
     kind = expect_string(initial.get("kind"), f"{path}.kind")
-    if kind == "rust-test":
+    if kind in {"rust-test", "unity-test", "python-test"}:
         binding = expect_keys(initial, path, common_keys)
     elif kind == "qualification-record":
         binding = expect_keys(initial, path, common_keys | {"non_executable"})
@@ -267,6 +340,22 @@ def validate_evidence_binding(
         if inventory.get(test_name, 0) != 1:
             fail(
                 f"row {row_id}: rust-test binding {test_name!r} "
+                "does not resolve exactly once"
+            )
+    elif kind == "unity-test":
+        source = resolve_binding_source(binding["file"], kind)
+        test_name = binding["test"]
+        if capture_unity_test_inventory(source).get(test_name, 0) != 1:
+            fail(
+                f"row {row_id}: unity-test binding {test_name!r} "
+                "does not resolve exactly once"
+            )
+    elif kind == "python-test":
+        source = resolve_binding_source(binding["file"], kind)
+        test_name = binding["test"]
+        if capture_python_test_inventory(source).get(test_name, 0) != 1:
+            fail(
+                f"row {row_id}: python-test binding {test_name!r} "
                 "does not resolve exactly once"
             )
     return kind

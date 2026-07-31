@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -27,13 +28,21 @@ namespace MagicCarpet.Native.Tests
         private static string AssetCachePath =>
             Path.Combine(PrivateRoot, "generated/level1-unity-asset-cache");
 
+        private static string QualifiedAssetCachePath =>
+            Path.GetFullPath(
+                Environment.GetEnvironmentVariable("MC_ASSET_CACHE_PATH") ??
+                AssetCachePath);
+
         [SetUp]
         public void SetUp()
         {
             priorAssetCache =
                 Environment.GetEnvironmentVariable("MC_ASSET_CACHE_PATH");
-            Environment.SetEnvironmentVariable(
-                "MC_ASSET_CACHE_PATH", AssetCachePath);
+            if (string.IsNullOrWhiteSpace(priorAssetCache))
+            {
+                Environment.SetEnvironmentVariable(
+                    "MC_ASSET_CACHE_PATH", AssetCachePath);
+            }
         }
 
         [TearDown]
@@ -331,14 +340,41 @@ namespace MagicCarpet.Native.Tests
         public void OwnerCacheUsesItsSemanticClosureIdentity()
         {
             var cache = OwnerAssetCache.OpenAndValidate(
-                AssetCachePath,
+                QualifiedAssetCachePath,
                 MagicCarpetRuntime.ExpectedPackageHash,
                 MagicCarpetRuntime.ExpectedOwnerAssetClosureHash);
-            Assert.That(cache.OutputCount, Is.EqualTo(570));
+            Assert.That(cache.OutputCount, Is.EqualTo(1248));
             Assert.That(
                 cache.ContentHash,
                 Is.EqualTo(
-                    "d299990e300117d065eb3a75008f6a69911b1ba356e4e06452c0a826450a01e5"));
+                    "ee063ce1d5f804c8efc412dff2bedb0800d6fd347b38a6d0376e2a2e4dccd9dc"));
+            Assert.That(
+                cache.ReadOutput("frame/source-frame-census.json"),
+                Is.Not.Empty);
+            var census = cache.ReadOutputText("frame/source-frame-census.json");
+            StringAssert.Contains(
+                "\"final_main_implementation\": \"accepted_fixed_profile_native_FINAL_MAIN\"",
+                census);
+            StringAssert.Contains(
+                "\"final_main_classification\": \"Exact\"",
+                File.ReadAllText(Path.Combine(QualifiedAssetCachePath, "manifest.json")));
+            StringAssert.Contains(
+                "\"MC_PRESENTATION_FRAME_COMPOSITOR_COMPLETE\"",
+                census);
+            StringAssert.Contains(
+                "\"MC_TERRAIN_FRAME_NON_TERRAIN_OMITTED\"",
+                census);
+            Assert.That(
+                QualifiedAssetCachePath,
+                Is.Not.EqualTo(AssetCachePath),
+                "the focused CP4 route supplies the accepted immutable cache");
+            Assert.Throws<InvalidDataException>(
+                () => OwnerAssetCache.OpenAndValidate(
+                    AssetCachePath,
+                    MagicCarpetRuntime.ExpectedPackageHash,
+                    MagicCarpetRuntime.ExpectedOwnerAssetClosureHash),
+                "the old 570-output cache is incomplete and must fail before " +
+                "qualified exact-mode initialization");
         }
 
         [Test]
@@ -3363,6 +3399,253 @@ namespace MagicCarpet.Native.Tests
                 camera, worldIndices, worldCoverage);
             Assert.That(repeated.indexHash, Is.EqualTo(world.indexHash));
             Assert.That(repeated.coverageHash, Is.EqualTo(world.coverageHash));
+        }
+
+        [Test]
+        [Timeout(900_000)]
+        public void PresentationFrameOwnsOneIndexedPlaneAndZeroManagedDuplicates()
+        {
+            var complete =
+                NativeSim.PresentationFrameCompositorComplete |
+                NativeSim.PresentationFrameHasProvenance |
+                NativeSim.PresentationFrameOverlaysComposited |
+                NativeSim.PresentationFramePostprocessComplete |
+                NativeSim.PresentationFrameLightingComplete;
+            var root = new GameObject("initialized exact presentation route");
+            root.SetActive(false);
+            try
+            {
+                var runtime = root.AddComponent<MagicCarpetRuntime>();
+                runtime.QualificationInitializeExactPresentation(
+                    PackagePath,
+                    ClosurePath,
+                    QualifiedAssetCachePath);
+                var flags = runtime.QualificationPresentationFrameFlags();
+                Assert.That(flags & complete, Is.EqualTo(complete));
+                Assert.That(
+                    flags &
+                        (NativeSim.TerrainFrameIsolatedSkyTerrain |
+                         NativeSim.TerrainFrameNonTerrainOmitted),
+                    Is.Zero);
+                Assert.That(
+                    runtime.QualificationPresentationRouteIsExact(),
+                    Is.True,
+                    "initialized production route owns a single R8 point " +
+                    "plane, uploads one exact row flip, disables every managed " +
+                    "renderer, and spawns no managed live-impact marker");
+                Assert.That(
+                    runtime.QualificationPresentationOwnershipCounters(),
+                    Is.EqualTo(new[]
+                    {
+                        1, 1, 1,
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        1
+                    }),
+                    "one native endpoint, one top-down row flip, one R8 " +
+                    "upload, zero managed terrain/world/entity/mission/" +
+                    "particle/billboard/minimap/objective/HUD/menu/live-impact " +
+                    "submissions, and one qualified OnGUI suppression");
+                Assert.That(
+                    MagicCarpetRuntime.NativeFinalFrameOwnsPresentation(
+                        false,
+                        flags),
+                    Is.False,
+                    "adapted mode never claims native FINAL-MAIN ownership");
+                Assert.That(
+                    runtime.QualificationDriveShippingPresentationState(),
+                    Is.EqualTo(Enumerable.Repeat(1, 12).ToArray()),
+                    "the initialized shipping update/state owners render " +
+                    "an authoritative held pause, resume, map, map options, " +
+                    "map volume, map OK/cancel, " +
+                    "and a reset with no managed presentation submission");
+
+                foreach (var menuState in new[] { 7, 8 })
+                {
+                    var mapRoot =
+                        new GameObject($"startup-valid map state {menuState}");
+                    mapRoot.SetActive(false);
+                    try
+                    {
+                        var mapRuntime = mapRoot.AddComponent<MagicCarpetRuntime>();
+                        mapRuntime.QualificationInitializePresentationFromStartup(
+                            new[] { "-mc-qualified", "-mc-control-mode", "7" },
+                            PackagePath,
+                            ClosurePath,
+                            QualifiedAssetCachePath);
+                        Assert.That(
+                            mapRuntime.QualificationDriveShippingMapFailClose(menuState),
+                            Is.EqualTo(Enumerable.Repeat(1, 3).ToArray()),
+                            $"startup-valid input reaches map state {menuState}, " +
+                            "and produces its exact COMPLETE or score-state " +
+                            "fail-closed ownership disposition");
+                    }
+                    finally
+                    {
+                        UnityEngine.Object.DestroyImmediate(mapRoot);
+                    }
+                }
+
+                var debugRoot = new GameObject("startup-valid debug presentation route");
+                debugRoot.SetActive(false);
+                try
+                {
+                    var debugRuntime = debugRoot.AddComponent<MagicCarpetRuntime>();
+                    debugRuntime.QualificationInitializePresentationFromStartup(
+                        new[]
+                        {
+                            "-mc-debug", "-mc-debug-entities",
+                            "-mc-control-mode", "7"
+                        },
+                        PackagePath,
+                        ClosurePath,
+                        QualifiedAssetCachePath);
+                    Assert.That(
+                        debugRuntime.QualificationDriveDebugStartup(),
+                        Is.EqualTo(Enumerable.Repeat(1, 5).ToArray()),
+                        "real -mc-debug startup owns FINAL MAIN, drives source " +
+                        "flags 0x08+0x40, submits the debug authority sentinel, " +
+                        "and uses the configured source control mode");
+                }
+                finally
+                {
+                    UnityEngine.Object.DestroyImmediate(debugRoot);
+                }
+
+                var completionRoot =
+                    new GameObject("startup-valid Level 1 completion route");
+                completionRoot.SetActive(false);
+                try
+                {
+                    var completionRuntime =
+                        completionRoot.AddComponent<MagicCarpetRuntime>();
+                    completionRuntime.QualificationInitializePresentationFromStartup(
+                        new[]
+                        {
+                            "-mc-qualified", "-mc-level1-autoplay",
+                            "-mc-level1-autoplay-fast", "-mc-control-mode", "7"
+                        },
+                        PackagePath,
+                        ClosurePath,
+                        QualifiedAssetCachePath);
+                    Assert.That(
+                        completionRuntime.QualificationDriveRealCompletion(),
+                        Is.EqualTo(Enumerable.Repeat(1, 11).ToArray()),
+                        "the real fast Update/autopilot route reaches Level 1 " +
+                        "completion and FINAL MAIN carries the live end/query, " +
+                        "overlay receipt, changed indexed pixels, and exact " +
+                        "CLRN[3840] PauseOrEnd objective/exit text pixels, and " +
+                        "the production path proceeds through the true remc2 " +
+                        "terminal (exitSequenceComplete==1, exitResultCode==10, " +
+                        "runtime exit-request path invoked) while the captured " +
+                        "COMPLETE receipt/ownership stays genuine and its end " +
+                        "pixels and provenance still correspond to the final " +
+                        "production frame");
+                }
+                finally
+                {
+                    UnityEngine.Object.DestroyImmediate(completionRoot);
+                }
+                var transition =
+                    runtime.QualificationTransitionOwnedFrameToMissingHelpFailure();
+                Assert.That(
+                    new[]
+                    {
+                        transition[0], transition[2], transition[3],
+                        transition[4], transition[5]
+                    },
+                    Is.EqualTo(new[] { 0, 1, 0, 0, 0 }),
+                    "same runtime COMPLETE -> changed-tick missing-help failure " +
+                    "clears ownership, restores managed renderers, preserves " +
+                    "a visible fatal, and performs no row flip, upload, or GUI " +
+                    $"suppression; state={string.Join(",", transition)}");
+                Assert.That(transition[1], Is.GreaterThan(0));
+                Assert.That(
+                    transition.Skip(6).Take(4).Sum(),
+                    Is.GreaterThan(0),
+                    "the failed changed-tick request traverses the current " +
+                    "managed terrain/world/entity/mission route");
+                Assert.That(
+                    transition[10],
+                    Is.Zero,
+                    "failed ownership leaves no retained suppression state");
+                var helpRetry =
+                    runtime.QualificationRetryAfterMissingHelpFailure();
+                Assert.That(
+                    helpRetry.Take(5).ToArray(),
+                    Is.EqualTo(new[] { 1, 0, 1, 1, 1 }),
+                    "clearing the public help state retries the same native " +
+                    "tick, earns COMPLETE, performs exactly one row flip/R8 " +
+                    "upload/OnGUI suppression, and clears the visible fatal; " +
+                    $"state={string.Join(",", helpRetry)}");
+                Assert.That(
+                    helpRetry[5],
+                    Is.GreaterThan(0),
+                    "successful same-tick help retry owns and suppresses the " +
+                    "current managed renderer set");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+
+            var incompleteRoot =
+                new GameObject("initialized incomplete presentation route");
+            incompleteRoot.SetActive(false);
+            try
+            {
+                var incomplete =
+                    incompleteRoot.AddComponent<MagicCarpetRuntime>();
+                incomplete.QualificationInitializeIncompletePresentation(
+                    PackagePath,
+                    ClosurePath,
+                    QualifiedAssetCachePath);
+                var incompleteState =
+                    incomplete.QualificationPresentationFailClosedState();
+                Assert.That(
+                    incomplete.QualificationPresentationIsFailClosed(true),
+                    Is.True,
+                    "an initialized missing-help receipt exposes its fatal " +
+                    "state, retains managed renderers, and never suppresses " +
+                    $"OnGUI; owned/gui/renderers/fatal/suppressed=" +
+                    string.Join(",", incompleteState));
+                var incompleteCounters =
+                    incomplete.QualificationPresentationOwnershipCounters();
+                Assert.That(incompleteCounters[0], Is.EqualTo(1));
+                Assert.That(
+                    incompleteCounters.Skip(1).ToArray(),
+                    Is.EqualTo(new int[14]),
+                    "rejected COMPLETE performs no row flip, R8 upload, managed " +
+                    "suppression, or GUI suppression");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(incompleteRoot);
+            }
+
+            var adaptedRoot =
+                new GameObject("initialized adapted presentation route");
+            adaptedRoot.SetActive(false);
+            try
+            {
+                var adapted = adaptedRoot.AddComponent<MagicCarpetRuntime>();
+                adapted.QualificationInitializeAdaptedPresentation(
+                    PackagePath,
+                    ClosurePath,
+                    QualifiedAssetCachePath);
+                var adaptedState =
+                    adapted.QualificationPresentationFailClosedState();
+                Assert.That(
+                    adapted.QualificationPresentationIsFailClosed(false),
+                    Is.True,
+                    "an initialized adapted world frame never owns FINAL MAIN " +
+                    "or suppresses its managed renderers/GUI; " +
+                    "owned/gui/renderers/fatal/suppressed=" +
+                    string.Join(",", adaptedState));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(adaptedRoot);
+            }
         }
 
         [Test]

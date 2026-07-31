@@ -365,18 +365,13 @@ class OwnerCacheTests(unittest.TestCase):
         bitmap_assets = hud["bitmap_assets"]
         self.assertEqual(
             [row["selector"] for row in bitmap_assets],
-            [
-                1, 2, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
-                51, 52, 53, 54, 55, 58, 66, 83, 84, 88, 89, 90, 91,
-                97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107,
-                108, 109, 110, 111, 112, 113, 114, 115, 116, 117,
-                118, 119, 120, 121, 122, 123, 124, 125, 126, 149, 150,
-                161, 162, 163, 164, 165, 166, 167, 171, 172, 173,
-                179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189,
-                190,
-            ],
+            [1, 2, 9]
+            + list(range(40, 56))
+            + [58, 66]
+            + list(range(74, 92))
+            + list(range(97, 262)),
         )
-        self.assertEqual(len({row["selector"] for row in bitmap_assets}), 80)
+        self.assertEqual(len({row["selector"] for row in bitmap_assets}), 204)
         self.assertTrue(
             all(
                 row["bank"] == "HSPRN0-0"
@@ -389,10 +384,16 @@ class OwnerCacheTests(unittest.TestCase):
                 for row in bitmap_assets
             )
         )
+        legacy_hud_selectors = {
+            1, 2, *range(40, 56), 58, 66, 83, 84, *range(88, 92),
+            *range(97, 127), 149, 150, *range(161, 168),
+            *range(171, 174), *range(179, 191),
+        }
         self.assertEqual(
             {
                 row["selector"]: (row["runtime_width"], row["runtime_height"])
                 for row in bitmap_assets
+                if row["selector"] in legacy_hud_selectors
             },
             {
                 1: (64, 44),
@@ -1157,8 +1158,8 @@ class OwnerCacheTests(unittest.TestCase):
         materials = manifest["assets"]["terrain_materials"]
         self.assertEqual(materials["bl32_tile_count"], 152)
         self.assertEqual(materials["tmap_frame_used_selectors"], [40, 41, 54, 63])
-        self.assertEqual(materials["tmap_scene_reachable_selector_count"], 172)
-        self.assertEqual(materials["tmap_decoded_texture_count"], 161)
+        self.assertEqual(materials["tmap_scene_reachable_selector_count"], 180)
+        self.assertEqual(materials["tmap_decoded_texture_count"], 169)
         self.assertEqual(materials["tmap_raw_placeholder_count"], 11)
         descriptor = json.loads((self.first / materials["path"]).read_text())
         self.assertEqual(
@@ -1185,7 +1186,7 @@ class OwnerCacheTests(unittest.TestCase):
         self.assertEqual(max(rgb6), 63)
         self.assertEqual(max(rgb8), 252)
         self.assertEqual(descriptor["tmaps1"]["frame_used_selectors"], [40, 41, 54, 63])
-        self.assertEqual(len(descriptor["tmaps1"]["scene_reachable_selectors"]), 172)
+        self.assertEqual(len(descriptor["tmaps1"]["scene_reachable_selectors"]), 180)
         self.assertTrue(
             set(cache.LEVEL1_LIVE_MISSION_TMAPS)
             <= set(descriptor["tmaps1"]["scene_reachable_selectors"])
@@ -1418,6 +1419,86 @@ class OwnerCacheTests(unittest.TestCase):
             cache.validate_cache(self.first, "0" * 64, cache.EXPECTED_CLOSURE)
         with self.assertRaisesRegex(cache.CacheError, "closure binding mismatch"):
             cache.validate_cache(self.first, cache.EXPECTED_PACKAGE, "0" * 64)
+
+    def test_source_frame_census_binds_accepted_native_final_main(self) -> None:
+        manifest = cache.validate_cache(self.first)
+        self.assertEqual(len(manifest["outputs"]), 1248)
+        asset = manifest["assets"]["source_frame_census"]
+        self.assertEqual(
+            asset["status"],
+            "accepted_fixed_profile_native_FINAL_MAIN_source_and_asset_census",
+        )
+        self.assertEqual(asset["final_main_classification"], "Exact")
+        census = json.loads((self.first / asset["path"]).read_text())
+        self.assertEqual(
+            census["checkpoint_status"],
+            {
+                "source_frame_census_complete": True,
+                "final_main_implementation":
+                    "accepted_fixed_profile_native_FINAL_MAIN",
+                "correspondence_layers": [
+                    "sprite.source_hotspot_anchor",
+                    "renderer.dos_depth_interleaving_aspect",
+                ],
+                "unknown_reachable_state_policy":
+                    "hard_error_and_no_COMPLETE_flag",
+            },
+        )
+        contract = census["native_final_main_contract"]
+        self.assertEqual(contract["classification"], "Exact")
+        self.assertEqual(contract["source_commit"], cache.PINNED_REMC2_COMMIT)
+        self.assertEqual(contract["profile"]["framebuffer"], "320x200 indexed MAIN")
+        self.assertEqual(
+            contract["fail_closed_reachable_states"],
+            [
+                "active tutorial/briefing",
+                "recursive help popup",
+                "immobilization spider-web writer",
+                "menu-state-7 score writer",
+            ],
+        )
+        self.assertEqual(len(contract["source_anchors"]), 10)
+        self.assertEqual(len(contract["ordered_closure"]), 9)
+        self.assertEqual(
+            contract["required_complete_flags"],
+            [
+                "MC_PRESENTATION_FRAME_COMPOSITOR_COMPLETE",
+                "MC_PRESENTATION_FRAME_HAS_PROVENANCE",
+                "MC_PRESENTATION_FRAME_OVERLAYS_COMPOSITED",
+                "MC_PRESENTATION_FRAME_POSTPROCESS_COMPLETE",
+                "MC_PRESENTATION_FRAME_LIGHTING_COMPLETE",
+            ],
+        )
+        self.assertEqual(
+            contract["forbidden_complete_flag"],
+            "MC_TERRAIN_FRAME_NON_TERRAIN_OMITTED",
+        )
+        self.assertEqual(
+            set(contract["implementation"]),
+            {
+                "source_tuple_and_tmap",
+                "map_chain",
+                "world_raster",
+                "lighting",
+                "postprocess",
+                "overlay",
+                "atomic_finalization",
+                "unity",
+            },
+        )
+        self.assertIn(
+            "cross-timeline pixel equality", contract["explicit_nonclaims"]
+        )
+        self.assertIn(
+            "stereo or alternate-resolution presentation",
+            contract["explicit_nonclaims"],
+        )
+        self.assertTrue(
+            all(
+                "fail-closed before COMPLETE" in claim
+                for claim in contract["explicit_nonclaims"][-4:]
+            )
+        )
 
     def test_manifest_tamper_is_rejected(self) -> None:
         path = self.first / "manifest.json"

@@ -21,11 +21,53 @@ SPEC.loader.exec_module(VERIFIER)
 CONTRACT = json.loads(
     (QUALIFICATION / "presentation-correspondence.json").read_text()
 )
+CP4_CACHE = (
+    QUALIFICATION.parents[1]
+    / "generated/level1-unity-asset-cache-plan28-cp4-correction2"
+)
 
 
 class PresentationContractTests(unittest.TestCase):
     def test_registered_contract_passes(self) -> None:
         VERIFIER.verify_contract(copy.deepcopy(CONTRACT))
+
+    def test_native_final_main_composed_gate_binds_qualified_cache(self) -> None:
+        contract = copy.deepcopy(CONTRACT)
+        VERIFIER.verify_contract(contract)
+        VERIFIER.verify_native_final_main_cache(contract, CP4_CACHE)
+        VERIFIER.verify_no_qualified_placeholders(contract, CP4_CACHE)
+
+    def test_native_final_main_cache_hash_substitutions_are_rejected(self) -> None:
+        mutations = {
+            "manifest_sha256": "manifest identity",
+            "content_sha256": "content/count mismatch",
+            "source_frame_census_sha256": "census identity mismatch",
+        }
+        for field, message in mutations.items():
+            with self.subTest(field=field):
+                mutated = copy.deepcopy(CONTRACT)
+                mutated["native_final_main"]["cache"][field] = "0" * 64
+                with self.assertRaisesRegex(SystemExit, message):
+                    VERIFIER.verify_native_final_main_cache(mutated, CP4_CACHE)
+
+    def test_native_final_main_shape_valid_unknown_rust_test_is_rejected(self) -> None:
+        mutated = copy.deepcopy(CONTRACT)
+        mutated["native_final_main"]["components"]["capi"]["tests"][0] = (
+            "native_v2::tests::shape_valid_but_nonexistent"
+        )
+        with self.assertRaisesRegex(SystemExit, "capi test binding does not resolve"):
+            VERIFIER.verify_contract(mutated)
+
+    def test_native_final_main_shape_valid_unknown_unity_test_is_rejected(self) -> None:
+        mutated = copy.deepcopy(CONTRACT)
+        mutated["native_final_main"]["components"]["unity_one_plane"]["tests"][0] = (
+            "MagicCarpet.Native.Tests.NativeSessionEditModeTests."
+            "ShapeValidButNonexistent"
+        )
+        with self.assertRaisesRegex(
+            SystemExit, "unity_one_plane test binding does not resolve"
+        ):
+            VERIFIER.verify_contract(mutated)
 
     def test_cross_timeline_pixel_equality_is_rejected(self) -> None:
         mutated = copy.deepcopy(CONTRACT)
@@ -53,17 +95,72 @@ class PresentationContractTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "classification mismatch"):
             VERIFIER.verify_contract(mutated)
 
-    def test_source_hotspot_exact_claim_is_rejected(self) -> None:
+    def test_source_hotspot_exact_target_cannot_be_substituted(self) -> None:
         mutated = copy.deepcopy(CONTRACT)
         layer = next(
             row for row in mutated["layers"]
             if row["id"] == "sprite.source_hotspot_anchor"
         )
-        layer["classification"] = "exact"
-        layer["present"] = True
-        layer["exact_domain"] = "sprite hotspot"
-        layer["exact_against"] = "owner cache"
-        with self.assertRaisesRegex(SystemExit, "classification mismatch"):
+        layer["exact_against"] = "controlled gallery"
+        with self.assertRaisesRegex(SystemExit, "exact target crosses"):
+            VERIFIER.verify_contract(mutated)
+
+    def test_native_final_main_source_anchor_cannot_move_symbols(self) -> None:
+        mutated = copy.deepcopy(CONTRACT)
+        mutated["native_final_main"]["source_anchors"][0]["symbols"].append(
+            "DrawGameFrame_2BE30"
+        )
+        with self.assertRaisesRegex(SystemExit, "pinned source anchors"):
+            VERIFIER.verify_contract(mutated)
+
+    def test_native_final_main_requires_every_component(self) -> None:
+        for component in VERIFIER.NATIVE_FINAL_MAIN_COMPONENTS:
+            with self.subTest(component=component):
+                mutated = copy.deepcopy(CONTRACT)
+                del mutated["native_final_main"]["components"][component]
+                with self.assertRaisesRegex(SystemExit, "component coverage"):
+                    VERIFIER.verify_contract(mutated)
+
+    def test_native_final_main_requires_complete_and_forbids_omission(self) -> None:
+        mutated = copy.deepcopy(CONTRACT)
+        mutated["native_final_main"]["complete_receipt"]["required_flags"].remove(
+            "MC_PRESENTATION_FRAME_LIGHTING_COMPLETE"
+        )
+        with self.assertRaisesRegex(SystemExit, "COMPLETE/atomicity"):
+            VERIFIER.verify_contract(mutated)
+        mutated = copy.deepcopy(CONTRACT)
+        mutated["native_final_main"]["complete_receipt"]["forbidden_flags"] = []
+        with self.assertRaisesRegex(SystemExit, "COMPLETE/atomicity"):
+            VERIFIER.verify_contract(mutated)
+
+    def test_native_final_main_requires_atomic_failure_semantics(self) -> None:
+        mutated = copy.deepcopy(CONTRACT)
+        mutated["native_final_main"]["complete_receipt"]["failure_semantics"] = (
+            "may commit partial output"
+        )
+        with self.assertRaisesRegex(SystemExit, "COMPLETE/atomicity"):
+            VERIFIER.verify_contract(mutated)
+
+    def test_native_final_main_requires_unity_one_plane_ownership(self) -> None:
+        mutated = copy.deepcopy(CONTRACT)
+        mutated["native_final_main"]["unity_one_plane"][
+            "managed_duplicate_submissions"
+        ] = 1
+        with self.assertRaisesRegex(SystemExit, "one-plane"):
+            VERIFIER.verify_contract(mutated)
+
+    def test_native_final_main_requires_profile_exclusions(self) -> None:
+        mutated = copy.deepcopy(CONTRACT)
+        mutated["native_final_main"]["explicit_exclusions"].remove(
+            "hostile or remote player presentation"
+        )
+        with self.assertRaisesRegex(SystemExit, "explicit exclusions"):
+            VERIFIER.verify_contract(mutated)
+
+    def test_native_final_main_cache_identity_is_paired(self) -> None:
+        mutated = copy.deepcopy(CONTRACT)
+        mutated["native_final_main"]["cache"]["output_count"] = 1247
+        with self.assertRaisesRegex(SystemExit, "owner-cache identity"):
             VERIFIER.verify_contract(mutated)
 
     def test_cross_domain_exact_target_is_rejected_and_counted(self) -> None:

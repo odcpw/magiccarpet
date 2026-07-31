@@ -13,6 +13,7 @@ import re
 import shutil
 import struct
 import subprocess
+import tarfile
 import tempfile
 import wave
 from io import BytesIO
@@ -28,6 +29,9 @@ DEFAULT_PACKAGE = GENERATED / "level1-export-m"
 DEFAULT_CLOSURE = GENERATED / "level1-asset-closure.json"
 DEFAULT_CATALOG = PRIVATE / "remc2-atlas/semantics/generated/owner-asset-catalog.json"
 DEFAULT_OUTPUT = GENERATED / "level1-unity-asset-cache"
+CANONICAL_LEVEL1_MATRIX = (
+    PRIVATE / "remc2-sim-rs/level1-conformance/level1-conformance-matrix.json"
+)
 PROVEN_DECODER = PRIVATE / "remc2-atlas/build_owner_asset_catalog.py"
 PROVEN_CLOSURE = PRIVATE / "remc2-level-asset-closure/build_closure.py"
 SPELL_TABLE = PRIVATE / "remc2-atlas/semantics/generated/spell-tiers.csv"
@@ -35,26 +39,271 @@ SPELL_GENERATOR = PRIVATE / "remc2-atlas/build_semantic_backbone.py"
 RNC_HELPER = Path(__file__).with_name("rnc_decode.cpp")
 XMI_HELPER = Path(__file__).with_name("xmi_convert.cpp")
 ADL_RENDER_HELPER = Path(__file__).with_name("adl_render.cpp")
-ADLMIDI_SOURCE = REPO / "upstream/magic-carpet-2-hd/libADLMIDI-master"
-XMI_IMPLEMENTATION = (
-    REPO / "upstream/magic-carpet-2-hd/remc2/portability/xmi2mid.cpp"
+ADLMIDI_SOURCE_AT_PIN = "libADLMIDI-master"
+EXPECTED_ADLMIDI_ARCHIVE_SHA256 = (
+    "566adad0a67ba84bae7b415582e9be2dce355a8a54e62365d6bf2c2bbd46a300"
 )
-XMI_HEADER = REPO / "upstream/magic-carpet-2-hd/remc2/portability/xmi2mid.h"
-RNC_DECODER_CPP = REPO / "upstream/magic-carpet-2-hd/remc2/utilities/DataFileRNC.cpp"
-RNC_DECODER_HEADER = REPO / "upstream/magic-carpet-2-hd/remc2/utilities/DataFileRNC.h"
-REMC2_TEXTURE_MAPPING = (
-    REPO / "upstream/magic-carpet-2-hd/remc2/engine/EventsFunctions.cpp"
+EXPECTED_RNC_SOURCE_ARCHIVE_SHA256 = (
+    "97e0a5ced2f608c57dab77c45e662756f6746085235b44196f6dc81e2a0d7e50"
 )
-REMC2_UV_TABLE = REPO / "upstream/magic-carpet-2-hd/remc2/engine/UVTable_D4350.cpp"
-REMC2_MATHS_TABLE = REPO / "upstream/magic-carpet-2-hd/remc2/utilities/Maths.cpp"
+REMC2_GIT = REPO / "upstream/magic-carpet-2-hd"
+REMC2_EVENTS_FUNCTIONS_SOURCE = "remc2/engine/EventsFunctions.cpp"
+REMC2_EVENTS_SOURCE = "remc2/engine/Events.cpp"
+REMC2_UV_TABLE_SOURCE = "remc2/engine/UVTable_D4350.cpp"
+REMC2_MATHS_TABLE_SOURCE = "remc2/utilities/Maths.cpp"
+RNC_DECODER_CPP_SOURCE = "remc2/utilities/DataFileRNC.cpp"
+RNC_DECODER_HEADER_SOURCE = "remc2/utilities/DataFileRNC.h"
+XMI_IMPLEMENTATION_SOURCE = "remc2/portability/xmi2mid.cpp"
+XMI_HEADER_SOURCE = "remc2/portability/xmi2mid.h"
+EXPORTER_SOURCE = PRIVATE / "remc2-level-exporter/src/exporter_main.cpp"
+EXPECTED_EXPORTER_SOURCE_SHA256 = (
+    "ffb1cf41b0e5c83fe34550659e34dbd699e3678dd26d8bff42a74144208754c4"
+)
+EXPORTER_CAPTURE_RUNTIME_SPAN = (899, 1135)
+EXPECTED_EXPORTER_CAPTURE_RUNTIME_SPAN_SHA256 = (
+    "d7278b8a74655e44ab268dfba4ed7d89d16158d423c2a05c7a8774f6cd55944a"
+)
 GOAT_TMAP_GOLDEN = (
     PRIVATE / "remc2-frame-trace/goat_tmap_golden.json"
 )
 
 SCHEMA = "mc2-owner-unity-asset-cache/v1"
-GENERATOR_VERSION = "1.13.0"
+GENERATOR_VERSION = "1.15.0"
+PINNED_REMC2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+PINNED_REMC2_SOURCE_SPANS = (
+    (
+        "remc2/engine/GameRenderOriginal.cpp",
+        127,
+        238,
+        "world postprocess mode selection, blur and smoothing",
+    ),
+    (
+        "remc2/engine/EventsFunctions.cpp",
+        21496,
+        22059,
+        "DrawGameFrame fixed-profile writer tree",
+    ),
+    (
+        "remc2/engine/EventsFunctions.cpp",
+        22063,
+        22195,
+        "pause, level-end and live notification text",
+    ),
+    (
+        "remc2/engine/EventsFunctions.cpp",
+        22237,
+        22360,
+        "map-score tiles, names, scores, lines and help state",
+    ),
+    (
+        "remc2/engine/EventsFunctions.cpp",
+        31816,
+        31869,
+        "present-boundary update and MAIN writer order",
+    ),
+    (
+        "remc2/engine/EventsFunctions.cpp",
+        42930,
+        42940,
+        "reset setting-byte initialization",
+    ),
+    (
+        "remc2/engine/EventsFunctions.cpp",
+        43160,
+        43175,
+        "reset show-help state",
+    ),
+    (
+        "remc2/engine/EventsFunctions.cpp",
+        32113,
+        32150,
+        "reset title loader and CopyScreen_85B20 MAIN copy",
+    ),
+    (
+        "remc2/engine/EventsFunctions.cpp",
+        44066,
+        44283,
+        "sub_6DCA0 class-9 constructor and xclass/xmodel rewrites",
+    ),
+    (
+        "remc2/engine/EventsFunctions.cpp",
+        22445,
+        22468,
+        "two-by-thirteen spell-family menu domain",
+    ),
+    (
+        "remc2/engine/EventsFunctions.cpp",
+        22615,
+        22628,
+        "three-tier spell selector formula",
+    ),
+    (
+        "remc2/engine/EventsFunctions.cpp",
+        47196,
+        47200,
+        "fixed high-speed-system reset",
+    ),
+    (
+        "remc2/engine/GameUI.cpp",
+        350,
+        380,
+        "top-status spell-family selector formula",
+    ),
+    (
+        "remc2/engine/GameUI.cpp",
+        4597,
+        4632,
+        "OK/cancel strings, bitmaps and cursor",
+    ),
+    (
+        "remc2/engine/GameUI.cpp",
+        4702,
+        4888,
+        "chat, options and pause menu writers",
+    ),
+    (
+        "remc2/engine/GameUI.cpp",
+        4983,
+        5146,
+        "pause recursive help and options-menu writers",
+    ),
+    (
+        "remc2/engine/GameUI.cpp",
+        5151,
+        5265,
+        "volume bars and recursive language help writer",
+    ),
+    (
+        "remc2/engine/Events.cpp",
+        5186,
+        5190,
+        "class/subtype constructor-table dispatch",
+    ),
+    (
+        "remc2/engine/LevelInit.cpp",
+        18,
+        51,
+        "Night palette, cursor, font and display reset",
+    ),
+    (
+        "remc2/engine/GameBitmapIndexes.h",
+        1,
+        61,
+        "mechanical UI selector constants",
+    ),
+    (
+        "remc2/engine/engine_support.cpp",
+        90,
+        105,
+        "static-storage runtime control state",
+    ),
+)
+PINNED_REMC2_BLOB_SHA256 = {
+    "remc2/engine/GameRenderOriginal.cpp":
+        "d15c1cc0042adbe103b2bcc664aed468914d82c8bb6cf0ea99485c4e04de987f",
+    "remc2/engine/EventsFunctions.cpp":
+        "3b01de678aff9f8662ef22a4790d5a47cb152de25592c3eeb42183e4783c503f",
+    "remc2/engine/Events.cpp":
+        "7ccdc4ad338e7f3e4287ceefc0459fba85dc4f48808bfe5139c0386548a052c3",
+    "remc2/engine/GameUI.cpp":
+        "92b5f63db493277dcdd717c4a94213aafd8a17db395e21d007829cc4eea4650f",
+    "remc2/engine/UVTable_D4350.cpp":
+        "74f60d14366223a5f3bacb09ea5be7d5ba46e9c3dd56dc06aa9e9e3c6356295c",
+    "remc2/utilities/Maths.cpp":
+        "8bed55e5c132a2485c3258d75cb7714def2c0bd9cf17839b1bfa4b0c659d52c0",
+    "remc2/utilities/DataFileRNC.cpp":
+        "180548e097934ce6e5af6ce54b31a2725951e4443c0b852d71297c481bd54600",
+    "remc2/utilities/DataFileRNC.h":
+        "cbbc4eb5d6da52c21f28f4922f435daa551c50242deee050a0453027d1ec453f",
+    "remc2/portability/xmi2mid.cpp":
+        "ffcd382d094202410be9b06119c807781d6217592369bfaec2c90564e1e5f9b5",
+    "remc2/portability/xmi2mid.h":
+        "437612b1c32b2ea5fe9dc43f6447fed2d86a956c4312461829f93490f81ec363",
+    "remc2/engine/LevelInit.cpp":
+        "8fcb4a136901adf998440d933b8cc8b3c43d78b2ab19b7cc0c1051a2dc533ca8",
+    "remc2/engine/GameBitmapIndexes.h":
+        "269c1b921ac5d68c2521335bee2b393f177d7bece7236d400e0caa8329bf5b05",
+    "remc2/engine/engine_support.cpp":
+        "a5d1812f796c690cd0fc7ea7f46cdb64bd9b73d999c632b04f9ea1e2806f4386",
+}
 EXPECTED_PACKAGE = "730d2fa084265df839f3f2b55ed766ac167a8b152ca4631b5ded9d0bb9104ac8"
 EXPECTED_CLOSURE = "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719"
+EXPECTED_RUNTIME_SHA256 = (
+    "b078dbed443e2cc3bf3bfd08a0f519492546d9f939db74a3d9c185d58f9c559f"
+)
+EXPECTED_LEVEL1_MATRIX_SHA256 = (
+    "f4bb41d0f8a1fc18b6b61804020922e369e8b6fccf63e7f6b6b03f9544c405ec"
+)
+CASTLE_DEFENSE_SHOT_ROWS = (
+    {
+        "spell_family": 0, "subspell": 1, "spell_life": 1,
+        "spell_subspell_index": 160,
+        "entity_class": 9, "entity_model": 0, "entity_action": 0,
+        "xclass": 10, "xmodel": 0,
+        "source_life_ticks": 21, "source_variant_byte": 0,
+        "source_subspell_index": 100,
+        "entity_parameter_index": 64, "particle_parameter_index": 340,
+        "base_tmap": 463, "render_mode": 21, "logical_height": 100,
+        "movement_speed": 384, "sound_id": 9,
+    },
+    {
+        "spell_family": 7, "subspell": 0, "spell_life": 0,
+        "spell_subspell_index": 200,
+        "entity_class": 9, "entity_model": 9, "entity_action": 9,
+        "xclass": 10, "xmodel": 23,
+        "source_life_ticks": 9, "source_variant_byte": 0,
+        "source_subspell_index": 200,
+        "entity_parameter_index": 63, "particle_parameter_index": 216,
+        "base_tmap": 151, "render_mode": 21, "logical_height": 50,
+        "movement_speed": 384, "sound_id": 23,
+    },
+    {
+        "spell_family": 7, "subspell": 1, "spell_life": 1,
+        "spell_subspell_index": 250,
+        "entity_class": 9, "entity_model": 12, "entity_action": 12,
+        "xclass": 9, "xmodel": 9,
+        "source_life_ticks": 5, "source_variant_byte": 0,
+        "source_subspell_index": 250,
+        "entity_parameter_index": 60, "particle_parameter_index": 216,
+        "base_tmap": 151, "render_mode": 21, "logical_height": 50,
+        "movement_speed": 384, "sound_id": 9,
+    },
+    {
+        "spell_family": 0, "subspell": 2, "spell_life": 2,
+        "spell_subspell_index": 80,
+        "entity_class": 9, "entity_model": 28, "entity_action": 29,
+        "xclass": 10, "xmodel": 76,
+        "source_life_ticks": 21, "source_variant_byte": 0,
+        "source_subspell_index": 100,
+        "entity_parameter_index": 64, "particle_parameter_index": 340,
+        "base_tmap": 463, "render_mode": 21, "logical_height": 100,
+        "movement_speed": 384, "sound_id": 9,
+    },
+    {
+        "spell_family": 9, "subspell": 0, "spell_life": 2,
+        "spell_subspell_index": 1_750,
+        "entity_class": 9, "entity_model": 3, "entity_action": 3,
+        "xclass": 10, "xmodel": 17,
+        "source_life_ticks": 21, "source_variant_byte": 2,
+        "source_subspell_index": 1_750,
+        "entity_parameter_index": 60, "particle_parameter_index": 76,
+        "base_tmap": 64, "render_mode": 21, "logical_height": 350,
+        "movement_speed": 384, "sound_id": 15,
+    },
+)
+QUALIFIED_RUNTIME_CAPTURES = (
+    "level1-export-i",
+    "level1-export-j",
+    "level1-export-k",
+    "level1-export-l",
+    "level1-export-m",
+    "level1-export-n",
+    "plan24-o-final3-20260730",
+    "plan24-p-final3-20260730",
+)
+QUALIFIED_SETTINGS_BYTES = bytes(
+    (1, 1, 1, 40, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0)
+)
 EXPECTED_GOAT_TMAP_GOLDEN = (
     "a5c3d430ba22c3503453124d76119ed7b93ff6ea8445e23cd616faa1015b5f64"
 )
@@ -67,18 +316,34 @@ RESET_FRAME_HSPRN = (
 )
 RESET_FRAME_MSPRN = (1, 40, 41, 42, 43, 54, 123, 124, 171, 172, 173)
 DYNAMIC_MSPRN = (9,)
+SPELL_FAMILY_DOMAIN = tuple(range(26))
+SPELL_TIER_DOMAIN = tuple(range(3))
+SPELL_SMALL_HSPRN = tuple(97 + family for family in SPELL_FAMILY_DOMAIN)
+SPELL_BIG_HSPRN = tuple(123 + family for family in SPELL_FAMILY_DOMAIN)
+SPELL_TIER_HSPRN = tuple(
+    179 + 3 * family + tier
+    for family in SPELL_FAMILY_DOMAIN
+    for tier in SPELL_TIER_DOMAIN
+)
+if (
+    SPELL_SMALL_HSPRN != tuple(range(97, 123))
+    or SPELL_BIG_HSPRN != tuple(range(123, 149))
+    or SPELL_TIER_HSPRN != tuple(range(179, 257))
+):
+    raise RuntimeError("mechanical 26-family/three-tier spell selector domains drifted")
 FRAME_HSPRN = RESET_FRAME_HSPRN + (
     2,
     44, 45, 46, 47, 48, 49, 50,
     51, 52, 53, 55,
     58, 66, 83, 84,
-    88, 89, 90, 91,
-    *range(97, 123),
-    125, 126,
-    149, 150,
-    *range(161, 168),
-    *range(179, 191),
+    *range(74, 92),
+    *SPELL_SMALL_HSPRN,
+    *SPELL_BIG_HSPRN,
+    *range(149, 179),
+    *SPELL_TIER_HSPRN,
+    *range(257, 262),
 )
+SOURCE_FRAME_MSPRN = tuple(sorted(set(FRAME_HSPRN + DYNAMIC_MSPRN)))
 DYNAMIC_HSPRN = (9,)
 FRAME_TMAPS = (40, 41, 54, 63)
 LEVEL1_TERRAIN_SELECTORS = (
@@ -110,7 +375,11 @@ SOURCE_PATHS = (
     "DATA/MSPRN0-0.DAT",
     "DATA/MSPRN0-0.TAB",
     "DATA/PALN-0.DAT",
+    "DATA/POINTERS.DAT",
+    "DATA/POINTERS.TAB",
     "DATA/SKYN0-0.DAT",
+    "DATA/SMATITLE.DAT",
+    "DATA/SMATITLE.PAL",
     "DATA/SPELLS.DAT",
     "DATA/FONT1.DAT",
     "DATA/FONT1.TAB",
@@ -131,6 +400,9 @@ FLI_CHUNK_HEADER = struct.Struct("<IH")
 ENTITY_HEADER = struct.Struct("<4sHHI")
 PRESENTATION_HEADER = struct.Struct("<4sHHI")
 PARTICLE_RECORD = struct.Struct("<HHHHH BbBB")
+AUTHORED_FEATURE_OFFSET = 1_091
+AUTHORED_FEATURE_BYTES = 20
+AUTHORED_FEATURE_COUNT = 1_200
 ENTITY_ACTOR_SPECS = {
     (2, 2, 6, 59, 39): ("dolmen", 79, 0, 400),
     (5, 1, 15, 98, 238): ("goat", 152, 20, 150),
@@ -143,6 +415,46 @@ ENTITY_EFFECT_SPECS = {
     (10, 0, 0, 59, 7): ("fireball-impact", 38, 36, 250),
     (10, 1, 1, 59, 41): ("explosion-death", 54, 21, 250),
     (10, 14, 14, 59, 9): ("smoke-particle", 63, 21, 50),
+}
+RESET_SOURCE_TUPLE_DISPOSITIONS = {
+    (10, 45, 52, 59, 177, 0, 13): ("Render", "authored-house"),
+    (11, 1, 1, 59, 0, 0, 1): ("Excluded", "SpriteLessSwitch"),
+    (11, 0, 0, 59, 0, 0, 1): ("Excluded", "SpriteLessSwitch"),
+    (5, 1, 15, 98, 238, 0, 12): ("Render", "goat"),
+    (5, 13, 111, 100, 271, 0, 12): ("Render", "villager-d"),
+    (5, 13, 111, 100, 241, 0, 12): ("Render", "villager-b"),
+    (5, 13, 111, 100, 239, 0, 12): ("Render", "villager-a"),
+    (5, 13, 111, 100, 242, 0, 12): ("Render", "villager-c"),
+    (11, 4, 4, 59, 0, 0, 1): ("Excluded", "SpriteLessSwitch"),
+    (10, 60, 65, 59, 0, 0, 1): ("Render", "ambient-emitter"),
+    (10, 1, 1, 59, 41, 0, 655366): ("Render", "death-burst"),
+    (2, 2, 6, 59, 39, 0, 4): ("Render", "dolmen"),
+    (3, 0, 0, 66, 44, 0, 13): ("Render", "local-player"),
+    (15, 0, 0, 59, 77, 0, 5): ("Render", "left-spell-holder"),
+    (15, 1, 3, 59, 77, 0, 5): ("Render", "right-spell-holder"),
+    (10, 14, 14, 59, 9, 0, 131076): ("Render", "smoke-particle"),
+    (10, 0, 0, 59, 7, 1, 655494): ("Render", "fireball-impact"),
+}
+RESET_SOURCE_PRESENTATION_PROFILES = {
+    (10, 45, 52, 59, 177, 0, 13): (177, 96, 0, 400, None),
+    (11, 1, 1, 59, 0, 0, 1): (None, None, None, None, "SpriteLessSwitch"),
+    (11, 0, 0, 59, 0, 0, 1): (None, None, None, None, "SpriteLessSwitch"),
+    (5, 1, 15, 98, 238, 0, 12): (238, 152, 20, 150, None),
+    (5, 13, 111, 100, 271, 0, 12): (271, 199, 20, 300, None),
+    (5, 13, 111, 100, 241, 0, 12): (241, 180, 20, 250, None),
+    (5, 13, 111, 100, 239, 0, 12): (239, 155, 20, 200, None),
+    (5, 13, 111, 100, 242, 0, 12): (242, 183, 20, 250, None),
+    (11, 4, 4, 59, 0, 0, 1): (None, None, None, None, "SpriteLessSwitch"),
+    (10, 60, 65, 59, 0, 0, 1): (0, 8, 20, 250, None),
+    (10, 1, 1, 59, 41, 0, 655366): (41, 54, 21, 250, None),
+    (2, 2, 6, 59, 39, 0, 4): (39, 79, 0, 400, None),
+    # The entity relation remains 66 while reset stores particle row 44.
+    # Production source-live projection resolves that row to parameter 66.
+    (3, 0, 0, 66, 44, 0, 13): (66, 80, 0, 200, None),
+    (15, 0, 0, 59, 77, 0, 5): (77, 59, 1, 150, None),
+    (15, 1, 3, 59, 77, 0, 5): (77, 59, 1, 150, None),
+    (10, 14, 14, 59, 9, 0, 131076): (9, 63, 21, 50, None),
+    (10, 0, 0, 59, 7, 1, 655494): (7, 38, 36, 250, None),
 }
 EXPECTED_ACTOR_COUNTS = {
     "dolmen": 3,
@@ -208,6 +520,14 @@ LEVEL1_LIVE_MISSION_TMAPS = (
     286,
     461,
     463,
+    80,
+    81,
+    138,
+    139,
+    140,
+    141,
+    142,
+    143,
 )
 BL32_TILE_SIDE = 32
 BL32_TILE_BYTES = BL32_TILE_SIDE * BL32_TILE_SIDE
@@ -274,6 +594,118 @@ def load_json(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise CacheError(f"cannot read canonical JSON {path}: {error}") from error
+
+
+def pinned_remc2_blob(relative_path: str) -> bytes:
+    if relative_path not in PINNED_REMC2_BLOB_SHA256:
+        raise CacheError(f"unapproved pinned remc2 source path: {relative_path}")
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(REMC2_GIT),
+            "show",
+            f"{PINNED_REMC2_COMMIT}:{relative_path}",
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise CacheError(
+            f"cannot read pinned remc2 source {relative_path}: {detail}"
+        )
+    actual_sha256 = sha256_bytes(result.stdout)
+    expected_sha256 = PINNED_REMC2_BLOB_SHA256.get(relative_path)
+    if actual_sha256 != expected_sha256:
+        raise CacheError(
+            f"pinned remc2 blob changed: {relative_path} "
+            f"(expected {expected_sha256}, got {actual_sha256})"
+        )
+    return result.stdout
+
+
+def exporter_layout_evidence() -> dict[str, Any]:
+    blob = EXPORTER_SOURCE.read_bytes()
+    actual_sha256 = sha256_bytes(blob)
+    if actual_sha256 != EXPECTED_EXPORTER_SOURCE_SHA256:
+        raise CacheError(
+            "qualified exporter source changed: "
+            f"expected {EXPECTED_EXPORTER_SOURCE_SHA256}, got {actual_sha256}"
+        )
+    lines = blob.splitlines(keepends=True)
+    first_line, last_line = EXPORTER_CAPTURE_RUNTIME_SPAN
+    if last_line > len(lines):
+        raise CacheError("qualified exporter capture_runtime span is out of bounds")
+    span = b"".join(lines[first_line - 1:last_line])
+    span_sha256 = sha256_bytes(span)
+    if span_sha256 != EXPECTED_EXPORTER_CAPTURE_RUNTIME_SPAN_SHA256:
+        raise CacheError(
+            "qualified exporter capture_runtime span changed: "
+            f"expected {EXPECTED_EXPORTER_CAPTURE_RUNTIME_SPAN_SHA256}, "
+            f"got {span_sha256}"
+        )
+    return {
+        "source": str(EXPORTER_SOURCE.relative_to(REPO)),
+        "source_sha256": actual_sha256,
+        "capture_runtime_first_line": first_line,
+        "capture_runtime_last_line": last_line,
+        "capture_runtime_span_sha256": span_sha256,
+        "runtime_bytes": 2_754,
+        "settings_offset": 49,
+        "settings_length": 16,
+    }
+
+
+def pinned_remc2_source_evidence() -> dict[str, Any]:
+    by_path: dict[str, list[tuple[int, int, str]]] = {}
+    for relative_path, first_line, last_line, purpose in PINNED_REMC2_SOURCE_SPANS:
+        by_path.setdefault(relative_path, []).append(
+            (first_line, last_line, purpose)
+        )
+    files = []
+    for relative_path, spans in by_path.items():
+        blob = pinned_remc2_blob(relative_path)
+        lines = blob.splitlines(keepends=True)
+        span_rows = []
+        for first_line, last_line, purpose in spans:
+            if first_line < 1 or last_line < first_line or last_line > len(lines):
+                raise CacheError(
+                    f"pinned remc2 span is out of bounds: "
+                    f"{relative_path}:{first_line}-{last_line}"
+                )
+            payload = b"".join(lines[first_line - 1:last_line])
+            span_rows.append(
+                {
+                    "first_line": first_line,
+                    "last_line": last_line,
+                    "line_count": last_line - first_line + 1,
+                    "sha256": sha256_bytes(payload),
+                    "purpose": purpose,
+                }
+            )
+        files.append(
+            {
+                "path": relative_path,
+                "bytes": len(blob),
+                "line_count": len(lines),
+                "blob_sha256": sha256_bytes(blob),
+                "spans": span_rows,
+            }
+        )
+    validated_blobs = {
+        relative_path: sha256_bytes(pinned_remc2_blob(relative_path))
+        for relative_path in sorted(PINNED_REMC2_BLOB_SHA256)
+    }
+    return {
+        "authority": "git_show_pinned_commit_only",
+        "commit": PINNED_REMC2_COMMIT,
+        "working_tree_files_read": False,
+        "validated_blob_sha256": validated_blobs,
+        "validated_blob_count": len(validated_blobs),
+        "files": files,
+    }
 
 
 def confined_source(root: Path, relative: str) -> Path:
@@ -379,6 +811,1384 @@ def language_records(payload: bytes) -> list[bytes]:
     return result
 
 
+def qualified_runtime_profile(
+    package_dir: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    captures = []
+    for name in QUALIFIED_RUNTIME_CAPTURES:
+        path = GENERATED / name / "runtime.bin"
+        payload = path.read_bytes()
+        if (
+            len(payload) != 2_754
+            or sha256_bytes(payload) != EXPECTED_RUNTIME_SHA256
+            or payload[49:65] != QUALIFIED_SETTINGS_BYTES
+        ):
+            raise CacheError(f"qualified runtime profile changed: {name}/runtime.bin")
+        captures.append(
+            {
+                "path": str(path.relative_to(REPO)),
+                "bytes": len(payload),
+                "sha256": EXPECTED_RUNTIME_SHA256,
+                "settings_offset": 49,
+                "settings_bytes_hex": payload[49:65].hex(),
+            }
+        )
+    package_runtime = (package_dir / "runtime.bin").read_bytes()
+    if (
+        len(package_runtime) != 2_754
+        or sha256_bytes(package_runtime) != EXPECTED_RUNTIME_SHA256
+        or package_runtime[49:65] != QUALIFIED_SETTINGS_BYTES
+    ):
+        raise CacheError("selected Level 1 package runtime profile changed")
+    fields = (
+        "reflections",
+        "shadows",
+        "sky",
+        "viewport_size",
+        "minimap",
+        "top_bar",
+        "screen_size",
+        "configured_blur_mode",
+        "spatial_smoothing",
+        "stereo",
+        "resolution",
+        "shadow_profile",
+        "dynamic_lighting",
+        "setting_0x2197",
+        "transparency",
+        "flat",
+    )
+    exporter_layout = exporter_layout_evidence()
+    exporter_layout["field_order"] = list(fields)
+    return captures, {
+        "exporter_layout": exporter_layout,
+        "values": dict(zip(fields, QUALIFIED_SETTINGS_BYTES, strict=True)),
+        "settings_bytes_hex": QUALIFIED_SETTINGS_BYTES.hex(),
+        "capture_count": len(captures),
+        "capture_sha256": EXPECTED_RUNTIME_SHA256,
+    }
+
+
+def source_sprite_tuple(
+    class_id: int,
+    model: int,
+    action: int,
+    parameter: int | None,
+    control: int,
+    disposition: str,
+    *,
+    base_tmap: int | None = None,
+    render_mode: int | None = None,
+    logical_height: int | None = None,
+    reason: str | None = None,
+    source_parameter_index: int | None = None,
+    particle_parameter_index: int | None = None,
+    xclass: int | None = None,
+    xmodel: int | None = None,
+) -> dict[str, Any]:
+    if disposition == "Render" and None in (parameter, base_tmap, render_mode, logical_height):
+        raise CacheError("render tuple is missing concrete presentation fields")
+    if disposition == "Excluded" and reason is None:
+        raise CacheError("excluded tuple is missing its typed reason")
+    return {
+        "class": class_id,
+        "model": model,
+        "action": action,
+        "xclass": xclass,
+        "xmodel": xmodel,
+        "source_parameter_index": (
+            parameter if source_parameter_index is None else source_parameter_index
+        ),
+        "particle_parameter_index": (
+            parameter if particle_parameter_index is None else particle_parameter_index
+        ),
+        "render_parameter_index": parameter,
+        "control_flags_u32": control,
+        "disposition": disposition,
+        "base_tmap": base_tmap,
+        "render_mode": render_mode,
+        "logical_height": logical_height,
+        "excluded_reason": reason,
+        "payload_wildcard": False,
+    }
+
+
+def reset_manifest_outcomes(
+    row: str,
+    kind: int,
+    subtype: int,
+) -> list[dict[str, Any]]:
+    semantic_by_row = {
+        "AUT-G0-DOLMENS": {"dolmen"},
+        "AUT-G0-EMITTERS": {"ambient-emitter"},
+        "AUT-G0-FIRES": {"death-burst", "smoke-particle", "fireball-impact"},
+        "AUT-G0-GOATS": {"goat"},
+        "AUT-G0-MARKER": {
+            "local-player",
+            "left-spell-holder",
+            "right-spell-holder",
+        },
+        "AUT-G0-SWITCHES": {"SpriteLessSwitch"},
+        "AUT-G0-VILLAGERS": {
+            "villager-a",
+            "villager-b",
+            "villager-c",
+            "villager-d",
+        },
+    }
+    semantics = semantic_by_row.get(row)
+    if semantics is None:
+        raise CacheError(f"authored reset row has no exact manifest join: {row}")
+    outcomes = []
+    for key, (_, semantic) in RESET_SOURCE_TUPLE_DISPOSITIONS.items():
+        if semantic not in semantics:
+            continue
+        (
+            class_id,
+            model,
+            action,
+            source_parameter,
+            particle_parameter,
+            animation_frame,
+            control,
+        ) = key
+        if row == "AUT-G0-SWITCHES" and (
+            class_id != kind or model != subtype or action != subtype
+        ):
+            continue
+        render_parameter, base, mode, height, reason = (
+            RESET_SOURCE_PRESENTATION_PROFILES[key]
+        )
+        outcome = source_sprite_tuple(
+            class_id,
+            model,
+            action,
+            render_parameter,
+            control,
+            "Excluded" if reason else "Render",
+            base_tmap=base,
+            render_mode=mode,
+            logical_height=height,
+            reason=reason,
+            source_parameter_index=source_parameter,
+            particle_parameter_index=particle_parameter,
+        )
+        outcome["animation_frame"] = animation_frame
+        outcome["reset_semantic"] = semantic
+        outcomes.append(outcome)
+    if not outcomes:
+        raise CacheError(f"authored reset row joined no source tuples: {row}")
+    return outcomes
+
+
+def authored_activation_outcomes(
+    row: str,
+    kind: int,
+    subtype: int,
+    group: int,
+) -> list[dict[str, Any]]:
+    tuple_key = (kind, subtype, group)
+    exact = {
+        "AUT-G-1-HOUSES": tuple_key == (10, 45, -1),
+        "AUT-G-1-TERRAIN29": tuple_key == (10, 29, -1),
+        "AUT-G0-DOLMENS": tuple_key == (2, 2, 0),
+        "AUT-G0-EMITTERS": tuple_key == (10, 60, 0),
+        "AUT-G0-FIRES": tuple_key == (10, 1, 0),
+        "AUT-G0-GOATS": tuple_key == (5, 1, 0),
+        "AUT-G0-MARKER": tuple_key == (3, 4, 0),
+        "AUT-G0-SWITCHES": tuple_key in ((11, 0, 0), (11, 1, 0), (11, 4, 0)),
+        "AUT-G0-VILLAGERS": tuple_key == (5, 13, 0),
+        "AUT-G1": tuple_key in ((2, 0, 1), (11, 0, 1), (11, 32, 1), (15, 2, 1)),
+        "AUT-G2": tuple_key in ((11, 1, 2), (11, 32, 2)),
+        "AUT-G3": tuple_key in ((5, 4, 3), (11, 17, 3), (11, 32, 3)),
+        "AUT-G4": tuple_key in (
+            (5, 3, 4), (10, 59, 4), (11, 0, 4), (11, 12, 4),
+            (11, 16, 4), (14, 3, 4), (14, 5, 4),
+        ),
+        "AUT-G5": tuple_key == (11, 32, 5),
+        "AUT-G6": tuple_key in ((2, 1, 6), (5, 19, 6)),
+        "AUT-G8": tuple_key == (11, 0, 8),
+        "AUT-G11": tuple_key == (15, 3, 11),
+        "AUT-G12": tuple_key == (10, 59, 12),
+        "AUT-G33": tuple_key == (5, 19, 33),
+        "AUT-G34": tuple_key == (5, 3, 34),
+        "AUT-G13-32-FIRES":
+            kind == 10 and subtype == 1 and 13 <= group <= 32,
+        "AUT-G13-32-HOUSES":
+            kind == 10 and subtype == 45 and 13 <= group <= 32,
+        "AUT-G13-32-SPLASH":
+            kind == 10 and subtype == 5 and 13 <= group <= 32,
+    }
+    if row not in exact or not exact[row]:
+        raise CacheError(
+            "unclassified in-range authored presentation tuple: "
+            f"row={row} kind={kind} subtype={subtype} group={group}"
+        )
+
+    if row.startswith("AUT-G0"):
+        return reset_manifest_outcomes(row, kind, subtype)
+    if row == "AUT-G-1-TERRAIN29":
+        return [{"disposition": "NoSourceAllocation", "payload_wildcard": False}]
+    if kind == 11 or (kind, subtype) == (10, 59):
+        return [
+            source_sprite_tuple(
+                kind, subtype, subtype if kind == 11 else 64, None, 8,
+                "Excluded", reason="SpriteLessSwitch",
+            )
+        ]
+    if row == "AUT-G-1-HOUSES":
+        return [source_sprite_tuple(10, 45, 52, 177, 13, "Render",
+                                    base_tmap=96, render_mode=0, logical_height=400)]
+    if (kind, subtype) == (2, 0):
+        return [
+            source_sprite_tuple(2, 0, 0, parameter, 8, "Render",
+                                base_tmap=base, render_mode=0, logical_height=400)
+            for parameter, base in ((83, 75), (84, 87))
+        ]
+    if (kind, subtype) == (2, 1):
+        return [source_sprite_tuple(2, 1, 3, 79, 8, "Render",
+                                    base_tmap=78, render_mode=0, logical_height=250)]
+    if (kind, subtype) == (5, 4):
+        return [source_sprite_tuple(5, 4, 33, 0, 8, "Render",
+                                    base_tmap=8, render_mode=20, logical_height=250)]
+    if (kind, subtype) == (5, 19):
+        return [source_sprite_tuple(5, 19, 159, 287, 8, "Render",
+                                    base_tmap=279, render_mode=17, logical_height=200)]
+    if (kind, subtype) == (5, 3):
+        outcomes = [
+            source_sprite_tuple(5, 3, 25, 88, 8, "Render",
+                                base_tmap=30, render_mode=17, logical_height=180)
+        ]
+        segment_heights = (150, 165, 185, 200, 210, 210, 200, 190,
+                           170, 160, 150, 130, 110, 90, 70, 60)
+        outcomes.extend(
+            source_sprite_tuple(5, 3, 232, 89 + ordinal, 8, "Render",
+                                base_tmap=66, render_mode=0,
+                                logical_height=height)
+            for ordinal, height in enumerate(segment_heights)
+        )
+        return outcomes
+    if (kind, subtype) in ((15, 2), (15, 3)):
+        return [source_sprite_tuple(15, subtype, 7 if subtype == 2 else 10,
+                                    77, 8, "Render", base_tmap=59,
+                                    render_mode=1, logical_height=150)]
+    if (kind, subtype) == (14, 3):
+        return [source_sprite_tuple(14, 3, 8, 338, 8, "Render",
+                                    base_tmap=461, render_mode=0, logical_height=700)]
+    if (kind, subtype) == (14, 5):
+        return [source_sprite_tuple(14, 5, 10, 280, 8, "Render",
+                                    base_tmap=259, render_mode=1, logical_height=75)]
+    if (kind, subtype) == (10, 45):
+        return [source_sprite_tuple(10, 45, 51, 177, 13, "Render",
+                                    base_tmap=96, render_mode=0, logical_height=400)]
+    if (kind, subtype) == (10, 1):
+        return [source_sprite_tuple(10, 1, 1, 41, 0x0002_0004, "Render",
+                                    base_tmap=54, render_mode=21, logical_height=250)]
+    if (kind, subtype) == (10, 5):
+        return [source_sprite_tuple(10, 5, 5, 244, 0x0002_0004, "Render",
+                                    base_tmap=186, render_mode=11,
+                                    logical_height=300)]
+    raise CacheError(
+        f"authored tuple has no concrete presentation outcome: {row}/{tuple_key}"
+    )
+
+
+def dynamic_allocator_sprite_census() -> list[dict[str, Any]]:
+    rows = [
+        ("PlayerFireball", "c09-constructor-000",
+         [source_sprite_tuple(9, 0, 0, 340, 8, "Render",
+                              base_tmap=463, render_mode=21, logical_height=100)]),
+        ("FireflyFireball", "c09-constructor-000",
+         [source_sprite_tuple(9, 0, 0, 340, 8, "Render",
+                              base_tmap=463, render_mode=21, logical_height=100)]),
+        ("ArcherArrow", "c09-constructor-013",
+         [source_sprite_tuple(9, 13, 13, 195, 8, "Render",
+                              base_tmap=105, render_mode=19, logical_height=60)]),
+        ("CastleBuild", "c09-constructor-010",
+         [source_sprite_tuple(9, 10, 10, 18, 8, "Render",
+                              base_tmap=61, render_mode=21, logical_height=150)]),
+        ("CastleRoot", "c03-constructor-002",
+         [source_sprite_tuple(3, 2, 5, 177, 8, "Render",
+                              base_tmap=96, render_mode=0, logical_height=400)]),
+        ("CastleConstruction", "c10-constructor-042",
+         [source_sprite_tuple(10, 42, 44, None, 8, "Excluded",
+                              reason="CastleConstruction")]),
+        ("CastleDefenseController", "c10-constructor-079",
+         [source_sprite_tuple(10, 79, 86, 66, 8, "Render",
+                              base_tmap=80, render_mode=0, logical_height=200)]),
+        ("CastleAssociation", "c10-constructor-043",
+         [source_sprite_tuple(10, 43, 45, 41, 8, "Render",
+                              base_tmap=54, render_mode=21, logical_height=250)]),
+        ("Possession-ordinary", "c09-constructor-001",
+         [source_sprite_tuple(9, 1, 1, 209, 8, "Render",
+                              base_tmap=144, render_mode=21, logical_height=150)]),
+        ("Possession-strong", "c09-constructor-017",
+         [source_sprite_tuple(9, 17, 18, 209, 8, "Render",
+                              base_tmap=144, render_mode=21, logical_height=150)]),
+        ("PossessionImpact", "c10-constructor-012",
+         [source_sprite_tuple(10, 12, 12, 41, 8, "Excluded",
+                              reason="HiddenSourceModel")]),
+        ("PossessionAttraction", "c10-constructor-054",
+         [source_sprite_tuple(10, 54, 59, 0, 8, "Excluded",
+                              reason="HiddenSourceModel")]),
+        ("StrongPossessionImpact", "c10-constructor-070",
+         [source_sprite_tuple(10, 70, 77, 0, 8, "Excluded",
+                              reason="HiddenSourceModel")]),
+        ("FireballImpact", "c10-constructor-000",
+         [source_sprite_tuple(10, 0, 0, 7, 8, "Render",
+                              base_tmap=38, render_mode=36, logical_height=250)]),
+        ("WaterSplash", "c10-constructor-005",
+         [source_sprite_tuple(10, 5, 5, 244, 8, "Render",
+                              base_tmap=186, render_mode=11, logical_height=300)]),
+        ("ManaCarrier", "c03-constructor-003",
+         [source_sprite_tuple(3, 3, 9, 169, 8, "Render",
+                              base_tmap=88, render_mode=0, logical_height=800)]),
+        ("DeathBurst", "c10-constructor-001",
+         [source_sprite_tuple(10, 1, 1, 41, 0x0002_0000, "Render",
+                              base_tmap=54, render_mode=21, logical_height=250),
+          source_sprite_tuple(10, 1, 1, 41, 0x000a_0000, "Render",
+                              base_tmap=54, render_mode=21, logical_height=250)]),
+        ("PlayerDeathMarker", "c10-constructor-040",
+         [source_sprite_tuple(10, 40, 42, 65, 8, "Render",
+                              base_tmap=81, render_mode=0, logical_height=200)]),
+        ("SpeedTrail", "c10-constructor-002",
+         [source_sprite_tuple(10, 2, 2, None, 8, "Excluded",
+                              reason="UnlinkedSpeedTrail")]),
+        ("AmbientFireChild", "c10-constructor-000",
+         [source_sprite_tuple(10, 0, 0, 7, 0x000a_0084, "Render",
+                              base_tmap=38, render_mode=36, logical_height=250)]),
+        ("AmbientSmoke", "c10-constructor-014",
+         [source_sprite_tuple(10, 14, 14, 9, 0x0002_0004, "Render",
+                              base_tmap=63, render_mode=21, logical_height=50)]),
+        ("ResidentArcher", "c05-constructor-004",
+         [source_sprite_tuple(5, 4, 33, 0, 8, "Render",
+                              base_tmap=8, render_mode=20, logical_height=250)]),
+        ("ResidentBuilder", "c05-constructor-012",
+         [source_sprite_tuple(5, 12, 97, 221, 8, "Render",
+                              base_tmap=141, render_mode=20, logical_height=250)]),
+        ("ResidentTrader", "c05-constructor-014",
+         [source_sprite_tuple(5, 14, 113, 219, 8, "Render",
+                              base_tmap=138, render_mode=20, logical_height=250)]),
+    ]
+    rows.append((
+        "GroundFire", "c10-constructor-006",
+        [source_sprite_tuple(10, 6, 6, 228 + phase, 8, "Render",
+                             base_tmap=77, render_mode=1, logical_height=height)
+         for phase, height in enumerate((50, 150, 300, 450, 600, 700, 800, 950))]
+    ))
+    rows.append((
+        "CheckpointSmoke", "c10-constructor-013",
+        [source_sprite_tuple(10, 13, 13, 67 + phase, 8, "Render",
+                             base_tmap=57, render_mode=21,
+                             logical_height=height)
+         for phase, height in enumerate(
+             (50, 100, 150, 200, 250, 300, 350, 400))]
+    ))
+    rows.append((
+        "ManaSphere", "c10-constructor-039",
+        [source_sprite_tuple(10, 39, 41, parameter, 8, "Render",
+                             base_tmap=base, render_mode=21,
+                             logical_height=height)
+         for base, first in ((58, 52), (67, 105))
+         for parameter, height in zip(
+             range(first, first + 7),
+             (50, 100, 150, 200, 250, 300, 350),
+             strict=True,
+         )]
+    ))
+    rows.append((
+        "MultipartSegment", "c05-constructor-003",
+        [source_sprite_tuple(5, 3, 232, 89 + ordinal, 8, "Render",
+                             base_tmap=66, render_mode=0, logical_height=height)
+         for ordinal, height in enumerate(
+             (150, 165, 185, 200, 210, 210, 200, 190,
+              170, 160, 150, 130, 110, 90, 70, 60))]
+    ))
+    rows.append((
+        "ResidentVillager", "c05-constructor-013",
+        [source_sprite_tuple(5, 13, 105, parameter, 8, "Render",
+                             base_tmap=base, render_mode=20, logical_height=height)
+         for parameter, base, height in (
+             (239, 155, 200), (241, 180, 250),
+             (242, 183, 250), (271, 199, 300))]
+    ))
+    rows.append((
+        "SpellPickup", "c15-constructor-000..003",
+        [source_sprite_tuple(15, family, action, 77, 8, "Render",
+                             base_tmap=59, render_mode=1, logical_height=150)
+         for family, action in enumerate((2, 5, 8, 11))]
+    ))
+    for ordinal, shot in enumerate(CASTLE_DEFENSE_SHOT_ROWS):
+        outcome = source_sprite_tuple(
+            shot["entity_class"],
+            shot["entity_model"],
+            shot["entity_action"],
+            shot["particle_parameter_index"],
+            8,
+            "Render",
+            base_tmap=shot["base_tmap"],
+            render_mode=shot["render_mode"],
+            logical_height=shot["logical_height"],
+            source_parameter_index=shot["entity_parameter_index"],
+            particle_parameter_index=shot["particle_parameter_index"],
+            xclass=shot["xclass"],
+            xmodel=shot["xmodel"],
+        )
+        outcome.update(shot)
+        rows.append((
+            f"CastleDefenseShot-{ordinal}",
+            f"c09-constructor-{shot['entity_model']:03d}",
+            [outcome],
+        ))
+    return [
+        {
+            "spawn_kind": spawn_kind,
+            "dispatch_slot": dispatch_slot,
+            "outcomes": outcomes,
+            "outcome_count": len(outcomes),
+            "payload_wildcard": False,
+        }
+        for spawn_kind, dispatch_slot, outcomes in rows
+    ]
+
+
+def build_source_tuple_spawn_census(
+    authored_blob: bytes,
+    entities_blob: bytes,
+) -> dict[str, Any]:
+    if sha256_file(CANONICAL_LEVEL1_MATRIX) != EXPECTED_LEVEL1_MATRIX_SHA256:
+        raise CacheError("canonical Level 1 matrix identity changed")
+    matrix = load_json(CANONICAL_LEVEL1_MATRIX)
+    authored = matrix["authored_census"]
+    if (
+        authored["record_count"] != AUTHORED_FEATURE_COUNT
+        or authored["record_bytes"] != AUTHORED_FEATURE_BYTES
+        or authored["table_offset"] != AUTHORED_FEATURE_OFFSET
+        or len(authored["records"]) != 308
+    ):
+        raise CacheError("canonical authored census extent changed")
+    row_for_index: dict[int, str] = {}
+    for row, indices in authored["row_coverage"].items():
+        for index in indices:
+            if index in row_for_index:
+                raise CacheError(f"authored index {index} occurs in two matrix rows")
+            row_for_index[index] = row
+    if set(row_for_index) != {int(index) for index in authored["records"]}:
+        raise CacheError("authored record/row partition changed")
+
+    authored_rows = []
+    for index_text, manifest in sorted(
+        authored["records"].items(), key=lambda item: int(item[0])
+    ):
+        index = int(index_text)
+        offset = AUTHORED_FEATURE_OFFSET + index * AUTHORED_FEATURE_BYTES
+        kind, subtype, _, _, group = struct.unpack_from("<HhHHh", authored_blob, offset)
+        expected = (
+            int(manifest["kind"]),
+            int(manifest["subtype"]),
+            int(manifest["activation_group"]),
+        )
+        if (kind, subtype, group) != expected:
+            raise CacheError(
+                f"owner/matrix authored tuple mismatch at {index}: "
+                f"{(kind, subtype, group)} != {expected}"
+            )
+        outcomes = authored_activation_outcomes(
+            row_for_index[index], kind, subtype, group
+        )
+        authored_rows.append({
+            "authored_index": index,
+            "matrix_row": row_for_index[index],
+            "kind": kind,
+            "subtype": subtype,
+            "activation_group": group,
+            "presentation_outcomes": outcomes,
+            "payload_wildcard": False,
+        })
+
+    negative = dict(authored_rows[0])
+    negative["kind"] = 99
+    try:
+        authored_activation_outcomes(
+            negative["matrix_row"],
+            negative["kind"],
+            negative["subtype"],
+            negative["activation_group"],
+        )
+    except CacheError:
+        pass
+    else:
+        raise CacheError("in-range unclassified authored tuple negative was accepted")
+
+    dispatch = matrix["dispatch_census"]
+    slots = set(dispatch["slots"])
+    if len(slots) != 845:
+        raise CacheError("canonical 845-slot dispatch census changed")
+    for slot in sorted(slots):
+        matrix_rows = dispatch["slot_to_row"].get(slot, [])
+        exclusion = dispatch["slot_to_exclusion"].get(slot)
+        if bool(matrix_rows) == bool(exclusion):
+            raise CacheError(
+                f"canonical dispatch slot is not classified exactly once: {slot}"
+            )
+    dynamic = dynamic_allocator_sprite_census()
+    if len(dynamic) != 35:
+        raise CacheError("dynamic allocator family census must remain exactly 35")
+    for row in dynamic:
+        slot = row["dispatch_slot"]
+        checked = (
+            [f"c15-constructor-{index:03d}" for index in range(4)]
+            if slot == "c15-constructor-000..003"
+            else [slot]
+        )
+        if any(candidate not in slots for candidate in checked):
+            raise CacheError(f"dynamic allocator dispatch join is absent: {slot}")
+        routes = []
+        for candidate in checked:
+            matrix_rows = dispatch["slot_to_row"].get(candidate, [])
+            exclusion = dispatch["slot_to_exclusion"].get(candidate)
+            if bool(matrix_rows) == bool(exclusion):
+                raise CacheError(
+                    "dynamic allocator dispatch slot is not classified exactly once: "
+                    f"{candidate}"
+                )
+            routes.append({
+                "slot": candidate,
+                "matrix_rows": matrix_rows,
+                "matrix_exclusion": exclusion,
+            })
+        row["dispatch_routes"] = routes
+
+    reset_records = []
+    for key, (_, semantic) in RESET_SOURCE_TUPLE_DISPOSITIONS.items():
+        (
+            class_id,
+            model,
+            action,
+            source_parameter,
+            particle_parameter,
+            animation_frame,
+            control,
+        ) = key
+        render_parameter, base, mode, height, reason = (
+            RESET_SOURCE_PRESENTATION_PROFILES[key]
+        )
+        profile = source_sprite_tuple(
+            class_id,
+            model,
+            action,
+            render_parameter,
+            control,
+            "Excluded" if reason else "Render",
+            base_tmap=base,
+            render_mode=mode,
+            logical_height=height,
+            reason=reason,
+            source_parameter_index=source_parameter,
+            particle_parameter_index=particle_parameter,
+        )
+        profile["animation_frame"] = animation_frame
+        profile["reset_semantic"] = semantic
+        reset_records.append(profile)
+    if len(reset_records) != 17:
+        raise CacheError("reset tuple census must remain exactly 17")
+
+    # The 17-key package reset closure is independently checked while building
+    # entities/presentation.json. Bind its exact byte identity here too.
+    return {
+        "schema": "mc2-level1-source-tuple-spawn-census/v1",
+        "matrix": {
+            "path": str(CANONICAL_LEVEL1_MATRIX.relative_to(REPO)),
+            "sha256": EXPECTED_LEVEL1_MATRIX_SHA256,
+            "authored_record_count": len(authored_rows),
+            "dispatch_slot_count": len(slots),
+        },
+        "owner_authored_sha256": sha256_bytes(authored_blob),
+        "owner_entities_sha256": sha256_bytes(entities_blob),
+        "reset_tuple_manifest": {
+            "tuple_count": len(RESET_SOURCE_TUPLE_DISPOSITIONS),
+            "active_entity_count": 177,
+            "payload_wildcards": 0,
+            "join": "entities/presentation.json source_tuple_census",
+            "records": reset_records,
+        },
+        "authored_records": authored_rows,
+        "dynamic_allocator_families": dynamic,
+        "dynamic_allocator_family_count": len(dynamic),
+        "exhaustive_classification": {
+            "authored_records": len(authored_rows),
+            "dynamic_allocator_families": len(dynamic),
+            "reset_tuple_keys": len(reset_records),
+            "dispatch_slots": len(slots),
+            "unclassified_reachable_outcomes": 0,
+        },
+        "payload_wildcards": 0,
+        "unknown_tuple_policy": "hard_error",
+        "mutation_negative": "in_range_authored_kind_99_rejected",
+    }
+
+
+def build_source_frame_census(
+    *,
+    pinned_source_evidence: dict[str, Any],
+    runtime_captures: list[dict[str, Any]],
+    runtime_profile: dict[str, Any],
+    reset_main_output: dict[str, Any],
+    reset_palette_output: dict[str, Any],
+    language_rows: list[dict[str, Any]],
+    language_output: dict[str, Any],
+    source_bitmap_assets: list[dict[str, Any]],
+    adapted_bitmap_assets: list[dict[str, Any]],
+    source_font: dict[str, Any],
+    adapted_font: dict[str, Any],
+    cursor_asset: dict[str, Any],
+    source_tuple_census: dict[str, Any],
+) -> dict[str, Any]:
+    with SPELL_TABLE.open(newline="", encoding="utf-8") as stream:
+        spell_source_rows = list(csv.DictReader(stream))
+    if len(spell_source_rows) != 78:
+        raise CacheError("source frame spell ledger must have 78 tier rows")
+    spell_profiles = []
+    for family in range(26):
+        family_rows = sorted(
+            (
+                row
+                for row in spell_source_rows
+                if int(row["family_id"]) == family
+            ),
+            key=lambda row: int(row["tier"]),
+        )
+        if [int(row["tier"]) for row in family_rows] != [0, 1, 2]:
+            raise CacheError(
+                f"source frame spell ledger family {family} is incomplete"
+            )
+        spell_profiles.append({
+            "family": family,
+            "family_header_tier_count": int(
+                family_rows[0]["family_header_tier_count"]
+            ),
+            "family_flags": int(family_rows[0]["family_initial_flags_raw"]),
+            "mana_cost": [int(row["mana_cost"]) for row in family_rows],
+            "max_mana_limit": [
+                int(row["max_mana_requirement"]) for row in family_rows
+            ],
+            "single_player_experience": [
+                int(row["single_player_experience"]) for row in family_rows
+            ],
+        })
+    ordinary = [
+        "SpiderWeb",
+        "MinimapTerrain",
+        "MinimapEntities",
+        "MinimapMarks",
+        "LeftSpell",
+        "RightSpell",
+        "TopStatus",
+        "Menu",
+        "PauseOrEndText",
+    ]
+    post = [
+        "ObjectiveTextbox",
+        "TutorialOrBriefing",
+        "HelpPopup",
+        "DebugText",
+    ]
+    map_before_bottom = [
+        "MapClear",
+        "MapTerrain",
+        "MapEntities",
+        "MapWorldViewport",
+        "MapDividers",
+        "MapMarks",
+        "Menu",
+    ]
+    map_after_bottom = [
+        "PauseOrEndText",
+        "LeftSpell",
+        "RightSpell",
+    ] + post
+    branch_sequences = []
+    for state in (0, 3, 5, 9, 10, 13):
+        stages = ordinary + (
+            ["BottomSpellMenu"] if state == 5 else []
+        ) + post
+        branch_sequences.append({
+            "key": f"ordinary-{state}",
+            "stages": stages,
+        })
+        branch_sequences.append({
+            "key": f"dead-{state}",
+            "stages": ["DeadPlayerMenu"] + post,
+        })
+    for state in (6, 7, 8, 11, 12, 14):
+        branch_sequences.append({
+            "key": f"map-{state}",
+            "stages": map_before_bottom
+                + (["BottomSpellMenu"] if state == 8 else [])
+                + map_after_bottom,
+        })
+    return {
+        "schema": "mc2-level1-source-frame-census/v1",
+        "pinned_remc2_commit": PINNED_REMC2_COMMIT,
+        "normative_source_evidence": pinned_source_evidence,
+        "qualified_profile": {
+            "runtime_captures": runtime_captures,
+            "runtime_settings": runtime_profile,
+            "reset_source_writes": {
+                "LevelInit_56C00": {
+                    "blur_capability": 0,
+                    "configured_blur_mode": 0,
+                    "selected_menu_item": 0,
+                    "font_type": 1,
+                    "cursor_selector": 9,
+                },
+                "Initialize": {"setting_byte1": 0},
+                "sub_5BCC0": {"show_help": 1},
+                "static_runtime_control_block": {"setting_byte4": 0},
+                "GetSystemSpeed": {"high_speed_system": 5},
+                "initial_player_actual_speed": {
+                    "value": runtime_profile["initial_player"]["actual_speed"],
+                    "entity_index":
+                        runtime_profile["initial_player"]["entity_index"],
+                    "source": "level1-export-m players.bin local entity relation -> entities.bin actual_speed",
+                },
+                "first_frame_conclusion":
+                    "blur capability and configured mode are both zero; actual speed zero also prevents automatic mode 1, so the first world frame is the non-temporal MAIN path",
+            },
+            "fixed_exporter_arguments": [
+                "remc2-level-exporter",
+                "--mode_test_regressions",
+                "0",
+                "--text_output_to_console",
+                "--set_level",
+                "0",
+                "--config_file_path",
+                "<staged-runtime-config>",
+                "--set_max_regressions_steps",
+                "0",
+            ],
+            "debug_command_line_flags": False,
+            "mutable_runtime_gates": [
+                "menu_state",
+                "m_wHighSpeedSystem",
+                "blur_scratch_present",
+                "blur_capability",
+                "configured_blur_mode",
+                "viewport_size",
+                "actual_speed",
+                "setting_byte1_22",
+                "setting_byte4_25",
+                "showHelp_10",
+                "tutorial_state",
+                "debug_command_line_flags",
+            ],
+        },
+        "reset_main_history": {
+            "source_function": "sub_47FC0_load_screen -> CopyScreen_85B20",
+            "source_assets": [
+                "owner_data:DATA/SMATITLE.DAT",
+                "owner_data:DATA/SMATITLE.PAL",
+            ],
+            "indices_path": reset_main_output["path"],
+            "indices_bytes": reset_main_output["bytes"],
+            "indices_sha256": reset_main_output["sha256"],
+            "palette_path": reset_palette_output["path"],
+            "palette_bytes": reset_palette_output["bytes"],
+            "palette_sha256": reset_palette_output["sha256"],
+            "dimensions": [320, 200],
+            "history_state_on_reset": "Unprimed",
+            "observability":
+                "loaded MAIN is overwritten by the mandatory first non-blur world frame before temporal history can read it",
+            "first_successful_contiguous_frame": "commits MAIN and changes history to Primed",
+            "unprimed_temporal_request": "hard_error_without_MAIN_or_history_mutation",
+        },
+        "postprocess_branch_census": {
+            "source": "remc2/engine/GameRenderOriginal.cpp:127-238",
+            "configured_mode_saved_and_restored": True,
+            "auto_mode_1_gates": [
+                "VGA_resolution_equals_1",
+                "menu_state_equals_0",
+                "m_wHighSpeedSystem_nonzero",
+                "scratch_present",
+                "viewport_size_equals_40",
+                "abs_actual_speed_greater_than_80",
+            ],
+            "execution_gates": [
+                "blur_capability_nonzero",
+                "effective_mode_nonzero",
+                "scratch_present",
+            ],
+            "mode_2_not_suppressed_by_menu_or_viewport_auto_gates": True,
+            "temporal_and_spatial_smoothing_mutually_exclusive": True,
+            "inactive_temporal_path":
+                "one world render to MAIN, then optional in-place spatial smoothing",
+            "active_temporal_path":
+                "one world render to scratch, TABLESN blend into prior MAIN, jump LABEL_44",
+            "tablesn_sha256":
+                "f88974baf68f728fb534a4dab35397b9cb3ca2f424019bbde36858eebbf97495",
+            "ordered_pair_vectors": [
+                {"high": 77, "low": 12, "result": 63},
+                {"high": 12, "low": 77, "result": 195},
+            ],
+        },
+        "present_boundary_order": [
+            {
+                "ordinal": 0,
+                "call": "sub_84B80",
+                "classification": "lighting_preparation_no_direct_MAIN_write",
+            },
+            {
+                "ordinal": 1,
+                "call": "sub_58F00_game_objectives",
+                "classification": "state_update_no_direct_MAIN_write",
+            },
+            {
+                "ordinal": 2,
+                "call": "PresentObjective_59820",
+                "classification": "state_update_no_direct_MAIN_write",
+            },
+            {
+                "ordinal": 3,
+                "call": "sub_57570",
+                "gate": "not_GAME_PAUSED",
+                "classification": "state_update_no_direct_MAIN_write",
+            },
+            {
+                "ordinal": 4,
+                "call": "sub_575C0",
+                "classification": "state_update_no_direct_MAIN_write",
+            },
+            {
+                "ordinal": 5,
+                "call": "PlayEntitySounds_6E150",
+                "classification": "audio_update_no_direct_MAIN_write",
+            },
+            {
+                "ordinal": 6,
+                "call": "DrawGameFrame_2BE30",
+                "classification": "MAIN_writer_tree",
+            },
+            {
+                "ordinal": 7,
+                "call": "DrawHelpPopUps_871F0",
+                "gate": "showHelp_10_nonzero",
+                "classification": "MAIN_overlay_writer",
+            },
+            {
+                "ordinal": 8,
+                "call": "DrawGameDebugText_6FEC0",
+                "gate": "debug_text_flags_and_command_line_profile",
+                "classification": "MAIN_overlay_writer_or_noop",
+            },
+            {
+                "ordinal": 9,
+                "call": "BlendAndBlit_40F80",
+                "classification":
+                    "presentation_only_for_qualified_screen_size_0; MAIN_writer_only_for_screen_size_2_half_size_branch",
+            },
+        ],
+        "draw_game_frame_tree": {
+            "pre_switch": [
+                {
+                    "call": "sub_88580",
+                    "gate": "showHelp_10_nonzero",
+                    "effect":
+                        "help/tutorial sentinel preparation; recursive help state is a required later FINAL-MAIN input",
+                }
+            ],
+            "ordinary_menu_states": [0, 3, 5, 9, 10, 13],
+            "ordinary_order": [
+                "conditional viewport clear",
+                "DrawWorld_411A0",
+                "dead player menu OR live spider web",
+                "ordinary minimap terrain",
+                "ordinary minimap entities",
+                "ordinary minimap marks",
+                "left spell",
+                "right spell",
+                "top status bar",
+                "menu-state overlay",
+                "pause/end-level text",
+                "bottom spell menu when state 5",
+            ],
+            "map_menu_states": [6, 7, 8, 11, 12, 14],
+            "map_order": [
+                "clear MAIN",
+                "map terrain",
+                "map entities",
+                "right-side world viewport",
+                "two divider lines",
+                "map marks",
+                "map menu/scores/pause/options/volume/ok-cancel",
+                "pause/end-level text",
+                "conditional left and right spells",
+            ],
+            "post_switch_order": [
+                "objective textbox when objective counter nonzero",
+                "tutorial/briefing/help text when setting_byte1_22 bit2 set",
+            ],
+            "unsupported_fixed_profile_branches": [
+                "stereo double render",
+                "alternate resolution",
+                "DAC presentation",
+                "hostile or remote player presentation",
+            ],
+        },
+        "overlay_receipt_ledger": {
+            "schema": "mc2-level1-overlay-receipt-ledger/v1",
+            "authority":
+                "pinned remc2 source branch census independent of Rust command emission",
+            "source_spans": [
+                "remc2/engine/GameUI.cpp:123-610",
+                "remc2/engine/GameUI.cpp:4591-5194",
+                "remc2/engine/EventsFunctions.cpp:21647-22688",
+                "remc2/engine/EventsFunctions.cpp:31851-31866",
+                "remc2/engine/EventsFunctions.cpp:44615-44881",
+                "remc2/engine/EventsFunctions.cpp:48218-48260",
+                "remc2/engine/MenuState.h:5-18",
+            ],
+            "branch_sequences": branch_sequences,
+            "vectors": {
+                "spell_tier_reset": [
+                    {
+                        "hand": "left",
+                        "source_x": 510,
+                        "fixed_x": 282,
+                        "fixed_y": 1,
+                        "text": "I",
+                        "colour": 61,
+                    },
+                    {
+                        "hand": "right",
+                        "source_x": 574,
+                        "fixed_x": 314,
+                        "fixed_y": 1,
+                        "text": "I",
+                        "colour": 61,
+                    },
+                ],
+                "spell_menu": {
+                    "family_count": 26,
+                    "family_selectors": [
+                        {
+                            "family": family,
+                            "small_selector": 97 + family,
+                            "tier_selectors": [
+                                179 + 3 * family + tier for tier in range(3)
+                            ],
+                        }
+                        for family in range(26)
+                    ],
+                    "no_holder_panel": 89,
+                    "cannot_summon_panel": 91,
+                    "source_order": "two rows of thirteen, left-to-right",
+                    "profiles": spell_profiles,
+                },
+                "menu_state_writers": {
+                    "ordinary": {
+                        "0": ["Pause"],
+                        "3": ["Chat", "Pause"],
+                        "5": ["Pause"],
+                        "9": ["Options"],
+                        "10": ["Volume", "Pause"],
+                        "13": ["OKCancel"],
+                    },
+                    "map": {
+                        "6": ["Pause"],
+                        "7": ["Scores"],
+                        "8": ["Pause", "BottomSpellMenu"],
+                        "11": ["Options"],
+                        "12": ["Volume", "Pause"],
+                        "14": ["OKCancel"],
+                    },
+                    "dead": {
+                        "9": ["Options"],
+                        "10": ["Volume", "Pause"],
+                        "13": ["OKCancel"],
+                        "default": ["Pause"],
+                    },
+                },
+                "correction_2_source_vectors": {
+                    "palette_indirection": {
+                        "source_offsets": [0, 15, 240, 255, 0x888, 3840, 4095],
+                        "indexed_values": [61, 23, 171, 87, 177, 119, 176],
+                    },
+                    "pause": {
+                        "selector_order": [174, 175, 176, 177, 178],
+                        "fixed_xy": [[134, 38], [134, 54], [134, 70],
+                                     [160, 70], [134, 86]],
+                        "disabled_shade_passes": 2,
+                        "disabled_colour_offset": 0,
+                    },
+                    "chat": {
+                        "entry_text_xy": [5, 167],
+                        "caret_xy_offset": [5, 168],
+                        "channel_selected": 155,
+                        "channel_unselected": 158,
+                        "mode_selected": 156,
+                        "mode_unselected": 159,
+                        "mode_xy": [[41, 180], [76, 180],
+                                    [111, 180], [155, 180]],
+                        "mode_inner_order": [154, 153, 152, 151],
+                        "remote_selected": 157,
+                        "remote_unselected": 160,
+                        "button_order": [[259, 192, 166],
+                                         [261, 237, 166],
+                                         [260, 282, 166]],
+                        "hover_text_xy_colour_offset": [195, 190, 240],
+                    },
+                    "options": {
+                        "on_ids": [400, 390, 392, 469, 398, 7, 382, 13,
+                                   359, 363, 357, 395, 365, 441, 442, 468,
+                                   402],
+                        "off_ids": [401, 391, 393, 470, 399, 7, 381, 14,
+                                    360, 364, 358, 396, 366, 440, 443, 468,
+                                    403],
+                        "left_x": 109,
+                        "row_y_start": 33,
+                        "row_y_step": 9,
+                        "middle_repeat": 15,
+                        "right_x": 202,
+                        "ok": [[168, 139, 188], [169, 147, 188],
+                               [169, 153, 188], [169, 159, 188],
+                               [169, 165, 188], [169, 171, 188],
+                               [170, 172, 188]],
+                        "text_colour_offsets": {
+                            "hover": 3840,
+                            "normal": 4095,
+                            "unavailable": 0x888,
+                        },
+                    },
+                    "volume": {
+                        "source_outer": [268, 204, 102, 24],
+                        "source_inner": [272, 208, 94, 16],
+                        "source_bar": [274, 210, 90, 12],
+                        "background_colour_offset": 0,
+                        "foreground_colour_offset": 240,
+                        "max_volume": 127,
+                    },
+                    "ok_cancel": {
+                        "localized_ids": [2, 423, 424],
+                        "fixed_prompts": ["Abandon level.?", "Load Level?",
+                                          "Save Level?"],
+                        "ordinary_xy": [66, 25],
+                        "map_dead_xy": [3, 3],
+                        "button_order": [[257, 135, 52], [258, 160, 52]],
+                    },
+                    "pause_or_end": {
+                        "ordinary_xy": [66, 25],
+                        "map_xy": [3, 3],
+                        "paused_id": 425,
+                        "paused_colour_offset": 240,
+                        "paused_advance": 36,
+                        "end_ids": [378, 379],
+                        "end_text": "Tasks completed. Fly to the exit point..",
+                        "end_colour_offset": 3840,
+                        "notification_states": {
+                            "1": ["name_text", 3840],
+                            "2": ["bracket_name_text", 3840],
+                            "3": ["text", 3840],
+                            "4": ["bracket_name_text", 240],
+                            "5": ["local_text", 3840],
+                        },
+                        "timer_edge": [0, 1, 100, 101],
+                    },
+                    "map": {
+                        "left_size": [191, 200],
+                        "scale": 408,
+                        "right_viewport": [192, 0, 128, 200],
+                        "right_eye_z_add": 128,
+                        "divider_order": [192, 191],
+                        "divider_colour_offset": 0,
+                        "centre_cross": [94, 100, 15, 4095],
+                    },
+                    "scores": {
+                        "large_selector": 85,
+                        "mini_selector": 86,
+                        "player_x_step": 18,
+                        "row_y_step": 19,
+                        "requires_all_player_matrix": True,
+                        "requires_help_rng_state": True,
+                    },
+                    "bottom": {
+                        "family_count": 26,
+                        "slot_origin": [4, 164],
+                        "slot_step": [24, 18],
+                        "edge_selector": 88,
+                        "panel_selected": 87,
+                        "panel_unavailable": 89,
+                        "panel_cannot": 91,
+                        "colourized_tint": 0xA6,
+                        "selected_frame": 90,
+                        "tier_y": 147,
+                        "tier_spacing": 33,
+                        "tier_panels": [161, 162, 163],
+                        "tier_number_start": 165,
+                        "tier_selected": 164,
+                        "xp_background_offset": 0,
+                        "xp_foreground_offset": 3840,
+                        "xp_source_width": 54,
+                    },
+                    "debug": {
+                        "flag8_x": 160,
+                        "flag40_xy": [5, 42],
+                        "line_step": 7,
+                        "label_colour_offset": 3840,
+                        "value_colour_offset": 15,
+                        "selected_value_colour_offset": 255,
+                        "version": "Beta",
+                        "version_date": "03:42:13 Sep 06 1995",
+                        "tape_size": 38547,
+                        "carpet_size": 224791,
+                    },
+                    "cursor": {
+                        "selector": 9,
+                        "msp_dimensions": [5, 1],
+                        "pointer_dimensions": [12, 13],
+                        "active_bank_proven": False,
+                        "active_policy": "fail_closed",
+                    },
+                },
+                "unsupported_prerequisites": {
+                    "spider": "typed web sprite sheet absent",
+                    "tutorial": "sentinel stream off_DB558 absent",
+                    "help": "recursive E2A74 textbox state absent",
+                },
+            },
+        },
+        "ui_mechanical_census": {
+            "fixed_source_bitmap_bank": {
+                "name": "MSPRN0-0",
+                "selectors": [
+                    asset["selector"] for asset in source_bitmap_assets
+                ],
+                "assets": source_bitmap_assets,
+            },
+            "adapted_bitmap_bank": {
+                "name": "HSPRN0-0",
+                "selectors": [
+                    asset["selector"] for asset in adapted_bitmap_assets
+                ],
+                "assets": adapted_bitmap_assets,
+            },
+            "fixed_source_font": source_font,
+            "adapted_font": adapted_font,
+            "cursor": cursor_asset,
+            "selector_groups": {
+                "chat_players_and_tiles": list(range(74, 88)),
+                "spell_menu_chrome": list(range(88, 92))
+                + list(range(149, 179)),
+                "spell_family_small_formula_97_plus_family":
+                    list(SPELL_SMALL_HSPRN),
+                "spell_family_big_formula_123_plus_family":
+                    list(SPELL_BIG_HSPRN),
+                "spell_tier_formula_179_plus_3_family_plus_tier":
+                    list(SPELL_TIER_HSPRN),
+                "ok_cancel_back": list(range(257, 262)),
+                "top_bar_and_objective": [
+                    1, 2, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
+                    50, 51, 52, 53, 54, 55, 58, 66, 83, 84, 123,
+                    124, 125, 126, 171, 172, 173,
+                ],
+            },
+            "calls": [
+                {
+                    "call": "DrawChatMenu_2F6B0",
+                    "selectors": list(range(74, 88))
+                    + list(range(151, 161))
+                    + [259, 260, 261],
+                    "strings":
+                        "live player names/chat buffer, decimal player numbers, wizard names and hovered wizard name",
+                    "formats": ["%s", "%d"],
+                    "primitives":
+                        "Night building colours, CLRN/PALN palette entries, indexed lines, FONT1/HFONT3 text and cursor",
+                },
+                {
+                    "call": "DrawInGameOptionsMenu_30050",
+                    "selectors": list(range(168, 171)),
+                    "strings":
+                        "17 sub_1A5B0_getLangStrings dynamic option labels plus literal OK",
+                    "state":
+                        "enabled/current bitfields, live mouse hover and fixed 320 source dimensions",
+                    "primitives":
+                        "panel edge/centre pieces, palette 4095/3840/0x888 text and cursor",
+                },
+                {
+                    "call": "DrawOkCancelMenu_30A60",
+                    "selectors": [257, 258],
+                    "language_ids": [2, 423, 424],
+                    "strings":
+                        "selected Abandon/Load/Save prompt formatted as %s?",
+                    "cursor":
+                        "software DrawBitmap uses MSPRN selector 9; SetCursor uses POINTERS selector 9",
+                },
+                {
+                    "call": "DrawPauseMenu_2FD90",
+                    "selectors": list(range(174, 179)),
+                    "gate": "GAME_PAUSED",
+                    "nested_gate":
+                        "setting_byte4_25 bit0x10 invokes sub_30870 after pause icons",
+                },
+                {
+                    "call": "DrawVolumeSettings_303D0",
+                    "selectors": [176, 177],
+                    "state":
+                        "byte_38591 selects soundVolume_6 or musicVolume_8, each scaled over 127",
+                    "primitives":
+                        "Night building colours plus palette 0/240 indexed volume bars",
+                },
+                {
+                    "call": "sub_30870",
+                    "gate": "setting_byte4_25 bit0x10",
+                    "language_extent": [1, 470],
+                    "strings":
+                        "selected language record number plus recursive textbox words",
+                    "primitives":
+                        "indexed black field, FONT1/HFONT3 text and palette 3840/0",
+                },
+                {
+                    "call": "DrawBottomSpellsMenu_2ECC0",
+                    "selectors": [88, 89, 90, 91, 149, 150]
+                    + list(SPELL_SMALL_HSPRN)
+                    + list(range(155, 179))
+                    + list(SPELL_TIER_HSPRN),
+                    "state":
+                        "2x13 families, enabled/locked/current tiers, hand corners, live mana shot bars",
+                },
+                {
+                    "call": "DrawSorcererScores_2D1D0",
+                    "selectors": [85, 86],
+                    "strings":
+                        "live wizard names, decimal max mana and zero-padded %03d pair scores",
+                    "state":
+                        "alive-player rows, player colours, help sentinel selection and source RNG update",
+                    "primitives":
+                        "SPELL_TILE/SPELL_TILE_MINI plus indexed player-colour rectangles",
+                },
+                {
+                    "call": "DrawTextPauseEndOfLevel_2CE30",
+                    "language_ids": [378, 379, 425],
+                    "strings":
+                        "Paused!, Tasks completed/Fly to exit, wizard notifications and selected spell/upgrade text",
+                    "state":
+                        "pause, level-end, notification type/countdown and selected-menu gates",
+                },
+                {
+                    "call": "DrawHelpPopUps_871F0",
+                    "strings":
+                        "prior tutorial/help sentinel recursion and complete 471-record Level 1 language table",
+                    "state":
+                        "reachable source state; native bridge fails closed before COMPLETE until cached E2A74 textbox state is typed",
+                },
+                {
+                    "call": "DrawGameFrame_2BE30 tutorial/briefing block",
+                    "gate": "setting_byte1_22 bit2; fixed profile reset is zero",
+                    "strings":
+                        "off_DB558 sentinel-separated lines with first-line palette 4095 and following palette 0",
+                    "qualification":
+                        "reachable source state; native bridge fails closed before COMPLETE until the live sentinel-separated stream is typed",
+                },
+                {
+                    "call": "DrawGameDebugText_6FEC0",
+                    "strings": "command-line/debug generated values",
+                    "gate":
+                        "qualified exporter command line has no in-game debug flag",
+                },
+            ],
+            "localization": {
+                "record_count": len(language_rows),
+                "records_path": language_output["path"],
+                "records_bytes": language_output["bytes"],
+                "records_sha256": language_output["sha256"],
+                "rows": language_rows,
+            },
+        },
+        "source_tuple_spawn_census": source_tuple_census,
+        "native_final_main_contract": {
+            "schema": "mc2-level1-native-final-main-contract/v1",
+            "classification": "Exact",
+            "source_commit": PINNED_REMC2_COMMIT,
+            "profile": {
+                "level": 1,
+                "environment": "Night",
+                "framebuffer": "320x200 indexed MAIN",
+                "players": "single local player",
+                "screen_size": 0,
+                "stereo": False,
+            },
+            "fail_closed_reachable_states": [
+                "active tutorial/briefing",
+                "recursive help popup",
+                "immobilization spider-web writer",
+                "menu-state-7 score writer",
+            ],
+            "source_anchors": [
+                "remc2/engine/GameRenderOriginal.cpp:9-238 DrawWorld_411A0 definition and temporal/spatial postprocess",
+                "remc2/engine/GameRenderOriginal.cpp:810-1843 world cell/reflection/primary traversal",
+                "remc2/engine/GameRenderOriginal.cpp:1855-3049 source sprite projection and raster",
+                "remc2/engine/GameRenderOriginal.cpp:3050-4033 linked sprite/shadow traversal and normal hotspot",
+                "remc2/engine/GameRenderOriginal.cpp:4924-4978 special hotspot and clipping",
+                "remc2/engine/EventsFunctions.cpp:21496-22062,31823-31823 DrawGameFrame_2BE30 definition and call",
+                "remc2/engine/EventsFunctions.cpp:31798-31816,47260-47720 dynamic-light calls and definitions",
+                "remc2/engine/GameUI.cpp:123-610,4591-5194 fixed-profile overlays",
+                "remc2/engine/EventsFunctions.cpp:21647-22688 fixed-profile map, bottom, and end overlays",
+                "remc2/engine/EventsFunctions.cpp:31851-31866,44615-44881,48218-48260 help/debug gates, calls, and definitions",
+            ],
+            "ordered_closure": [
+                "typed source occupant census: Render, Excluded, or hard error",
+                "source linked map-chain order retained across excluded occupants",
+                "per cell: reflection terrain and linked reflection chain before primary terrain and linked primary chain",
+                "per entity: terrain shadow immediately before primary sprite",
+                "normal and special hotspot, mirror, roll, fixed-point clipping phase, and edge truncation",
+                "subtract prior dynamic-light contributions, update entities, retire/move/recompute lights, then render",
+                "render world once, apply exact temporal-or-spatial TABLESN postprocess, then supported source-ordered overlays; active tutorial/briefing, recursive help, immobilization spider web, and menu-state-7 scores fail closed",
+                "atomically validate execution receipts and commit one generation/tick FINAL MAIN plus provenance",
+                "copy the revisioned C ABI frame and upload one row-flipped point-filtered R8 plane in Unity",
+            ],
+            "required_complete_flags": [
+                "MC_PRESENTATION_FRAME_COMPOSITOR_COMPLETE",
+                "MC_PRESENTATION_FRAME_HAS_PROVENANCE",
+                "MC_PRESENTATION_FRAME_OVERLAYS_COMPOSITED",
+                "MC_PRESENTATION_FRAME_POSTPROCESS_COMPLETE",
+                "MC_PRESENTATION_FRAME_LIGHTING_COMPLETE",
+            ],
+            "forbidden_complete_flag": "MC_TERRAIN_FRAME_NON_TERRAIN_OMITTED",
+            "implementation": {
+                "source_tuple_and_tmap": "sim-core/source_sprite_tmap.rs",
+                "map_chain": "sim-core/renderable_map_chain.rs",
+                "world_raster": "sim-core/terrain_frame.rs + native_world.rs",
+                "lighting": "sim-core/dynamic_lighting.rs",
+                "postprocess": "sim-core/indexed_postprocess.rs",
+                "overlay": "sim-core/indexed_overlay.rs + sim-capi/presentation_bridge.rs",
+                "atomic_finalization": "sim-core/presentation_frame.rs + sim-capi/native_v2.rs",
+                "unity": "NativeSession + MagicCarpetRuntime current-COMPLETE ownership",
+            },
+            "explicit_nonclaims": [
+                "cross-timeline pixel equality",
+                "cross-timeline clock equality",
+                "active-DAC RGB for historical captures",
+                "stereo or alternate-resolution presentation",
+                "hostile or remote player presentation",
+                "unsupported source sprite or overlay branches",
+                "active tutorial/briefing is reachable but fail-closed before COMPLETE",
+                "recursive help popup is reachable but fail-closed before COMPLETE",
+                "immobilization spider-web writer is reachable but fail-closed before COMPLETE",
+                "menu-state-7 score writer is reachable but fail-closed before COMPLETE",
+            ],
+        },
+        "checkpoint_status": {
+            "source_frame_census_complete": True,
+            "final_main_implementation":
+                "accepted_fixed_profile_native_FINAL_MAIN",
+            "correspondence_layers": [
+                "sprite.source_hotspot_anchor",
+                "renderer.dos_depth_interleaving_aspect",
+            ],
+            "unknown_reachable_state_policy": "hard_error_and_no_COMPLETE_flag",
+        },
+    }
+
+
 def build_minimap_aperture(
     tables: bytes,
 ) -> tuple[bytes, list[dict[str, int]]]:
@@ -415,7 +2225,7 @@ def build_minimap_aperture(
 
 
 def load_remc2_sine_table() -> tuple[list[int], bytes]:
-    text = REMC2_MATHS_TABLE.read_text(encoding="utf-8")
+    text = pinned_remc2_blob(REMC2_MATHS_TABLE_SOURCE).decode("utf-8")
     declaration = "int32_t Maths::sin_DB750[2560]"
     start = text.index("{", text.index(declaration)) + 1
     end = text.index("};", start)
@@ -1005,11 +2815,8 @@ def build_entity_presentation_descriptor(
         raise CacheError("entities.bin record extent changed")
     if len(terrain_blob) != 458752:
         raise CacheError("terrain.bin extent changed")
-    terrain_heads = {
-        value
-        for value in struct.unpack_from("<65536h", terrain_blob, 5 * 65536)
-        if value > 0
-    }
+    terrain_head_values = struct.unpack_from("<65536h", terrain_blob, 5 * 65536)
+    terrain_heads = {value for value in terrain_head_values if value > 0}
     if len(terrain_heads) != 130:
         raise CacheError("qualified Level 1 terrain billboard head count changed")
     if len(presentation_blob) < PRESENTATION_HEADER.size:
@@ -1044,6 +2851,47 @@ def build_entity_presentation_descriptor(
     ):
         raise CacheError("presentation parameter table changed")
 
+    raw_chain_entries = []
+    raw_membership: set[int] = set()
+    for tile, head in enumerate(terrain_head_values):
+        if head <= 0:
+            continue
+        source_entity = head
+        local_membership: set[int] = set()
+        ordinal = 0
+        while source_entity != 0:
+            if not 0 < source_entity < count:
+                raise CacheError(
+                    f"raw terrain tile {tile} links invalid entity {source_entity}"
+                )
+            if source_entity in local_membership:
+                raise CacheError(
+                    f"raw terrain tile {tile} contains a cycle at {source_entity}"
+                )
+            if source_entity in raw_membership:
+                raise CacheError(
+                    f"raw entity {source_entity} occurs in multiple terrain chains"
+                )
+            record_start = ENTITY_HEADER.size + source_entity * record_size
+            record = entities_blob[record_start:record_start + record_size]
+            if record[2] == 0:
+                raise CacheError(
+                    f"raw terrain tile {tile} links inactive entity {source_entity}"
+                )
+            local_membership.add(source_entity)
+            raw_membership.add(source_entity)
+            raw_chain_entries.append(
+                {
+                    "tile": tile,
+                    "ordinal": ordinal,
+                    "source_entity_index": source_entity,
+                }
+            )
+            ordinal += 1
+            source_entity = struct.unpack_from("<H", record, 22)[0]
+    if len(raw_chain_entries) != 130:
+        raise CacheError("qualified raw Level 1 map-chain extent changed")
+
     texture_rows = {row["index"]: row for row in tmap_rows}
     grouped: dict[tuple[int, int, int, int | None, int, int, int], list[int]] = {}
     for index in range(count):
@@ -1071,6 +2919,13 @@ def build_entity_presentation_descriptor(
         grouped.setdefault(key, []).append(index)
     if len(grouped) != 17 or sum(len(indices) for indices in grouped.values()) != 177:
         raise CacheError("qualified Level 1 active reset grouping changed")
+    if set(grouped) != set(RESET_SOURCE_TUPLE_DISPOSITIONS):
+        missing = sorted(set(RESET_SOURCE_TUPLE_DISPOSITIONS) - set(grouped))
+        unexpected = sorted(set(grouped) - set(RESET_SOURCE_TUPLE_DISPOSITIONS))
+        raise CacheError(
+            "qualified reset source tuple closure changed: "
+            f"missing={missing} unexpected={unexpected}"
+        )
 
     groups: list[dict[str, Any]] = []
     actor_total = 0
@@ -1087,6 +2942,7 @@ def build_entity_presentation_descriptor(
             animation_frame,
             control_flags,
         ) = key
+        source_disposition, source_semantic = RESET_SOURCE_TUPLE_DISPOSITIONS[key]
         if particle_index < 0 or particle_index >= len(particles):
             raise CacheError(f"entity group has invalid particle index {particle_index}")
         (
@@ -1224,6 +3080,14 @@ def build_entity_presentation_descriptor(
                     "control_flags_u32": control_flags,
                 },
                 "semantic_family": family,
+                "source_sprite_disposition": {
+                    "kind": source_disposition,
+                    "semantic": source_semantic,
+                    "excluded_reason": (
+                        source_semantic if source_disposition == "Excluded" else None
+                    ),
+                    "payload_wildcard": False,
+                },
                 "qualified_status": status,
                 "qualified_hidden_reason": hidden_reason,
                 "particle": {
@@ -1395,20 +3259,67 @@ def build_entity_presentation_descriptor(
         "qualified_group_count": len(EXPECTED_ACTOR_COUNTS),
         "active_reset_count": 177,
         "active_group_count": len(groups),
+        "raw_map_chain_entry_count": len(raw_chain_entries),
+        "raw_map_chain_entries": raw_chain_entries,
+        "source_tuple_census": {
+            "tuple_count": len(RESET_SOURCE_TUPLE_DISPOSITIONS),
+            "render_tuple_count": sum(
+                disposition == "Render"
+                for disposition, _ in RESET_SOURCE_TUPLE_DISPOSITIONS.values()
+            ),
+            "excluded_tuple_count": sum(
+                disposition == "Excluded"
+                for disposition, _ in RESET_SOURCE_TUPLE_DISPOSITIONS.values()
+            ),
+            "payload_wildcards": 0,
+            "unknown_reachable_tuple": "hard_error",
+        },
         "groups": groups,
     }
 
 
 def compile_rnc_decoder(directory: Path) -> tuple[Path, dict[str, Any]]:
     executable = directory / "mc-rnc-decode"
+    archive_result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(REMC2_GIT),
+            "archive",
+            "--format=tar",
+            PINNED_REMC2_COMMIT,
+            "remc2/engine",
+            "remc2/build_config.h",
+            RNC_DECODER_CPP_SOURCE,
+            RNC_DECODER_HEADER_SOURCE,
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if archive_result.returncode != 0:
+        detail = archive_result.stderr.decode("utf-8", errors="replace").strip()
+        raise CacheError(f"cannot archive pinned RNC source closure: {detail}")
+    archive_sha256 = sha256_bytes(archive_result.stdout)
+    if archive_sha256 != EXPECTED_RNC_SOURCE_ARCHIVE_SHA256:
+        raise CacheError(
+            "pinned RNC source archive changed: "
+            f"expected {EXPECTED_RNC_SOURCE_ARCHIVE_SHA256}, got {archive_sha256}"
+        )
+    source_root = directory / "pinned-source"
+    source_root.mkdir()
+    with tarfile.open(fileobj=BytesIO(archive_result.stdout), mode="r:") as archive:
+        archive.extractall(source_root, filter="data")
+    implementation = source_root / RNC_DECODER_CPP_SOURCE
+    header = source_root / RNC_DECODER_HEADER_SOURCE
     command = [
         "g++",
         "-std=c++17",
         "-O2",
         "-I",
-        str(RNC_DECODER_HEADER.parent),
+        str(header.parent),
         str(RNC_HELPER),
-        str(RNC_DECODER_CPP),
+        str(implementation),
         "-o",
         str(executable),
     ]
@@ -1421,11 +3332,13 @@ def compile_rnc_decoder(directory: Path) -> tuple[Path, dict[str, Any]]:
         raise CacheError(f"cannot build proven RNC decoder: {detail.strip()}") from error
     if completed.stderr:
         raise CacheError(f"RNC decoder compiler emitted diagnostics: {completed.stderr.strip()}")
-    return executable, rnc_logical_identity()
+    return executable, rnc_logical_identity(archive_sha256=archive_sha256)
 
 
 def rnc_logical_identity(
     non_identity_compiler_metadata: str | None = None,
+    *,
+    archive_sha256: str = EXPECTED_RNC_SOURCE_ARCHIVE_SHA256,
 ) -> dict[str, Any]:
     # The compiler executable is only a vehicle for the already pinned source.
     # Host version strings must not perturb the cache's logical identity.
@@ -1437,15 +3350,21 @@ def rnc_logical_identity(
             "host compiler metadata is non-identity-bearing; adapter/implementation/"
             "header and every decoded output hash define logical cache truth",
         "adapter_sha256": sha256_file(RNC_HELPER),
-        "implementation_sha256": sha256_file(RNC_DECODER_CPP),
-        "header_sha256": sha256_file(RNC_DECODER_HEADER),
+        "source_archive_sha256": archive_sha256,
+        "implementation_sha256": sha256_bytes(
+            pinned_remc2_blob(RNC_DECODER_CPP_SOURCE)
+        ),
+        "header_sha256": sha256_bytes(
+            pinned_remc2_blob(RNC_DECODER_HEADER_SOURCE)
+        ),
     }
 
 
 def parse_source_uv_rows() -> list[list[list[int]]]:
+    text = pinned_remc2_blob(REMC2_UV_TABLE_SOURCE).decode("utf-8")
     values = [
         int(value, 16)
-        for value in re.findall(r"0x[0-9A-Fa-f]+", REMC2_UV_TABLE.read_text())
+        for value in re.findall(r"0x[0-9A-Fa-f]+", text)
     ]
     if len(values) != 32 * 8 or any(value not in (0, 0x001FFFFF) for value in values):
         raise CacheError("remc2 UVTable_D4350 no longer has the qualified 32x8 binary form")
@@ -2026,12 +3945,28 @@ def midi_dynamic_control_census(payload: bytes, label: str) -> dict[str, Any]:
 
 def compile_xmi_converter(directory: Path) -> tuple[Path, dict[str, Any]]:
     executable = directory / "mc-xmi-to-midi"
+    implementation = directory / "xmi2mid.cpp"
+    header = directory / "xmi2mid.h"
+    adapter = directory / "xmi_convert.cpp"
+    implementation.write_bytes(pinned_remc2_blob(XMI_IMPLEMENTATION_SOURCE))
+    header.write_bytes(pinned_remc2_blob(XMI_HEADER_SOURCE))
+    adapter_text = XMI_HELPER.read_text(encoding="utf-8")
+    dirty_header_include = (
+        '#include "../../../upstream/magic-carpet-2-hd/'
+        'remc2/portability/xmi2mid.h"'
+    )
+    if adapter_text.count(dirty_header_include) != 1:
+        raise CacheError("XMI adapter remc2 header include changed")
+    adapter.write_text(
+        adapter_text.replace(dirty_header_include, '#include "xmi2mid.h"'),
+        encoding="utf-8",
+    )
     command = [
         os.environ.get("CXX", "c++"),
         "-std=c++17",
         "-O2",
-        str(XMI_HELPER),
-        str(XMI_IMPLEMENTATION),
+        str(adapter),
+        str(implementation),
         "-o",
         str(executable),
     ]
@@ -2047,8 +3982,12 @@ def compile_xmi_converter(directory: Path) -> tuple[Path, dict[str, Any]]:
     return executable, {
         "id": "remc2-TranscodeXmiToMid-owner-cache-adapter",
         "adapter_sha256": sha256_file(XMI_HELPER),
-        "implementation_sha256": sha256_file(XMI_IMPLEMENTATION),
-        "header_sha256": sha256_file(XMI_HEADER),
+        "implementation_sha256": sha256_bytes(
+            pinned_remc2_blob(XMI_IMPLEMENTATION_SOURCE)
+        ),
+        "header_sha256": sha256_bytes(
+            pinned_remc2_blob(XMI_HEADER_SOURCE)
+        ),
         "compile_flags": ["-std=c++17", "-O2"],
         "host_compiler_metadata_identity_bearing": False,
     }
@@ -2078,17 +4017,33 @@ def transcode_xmi(
 
 def compile_adl_renderer() -> tuple[Path, dict[str, Any]]:
     """Build a private deterministic MIDI-to-WAVE adapter outside the cache."""
-    source_revision = subprocess.run(
-        ["git", "-C", str(ADLMIDI_SOURCE), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    if source_revision != "6806c7204d17220ecc0430759f784aea8ee2ddb2":
-        raise CacheError("qualified remc2/libADLMIDI source revision changed")
+    archive_result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(REMC2_GIT),
+            "archive",
+            "--format=tar",
+            PINNED_REMC2_COMMIT,
+            ADLMIDI_SOURCE_AT_PIN,
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if archive_result.returncode != 0:
+        detail = archive_result.stderr.decode("utf-8", errors="replace").strip()
+        raise CacheError(f"cannot archive pinned libADLMIDI source: {detail}")
+    archive_sha256 = sha256_bytes(archive_result.stdout)
+    if archive_sha256 != EXPECTED_ADLMIDI_ARCHIVE_SHA256:
+        raise CacheError(
+            "pinned libADLMIDI archive changed: "
+            f"expected {EXPECTED_ADLMIDI_ARCHIVE_SHA256}, got {archive_sha256}"
+        )
     identity = sha256_bytes(
         canonical_json({
-            "source_revision": source_revision,
+            "source_revision": PINNED_REMC2_COMMIT,
+            "source_archive_sha256": archive_sha256,
             "adapter_sha256": sha256_file(ADL_RENDER_HELPER),
             "bank": 59,
             "chips": 2,
@@ -2100,9 +4055,13 @@ def compile_adl_renderer() -> tuple[Path, dict[str, Any]]:
     executable = build / "mc-adl-render"
     if not library.is_file():
         build.mkdir(parents=True, exist_ok=True)
+        source_parent = Path(tempfile.mkdtemp(prefix="pinned-source-", dir=build))
+        with tarfile.open(fileobj=BytesIO(archive_result.stdout), mode="r:") as archive:
+            archive.extractall(source_parent, filter="data")
+        adlmidi_source = source_parent / ADLMIDI_SOURCE_AT_PIN
         configure = [
             "cmake",
-            "-S", str(ADLMIDI_SOURCE),
+            "-S", str(adlmidi_source),
             "-B", str(build),
             "-DCMAKE_BUILD_TYPE=Release",
             "-DADLMIDI_STATIC=ON",
@@ -2129,11 +4088,18 @@ def compile_adl_renderer() -> tuple[Path, dict[str, Any]]:
                 f"cannot build qualified private libADLMIDI: {detail.strip()}"
             ) from error
     if not executable.is_file():
+        source_candidates = sorted(build.glob(f"pinned-source-*/{ADLMIDI_SOURCE_AT_PIN}"))
+        if not source_candidates:
+            source_parent = Path(tempfile.mkdtemp(prefix="pinned-source-", dir=build))
+            with tarfile.open(fileobj=BytesIO(archive_result.stdout), mode="r:") as archive:
+                archive.extractall(source_parent, filter="data")
+            source_candidates = [source_parent / ADLMIDI_SOURCE_AT_PIN]
+        adlmidi_source = source_candidates[-1]
         command = [
             os.environ.get("CXX", "c++"),
             "-std=c++17",
             "-O2",
-            "-I", str(ADLMIDI_SOURCE / "include"),
+            "-I", str(adlmidi_source / "include"),
             str(ADL_RENDER_HELPER),
             str(library),
             "-ldl", "-lpthread", "-lm",
@@ -2148,7 +4114,8 @@ def compile_adl_renderer() -> tuple[Path, dict[str, Any]]:
             raise CacheError(f"cannot build ADLMIDI render adapter: {detail.strip()}") from error
     return executable, {
         "id": "libADLMIDI-private-owner-cache-render-adapter",
-        "source_revision": source_revision,
+        "source_revision": PINNED_REMC2_COMMIT,
+        "source_archive_sha256": archive_sha256,
         "source_license": "LGPL-2.1-or-later/GPL-3.0-or-later upstream dual license",
         "adapter_sha256": sha256_file(ADL_RENDER_HELPER),
         "compile_flags": ["-std=c++17", "-O2"],
@@ -2359,6 +4326,8 @@ def build_cache(
                 "sha256": row["sha256"],
             }
         )
+    runtime_captures, runtime_profile = qualified_runtime_profile(package_dir)
+    pinned_source_evidence = pinned_remc2_source_evidence()
 
     frame_ids = {
         int(asset_id.rsplit("#", 1)[1])
@@ -2411,8 +4380,20 @@ def build_cache(
     }
     if not frame_tmaps <= scene_tmaps or len(scene_tmaps) != 129:
         raise CacheError("qualified Level 1 scene TMAP closure changed")
+    source_contract_tmaps = {
+        int(outcome["base_tmap"])
+        for row in dynamic_allocator_sprite_census()
+        for outcome in row["outcomes"]
+        if outcome["disposition"] == "Render"
+    }
+    source_contract_tmaps.update(
+        int(profile[1])
+        for profile in RESET_SOURCE_PRESENTATION_PROFILES.values()
+        if profile[1] is not None
+    )
     scene_tmaps.update(LEVEL1_LIVE_MISSION_TMAPS)
-    if len(scene_tmaps) != 172:
+    scene_tmaps.update(source_contract_tmaps)
+    if len(scene_tmaps) != 180:
         raise CacheError("live Level 1 mission TMAP extension changed")
 
     stage = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent))
@@ -2421,6 +4402,44 @@ def build_cache(
         rnc_work = stage / ".rnc-work"
         rnc_work.mkdir()
         decoder, rnc_provenance = compile_rnc_decoder(rnc_work)
+        reset_main = decode_container_blob(
+            decoder,
+            source_bytes["DATA/SMATITLE.DAT"],
+            0,
+            320 * 200,
+            rnc_work,
+            "smatitle-main",
+        )
+        reset_palette = decode_container_blob(
+            decoder,
+            source_bytes["DATA/SMATITLE.PAL"],
+            0,
+            256 * 3,
+            rnc_work,
+            "smatitle-palette",
+        )
+        reset_main_output = write_output(
+            stage,
+            outputs,
+            "frame/reset-loaded-main-320x200.indices.u8",
+            reset_main,
+            kind="indexed_image_u8_reset_loaded_MAIN",
+            source_asset_ids=["owner_data:DATA/SMATITLE.DAT"],
+            extra={
+                "width": 320,
+                "height": 200,
+                "history_state": "Unprimed",
+            },
+        )
+        reset_palette_output = write_output(
+            stage,
+            outputs,
+            "frame/reset-loaded-main.palette.rgb6",
+            reset_palette,
+            kind="ordered_palette_rgb6",
+            source_asset_ids=["owner_data:DATA/SMATITLE.PAL"],
+            extra={"colour_count": 256},
+        )
         build_dat = source_bytes["DATA/BUILD0-0.DAT"]
         build_tab = source_bytes["DATA/BUILD0-0.TAB"]
         build_records = bitmap_records(build_tab)
@@ -3499,13 +5518,17 @@ def build_cache(
                 "repack_provenance": {
                     "algorithm":
                         "remc2_sub_5B7A0_256_stride_32x32_address_grid",
-                    "source_sha256": sha256_file(REMC2_TEXTURE_MAPPING),
+                    "source_sha256": sha256_bytes(
+                        pinned_remc2_blob(REMC2_EVENTS_FUNCTIONS_SOURCE)
+                    ),
                 },
             },
             "terrain_uv": {
                 "source_path":
-                    "upstream/magic-carpet-2-hd/remc2/engine/UVTable_D4350.cpp",
-                "source_sha256": sha256_file(REMC2_UV_TABLE),
+                    f"git:{PINNED_REMC2_COMMIT}:{REMC2_UV_TABLE_SOURCE}",
+                "source_sha256": sha256_bytes(
+                    pinned_remc2_blob(REMC2_UV_TABLE_SOURCE)
+                ),
                 "source_rows_camera_relative": parse_source_uv_rows(),
                 "source_row_count": 32,
                 "persistent_group_expression": "(terrain_angle_u8 >> 4) & 7",
@@ -3606,6 +5629,33 @@ def build_cache(
                 "qualified_group_count": entity_descriptor["qualified_group_count"],
             },
         )
+        source_tuple_census = build_source_tuple_spawn_census(
+            (package_dir / "authored-level.bin").read_bytes(),
+            (package_dir / "entities.bin").read_bytes(),
+        )
+        source_tuple_output = write_output(
+            stage,
+            outputs,
+            "entities/source-tuple-spawn-census.json",
+            canonical_json(source_tuple_census),
+            kind="canonical_json_Level1_source_tuple_spawn_census",
+            source_asset_ids=[
+                "level_export:authored-level.bin",
+                "level_export:entities.bin",
+                "level_export:presentation.bin",
+            ],
+            extra={
+                "authored_record_count":
+                    source_tuple_census["matrix"]["authored_record_count"],
+                "dispatch_slot_count":
+                    source_tuple_census["matrix"]["dispatch_slot_count"],
+                "reset_tuple_count":
+                    source_tuple_census["reset_tuple_manifest"]["tuple_count"],
+                "dynamic_allocator_family_count":
+                    source_tuple_census["dynamic_allocator_family_count"],
+                "canonical_matrix_sha256": EXPECTED_LEVEL1_MATRIX_SHA256,
+            },
+        )
         shutil.rmtree(rnc_work)
 
         proven_decode = load_proven_decoder()
@@ -3688,6 +5738,59 @@ def build_cache(
                 }
             )
 
+        mspr_dat = source_bytes["DATA/MSPRN0-0.DAT"]
+        mspr_records = bitmap_records(source_bytes["DATA/MSPRN0-0.TAB"])
+        source_sprite_rows: list[dict[str, Any]] = []
+        for index in SOURCE_FRAME_MSPRN:
+            offset, width, height = mspr_records[index]
+            pixels, mask, encoded_length = materialize_indexed_rle(
+                mspr_dat, offset, width, height
+            )
+            proven = proven_decode(mspr_dat, offset, width, height)
+            catalog_entry = entry_rows[f"owner_data:DATA/MSPRN0-0.DAT#{index}"]
+            if (
+                proven["status"] != "decoded_indexed_rle"
+                or proven["indexed_pixels_sha256"] != sha256_bytes(pixels)
+                or proven["transparency_mask_sha256"] != sha256_bytes(mask)
+                or catalog_entry["indexed_pixels_sha256"] != sha256_bytes(pixels)
+                or catalog_entry["transparency_mask_sha256"] != sha256_bytes(mask)
+                or proven["encoded_length"] != encoded_length
+            ):
+                raise CacheError(f"MSPRN decoder/catalog disagreement at index {index}")
+            index_row = write_output(
+                stage,
+                outputs,
+                f"sprites/msprn/{index:03d}.indices.u8",
+                pixels,
+                kind="indexed_image_u8",
+                source_asset_ids=[catalog_entry["asset_id"]],
+                extra={"index": index, "width": width, "height": height},
+            )
+            mask_row = write_output(
+                stage,
+                outputs,
+                f"sprites/msprn/{index:03d}.mask.u8",
+                mask,
+                kind="visibility_mask_u8_0_or_1",
+                source_asset_ids=[catalog_entry["asset_id"]],
+                extra={"index": index, "width": width, "height": height},
+            )
+            source_sprite_rows.append(
+                {
+                    "index": index,
+                    "width": width,
+                    "height": height,
+                    "indices_path": index_row["path"],
+                    "mask_path": mask_row["path"],
+                    "indices_sha256": index_row["sha256"],
+                    "mask_sha256": mask_row["sha256"],
+                    "source_asset_id": catalog_entry["asset_id"],
+                    "row_order": "top_to_bottom",
+                    "origin": "top_left",
+                    "mask_semantics": "one_visible_zero_transparent",
+                }
+            )
+
         font_dat = source_bytes["DATA/HFONT3.DAT"]
         font_records = bitmap_records(source_bytes["DATA/HFONT3.TAB"])
         font_blob = bytearray()
@@ -3733,6 +5836,110 @@ def build_cache(
             extra={"glyph_count": len(glyph_rows)},
         )
 
+        source_font_dat = source_bytes["DATA/FONT1.DAT"]
+        source_font_records = bitmap_records(source_bytes["DATA/FONT1.TAB"])
+        source_font_blob = bytearray()
+        source_glyph_rows: list[dict[str, Any]] = []
+        for index, (offset, width, height) in enumerate(source_font_records):
+            pixels, mask, encoded_length = materialize_indexed_rle(
+                source_font_dat, offset, width, height
+            )
+            proven = proven_decode(source_font_dat, offset, width, height)
+            catalog_entry = entry_rows[f"owner_data:DATA/FONT1.DAT#{index}"]
+            if (
+                proven["indexed_pixels_sha256"] != sha256_bytes(pixels)
+                or proven["transparency_mask_sha256"] != sha256_bytes(mask)
+                or catalog_entry["transparency_mask_sha256"] != sha256_bytes(mask)
+                or proven["encoded_length"] != encoded_length
+            ):
+                raise CacheError(f"FONT1 decoder/catalog disagreement at glyph {index}")
+            blob_offset = len(source_font_blob)
+            source_font_blob.extend(mask)
+            source_glyph_rows.append(
+                {
+                    "index": index,
+                    "offset": blob_offset,
+                    "length": len(mask),
+                    "width": width,
+                    "height": height,
+                    "mask_sha256": sha256_bytes(mask),
+                    "source_asset_id": catalog_entry["asset_id"],
+                    "palette_status":
+                        "mask_exact_runtime_tint_callsite_dynamic",
+                }
+            )
+        source_font_output = write_output(
+            stage,
+            outputs,
+            "font/font1.masks.u8",
+            bytes(source_font_blob),
+            kind="concatenated_visibility_masks_u8_0_or_1",
+            source_asset_ids=[
+                "owner_data:DATA/FONT1.DAT",
+                "owner_data:DATA/FONT1.TAB",
+            ],
+            extra={"glyph_count": len(source_glyph_rows)},
+        )
+
+        pointer_dat = source_bytes["DATA/POINTERS.DAT"]
+        pointer_records = bitmap_records(source_bytes["DATA/POINTERS.TAB"])
+        cursor_selector = 9
+        cursor_offset, cursor_width, cursor_height = pointer_records[cursor_selector]
+        cursor_pixels, cursor_mask, cursor_encoded_length = materialize_indexed_rle(
+            pointer_dat,
+            cursor_offset,
+            cursor_width,
+            cursor_height,
+        )
+        cursor_proven = proven_decode(
+            pointer_dat,
+            cursor_offset,
+            cursor_width,
+            cursor_height,
+        )
+        cursor_catalog = entry_rows[
+            f"owner_data:DATA/POINTERS.DAT#{cursor_selector}"
+        ]
+        if (
+            cursor_proven["status"] != "decoded_indexed_rle"
+            or cursor_proven["indexed_pixels_sha256"]
+            != sha256_bytes(cursor_pixels)
+            or cursor_proven["transparency_mask_sha256"]
+            != sha256_bytes(cursor_mask)
+            or cursor_catalog["indexed_pixels_sha256"]
+            != sha256_bytes(cursor_pixels)
+            or cursor_catalog["transparency_mask_sha256"]
+            != sha256_bytes(cursor_mask)
+            or cursor_proven["encoded_length"] != cursor_encoded_length
+        ):
+            raise CacheError("POINTERS decoder/catalog disagreement at selector 9")
+        cursor_indices_output = write_output(
+            stage,
+            outputs,
+            "cursor/pointers/009.indices.u8",
+            cursor_pixels,
+            kind="indexed_image_u8",
+            source_asset_ids=[cursor_catalog["asset_id"]],
+            extra={
+                "selector": cursor_selector,
+                "width": cursor_width,
+                "height": cursor_height,
+            },
+        )
+        cursor_mask_output = write_output(
+            stage,
+            outputs,
+            "cursor/pointers/009.mask.u8",
+            cursor_mask,
+            kind="visibility_mask_u8_0_or_1",
+            source_asset_ids=[cursor_catalog["asset_id"]],
+            extra={
+                "selector": cursor_selector,
+                "width": cursor_width,
+                "height": cursor_height,
+            },
+        )
+
         language_l1 = language_records(source_bytes["LANGUAGE/L1.TXT"])
         language_d2 = language_records(source_bytes["LANGUAGE/D2.TXT"])
         if language_l1 != language_d2:
@@ -3742,6 +5949,35 @@ def build_cache(
             raise CacheError("qualified Level 1 objective localization changed")
         if any(not language_l1[index] for index in LEVEL1_OBJECTIVE_IDS):
             raise CacheError("qualified Level 1 objective stage localization is empty")
+        language_blob = bytearray()
+        language_record_rows = []
+        for selector, record in enumerate(language_l1):
+            offset = len(language_blob)
+            language_blob.extend(record)
+            language_blob.append(0)
+            language_record_rows.append(
+                {
+                    "selector": selector,
+                    "offset": offset,
+                    "byte_length": len(record),
+                    "sha256": sha256_bytes(record),
+                }
+            )
+        language_output = write_output(
+            stage,
+            outputs,
+            "font/language-l1.records-nul.bin",
+            bytes(language_blob),
+            kind="ordered_owner_localization_records_nul_terminated",
+            source_asset_ids=[
+                "owner_data:LANGUAGE/L1.TXT",
+                "owner_data:LANGUAGE/D2.TXT",
+            ],
+            extra={
+                "record_count": LANGUAGE_RECORD_COUNT,
+                "payload_offset": LANGUAGE_PAYLOAD_OFFSET,
+            },
+        )
 
         players_blob = (package_dir / "players.bin").read_bytes()
         if (
@@ -3762,7 +5998,11 @@ def build_cache(
         ):
             raise CacheError("qualified Level 1 reset spell slots changed")
         entities_blob = (package_dir / "entities.bin").read_bytes()
-        if entities_blob[:4] != b"MCE1":
+        if (
+            len(entities_blob) != 12 + 1000 * 176
+            or entities_blob[:4] != b"MCE1"
+            or struct.unpack_from("<HHI", entities_blob, 4) != (1, 176, 1000)
+        ):
             raise CacheError("entities.bin is not the qualified MCE1 form")
         record_size = struct.unpack_from("<H", entities_blob, 6)[0]
         holder_models = []
@@ -3776,6 +6016,22 @@ def build_cache(
         player_y = struct.unpack_from("<H", entities_blob, player_start + 82)[0]
         if (player_x, player_y) != (19840, 56960):
             raise CacheError("qualified Level 1 reset player position changed")
+        player_entity_index = struct.unpack_from("<H", player0, 4)[0]
+        if player_entity_index != 152:
+            raise CacheError("qualified Level 1 player relation changed")
+        player_actual_speed = struct.unpack_from(
+            "<h",
+            entities_blob,
+            12 + player_entity_index * record_size + 134,
+        )[0]
+        if player_actual_speed != 0:
+            raise CacheError("qualified Level 1 player actual speed changed")
+        runtime_profile["initial_player"] = {
+            "entity_index": player_entity_index,
+            "entities_record_size": record_size,
+            "actual_speed_offset": 134,
+            "actual_speed": player_actual_speed,
+        }
 
         minimap_mask, minimap_scanlines = build_minimap_aperture(tablesn)
         minimap_mask_output = write_output(
@@ -3926,12 +6182,10 @@ def build_cache(
                 "authority": "FrozenObserved",
             },
         )
-        localization_rows = [
+        objective_localization_rows = [
             {
-                "selector": selector,
+                **language_record_rows[selector],
                 "bytes_hex": language_l1[selector].hex(),
-                "byte_length": len(language_l1[selector]),
-                "sha256": sha256_bytes(language_l1[selector]),
             }
             for selector in LEVEL1_OBJECTIVE_IDS
         ]
@@ -3974,15 +6228,7 @@ def build_cache(
                 "glyph_indices": tier_glyphs,
                 "palette_index": objective_background_index,
             })
-        hud_bitmap_selectors = (
-            1, 2, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
-            51, 52, 53, 54, 55, 58, 66, 83, 84, 123, 124, 125, 126,
-            88, 89, 90, 91,
-            *range(97, 123),
-            149, 150, 161, 162, 163, 164, 165, 166, 167,
-            171, 172, 173,
-            *range(179, 191),
-        )
+        hud_bitmap_selectors = tuple(sorted(set(FRAME_HSPRN + DYNAMIC_HSPRN)))
         sprite_by_index = {row["index"]: row for row in sprite_rows}
         hud_bitmap_assets = []
         for selector in sorted(hud_bitmap_selectors):
@@ -4007,9 +6253,77 @@ def build_cache(
                 "filter": "nearest",
                 "authority": "FrozenObserved",
             })
+        source_frame_bitmap_assets = [
+            {
+                "selector": row["index"],
+                "bank": "MSPRN0-0",
+                "source_asset_id": row["source_asset_id"],
+                "indices_path": row["indices_path"],
+                "mask_path": row["mask_path"],
+                "indices_sha256": row["indices_sha256"],
+                "mask_sha256": row["mask_sha256"],
+                "stored_width": row["width"],
+                "stored_height": row["height"],
+                "palette": "PALN-0",
+                "filter": "nearest",
+                "authority": "PinnedSourceMechanical",
+            }
+            for row in source_sprite_rows
+        ]
+        source_frame_font = {
+            "bank": "FONT1",
+            "mask_blob_path": source_font_output["path"],
+            "mask_blob_bytes": source_font_output["bytes"],
+            "mask_blob_sha256": source_font_output["sha256"],
+            "glyph_count": len(source_glyph_rows),
+            "glyphs": source_glyph_rows,
+            "authority": "PinnedSourceMechanical",
+        }
+        adapted_frame_font = {
+            "bank": "HFONT3",
+            "mask_blob_path": font_output["path"],
+            "mask_blob_bytes": font_output["bytes"],
+            "mask_blob_sha256": font_output["sha256"],
+            "glyph_count": len(glyph_rows),
+            "glyphs": glyph_rows,
+            "authority": "PinnedSourceMechanical",
+        }
+        source_cursor_asset = {
+            "selector": cursor_selector,
+            "system_cursor": {
+                "bank": "POINTERS",
+                "source_asset_id": cursor_catalog["asset_id"],
+                "indices_path": cursor_indices_output["path"],
+                "mask_path": cursor_mask_output["path"],
+                "indices_sha256": cursor_indices_output["sha256"],
+                "mask_sha256": cursor_mask_output["sha256"],
+                "stored_width": cursor_width,
+                "stored_height": cursor_height,
+            },
+            "fixed_software_cursor": next(
+                asset
+                for asset in source_frame_bitmap_assets
+                if asset["selector"] == cursor_selector
+            ),
+            "adapted_software_cursor": next(
+                asset
+                for asset in hud_bitmap_assets
+                if asset["selector"] == cursor_selector
+            ),
+            "palette": "PALN-0",
+            "filter": "nearest",
+            "authority": "PinnedSourceMechanical",
+        }
         hud_descriptor = {
             "schema": "mc2-level1-owner-hud/v1",
             "bitmap_assets": hud_bitmap_assets,
+            "localization_extent": {
+                "record_count": LANGUAGE_RECORD_COUNT,
+                "records_path": language_output["path"],
+                "records_bytes": language_output["bytes"],
+                "records_sha256": language_output["sha256"],
+                "rows": language_record_rows,
+            },
             "reference_layout": {
                 "width": LEVEL1_REFERENCE_WIDTH,
                 "height": LEVEL1_REFERENCE_HEIGHT,
@@ -4181,7 +6495,7 @@ def build_cache(
                 "reference_y": objective_render["objective_y"],
                 "authority": "SourceMappedLiveIndexedFramebuffer",
                 "objective_textbox_ticks": 33,
-                "localization_records": localization_rows,
+                "localization_records": objective_localization_rows,
                 "rows": objective_rows,
             },
             "authority_badge": {
@@ -4291,6 +6605,52 @@ def build_cache(
                 "objective_selector": LEVEL1_OBJECTIVE_SELECTOR,
             },
         )
+        source_frame_census = build_source_frame_census(
+            pinned_source_evidence=pinned_source_evidence,
+            runtime_captures=runtime_captures,
+            runtime_profile=runtime_profile,
+            reset_main_output=reset_main_output,
+            reset_palette_output=reset_palette_output,
+            language_rows=language_record_rows,
+            language_output=language_output,
+            source_bitmap_assets=source_frame_bitmap_assets,
+            adapted_bitmap_assets=hud_bitmap_assets,
+            source_font=source_frame_font,
+            adapted_font=adapted_frame_font,
+            cursor_asset=source_cursor_asset,
+            source_tuple_census=source_tuple_census,
+        )
+        source_frame_output = write_output(
+            stage,
+            outputs,
+            "frame/source-frame-census.json",
+            canonical_json(source_frame_census),
+            kind="canonical_json_Level1_source_frame_census",
+            source_asset_ids=[
+                "owner_data:DATA/SMATITLE.DAT",
+                "owner_data:DATA/SMATITLE.PAL",
+                "owner_data:DATA/MSPRN0-0.DAT",
+                "owner_data:DATA/HSPRN0-0.DAT",
+                "owner_data:DATA/FONT1.DAT",
+                "owner_data:DATA/HFONT3.DAT",
+                "owner_data:DATA/POINTERS.DAT",
+                "owner_data:LANGUAGE/L1.TXT",
+                "level_export:runtime.bin",
+                "level_export:entities.bin",
+                "level_export:players.bin",
+                "level_export:authored-level.bin",
+            ],
+            extra={
+                "runtime_capture_count": len(runtime_captures),
+                "source_bitmap_selector_count":
+                    len(source_frame_bitmap_assets),
+                "adapted_bitmap_selector_count": len(hud_bitmap_selectors),
+                "localization_record_count": len(language_record_rows),
+                "reset_history_state": "Unprimed",
+                "source_tuple_census_path": source_tuple_output["path"],
+                "source_tuple_census_sha256": source_tuple_output["sha256"],
+            },
+        )
 
         with SPELL_TABLE.open(newline="", encoding="utf-8") as stream:
             spell_rows = list(csv.DictReader(stream))
@@ -4356,6 +6716,8 @@ def build_cache(
                 "level_export_package_sha256": EXPECTED_PACKAGE,
                 "level_asset_closure_sha256": EXPECTED_CLOSURE,
                 "owner_catalog_sha256": catalog_binding,
+                "qualified_runtime_capture_sha256": EXPECTED_RUNTIME_SHA256,
+                "qualified_runtime_capture_count": len(runtime_captures),
                 "goat_tmap_golden_file_sha256": EXPECTED_GOAT_TMAP_GOLDEN,
                 "goat_tmap_oracle_manifest_sha256":
                     EXPECTED_GOAT_TMAP_ORACLE_MANIFEST,
@@ -4432,9 +6794,36 @@ def build_cache(
                     "mask_blob_path": font_output["path"],
                     "glyph_count": len(glyph_rows),
                     "glyphs": glyph_rows,
+                    "language_records_path": language_output["path"],
+                    "language_record_count": len(language_record_rows),
+                    "language_records_sha256": language_output["sha256"],
                     "palette_status":
                         "mask_exact_runtime_tint_callsite_dynamic; "
                         "Level1 objective CLRN3840 qualified",
+                },
+                "font1": {
+                    "mask_blob_path": source_font_output["path"],
+                    "glyph_count": len(source_glyph_rows),
+                    "glyphs": source_glyph_rows,
+                    "palette_status":
+                        "fixed_320_source_frame_mask_exact_runtime_tint_dynamic",
+                },
+                "source_frame_census": {
+                    "path": source_frame_output["path"],
+                    "status":
+                        "accepted_fixed_profile_native_FINAL_MAIN_source_and_asset_census",
+                    "runtime_capture_count": len(runtime_captures),
+                    "reset_main_path": reset_main_output["path"],
+                    "reset_main_history_state": "Unprimed",
+                    "source_bitmap_selector_count":
+                        len(source_frame_bitmap_assets),
+                    "adapted_bitmap_selector_count":
+                        len(hud_bitmap_selectors),
+                    "cursor_selector": cursor_selector,
+                    "pinned_source_blob_count":
+                        pinned_source_evidence["validated_blob_count"],
+                    "localization_record_count": len(language_record_rows),
+                    "final_main_classification": "Exact",
                 },
                 "spell_icon_indices": {
                     "path": spell_output["path"],

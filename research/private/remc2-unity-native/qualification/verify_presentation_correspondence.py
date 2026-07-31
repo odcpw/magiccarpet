@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -18,7 +20,12 @@ REPO = HERE.parents[3]
 CORPUS_PATH = HERE / "level1-reference-corpus.json"
 CONTRACT_PATH = HERE / "presentation-correspondence.json"
 RUNTIME = REPO / "research/private/remc2-unity-native"
-CACHE = REPO / "research/private/generated/level1-unity-asset-cache"
+HISTORICAL_GALLERY_CACHE = REPO / "research/private/generated/level1-unity-asset-cache"
+RUST_WORKSPACE = REPO / "research/private/remc2-sim-rs"
+UNITY_TEST_SOURCE = (
+    REPO
+    / "research/private/remc2-unity-native/Assets/Tests/EditMode/NativeSessionEditModeTests.cs"
+)
 PACKAGE_SHA256 = "730d2fa084265df839f3f2b55ed766ac167a8b152ca4631b5ded9d0bb9104ac8"
 CLOSURE_SHA256 = "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719"
 CLASSIFICATIONS = ("exact", "frozen", "adapted", "omitted", "deferred")
@@ -65,8 +72,8 @@ REQUIRED_LAYER_AUTHORITIES = {
     "projectile.debug_proxy": "unity-synthetic-route",
     "carpet.approximate_proxy": "unity-synthetic-route",
     "diagnostic.presentation": "unity-synthetic-route",
-    "sprite.source_hotspot_anchor": "owner-cache",
-    "renderer.dos_depth_interleaving_aspect": "original-remc2-hook-002285ff",
+    "sprite.source_hotspot_anchor": "native-final-main-fixed-profile",
+    "renderer.dos_depth_interleaving_aspect": "native-final-main-fixed-profile",
     "palette.transient_runtime": "unity-synthetic-route",
     "hud.hsprn_and_live_progression": "unity-synthetic-route",
     "projectile.presentation": "unity-synthetic-route",
@@ -77,12 +84,29 @@ EXACT_LAYER_TARGETS = {
     "owner.palette.base": "content-addressed owner cache",
     "native.terrain.indexed": "same native build route registry",
     "unity.route.pngs": "two independent same-build Unity runs",
+    "sprite.source_hotspot_anchor":
+        "pinned remc2 fixed-profile DrawSprite raster contract",
+    "renderer.dos_depth_interleaving_aspect":
+        "pinned remc2 fixed-profile FINAL MAIN contract",
 }
 REQUIRED_EXACT_NOT_CLAIMED = {
     "original.framebuffer.indexed": {"active DAC RGB", "Unity pixel equality"},
     "owner.palette.base": {"per-frame active DAC palette"},
     "native.terrain.indexed": {"original full-frame pixel equality"},
     "unity.route.pngs": {"remc2 pixel equality", "remc2 clock equality"},
+    "sprite.source_hotspot_anchor": {
+        "controlled gallery bottom-centre pivot is source-exact",
+        "unsupported source sprite modes",
+        "cross-timeline pixel equality",
+    },
+    "renderer.dos_depth_interleaving_aspect": {
+        "historical remc2 or managed Unity capture pixel equality",
+        "historical remc2 or managed Unity capture clock equality",
+        "active-DAC RGB",
+        "stereo or alternate-resolution presentation",
+        "hostile or remote player presentation",
+        "unsupported source branches",
+    },
 }
 REQUIRED_LAYER_CLASSIFICATIONS = {
     "original.framebuffer.indexed": "exact",
@@ -102,13 +126,97 @@ REQUIRED_LAYER_CLASSIFICATIONS = {
     "projectile.debug_proxy": "omitted",
     "carpet.approximate_proxy": "omitted",
     "diagnostic.presentation": "omitted",
-    "sprite.source_hotspot_anchor": "deferred",
-    "renderer.dos_depth_interleaving_aspect": "deferred",
+    "sprite.source_hotspot_anchor": "exact",
+    "renderer.dos_depth_interleaving_aspect": "exact",
     "palette.transient_runtime": "adapted",
     "hud.hsprn_and_live_progression": "adapted",
     "projectile.presentation": "adapted",
     "simulation.ai_spells_creatures_progression": "adapted",
 }
+NATIVE_FINAL_MAIN_COMPONENTS = {
+    "source_tuple_and_tmap",
+    "map_chain",
+    "hotspot_reflection_shadow",
+    "lighting",
+    "postprocess",
+    "overlay",
+    "atomic_finalization",
+    "capi",
+    "unity_one_plane",
+}
+NATIVE_FINAL_MAIN_FLAGS = {
+    "MC_PRESENTATION_FRAME_COMPOSITOR_COMPLETE",
+    "MC_PRESENTATION_FRAME_HAS_PROVENANCE",
+    "MC_PRESENTATION_FRAME_OVERLAYS_COMPOSITED",
+    "MC_PRESENTATION_FRAME_POSTPROCESS_COMPLETE",
+    "MC_PRESENTATION_FRAME_LIGHTING_COMPLETE",
+}
+NATIVE_FINAL_MAIN_EXCLUSIONS = {
+    "stereo double render",
+    "alternate resolution",
+    "active-DAC RGB for historical captures",
+    "hostile or remote player presentation",
+    "unsupported source sprite modes and malformed or unknown tuples",
+    "cross-timeline pixel equality",
+    "cross-timeline clock equality",
+    "active tutorial/briefing is reachable but fail-closed before COMPLETE",
+    "recursive help popup is reachable but fail-closed before COMPLETE",
+    "immobilization spider-web writer is reachable but fail-closed before COMPLETE",
+    "menu-state-7 score writer is reachable but fail-closed before COMPLETE",
+}
+NATIVE_FINAL_MAIN_SOURCE_ANCHORS = [
+    {
+        "path": "remc2/engine/GameRenderOriginal.cpp",
+        "lines": "9-238",
+        "symbols": ["DrawWorld_411A0 postprocess gate"],
+    },
+    {
+        "path": "remc2/engine/GameRenderOriginal.cpp",
+        "lines": "810-1843",
+        "symbols": ["world cell traversal", "reflection-before-primary"],
+    },
+    {
+        "path": "remc2/engine/GameRenderOriginal.cpp",
+        "lines": "1855-4033",
+        "symbols": ["sub_3FD60", "DrawSprites_3E360", "normal hotspot"],
+    },
+    {
+        "path": "remc2/engine/GameRenderOriginal.cpp",
+        "lines": "4924-4978",
+        "symbols": ["special hotspot", "clipping"],
+    },
+    {
+        "path": "remc2/engine/EventsFunctions.cpp",
+        "lines": "21496-22062,31823-31823",
+        "symbols": ["DrawGameFrame_2BE30 definition and call"],
+    },
+    {
+        "path": "remc2/engine/EventsFunctions.cpp",
+        "lines": "31798-31816,47260-47720",
+        "symbols": ["sub_848A0, sub_84B80, and sub_84EA0 calls and definitions"],
+    },
+    {
+        "path": "remc2/engine/GameUI.cpp",
+        "lines": "123-610,4591-5194",
+        "symbols": ["fixed-profile HUD and menu writers"],
+    },
+    {
+        "path": "remc2/engine/EventsFunctions.cpp",
+        "lines": "21647-22688",
+        "symbols": [
+            "supported fixed-profile map, bottom, and end writers; "
+            "tutorial and score states fail closed"
+        ],
+    },
+    {
+        "path": "remc2/engine/EventsFunctions.cpp",
+        "lines": "31851-31866,44615-44881,48218-48260",
+        "symbols": [
+            "DrawHelpPopUps_871F0 and DrawGameDebugText_6FEC0 gates, calls, "
+            "and definitions; active help fails closed"
+        ],
+    },
+]
 
 
 def sha256_file(path: Path) -> str:
@@ -224,6 +332,177 @@ def cross_timeline_claim_counts(contract: dict) -> tuple[int, int]:
     return pixel_claims, clock_claims
 
 
+@functools.lru_cache(maxsize=1)
+def capture_cargo_test_inventory() -> frozenset[str]:
+    completed = subprocess.run(
+        ["cargo", "test", "--workspace", "--locked", "--", "--list"],
+        cwd=RUST_WORKSPACE,
+        env={**os.environ, "CARGO_TERM_COLOR": "never"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    require(
+        completed.returncode == 0,
+        "native FINAL MAIN Cargo test inventory command failed",
+    )
+    names = [
+        line.removesuffix(": test")
+        for line in completed.stdout.splitlines()
+        if line.endswith(": test")
+    ]
+    require(names and len(names) == len(set(names)), "Cargo test inventory is ambiguous")
+    return frozenset(names)
+
+
+@functools.lru_cache(maxsize=1)
+def capture_unity_test_inventory() -> frozenset[str]:
+    source = UNITY_TEST_SOURCE.read_text()
+    namespace = re.search(r"\bnamespace\s+([A-Za-z_][A-Za-z0-9_.]*)", source)
+    class_name = re.search(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)", source)
+    methods = re.findall(
+        r"\[Test\](?:\s*\[[^\]]+\])*\s*(?:public\s+)?(?:unsafe\s+)?void\s+"
+        r"([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+        source,
+        re.MULTILINE,
+    )
+    require(
+        namespace is not None
+        and class_name is not None
+        and methods
+        and len(methods) == len(set(methods)),
+        "Unity [Test] inventory is missing or ambiguous",
+    )
+    return frozenset(
+        f"{namespace.group(1)}.{class_name.group(1)}.{method}"
+        for method in methods
+    )
+
+
+def verify_native_final_main_contract(contract: dict) -> None:
+    final = contract.get("native_final_main")
+    require(isinstance(final, dict), "native FINAL MAIN contract is missing")
+    require(
+        final.get("schema") == "mc2-level1-native-final-main-correspondence/v1"
+        and final.get("source_commit")
+        == "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+        "native FINAL MAIN schema/source pin mismatch",
+    )
+    cache = final.get("cache", {})
+    require(
+        cache.get("output_count") == 1248
+        and cache.get("source_frame_census_path")
+        == "frame/source-frame-census.json"
+        and all(
+            re.fullmatch(r"[0-9a-f]{64}", str(cache.get(field, "")))
+            for field in (
+                "manifest_sha256",
+                "content_sha256",
+                "source_frame_census_sha256",
+            )
+        ),
+        "native FINAL MAIN owner-cache identity is incomplete",
+    )
+    require(
+        final.get("profile") == {
+            "level": 1,
+            "environment": "Night",
+            "width": 320,
+            "height": 200,
+            "screen_size": 0,
+            "stereo": False,
+            "player_scope": "one local player",
+        },
+        "native FINAL MAIN fixed profile changed",
+    )
+    require(
+        final.get("source_anchors") == NATIVE_FINAL_MAIN_SOURCE_ANCHORS,
+        "native FINAL MAIN pinned source anchors are incomplete",
+    )
+    require(
+        len(final.get("preconditions", [])) == 7
+        and len(final.get("ordered_closure", [])) == 10,
+        "native FINAL MAIN preconditions or ordered closure are incomplete",
+    )
+    components = final.get("components", {})
+    require(
+        set(components) == NATIVE_FINAL_MAIN_COMPONENTS,
+        "native FINAL MAIN component coverage is incomplete",
+    )
+    rust_tests = capture_cargo_test_inventory()
+    unity_tests = capture_unity_test_inventory()
+    for name, component in components.items():
+        files = component.get("files", [])
+        tests = component.get("tests", [])
+        require(
+            files
+            and tests
+            and all(isinstance(path, str) and (REPO / path).is_file() for path in files)
+            and all(isinstance(test, str) for test in tests),
+            f"native FINAL MAIN {name} executable binding is incomplete",
+        )
+        inventory = unity_tests if name == "unity_one_plane" else rust_tests
+        require(
+            all(test in inventory for test in tests),
+            f"native FINAL MAIN {name} test binding does not resolve",
+        )
+    receipt = final.get("complete_receipt", {})
+    require(
+        set(receipt.get("required_flags", [])) == NATIVE_FINAL_MAIN_FLAGS
+        and receipt.get("forbidden_flags")
+        == ["MC_TERRAIN_FRAME_NON_TERRAIN_OMITTED"]
+        and receipt.get("failure_semantics")
+        == "reject before MAIN, history, receipt cache, or selector-clock mutation",
+        "native FINAL MAIN COMPLETE/atomicity receipt is incomplete",
+    )
+    require(
+        final.get("unity_one_plane") == {
+            "endpoint_calls": 1,
+            "top_down_row_flips": 1,
+            "r8_point_uploads": 1,
+            "managed_duplicate_submissions": 0,
+            "suppression_gate": "current successful COMPLETE receipt only",
+        },
+        "native FINAL MAIN Unity one-plane ownership changed",
+    )
+    require(
+        set(final.get("explicit_exclusions", [])) == NATIVE_FINAL_MAIN_EXCLUSIONS,
+        "native FINAL MAIN explicit exclusions are incomplete",
+    )
+
+
+def verify_native_final_main_cache(contract: dict, raw_cache: Path) -> None:
+    final = contract["native_final_main"]
+    expected = final["cache"]
+    cache = raw_cache.resolve(strict=True)
+    require(cache.is_dir() and not cache.is_symlink(), "unsafe native FINAL MAIN cache")
+    manifest_path = cache / "manifest.json"
+    require(
+        sha256_file(manifest_path) == expected["manifest_sha256"],
+        "native FINAL MAIN manifest identity mismatch",
+    )
+    manifest = json.loads(manifest_path.read_text())
+    require(
+        manifest.get("cache_content_sha256") == expected["content_sha256"]
+        and len(manifest.get("outputs", [])) == expected["output_count"],
+        "native FINAL MAIN cache content/count mismatch",
+    )
+    census_path = cache / expected["source_frame_census_path"]
+    require(
+        sha256_file(census_path) == expected["source_frame_census_sha256"],
+        "native FINAL MAIN source-frame census identity mismatch",
+    )
+    census = json.loads(census_path.read_text())
+    require(
+        census.get("checkpoint_status", {}).get("final_main_implementation")
+        == "accepted_fixed_profile_native_FINAL_MAIN"
+        and census.get("native_final_main_contract", {}).get("source_commit")
+        == final["source_commit"],
+        "native FINAL MAIN source-frame census is not accepted",
+    )
+
+
 def verify_contract(contract: dict) -> None:
     require(
         contract["schema"] == "mc2-private-level1-presentation-correspondence/v1",
@@ -248,6 +527,7 @@ def verify_contract(contract: dict) -> None:
         == "not captured at these checkpoints",
         "active DAC palette must remain explicitly uncaptured",
     )
+    verify_native_final_main_contract(contract)
     timelines = contract["timelines"]
     timeline_ids = [timeline["timeline_id"] for timeline in timelines]
     require(
@@ -256,6 +536,7 @@ def verify_contract(contract: dict) -> None:
             "unity-synthetic-route",
             "controlled-debug-gallery",
             "owner-cache",
+            "native-final-main-fixed-profile",
         ],
         "typed timeline registry changed or is duplicated",
     )
@@ -263,6 +544,7 @@ def verify_contract(contract: dict) -> None:
     unity_timeline = timelines[1]
     gallery_timeline = timelines[2]
     cache_timeline = timelines[3]
+    native_final_main_timeline = timelines[4]
     require(
         original_timeline["clock_domain"] == "reference_frame"
         and [row["checkpoint_id"] for row in original_timeline["checkpoints"]]
@@ -285,6 +567,15 @@ def verify_contract(contract: dict) -> None:
         cache_timeline["clock_domain"] == "timeless"
         and cache_timeline["checkpoints"] == [],
         "owner cache must remain a timeless content authority",
+    )
+    require(
+        native_final_main_timeline["authority"]
+        == "pinned-source-executable-contract"
+        and native_final_main_timeline["clock_domain"]
+        == "native-generation-tick"
+        and native_final_main_timeline["checkpoints"] == []
+        and "no pairing" in native_final_main_timeline["claim_limit"],
+        "native FINAL MAIN timeline/claim limit mismatch",
     )
     gallery = contract["controlled_gallery"]
     require(
@@ -385,15 +676,8 @@ def verify_contract(contract: dict) -> None:
                 ),
                 f"{layer['id']}: deferred layer carries pixel evidence",
             )
-    hotspot = next(
-        layer for layer in layers if layer["id"] == "sprite.source_hotspot_anchor"
-    )
     review_decode = next(
         layer for layer in layers if layer["id"] == "original.review_decode.base_paln"
-    )
-    require(
-        hotspot["classification"] == "deferred" and hotspot["present"] is False,
-        "source hotspot/anchor cannot be claimed exact",
     )
     require(
         review_decode["classification"] == "adapted"
@@ -445,6 +729,7 @@ def verify_contract(contract: dict) -> None:
             "no_magenta",
             "no_placeholder_claim",
             "independent_timeline_labels",
+            "native_final_main_contract",
         },
         "required presentation gates changed",
     )
@@ -490,12 +775,12 @@ def verify_contract(contract: dict) -> None:
             seen.update(values)
 
 
-def verify_no_qualified_placeholders(contract: dict) -> None:
+def verify_no_qualified_placeholders(contract: dict, cache: Path) -> None:
     forbidden = set(contract["forbidden_placeholder_selectors"])
     require(forbidden == set(range(426, 437)), "placeholder selector register changed")
-    cache_manifest = json.loads((CACHE / "manifest.json").read_text())
+    cache_manifest = json.loads((cache / "manifest.json").read_text())
     entity_descriptor = json.loads(
-        (CACHE / cache_manifest["assets"]["entity_presentations"]["path"]).read_text()
+        (cache / cache_manifest["assets"]["entity_presentations"]["path"]).read_text()
     )
     qualified_selectors: set[int] = set()
     for group in entity_descriptor["groups"]:
@@ -506,7 +791,7 @@ def verify_no_qualified_placeholders(contract: dict) -> None:
         "placeholder selector entered the qualified actor view",
     )
     hud_descriptor = json.loads(
-        (CACHE / cache_manifest["assets"]["level1_hud"]["path"]).read_text()
+        (cache / cache_manifest["assets"]["level1_hud"]["path"]).read_text()
     )
     hud_selectors = {row["selector"] for row in hud_descriptor["bitmap_assets"]}
     require(
@@ -683,6 +968,10 @@ def verify_materialized_evidence(
         "forbidden-claim registry changed",
     )
     require(report["surfaces"] == contract["surfaces"], "evidence matrix changed")
+    require(
+        report["native_final_main"] == contract["native_final_main"],
+        "native FINAL MAIN executable correspondence changed",
+    )
     require(report["corpus_sha256"] == sha256_file(CORPUS_PATH), "corpus identity mismatch")
     require(
         report["contract_sha256"] == sha256_file(CONTRACT_PATH),
@@ -751,6 +1040,11 @@ def verify_materialized_evidence(
         and "pixel-equality claim" in page,
         "HTML equivalence warning missing",
     )
+    require(
+        "Current native FINAL MAIN executable correspondence" in page
+        and contract["native_final_main"]["cache"]["content_sha256"] in page,
+        "HTML native FINAL MAIN correspondence missing",
+    )
     for checkpoint_id in (
         contract["original_timeline"]["checkpoint_ids"]
         + contract["unity_timeline"]["checkpoint_ids"]
@@ -769,6 +1063,19 @@ def main() -> int:
     parser.add_argument("--unity-log-b", required=True, type=Path)
     parser.add_argument("--entity-gallery", required=True, type=Path)
     parser.add_argument("--gallery-log", required=True, type=Path)
+    parser.add_argument(
+        "--owner-cache",
+        type=Path,
+        default=(
+            Path(os.environ["MC_OWNER_ASSET_CACHE"])
+            if os.environ.get("MC_OWNER_ASSET_CACHE")
+            else None
+        ),
+        help=(
+            "qualified native FINAL MAIN cache; required explicitly or through "
+            "MC_OWNER_ASSET_CACHE"
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -787,11 +1094,17 @@ def main() -> int:
         resolve_private_file(args.unity_log_b, "Unity log B"),
     ]
     gallery_log = resolve_private_file(args.gallery_log, "entity gallery log")
+    require(
+        args.owner_cache is not None,
+        "native FINAL MAIN requires --owner-cache or MC_OWNER_ASSET_CACHE",
+    )
+    owner_cache = resolve_private_directory(args.owner_cache, "owner cache")
     corpus = json.loads(CORPUS_PATH.read_text())
     contract = json.loads(CONTRACT_PATH.read_text())
 
     verify_contract(contract)
-    verify_no_qualified_placeholders(contract)
+    verify_native_final_main_cache(contract, owner_cache)
+    verify_no_qualified_placeholders(contract, owner_cache)
     verify_runtime_logs(unity_logs, gallery_log, corpus)
     verify_controlled_gallery(contract, corpus, entity_gallery)
     verify_materialized_evidence(
@@ -810,7 +1123,7 @@ def main() -> int:
             str(REPO / "research/private/remc2-unity-asset-cache/build_cache.py"),
             "validate",
             "--cache",
-            str(CACHE),
+            str(owner_cache),
             "--package-sha256",
             PACKAGE_SHA256,
             "--closure-sha256",
@@ -848,7 +1161,7 @@ def main() -> int:
             str(RUNTIME / "verify_entity_gallery.py"),
             str(entity_gallery),
             "--cache",
-            str(CACHE),
+            str(HISTORICAL_GALLERY_CACHE),
             "--json",
         ],
         '"status": "PASS"',

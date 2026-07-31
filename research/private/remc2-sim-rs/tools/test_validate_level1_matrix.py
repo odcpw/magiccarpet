@@ -56,23 +56,50 @@ class Level1MatrixValidatorTests(unittest.TestCase):
             {
                 "ok": True,
                 "rows": 182,
-                "exact_rows": 100,
-                "non_exact_rows": 82,
+                "exact_rows": 101,
+                "non_exact_rows": 81,
                 "exclusions": 18,
                 "plan_items": 22,
                 "authored_indices": 308,
                 "dispatch_slots": 845,
-                "cargo_tests": 429,
+                "cargo_tests": 442,
             },
         )
 
-    def test_unknown_cargo_test_binding_is_rejected(self) -> None:
+    def test_shape_valid_unknown_cargo_test_binding_is_rejected(self) -> None:
         def mutate(document: dict[str, Any]) -> None:
             document["rows"][0]["evidence_bindings"][0]["test"] = (
-                "unknown::test::binding"
+                "native_v2::tests::shape_valid_but_nonexistent"
             )
 
         self.assert_mutation_rejected(mutate, "does not resolve exactly once")
+
+    def test_shape_valid_unknown_unity_test_binding_is_rejected(self) -> None:
+        def mutate(document: dict[str, Any]) -> None:
+            row = next(row for row in document["rows"] if row["id"] == "PRS-001")
+            binding = next(
+                item for item in row["evidence_bindings"]
+                if item["kind"] == "unity-test"
+            )
+            binding["test"] = (
+                "MagicCarpet.Native.Tests.NativeSessionEditModeTests."
+                "ShapeValidButNonexistent"
+            )
+
+        self.assert_mutation_rejected(mutate, "unity-test binding .* does not resolve")
+
+    def test_shape_valid_unknown_python_test_binding_is_rejected(self) -> None:
+        def mutate(document: dict[str, Any]) -> None:
+            row = next(row for row in document["rows"] if row["id"] == "PRS-001")
+            binding = next(
+                item for item in row["evidence_bindings"]
+                if item["kind"] == "python-test"
+            )
+            binding["test"] = (
+                "test_cache.OwnerCacheTests.test_shape_valid_but_nonexistent"
+            )
+
+        self.assert_mutation_rejected(mutate, "python-test binding .* does not resolve")
 
     def test_dangling_plan_reference_is_rejected(self) -> None:
         def mutate(document: dict[str, Any]) -> None:

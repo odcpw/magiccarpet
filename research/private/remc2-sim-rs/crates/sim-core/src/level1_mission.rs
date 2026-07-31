@@ -9,9 +9,15 @@ use crate::native_world::{
     TerrainPlanes, apply_level1_load_house_edge_smoothing, apply_level1_load_house_sweep,
     apply_level1_load_path_point, level1_feature_ground_height, level1_load_house_base,
 };
+#[cfg(test)]
+use crate::source_sprite_tmap::SourceSpritePaletteOwner;
 use crate::{
     FlightContext, FlightEvent, FlightProfile, FlightState, FlightWorld, MovementResolution,
     Position, SIN_16_16, SpellActivationHolder, SpellFireSource, SpellHolder, Tile, angle_distance,
+    dynamic_lighting::{
+        DYNAMIC_LIGHT_CAPACITY, DynamicLightLinkedEntity, DynamicLightSlot,
+        DynamicLightingExecutionReceipt, DynamicLightingState,
+    },
     heading_for_positions,
     house::{
         HOUSE_CLASS, HOUSE_MODEL, HOUSE_TERRAIN_TO_LIVE_ACTION, HouseParameter, HouseState,
@@ -19,7 +25,14 @@ use crate::{
     },
     legacy_sqrt, move_entity, pitch_for_delta,
     renderable_map_chain::{RenderableMapChains, RenderableMapSeed},
-    resolve_legacy_movement, turn_toward,
+    resolve_legacy_movement,
+    source_sprite_tmap::{
+        CastleDefenseShotError, Level1SourceSpawnKind, Level1SourceSpriteState,
+        SourceSpriteContractRow, SourceSpriteDisposition, castle_defense_shot_profile,
+        legacy_route_for_spawn_kind, level1_source_sprite_dispositions, resident_spawn_kind,
+        source_sprite_dispositions, spell_pickup_spawn_kind, unknown_source_sprite_tuple,
+    },
+    turn_toward,
     villager::{VillagerBehaviorConfig, VillagerState, VillagerStepEffect, step_villager_state},
 };
 use std::{
@@ -1342,6 +1355,25 @@ pub fn level1_minimap_entity_command(
     player: &FlightState,
     input: Level1MinimapEntityInput,
 ) -> Option<Level1MinimapEntityCommand> {
+    level1_minimap_entity_command_for_view(player, input, 128, 128, 256)
+}
+
+/// Exact entity classifier projected into the VGA1 full-map writer.
+#[must_use]
+pub fn level1_map_entity_command(
+    player: &FlightState,
+    input: Level1MinimapEntityInput,
+) -> Option<Level1MinimapEntityCommand> {
+    level1_minimap_entity_command_for_view(player, input, 191, 200, 408)
+}
+
+fn level1_minimap_entity_command_for_view(
+    player: &FlightState,
+    input: Level1MinimapEntityInput,
+    width: i32,
+    height: i32,
+    scaling: i32,
+) -> Option<Level1MinimapEntityCommand> {
     if !input.active || input.source_slot == 0 {
         return None;
     }
@@ -1513,7 +1545,7 @@ pub fn level1_minimap_entity_command(
         _ => return None,
     }
 
-    let (x, y) = level1_minimap_project(player, input.position, 128, 256);
+    let (x, y) = level1_minimap_project_rect(player, input.position, width, height, scaling);
     Some(Level1MinimapEntityCommand {
         source_slot: input.source_slot,
         x,
@@ -1546,8 +1578,24 @@ pub fn level1_minimap_castle_rope_pixels(
     player: &FlightState,
     castle: Position,
 ) -> Vec<(i16, i16)> {
-    let (start_x, start_y) = level1_minimap_project(player, player.position, 128, 256);
-    let (end_x, end_y) = level1_minimap_project(player, castle, 128, 256);
+    level1_castle_rope_pixels_for_view(player, castle, 128, 128, 256)
+}
+
+#[must_use]
+pub fn level1_map_castle_rope_pixels(player: &FlightState, castle: Position) -> Vec<(i16, i16)> {
+    level1_castle_rope_pixels_for_view(player, castle, 191, 200, 408)
+}
+
+fn level1_castle_rope_pixels_for_view(
+    player: &FlightState,
+    castle: Position,
+    width: i32,
+    height: i32,
+    scaling: i32,
+) -> Vec<(i16, i16)> {
+    let (start_x, start_y) =
+        level1_minimap_project_rect(player, player.position, width, height, scaling);
+    let (end_x, end_y) = level1_minimap_project_rect(player, castle, width, height, scaling);
     let start = Position {
         x: start_x.cast_unsigned(),
         y: start_y.cast_unsigned(),
@@ -1625,14 +1673,24 @@ pub fn level1_minimap_project(
     side: i32,
     scaling: i32,
 ) -> (i16, i16) {
+    level1_minimap_project_rect(player, target, side, side, scaling)
+}
+
+fn level1_minimap_project_rect(
+    player: &FlightState,
+    target: Position,
+    width: i32,
+    height: i32,
+    scaling: i32,
+) -> (i16, i16) {
     let inverse_scale = 0x1_0000 / scaling;
     let angle = usize::from(player.yaw.cast_unsigned() & 0x07ff);
     let axis_down = (-i64::from(inverse_scale) * i64::from(SIN_16_16[angle])) >> 16;
     let axis_right = (i64::from(inverse_scale) * i64::from(SIN_16_16[angle + 512])) >> 16;
     let dx = i64::from(target.x.wrapping_sub(player.position.x).cast_signed());
     let dy = i64::from(target.y.wrapping_sub(player.position.y).cast_signed());
-    let x = i64::from(side / 2) + ((dx * axis_right - dy * axis_down) >> 16);
-    let y = i64::from(side / 2) + ((axis_right * dy + axis_down * dx) >> 16);
+    let x = i64::from(width / 2) + ((dx * axis_right - dy * axis_down) >> 16);
+    let y = i64::from(height / 2) + ((axis_right * dy + axis_down * dx) >> 16);
     (x as i16, y as i16)
 }
 
@@ -2152,7 +2210,7 @@ pub const GROUND_FIRE_COLLISION_HALF_HEIGHT: i16 = 1_536;
 pub const GROUND_FIRE_DYNAMIC_LIGHT_RADIUS: u8 = 80;
 pub const GROUND_FIRE_DYNAMIC_LIGHT_KIND: u8 = 11;
 pub const SOURCE_DYNAMIC_LIGHT_FLAG: u32 = 0x0008_0000;
-pub const SOURCE_DYNAMIC_LIGHT_CAPACITY: usize = 50;
+pub const SOURCE_DYNAMIC_LIGHT_CAPACITY: usize = DYNAMIC_LIGHT_CAPACITY;
 
 #[must_use]
 pub const fn ground_fire_presentation(phase: u32) -> (u16, u16) {
@@ -3858,6 +3916,42 @@ enum SourceOccupant {
 }
 
 impl SourceOccupant {
+    fn source_spawn_kind(self) -> Result<Level1SourceSpawnKind, String> {
+        match self {
+            Self::Reserved => Ok(Level1SourceSpawnKind::Reserved),
+            Self::ImportedLive => Ok(Level1SourceSpawnKind::ImportedResetTuple),
+            // The open authored payload is validated against the canonical
+            // 308-record activation manifest by the source-sprite census.
+            Self::Authored(_) => Ok(Level1SourceSpawnKind::AuthoredActivationTuple),
+            Self::PlayerFireball(_) => Ok(Level1SourceSpawnKind::PlayerFireball),
+            Self::ArcherArrow(_) => Ok(Level1SourceSpawnKind::ArcherArrow),
+            Self::FireflyFireball(_) => Ok(Level1SourceSpawnKind::FireflyFireball),
+            Self::CastleBuild(_) => Ok(Level1SourceSpawnKind::CastleBuild),
+            Self::CastleRoot(_) => Ok(Level1SourceSpawnKind::CastleRoot),
+            Self::CastleConstruction(_) => Ok(Level1SourceSpawnKind::CastleConstruction),
+            Self::CastleDefense(_) => Ok(Level1SourceSpawnKind::CastleDefenseController),
+            Self::CastleDefenseShot(_) => Ok(Level1SourceSpawnKind::CastleDefenseShot),
+            Self::CastleAssociation(_) => Ok(Level1SourceSpawnKind::CastleAssociation),
+            Self::Possession(_) => Ok(Level1SourceSpawnKind::Possession),
+            Self::PossessionImpact(_) => Ok(Level1SourceSpawnKind::PossessionImpact),
+            Self::GroundFire(_) => Ok(Level1SourceSpawnKind::GroundFire),
+            Self::PossessionAttraction(_) => Ok(Level1SourceSpawnKind::PossessionAttraction),
+            Self::StrongPossessionImpact(_) => Ok(Level1SourceSpawnKind::StrongPossessionImpact),
+            Self::FireballImpact(_) => Ok(Level1SourceSpawnKind::FireballImpact),
+            Self::WaterSplash(_) => Ok(Level1SourceSpawnKind::WaterSplash),
+            Self::ManaSphere(_) => Ok(Level1SourceSpawnKind::ManaSphere),
+            Self::ManaCarrier(_) => Ok(Level1SourceSpawnKind::ManaCarrier),
+            Self::DeathBurst(_) => Ok(Level1SourceSpawnKind::DeathBurst),
+            Self::PlayerDeathMarker(_) => Ok(Level1SourceSpawnKind::PlayerDeathMarker),
+            Self::SpeedTrail(_) => Ok(Level1SourceSpawnKind::SpeedTrail),
+            Self::CheckpointSmoke(_) => Ok(Level1SourceSpawnKind::CheckpointSmoke),
+            Self::SpellPickup { family } => spell_pickup_spawn_kind(family),
+            Self::Ambient(_) => Ok(Level1SourceSpawnKind::Ambient),
+            Self::MultipartSegment(_) => Ok(Level1SourceSpawnKind::MultipartSegment),
+            Self::Resident { model, action, .. } => resident_spawn_kind(model, action),
+        }
+    }
+
     const fn dynamic_shape(self) -> Option<(u8, u8, u8)> {
         match self {
             Self::PlayerFireball(_) | Self::FireflyFireball(_) => {
@@ -3884,10 +3978,9 @@ impl SourceOccupant {
                 CASTLE_DEFENSE_MODEL,
                 CASTLE_DEFENSE_ACTION,
             )),
-            // `sub_6DCA0` selects the concrete spell row after allocation.
-            // The generic source record remains class two; the exact family
-            // and subspell live in `CastleDefenseShot`.
-            Self::CastleDefenseShot(_) => Some((2, 0, 0)),
+            // `sub_6DCA0` selects one of five concrete constructors. The
+            // caller binds that exact post-rewrite tuple after allocation.
+            Self::CastleDefenseShot(_) => None,
             Self::CastleAssociation(_) => Some((
                 CASTLE_ASSOCIATION_CLASS,
                 CASTLE_ASSOCIATION_MODEL,
@@ -3957,6 +4050,9 @@ fn bind_dynamic_source_record(
     occupant: SourceOccupant,
     global_rng: u32,
 ) {
+    occupant
+        .source_spawn_kind()
+        .unwrap_or_else(|error| panic!("source slot {source_slot}: {error}"));
     let Some((class, model, action)) = occupant.dynamic_shape() else {
         return;
     };
@@ -3968,6 +4064,34 @@ fn bind_dynamic_source_record(
     record.phase = 0;
     record.entity_rng = source_slot.wrapping_add(global_rng as u16);
     record.control_flags = 8;
+}
+
+fn allocate_castle_association(
+    source_pool: &mut Level1SourcePool,
+    source_slots: &mut [Level1ResetSourceSlot],
+    castle_associations: &mut Vec<CastleAssociationEffect>,
+    next_effect_id: &mut u32,
+    global_rng: u32,
+    owner_entity_index: u16,
+    position: Position,
+) -> Option<u16> {
+    let association_id = *next_effect_id;
+    let association_slot =
+        source_pool.allocate(SourceOccupant::CastleAssociation(association_id))?;
+    let occupant = SourceOccupant::CastleAssociation(association_id);
+    bind_dynamic_source_record(source_slots, association_slot, occupant, global_rng);
+    *next_effect_id = next_effect_id.wrapping_add(1).max(1);
+    castle_associations.push(CastleAssociationEffect {
+        id: association_id,
+        source_entity_index: association_slot,
+        owner_entity_index,
+        position,
+        life: CASTLE_ASSOCIATION_LIFE,
+        update_count: 0,
+        collision_attempted: false,
+        active: true,
+    });
+    Some(association_slot)
 }
 
 /// The bounded remc2 entity arena for the Level 1 slice.
@@ -4601,6 +4725,20 @@ pub struct CastleDefenseShot {
     pub pitch: i16,
     pub spell_family: u8,
     pub subspell: u8,
+    pub entity_class: u8,
+    pub entity_model: u8,
+    pub entity_action: u8,
+    pub xclass: u8,
+    pub xmodel: u8,
+    pub source_life_ticks: i16,
+    pub source_variant_byte: u8,
+    pub source_subspell_index: u16,
+    pub entity_parameter_index: u16,
+    pub particle_parameter_index: u16,
+    pub base_tmap: u16,
+    pub render_mode: u8,
+    pub logical_height: u16,
+    pub speed: i16,
     pub first_shot: bool,
     pub active: bool,
 }
@@ -4904,19 +5042,6 @@ pub struct FireballImpact {
     /// Source `animationFrame_0x5C`; bounded by the selected particle mode.
     pub animation_frame: u8,
     pub damage_submitted: bool,
-    pub active: bool,
-}
-
-/// Night/Cave `AddEvent2_847D0` record linked to a live source entity.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Level1DynamicLight {
-    pub slot_index: u8,
-    pub source_entity_index: u16,
-    pub position: Position,
-    pub radius: u8,
-    pub kind: u8,
-    pub linked: bool,
-    pub history: [u8; 25],
     pub active: bool,
 }
 
@@ -5756,7 +5881,7 @@ impl Level1MissionTemplate {
             projectiles: Vec::new(),
             castle_associations: Vec::new(),
             impacts: Vec::new(),
-            dynamic_lights: Vec::new(),
+            dynamic_lighting: DynamicLightingState::reset(),
             pending_ambient_loop_5_distance: None,
             mana_spheres: Vec::new(),
             temporary_mana_sphere_life: BTreeMap::new(),
@@ -5980,7 +6105,7 @@ pub struct Level1MissionState {
     projectiles: Vec<Level1Projectile>,
     castle_associations: Vec<CastleAssociationEffect>,
     impacts: Vec<FireballImpact>,
-    dynamic_lights: Vec<Level1DynamicLight>,
+    dynamic_lighting: DynamicLightingState,
     pending_ambient_loop_5_distance: Option<i32>,
     mana_spheres: Vec<ManaSphere>,
     /// Source `struct_byte_0xc.byte[1] & 0x20` plus `life_0x8` for the
@@ -6288,21 +6413,21 @@ impl Level1MissionState {
                 authority: Level1SourceEntityAuthority::ImportedRecord,
                 active: true,
                 visible: true,
-                class: 2,
-                model: shot.spell_family,
-                action: shot.subspell,
+                class: shot.entity_class,
+                model: shot.entity_model,
+                action: shot.entity_action,
                 phase: self.source_slots[index].phase,
                 entity_rng: self.source_slots[index].entity_rng,
                 control_flags: self.source_slots[index].control_flags,
                 position: shot.position,
-                max_life: 0,
-                life: 0,
+                max_life: i32::from(shot.source_life_ticks),
+                life: i32::from(shot.source_life_ticks),
                 pending_damage: 0,
                 pending_attacker: 0,
                 owner_entity_index: shot.owner_entity_index,
                 target_entity_index: shot.target_entity_index,
                 linked_entity_index: 0,
-                actual_speed: 0,
+                actual_speed: shot.speed,
                 maximum_speed: 0,
                 collision_half_width: 0,
                 collision_half_depth: 0,
@@ -6665,8 +6790,12 @@ impl Level1MissionState {
                 view.active = shot.active;
                 view.visible = shot.active;
                 view.position = shot.position;
-                view.model = shot.spell_family;
-                view.action = shot.subspell;
+                view.class = shot.entity_class;
+                view.model = shot.entity_model;
+                view.action = shot.entity_action;
+                view.max_life = i32::from(shot.source_life_ticks);
+                view.life = i32::from(shot.source_life_ticks);
+                view.actual_speed = shot.speed;
                 view.owner_entity_index = shot.owner_entity_index;
                 view.target_entity_index = shot.target_entity_index;
             }
@@ -7498,8 +7627,23 @@ impl Level1MissionState {
     /// arrow vertices stay in the deterministic simulation.
     #[must_use]
     pub fn minimap_marks(&self, player: &FlightState) -> Level1MinimapMarks {
-        const SIDE: i32 = 128;
-        const SCALING: i32 = 256;
+        self.minimap_marks_for_view(player, 128, 128, 256)
+    }
+
+    /// Source `DrawMinimapMarks_644F0` projection for the fixed full-map
+    /// 191x200 terrain pane after VGA1 doubles scaling 204 to 408.
+    #[must_use]
+    pub fn map_marks(&self, player: &FlightState) -> Level1MinimapMarks {
+        self.minimap_marks_for_view(player, 191, 200, 408)
+    }
+
+    fn minimap_marks_for_view(
+        &self,
+        player: &FlightState,
+        width: i32,
+        height: i32,
+        scaling: i32,
+    ) -> Level1MinimapMarks {
         const RED: u8 = 119;
         const GOLD: u8 = 184;
         const FIXED_HELP: u8 = 0x51;
@@ -7568,7 +7712,7 @@ impl Level1MissionState {
             "qualified Level 1 objective mark extent"
         );
         for (ordinal, (target, colour, help_selector)) in targets.iter().enumerate() {
-            let (x, y) = level1_minimap_project(player, *target, SIDE, SCALING);
+            let (x, y) = level1_minimap_project_rect(player, *target, width, height, scaling);
             result.mark_x[ordinal] = x;
             result.mark_y[ordinal] = y;
             result.mark_colour[ordinal] = *colour;
@@ -7592,7 +7736,8 @@ impl Level1MissionState {
                 0,
                 i16::try_from(arrow_distance).expect("clamped arrow distance fits i16"),
             );
-            let (anchor_x, anchor_y) = level1_minimap_project(player, anchor, SIDE, SCALING);
+            let (anchor_x, anchor_y) =
+                level1_minimap_project_rect(player, anchor, width, height, scaling);
             let relative = usize::from(heading.wrapping_sub(player.yaw).cast_unsigned() & 0x07ff);
             let sine = i64::from(SIN_16_16[relative]);
             let cosine = i64::from(SIN_16_16[relative + 512]);
@@ -7649,6 +7794,11 @@ impl Level1MissionState {
         self.source_map_chains = map_chains;
     }
 
+    #[must_use]
+    pub const fn source_map_chains(&self) -> &RenderableMapChains {
+        &self.source_map_chains
+    }
+
     /// Production constructor for pinned class-10 slot 86.
     ///
     /// Cave-level global scheduling is outside the Level 1 product slice, but
@@ -7703,6 +7853,43 @@ impl Level1MissionState {
                 y: position.y,
             })
             .expect("castle-defense source slot fits the source map");
+        Some(source_entity_index)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn spawn_player_death_marker_for_test(
+        &mut self,
+        player: &FlightState,
+    ) -> Option<u16> {
+        let marker = self.allocate_player_death_marker(player)?;
+        let source_entity_index = marker.source_entity_index;
+        self.player_death_marker = Some(marker);
+        Some(source_entity_index)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn spawn_castle_association_for_test(
+        &mut self,
+        owner_entity_index: u16,
+        position: Position,
+    ) -> Option<u16> {
+        let source_entity_index = allocate_castle_association(
+            &mut self.source_pool,
+            &mut self.source_slots,
+            &mut self.castle_associations,
+            &mut self.next_effect_id,
+            self.global_rng,
+            owner_entity_index,
+            position,
+        )?;
+        self.source_map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .expect("Castle association source slot fits the source map");
         Some(source_entity_index)
     }
 
@@ -7770,8 +7957,238 @@ impl Level1MissionState {
     }
 
     #[must_use]
-    pub fn dynamic_lights(&self) -> &[Level1DynamicLight] {
-        &self.dynamic_lights
+    pub const fn dynamic_lights(&self) -> &[DynamicLightSlot; DYNAMIC_LIGHT_CAPACITY] {
+        self.dynamic_lighting.slots()
+    }
+
+    #[must_use]
+    pub const fn dynamic_light_active_count(&self) -> u8 {
+        self.dynamic_lighting.active_count()
+    }
+
+    #[must_use]
+    pub fn dynamic_lighting_hash_v1(&self) -> u64 {
+        self.dynamic_lighting.hash_v1()
+    }
+
+    pub fn dynamic_lighting_execution_receipt(
+        &self,
+        shading: &[u8],
+    ) -> Result<DynamicLightingExecutionReceipt, String> {
+        self.dynamic_lighting.execution_receipt(shading)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn admit_linked_dynamic_light_for_test(
+        &mut self,
+        source_entity_index: u16,
+        position: Position,
+    ) -> Option<u8> {
+        self.dynamic_lighting
+            .admit(true, true, source_entity_index, position, 128, 7, true)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn dynamic_lighting_rng_for_test(&self) -> u32 {
+        self.dynamic_lighting.rng()
+    }
+
+    /// Aggregate current state for the pure source tuple constructor.
+    pub fn source_sprite_dispositions(
+        &self,
+        player: &FlightState,
+    ) -> Result<Vec<SourceSpriteDisposition>, String> {
+        let control_flags = |source_entity_index: u16| {
+            self.source_slots
+                .get(usize::from(source_entity_index))
+                .map_or(0, |source| source.control_flags)
+        };
+        let residents = self.dynamic_residents().copied().collect::<Vec<_>>();
+        let resident_flags = residents
+            .iter()
+            .map(|resident| {
+                (
+                    resident.source_entity_index,
+                    control_flags(resident.source_entity_index),
+                )
+            })
+            .collect::<Vec<_>>();
+        let association_flags = self
+            .castle_associations
+            .iter()
+            .map(|value| {
+                (
+                    value.source_entity_index,
+                    control_flags(value.source_entity_index),
+                )
+            })
+            .collect::<Vec<_>>();
+        let controller_flags = self
+            .castle_defense_controllers
+            .iter()
+            .map(|value| {
+                (
+                    value.source_entity_index,
+                    control_flags(value.source_entity_index),
+                )
+            })
+            .collect::<Vec<_>>();
+        let shot_flags = self
+            .castle_defense_shots
+            .iter()
+            .map(|value| {
+                (
+                    value.source_entity_index,
+                    control_flags(value.source_entity_index),
+                )
+            })
+            .collect::<Vec<_>>();
+        let sphere_flags = self
+            .mana_spheres
+            .iter()
+            .map(|value| {
+                (
+                    value.source_entity_index,
+                    control_flags(value.source_entity_index),
+                )
+            })
+            .collect::<Vec<_>>();
+        let neutral_owner_entity_indices = self
+            .source_slots
+            .iter()
+            .enumerate()
+            .filter_map(|(source_entity_index, source)| {
+                (source.active && source.class == 10)
+                    .then(|| u16::try_from(source_entity_index).expect("source slot fits u16"))
+            })
+            .collect::<Vec<_>>();
+        level1_source_sprite_dispositions(Level1SourceSpriteState {
+            player,
+            player_action: self.player_action,
+            player_control_flags: (player.entity_index != 0
+                && self
+                    .source_slots
+                    .get(usize::from(player.entity_index))
+                    .is_some_and(|slot| slot.active))
+            .then(|| control_flags(player.entity_index)),
+            neutral_owner_entity_indices: &neutral_owner_entity_indices,
+            residents: &residents,
+            resident_control_flags: &resident_flags,
+            death_bursts: &self.death_bursts,
+            player_death_marker: self.player_death_marker,
+            player_death_marker_control_flags: self
+                .player_death_marker
+                .map_or(0, |marker| control_flags(marker.source_entity_index)),
+            castle_associations: &self.castle_associations,
+            castle_association_control_flags: &association_flags,
+            castle_defense_controllers: &self.castle_defense_controllers,
+            castle_defense_control_flags: &controller_flags,
+            castle_defense_shots: &self.castle_defense_shots,
+            castle_defense_shot_control_flags: &shot_flags,
+            mana_spheres: &self.mana_spheres,
+            mana_sphere_control_flags: &sphere_flags,
+            castle_construction: self.castle_construction,
+            speed_trails: &self.speed_trails,
+        })
+    }
+
+    /// Qualify every non-imported source occupant not already represented by
+    /// a concrete CP2 submission.
+    ///
+    /// The source pool proves the allocation family; the live source row must
+    /// still match its constructor shape before the typed contract can select
+    /// a legacy compositor family or an explicit exclusion.
+    pub fn source_sprite_legacy_dispositions(
+        &self,
+        concrete_source_indices: &BTreeSet<u16>,
+    ) -> Result<Vec<SourceSpriteDisposition>, String> {
+        let mut rows = Vec::new();
+        for (source_entity_index, occupant) in self.source_pool.occupants.iter().enumerate().skip(1)
+        {
+            let Some(occupant) = *occupant else {
+                continue;
+            };
+            let source_entity_index =
+                u16::try_from(source_entity_index).expect("source slot fits u16");
+            if concrete_source_indices.contains(&source_entity_index)
+                || matches!(
+                    occupant,
+                    SourceOccupant::Reserved | SourceOccupant::ImportedLive
+                )
+            {
+                continue;
+            }
+            let record = self.source_slots[usize::from(source_entity_index)];
+            if let Some((class, model, action)) = occupant.dynamic_shape()
+                && (record.class, record.model, record.action) != (class, model, action)
+            {
+                return Err(unknown_source_sprite_tuple(
+                    source_entity_index,
+                    record.class,
+                    record.model,
+                    record.action,
+                    0,
+                ));
+            }
+            rows.push(SourceSpriteContractRow {
+                source_entity_index,
+                position: Position::default(),
+                yaw: 0,
+                pitch: 0,
+                roll: 0,
+                control_flags: record.control_flags,
+                class: record.class,
+                model: record.model,
+                action: record.action,
+                xclass: 0,
+                xmodel: 0,
+                route: legacy_route_for_spawn_kind(occupant.source_spawn_kind()?)?,
+            });
+        }
+        source_sprite_dispositions(rows)
+    }
+
+    /// Source `sub_848A0`, scheduled once after PlayerEvents and before the
+    /// first UpdateEntities pass.
+    pub fn subtract_dynamic_lighting_before_updates(&self, shading: &mut [u8]) {
+        self.dynamic_lighting
+            .subtract_previous(shading, LEVEL1_LIGHTING_IS_NIGHT_OR_CAVE);
+    }
+
+    /// Source `sub_84B80`, scheduled once after the final UpdateEntities pass
+    /// and before objective evaluation.
+    pub fn service_dynamic_lighting_after_updates(
+        &mut self,
+        player: &FlightState,
+        imported_live: &[Level1SourceEntityView],
+        ground_heights: &[u8],
+        shading: &mut [u8],
+    ) {
+        let mut linked = [None; ENTITY_POOL_SIZE];
+        for fallback in self.source_entity_views(player, imported_live) {
+            let Some(view) = self.current_source_entity_view(
+                player,
+                fallback.source_entity_index,
+                Some(fallback),
+            ) else {
+                continue;
+            };
+            linked[usize::from(view.source_entity_index)] = Some(DynamicLightLinkedEntity {
+                position: view.position,
+                life: view.life,
+                disabled: !view.active || view.control_flags & SOURCE_DISABLED_FLAG != 0,
+            });
+        }
+        self.dynamic_lighting.service_recompute(
+            shading,
+            LEVEL1_LIGHTING_IS_NIGHT_OR_CAVE,
+            |source_entity_index| linked[usize::from(source_entity_index)],
+            |x, y| {
+                crate::legacy_terrain::interpolate_ground(ground_heights, x, y)
+                    .try_into()
+                    .expect("u8 terrain interpolation fits i16")
+            },
+        );
     }
 
     /// Commit mission-side player transients after source dispatch.
@@ -7960,6 +8377,28 @@ impl Level1MissionState {
         self.source_slots
             .get(usize::from(player_entity_index))
             .map_or(0, |record| record.control_flags)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reveal_player_source_sprite_for_test(&mut self, player_entity_index: u16) {
+        self.source_slots[usize::from(player_entity_index)].control_flags &= !0x21;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_source_tuple_for_test(
+        &mut self,
+        source_entity_index: u16,
+        class: u8,
+        model: u8,
+        action: u8,
+    ) {
+        let source = &mut self.source_slots[usize::from(source_entity_index)];
+        (source.class, source.model, source.action) = (class, model, action);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_source_no_draw_for_test(&mut self, source_entity_index: u16) {
+        self.source_slots[usize::from(source_entity_index)].control_flags |= 1;
     }
 
     #[must_use]
@@ -8304,6 +8743,42 @@ impl Level1MissionState {
                 hash.u8(u8::from(projectile.active));
             }
         }
+        if !self.castle_defense_shots.is_empty() {
+            hash.bytes(b"castle-defense-shots\0");
+            hash.u32(
+                u32::try_from(self.castle_defense_shots.len())
+                    .expect("castle-defense shot count fits u32"),
+            );
+            for shot in &self.castle_defense_shots {
+                hash.u32(shot.id);
+                hash.u16(shot.source_entity_index);
+                hash.u16(shot.owner_entity_index);
+                hash.u16(shot.target_entity_index);
+                hash.u16(shot.position.x);
+                hash.u16(shot.position.y);
+                hash.u16(shot.position.z.cast_unsigned());
+                hash.u16(shot.yaw.cast_unsigned());
+                hash.u16(shot.pitch.cast_unsigned());
+                hash.u8(shot.spell_family);
+                hash.u8(shot.subspell);
+                hash.u8(shot.entity_class);
+                hash.u8(shot.entity_model);
+                hash.u8(shot.entity_action);
+                hash.u8(shot.xclass);
+                hash.u8(shot.xmodel);
+                hash.u16(shot.source_life_ticks.cast_unsigned());
+                hash.u8(shot.source_variant_byte);
+                hash.u16(shot.source_subspell_index);
+                hash.u16(shot.entity_parameter_index);
+                hash.u16(shot.particle_parameter_index);
+                hash.u16(shot.base_tmap);
+                hash.u8(shot.render_mode);
+                hash.u16(shot.logical_height);
+                hash.u16(shot.speed.cast_unsigned());
+                hash.u8(u8::from(shot.first_shot));
+                hash.u8(u8::from(shot.active));
+            }
+        }
         let conditional_effect_count = self
             .impacts
             .iter()
@@ -8365,24 +8840,6 @@ impl Level1MissionState {
             hash.bytes(b"projectile-accuracy\0");
             hash.u32(self.projectile_accuracy_attempts.cast_unsigned());
             hash.u32(self.projectile_accuracy_hits.cast_unsigned());
-        }
-        if !self.dynamic_lights.is_empty() {
-            hash.bytes(b"dynamic-lights\0");
-            hash.u32(
-                u32::try_from(self.dynamic_lights.len()).expect("dynamic light count fits u32"),
-            );
-            for light in &self.dynamic_lights {
-                hash.u8(light.slot_index);
-                hash.u16(light.source_entity_index);
-                hash.u16(light.position.x);
-                hash.u16(light.position.y);
-                hash.u16(light.position.z.cast_unsigned());
-                hash.u8(light.radius);
-                hash.u8(light.kind);
-                hash.u8(u8::from(light.linked));
-                hash.bytes(&light.history);
-                hash.u8(u8::from(light.active));
-            }
         }
         if let Some(distance) = self.pending_ambient_loop_5_distance {
             hash.bytes(b"pending-ambient-loop-5-distance\0");
@@ -8705,6 +9162,17 @@ impl Level1MissionState {
         hash.u32(self.global_rng);
         hash.u32(self.next_effect_id);
         hash.bytes(&self.model_phase_counters);
+        hash.finish()
+    }
+
+    /// Compose the established source-arena digest with the complete fixed
+    /// dynamic-light array under an explicit new domain.
+    #[must_use]
+    pub fn source_arena_hash_v2(&self) -> u64 {
+        let mut hash = Level1Fnv1a64::new();
+        hash.bytes(b"mc2-level1-source-arena-v2\0");
+        hash.u64(self.source_arena_hash_v1());
+        hash.u64(self.dynamic_lighting.hash_v1());
         hash.finish()
     }
 
@@ -9073,29 +9541,20 @@ impl Level1MissionState {
                 y: position.y,
             })
             .expect("death burst source slot fits the source map");
-        if LEVEL1_SOURCE_DYNAMIC_LIGHTS_ENABLED && LEVEL1_LIGHTING_IS_NIGHT_OR_CAVE {
-            let light_slot = (0..SOURCE_DYNAMIC_LIGHT_CAPACITY).find(|candidate| {
-                self.dynamic_lights
-                    .iter()
-                    .all(|light| usize::from(light.slot_index) != *candidate)
-            });
-            if let Some(light_slot) = light_slot {
-                self.dynamic_lights.push(Level1DynamicLight {
-                    slot_index: u8::try_from(light_slot)
-                        .expect("dynamic-light capacity fits a source byte"),
-                    source_entity_index: burst_slot,
-                    position,
-                    radius: PLAYER_DEATH_BURST_DYNAMIC_LIGHT_RADIUS,
-                    kind: PLAYER_DEATH_BURST_DYNAMIC_LIGHT_KIND,
-                    linked: true,
-                    history: [0; 25],
-                    active: true,
-                });
-                self.dynamic_lights
-                    .sort_unstable_by_key(|light| light.slot_index);
-                self.source_slots[usize::from(burst_slot)].control_flags |=
-                    SOURCE_DYNAMIC_LIGHT_FLAG;
-            }
+        if self
+            .dynamic_lighting
+            .admit(
+                LEVEL1_SOURCE_DYNAMIC_LIGHTS_ENABLED,
+                LEVEL1_LIGHTING_IS_NIGHT_OR_CAVE,
+                burst_slot,
+                position,
+                PLAYER_DEATH_BURST_DYNAMIC_LIGHT_RADIUS,
+                PLAYER_DEATH_BURST_DYNAMIC_LIGHT_KIND,
+                true,
+            )
+            .is_some()
+        {
+            self.source_slots[usize::from(burst_slot)].control_flags |= SOURCE_DYNAMIC_LIGHT_FLAG;
         }
         let control_flags = self.source_slots[usize::from(burst_slot)].control_flags;
         self.death_bursts.push(DeathBurst {
@@ -10256,14 +10715,6 @@ impl Level1MissionState {
         self.pending_ambient_loop_5_distance = None;
         self.player_menu_close_requested = false;
         self.player_action0_prepared_for_flight = false;
-        if self.player_notification_timer != 0 {
-            self.player_notification_timer -= 1;
-            if self.player_notification_timer == 0 {
-                self.player_notification_active = false;
-                self.player_notification_id = 0;
-                self.player_notification_state = 0;
-            }
-        }
         if self.objective_textbox_ticks != 0 {
             self.objective_textbox_ticks -= 1;
         }
@@ -11241,10 +11692,6 @@ impl Level1MissionState {
         self.clear_replaced_authored_projections();
         self.projectiles.retain(|projectile| projectile.active());
         self.impacts.retain(|impact| impact.active);
-        // `AddEvent2_847D0` owns a separate light-pool record. Source-slot
-        // replacement does not erase it; only an explicit light update or the
-        // natural owning action disables the record.
-        self.dynamic_lights.retain(|light| light.active);
         self.clear_replaced_ambient_projections();
         self.source_turn_active = false;
     }
@@ -13992,25 +14439,19 @@ impl Level1MissionState {
                 damage_submitted: false,
                 active: true,
             });
-            let light_slot = (0..SOURCE_DYNAMIC_LIGHT_CAPACITY).find(|candidate| {
-                self.dynamic_lights
-                    .iter()
-                    .all(|light| usize::from(light.slot_index) != *candidate)
-            });
-            if let Some(light_slot) = light_slot {
-                self.dynamic_lights.push(Level1DynamicLight {
-                    slot_index: u8::try_from(light_slot)
-                        .expect("dynamic-light capacity fits a source byte"),
+            if self
+                .dynamic_lighting
+                .admit(
+                    LEVEL1_SOURCE_DYNAMIC_LIGHTS_ENABLED,
+                    LEVEL1_LIGHTING_IS_NIGHT_OR_CAVE,
                     source_entity_index,
                     position,
-                    radius: GROUND_FIRE_DYNAMIC_LIGHT_RADIUS,
-                    kind: GROUND_FIRE_DYNAMIC_LIGHT_KIND,
-                    linked: true,
-                    history: [0; 25],
-                    active: true,
-                });
-                self.dynamic_lights
-                    .sort_unstable_by_key(|light| light.slot_index);
+                    GROUND_FIRE_DYNAMIC_LIGHT_RADIUS,
+                    GROUND_FIRE_DYNAMIC_LIGHT_KIND,
+                    true,
+                )
+                .is_some()
+            {
                 self.source_slots[usize::from(source_entity_index)].control_flags |=
                     SOURCE_DYNAMIC_LIGHT_FLAG;
             }
@@ -14653,6 +15094,7 @@ impl Level1MissionState {
         let mut archer_damage = Vec::new();
         let mut castle_root_request = None;
         let mut possession_impact_request = None;
+        let mut association_map_seeds = Vec::new();
         let mut castle_rejected = false;
         let mut castle_holder_reset = false;
         for projectile in &mut self.projectiles {
@@ -15041,27 +15483,20 @@ impl Level1MissionState {
                             if !impact {
                                 continue;
                             }
-                            let association_id = next_effect_id;
-                            if let Some(association_slot) = source_pool
-                                .allocate(SourceOccupant::CastleAssociation(association_id))
-                            {
-                                let occupant = SourceOccupant::CastleAssociation(association_id);
-                                bind_dynamic_source_record(
-                                    source_slots,
-                                    association_slot,
-                                    occupant,
-                                    self.global_rng,
-                                );
-                                next_effect_id = next_effect_id.wrapping_add(1).max(1);
-                                castle_associations.push(CastleAssociationEffect {
-                                    id: association_id,
-                                    source_entity_index: association_slot,
-                                    owner_entity_index: projectile.owner_entity_index,
-                                    position: projectile.position,
-                                    life: CASTLE_ASSOCIATION_LIFE,
-                                    update_count: 0,
-                                    collision_attempted: false,
+                            if let Some(association_slot) = allocate_castle_association(
+                                source_pool,
+                                source_slots,
+                                castle_associations,
+                                &mut next_effect_id,
+                                self.global_rng,
+                                projectile.owner_entity_index,
+                                projectile.position,
+                            ) {
+                                association_map_seeds.push(RenderableMapSeed {
+                                    entity_index: association_slot,
                                     active: true,
+                                    x: projectile.position.x,
+                                    y: projectile.position.y,
                                 });
                                 projectile.active = false;
                             } else {
@@ -15456,6 +15891,11 @@ impl Level1MissionState {
             source_pool.disable_occupant(projectile.source_occupant());
             source_slots[usize::from(projectile.source_entity_index())].control_flags |=
                 SOURCE_DISABLED_FLAG;
+        }
+        for seed in association_map_seeds {
+            self.source_map_chains
+                .sync_entity(seed)
+                .expect("Castle association source slot fits the source map");
         }
         self.next_effect_id = next_effect_id;
         if castle_rejected || castle_holder_reset {
@@ -16080,9 +16520,15 @@ impl Level1MissionState {
                 controller.shot_subspell = subspell;
                 controller.shots_remaining = shots;
                 controller.action_state = 7;
-                self.fire_castle_defense_shot(&mut controller);
+                if self.fire_castle_defense_shot(&mut controller).is_err() {
+                    return;
+                }
             }
-            7 | 8 => self.fire_castle_defense_shot(&mut controller),
+            7 | 8 => {
+                if self.fire_castle_defense_shot(&mut controller).is_err() {
+                    return;
+                }
+            }
             9 => {
                 self.disable_castle_defense_controller(source_slot, controller.position);
                 return;
@@ -16150,7 +16596,12 @@ impl Level1MissionState {
         self.castle_defense_controllers[index] = controller;
     }
 
-    fn fire_castle_defense_shot(&mut self, controller: &mut CastleDefenseController) {
+    fn fire_castle_defense_shot(
+        &mut self,
+        controller: &mut CastleDefenseController,
+    ) -> Result<(), CastleDefenseShotError> {
+        let profile =
+            castle_defense_shot_profile(controller.shot_family, controller.shot_subspell)?;
         let Some(target) = self
             .resolved_targeting_source_view(controller.target_entity_index)
             .filter(|target| {
@@ -16161,7 +16612,7 @@ impl Level1MissionState {
         else {
             controller.target_entity_index = 0;
             controller.action_state = 1;
-            return;
+            return Ok(());
         };
         let first_shot = controller.action_state == 7;
         let id = self.next_effect_id;
@@ -16169,19 +16620,16 @@ impl Level1MissionState {
             self.allocate_source_slot(SourceOccupant::CastleDefenseShot(id))
         else {
             controller.action_state = 8;
-            return;
+            return Ok(());
         };
-        let occupant = SourceOccupant::CastleDefenseShot(id);
-        bind_dynamic_source_record(
-            &mut self.source_slots,
-            source_entity_index,
-            occupant,
-            self.global_rng,
-        );
         let record = &mut self.source_slots[usize::from(source_entity_index)];
-        record.model = controller.shot_family;
-        record.action = controller.shot_subspell;
+        record.active = true;
+        record.class = profile.entity_class;
+        record.model = profile.entity_model;
+        record.action = profile.entity_action;
         record.phase = source_entity_index as u8;
+        record.entity_rng = source_entity_index.wrapping_add(self.global_rng as u16);
+        record.control_flags = 8;
         self.next_effect_id = self.next_effect_id.wrapping_add(1).max(1);
         let (yaw, pitch) = projectile_guidance_angles(controller.position, target.position);
         controller.yaw = yaw & 0x07ff;
@@ -16191,6 +16639,14 @@ impl Level1MissionState {
         } else {
             controller.orbit_step.saturating_add(1).min(5)
         };
+        self.source_map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: controller.position.x,
+                y: controller.position.y,
+            })
+            .expect("castle-defense shot source slot fits the source map");
         self.castle_defense_shots.push(CastleDefenseShot {
             id,
             source_entity_index,
@@ -16201,6 +16657,20 @@ impl Level1MissionState {
             pitch,
             spell_family: controller.shot_family,
             subspell: controller.shot_subspell,
+            entity_class: profile.entity_class,
+            entity_model: profile.entity_model,
+            entity_action: profile.entity_action,
+            xclass: profile.xclass,
+            xmodel: profile.xmodel,
+            source_life_ticks: profile.source_life_ticks,
+            source_variant_byte: profile.source_variant_byte,
+            source_subspell_index: profile.source_subspell_index,
+            entity_parameter_index: profile.entity_parameter_index,
+            particle_parameter_index: profile.particle_parameter_index,
+            base_tmap: profile.base_tmap,
+            render_mode: profile.render_mode,
+            logical_height: profile.logical_height,
+            speed: profile.movement_speed,
             first_shot,
             active: true,
         });
@@ -16221,6 +16691,36 @@ impl Level1MissionState {
         } else {
             controller.action_state = 8;
         }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fire_castle_defense_shot_for_test(
+        &mut self,
+        player: &FlightState,
+        controller_source_entity_index: u16,
+        target: Level1SourceEntityView,
+        spell_family: u8,
+        subspell: u8,
+    ) -> Result<u16, CastleDefenseShotError> {
+        self.begin_source_turn_at(player.position);
+        let source_views = self.source_entity_views(player, &[target]);
+        self.prepare_source_dispatch_views(player, &source_views, controller_source_entity_index);
+        let controller_index = self
+            .castle_defense_controllers
+            .iter()
+            .position(|controller| controller.source_entity_index == controller_source_entity_index)
+            .expect("test controller is a live production allocation");
+        let mut controller = self.castle_defense_controllers[controller_index];
+        controller.target_entity_index = target.source_entity_index;
+        controller.shot_family = spell_family;
+        controller.shot_subspell = subspell;
+        controller.shots_remaining = 1;
+        controller.action_state = 8;
+        let shot_count = self.castle_defense_shots.len();
+        self.fire_castle_defense_shot(&mut controller)?;
+        self.castle_defense_controllers[controller_index] = controller;
+        Ok(self.castle_defense_shots[shot_count].source_entity_index)
     }
 
     /// Test-only stable fixture for systems whose subject is shelter, damage,
@@ -16578,11 +17078,6 @@ impl Level1MissionState {
             burst.active = false;
             self.source_pool.disable_slot(source_slot);
             self.source_slots[usize::from(source_slot)].control_flags |= SOURCE_DISABLED_FLAG;
-            for light in &mut self.dynamic_lights {
-                if light.source_entity_index == source_slot {
-                    light.active = false;
-                }
-            }
         }
         self.death_bursts.retain(|burst| burst.active);
     }
@@ -17338,16 +17833,9 @@ impl Level1MissionState {
             }
         }
         self.pending_ambient_loop_5_distance = pending_ambient_loop_5_distance;
-        for (source_entity_index, position, active) in ground_fire_light_updates {
-            if let Some(light) = self
-                .dynamic_lights
-                .iter_mut()
-                .find(|light| light.source_entity_index == source_entity_index)
-            {
-                light.position = position;
-                light.active = active;
-            }
-        }
+        // `sub_84B80` samples the linked row after the complete entity pass.
+        // Do not move or retire the separate light record during action 6.
+        drop(ground_fire_light_updates);
         for (target_entity_index, owner_entity_index, payload) in possession_building_mailboxes {
             let mailbox = Level1BuildingMailbox {
                 target_entity_index,
@@ -21668,6 +22156,65 @@ mod tests {
         }
         assert_ne!(mission.source_arena_hash_v1(), baseline_hash);
 
+        let player = FlightState {
+            entity_index: 152,
+            ..FlightState::default()
+        };
+        let resident_dispositions = mission
+            .source_sprite_dispositions(&player)
+            .expect("all live resident tuples are source-qualified");
+        for source_entity_index in [500_u16, 502] {
+            assert!(
+                resident_dispositions.iter().any(|disposition| matches!(
+                    disposition,
+                    SourceSpriteDisposition::Legacy {
+                        source_entity_index: index,
+                        family: crate::source_sprite_tmap::SourceSpriteLegacyFamily::Resident,
+                    } if *index == source_entity_index
+                )),
+                "dynamic Archer/Villager slot {source_entity_index} must enter the qualified resident renderer"
+            );
+        }
+        for source_entity_index in [501_u16, 503] {
+            assert!(
+                resident_dispositions.iter().any(|disposition| matches!(
+                    disposition,
+                    SourceSpriteDisposition::Render(submission)
+                        if submission.source_entity_index == source_entity_index
+                )),
+                "dynamic Builder/Trader slot {source_entity_index} must retain its concrete compositor submission"
+            );
+        }
+        mission.source_slots[502].control_flags = 1;
+        assert!(mission
+            .source_sprite_dispositions(&player)
+            .expect("resident no-draw state remains a typed disposition")
+            .iter()
+            .any(|disposition| matches!(
+                disposition,
+                SourceSpriteDisposition::Excluded {
+                    source_entity_index: 502,
+                    reason: crate::source_sprite_tmap::SourceSpriteExclusionReason::SourceNoDrawFlags,
+                }
+            )), "resident source flags must reach the typed draw exclusion before the legacy renderer");
+        mission.source_slots[502].control_flags = 0;
+        mission.dynamic_residents[502].as_mut().unwrap().visible = false;
+        assert!(
+            mission
+                .source_sprite_dispositions(&player)
+                .expect("linked hidden Villager remains source-qualified")
+                .iter()
+                .any(|disposition| matches!(
+                    disposition,
+                    SourceSpriteDisposition::Legacy {
+                        source_entity_index: 502,
+                        family: crate::source_sprite_tmap::SourceSpriteLegacyFamily::Resident,
+                    }
+                )),
+            "a map-linked Villager must keep a typed non-drawing legacy route before becoming visible"
+        );
+        mission.dynamic_residents[502].as_mut().unwrap().visible = true;
+
         let ordered_requests = [
             HouseResidentRequest {
                 position,
@@ -21756,10 +22303,6 @@ mod tests {
             "disable precedes the next ascending reclamation pass"
         );
 
-        let player = FlightState {
-            entity_index: 152,
-            ..FlightState::default()
-        };
         for slot in 500_u16..=503 {
             assert_eq!(
                 mission.source_entity_position(slot, &player),
@@ -22508,7 +23051,7 @@ mod tests {
             Some(SourceOccupant::Resident {
                 source_entity_index: restored_slot,
                 model: TRADER_MODEL,
-                action: TRADER_INITIAL_ACTION,
+                action: TRADER_FREE_ACTION,
             });
         restored.dynamic_residents[usize::from(restored_slot)] = Some(restored_resident);
         bind_dynamic_source_record(
@@ -22517,7 +23060,7 @@ mod tests {
             SourceOccupant::Resident {
                 source_entity_index: restored_slot,
                 model: TRADER_MODEL,
-                action: TRADER_INITIAL_ACTION,
+                action: TRADER_FREE_ACTION,
             },
             restored.global_rng,
         );
@@ -25728,6 +26271,502 @@ mod tests {
         assert!(Level1SourcePool::from_free_stack(&[2, 0, 1]).is_err());
     }
 
+    fn generated_source_sprite_census() -> serde_json::Value {
+        let private_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let package = private_root.join("generated/level1-export-m");
+        let cache_builder = private_root.join("remc2-unity-asset-cache/build_cache.py");
+        let python = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(
+                "import importlib.util,json,pathlib,sys\n\
+                 spec=importlib.util.spec_from_file_location('cp1_cache',sys.argv[1])\n\
+                 module=importlib.util.module_from_spec(spec)\n\
+                 spec.loader.exec_module(module)\n\
+                 census=module.build_source_tuple_spawn_census(\
+                 pathlib.Path(sys.argv[2]).read_bytes(),\
+                 pathlib.Path(sys.argv[3]).read_bytes())\n\
+                 print(json.dumps(census,sort_keys=True))",
+            )
+            .arg(&cache_builder)
+            .arg(package.join("authored-level.bin"))
+            .arg(package.join("entities.bin"))
+            .output()
+            .expect("run the production cache census generator");
+        assert!(
+            python.status.success(),
+            "production cache census generator failed: {}",
+            String::from_utf8_lossy(&python.stderr)
+        );
+        serde_json::from_slice(&python.stdout).expect("production cache census JSON")
+    }
+
+    fn generated_castle_defense_outcomes(generated: &serde_json::Value) -> Vec<&serde_json::Value> {
+        let mut rows = generated["dynamic_allocator_families"]
+            .as_array()
+            .expect("dynamic allocator census is an array")
+            .iter()
+            .filter(|row| {
+                row["spawn_kind"]
+                    .as_str()
+                    .is_some_and(|kind| kind.starts_with("CastleDefenseShot-"))
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by_key(|row| row["spawn_kind"].as_str().unwrap());
+        rows.into_iter()
+            .map(|row| {
+                assert_eq!(row["outcome_count"], 1);
+                &row["outcomes"][0]
+            })
+            .collect()
+    }
+
+    fn generated_i64(row: &serde_json::Value, field: &str) -> i64 {
+        row[field]
+            .as_i64()
+            .unwrap_or_else(|| panic!("generated field {field} is a signed integer"))
+    }
+
+    #[test]
+    fn source_sprite_census_covers_raw_level1_chains_and_rejects_unknowns() {
+        use crate::source_sprite_tmap::{
+            CASTLE_DEFENSE_SHOT_PROFILES, IMPORTED_RESET_SPRITE_PROFILES, ImportedResetSpriteTuple,
+            Level1AuthoredCensusRecord, Level1AuthoredCensusRow, SourceSpriteTemplateDisposition,
+            authored_activation_spawn_kind, imported_reset_sprite_disposition,
+        };
+
+        let private_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let package = private_root.join("generated/level1-export-m");
+        let closure = private_root.join("generated/level1-asset-closure.json");
+        let matrix_path =
+            private_root.join("remc2-sim-rs/level1-conformance/level1-conformance-matrix.json");
+        let owner_authored =
+            std::fs::read(package.join("authored-level.bin")).expect("owner authored table");
+        let matrix_bytes = std::fs::read(matrix_path).expect("canonical Level 1 matrix");
+        let matrix: serde_json::Value =
+            serde_json::from_slice(&matrix_bytes).expect("typed canonical matrix");
+        let matrix_records = matrix["authored_census"]["records"]
+            .as_object()
+            .expect("typed authored records");
+        let row_coverage = matrix["authored_census"]["row_coverage"]
+            .as_object()
+            .expect("typed authored row coverage");
+
+        let mut row_for_index = BTreeMap::new();
+        for (row_name, indices) in row_coverage {
+            let row = Level1AuthoredCensusRow::parse(row_name)
+                .unwrap_or_else(|error| panic!("{row_name}: {error}"));
+            for value in indices.as_array().expect("row coverage is an array") {
+                let index = u16::try_from(value.as_u64().expect("authored index is unsigned"))
+                    .expect("authored index fits u16");
+                assert_eq!(
+                    row_for_index.insert(index, row),
+                    None,
+                    "authored index {index} appears in more than one census row"
+                );
+            }
+        }
+        assert_eq!(row_for_index.len(), 308);
+        assert_eq!(matrix_records.len(), 308);
+        let owner_features = parse_authored_features(&owner_authored).expect("owner authored rows");
+        for (index, row) in &row_for_index {
+            let feature = owner_features
+                .iter()
+                .find(|feature| feature.index == *index)
+                .unwrap_or_else(|| panic!("owner authored row {index}"));
+            let manifest = &matrix_records[&index.to_string()];
+            let manifest_kind = u16::try_from(
+                manifest["kind"]
+                    .as_u64()
+                    .expect("manifest kind is unsigned"),
+            )
+            .expect("manifest kind fits u16");
+            let manifest_subtype = i16::try_from(
+                manifest["subtype"]
+                    .as_i64()
+                    .expect("manifest subtype is signed"),
+            )
+            .expect("manifest subtype fits i16");
+            let manifest_group = i16::try_from(
+                manifest["activation_group"]
+                    .as_i64()
+                    .expect("manifest activation group is signed"),
+            )
+            .expect("manifest activation group fits i16");
+            assert_eq!(
+                (feature.kind, feature.subtype, feature.activation_group),
+                (manifest_kind, manifest_subtype, manifest_group),
+                "owner/matrix authored tuple mismatch at index {index}"
+            );
+            authored_activation_spawn_kind(Level1AuthoredCensusRecord {
+                authored_index: *index,
+                kind: manifest_kind,
+                subtype: manifest_subtype,
+                activation_group: manifest_group,
+                row: *row,
+            })
+            .unwrap_or_else(|error| panic!("authored tuple {index}: {error}"));
+        }
+        let mut unclassified = Level1AuthoredCensusRecord {
+            authored_index: 31,
+            kind: 2,
+            subtype: 0,
+            activation_group: 1,
+            row: Level1AuthoredCensusRow::Group1,
+        };
+        assert_eq!(
+            authored_activation_spawn_kind(unclassified).unwrap(),
+            Level1SourceSpawnKind::AuthoredActivationTuple
+        );
+        unclassified.subtype = 9;
+        assert!(
+            authored_activation_spawn_kind(unclassified)
+                .unwrap_err()
+                .contains("index=31"),
+            "an in-range authored record with no concrete tuple rule must fail closed"
+        );
+
+        let world = crate::native_world::NativeWorld::load(&package, closure)
+            .expect("validated Level 1 owner package");
+        let observed_reset_tuples = world
+            .entities()
+            .iter()
+            .filter(|entity| entity.active)
+            .map(|entity| ImportedResetSpriteTuple {
+                class: entity.class,
+                model: entity.model,
+                action: entity.action,
+                entity_parameter_index: entity
+                    .parameter_relation
+                    .expect("active reset entity has a parameter relation"),
+                particle_parameter_index: entity
+                    .particle_parameter_index
+                    .expect("active reset entity has a particle parameter"),
+                animation_frame: entity.animation_frame(),
+                control_flags: entity.control_flags,
+            })
+            .collect::<BTreeSet<_>>();
+        let expected_reset_tuples = IMPORTED_RESET_SPRITE_PROFILES
+            .iter()
+            .map(|profile| profile.tuple)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            observed_reset_tuples, expected_reset_tuples,
+            "all 177 imported rows must reduce to the exact 17-key presentation census"
+        );
+        for tuple in observed_reset_tuples {
+            imported_reset_sprite_disposition(tuple)
+                .unwrap_or_else(|error| panic!("imported reset tuple: {error}"));
+        }
+        let mut invalid_imported = IMPORTED_RESET_SPRITE_PROFILES[12].tuple;
+        invalid_imported.particle_parameter_index = 45;
+        assert!(
+            imported_reset_sprite_disposition(invalid_imported)
+                .unwrap_err()
+                .contains("particle_parameter=45"),
+            "ImportedLive must not be accepted without its exact presentation tuple"
+        );
+
+        let mission = world.level1_mission().session(10_000, 1_000);
+        for (source_slot, occupant) in mission.source_pool.occupants.iter().enumerate() {
+            let Some(occupant) = occupant else {
+                continue;
+            };
+            occupant.source_spawn_kind().unwrap_or_else(|error| {
+                panic!("reset/activation census slot {source_slot}: {error}")
+            });
+        }
+
+        let closed_spawns = [
+            (SourceOccupant::Reserved, Level1SourceSpawnKind::Reserved),
+            (
+                SourceOccupant::PlayerFireball(1),
+                Level1SourceSpawnKind::PlayerFireball,
+            ),
+            (
+                SourceOccupant::ArcherArrow(1),
+                Level1SourceSpawnKind::ArcherArrow,
+            ),
+            (
+                SourceOccupant::FireflyFireball(1),
+                Level1SourceSpawnKind::FireflyFireball,
+            ),
+            (
+                SourceOccupant::CastleBuild(1),
+                Level1SourceSpawnKind::CastleBuild,
+            ),
+            (
+                SourceOccupant::CastleRoot(1),
+                Level1SourceSpawnKind::CastleRoot,
+            ),
+            (
+                SourceOccupant::CastleConstruction(1),
+                Level1SourceSpawnKind::CastleConstruction,
+            ),
+            (
+                SourceOccupant::CastleDefense(1),
+                Level1SourceSpawnKind::CastleDefenseController,
+            ),
+            (
+                SourceOccupant::CastleDefenseShot(1),
+                Level1SourceSpawnKind::CastleDefenseShot,
+            ),
+            (
+                SourceOccupant::CastleAssociation(1),
+                Level1SourceSpawnKind::CastleAssociation,
+            ),
+            (
+                SourceOccupant::Possession(1),
+                Level1SourceSpawnKind::Possession,
+            ),
+            (
+                SourceOccupant::PossessionImpact(1),
+                Level1SourceSpawnKind::PossessionImpact,
+            ),
+            (
+                SourceOccupant::GroundFire(1),
+                Level1SourceSpawnKind::GroundFire,
+            ),
+            (
+                SourceOccupant::PossessionAttraction(1),
+                Level1SourceSpawnKind::PossessionAttraction,
+            ),
+            (
+                SourceOccupant::StrongPossessionImpact(1),
+                Level1SourceSpawnKind::StrongPossessionImpact,
+            ),
+            (
+                SourceOccupant::FireballImpact(1),
+                Level1SourceSpawnKind::FireballImpact,
+            ),
+            (
+                SourceOccupant::WaterSplash(1),
+                Level1SourceSpawnKind::WaterSplash,
+            ),
+            (
+                SourceOccupant::ManaSphere(1),
+                Level1SourceSpawnKind::ManaSphere,
+            ),
+            (
+                SourceOccupant::ManaCarrier(1),
+                Level1SourceSpawnKind::ManaCarrier,
+            ),
+            (
+                SourceOccupant::DeathBurst(1),
+                Level1SourceSpawnKind::DeathBurst,
+            ),
+            (
+                SourceOccupant::PlayerDeathMarker(1),
+                Level1SourceSpawnKind::PlayerDeathMarker,
+            ),
+            (
+                SourceOccupant::SpeedTrail(1),
+                Level1SourceSpawnKind::SpeedTrail,
+            ),
+            (
+                SourceOccupant::CheckpointSmoke(1),
+                Level1SourceSpawnKind::CheckpointSmoke,
+            ),
+            (SourceOccupant::Ambient(1), Level1SourceSpawnKind::Ambient),
+            (
+                SourceOccupant::MultipartSegment(1),
+                Level1SourceSpawnKind::MultipartSegment,
+            ),
+        ];
+        for (occupant, expected) in closed_spawns {
+            assert_eq!(occupant.source_spawn_kind().unwrap(), expected);
+        }
+        for family in 0..4 {
+            assert_eq!(
+                SourceOccupant::SpellPickup { family }
+                    .source_spawn_kind()
+                    .unwrap(),
+                Level1SourceSpawnKind::SpellPickup
+            );
+        }
+        assert_eq!(
+            SourceOccupant::SpellPickup { family: 4 }
+                .source_spawn_kind()
+                .unwrap_err(),
+            "unknown Level 1 spell-pickup spawn tuple class=15 family=4"
+        );
+        assert_eq!(
+            SourceOccupant::ImportedLive.source_spawn_kind().unwrap(),
+            Level1SourceSpawnKind::ImportedResetTuple,
+            "the enum family is only a routing tag; exact imported keys were proven above"
+        );
+        for (model, action, expected) in [
+            (4, 33, Level1SourceSpawnKind::ResidentArcher),
+            (12, 97, Level1SourceSpawnKind::ResidentBuilder),
+            (13, 105, Level1SourceSpawnKind::ResidentVillager),
+            (14, 113, Level1SourceSpawnKind::ResidentTrader),
+        ] {
+            let occupant = SourceOccupant::Resident {
+                source_entity_index: 845,
+                model,
+                action,
+            };
+            assert_eq!(occupant.source_spawn_kind().unwrap(), expected);
+        }
+        assert_eq!(
+            SourceOccupant::Resident {
+                source_entity_index: 845,
+                model: 13,
+                action: 104,
+            }
+            .source_spawn_kind()
+            .unwrap_err(),
+            "unknown Level 1 resident spawn tuple class=5 model=13 action=104"
+        );
+
+        let generated = generated_source_sprite_census();
+        assert_eq!(generated["dynamic_allocator_family_count"], 35);
+        assert_eq!(generated["reset_tuple_manifest"]["tuple_count"], 17);
+
+        let generated_reset = generated["reset_tuple_manifest"]["records"]
+            .as_array()
+            .expect("generated reset census is an array");
+        assert_eq!(generated_reset.len(), IMPORTED_RESET_SPRITE_PROFILES.len());
+        for (profile, expected) in IMPORTED_RESET_SPRITE_PROFILES.iter().zip(generated_reset) {
+            let tuple = profile.tuple;
+            assert_eq!(
+                (
+                    i64::from(tuple.class),
+                    i64::from(tuple.model),
+                    i64::from(tuple.action),
+                    i64::from(tuple.entity_parameter_index),
+                    i64::from(tuple.particle_parameter_index),
+                    i64::from(tuple.animation_frame),
+                    i64::from(tuple.control_flags),
+                ),
+                (
+                    generated_i64(expected, "class"),
+                    generated_i64(expected, "model"),
+                    generated_i64(expected, "action"),
+                    generated_i64(expected, "source_parameter_index"),
+                    generated_i64(expected, "particle_parameter_index"),
+                    generated_i64(expected, "animation_frame"),
+                    generated_i64(expected, "control_flags_u32"),
+                ),
+                "Rust reset key must equal its production generated-census key: {expected}"
+            );
+            match profile.disposition {
+                SourceSpriteTemplateDisposition::Render(template) => {
+                    assert_eq!(expected["disposition"], "Render");
+                    assert_eq!(
+                        (
+                            i64::from(template.render_parameter_index),
+                            i64::from(template.base_tmap),
+                            i64::from(template.render_mode),
+                            i64::from(template.logical_height),
+                        ),
+                        (
+                            generated_i64(expected, "render_parameter_index"),
+                            generated_i64(expected, "base_tmap"),
+                            generated_i64(expected, "render_mode"),
+                            generated_i64(expected, "logical_height"),
+                        ),
+                        "Rust reset render profile must equal the generated profile: {expected}"
+                    );
+                    assert!(expected["excluded_reason"].is_null());
+                }
+                SourceSpriteTemplateDisposition::Excluded(reason) => {
+                    assert_eq!(expected["disposition"], "Excluded");
+                    assert_eq!(
+                        expected["excluded_reason"],
+                        format!("{reason:?}"),
+                        "Rust reset exclusion reason must equal the generated reason"
+                    );
+                    for field in [
+                        "render_parameter_index",
+                        "base_tmap",
+                        "render_mode",
+                        "logical_height",
+                    ] {
+                        assert!(
+                            expected[field].is_null(),
+                            "excluded reset profile unexpectedly has {field}: {expected}"
+                        );
+                    }
+                }
+            }
+        }
+
+        let generated_castle = generated_castle_defense_outcomes(&generated);
+        assert_eq!(generated_castle.len(), CASTLE_DEFENSE_SHOT_PROFILES.len());
+        for (profile, expected) in CASTLE_DEFENSE_SHOT_PROFILES.iter().zip(generated_castle) {
+            macro_rules! assert_generated_field {
+                ($rust:ident, $generated:literal) => {
+                    assert_eq!(
+                        i64::from(profile.$rust),
+                        generated_i64(expected, $generated),
+                        "castle-defense choice ({}, {}) field {}",
+                        profile.spell_family,
+                        profile.subspell,
+                        $generated
+                    );
+                };
+            }
+            assert_generated_field!(spell_family, "spell_family");
+            assert_generated_field!(subspell, "subspell");
+            assert_generated_field!(spell_life, "spell_life");
+            assert_generated_field!(spell_subspell_index, "spell_subspell_index");
+            assert_generated_field!(entity_class, "entity_class");
+            assert_generated_field!(entity_model, "entity_model");
+            assert_generated_field!(entity_action, "entity_action");
+            assert_generated_field!(xclass, "xclass");
+            assert_generated_field!(xmodel, "xmodel");
+            assert_generated_field!(source_life_ticks, "source_life_ticks");
+            assert_generated_field!(source_variant_byte, "source_variant_byte");
+            assert_generated_field!(source_subspell_index, "source_subspell_index");
+            assert_generated_field!(entity_parameter_index, "entity_parameter_index");
+            assert_generated_field!(particle_parameter_index, "particle_parameter_index");
+            assert_generated_field!(base_tmap, "base_tmap");
+            assert_generated_field!(render_mode, "render_mode");
+            assert_generated_field!(logical_height, "logical_height");
+            assert_generated_field!(movement_speed, "movement_speed");
+            assert_generated_field!(sound_id, "sound_id");
+            assert_eq!(
+                (
+                    generated_i64(expected, "class"),
+                    generated_i64(expected, "model"),
+                    generated_i64(expected, "action"),
+                    generated_i64(expected, "source_parameter_index"),
+                    generated_i64(expected, "particle_parameter_index"),
+                    generated_i64(expected, "render_parameter_index"),
+                ),
+                (
+                    i64::from(profile.entity_class),
+                    i64::from(profile.entity_model),
+                    i64::from(profile.entity_action),
+                    i64::from(profile.entity_parameter_index),
+                    i64::from(profile.particle_parameter_index),
+                    i64::from(profile.particle_parameter_index),
+                ),
+                "generated constructor and compositor fields must agree with the Rust profile"
+            );
+            assert_eq!(expected["disposition"], "Render");
+            assert_eq!(expected["control_flags_u32"], 8);
+            assert!(expected["excluded_reason"].is_null());
+        }
+
+        let mut heads = vec![0_i16; crate::renderable_map_chain::SOURCE_MAP_CELLS];
+        heads[0x0504] = 50;
+        let links = [(50, 17), (17, 81), (81, 22), (22, 90), (90, 0)];
+        let raw = crate::renderable_map_chain::raw_source_map_chain_entries(&heads, |entity| {
+            links
+                .iter()
+                .find_map(|(index, next)| (*index == entity).then_some(*next))
+        })
+        .unwrap();
+        assert_eq!(
+            raw.iter()
+                .map(|entry| entry.entity_index)
+                .collect::<Vec<_>>(),
+            [50, 17, 81, 22, 90],
+            "raw oldMapEntity traversal must retain excluded middle nodes before filtering"
+        );
+    }
+
     #[test]
     fn castle_construction_allocation_is_atomic_and_child_cursor_order_is_exact() {
         let mut build = qualified_house_state();
@@ -26762,29 +27801,20 @@ mod tests {
                 & SOURCE_DYNAMIC_LIGHT_FLAG,
             0
         );
+        assert_eq!(mission.dynamic_light_active_count(), 1);
         assert_eq!(
-            mission.dynamic_lights(),
-            &[Level1DynamicLight {
-                slot_index: 0,
-                source_entity_index: fire.source_entity_index,
+            mission.dynamic_lights()[0],
+            DynamicLightSlot {
+                active: true,
+                life_scaled: true,
+                intensity: GROUND_FIRE_DYNAMIC_LIGHT_RADIUS,
+                jitter_range: GROUND_FIRE_DYNAMIC_LIGHT_KIND,
                 position: fire.position,
-                radius: GROUND_FIRE_DYNAMIC_LIGHT_RADIUS,
-                kind: GROUND_FIRE_DYNAMIC_LIGHT_KIND,
+                source_entity_index: fire.source_entity_index,
                 linked: true,
                 history: [0; 25],
-                active: true,
-            }]
+            }
         );
-        let placeholder_light = |slot_index: u8| Level1DynamicLight {
-            slot_index,
-            source_entity_index: 900 + u16::from(slot_index),
-            position: Position::default(),
-            radius: GROUND_FIRE_DYNAMIC_LIGHT_RADIUS,
-            kind: GROUND_FIRE_DYNAMIC_LIGHT_KIND,
-            linked: true,
-            history: [0; 25],
-            active: true,
-        };
         let second_tree_index = mission
             .actors
             .iter()
@@ -26796,7 +27826,31 @@ mod tests {
             .unwrap();
         let second_tree_slot = mission.actors[second_tree_index].source_entity_index;
         let mut first_free_light = mission.clone();
-        first_free_light.dynamic_lights.push(placeholder_light(2));
+        assert_eq!(
+            first_free_light.dynamic_lighting.admit(
+                true,
+                true,
+                901,
+                Position::default(),
+                GROUND_FIRE_DYNAMIC_LIGHT_RADIUS,
+                GROUND_FIRE_DYNAMIC_LIGHT_KIND,
+                true,
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            first_free_light.dynamic_lighting.admit(
+                true,
+                true,
+                902,
+                Position::default(),
+                GROUND_FIRE_DYNAMIC_LIGHT_RADIUS,
+                GROUND_FIRE_DYNAMIC_LIGHT_KIND,
+                true,
+            ),
+            Some(2)
+        );
+        first_free_light.dynamic_lighting.retire(1);
         first_free_light.actors[second_tree_index].pending_attacker = 77;
         first_free_light.actors[second_tree_index].pending_damage = TREE_LIFE + 1;
         let source_views = first_free_light.source_entity_views(&FlightState::default(), &[]);
@@ -26808,18 +27862,30 @@ mod tests {
         );
         assert_eq!(
             first_free_light
-                .dynamic_lights()
-                .iter()
-                .map(|light| light.slot_index)
+                .dynamic_lighting
+                .active_slots()
+                .map(|(slot, _)| slot)
                 .collect::<Vec<_>>(),
             [0, 1, 2],
             "AddEvent2 takes the first inactive light-array slot"
         );
 
         let mut full_light_array = mission.clone();
-        full_light_array.dynamic_lights = (0..SOURCE_DYNAMIC_LIGHT_CAPACITY)
-            .map(|slot| placeholder_light(u8::try_from(slot).unwrap()))
-            .collect();
+        full_light_array.dynamic_lighting = DynamicLightingState::reset();
+        for slot in 0..SOURCE_DYNAMIC_LIGHT_CAPACITY {
+            assert_eq!(
+                full_light_array.dynamic_lighting.admit(
+                    true,
+                    true,
+                    900 + u16::try_from(slot).unwrap(),
+                    Position::default(),
+                    GROUND_FIRE_DYNAMIC_LIGHT_RADIUS,
+                    GROUND_FIRE_DYNAMIC_LIGHT_KIND,
+                    true,
+                ),
+                Some(u8::try_from(slot).unwrap())
+            );
+        }
         full_light_array.actors[second_tree_index].pending_attacker = 77;
         full_light_array.actors[second_tree_index].pending_damage = TREE_LIFE + 1;
         let source_views = full_light_array.source_entity_views(&FlightState::default(), &[]);
@@ -26834,7 +27900,7 @@ mod tests {
             .iter()
             .find(|candidate| candidate.source_projectile_id == u32::from(second_tree_slot))
             .unwrap();
-        assert_eq!(full_light_array.dynamic_lights().len(), 50);
+        assert_eq!(full_light_array.dynamic_light_active_count(), 50);
         assert_eq!(
             full_light_array.source_slots[usize::from(unlit_fire.source_entity_index)]
                 .control_flags
@@ -26843,6 +27909,7 @@ mod tests {
             "a full 50-record light array leaves the new event unlinked"
         );
         let fire_hash = mission.source_arena_hash_v1();
+        let fire_hash_v2 = mission.source_arena_hash_v2();
         let mut changed_fire = mission.clone();
         changed_fire
             .impacts
@@ -26852,9 +27919,54 @@ mod tests {
             .payload += 1;
         assert_ne!(changed_fire.source_arena_hash_v1(), fire_hash);
         let mut changed_light = mission.clone();
-        changed_light.dynamic_lights[0].radius =
-            changed_light.dynamic_lights[0].radius.wrapping_add(1);
-        assert_ne!(changed_light.source_arena_hash_v1(), fire_hash);
+        changed_light.dynamic_lighting.slots_mut()[0].intensity =
+            changed_light.dynamic_lighting.slots()[0]
+                .intensity
+                .wrapping_add(1);
+        assert_eq!(
+            changed_light.source_arena_hash_v1(),
+            fire_hash,
+            "source-arena v1 retains its exact pre-lighting byte stream"
+        );
+        assert_ne!(changed_light.source_arena_hash_v2(), fire_hash_v2);
+        assert_ne!(
+            changed_light.dynamic_lighting_hash_v1(),
+            mission.dynamic_lighting_hash_v1()
+        );
+        let mut changed_light_rng = mission.clone();
+        changed_light_rng
+            .dynamic_lighting
+            .set_rng(changed_light_rng.dynamic_lighting.rng().wrapping_add(1));
+        assert_eq!(changed_light_rng.source_arena_hash_v1(), fire_hash);
+        assert_ne!(changed_light_rng.source_arena_hash_v2(), fire_hash_v2);
+        let mut inactive_light = mission.clone();
+        inactive_light.dynamic_lighting.retire(0);
+        assert_eq!(inactive_light.source_arena_hash_v1(), fire_hash);
+        assert_ne!(inactive_light.source_arena_hash_v2(), fire_hash_v2);
+        let inactive_hash = inactive_light.source_arena_hash_v2();
+        inactive_light.dynamic_lighting.slots_mut()[0].intensity ^= 1;
+        assert_eq!(inactive_light.source_arena_hash_v1(), fire_hash);
+        assert_ne!(
+            inactive_light.source_arena_hash_v2(),
+            inactive_hash,
+            "inactive retained light payload remains future-driving v2 state"
+        );
+        let inactive_payload_hash = inactive_light.source_arena_hash_v2();
+        inactive_light.dynamic_lighting.slots_mut()[0].history[7] ^= 1;
+        assert_eq!(inactive_light.source_arena_hash_v1(), fire_hash);
+        assert_ne!(
+            inactive_light.source_arena_hash_v2(),
+            inactive_payload_hash,
+            "inactive retained light history remains future-driving v2 state"
+        );
+        let mut moved_light = mission.clone();
+        moved_light.dynamic_lighting.slots_mut()[0].position.x =
+            moved_light.dynamic_lighting.slots()[0]
+                .position
+                .x
+                .wrapping_add(1);
+        assert_eq!(moved_light.source_arena_hash_v1(), fire_hash);
+        assert_ne!(moved_light.source_arena_hash_v2(), fire_hash_v2);
         let fire_index = mission
             .impacts
             .iter()
@@ -26892,6 +28004,14 @@ mod tests {
             "life >= 12 ramps both dword 0x10 and word 0x5A"
         );
         assert_eq!(ambient_player.ambient_loop_5_distance, 300);
+        let ground_heights = vec![0_u8; 65_536];
+        let mut shading = vec![0_u8; 65_536];
+        mission.service_dynamic_lighting_after_updates(
+            &ambient_player,
+            &[],
+            &ground_heights,
+            &mut shading,
+        );
         assert_eq!(
             mission.dynamic_lights()[0].position,
             mission.impacts[fire_index].position,
@@ -26901,7 +28021,7 @@ mod tests {
         terminal.begin_source_turn();
         terminal.impacts[fire_index].life_ticks = -1;
         terminal.impacts[fire_index].active = true;
-        terminal.dynamic_lights[0].active = true;
+        terminal.subtract_dynamic_lighting_before_updates(&mut shading);
         let mut terminal_player = FlightState {
             ambient_loop_5_distance: 777,
             ..ambient_player
@@ -26917,9 +28037,20 @@ mod tests {
         terminal.apply_pending_player_transients(&mut terminal_player);
         assert_eq!(terminal_player.ambient_loop_5_distance, 777);
         assert!(!terminal.impacts[fire_index].active);
-        assert!(!terminal.dynamic_lights[0].active);
+        assert!(
+            terminal.dynamic_lights()[0].active,
+            "entity retirement cannot erase the footprint before sub_848A0"
+        );
+        terminal.service_dynamic_lighting_after_updates(
+            &terminal_player,
+            &[],
+            &ground_heights,
+            &mut shading,
+        );
+        assert!(!terminal.dynamic_lights()[0].active);
         terminal.finish_source_turn(&terminal_player);
-        assert!(terminal.dynamic_lights().is_empty());
+        assert_eq!(terminal.dynamic_light_active_count(), 0);
+        assert_eq!(terminal.dynamic_lights().len(), 50);
 
         mission.actors[tree_index].life = 60;
         let source_views = mission.source_entity_views(&FlightState::default(), &[]);
@@ -26972,7 +28103,7 @@ mod tests {
             "allocation failure consumes the mailbox but not the tree RNG/transition"
         );
         assert!(exhausted.actors[exhausted_tree].life < 0);
-        assert!(exhausted.dynamic_lights().is_empty());
+        assert_eq!(exhausted.dynamic_light_active_count(), 0);
         assert!(
             exhausted
                 .impacts
@@ -30441,12 +31572,12 @@ mod tests {
                 burst.control_flags,
             )
         );
-        assert!(mission.dynamic_lights.iter().any(|light| {
+        assert!(mission.dynamic_lights().iter().any(|light| {
             light.active
                 && light.source_entity_index == burst.source_entity_index
                 && light.position == burst.position
-                && light.radius == PLAYER_DEATH_BURST_DYNAMIC_LIGHT_RADIUS
-                && light.kind == PLAYER_DEATH_BURST_DYNAMIC_LIGHT_KIND
+                && light.intensity == PLAYER_DEATH_BURST_DYNAMIC_LIGHT_RADIUS
+                && light.jitter_range == PLAYER_DEATH_BURST_DYNAMIC_LIGHT_KIND
                 && light.linked
         }));
         assert!(
@@ -30602,6 +31733,70 @@ mod tests {
                 .owner_entity_index,
             marker.source_entity_index,
             "model-39 owner relation redirects only after marker allocation"
+        );
+        let source_sprites = mission
+            .source_sprite_dispositions(&dying_player)
+            .expect("typed dying-player source sprites");
+        let redirected_sphere = source_sprites
+            .iter()
+            .find_map(|disposition| match disposition {
+                SourceSpriteDisposition::Render(submission)
+                    if submission.source_entity_index
+                        == mission
+                            .mana_spheres()
+                            .iter()
+                            .find(|sphere| sphere.id == owned_sphere)
+                            .unwrap()
+                            .source_entity_index =>
+                {
+                    Some(*submission)
+                }
+                _ => None,
+            })
+            .expect("redirected sphere has a typed compositor submission");
+        assert_eq!(
+            (
+                redirected_sphere.render_parameter_index,
+                redirected_sphere.base_tmap,
+                redirected_sphere.palette_owner,
+            ),
+            (
+                MANA_SPHERE_NEUTRAL_RENDER_BASE
+                    + u16::from(mana_sphere_size_ordinal(
+                        mission
+                            .mana_spheres()
+                            .iter()
+                            .find(|sphere| sphere.id == owned_sphere)
+                            .unwrap()
+                            .mana,
+                    )),
+                MANA_SPHERE_NEUTRAL_BASE_TMAP,
+                SourceSpritePaletteOwner::NightLevel,
+            ),
+            "a class-10 death-marker owner relation remains visually neutral"
+        );
+        let marker_submission = source_sprites
+            .iter()
+            .find_map(|disposition| match disposition {
+                SourceSpriteDisposition::Render(submission)
+                    if submission.source_entity_index == marker.source_entity_index =>
+                {
+                    Some(*submission)
+                }
+                _ => None,
+            })
+            .expect("death marker reaches the production compositor");
+        assert_eq!(
+            (
+                marker_submission.class,
+                marker_submission.model,
+                marker_submission.action,
+                marker_submission.render_parameter_index,
+                marker_submission.base_tmap,
+                marker_submission.render_mode,
+                marker_submission.logical_height,
+            ),
+            (10, 40, 42, 65, 81, 0, 200)
         );
         assert_eq!(
             mission.source_slots[usize::from(player.entity_index)].control_flags & 0x20,
@@ -31086,8 +32281,8 @@ mod tests {
             replacement_only.dynamic_lights().iter().any(|light| {
                 light.active
                     && light.source_entity_index == 900
-                    && light.radius == PLAYER_DEATH_BURST_DYNAMIC_LIGHT_RADIUS
-                    && light.kind == PLAYER_DEATH_BURST_DYNAMIC_LIGHT_KIND
+                    && light.intensity == PLAYER_DEATH_BURST_DYNAMIC_LIGHT_RADIUS
+                    && light.jitter_range == PLAYER_DEATH_BURST_DYNAMIC_LIGHT_KIND
             }),
             "same-slot burst-to-marker replacement preserves the separate AddEvent2 light record"
         );
@@ -31575,6 +32770,31 @@ mod tests {
         assert_eq!(pending.update_count, 0);
         assert!(!pending.collision_attempted);
         assert!(pending.active);
+        let pending_submission = earlier_slot
+            .source_sprite_dispositions(player)
+            .expect("typed Castle-association source sprites")
+            .into_iter()
+            .find_map(|disposition| match disposition {
+                SourceSpriteDisposition::Render(submission)
+                    if submission.source_entity_index == pending.source_entity_index =>
+                {
+                    Some(submission)
+                }
+                _ => None,
+            })
+            .expect("live 10/43/45 reaches the production typed compositor");
+        assert_eq!(
+            (
+                pending_submission.class,
+                pending_submission.model,
+                pending_submission.action,
+                pending_submission.render_parameter_index,
+                pending_submission.base_tmap,
+                pending_submission.render_mode,
+                pending_submission.logical_height,
+            ),
+            (10, 43, 45, 41, 54, 21, 250)
+        );
         let pending_hash = earlier_slot.source_arena_hash_v1();
         let mut changed_pending = earlier_slot.clone();
         changed_pending.castle_associations[0].life -= 1;
@@ -31904,6 +33124,294 @@ mod tests {
         )));
     }
 
+    fn assert_castle_defense_choice_profiles_reach_production_dispatch(
+        template: &Level1MissionTemplate,
+        player: &FlightState,
+    ) {
+        let generated = generated_source_sprite_census();
+        for (ordinal, expected) in generated_castle_defense_outcomes(&generated)
+            .into_iter()
+            .enumerate()
+        {
+            let spell_family = u8::try_from(generated_i64(expected, "spell_family")).unwrap();
+            let subspell = u8::try_from(generated_i64(expected, "subspell")).unwrap();
+            let entity_class = u8::try_from(generated_i64(expected, "entity_class")).unwrap();
+            let entity_model = u8::try_from(generated_i64(expected, "entity_model")).unwrap();
+            let entity_action = u8::try_from(generated_i64(expected, "entity_action")).unwrap();
+            let xclass = u8::try_from(generated_i64(expected, "xclass")).unwrap();
+            let xmodel = u8::try_from(generated_i64(expected, "xmodel")).unwrap();
+            let source_life_ticks =
+                i16::try_from(generated_i64(expected, "source_life_ticks")).unwrap();
+            let source_variant_byte =
+                u8::try_from(generated_i64(expected, "source_variant_byte")).unwrap();
+            let source_subspell_index =
+                u16::try_from(generated_i64(expected, "source_subspell_index")).unwrap();
+            let entity_parameter_index =
+                u16::try_from(generated_i64(expected, "entity_parameter_index")).unwrap();
+            let particle_parameter_index =
+                u16::try_from(generated_i64(expected, "particle_parameter_index")).unwrap();
+            let base_tmap = u16::try_from(generated_i64(expected, "base_tmap")).unwrap();
+            let render_mode = u8::try_from(generated_i64(expected, "render_mode")).unwrap();
+            let logical_height = u16::try_from(generated_i64(expected, "logical_height")).unwrap();
+            let movement_speed = i16::try_from(generated_i64(expected, "movement_speed")).unwrap();
+            let mut fixture = castle_defense_fixture(template, player);
+            let defense = &mut fixture.defense;
+            let projectile_slot =
+                900_u16 + u16::try_from(ordinal).expect("five shot profiles fit u16");
+            defense.source_pool.free_stack.clear();
+            defense.source_pool.replaceable_stack.clear();
+            defense.source_pool.occupants[usize::from(projectile_slot)] = None;
+            defense.source_pool.disabled[usize::from(projectile_slot)] = false;
+            defense.source_pool.replaceable[usize::from(projectile_slot)] = false;
+            defense.source_pool.free_stack.push(projectile_slot);
+            defense.begin_source_turn_at(player.position);
+            {
+                let controller = defense
+                    .castle_defense_controllers
+                    .iter_mut()
+                    .find(|controller| controller.source_entity_index == fixture.controller_slot)
+                    .unwrap();
+                controller.action_state = 8;
+                controller.target_entity_index = 121;
+                controller.shot_family = spell_family;
+                controller.shot_subspell = subspell;
+                controller.shots_remaining = 1;
+            }
+            let views = defense.source_entity_views(player, &fixture.candidates);
+            defense.dispatch_source_slot_with_views_and_look(
+                &FlatWorld,
+                player,
+                &views,
+                fixture.controller_slot,
+                false,
+                false,
+                None,
+                0,
+                0,
+            );
+
+            let shot = defense
+                .castle_defense_shots()
+                .first()
+                .copied()
+                .expect("qualified action-86 allocation produces one concrete shot");
+            assert_eq!(
+                (
+                    shot.source_entity_index,
+                    shot.target_entity_index,
+                    shot.spell_family,
+                    shot.subspell,
+                    shot.entity_class,
+                    shot.entity_model,
+                    shot.entity_action,
+                    shot.xclass,
+                    shot.xmodel,
+                ),
+                (
+                    projectile_slot,
+                    121,
+                    spell_family,
+                    subspell,
+                    entity_class,
+                    entity_model,
+                    entity_action,
+                    xclass,
+                    xmodel,
+                ),
+                "choice ({}, {}) must keep the constructor tuple separate from xclass/xmodel",
+                spell_family,
+                subspell
+            );
+            assert_eq!(
+                (
+                    shot.source_life_ticks,
+                    shot.source_variant_byte,
+                    shot.source_subspell_index,
+                    shot.entity_parameter_index,
+                ),
+                (
+                    source_life_ticks,
+                    source_variant_byte,
+                    source_subspell_index,
+                    entity_parameter_index,
+                ),
+                "choice ({}, {}) must retain lifetime/subspell/constructor parameters",
+                spell_family,
+                subspell
+            );
+            assert_eq!(
+                (
+                    shot.particle_parameter_index,
+                    shot.base_tmap,
+                    shot.render_mode,
+                    shot.logical_height,
+                    shot.speed,
+                ),
+                (
+                    particle_parameter_index,
+                    base_tmap,
+                    render_mode,
+                    logical_height,
+                    movement_speed,
+                ),
+                "choice ({}, {}) must retain its complete sprite-data profile",
+                spell_family,
+                subspell
+            );
+            let submission = defense
+                .source_sprite_dispositions(player)
+                .expect("typed castle-defense source sprites")
+                .into_iter()
+                .find_map(|disposition| match disposition {
+                    SourceSpriteDisposition::Render(submission)
+                        if submission.source_entity_index == projectile_slot =>
+                    {
+                        Some(submission)
+                    }
+                    _ => None,
+                })
+                .expect("concrete action-86 shot reaches the production typed compositor");
+            assert_eq!(
+                (
+                    submission.class,
+                    submission.model,
+                    submission.action,
+                    submission.xclass,
+                    submission.xmodel,
+                    submission.render_parameter_index,
+                    submission.base_tmap,
+                    submission.render_mode,
+                    submission.logical_height,
+                ),
+                (
+                    entity_class,
+                    entity_model,
+                    entity_action,
+                    xclass,
+                    xmodel,
+                    particle_parameter_index,
+                    base_tmap,
+                    render_mode,
+                    logical_height,
+                ),
+                "choice ({spell_family}, {subspell}) must preserve its real allocation tuple through production presentation"
+            );
+            if ordinal == 0 {
+                let source_hash = defense.source_arena_hash_v1();
+                let mut changed_xmodel = defense.clone();
+                changed_xmodel.castle_defense_shots[0].xmodel ^= 1;
+                assert_ne!(
+                    changed_xmodel.source_arena_hash_v1(),
+                    source_hash,
+                    "future compositor input xmodel must remain authoritative-hash sensitive"
+                );
+            }
+            let record = defense.source_slots()[usize::from(projectile_slot)];
+            assert_eq!(
+                (
+                    record.active,
+                    record.class,
+                    record.model,
+                    record.action,
+                    record.control_flags,
+                ),
+                (true, entity_class, entity_model, entity_action, 8,)
+            );
+            let source_view = defense
+                .source_entity_views(player, &fixture.candidates)
+                .into_iter()
+                .find(|view| view.source_entity_index == projectile_slot)
+                .expect("concrete shot projects into the complete source arena");
+            assert_eq!(
+                (
+                    source_view.class,
+                    source_view.model,
+                    source_view.action,
+                    source_view.life,
+                    source_view.max_life,
+                    source_view.actual_speed,
+                    source_view.owner_entity_index,
+                    source_view.target_entity_index,
+                ),
+                (
+                    entity_class,
+                    entity_model,
+                    entity_action,
+                    i32::from(source_life_ticks),
+                    i32::from(source_life_ticks),
+                    movement_speed,
+                    player.entity_index,
+                    121,
+                )
+            );
+            assert!(
+                defense
+                    .source_map_chains
+                    .entity_chain(
+                        fixture.controller_position.x.to_le_bytes()[1],
+                        fixture.controller_position.y.to_le_bytes()[1],
+                    )
+                    .contains(&projectile_slot),
+                "the concrete shot must join the source map chain"
+            );
+            assert!(defense.events().iter().any(|event| matches!(
+                event,
+                Level1MissionEvent::CastleDefenseShot {
+                    projectile_entity_index,
+                    spell_family: event_spell_family,
+                    subspell: event_subspell,
+                    ..
+                } if *projectile_entity_index == projectile_slot
+                    && *event_spell_family == spell_family
+                    && *event_subspell == subspell
+            )));
+        }
+    }
+
+    fn assert_castle_defense_unknown_choice_is_atomic(
+        template: &Level1MissionTemplate,
+        player: &FlightState,
+    ) {
+        let mut fixture = castle_defense_fixture(template, player);
+        let mut controller = fixture.defense.castle_defense_controllers[0];
+        controller.action_state = 8;
+        controller.target_entity_index = 121;
+        controller.shot_family = 7;
+        controller.shot_subspell = 2;
+        controller.shots_remaining = 1;
+
+        let before_state = fixture.defense.clone();
+        let before_controller = controller;
+        assert_eq!(
+            fixture
+                .defense
+                .fire_castle_defense_shot(&mut controller)
+                .unwrap_err(),
+            CastleDefenseShotError::UnknownChoice {
+                spell_family: 7,
+                subspell: 2,
+            }
+        );
+        assert_eq!(
+            fixture.defense, before_state,
+            "unknown castle choice must not mutate the source pool/slots/map chain, shots, events, RNG, or next ID"
+        );
+        assert_eq!(
+            controller, before_controller,
+            "unknown castle choice must not mutate the firing controller"
+        );
+
+        fixture.defense.castle_defense_controllers[0] = controller;
+        let before_dispatch = fixture.defense.clone();
+        fixture
+            .defense
+            .step_castle_defense_slot(&FlatWorld, fixture.controller_slot);
+        assert_eq!(
+            fixture.defense, before_dispatch,
+            "the production action-86 caller must treat an unknown choice as an atomic no-op"
+        );
+    }
+
     fn assert_castle_defense_rejects_invalid_targets(
         fixture: &CastleDefenseFixture,
         player: &FlightState,
@@ -32060,6 +33568,8 @@ mod tests {
 
         let mut fixture = castle_defense_fixture(&template, &player);
         exercise_castle_defense_positive_path(&mut fixture, &player);
+        assert_castle_defense_choice_profiles_reach_production_dispatch(&template, &player);
+        assert_castle_defense_unknown_choice_is_atomic(&template, &player);
 
         assert_castle_defense_rejects_invalid_targets(&fixture, &player);
         assert_castle_defense_rejects_unqualified_candidates(

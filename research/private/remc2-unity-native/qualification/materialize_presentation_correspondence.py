@@ -99,6 +99,14 @@ def render_html(report: dict) -> str:
         matrix_rows.append(
             f"<tr><th>{html.escape(surface['id'])}</th>{''.join(cells)}</tr>"
         )
+    final = report["native_final_main"]
+    final_components = "".join(
+        f"<li>{html.escape(name)}</li>" for name in final["components"]
+    )
+    final_exclusions = "".join(
+        f"<li>{html.escape(value)}</li>"
+        for value in final["explicit_exclusions"]
+    )
     return """<!doctype html>
 <html lang="en">
 <head>
@@ -129,6 +137,12 @@ ul { margin:0; padding-left:1.1rem; }
 <div class="timeline original">""" + "".join(original_cards) + """</div>
 <h2>Unity synthetic regression timeline</h2>
 <div class="timeline">""" + "".join(unity_cards) + """</div>
+<h2>Current native FINAL MAIN executable correspondence</h2>
+<p>Exact only inside the pinned 320×200 Night Level 1 single-local-player profile. Historical remc2, managed Unity, and gallery timelines remain independent evidence.</p>
+<p><strong>Source commit:</strong> """ + html.escape(final["source_commit"]) + """</p>
+<p><strong>Owner-cache content:</strong> """ + html.escape(final["cache"]["content_sha256"]) + """</p>
+<h3>Executable components</h3><ul>""" + final_components + """</ul>
+<h3>Explicit exclusions and nonclaims</h3><ul>""" + final_exclusions + """</ul>
 <h2>Structural correspondence matrix</h2>
 <table><thead><tr><th>Surface</th><th>Exact</th><th>Frozen</th><th>Adapted</th><th>Omitted</th><th>Deferred</th></tr></thead>
 <tbody>""" + "".join(matrix_rows) + """</tbody></table>
@@ -270,6 +284,7 @@ def main() -> int:
         "comparisons": contract["comparisons"],
         "forbidden_claims": contract["forbidden_claims"],
         "surfaces": contract["surfaces"],
+        "native_final_main": contract["native_final_main"],
         "claim_limits": {
             "original": decode["claim_limit"],
             "unity": contract["unity_timeline"]["claim_limit"],
