@@ -39,6 +39,7 @@ pub mod terrain_grid;
 pub mod terrain_presentation;
 pub mod terrain_reflection;
 pub mod villager;
+pub mod voxel_collapse;
 pub mod voxel_damage;
 pub mod voxel_state;
 pub mod voxel_structure;
