@@ -74,6 +74,29 @@ pub struct Mode20SpriteRasterStats {
     pub framebuffer_writes: u32,
 }
 
+/// Profile-specific admission limits for the shared source sprite projector.
+/// Exact callers use the original constants; Classic HD supplies the
+/// profile-scaled cutoffs while retaining the same fixed-point geometry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Mode20SpriteProjectionLimits {
+    pub render_cutoff_squared: u32,
+    pub fog_start_squared: u32,
+    pub fog_end_squared: u32,
+    pub fog_thickness_squared: i64,
+}
+
+impl Mode20SpriteProjectionLimits {
+    #[must_use]
+    pub const fn exact() -> Self {
+        Self {
+            render_cutoff_squared: TERRAIN_RENDER_CUTOFF_SQUARED,
+            fog_start_squared: TERRAIN_FOG_START_SQUARED,
+            fog_end_squared: TERRAIN_FOG_END_SQUARED,
+            fog_thickness_squared: TERRAIN_FOG_THICKNESS_SQUARED,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode20SpriteReject {
     BehindObjectNearPlane,
@@ -220,6 +243,31 @@ pub fn project_mode20_sprite_with_definition(
     )
 }
 
+/// Profile-aware mode-20 projection. The compatibility profile should use
+/// [`Mode20SpriteProjectionLimits::exact`] and is byte-compatible with the
+/// existing wrapper.
+#[must_use]
+pub fn project_mode20_sprite_with_definition_and_limits(
+    definition: Mode20SpriteDefinition,
+    camera: Mode20SpriteCamera,
+    entity: Mode20SpriteEntity,
+    source_width: u16,
+    source_height: u16,
+    limits: Mode20SpriteProjectionLimits,
+) -> Result<Mode20SpritePlacement, Mode20SpriteReject> {
+    project_source_sprite_with_limits(
+        SourceSpriteSelectorMode::Mode20,
+        definition,
+        camera,
+        entity,
+        source_width,
+        source_height,
+        false,
+        false,
+        limits,
+    )
+}
+
 /// Reproduce render mode 17's selector choice and common source sprite
 /// projection.
 #[must_use]
@@ -239,6 +287,28 @@ pub fn project_mode17_sprite_with_definition(
         source_height,
         false,
         false,
+    )
+}
+
+#[must_use]
+pub fn project_mode17_sprite_with_definition_and_limits(
+    definition: Mode20SpriteDefinition,
+    camera: Mode20SpriteCamera,
+    entity: Mode20SpriteEntity,
+    source_width: u16,
+    source_height: u16,
+    limits: Mode20SpriteProjectionLimits,
+) -> Result<Mode20SpritePlacement, Mode20SpriteReject> {
+    project_source_sprite_with_limits(
+        SourceSpriteSelectorMode::Mode17,
+        definition,
+        camera,
+        entity,
+        source_width,
+        source_height,
+        false,
+        false,
+        limits,
     )
 }
 
@@ -273,6 +343,34 @@ pub fn project_fixed_sprite_with_definition(
     )
 }
 
+#[must_use]
+pub fn project_fixed_sprite_with_definition_and_limits(
+    definition: Mode20SpriteDefinition,
+    entity_frame: Option<u8>,
+    quarter_sum_anchor: bool,
+    camera: Mode20SpriteCamera,
+    entity: Mode20SpriteEntity,
+    source_width: u16,
+    source_height: u16,
+    limits: Mode20SpriteProjectionLimits,
+) -> Result<Mode20SpritePlacement, Mode20SpriteReject> {
+    let shadow_quarter_sum_anchor = quarter_sum_anchor && entity_frame.is_some();
+    project_source_sprite_with_limits(
+        entity_frame.map_or(
+            SourceSpriteSelectorMode::Fixed,
+            SourceSpriteSelectorMode::EntityFrame,
+        ),
+        definition,
+        camera,
+        entity,
+        source_width,
+        source_height,
+        quarter_sum_anchor,
+        shadow_quarter_sum_anchor,
+        limits,
+    )
+}
+
 /// Reproduce mode 19's five-frame directional selection.
 #[must_use]
 pub fn project_mode19_sprite_with_definition(
@@ -294,6 +392,28 @@ pub fn project_mode19_sprite_with_definition(
     )
 }
 
+#[must_use]
+pub fn project_mode19_sprite_with_definition_and_limits(
+    definition: Mode20SpriteDefinition,
+    camera: Mode20SpriteCamera,
+    entity: Mode20SpriteEntity,
+    source_width: u16,
+    source_height: u16,
+    limits: Mode20SpriteProjectionLimits,
+) -> Result<Mode20SpritePlacement, Mode20SpriteReject> {
+    project_source_sprite_with_limits(
+        SourceSpriteSelectorMode::Mode19,
+        definition,
+        camera,
+        entity,
+        source_width,
+        source_height,
+        false,
+        false,
+        limits,
+    )
+}
+
 fn project_source_sprite(
     selector_mode: SourceSpriteSelectorMode,
     definition: Mode20SpriteDefinition,
@@ -303,6 +423,30 @@ fn project_source_sprite(
     source_height: u16,
     quarter_sum_anchor: bool,
     shadow_quarter_sum_anchor: bool,
+) -> Result<Mode20SpritePlacement, Mode20SpriteReject> {
+    project_source_sprite_with_limits(
+        selector_mode,
+        definition,
+        camera,
+        entity,
+        source_width,
+        source_height,
+        quarter_sum_anchor,
+        shadow_quarter_sum_anchor,
+        Mode20SpriteProjectionLimits::exact(),
+    )
+}
+
+fn project_source_sprite_with_limits(
+    selector_mode: SourceSpriteSelectorMode,
+    definition: Mode20SpriteDefinition,
+    camera: Mode20SpriteCamera,
+    entity: Mode20SpriteEntity,
+    source_width: u16,
+    source_height: u16,
+    quarter_sum_anchor: bool,
+    shadow_quarter_sum_anchor: bool,
+    limits: Mode20SpriteProjectionLimits,
 ) -> Result<Mode20SpritePlacement, Mode20SpriteReject> {
     if source_width == 0 || source_height == 0 {
         return Err(Mode20SpriteReject::EmptySource);
@@ -332,15 +476,15 @@ fn project_source_sprite(
         .wrapping_mul(lateral)
         .wrapping_add(forward_depth.wrapping_mul(forward_depth))
         .cast_unsigned();
-    if distance_squared >= TERRAIN_RENDER_CUTOFF_SQUARED {
+    if distance_squared >= limits.render_cutoff_squared {
         return Err(Mode20SpriteReject::BeyondRenderCutoff);
     }
 
-    let brightness = if distance_squared <= TERRAIN_FOG_START_SQUARED {
+    let brightness = if distance_squared <= limits.fog_start_squared {
         0x2000
-    } else if distance_squared < TERRAIN_FOG_END_SQUARED {
-        let remaining = TERRAIN_FOG_END_SQUARED - distance_squared;
-        i32::try_from(32_i64 * i64::from(remaining) / TERRAIN_FOG_THICKNESS_SQUARED)
+    } else if distance_squared < limits.fog_end_squared {
+        let remaining = limits.fog_end_squared - distance_squared;
+        i32::try_from(32_i64 * i64::from(remaining) / limits.fog_thickness_squared)
             .expect("bounded sprite fog value fits i32")
             .wrapping_shl(8)
     } else {
