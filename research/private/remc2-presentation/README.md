@@ -22,6 +22,12 @@ Changing mode requires a restart. There is no mid-frame Built-in/URP switch.
 Invalid mode values, missing required owner inputs, Exact claims from a
 non-Exact mode, corpus crossover, and mode-off are failures.
 
+Level 1 Night visual acceptance is defined in
+`quality/level1-night-quality-target.md`. The separate `corpora/` roots hold
+dry-run manifests for Exact, Classic HD, and Unity Enhanced;
+`capture_manifest.py` embeds mode/profile/build metadata, refuses a
+mode/root crossover, and never presents a placeholder as captured evidence.
+
 Validate the schema and a selected invocation:
 
 ```bash
@@ -33,3 +39,11 @@ python3 research/private/remc2-presentation/verify_mode_contract.py \
 ```
 
 The last command is intentionally a negative check and must fail.
+
+Corpus checks:
+
+```bash
+python3 research/private/remc2-presentation/verify_presentation_corpora.py
+python3 -m unittest discover \
+  -s research/private/remc2-presentation/tests -p 'test_*.py' -v
+```
