@@ -44,6 +44,21 @@ inventory is 481 tests: 4 atlas-registry, 70 sim-capi, 3 sim-cli integration,
 [`level1-conformance/LEVEL1-CONFORMANCE-MATRIX.md`](level1-conformance/LEVEL1-CONFORMANCE-MATRIX.md)
 and the Unity [`LEVEL1-READINESS.md`](../remc2-unity-native/LEVEL1-READINESS.md).
 
+The first Level 2 seam is now frozen before behavior work begins. The
+[`level2-conformance/LEVEL2-PROFILE-CONTRACT.md`](level2-conformance/LEVEL2-PROFILE-CONTRACT.md)
+requires external level 2 to select internal index 1, the Day map, offline
+local player 0 plus AI opponent 1, English owner data, and the existing
+320x200/screen-size-0/non-stereo desktop profile. Run the cheap shared guard
+before each Level 2 slice:
+
+```bash
+python3 tools/verify_level2_profile.py --json
+```
+
+It checks immutable Level 1 identities separately from regenerable current
+matrix/render/Rust checks. It does not rerun or rewrite the long Unity/PLAN29
+qualification.
+
 ### Historical progression
 
 The following narrative records how the bounded slice was built. Intermediate

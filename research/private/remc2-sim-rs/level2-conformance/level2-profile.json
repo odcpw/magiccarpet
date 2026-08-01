@@ -1,0 +1,136 @@
+{
+  "schema": "mc2-level2-profile-contract/v1",
+  "specification": {
+    "remc2_commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+    "source_read_policy": "Read remc2 only with git show <commit>:<path>; the upstream worktree is protected and may be dirty.",
+    "source_anchors": [
+      {
+        "path": "remc2/engine/MapType.h",
+        "symbol": "MapType_t::Day",
+        "claim": "The Day map type has the serialized value 0."
+      },
+      {
+        "path": "remc2/engine/Level.cpp",
+        "symbol": "LoadLevel_555D0",
+        "claim": "The loader receives the external level number and resolves the stored internal level index."
+      },
+      {
+        "path": "remc2/engine/EventsFunctions.cpp",
+        "symbol": "sub_47FC0_load_screen",
+        "claim": "The fixed VGA path clears and blits the 320x200 logical desktop when the selector bit is set."
+      }
+    ]
+  },
+  "profile": {
+    "external_level": 2,
+    "internal_level_index": 1,
+    "map_type": {
+      "name": "Day",
+      "serialized_value": 0
+    },
+    "campaign": "offline",
+    "owner_data": {
+      "language": "English",
+      "required": true
+    },
+    "players": {
+      "local_player_indices": [0],
+      "ai_player_indices": [1],
+      "total_players": 2,
+      "network_multiplayer": false
+    },
+    "desktop": {
+      "width": 320,
+      "height": 200,
+      "screen_size": 0,
+      "stereo": false,
+      "profile_status": "fixed_until_a_later_matrix_explicitly_broadens_it"
+    }
+  },
+  "scope": {
+    "inclusions": [
+      "The Level 2 external-to-internal selector is explicit: external level 2 selects internal index 1.",
+      "The selected terrain is the pinned remc2 Day map type (serialized value 0).",
+      "The run is an offline campaign with local player 0 and AI opponent 1.",
+      "The owner-data language is English and owner data is required; host defaults cannot silently substitute another package.",
+      "The existing fixed desktop presentation profile is 320x200, screen-size 0, non-stereo, until a later matrix explicitly broadens it.",
+      "Level 1 remains a sealed prerequisite and every shared Level 2 change must run the fast guard."
+    ],
+    "nonclaims": [
+      "This contract does not claim any Level 2 gameplay, asset, audio, AI, objective, or presentation row is implemented.",
+      "Night or Cave maps, external levels other than 2, internal indices other than 1, and any alternate map selector are outside this profile.",
+      "Network multiplayer, remote players, more than one AI opponent, or a different player ordering are outside this profile.",
+      "Alternate resolutions, stereo output, active-DAC colour, widescreen presentation, and a modern overlay are outside this profile.",
+      "Non-English owner data, missing owner data, generated fixtures, and host-inferred defaults are outside this profile.",
+      "The long Unity/PLAN29 qualification is a milestone gate, not a per-slice guard requirement."
+    ],
+    "broadening_requires": [
+      "A later matrix row or explicit profile revision with source evidence at the pinned commit.",
+      "A reviewed change to this contract and its mutation-negative guard tests.",
+      "A new owner-data and presentation receipt; no Level 1 receipt may be regenerated in place."
+    ]
+  },
+  "sealed_level1": {
+    "historical_receipts": {
+      "immutable": true,
+      "description": "These hashes identify accepted Level 1 history. The guard checks them; it never regenerates or rewrites them.",
+      "matrix": {
+        "path": "level1-conformance/level1-conformance-matrix.json",
+        "sha256": "2469237003fb977a447d0ef2496c03cf598cb55f3eae77b7d094f9fa258509c7",
+        "rows": 182,
+        "exact_rows": 182,
+        "structured_exclusions": 29
+      },
+      "closure_contract": {
+        "path": "level1-conformance/plan29-closure-contract.json",
+        "file_sha256": "e8b2f760f24e8de2003e856027420fce4609c47c481d7ad5cf67b51f668f3f0a",
+        "declared_contract_sha256": "0d59fdb5f43ef794308bc45614a6b2edbffa46f23e29286695406838185b08a7"
+      },
+      "qualification_policy": {
+        "path": "level1-conformance/plan29-final-qualification-policy.json",
+        "file_sha256": "9f35b769521717a3bc8fbe86d8ff123e522ee34a95267b3fc28a31d88c8114ca",
+        "declared_policy_sha256": "2bc1f70cc9c0fb02c3fe0129575b8eedfd5e5799ecb3c05e89dff4b7dde1a91d",
+        "required_clean_runs": 1,
+        "run_b_required": false,
+        "run_b_permitted": false
+      },
+      "cache_identity": {
+        "path": "../generated/level1-unity-asset-cache-plan29-final/conformance-identity.json",
+        "file_sha256": "49f29fb7f61296893d94824046aa3397a81d79cba094e8b9a9a5d1bda3fad824",
+        "declared_seal_sha256": "988058c2d08a3ebf7eed089de0e4ecd5a7739e7278689462d67a65856854342b"
+      },
+      "owner_package": {
+        "path": "../generated/level1-export-m/manifest.json",
+        "file_sha256": "169b4bda478df3c6d708041f911bf37a0b5779695b3677d500bb737ba8846c53"
+      },
+      "asset_closure": {
+        "path": "../generated/level1-asset-closure.json",
+        "file_sha256": "87c246b995714714baf20ec98c92657eb4349ded7c7ed462aa507eab4bea111a",
+        "declared_closure_sha256": "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719"
+      },
+      "abi": {
+        "header_path": "crates/sim-capi/include/mc_sim.h",
+        "header_sha256": "f822e3d343517469775ae53546ec827bd392ad37f866aec3d48bddc0504a3d6f",
+        "event_code_range": {"first": 0, "last": 38},
+        "layout_tests": [
+          "layouts_and_versions_are_stable",
+          "c_header_compiles_and_locks_the_rust_layout",
+          "presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed"
+        ]
+      }
+    },
+    "current_checks": {
+      "regenerable": true,
+      "description": "Current source and production-path tests may be rerun and must pass; their outputs are not promoted to historical receipts by this guard.",
+      "commands": [
+        "python3 tools/validate_level1_matrix.py --require-closed --json",
+        "python3 tools/render_level1_matrix.py --check",
+        "cargo test --workspace --locked complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+        "cargo test --workspace --locked exact_level1_actor_manifest_is_decoded",
+        "cargo test --workspace --locked layouts_and_versions_are_stable",
+        "cargo test --workspace --locked c_header_compiles_and_locks_the_rust_layout",
+        "cargo test --workspace --locked presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed"
+      ]
+    }
+  }
+}
