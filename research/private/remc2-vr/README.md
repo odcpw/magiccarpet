@@ -22,6 +22,11 @@ controller pair, Unity editor resolution, and a real player smoke build are
 still required before the PC profile becomes admitted. Quest 3 is next, and
 Quest 2 remains an optional measured compatibility profile.
 
+GFX-D has a fuller canonical implementation in the clean
+`codex/gfx-spec@823e4b27`; the current `main` checkout also contains an earlier
+provisional lab scaffold on the same path. Integration must choose one tree;
+the VR gate does not silently merge them.
+
 The Exact project is checked by a negative scan: no OpenXR/XR Plug-in
 Management/XR Origin package or object may enter
 `research/private/remc2-unity-native`. Built-in Unity module names such as

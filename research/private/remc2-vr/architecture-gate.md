@@ -25,12 +25,19 @@ The first input slice is deliberately conservative:
 ## Handoff and ownership
 
 GFX-A is pinned at `35aa572d79e971dd4623993172246a5c035e1e9e`, GFX-B at
-`1bd6af35076e6e209a5a6b1bb82959cee6b4493d`, and the isolated lab scaffold is
-handed off at `696ef02d026056f8499f7cf8da6535e7d4d33ffd`. The lab lives at
+`1bd6af35076e6e209a5a6b1bb82959cee6b4493d`, and the canonical isolated lab
+scaffold is handed off at `823e4b27d0259dc8f4d13900be951bcc9468f858` on the
+clean `codex/gfx-spec` worktree (currently advanced to `be585e79` by later
+GFX-E work). The lab lives at
 `research/private/remc2-unity-presentation-lab`; it has separate packages,
 settings, scenes and cache/build roots. The handoff currently has static
 guard evidence, while the Unity editor/player smoke remains pending because
 neither `t14` nor `legion` currently has the pinned Unity editor installed.
+
+The current `main` checkout also contains the smaller provisional lab commits
+`b1dfcbe` and `696ef02` on that same path. They are recorded so integration can
+be recovered, but they must not be combined with the canonical GFX-D branch
+implementation; the coordinator should select one lab tree before merging.
 
 The Exact project is frozen at
 `research/private/remc2-unity-native`. VR work cannot edit it, its qualification

@@ -40,9 +40,12 @@
     "mode_contract_commit": "1bd6af35076e6e209a5a6b1bb82959cee6b4493d",
     "presentation_lab": {
       "project_path": "research/private/remc2-unity-presentation-lab",
-      "handoff_commit": "696ef02d026056f8499f7cf8da6535e7d4d33ffd",
+      "handoff_commit": "823e4b27d0259dc8f4d13900be951bcc9468f858",
       "static_guard": "python3 research/private/remc2-unity-presentation-lab/tools/verify_presentation_lab.py --json",
       "runtime_build_status": "pending-unity-editor",
+      "canonical_branch": "codex/gfx-spec",
+      "canonical_branch_head": "be585e79f04e00edaf18ff6a2c6eb29a3c0d8bba",
+      "local_duplicate_warning": "main contains provisional lab commits b1dfcbe and 696ef02; integrate one canonical GFX-D implementation only",
       "owner_payload_in_tree": false
     },
     "rollback": {
@@ -70,8 +73,8 @@
       "com.unity.test-framework": "1.6.0"
     },
     "resolution": {
-      "source": "presentation-lab Packages/packages-lock.json",
-      "status": "static-lock-pending-editor-resolution",
+      "source": "GFX-D URP lock plus the VR-B XR extension lock",
+      "status": "GFX-D-URP-resolved; VR-B-XR-extension-pending",
       "required_before_qualification": true,
       "rule": "Unity-generated resolved metadata wins over planning pins; update this record and the lock together"
     },
