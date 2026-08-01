@@ -20492,8 +20492,8 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
                 capi.mission.source_arena_hash_v1(),
                 "resident effect source-arena hashes diverged"
             );
-            assert_eq!(direct.mission.dynamic_resident_behavior_gap_mask(), 0);
-            assert_eq!(capi.mission.dynamic_resident_behavior_gap_mask(), 0);
+            assert_eq!(direct.mission.remaining_resident_behavior_mask(), 0);
+            assert_eq!(capi.mission.remaining_resident_behavior_mask(), 0);
             Ok(())
         })
         .expect("registered C API session");

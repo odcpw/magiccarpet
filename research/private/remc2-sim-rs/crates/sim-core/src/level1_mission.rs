@@ -7979,6 +7979,7 @@ impl Level1MissionState {
             .is_some()
     }
 
+    #[deprecated(note = "use remaining_resident_behavior_mask")]
     #[must_use]
     pub const fn dynamic_resident_behavior_gap_mask(&self) -> u8 {
         self.remaining_resident_behavior_mask()
@@ -24457,7 +24458,7 @@ mod tests {
                 )
             );
         }
-        assert_eq!(mission.dynamic_resident_behavior_gap_mask(), 0);
+        assert_eq!(mission.remaining_resident_behavior_mask(), 0);
         mission.observed_resident_behavior_mask = 0x05;
         mission.begin_source_turn_at(player.position);
         let views = mission.source_entity_views(&player, &[]);
@@ -24468,7 +24469,7 @@ mod tests {
             mission.apply_local_source_effect(effect).unwrap();
         }
         assert_eq!(
-            mission.dynamic_resident_behavior_gap_mask(),
+            mission.remaining_resident_behavior_mask(),
             0x08,
             "Builder dispatch clears only bit 0x02 and preserves the independently owned Trader bit"
         );
@@ -24478,7 +24479,7 @@ mod tests {
             &FlatWorld, &player, &views, 503, false, false, None, 0, 0,
         );
         assert_eq!(
-            mission.dynamic_resident_behavior_gap_mask(),
+            mission.remaining_resident_behavior_mask(),
             0,
             "production Trader dispatch closes the final resident gap bit 0x08"
         );
@@ -24580,7 +24581,7 @@ mod tests {
                     trader.maximum_speed
                 }
             );
-            assert_eq!(case.dynamic_resident_behavior_gap_mask(), 0);
+            assert_eq!(case.remaining_resident_behavior_mask(), 0);
         }
 
         // Action 113 consumes the attacker word but preserves the damage
@@ -27036,7 +27037,7 @@ mod tests {
                 "house-created Villager action {action}"
             );
             assert_eq!(
-                case.dynamic_resident_behavior_gap_mask(),
+                case.remaining_resident_behavior_mask(),
                 0x0b,
                 "only the Villager bit clears in an isolated band dispatch"
             );
@@ -27217,7 +27218,7 @@ mod tests {
             higher.resident_projection_is_linked(600),
             "a newly allocated higher slot dispatches and projects this turn"
         );
-        assert_eq!(higher.dynamic_resident_behavior_gap_mask(), 0x0e);
+        assert_eq!(higher.remaining_resident_behavior_mask(), 0x0e);
         higher
             .apply_local_source_effect(Level1SourceEffect::DisableSourceSlot {
                 source_entity_index: 600,
@@ -27262,7 +27263,7 @@ mod tests {
         }
         assert!(!lower.resident_projection_is_linked(100));
         assert_eq!(
-            lower.dynamic_resident_behavior_gap_mask(),
+            lower.remaining_resident_behavior_mask(),
             0x0f,
             "a newly allocated lower slot defers to the next turn"
         );
@@ -27277,7 +27278,7 @@ mod tests {
             lower.apply_local_source_effect(effect).unwrap();
         }
         assert!(lower.resident_projection_is_linked(100));
-        assert_eq!(lower.dynamic_resident_behavior_gap_mask(), 0x0e);
+        assert_eq!(lower.remaining_resident_behavior_mask(), 0x0e);
 
         // Action 33 gates on the attacker word, retains the damage dword, and
         // consumes the armed mailbox before any movement or wander RNG.
@@ -38170,7 +38171,7 @@ mod tests {
         dynamic.begin_source_turn();
         assert!(dynamic.archers_present_at_turn_start);
         dynamic.observed_resident_behavior_mask = 0x01;
-        assert_eq!(dynamic.dynamic_resident_behavior_gap_mask(), 0x0e);
+        assert_eq!(dynamic.remaining_resident_behavior_mask(), 0x0e);
 
         // The final Archer qualified when UpdateEntities rebuilt the list.
         // Killing it before the lower row-109 switch dispatch cannot recensus
@@ -38202,7 +38203,7 @@ mod tests {
                 .all(|group| *group != 11)
         );
         assert_eq!(
-            dynamic.dynamic_resident_behavior_gap_mask(),
+            dynamic.remaining_resident_behavior_mask(),
             0x0e,
             "PLAN-10 must preserve the Builder, Villager, and Trader bits"
         );
@@ -38224,7 +38225,7 @@ mod tests {
         dynamic.step_switch_slot(&FlightState::default(), dynamic_switch_slot);
         assert_eq!(sound_41_count(&dynamic), 1);
         assert_eq!(dynamic.stage_group_broadcasts.last(), Some(&11));
-        assert_eq!(dynamic.dynamic_resident_behavior_gap_mask(), 0x0e);
+        assert_eq!(dynamic.remaining_resident_behavior_mask(), 0x0e);
         assert!(
             dynamic.dynamic_residents[usize::from(dynamic_archer_slot)]
                 .unwrap()
@@ -38244,10 +38245,10 @@ mod tests {
                 .unwrap()
                 .active
         );
-        assert_eq!(dynamic.dynamic_resident_behavior_gap_mask(), 0x0e);
+        assert_eq!(dynamic.remaining_resident_behavior_mask(), 0x0e);
         dynamic.begin_source_turn();
         assert!(dynamic.dynamic_residents[usize::from(dynamic_archer_slot)].is_none());
-        assert_eq!(dynamic.dynamic_resident_behavior_gap_mask(), 0x0e);
+        assert_eq!(dynamic.remaining_resident_behavior_mask(), 0x0e);
 
         // With the complete model-4 list empty, the exact sample sequence is
         // 0 -> 16, fifteen decrements to 1, then release on sample 17.
