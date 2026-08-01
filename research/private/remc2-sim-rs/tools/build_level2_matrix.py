@@ -179,7 +179,7 @@ def row_for(plan_id: str, title: str, family: str) -> dict[str, Any]:
             "kind": "python-test",
             "file": PY_EVIDENCE,
             "test": PY_TEST,
-            "command": "cd research/private/remc2-sim-rs && python3 -m unittest level2-conformance.test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
+            "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
             "proves": "production denominator builders and discriminating joins, not gameplay closure",
         }],
         "negative_coverage_required": ["tampered denominator ID", "duplicate or dropped ID", "wrong pinned source anchor", "wrong branch/order/value"],
@@ -239,6 +239,10 @@ def build() -> dict[str, Any]:
     for row in authored:
         by_state[closure[row["index"]]["closure_state"]].append(row["id"])
     add(by_plan["mc-uk2k"]["coverage"], "authored", by_state["reachable"] + by_state["conditionally_reachable"])
+    by_plan["mc-uk2k"]["reachability"] = {
+        "status": "conditional",
+        "chain": "Level 2 profile -> GenerateEvents_49290 -> group-zero root -> producer groups; dormant authored rows require their pinned conditional switch",
+    }
     exclusions.append(exclusion("EXC-L2-AUTHORED-NOCALL", "755 deliberate-no-call authored records", "dispatcher requires a nonzero type and the pinned preprocessor leaves these records null", {"authored": [r["id"] for r in authored if closure[r["index"]]["closure_state"] == "deliberate_no_call"]}, "authored"))
     exclusions.append(exclusion("EXC-L2-AUTHORED-MECHANICAL", "87 mechanically excluded authored records", "pinned activation closure proves terrain auxiliary and unrooted group-zero records cannot reach the selected mission", {"authored": [r["id"] for r in authored if closure[r["index"]]["closure_state"] == "mechanically_excluded"]}, "authored"))
 
@@ -261,6 +265,10 @@ def build() -> dict[str, Any]:
     exclusions.append(exclusion("EXC-L2-DISPATCH-NONROOTED", "787 non-rooted/disabled/null dispatch slots", "dispatch ledger partitions every non-live slot as null sentinel, disabled, or mechanically unreachable under Level 2", {"dispatch": excluded}, "dispatch"))
 
     add(by_plan["mc-jc4w"]["coverage"], "tuples", [r["id"] for r in d["tuple_denominator"]["rows"]])
+    by_plan["mc-jc4w"]["reachability"] = {
+        "status": "conditional",
+        "chain": "Level 2 profile -> authored/reset join -> conditional event/reset relation; unresolved authored events remain explicitly open",
+    }
     add(by_plan["mc-e7oi"]["coverage"], "ai_helpers", [r["id"] for r in d["ai_helper_ledger"]["rows"]])
     rng = d["rng"]["rows"]
     add(by_plan["mc-yawx"]["coverage"], "rng", [r["id"] for r in rng if r["classification"] == "reachable_level2"])
@@ -327,7 +335,7 @@ def build() -> dict[str, Any]:
             "implementation_under_assessment": ["research/private/remc2-sim-rs", "research/private/remc2-unity-native", "research/private/remc2-unity-asset-cache"],
             "test_inventory": {"command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked -- --list", "count": cargo_count()},
             "census_method": "independent join of L2-04 authored/reset census, L2-05 rooted activation closure, and L2-06 dispatch/RNG/audio/presentation ledger",
-            "totals": {"rows": len(rows), "by_classification": dict(counts), "by_subsystem": {k: dict(v) for k, v in by_subsystem.items()}, "reachable_rows": len(rows), "exclusions": len(exclusions), "plan_items": len(plans)},
+            "totals": {"rows": len(rows), "by_classification": dict(counts), "by_subsystem": {k: dict(v) for k, v in by_subsystem.items()}, "reachable_rows": sum(r["reachability"]["status"] == "reachable" for r in rows), "exclusions": len(exclusions), "plan_items": len(plans)},
             "denominators": {"authored": 1200, "reset": 1000, "activation_groups": 33, "producer_edges": 31, "objectives": 5, "dispatch": 845, "tuples": 373, "ai_helpers": 79, "rng": 494, "audio": 119, "cache": 1008, "presentation_refs": 1361},
         },
         "authored_census": {"record_count": 1200, "record_bytes": 20, "table_offset": c["authored"]["table_offset"], "nonzero_indices": authored_indices, "records": {str(i): {"kind": authored[i]["kind"], "subtype": authored[i]["subtype"], "activation_group": closure[i]["activation_group"]} for i in authored_indices}, "row_coverage": row_coverage, "partition_proof": {"unique": True, "disjoint": True, "union_equals_nonzero_indices": True, "covered": len(authored_indices), "declared": len(authored_indices)}},
