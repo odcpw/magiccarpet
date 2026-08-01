@@ -161,11 +161,16 @@ pub struct VoxelStructure {
     pub cell_bounds_min: CellCoord,
     pub cell_bounds_max: CellCoord,
     pub anchor_cell: CellCoord,
+    /// Anchor world position in micrometres, retained for fixed-point impact
+    /// transforms and never used as gameplay position state.
+    pub anchor_world_um: [i64; 3],
     /// Cell size in micrometres (rounded from the positive contract value).
     pub cell_size_um: u64,
     pub cells: Vec<VoxelCell>,
     pub materials: Vec<VoxelMaterial>,
     pub foundation_cells: Vec<CellCoord>,
+    /// Explicit window/door/breach coordinates remain empty detail cells.
+    pub opening_cells: Vec<CellCoord>,
     pub semantic_sha256: String,
     pub schema_sha256: String,
     pub observed_budgets: BTreeMap<String, f64>,
@@ -390,11 +395,13 @@ fn validate_value(
         required(anchor, "cell_coord", "manifest.coordinate_system.anchor")?,
         "manifest.coordinate_system.anchor.cell_coord",
     )?;
-    let _anchor_world = vec3(
+    let anchor_world = vec3(
         required(anchor, "world_m", "manifest.coordinate_system.anchor")?,
         "manifest.coordinate_system.anchor.world_m",
         false,
     )?;
+    let anchor_world_um =
+        fixed_signed_vec3(anchor_world, "manifest.coordinate_system.anchor.world_m")?;
 
     let authority = object(
         required(root, "authority", "manifest")?,
@@ -1409,6 +1416,8 @@ fn validate_value(
     )?;
     let mut foundation_cells: Vec<_> = foundation_coords.into_iter().collect();
     foundation_cells.sort_unstable();
+    let mut opening_cells: Vec<_> = topology_openings.into_iter().collect();
+    opening_cells.sort_unstable();
     Ok(VoxelStructure {
         manifest_id,
         structure_id,
@@ -1418,10 +1427,12 @@ fn validate_value(
         cell_bounds_min,
         cell_bounds_max,
         anchor_cell,
+        anchor_world_um,
         cell_size_um,
         cells,
         materials,
         foundation_cells,
+        opening_cells,
         semantic_sha256: semantic_digest,
         schema_sha256: hash_values["schema_sha256"].clone(),
         observed_budgets,
@@ -1847,6 +1858,33 @@ fn fixed_unsigned(value: f64, scale: f64, path: &str) -> Result<u64, VoxelManife
         ));
     }
     Ok(rounded as u64)
+}
+
+fn fixed_signed_vec3(value: [f64; 3], path: &str) -> Result<[i64; 3], VoxelManifestError> {
+    value
+        .into_iter()
+        .enumerate()
+        .map(|(index, component)| {
+            let scaled = component * 1_000_000.0;
+            if !scaled.is_finite() || scaled < i64::MIN as f64 || scaled > i64::MAX as f64 {
+                return Err(VoxelManifestError::expect(
+                    VoxelManifestErrorKind::Contract,
+                    format!("{path}[{index}]"),
+                    "fixed-point coordinate overflows",
+                ));
+            }
+            Ok(scaled.round() as i64)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .and_then(|components| {
+            components.try_into().map_err(|_| {
+                VoxelManifestError::expect(
+                    VoxelManifestErrorKind::Contract,
+                    path,
+                    "fixed-point coordinate must contain three components",
+                )
+            })
+        })
 }
 
 fn cap_as_usize(key: &str) -> usize {

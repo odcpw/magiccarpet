@@ -76,6 +76,9 @@ pub struct VoxelSourceEvent {
     /// Optional authoritative impact position in micrometres in source world
     /// space.  It is metadata for later damage mapping, not a gameplay query.
     pub impact_position_um: Option<[i64; 3]>,
+    /// Optional attacker position used only for deterministic facade fallback
+    /// when no impact position was emitted by the source.
+    pub attacker_position_um: Option<[i64; 3]>,
 }
 
 impl VoxelSourceEvent {
@@ -101,6 +104,7 @@ impl VoxelSourceEvent {
             source_action: 0,
             source_active: true,
             impact_position_um: None,
+            attacker_position_um: None,
         }
     }
 
@@ -196,6 +200,12 @@ impl VoxelSourceEvent {
         self.source_action = source_action;
         self.source_active = source_active;
         self.impact_position_um = impact_position_um;
+        self
+    }
+
+    #[must_use]
+    pub fn with_attacker_position_um(mut self, attacker_position_um: Option<[i64; 3]>) -> Self {
+        self.attacker_position_um = attacker_position_um;
         self
     }
 }
@@ -303,6 +313,7 @@ pub struct VoxelStructureState {
     source_action: u8,
     source_active: bool,
     impact_position_um: Option<[i64; 3]>,
+    damage_hit_count: u32,
 }
 
 impl VoxelStructureState {
@@ -364,6 +375,7 @@ impl VoxelStructureState {
             source_action: 0,
             source_active: true,
             impact_position_um: None,
+            damage_hit_count: 0,
         })
     }
 
@@ -463,6 +475,11 @@ impl VoxelStructureState {
     #[must_use]
     pub const fn impact_position_um(&self) -> Option<[i64; 3]> {
         self.impact_position_um
+    }
+
+    #[must_use]
+    pub const fn damage_hit_count(&self) -> u32 {
+        self.damage_hit_count
     }
 
     /// Advance the detail clock without inventing a source event cursor.
@@ -620,6 +637,7 @@ impl VoxelStructureState {
         self.impact_position_um = event.impact_position_um;
         match event.kind {
             VoxelSourceEventKind::Damaged => {
+                self.damage_hit_count = self.damage_hit_count.saturating_add(1);
                 for id in &event.target_cell_ids {
                     let index = self.cell_indexes[id];
                     let cell = &mut self.cells[index];
