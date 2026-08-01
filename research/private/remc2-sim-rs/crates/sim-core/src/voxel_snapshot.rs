@@ -34,6 +34,10 @@ pub const VOXEL_SNAPSHOT_VERSION: u16 = 1;
 pub const MAX_SNAPSHOT_CELLS: usize = 4_096;
 /// Maximum derived opening coordinates retained by one snapshot.
 pub const MAX_REVEALED_OPENINGS: usize = 256;
+/// Maximum canonical sidecar payload size.  This mirrors the frozen private
+/// `sidecar_snapshot_bytes` budget and is checked before a snapshot or delta
+/// can cross the later ABI boundary.
+pub const MAX_SNAPSHOT_BYTES: usize = 524_288;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VoxelSnapshotHeader {
@@ -270,7 +274,7 @@ impl VoxelSnapshot {
         structure: &VoxelStructure,
         state: &mut VoxelStructureState,
     ) -> Result<Self, VoxelSnapshotError> {
-        previous.validate_header_only(structure)?;
+        previous.validate_for_reset(structure)?;
         if structure.generation <= previous.header.generation {
             return Err(VoxelSnapshotError::new(
                 VoxelSnapshotErrorKind::Generation,
@@ -281,7 +285,7 @@ impl VoxelSnapshot {
         Self::capture(structure, state)
     }
 
-    fn validate_header_only(&self, structure: &VoxelStructure) -> Result<(), VoxelSnapshotError> {
+    fn validate_for_reset(&self, structure: &VoxelStructure) -> Result<(), VoxelSnapshotError> {
         validate_header_static(&self.header, structure)?;
         if self.header.generation >= structure.generation {
             return Err(VoxelSnapshotError::new(
@@ -289,15 +293,49 @@ impl VoxelSnapshot {
                 "previous snapshot generation is not older than reset target",
             ));
         }
+        self.validate_sparse_fields(structure)?;
+        let encoded_size = snapshot_encoded_size(self)?;
+        if encoded_size > MAX_SNAPSHOT_BYTES {
+            return Err(VoxelSnapshotError::new(
+                VoxelSnapshotErrorKind::Cap,
+                format!(
+                    "canonical previous snapshot size {encoded_size} exceeds cap {MAX_SNAPSHOT_BYTES}"
+                ),
+            ));
+        }
+        if self.snapshot_hash_sha256 != snapshot_hash_sha256(self) {
+            return Err(VoxelSnapshotError::new(
+                VoxelSnapshotErrorKind::Hash,
+                "previous snapshot hash does not match canonical fields",
+            ));
+        }
         Ok(())
     }
 
     fn validate_sparse(&self, structure: &VoxelStructure) -> Result<(), VoxelSnapshotError> {
         validate_header_against_structure(&self.header, structure)?;
+        self.validate_sparse_fields(structure)?;
+        let encoded_size = snapshot_encoded_size(self)?;
+        if encoded_size > MAX_SNAPSHOT_BYTES {
+            return Err(VoxelSnapshotError::new(
+                VoxelSnapshotErrorKind::Cap,
+                format!("canonical snapshot size {encoded_size} exceeds cap {MAX_SNAPSHOT_BYTES}"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_sparse_fields(&self, structure: &VoxelStructure) -> Result<(), VoxelSnapshotError> {
         validate_changed_cells(structure, &self.changed_cells, false)?;
         validate_missing_ids(structure, &self.changed_cells, &self.missing_cell_ids, true)?;
         validate_revealed_openings(structure, &self.revealed_opening_cells)?;
         validate_component_report(structure, &self.components)?;
+        if self.components.generation != self.header.generation {
+            return Err(VoxelSnapshotError::new(
+                VoxelSnapshotErrorKind::Corrupt,
+                "component report generation does not match snapshot header",
+            ));
+        }
         if self.changed_cells.len() > MAX_SNAPSHOT_CELLS
             || self.missing_cell_ids.len() > MAX_SNAPSHOT_CELLS
         {
@@ -455,6 +493,13 @@ impl VoxelSparseDelta {
         )?;
         validate_revealed_openings(structure, &self.revealed_opening_cells)?;
         validate_component_report(structure, &self.components)?;
+        let encoded_size = delta_encoded_size(self)?;
+        if encoded_size > MAX_SNAPSHOT_BYTES {
+            return Err(VoxelSnapshotError::new(
+                VoxelSnapshotErrorKind::Cap,
+                format!("canonical delta size {encoded_size} exceeds cap {MAX_SNAPSHOT_BYTES}"),
+            ));
+        }
         if !is_sha256(&self.from_snapshot_hash_sha256)
             || !is_sha256(&self.to_snapshot_hash_sha256)
             || !is_sha256(&self.delta_hash_sha256)
@@ -750,7 +795,6 @@ fn validate_component_report(
 ) -> Result<(), VoxelSnapshotError> {
     if report.source_entity_id != structure.source_entity_id
         || report.profile_id != structure.structure_id
-        || report.generation != structure.generation
         || report.components.len() > super::voxel_collapse::MAX_MAJOR_CLUSTERS
         || report.component_count < report.components.len()
         || report.omitted_component_count
@@ -906,6 +950,183 @@ fn is_sha256(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+#[derive(Default)]
+struct SizeCounter {
+    bytes: usize,
+}
+
+impl SizeCounter {
+    fn add(&mut self, amount: usize) -> Result<(), VoxelSnapshotError> {
+        self.bytes = self.bytes.checked_add(amount).ok_or_else(|| {
+            VoxelSnapshotError::new(
+                VoxelSnapshotErrorKind::Cap,
+                "canonical sidecar size overflows usize",
+            )
+        })?;
+        Ok(())
+    }
+
+    fn string(&mut self, value: &str) -> Result<(), VoxelSnapshotError> {
+        self.add(8)?;
+        self.add(value.len())
+    }
+
+    fn count(&mut self, count: usize) -> Result<(), VoxelSnapshotError> {
+        let _ = u64::try_from(count).map_err(|_| {
+            VoxelSnapshotError::new(
+                VoxelSnapshotErrorKind::Cap,
+                "canonical sidecar count does not fit u64",
+            )
+        })?;
+        self.add(8)
+    }
+
+    fn cursor(&mut self, cursor: Option<VoxelSourceCursor>) -> Result<(), VoxelSnapshotError> {
+        self.add(1)?;
+        if cursor.is_some() {
+            self.add(8 + 4)?;
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> usize {
+        self.bytes
+    }
+}
+
+fn snapshot_encoded_size(snapshot: &VoxelSnapshot) -> Result<usize, VoxelSnapshotError> {
+    let mut size = SizeCounter::default();
+    size_header(&mut size, &snapshot.header)?;
+    size_cells(&mut size, &snapshot.changed_cells)?;
+    size_strings(&mut size, &snapshot.missing_cell_ids)?;
+    size_coords(&mut size, &snapshot.revealed_opening_cells)?;
+    size_lifecycle(&mut size, &snapshot.lifecycle)?;
+    size_component_report(&mut size, &snapshot.components)?;
+    Ok(size.finish())
+}
+
+fn delta_encoded_size(delta: &VoxelSparseDelta) -> Result<usize, VoxelSnapshotError> {
+    let mut size = SizeCounter::default();
+    size.add(2)?;
+    size.string(&delta.from_snapshot_hash_sha256)?;
+    size.string(&delta.to_snapshot_hash_sha256)?;
+    size.add(8)?;
+    size.cursor(delta.from_cursor)?;
+    size_header(&mut size, &delta.target_header)?;
+    size_cells(&mut size, &delta.changed_cells)?;
+    size_strings(&mut size, &delta.missing_cell_ids)?;
+    size_coords(&mut size, &delta.revealed_opening_cells)?;
+    size_lifecycle(&mut size, &delta.lifecycle)?;
+    size_component_report(&mut size, &delta.components)?;
+    Ok(size.finish())
+}
+
+fn size_header(
+    size: &mut SizeCounter,
+    header: &VoxelSnapshotHeader,
+) -> Result<(), VoxelSnapshotError> {
+    size.add(2 + 4 + 8)?;
+    size.cursor(header.source_cursor)?;
+    for value in [
+        &header.source_entity_id,
+        &header.profile_id,
+        &header.manifest_id,
+        &header.manifest_sha256,
+        &header.recipe_sha256,
+        &header.schema_sha256,
+    ] {
+        size.string(value)?;
+    }
+    Ok(())
+}
+
+fn size_cells(
+    size: &mut SizeCounter,
+    cells: &[VoxelSnapshotCell],
+) -> Result<(), VoxelSnapshotError> {
+    size.count(cells.len())?;
+    for cell in cells {
+        size.string(&cell.id)?;
+        size.add(3 * 4)?;
+        size.string(&cell.material_id)?;
+        size.add(4 + 1)?;
+    }
+    Ok(())
+}
+
+fn size_strings(size: &mut SizeCounter, values: &[String]) -> Result<(), VoxelSnapshotError> {
+    size.count(values.len())?;
+    for value in values {
+        size.string(value)?;
+    }
+    Ok(())
+}
+
+fn size_coords(size: &mut SizeCounter, values: &[CellCoord]) -> Result<(), VoxelSnapshotError> {
+    size.count(values.len())?;
+    size.add(values.len().checked_mul(3 * 4).ok_or_else(|| {
+        VoxelSnapshotError::new(
+            VoxelSnapshotErrorKind::Cap,
+            "canonical coordinate size overflows usize",
+        )
+    })?)
+}
+
+fn size_lifecycle(
+    size: &mut SizeCounter,
+    lifecycle: &VoxelSnapshotLifecycle,
+) -> Result<(), VoxelSnapshotError> {
+    size.add(
+        1 + 1
+            + if lifecycle.possessed_owner.is_some() {
+                2
+            } else {
+                0
+            },
+    )?;
+    size.add(4 + 4 + 2)?;
+    size.add(
+        1 + if lifecycle.impact_position_um.is_some() {
+            3 * 8
+        } else {
+            0
+        },
+    )?;
+    size.add(4)
+}
+
+fn size_component_report(
+    size: &mut SizeCounter,
+    report: &VoxelCollapseReport,
+) -> Result<(), VoxelSnapshotError> {
+    size.string(&report.source_entity_id)?;
+    size.string(&report.profile_id)?;
+    size.add(4 + 8 + 8 + 2)?;
+    size.string(&report.report_hash_sha256)?;
+    size.count(report.components.len())?;
+    for component in &report.components {
+        size.string(&component.component_id)?;
+        size_strings(size, &component.cell_ids)?;
+        size_strings(size, &component.foundation_cell_ids)?;
+        size.add(
+            1 + if component.support_footprint_x_um.is_some() {
+                2 * 8
+            } else {
+                0
+            },
+        )?;
+        size.add(
+            1 + if component.support_footprint_z_um.is_some() {
+                2 * 8
+            } else {
+                0
+            },
+        )?;
+        size.add(16 + 3 * 8 + 3 * 16 + 1)?;
+    }
+    Ok(())
 }
 
 fn neighbors(coord: CellCoord) -> [Option<CellCoord>; 6] {
@@ -1097,7 +1318,10 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use super::*;
-    use crate::{voxel_state::VoxelSourceEvent, voxel_structure::load_manifest};
+    use crate::{
+        voxel_state::{VoxelSourceEvent, VoxelSourceEventKind},
+        voxel_structure::load_manifest,
+    };
 
     const SOURCE_ID: &str = "synthetic-house-0";
     const PROFILE_ID: &str = "synthetic-pointy-house";
@@ -1148,6 +1372,120 @@ mod tests {
             .unwrap();
         let snapshot = VoxelSnapshot::capture(structure, &state).unwrap();
         (state, snapshot)
+    }
+
+    fn replay_events(structure: &VoxelStructure) -> Vec<VoxelSourceEvent> {
+        let ids: Vec<_> = structure.cells.iter().map(|cell| cell.id.clone()).collect();
+        (0..10_000_u32)
+            .map(|index| {
+                let target = ids[(index as usize * 17) % ids.len()].clone();
+                let cursor = VoxelSourceCursor::new(u64::from(index) + 1, index);
+                let event = if index == 9_999 {
+                    VoxelSourceEvent::remove_footprint(
+                        SOURCE_ID,
+                        PROFILE_ID,
+                        structure.generation,
+                        cursor,
+                        Vec::new(),
+                    )
+                } else if index != 0 && index % 127 == 0 {
+                    VoxelSourceEvent::remove_footprint(
+                        SOURCE_ID,
+                        PROFILE_ID,
+                        structure.generation,
+                        cursor,
+                        vec![target],
+                    )
+                } else if index != 0 && index % 113 == 0 {
+                    VoxelSourceEvent::destruction_started(
+                        SOURCE_ID,
+                        PROFILE_ID,
+                        structure.generation,
+                        cursor,
+                        Vec::new(),
+                    )
+                } else if index != 0 && index % 97 == 0 {
+                    VoxelSourceEvent::possessed(
+                        SOURCE_ID,
+                        PROFILE_ID,
+                        structure.generation,
+                        cursor,
+                        u16::try_from(index % 11).unwrap(),
+                        index,
+                    )
+                } else {
+                    VoxelSourceEvent::damaged(
+                        SOURCE_ID,
+                        PROFILE_ID,
+                        structure.generation,
+                        cursor,
+                        vec![target],
+                        1_000 + (index % 17) * 137,
+                    )
+                };
+                event.with_source_metadata(
+                    20_000 - i32::try_from(index % 101).unwrap(),
+                    52 + u8::try_from(index % 4).unwrap(),
+                    index % 3 != 0,
+                    Some([
+                        -750_000 + i64::from(index % 3) * 750_000,
+                        250_000 + i64::from(index % 5) * 500_000,
+                        i64::from(index % 7) * 250_000,
+                    ]),
+                )
+            })
+            .collect()
+    }
+
+    fn event_stream_hash(events: &[VoxelSourceEvent]) -> String {
+        let mut hasher = Sha256::new();
+        for event in events {
+            hasher.update([match event.kind {
+                VoxelSourceEventKind::Damaged => 0,
+                VoxelSourceEventKind::DestructionStarted => 1,
+                VoxelSourceEventKind::RemoveFootprint => 2,
+                VoxelSourceEventKind::Possessed => 3,
+            }]);
+            hasher.update(event.generation.to_le_bytes());
+            hasher.update(event.cursor.tick.to_le_bytes());
+            hasher.update(event.cursor.sequence.to_le_bytes());
+            hasher.update(event.damage_milli.to_le_bytes());
+            hasher.update(event.owner_entity_index.to_le_bytes());
+            hasher.update(event.payload.to_le_bytes());
+            hasher.update(event.source_life.to_le_bytes());
+            hasher.update([event.source_action, u8::from(event.source_active)]);
+            for id in &event.target_cell_ids {
+                hasher.update((id.len() as u64).to_le_bytes());
+                hasher.update(id.as_bytes());
+            }
+            if let Some(position) = event.impact_position_um {
+                hasher.update([1]);
+                for axis in position {
+                    hasher.update(axis.to_le_bytes());
+                }
+            } else {
+                hasher.update([0]);
+            }
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
+    fn replay_stream(
+        structure: &VoxelStructure,
+        events: &[VoxelSourceEvent],
+    ) -> (VoxelStructureState, Vec<String>, VoxelSnapshot) {
+        let mut state = intact_state(structure);
+        let mut step_hashes = Vec::new();
+        for batch in events.chunks(crate::voxel_state::MAX_SOURCE_EVENTS_PER_BATCH) {
+            state.apply_source_events(batch).unwrap();
+            step_hashes.push(
+                VoxelSnapshot::capture(structure, &state)
+                    .unwrap()
+                    .snapshot_hash_sha256,
+            );
+        }
+        let final_snapshot = VoxelSnapshot::capture(structure, &state).unwrap();
+        (state, step_hashes, final_snapshot)
     }
 
     #[test]
@@ -1203,6 +1541,17 @@ mod tests {
         let previous = VoxelSnapshot::capture(&structure, &state).unwrap();
         let mut next = structure.clone();
         next.generation = structure.generation + 1;
+        let mut corrupt = previous.clone();
+        corrupt.changed_cells[0].health_milli = 100_000;
+        corrupt.changed_cells[0].present = true;
+        let mut corrupt_state = intact_state(&structure);
+        let corrupt_error =
+            VoxelSnapshot::reset_generation(&corrupt, &next, &mut corrupt_state).unwrap_err();
+        assert_eq!(
+            corrupt_error.kind,
+            VoxelSnapshotErrorKind::InvalidSparseState
+        );
+
         let reset = VoxelSnapshot::reset_generation(&previous, &next, &mut state).unwrap();
         assert_eq!(reset.header.generation, next.generation);
         assert_eq!(reset.header.tick, 0);
@@ -1281,7 +1630,7 @@ mod tests {
             VoxelSnapshotErrorKind::InvalidSparseState
         );
 
-        let mut unknown = snapshot;
+        let mut unknown = snapshot.clone();
         unknown.changed_cells = vec![VoxelSnapshotCell {
             id: "cell-unknown".to_owned(),
             coord: [0, 0, 0],
@@ -1292,6 +1641,15 @@ mod tests {
         assert_eq!(
             unknown.validate(&structure).unwrap_err().kind,
             VoxelSnapshotErrorKind::UnknownCell
+        );
+
+        let mut oversized = snapshot;
+        oversized.components.components[0]
+            .cell_ids
+            .push("oversized-component-member".repeat(MAX_SNAPSHOT_BYTES));
+        assert_eq!(
+            oversized.validate(&structure).unwrap_err().kind,
+            VoxelSnapshotErrorKind::Cap
         );
     }
 
@@ -1306,6 +1664,15 @@ mod tests {
         assert_eq!(
             corrupt_hash.validate(&structure).unwrap_err().kind,
             VoxelSnapshotErrorKind::Hash
+        );
+
+        let mut oversized = delta.clone();
+        oversized.components.components[0]
+            .cell_ids
+            .push("oversized-delta-member".repeat(MAX_SNAPSHOT_BYTES));
+        assert_eq!(
+            oversized.validate(&structure).unwrap_err().kind,
+            VoxelSnapshotErrorKind::Cap
         );
 
         let mut corrupt = delta.clone();
@@ -1339,12 +1706,65 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_replay_hash_repeats_for_ten_thousand_captures() {
+    fn deterministic_replay_hash_repeats_for_ten_thousand_ordered_events() {
         let structure = fixture_structure();
-        let (state, expected) = damaged_snapshot(&structure, 3, 10_000);
-        for _ in 0..10_000 {
-            let replayed = VoxelSnapshot::capture(&structure, &state).unwrap();
-            assert_eq!(replayed.snapshot_hash_sha256, expected.snapshot_hash_sha256);
+        let events = replay_events(&structure);
+        assert_eq!(events.len(), 10_000);
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == VoxelSourceEventKind::Damaged)
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == VoxelSourceEventKind::DestructionStarted)
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == VoxelSourceEventKind::RemoveFootprint)
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == VoxelSourceEventKind::Possessed)
+        );
+        assert_eq!(
+            event_stream_hash(&events),
+            event_stream_hash(&replay_events(&structure))
+        );
+
+        let (mut first_state, first_steps, first_final) = replay_stream(&structure, &events);
+        let (_second_state, second_steps, second_final) = replay_stream(&structure, &events);
+        let first_divergence = first_steps
+            .iter()
+            .zip(&second_steps)
+            .position(|(left, right)| left != right);
+        assert_eq!(
+            first_divergence, None,
+            "first divergent batch should be reported"
+        );
+        assert_eq!(first_steps, second_steps);
+        assert_eq!(first_final, second_final);
+
+        let mut next = structure.clone();
+        next.generation += 1;
+        first_state.reset_generation(&next).unwrap();
+        let next_events = replay_events(&next);
+        let (_fresh_next_state, expected_next_steps, expected_next_final) =
+            replay_stream(&next, &next_events);
+        let mut reset_steps = Vec::new();
+        for batch in next_events.chunks(crate::voxel_state::MAX_SOURCE_EVENTS_PER_BATCH) {
+            first_state.apply_source_events(batch).unwrap();
+            reset_steps.push(
+                VoxelSnapshot::capture(&next, &first_state)
+                    .unwrap()
+                    .snapshot_hash_sha256,
+            );
         }
+        let reset_final = VoxelSnapshot::capture(&next, &first_state).unwrap();
+        assert_eq!(reset_steps, expected_next_steps);
+        assert_eq!(reset_final, expected_next_final);
     }
 }

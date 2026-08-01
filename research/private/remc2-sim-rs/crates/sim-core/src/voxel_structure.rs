@@ -150,6 +150,24 @@ pub struct VoxelCell {
     pub render_group_id: String,
 }
 
+/// The declared structural relation for one support group.  `face_connected`
+/// documents the ordinary voxel adjacency that the collapse analyser already
+/// traverses; `brace` is an authored non-face connection and therefore must be
+/// consumed explicitly rather than inferred from coordinates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VoxelSupportKind {
+    Foundation,
+    FaceConnected,
+    Brace,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VoxelSupportGroup {
+    pub id: String,
+    pub kind: VoxelSupportKind,
+    pub cell_ids: Vec<String>,
+}
+
 /// A compact read-only summary of one validated private house.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VoxelStructure {
@@ -168,6 +186,9 @@ pub struct VoxelStructure {
     pub cell_size_um: u64,
     pub cells: Vec<VoxelCell>,
     pub materials: Vec<VoxelMaterial>,
+    /// Declared support groups, retained so structural authority can consume
+    /// authored brace links without reparsing the manifest document.
+    pub support_groups: Vec<VoxelSupportGroup>,
     pub foundation_cells: Vec<CellCoord>,
     /// Explicit window/door/breach coordinates remain empty detail cells.
     pub opening_cells: Vec<CellCoord>,
@@ -877,18 +898,24 @@ fn validate_value(
     let mut support_ids = Vec::with_capacity(supports_value.len());
     check_sorted_unique_ids(supports_value, "manifest.supports", &mut support_ids)?;
     let mut support_map: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut support_groups = Vec::with_capacity(supports_value.len());
     let mut foundation_ids = HashSet::new();
     for (index, value) in supports_value.iter().enumerate() {
         let path = format!("manifest.supports[{index}]");
         let item = object(value, &path)?;
         let kind = string(required(item, "kind", &path)?, &format!("{path}.kind"))?;
-        if !matches!(kind, "foundation" | "face_connected" | "brace") {
-            return Err(VoxelManifestError::expect(
-                VoxelManifestErrorKind::Contract,
-                format!("{path}.kind"),
-                "unknown support kind",
-            ));
-        }
+        let support_kind = match kind {
+            "foundation" => VoxelSupportKind::Foundation,
+            "face_connected" => VoxelSupportKind::FaceConnected,
+            "brace" => VoxelSupportKind::Brace,
+            _ => {
+                return Err(VoxelManifestError::expect(
+                    VoxelManifestErrorKind::Contract,
+                    format!("{path}.kind"),
+                    "unknown support kind",
+                ));
+            }
+        };
         let members = id_array(
             required(item, "cell_ids", &path)?,
             &format!("{path}.cell_ids"),
@@ -906,7 +933,15 @@ fn validate_value(
         if kind == "foundation" {
             foundation_ids.extend(members.iter().cloned());
         }
-        support_map.insert(support_ids[index].clone(), members.into_iter().collect());
+        support_map.insert(
+            support_ids[index].clone(),
+            members.iter().cloned().collect(),
+        );
+        support_groups.push(VoxelSupportGroup {
+            id: support_ids[index].clone(),
+            kind: support_kind,
+            cell_ids: members,
+        });
     }
     if foundation_ids.is_empty() {
         return Err(VoxelManifestError::expect(
@@ -1441,6 +1476,7 @@ fn validate_value(
         cell_size_um,
         cells,
         materials,
+        support_groups,
         foundation_cells,
         opening_cells,
         semantic_sha256: semantic_digest,

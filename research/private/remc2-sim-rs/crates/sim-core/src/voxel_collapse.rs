@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     voxel_state::VoxelStructureState,
-    voxel_structure::{CellCoord, VoxelStructure},
+    voxel_structure::{CellCoord, VoxelStructure, VoxelSupportKind},
 };
 
 /// Maximum number of authoritative component/cluster summaries retained in a
@@ -180,6 +180,37 @@ impl VoxelCollapseAnalyzer {
                 ));
             }
         }
+        // Face-connected support groups document the ordinary grid relation;
+        // authored braces are the only non-face edges.  Expand those groups
+        // once into a stable ID adjacency map so a diagonal brace can keep a
+        // component together without making every face-connected group a
+        // dense clique.
+        let mut brace_neighbors: HashMap<&str, Vec<&str>> = HashMap::new();
+        for group in &structure.support_groups {
+            if group.kind != VoxelSupportKind::Brace {
+                continue;
+            }
+            for member in &group.cell_ids {
+                if state.cell(member).is_none() {
+                    return Err(VoxelCollapseError::new(
+                        VoxelCollapseErrorKind::InvalidState,
+                        format!("brace support references missing cell {member}"),
+                    ));
+                }
+                let peers = brace_neighbors.entry(member.as_str()).or_default();
+                peers.extend(
+                    group
+                        .cell_ids
+                        .iter()
+                        .filter(|peer| *peer != member)
+                        .map(String::as_str),
+                );
+            }
+        }
+        for peers in brace_neighbors.values_mut() {
+            peers.sort_unstable();
+            peers.dedup();
+        }
         let foundation_coords: HashSet<CellCoord> =
             structure.foundation_cells.iter().copied().collect();
         let mut visited = HashSet::with_capacity(state.cells().len());
@@ -213,6 +244,19 @@ impl VoxelCollapseAnalyzer {
                     let neighbor_cell = &state.cells()[neighbor_index];
                     if neighbor_cell.present && visited.insert(neighbor_cell.id.clone()) {
                         queue.push_back(neighbor);
+                    }
+                }
+                if let Some(peers) = brace_neighbors.get(cell.id.as_str()) {
+                    for peer in peers {
+                        let Some(peer_cell) = state.cell(peer) else {
+                            return Err(VoxelCollapseError::new(
+                                VoxelCollapseErrorKind::InvalidState,
+                                format!("brace support references missing cell {peer}"),
+                            ));
+                        };
+                        if peer_cell.present && visited.insert(peer_cell.id.clone()) {
+                            queue.push_back(peer_cell.coord);
+                        }
                     }
                 }
             }
@@ -860,6 +904,61 @@ mod tests {
     }
 
     #[test]
+    fn authored_brace_keeps_diagonal_component_connected() {
+        let mut structure = fixture_structure();
+        let cell =
+            |id: &str, coord: CellCoord, supports: &[&str]| crate::voxel_structure::VoxelCell {
+                id: id.to_owned(),
+                coord,
+                material_id: "material-masonry".to_owned(),
+                part_id: "part-shell".to_owned(),
+                support_ids: supports
+                    .iter()
+                    .map(|support| (*support).to_owned())
+                    .collect(),
+                render_group_id: "render-shell".to_owned(),
+            };
+        structure.cells = vec![
+            cell(
+                "cell-a",
+                [0, 0, 0],
+                &["support-brace", "support-foundation"],
+            ),
+            cell("cell-b", [1, 1, 0], &["support-brace"]),
+        ];
+        structure.foundation_cells = vec![[0, 0, 0]];
+        structure.opening_cells.clear();
+        structure.support_groups = vec![
+            crate::voxel_structure::VoxelSupportGroup {
+                id: "support-brace".to_owned(),
+                kind: VoxelSupportKind::Brace,
+                cell_ids: vec!["cell-a".to_owned(), "cell-b".to_owned()],
+            },
+            crate::voxel_structure::VoxelSupportGroup {
+                id: "support-foundation".to_owned(),
+                kind: VoxelSupportKind::Foundation,
+                cell_ids: vec!["cell-a".to_owned()],
+            },
+        ];
+        let state = intact_state(&structure);
+        let braced = VoxelCollapseAnalyzer::analyze(&structure, &state).unwrap();
+        assert_eq!(braced.component_count, 1);
+        assert_eq!(braced.decision, VoxelCollapseDecision::Topple);
+        assert_eq!(
+            braced.components[0].classification,
+            VoxelComponentClassification::Topple
+        );
+
+        structure
+            .support_groups
+            .retain(|group| group.kind != VoxelSupportKind::Brace);
+        let unbraced =
+            VoxelCollapseAnalyzer::analyze(&structure, &intact_state(&structure)).unwrap();
+        assert_eq!(unbraced.component_count, 2);
+        assert_eq!(unbraced.decision, VoxelCollapseDecision::ShedDetached);
+    }
+
+    #[test]
     fn roof_shed_is_reported_without_toppling_grounded_body() {
         let structure = fixture_structure();
         let mut state = intact_state(&structure);
@@ -1065,11 +1164,52 @@ mod tests {
             total + removed_mass,
             intact.components[0].center_of_mass.mass_microkg
         );
-        for _ in 0..10_000 {
-            assert_eq!(
-                first,
-                VoxelCollapseAnalyzer::analyze(&structure, &state).unwrap()
+
+        // Replay a real 10,000-event stream in bounded batches.  The old test
+        // repeatedly analysed one unchanged state, which could not exercise
+        // cursor order, damage transitions, or reset/replay determinism.
+        let events: Vec<_> = (0..10_000_u32)
+            .map(|index| {
+                VoxelSourceEvent::damaged(
+                    SOURCE_ID,
+                    PROFILE_ID,
+                    structure.generation,
+                    crate::voxel_state::VoxelSourceCursor::new(u64::from(index) + 1, index),
+                    vec!["cell-n1-p0-n1".to_owned()],
+                    37 + index % 11,
+                )
+            })
+            .collect();
+        let mut first_replay = state.clone();
+        let mut second_replay = state;
+        let mut first_hashes = Vec::new();
+        let mut second_hashes = Vec::new();
+        for batch in events.chunks(crate::voxel_state::MAX_SOURCE_EVENTS_PER_BATCH) {
+            first_replay.apply_source_events(batch).unwrap();
+            second_replay.apply_source_events(batch).unwrap();
+            first_hashes.push(
+                VoxelCollapseAnalyzer::analyze(&structure, &first_replay)
+                    .unwrap()
+                    .report_hash_sha256,
+            );
+            second_hashes.push(
+                VoxelCollapseAnalyzer::analyze(&structure, &second_replay)
+                    .unwrap()
+                    .report_hash_sha256,
             );
         }
+        let first_divergence = first_hashes
+            .iter()
+            .zip(&second_hashes)
+            .position(|(left, right)| left != right);
+        assert_eq!(
+            first_divergence, None,
+            "first divergent batch should be reported"
+        );
+        assert_eq!(first_hashes, second_hashes);
+        assert_eq!(
+            VoxelCollapseAnalyzer::analyze(&structure, &first_replay).unwrap(),
+            VoxelCollapseAnalyzer::analyze(&structure, &second_replay).unwrap()
+        );
     }
 }
