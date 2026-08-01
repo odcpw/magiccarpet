@@ -66,6 +66,6 @@ runtime gate is:
 Unity -batchmode -nographics -quit -projectPath research/private/remc2-unity-presentation-lab -executeMethod MagicCarpet.PresentationLab.EditorSmoke.Run
 ```
 
-That command is intentionally documented before the editor script is added;
-the editor/player smoke route is the next implementation slice after the
-Unity editor is available.
+The editor smoke method is now present in
+`Assets/Editor/PresentationLabEditorSmoke.cs`; it is still unverified until
+the pinned editor is installed and can resolve the package lock.

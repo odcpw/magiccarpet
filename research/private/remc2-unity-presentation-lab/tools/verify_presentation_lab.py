@@ -31,8 +31,19 @@ def check(root: Path) -> dict[str, object]:
     version_path = root / "ProjectSettings" / "ProjectVersion.txt"
     scene_path = root / "Assets" / "Scenes" / "PresentationLabBoot.unity"
     script_path = root / "Assets" / "Scripts" / "PresentationLabBootstrap.cs"
+    editor_smoke_path = root / "Assets" / "Editor" / "PresentationLabEditorSmoke.cs"
+    build_settings_path = root / "ProjectSettings" / "EditorBuildSettings.asset"
 
-    for path in (manifest_path, lock_path, contract_path, version_path, scene_path, script_path):
+    for path in (
+        manifest_path,
+        lock_path,
+        contract_path,
+        version_path,
+        scene_path,
+        script_path,
+        editor_smoke_path,
+        build_settings_path,
+    ):
         if not path.is_file():
             fail(f"required file missing: {path.relative_to(root)}")
 
@@ -66,11 +77,17 @@ def check(root: Path) -> dict[str, object]:
 
     scene = scene_path.read_text(encoding="utf-8")
     script = script_path.read_text(encoding="utf-8")
+    editor_smoke = editor_smoke_path.read_text(encoding="utf-8")
+    build_settings = build_settings_path.read_text(encoding="utf-8")
     if "1f5c9e6b76e54e8e8bb8cbcc3c8dc1d6" not in scene:
         fail("boot scene does not reference PresentationLabBootstrap script GUID")
     for marker in ("--mc-mode=", "--mc-owner-root=", "--mc-require-owner-data", "synthetic/no-owner"):
         if marker not in script:
             fail(f"bootstrap is missing diagnostic marker: {marker}")
+    if "PresentationLabEditorSmoke" not in editor_smoke or "EditorApplication.Exit(0)" not in editor_smoke:
+        fail("editor smoke entry point is incomplete")
+    if "Assets/Scenes/PresentationLabBoot.unity" not in build_settings:
+        fail("boot scene is not registered in EditorBuildSettings")
 
     forbidden_dirs = (
         "Library",
