@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import collections
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -100,6 +101,125 @@ ROW_DESCRIPTOR_KEYS = ROW_KEYS | {"authored_indices"}
 
 class ValidationError(Exception):
     """The matrix or its live evidence inventory violates the v2 contract."""
+
+
+@dataclass(frozen=True)
+class MatrixValidationProfile:
+    """Explicit denominator/evidence policy for a conformance matrix.
+
+    The Level 1 wrapper below supplies the sealed historical policy.  Other
+    matrices must opt into their own schema and denominators; ``None`` means
+    that a denominator is recomputed from the document rather than silently
+    borrowing Level 1's counts.
+    """
+
+    schema_id: str = SCHEMA_ID
+    schema_version: int = SCHEMA_VERSION
+    pinned_commit: str = PINNED_REMC2_COMMIT
+    expected_rows: int | None = None
+    expected_authored_indices: int | None = None
+    expected_dispatch_slots: int | None = None
+    expected_validator_checks: frozenset[str] | None = None
+    audio_ledger_path: Path | None = None
+    inventory_command: str | None = None
+
+
+def level1_validation_profile() -> MatrixValidationProfile:
+    """Return the sealed Level 1 policy used by legacy entry points."""
+
+    return MatrixValidationProfile(
+        expected_rows=EXPECTED_MATRIX_ROWS,
+        expected_authored_indices=EXPECTED_AUTHORED_INDICES,
+        expected_dispatch_slots=EXPECTED_DISPATCH_SLOTS,
+        expected_validator_checks=frozenset(EXPECTED_CHECK_IDS),
+        audio_ledger_path=AUDIO_LEDGER_PATH,
+        inventory_command=(
+            "cd research/private/remc2-sim-rs && "
+            "cargo test --workspace --locked -- --list"
+        ),
+    )
+
+
+def open_matrix_validation_profile(
+    *,
+    schema_id: str,
+    schema_version: int,
+    pinned_commit: str = PINNED_REMC2_COMMIT,
+    expected_rows: int | None = None,
+    expected_authored_indices: int | None = None,
+    expected_dispatch_slots: int | None = None,
+    inventory_command: str | None = None,
+) -> MatrixValidationProfile:
+    """Build an open profile without inheriting Level 1 closure policy.
+
+    This is intentionally a small public constructor so a Level 2 matrix can
+    declare its own schema and denominators while still using all structural
+    checks (duplicate IDs, partitions, ownership, evidence resolution, and
+    dependency acyclicity).
+    """
+
+    if not schema_id or schema_id == SCHEMA_ID:
+        raise ValueError("an open profile must name a non-Level-1 schema")
+    if schema_version < 1:
+        raise ValueError("schema_version must be positive")
+    return MatrixValidationProfile(
+        schema_id=schema_id,
+        schema_version=schema_version,
+        pinned_commit=pinned_commit,
+        expected_rows=expected_rows,
+        expected_authored_indices=expected_authored_indices,
+        expected_dispatch_slots=expected_dispatch_slots,
+        expected_validator_checks=None,
+        audio_ledger_path=None,
+        inventory_command=inventory_command,
+    )
+
+
+def profile_from_json(path: Path) -> MatrixValidationProfile:
+    """Load an explicit validator profile from a small JSON contract.
+
+    The accepted shape is either the object itself or ``{"matrix_validation":
+    {...}}``.  No Level 1 values are filled in implicitly.
+    """
+
+    value = load_matrix(path)
+    value = value.get("matrix_validation", value)
+    profile = expect_keys(
+        value,
+        "$.matrix_validation",
+        {"schema_id", "schema_version", "pinned_commit"},
+        {
+            "expected_rows",
+            "expected_authored_indices",
+            "expected_dispatch_slots",
+            "inventory_command",
+        },
+    )
+    return open_matrix_validation_profile(
+        schema_id=expect_string(profile["schema_id"], "profile.schema_id"),
+        schema_version=expect_int(profile["schema_version"], "profile.schema_version", minimum=1),
+        pinned_commit=expect_string(profile["pinned_commit"], "profile.pinned_commit"),
+        expected_rows=(
+            None
+            if "expected_rows" not in profile or profile["expected_rows"] is None
+            else expect_int(profile["expected_rows"], "profile.expected_rows", minimum=0)
+        ),
+        expected_authored_indices=(
+            None
+            if "expected_authored_indices" not in profile or profile["expected_authored_indices"] is None
+            else expect_int(profile["expected_authored_indices"], "profile.expected_authored_indices", minimum=0)
+        ),
+        expected_dispatch_slots=(
+            None
+            if "expected_dispatch_slots" not in profile or profile["expected_dispatch_slots"] is None
+            else expect_int(profile["expected_dispatch_slots"], "profile.expected_dispatch_slots", minimum=0)
+        ),
+        inventory_command=(
+            None
+            if "inventory_command" not in profile or profile["inventory_command"] is None
+            else expect_string(profile["inventory_command"], "profile.inventory_command")
+        ),
+    )
 
 
 def fail(message: str) -> None:
@@ -873,6 +993,44 @@ def capture_cargo_test_inventory(workspace_root: Path) -> collections.Counter[st
     return inventory
 
 
+def load_external_evidence_inventory(path: Path) -> collections.Counter[str]:
+    """Load a reviewed evidence inventory without running a test suite.
+
+    The file is either a JSON object mapping fully-qualified test names to
+    integer occurrence counts, or an array of names (which must be unique).
+    This keeps synthetic/open matrix validation deterministic while making the
+    inventory an explicit input rather than an accidental Level 1 workspace
+    dependency.
+    """
+
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            value = json.load(
+                handle,
+                object_pairs_hook=duplicate_rejecting_object,
+                parse_constant=reject_json_constant,
+            )
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        fail(f"{path}: cannot load evidence inventory: {error}")
+    if isinstance(value, dict) and "tests" in value:
+        value = value["tests"]
+    if type(value) is dict:
+        inventory: collections.Counter[str] = collections.Counter()
+        for name, count in value.items():
+            expect_string(name, f"{path}.tests key")
+            inventory[name] = expect_int(count, f"{path}.tests.{name}", minimum=0)
+    elif type(value) is list:
+        names = [expect_string(item, f"{path}.tests[{index}]") for index, item in enumerate(value)]
+        if len(names) != len(set(names)):
+            fail(f"{path}: duplicate evidence inventory names are ambiguous")
+        inventory = collections.Counter(names)
+    else:
+        fail(f"{path}: evidence inventory must be an object or array")
+    if not inventory:
+        fail(f"{path}: evidence inventory is empty")
+    return inventory
+
+
 def capture_unity_test_inventory(source_path: Path) -> collections.Counter[str]:
     try:
         source = source_path.read_text(encoding="utf-8")
@@ -930,7 +1088,10 @@ def resolve_binding_source(file_value: str, kind: str) -> Path:
     return source
 
 
-def validate_schema(value: Any) -> None:
+def validate_schema(
+    value: Any, profile: MatrixValidationProfile | None = None
+) -> None:
+    profile = profile or level1_validation_profile()
     schema = expect_keys(
         value,
         "$.schema",
@@ -943,10 +1104,10 @@ def validate_schema(value: Any) -> None:
             "classification_rule",
         },
     )
-    if schema["id"] != SCHEMA_ID:
-        fail(f"$.schema.id: expected {SCHEMA_ID!r}")
-    if type(schema["version"]) is not int or schema["version"] != SCHEMA_VERSION:
-        fail(f"$.schema.version: expected integer {SCHEMA_VERSION}")
+    if schema["id"] != profile.schema_id:
+        fail(f"$.schema.id: expected {profile.schema_id!r}")
+    if type(schema["version"]) is not int or schema["version"] != profile.schema_version:
+        fail(f"$.schema.version: expected integer {profile.schema_version}")
     expect_string(schema["description"], "$.schema.description")
     row_fields = expect_keys(schema["row_fields"], "$.schema.row_fields", ROW_DESCRIPTOR_KEYS)
     for key in ROW_DESCRIPTOR_KEYS - {"reachability", "source", "implementation"}:
@@ -1029,7 +1190,9 @@ def validate_row(
     value: Any,
     index: int,
     inventory: collections.Counter[str],
+    profile: MatrixValidationProfile | None = None,
 ) -> dict[str, Any]:
+    profile = profile or level1_validation_profile()
     path = f"$.rows[{index}]"
     row = expect_keys(value, path, ROW_KEYS, {"authored_indices"})
     row_id = expect_string(row["id"], f"{path}.id")
@@ -1052,8 +1215,8 @@ def validate_row(
         {"related"},
     )
     commit = expect_string(source["commit"], f"{path}.source.commit")
-    if commit != PINNED_REMC2_COMMIT:
-        fail(f"{path}.source.commit: expected pinned remc2 commit")
+    if commit != profile.pinned_commit:
+        fail(f"{path}.source.commit: expected pinned remc2 commit {profile.pinned_commit}")
     string_array(source["symbols"], f"{path}.source.symbols", unique=True)
     expect_string(source["path"], f"{path}.source.path")
     expect_string(source["lines"], f"{path}.source.lines")
@@ -1082,8 +1245,8 @@ def validate_row(
             {"commit", "symbols", "path", "lines"},
         )
         related_commit = expect_string(related["commit"], f"{related_path}.commit")
-        if related_commit != PINNED_REMC2_COMMIT:
-            fail(f"{related_path}.commit: expected pinned remc2 commit")
+        if related_commit != profile.pinned_commit:
+            fail(f"{related_path}.commit: expected pinned remc2 commit {profile.pinned_commit}")
         string_array(related["symbols"], f"{related_path}.symbols", unique=True)
         expect_string(related["path"], f"{related_path}.path")
         expect_string(related["lines"], f"{related_path}.lines")
@@ -1133,7 +1296,12 @@ def validate_row(
     return row
 
 
-def validate_exclusion(value: Any, index: int) -> dict[str, Any]:
+def validate_exclusion(
+    value: Any,
+    index: int,
+    profile: MatrixValidationProfile | None = None,
+) -> dict[str, Any]:
+    profile = profile or level1_validation_profile()
     path = f"$.exclusions[{index}]"
     exclusion = expect_keys(
         value,
@@ -1147,8 +1315,8 @@ def validate_exclusion(value: Any, index: int) -> dict[str, Any]:
     )
     if not anchors:
         fail(f"{path}.source_anchors: expected at least one source anchor")
-    if exclusion["commit"] != PINNED_REMC2_COMMIT:
-        fail(f"{path}.commit: expected pinned remc2 commit")
+    if exclusion["commit"] != profile.pinned_commit:
+        fail(f"{path}.commit: expected pinned remc2 commit {profile.pinned_commit}")
     return exclusion
 
 
@@ -1267,7 +1435,9 @@ def validate_ownership(
 def validate_authored_census(
     value: Any,
     rows: dict[str, dict[str, Any]],
+    profile: MatrixValidationProfile | None = None,
 ) -> None:
+    profile = profile or level1_validation_profile()
     path = "$.authored_census"
     census = expect_keys(
         value,
@@ -1288,10 +1458,13 @@ def validate_authored_census(
     nonzero = int_array(
         census["nonzero_indices"], f"{path}.nonzero_indices", unique=True
     )
-    if len(nonzero) != EXPECTED_AUTHORED_INDICES:
+    if (
+        profile.expected_authored_indices is not None
+        and len(nonzero) != profile.expected_authored_indices
+    ):
         fail(
             f"{path}.nonzero_indices: expected exactly "
-            f"{EXPECTED_AUTHORED_INDICES} indices, got {len(nonzero)}"
+            f"{profile.expected_authored_indices} indices, got {len(nonzero)}"
         )
     for index, authored_index in enumerate(nonzero):
         if authored_index <= 0 or authored_index >= record_count:
@@ -1374,7 +1547,9 @@ def validate_dispatch_census(
     value: Any,
     rows: dict[str, dict[str, Any]],
     exclusions: dict[str, dict[str, Any]],
+    profile: MatrixValidationProfile | None = None,
 ) -> None:
+    profile = profile or level1_validation_profile()
     path = "$.dispatch_census"
     census = expect_keys(
         value,
@@ -1392,10 +1567,13 @@ def validate_dispatch_census(
     expect_string(census["source"], f"{path}.source")
     expect_string(census["slot_id_format"], f"{path}.slot_id_format")
     slot_count = expect_int(census["slot_count"], f"{path}.slot_count", minimum=1)
-    if slot_count != EXPECTED_DISPATCH_SLOTS:
+    if (
+        profile.expected_dispatch_slots is not None
+        and slot_count != profile.expected_dispatch_slots
+    ):
         fail(
             f"{path}.slot_count: expected exactly "
-            f"{EXPECTED_DISPATCH_SLOTS}, got {slot_count}"
+            f"{profile.expected_dispatch_slots}, got {slot_count}"
         )
     slots = string_array(census["slots"], f"{path}.slots", unique=True)
     if len(slots) != slot_count:
@@ -1472,7 +1650,9 @@ def validate_meta(
     exclusion_count: int,
     plan_count: int,
     inventory: collections.Counter[str],
+    profile: MatrixValidationProfile | None = None,
 ) -> None:
+    profile = profile or level1_validation_profile()
     path = "$.meta"
     meta = expect_keys(
         value,
@@ -1489,8 +1669,8 @@ def validate_meta(
         },
     )
     expect_string(meta["generated"], f"{path}.generated")
-    if meta["remc2_commit"] != PINNED_REMC2_COMMIT:
-        fail(f"{path}.remc2_commit: expected pinned remc2 commit")
+    if meta["remc2_commit"] != profile.pinned_commit:
+        fail(f"{path}.remc2_commit: expected pinned remc2 commit {profile.pinned_commit}")
     for key in ("upstream_checkout", "owner_package", "census_method"):
         expect_string(meta[key], f"{path}.{key}")
     string_array(
@@ -1501,11 +1681,11 @@ def validate_meta(
     inventory_meta = expect_keys(
         meta["test_inventory"], f"{path}.test_inventory", {"command", "count"}
     )
-    expected_command = (
-        "cd research/private/remc2-sim-rs && "
-        "cargo test --workspace --locked -- --list"
-    )
-    if inventory_meta["command"] != expected_command:
+    expect_string(inventory_meta["command"], f"{path}.test_inventory.command")
+    if (
+        profile.inventory_command is not None
+        and inventory_meta["command"] != profile.inventory_command
+    ):
         fail(f"{path}.test_inventory.command: unexpected inventory command")
     actual_inventory_count = sum(inventory.values())
     declared_inventory_count = expect_int(
@@ -1585,7 +1765,10 @@ def validate_meta(
                 )
 
 
-def validate_validator_contract(value: Any) -> None:
+def validate_validator_contract(
+    value: Any, profile: MatrixValidationProfile | None = None
+) -> None:
+    profile = profile or level1_validation_profile()
     contract = expect_keys(value, "$.validator_contract", {"checks"})
     checks = expect_array(contract["checks"], "$.validator_contract.checks")
     check_ids: list[str] = []
@@ -1594,24 +1777,30 @@ def validate_validator_contract(value: Any) -> None:
         check = expect_keys(check_value, path, {"id", "rule"})
         check_ids.append(expect_string(check["id"], f"{path}.id"))
         expect_string(check["rule"], f"{path}.rule")
+    if not check_ids:
+        fail("$.validator_contract.checks: at least one declared check is required")
     if len(check_ids) != len(set(check_ids)):
         fail("$.validator_contract.checks: duplicate check IDs")
-    if set(check_ids) != EXPECTED_CHECK_IDS:
+    expected_checks = profile.expected_validator_checks
+    if expected_checks is not None and set(check_ids) != expected_checks:
         fail(
             "$.validator_contract.checks: IDs do not exactly match the "
-            "schema-v2 validator contract"
+            "declared validator contract"
         )
 
 
 def validate_audio_call_ledger(
     matrix: dict[str, Any],
+    profile: MatrixValidationProfile | None = None,
 ) -> dict[str, int]:
+    profile = profile or level1_validation_profile()
     exclusions = {exclusion["id"]: exclusion for exclusion in matrix["exclusions"]}
     exclusion_ids = set(exclusions)
     row_ids = {row["id"] for row in matrix["rows"]}
     slot_to_row = matrix["dispatch_census"]["slot_to_row"]
     slot_to_exclusion = matrix["dispatch_census"]["slot_to_exclusion"]
-    ledger = load_matrix(AUDIO_LEDGER_PATH)
+    ledger_path = profile.audio_ledger_path or AUDIO_LEDGER_PATH
+    ledger = load_matrix(ledger_path)
     expect_keys(
         ledger,
         "audio ledger",
@@ -1631,31 +1820,31 @@ def validate_audio_call_ledger(
         expect_string(ledger[field], f"audio ledger.{field}")
     if ledger.get("schema") != "plan26-remc2-prepare-event-sound-ledger-v1":
         fail("audio ledger: unexpected schema")
-    if ledger.get("pinned_commit") != PINNED_REMC2_COMMIT:
+    if ledger.get("pinned_commit") != profile.pinned_commit:
         fail("audio ledger: pinned commit differs from the matrix")
     if ledger.get("target") != AUDIO_TARGET:
         fail("audio ledger: unexpected source-call target")
-    profile = expect_object(
+    scope_profile = expect_object(
         ledger.get("classification_scope_profile"),
         "audio ledger.classification_scope_profile",
     )
     expect_keys(
-        profile,
+        scope_profile,
         "audio ledger.classification_scope_profile",
         {"mission", "players", "map", "speech", "objective_kind", "host", "status"},
     )
-    for field in profile:
-        expect_string(profile[field], f"audio ledger.classification_scope_profile.{field}")
-    if profile.get("status") != (
+    for field in scope_profile:
+        expect_string(scope_profile[field], f"audio ledger.classification_scope_profile.{field}")
+    if scope_profile.get("status") != (
         "accepted after independent writer/reviewer reconciliation; "
         "extraction fields are mechanical"
     ):
         fail("audio ledger: classifications are not accepted closure evidence")
-    if profile.get("objective_kind") != "ordinary / non-secret":
+    if scope_profile.get("objective_kind") != "ordinary / non-secret":
         fail("audio ledger: selected profile does not close the objective-kind axis")
-    if "selected normatively" not in str(profile.get("speech", "")):
+    if "selected normatively" not in str(scope_profile.get("speech", "")):
         fail("audio ledger: speech/CD profile must be selected normatively")
-    if AUDIO_LEDGER_PATH.stat().st_mode & 0o777 != 0o644:
+    if ledger_path.stat().st_mode & 0o777 != 0o644:
         fail("audio ledger: repository permissions must be 0644")
 
     records = expect_array(ledger.get("records"), "audio ledger.records")
@@ -1959,19 +2148,25 @@ def validate_audio_call_ledger(
 def validate_document(
     document: Any,
     inventory: collections.Counter[str],
+    profile: MatrixValidationProfile | None = None,
 ) -> dict[str, int | bool]:
+    profile = profile or level1_validation_profile()
     root = expect_keys(document, "$", ROOT_KEYS)
-    validate_schema(root["schema"])
+    validate_schema(root["schema"], profile)
 
     row_values = expect_array(root["rows"], "$.rows")
     rows_list = [
-        validate_row(row, index, inventory) for index, row in enumerate(row_values)
+        validate_row(row, index, inventory, profile) for index, row in enumerate(row_values)
     ]
     rows = unique_id_map(rows_list, "$.rows")
+    if profile.expected_rows is not None and len(rows) != profile.expected_rows:
+        fail(
+            f"$.rows: expected exactly {profile.expected_rows} rows, got {len(rows)}"
+        )
 
     exclusion_values = expect_array(root["exclusions"], "$.exclusions")
     exclusions_list = [
-        validate_exclusion(exclusion, index)
+        validate_exclusion(exclusion, index, profile)
         for index, exclusion in enumerate(exclusion_values)
     ]
     exclusions = unique_id_map(exclusions_list, "$.exclusions")
@@ -1988,16 +2183,17 @@ def validate_document(
 
     validate_plan_graph(plans)
     validate_ownership(rows, plans)
-    validate_authored_census(root["authored_census"], rows)
-    validate_dispatch_census(root["dispatch_census"], rows, exclusions)
+    validate_authored_census(root["authored_census"], rows, profile)
+    validate_dispatch_census(root["dispatch_census"], rows, exclusions, profile)
     validate_meta(
         root["meta"],
         rows_list,
         len(exclusions),
         len(plans),
         inventory,
+        profile,
     )
-    validate_validator_contract(root["validator_contract"])
+    validate_validator_contract(root["validator_contract"], profile)
     return {
         "ok": True,
         "rows": len(rows),
@@ -2007,8 +2203,8 @@ def validate_document(
         ),
         "exclusions": len(exclusions),
         "plan_items": len(plans),
-        "authored_indices": EXPECTED_AUTHORED_INDICES,
-        "dispatch_slots": EXPECTED_DISPATCH_SLOTS,
+        "authored_indices": len(root["authored_census"]["nonzero_indices"]),
+        "dispatch_slots": len(root["dispatch_census"]["slots"]),
         "cargo_tests": sum(inventory.values()),
     }
 
@@ -2016,28 +2212,44 @@ def validate_document(
 def validate_file(
     matrix_path: Path,
     inventory: collections.Counter[str],
+    profile: MatrixValidationProfile | None = None,
 ) -> dict[str, int | bool]:
+    profile = profile or level1_validation_profile()
     document = load_matrix(matrix_path)
-    summary = validate_document(document, inventory)
-    summary.update(validate_audio_call_ledger(document))
+    summary = validate_document(document, inventory, profile)
+    if profile.audio_ledger_path is not None:
+        summary.update(validate_audio_call_ledger(document, profile))
     return summary
+
+
+def validate_matrix(
+    matrix_path: Path,
+    inventory: collections.Counter[str],
+    profile: MatrixValidationProfile,
+) -> dict[str, int | bool]:
+    """Explicit generic entry point; unlike the legacy name, never implies closure."""
+
+    return validate_file(matrix_path, inventory, profile)
 
 
 def require_closed(
     matrix_path: Path,
     inventory: collections.Counter[str] | None = None,
+    profile: MatrixValidationProfile | None = None,
 ) -> dict[str, Any]:
     """Require the canonical matrix itself to be closed, without implying final qualification."""
+    profile = profile or level1_validation_profile()
     if inventory is None:
         inventory = capture_cargo_test_inventory(SIM_WORKSPACE_ROOT)
     document = load_matrix(matrix_path)
-    summary = validate_document(document, inventory)
-    summary.update(validate_audio_call_ledger(document))
-    if summary["rows"] != EXPECTED_MATRIX_ROWS:
-        fail(f"closed matrix requires exactly {EXPECTED_MATRIX_ROWS} rows")
-    if summary["non_exact_rows"] != 0 or summary["exact_rows"] != EXPECTED_MATRIX_ROWS:
-        fail("closed matrix requires every one of the 182 rows to be Exact")
-    if document["meta"]["remc2_commit"] != PINNED_REMC2_COMMIT:
+    summary = validate_file(matrix_path, inventory, profile)
+    if profile.expected_rows is not None and summary["rows"] != profile.expected_rows:
+        fail(f"closed matrix requires exactly {profile.expected_rows} rows")
+    if summary["non_exact_rows"] != 0 or summary["exact_rows"] != summary["rows"]:
+        if profile.expected_rows == EXPECTED_MATRIX_ROWS:
+            fail("closed matrix requires every one of the 182 rows to be Exact")
+        fail("closed matrix requires every row to be Exact")
+    if document["meta"]["remc2_commit"] != profile.pinned_commit:
         fail("closed matrix uses the wrong pinned remc2 commit")
     return {**summary, "closed": True}
 
@@ -2059,7 +2271,17 @@ def parse_args(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--require-closed",
         action="store_true",
-        help="require exactly 182 Exact rows after all ordinary validation",
+        help="require every validated row to be Exact (Level 1 additionally requires its sealed denominator)",
+    )
+    parser.add_argument(
+        "--profile",
+        type=Path,
+        help="explicit JSON matrix-validation profile; without it use sealed Level 1 policy",
+    )
+    parser.add_argument(
+        "--evidence-inventory",
+        type=Path,
+        help="reviewed JSON inventory of external executable evidence names",
     )
     parser.add_argument("--final-closure", action="store_true")
     parser.add_argument("--closure-contract", type=Path)
@@ -2076,7 +2298,16 @@ def main(arguments: list[str] | None = None) -> int:
     workspace_root = Path(__file__).resolve().parent.parent
     matrix_path = args.matrix.resolve()
     try:
-        inventory = capture_cargo_test_inventory(workspace_root)
+        profile = (
+            profile_from_json(args.profile.resolve())
+            if args.profile is not None
+            else level1_validation_profile()
+        )
+        inventory = (
+            load_external_evidence_inventory(args.evidence_inventory.resolve())
+            if args.evidence_inventory is not None
+            else capture_cargo_test_inventory(workspace_root)
+        )
         if args.final_closure:
             missing = [
                 name
@@ -2101,9 +2332,9 @@ def main(arguments: list[str] | None = None) -> int:
                 inventory,
             )
         elif args.require_closed:
-            summary = require_closed(matrix_path, inventory)
+            summary = require_closed(matrix_path, inventory, profile)
         else:
-            summary = validate_file(matrix_path, inventory)
+            summary = validate_file(matrix_path, inventory, profile)
     except ValidationError as error:
         print(json.dumps({"ok": False, "closed": False, "error": str(error)}, sort_keys=True))
         return 1
