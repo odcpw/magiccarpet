@@ -405,6 +405,83 @@ impl VoxelStructureState {
         self.reset_generation(structure)
     }
 
+    /// Restore a validated private snapshot without routing it through source
+    /// gameplay events.  The snapshot module owns canonical hash/identity
+    /// validation; this narrow crate-private seam only applies already checked
+    /// fixed-point fields to this detail mirror.
+    pub(crate) fn restore_snapshot_state(
+        &mut self,
+        generation: u32,
+        tick: u64,
+        source_cursor: Option<VoxelSourceCursor>,
+        cell_overrides: &[(String, u32, bool)],
+        destruction_started: bool,
+        possessed_owner: Option<u16>,
+        possession_payload: u32,
+        source_life: i32,
+        source_action: u8,
+        source_active: bool,
+        impact_position_um: Option<[i64; 3]>,
+        damage_hit_count: u32,
+    ) -> Result<(), VoxelStateError> {
+        self.check_generation(generation)?;
+        if source_cursor.is_some_and(|cursor| cursor.tick > tick) {
+            return Err(VoxelStateError::new(
+                VoxelStateErrorKind::InvalidEvent,
+                "snapshot cursor tick exceeds snapshot tick",
+            ));
+        }
+        if cell_overrides
+            .windows(2)
+            .any(|window| window[0].0 >= window[1].0)
+        {
+            return Err(VoxelStateError::new(
+                VoxelStateErrorKind::InvalidEvent,
+                "snapshot cell overrides must be sorted and unique",
+            ));
+        }
+        for (id, health_milli, present) in cell_overrides {
+            let Some(&index) = self.cell_indexes.get(id) else {
+                return Err(VoxelStateError::new(
+                    VoxelStateErrorKind::UnknownCell,
+                    format!("snapshot references unknown cell {id}"),
+                ));
+            };
+            let cell = &self.cells[index];
+            if *health_milli > cell.max_health_milli
+                || (*present && *health_milli == 0)
+                || (!*present && *health_milli != 0)
+            {
+                return Err(VoxelStateError::new(
+                    VoxelStateErrorKind::InvalidEvent,
+                    format!("snapshot health/presence is invalid for cell {id}"),
+                ));
+            }
+        }
+
+        for cell in &mut self.cells {
+            cell.health_milli = cell.max_health_milli;
+            cell.present = true;
+        }
+        for (id, health_milli, present) in cell_overrides {
+            let index = self.cell_indexes[id];
+            let cell = &mut self.cells[index];
+            cell.health_milli = *health_milli;
+            cell.present = *present;
+        }
+        self.tick = tick;
+        self.source_cursor = source_cursor;
+        self.destruction_started = destruction_started;
+        self.possessed_owner = possessed_owner;
+        self.possession_payload = possession_payload;
+        self.source_life = source_life;
+        self.source_action = source_action;
+        self.source_active = source_active;
+        self.impact_position_um = impact_position_um;
+        self.damage_hit_count = damage_hit_count;
+        Ok(())
+    }
+
     #[must_use]
     pub fn source_entity_id(&self) -> &str {
         &self.source_entity_id

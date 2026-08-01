@@ -192,6 +192,16 @@ impl VoxelStructure {
     pub fn cell(&self, id: &str) -> Option<&VoxelCell> {
         self.cells.iter().find(|cell| cell.id == id)
     }
+
+    /// Look up the stable cell ID occupying a coordinate, if that coordinate
+    /// is part of the occupied semantic structure.
+    #[must_use]
+    pub fn cell_id_at(&self, coord: CellCoord) -> Option<&str> {
+        self.cells
+            .iter()
+            .find(|cell| cell.coord == coord)
+            .map(|cell| cell.id.as_str())
+    }
 }
 
 /// Parse and validate one VoxelHouseManifest v1 against the supplied schema
