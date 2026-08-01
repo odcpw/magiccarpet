@@ -2218,6 +2218,10 @@ int run(const Arguments& arguments) {
         {"files", file_manifest},
         {"package_sha256", package_hash.finish()}
     };
+    // The reset projection is a sealed Level 1 contract.  Do not copy its
+    // Night-specific expected state into an open Level 2 package; Level 2 gets
+    // its own reset seal only when that corpus is qualified.
+    if (!level_one) manifest.erase("reset_projection");
     write_text(staging / "manifest.json", manifest.dump(2) + "\n");
 
     fs::rename(staging, output);

@@ -10,11 +10,18 @@ output or staging directory can appear.
 from __future__ import annotations
 
 import os
+import copy
+import hashlib
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import json
+import sys
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from verify_package import verify
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -135,6 +142,98 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
     }
 
 
+def _expect_level2_rejected(package: Path, mutate) -> None:
+    with tempfile.TemporaryDirectory(prefix="mc2-level2-negative-") as temporary:
+        candidate = Path(temporary) / "package"
+        shutil.copytree(package, candidate)
+        candidate.chmod(0o700)
+        for path in candidate.iterdir():
+            path.chmod(0o600)
+        mutate(candidate)
+        try:
+            verify(candidate, enforce_reference_hashes=False)
+        except (AssertionError, KeyError, OSError, json.JSONDecodeError, ValueError):
+            return
+        raise AssertionError("tampered Level 2 package was accepted")
+
+
+def _mutate_manifest(candidate: Path, operation) -> None:
+    path = candidate / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    operation(manifest)
+    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
+def _refresh_package_hash(candidate: Path) -> None:
+    path = candidate / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    rows = []
+    for name in sorted(manifest["files"]):
+        entry = manifest["files"][name]
+        rows.append(f"{name}\0{entry['sha256']}\0{entry['bytes']}\n")
+    manifest["package_sha256"] = hashlib.sha256("".join(rows).encode()).hexdigest()
+    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
+# The two preserved Level 2 captures predate the fresh exporter receipt.  The
+# comparator below intentionally excludes only state that is expected to vary
+# between capture environments: source/build identity, the aggregate package
+# hash, the host-clock/secondary-plane normalization note, and terrain-plane
+# hashes (the live secondary plane is preserved by policy).  Every other
+# manifest field and every non-terrain payload must agree.
+L2_CORPUS_MANIFEST_EXCLUSIONS = {
+    "source",
+    "package_sha256",
+    "reset_projection",
+    "normalization.volatile_host_state",
+    "reference.terrain_frame0_sha256",
+    "reference.terrain_sequence",
+    "reference.terrain_planes[*].exported_sha256",
+    "files.terrain*.bin.sha256",
+}
+
+
+def _stable_l2_manifest(manifest: dict) -> dict:
+    stable = copy.deepcopy(manifest)
+    stable.pop("source", None)
+    stable.pop("package_sha256", None)
+    # Older exploratory captures copied the Level 1 reset seal. Fresh Level 2
+    # output deliberately omits it, so it is not a Level 2 comparison field.
+    stable.pop("reset_projection", None)
+    stable.get("normalization", {}).pop("volatile_host_state", None)
+    reference = stable.get("reference", {})
+    reference.pop("terrain_frame0_sha256", None)
+    reference.pop("terrain_sequence", None)
+    for plane in reference.get("terrain_planes", []):
+        plane.pop("exported_sha256", None)
+    for name, entry in stable.get("files", {}).items():
+        if name.startswith("terrain") and name.endswith(".bin"):
+            entry.pop("sha256", None)
+    return stable
+
+
+def _assert_l2_corpus_matches(fresh: Path, preserved: Path) -> None:
+    fresh_manifest = json.loads((fresh / "manifest.json").read_text(encoding="utf-8"))
+    preserved_manifest = json.loads(
+        (preserved / "manifest.json").read_text(encoding="utf-8")
+    )
+    if _stable_l2_manifest(fresh_manifest) != _stable_l2_manifest(preserved_manifest):
+        raise AssertionError(f"Level 2 manifest differs from preserved corpus: {preserved}")
+    fresh_files = set(fresh_manifest["files"])
+    preserved_files = set(preserved_manifest["files"])
+    if fresh_files != preserved_files:
+        raise AssertionError(
+            f"Level 2 member set differs from preserved corpus: {preserved}"
+        )
+    for name in sorted(fresh_files):
+        if name.startswith("terrain") and name.endswith(".bin"):
+            continue
+        if (fresh / name).read_bytes() != (preserved / name).read_bytes():
+            raise AssertionError(
+                f"Level 2 stable payload differs for {name}: {preserved}"
+            )
+
+
 def test_deterministic_level_profiles() -> None:
     """Run the full production exporter gate only when explicitly requested.
 
@@ -200,6 +299,90 @@ def test_deterministic_level_profiles() -> None:
             "internal": 1,
             "map_type": {"id": 0, "name": "Day"},
         }
+        assert "reset_projection" not in level_two_manifest
+
+        # Exercise the production verifier against both independent native
+        # captures, then prove that profile relabelling and package-member
+        # changes fail closed rather than relying on a fixture-only check.
+        verify(level_two_a, enforce_reference_hashes=False)
+        verify(level_two_b, enforce_reference_hashes=False)
+        for preserved in (
+            generated_root / "l2-debug3.fJ3PaM/level2",
+            generated_root / "mc2-l2-native2.Ibpz9b/out",
+        ):
+            if not preserved.is_dir():
+                raise AssertionError(f"preserved Level 2 corpus is missing: {preserved}")
+            _assert_l2_corpus_matches(level_two_a, preserved)
+        def relabel_profile(candidate: Path) -> None:
+            _mutate_manifest(
+                candidate,
+                lambda manifest: manifest["level"].update(
+                    {"internal": 0, "map_type": {"id": 1, "name": "Night"}}
+                ),
+            )
+            # package_sha256 is derived from the file identity rows rather than
+            # the manifest itself; recompute it explicitly so this negative
+            # proves the Level 2 profile check, not stale package metadata.
+            _refresh_package_hash(candidate)
+
+        _expect_level2_rejected(level_two_a, relabel_profile)
+        def tamper_active_entity_count(candidate: Path) -> None:
+            _mutate_manifest(
+                candidate,
+                lambda manifest: manifest["counts"].update({"active_entities": 113}),
+            )
+            _refresh_package_hash(candidate)
+
+        _expect_level2_rejected(level_two_a, tamper_active_entity_count)
+
+        def tamper_binary_u32(candidate: Path, name: str, offset: int, value: int) -> None:
+            path = candidate / name
+            content = bytearray(path.read_bytes())
+            content[offset : offset + 4] = value.to_bytes(4, "little")
+            path.write_bytes(content)
+            _mutate_manifest(
+                candidate,
+                lambda manifest: manifest["files"][name].update(
+                    {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+                ),
+            )
+            _refresh_package_hash(candidate)
+
+        # Refresh identities for each payload mutation so rejection exercises
+        # the semantic relation checks rather than stale file hashes.
+        _expect_level2_rejected(
+            level_two_a,
+            lambda candidate: tamper_binary_u32(candidate, "players.bin", 12 + 4, 1000),
+        )
+        _expect_level2_rejected(
+            level_two_a,
+            lambda candidate: tamper_binary_u32(candidate, "entities.bin", 12 + 4, 1001),
+        )
+        _expect_level2_rejected(
+            level_two_a,
+            lambda candidate: tamper_binary_u32(candidate, "runtime.bin", 206 + 10, 1001),
+        )
+        _expect_level2_rejected(
+            level_two_a,
+            lambda candidate: (candidate / "unexpected.bin").write_bytes(b"x"),
+        )
+        def tamper_terrain(candidate: Path) -> None:
+            path = candidate / "terrain.bin"
+            content = bytearray(path.read_bytes())
+            content[0] ^= 1
+            path.write_bytes(content)
+            path.chmod(0o600)
+            _mutate_manifest(
+                candidate,
+                lambda manifest: manifest["files"]["terrain.bin"].update(
+                    {
+                        "bytes": len(content),
+                        "sha256": hashlib.sha256(content).hexdigest(),
+                    }
+                ),
+            )
+            _refresh_package_hash(candidate)
+        _expect_level2_rejected(level_two_a, tamper_terrain)
     finally:
         shutil.rmtree(scratch)
 

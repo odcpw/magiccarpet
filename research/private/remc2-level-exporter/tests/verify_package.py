@@ -98,6 +98,37 @@ V3_TERRAIN_PLANE_HASHES = {
         "98a9c8a98491af66484087944ffbbcb62705682df0b24a4adcb8aeb96d9ab9bc",
     ),
 }
+
+# The native exporter intentionally emits an open Level 2 profile until the
+# corresponding remc2 regression corpus is sealed.  These values are the
+# profile contract, not hashes copied from a Level 1 receipt.
+LEVEL2_PROFILE = {
+    "external": 2,
+    "internal": 1,
+    "map_type": {"id": 0, "name": "Day"},
+    "active_entities": 114,
+    "number_of_players": 2,
+}
+LEVEL2_PRESENTATION = {
+    "map_type": "Day",
+    "terrain_bank": "TMAPS0-0",
+    "sprite_bank": "MSPRD0-0",
+    "web_bank": "MWEBD0-0",
+    "palette": "PALD-0",
+    "sky_bank": "SKYD0-0",
+    "vga_resolution_selector": 1,
+    "texture_size": 32,
+    "sound_bank": 1,
+    "cursor": 9,
+}
+
+
+def require(condition: bool, message: str) -> None:
+    """Raise a useful first-mismatch diagnostic for profile checks."""
+    if not condition:
+        raise AssertionError(message)
+
+
 STATE_HASH_ORDER = [
     "entity_index:u16", "position.x:u16", "position.y:u16", "position.z:i16",
     "yaw:i16", "display_pitch:i16", "effective_pitch:i16",
@@ -650,9 +681,13 @@ def verify_reset_projection(
 
 
 def verify_binary_structure(package: Path, manifest: dict) -> None:
+    external_level = manifest["level"]["external"]
     authored = (package / "authored-level.bin").read_bytes()
     assert len(authored) == 0x6604
-    assert authored[6] == 1
+    require(
+        authored[6] == manifest["level"]["map_type"]["id"],
+        "authored-level.bin map type disagrees with manifest level identity",
+    )
 
     entities = verify_record_file(
         package / "entities.bin",
@@ -663,12 +698,17 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
     )
     entity_record_size = manifest["record_sizes"]["entity"]
     assert entity_record_size == 176
+    active_entity_count = 0
     for index in range(1000):
         offset = 12 + index * entity_record_size
         assert u16(entities, offset) == index
         assert entities[offset + 2] in (0, 1)
+        active_entity_count += entities[offset + 2]
         next_relation = u32(entities, offset + 4)
-        assert 0 <= next_relation <= 1000
+        require(
+            0 <= next_relation <= 1000,
+            f"entity slot {index} next relation is out of range",
+        )
         assert 0 <= u32(entities, offset + 164) <= 157
         special_domain = entities[offset + 168]
         special_relation = u32(entities, offset + 172)
@@ -679,6 +719,10 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
             assert 1 <= special_relation <= 8
         else:
             assert special_relation == 1
+    require(
+        active_entity_count == manifest["counts"]["active_entities"],
+        "exported active entity count differs from manifest",
+    )
 
     players = verify_record_file(
         package / "players.bin",
@@ -696,6 +740,10 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
         offset = 12 + index * player_record_size
         assert u16(players, offset) == index
         assert players[offset + 50 : offset + 54] == bytes(4)
+        require(
+            u16(players, offset + 4) < manifest["counts"]["entity_slots"],
+            f"player slot {index} entity relation is out of range",
+        )
     if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3}:
         layout = manifest["record_layouts"]["player"]
         assert layout == {
@@ -707,32 +755,56 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
             "record_bytes": 573,
         }
         assert struct.unpack_from("<i", players, 12 + 565)[0] == 2048
-        assert struct.unpack_from("<i", players, 12 + 569)[0] == 1746
+        assert struct.unpack_from("<i", players, 12 + 569)[0] == (
+            1746 if external_level == 1 else 2048
+        )
 
     runtime = (package / "runtime.bin").read_bytes()
     assert runtime[:4] == b"MCR1"
     assert u16(runtime, 4) == 1
     assert u16(runtime, 6) == 0
+    if external_level == 2:
+        local_player_count = u16(runtime, 18)
+        require(
+            local_player_count == LEVEL2_PROFILE["number_of_players"],
+            "Level 2 runtime local player count differs",
+        )
+        for slot in range(local_player_count):
+            player_offset = 12 + slot * player_record_size
+            entity_index = u16(players, player_offset + 4)
+            entity_offset = 12 + entity_index * entity_record_size
+            require(
+                entities[entity_offset + 2] == 1,
+                f"Level 2 player slot {slot} does not reference an active entity",
+            )
     divergences = manifest["reference"]["runtime_scalar_divergences"]
-    assert divergences == [
-        {
-            "field": "maptypeMusic_0x235",
-            "original_state_offset": "0x235",
-            "runtime_bin_offset": 32,
-            "exported_remc2_value": 1,
-            "preserved_dos_frames": "0..19",
-            "preserved_dos_value": 0,
-            "status": "presentation_environment_divergence",
-            "evidence": (
-                "native remc2 selects the Night music bank when music is enabled; "
-                "the oracle capture had music inactive"
-            ),
-        }
-    ]
-    assert u32(runtime, 32) == 1
-    if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3}:
-        verify_reset_projection(manifest, players, entities, runtime)
+    if external_level == 1:
+        assert divergences == [
+            {
+                "field": "maptypeMusic_0x235",
+                "original_state_offset": "0x235",
+                "runtime_bin_offset": 32,
+                "exported_remc2_value": 1,
+                "preserved_dos_frames": "0..19",
+                "preserved_dos_value": 0,
+                "status": "presentation_environment_divergence",
+                "evidence": (
+                    "native remc2 selects the Night music bank when music is enabled; "
+                    "the oracle capture had music inactive"
+                ),
+            }
+        ]
+        assert u32(runtime, 32) == 1
     else:
+        assert external_level == LEVEL2_PROFILE["external"]
+        require(
+            divergences == [],
+            "Level 2 runtime scalar divergences must be empty",
+        )
+        require(u32(runtime, 32) == 2, "Level 2 runtime music selector must be 2")
+    if external_level == 1 and manifest["schema"] in {SCHEMA_V2, SCHEMA_V3}:
+        verify_reset_projection(manifest, players, entities, runtime)
+    elif external_level == 1:
         assert "reset_projection" not in manifest
     runtime_layout = manifest["record_layouts"]["runtime"]
     section_names = [
@@ -770,11 +842,20 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
         else:
             assert domain == 0
         if domain == 1:
-            assert 0 <= relation <= 1200
+            require(
+                0 <= relation <= 1200,
+                f"runtime stage {index} authored relation is out of range",
+            )
         elif domain == 2:
-            assert 0 <= relation <= 1000
+            require(
+                0 <= relation <= 1000,
+                f"runtime stage {index} entity relation is out of range",
+            )
         elif domain == 3:
-            assert 0 <= relation < 1000
+            require(
+                0 <= relation < 1000,
+                f"runtime stage {index} special relation is out of range",
+            )
 
     stage_vars = runtime_layout["stage_variables"]
     assert stage_vars["record_bytes"] == 12
@@ -829,18 +910,100 @@ def verify_binary_structure(package: Path, manifest: dict) -> None:
         end = start + plane["bytes"]
         exported_hash = hashlib.sha256(terrain[start:end]).hexdigest()
         assert exported_hash == plane["exported_sha256"]
-        assert plane["oracle_sha256"] == TERRAIN_ORACLE_HASHES[plane["name"]]
-        if plane["name"] == "secondary_cave":
-            assert plane["stock_regression_compared"] is False
-            assert plane["source_status"] == "inactive_uninitialized_host_state"
-            assert plane["normalization"] == "inactive_non_regression_compared_zeroed"
-            assert exported_hash == hashlib.sha256(bytes(0x10000)).hexdigest()
-            assert plane["match"] is False
+        if external_level == 1:
+            assert plane["oracle_sha256"] == TERRAIN_ORACLE_HASHES[plane["name"]]
+            if plane["name"] == "secondary_cave":
+                assert plane["stock_regression_compared"] is False
+                assert plane["source_status"] == "inactive_uninitialized_host_state"
+                assert plane["normalization"] == "inactive_non_regression_compared_zeroed"
+                assert exported_hash == hashlib.sha256(bytes(0x10000)).hexdigest()
+                assert plane["match"] is False
+            else:
+                assert plane["stock_regression_compared"] is True
+                assert plane["match"] is True
+                assert exported_hash == plane["oracle_sha256"]
         else:
-            assert plane["stock_regression_compared"] is True
-            assert plane["match"] is True
-            assert exported_hash == plane["oracle_sha256"]
-    assert manifest["reference"]["terrain_full_match"] is False
+            require(
+                exported_hash == plane["exported_sha256"],
+                f"{plane['name']} content hash does not match manifest",
+            )
+            require(
+                plane["oracle_sha256"] is None,
+                f"Level 2 {plane['name']} oracle hash must be null",
+            )
+            require(
+                plane["match"] is False,
+                f"Level 2 {plane['name']} oracle match must be false",
+            )
+            if plane["name"] == "secondary_cave":
+                require(
+                    plane["stock_regression_compared"] is False,
+                    "Level 2 secondary cave must not claim stock comparison",
+                )
+                require(
+                    plane["source_status"] == "live_plane",
+                    "Level 2 secondary cave source status differs",
+                )
+                require(
+                    plane["normalization"] == "preserved",
+                    "Level 2 secondary cave normalization differs",
+                )
+            else:
+                require(
+                    plane["stock_regression_compared"] is True,
+                    f"Level 2 {plane['name']} must claim stock comparison",
+                )
+    require(
+        manifest["reference"]["terrain_full_match"] is (
+            False if external_level == 1 else None
+        ),
+        "terrain full-match flag differs from level profile",
+    )
+
+    if external_level == 2:
+        # The Level 2 package carries no Level 1 reset seal.  Older exploratory
+        # captures did copy that object; it is deliberately ignored here so a
+        # relabelled Level 1 state cannot pass the profile checks above.
+        presentation = manifest["presentation_dependencies"]
+        for key, expected in LEVEL2_PRESENTATION.items():
+            require(
+                presentation.get(key) == expected,
+                f"Level 2 presentation field {key} differs from Day profile",
+            )
+        require(
+            presentation.get("resolved_files", {}).get("language", "").startswith("owner:"),
+            "Level 2 owner language asset is missing",
+        )
+        require(
+            presentation["resolved_files"]["language"].endswith("/L1.TXT"),
+            "Level 2 owner language asset is not English L1.TXT",
+        )
+        require(
+            manifest["normalization"]["volatile_host_state"] == [
+                "player time_393 host-clock sample zeroed; secondary terrain plane preserved"
+            ],
+            "Level 2 host-state normalization policy differs",
+        )
+        feature_generation = manifest["feature_generation_oracle"]
+        require(
+            feature_generation["pre_terrain"]["inactive_secondary_plane"]
+            == "preserved-live-plane",
+            "Level 2 pre-feature secondary terrain policy differs",
+        )
+        require(
+            feature_generation["post_terrain"]["inactive_secondary_plane"]
+            == "preserved-live-plane",
+            "Level 2 post-feature secondary terrain policy differs",
+        )
+        require(u16(runtime, 16) == 0, "Level 2 runtime local player slot must be 0")
+        require(
+            u16(runtime, 18) == LEVEL2_PROFILE["number_of_players"],
+            "Level 2 runtime player count differs",
+        )
+        require(
+            active_entity_count == LEVEL2_PROFILE["active_entities"],
+            "Level 2 active entity count differs",
+        )
 
 
 def verify(
@@ -853,26 +1016,53 @@ def verify(
     package = package.resolve(strict=True)
     manifest_path = package / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["schema"] in SCHEMAS
-    assert manifest["level"]["external"] == 1
-    assert manifest["level"]["internal"] == 0
-    assert manifest["level"]["map_type"] == {"id": 1, "name": "Night"}
+    require(manifest["schema"] in SCHEMAS, "unsupported owner-package schema")
+    level = manifest["level"]
+    require(level.get("external") in {1, 2}, "unsupported owner-package level profile")
+    if level["external"] == 1:
+        assert level["internal"] == 0
+        assert level["map_type"] == {"id": 1, "name": "Night"}
+    else:
+        require(level == {
+            "external": LEVEL2_PROFILE["external"],
+            "internal": LEVEL2_PROFILE["internal"],
+            "map_type": LEVEL2_PROFILE["map_type"],
+        }, "Level 2 profile identity mismatch (expected external 2/internal 1/Day)")
     assert manifest["capture"] == {"frame": 0, "site": "0x002285ff"}
     assert manifest["byte_order"] == "little-endian"
     assert manifest["counts"]["authored_features"] == 1200
     assert manifest["counts"]["entity_slots"] == 1000
-    assert manifest["counts"]["active_entities"] == 177
+    expected_active_entities = (
+        177 if level["external"] == 1 else LEVEL2_PROFILE["active_entities"]
+    )
+    require(
+        manifest["counts"]["active_entities"] == expected_active_entities,
+        f"active entity count differs for external level {level['external']}",
+    )
     assert manifest["dimensions"]["terrain"] == [256, 256]
     required_files = V3_FILES if manifest["schema"] == SCHEMA_V3 else V2_FILES
-    assert set(manifest["files"]) == required_files
+    require(
+        set(manifest["files"]) == required_files,
+        f"manifest file set differs for schema {manifest['schema']}",
+    )
+    actual_members = {path.name for path in package.iterdir()}
+    require(
+        actual_members == required_files | {"manifest.json"},
+        "package member set differs from schema contract",
+    )
     assert stat.S_IMODE(package.stat().st_mode) == 0o700
     assert len(manifest["source"]["upstream_commit"]) == 40
     assert len(manifest["source"]["upstream_worktree_diff_sha256"]) == 64
     assert len(manifest["source"]["compiled_source_sha256"]) == 64
     if manifest["schema"] == SCHEMA_V3:
-        assert {
-            key: manifest["source"][key] for key in V3_SOURCE_IDENTITY
-        } == V3_SOURCE_IDENTITY
+        if level["external"] == 1:
+            assert {
+                key: manifest["source"][key] for key in V3_SOURCE_IDENTITY
+            } == V3_SOURCE_IDENTITY
+        else:
+            assert manifest["source"]["upstream_commit"] == (
+                "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+            )
     modified_hashes = {
         entry["path"]: entry["sha256"] for entry in manifest["source"]["modified_files"]
     }
@@ -897,7 +1087,7 @@ def verify(
         assert identity == sorted(identity)
         aggregate = hashlib.sha256("".join(identity).encode()).hexdigest()
         assert aggregate == manifest["source"]["compiled_source_sha256"]
-        if manifest["schema"] in {SCHEMA_V2, SCHEMA_V3}:
+        if level["external"] == 1 and manifest["schema"] in {SCHEMA_V2, SCHEMA_V3}:
             verify_ambient_sequence(upstream_root, manifest)
 
     identity_rows = []
@@ -913,14 +1103,18 @@ def verify(
 
     expected_identity = hashlib.sha256("".join(identity_rows).encode()).hexdigest()
     assert manifest["package_sha256"] == expected_identity
-    if manifest["schema"] == SCHEMA_V3 and enforce_reference_hashes:
+    if (
+        manifest["schema"] == SCHEMA_V3
+        and level["external"] == 1
+        and enforce_reference_hashes
+    ):
         assert manifest["package_sha256"] == V3_PACKAGE_SHA256
         assert {
             name: manifest["files"][name]["sha256"] for name in V3_FILE_HASHES
         } == V3_FILE_HASHES
     assert (package / "terrain.bin").stat().st_size == 0x70000
     assert (package / "authored-level.bin").stat().st_size == 0x6604
-    if manifest["schema"] == SCHEMA_V3:
+    if manifest["schema"] == SCHEMA_V3 and level["external"] == 1:
         verify_feature_generation_input(package, manifest)
     verify_binary_structure(package, manifest)
 
