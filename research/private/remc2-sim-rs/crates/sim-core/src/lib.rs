@@ -12,6 +12,7 @@ pub mod classic_hd_terrain;
 pub mod combat_tmap;
 pub mod dynamic_lighting;
 pub mod economy_tmap;
+pub mod enhanced_presentation;
 pub mod firefly_tmap;
 pub mod frozen_actor_tmap;
 pub mod goat;

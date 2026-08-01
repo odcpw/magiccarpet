@@ -20,6 +20,7 @@ use sim_core::{
 };
 
 mod classic_hd_abi;
+mod enhanced_abi;
 mod native_v2;
 mod presentation_bridge;
 
