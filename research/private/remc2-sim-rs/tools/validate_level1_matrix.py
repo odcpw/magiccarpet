@@ -20,6 +20,17 @@ SCHEMA_VERSION = 2
 PINNED_REMC2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 EXPECTED_AUTHORED_INDICES = 308
 EXPECTED_DISPATCH_SLOTS = 845
+EXPECTED_MATRIX_ROWS = 182
+FINAL_CONTRACT_SCHEMA = "mc2-plan29-closure-contract/v1"
+FINAL_POLICY_SCHEMA = "mc2-plan29-final-qualification-policy/v1"
+FINAL_RECEIPT_SCHEMA = "mc2-plan29-closure-receipts/v1"
+FINAL_CACHE_SEAL_SCHEMA = "mc2-plan29-cache-conformance-identity/v1"
+REQUIRED_RESIDENT_FAMILIES = {
+    "archer": 0x01,
+    "builder": 0x02,
+    "villager": 0x04,
+    "trader": 0x08,
+}
 EXPECTED_CHECK_IDS = {
     "unique-row-ids",
     "totals",
@@ -184,6 +195,405 @@ def load_matrix(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         fail(f"{path}: cannot load canonical JSON: {error}")
     return expect_object(value, "$")
+
+
+def canonical_json_bytes(value: Any) -> bytes:
+    """Canonical JSON used by every PLAN29 identity and receipt seal."""
+    return (
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+    ).encode("utf-8")
+
+
+def sha256_hex(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def expect_sha256(value: Any, path: str) -> str:
+    digest = expect_string(value, path)
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        fail(f"{path}: expected lowercase SHA-256")
+    return digest
+
+
+def matrix_row_id_digest(matrix: dict[str, Any]) -> str:
+    rows = expect_array(matrix.get("rows"), "$.rows")
+    row_ids = sorted(expect_string(row.get("id"), "$.rows[].id") for row in rows)
+    if len(row_ids) != EXPECTED_MATRIX_ROWS or len(set(row_ids)) != len(row_ids):
+        fail(f"closure identity: expected {EXPECTED_MATRIX_ROWS} unique row IDs")
+    return sha256_hex(("\n".join(row_ids) + "\n").encode("utf-8"))
+
+
+def matrix_source_span_digest(matrix: dict[str, Any]) -> str:
+    descriptors = []
+    for row in sorted(matrix["rows"], key=lambda item: item["id"]):
+        source = expect_object(row.get("source"), f"row {row.get('id')}.source")
+        if source.get("commit") != PINNED_REMC2_COMMIT:
+            fail(f"row {row.get('id')}: source commit is not the pinned remc2 commit")
+        descriptors.append(
+            {
+                "id": row["id"],
+                "path": source.get("path"),
+                "symbols": source.get("symbols"),
+                "lines": source.get("lines"),
+                "dispatch": source.get("dispatch"),
+                "related": source.get("related", []),
+            }
+        )
+    return sha256_hex(canonical_json_bytes(descriptors))
+
+
+def matrix_ordered_behavior_digest(matrix: dict[str, Any]) -> str:
+    behaviors = []
+    for row in sorted(matrix["rows"], key=lambda item: item["id"]):
+        behaviors.append(
+            {
+                "id": row["id"],
+                "reachability": row.get("reachability"),
+                "preconditions": row.get("preconditions"),
+                "dispatch": row.get("source", {}).get("dispatch"),
+                "behavior_ordered": row.get("behavior_ordered"),
+                "negative_coverage_required": row.get("negative_coverage_required"),
+                "implementation_layers": sorted(
+                    key
+                    for key, value in row.get("implementation", {}).items()
+                    if key != "absent" and value
+                ),
+            }
+        )
+    return sha256_hex(canonical_json_bytes(behaviors))
+
+
+def matrix_reachable_row_id_digest(matrix: dict[str, Any]) -> str:
+    row_ids = sorted(
+        row["id"]
+        for row in matrix["rows"]
+        if row["reachability"]["status"] == "reachable"
+    )
+    return sha256_hex(("\n".join(row_ids) + "\n").encode("utf-8"))
+
+
+def matrix_identity(matrix: dict[str, Any], matrix_path: Path) -> dict[str, str]:
+    castle_rows = [
+        {
+            "id": row["id"],
+            "source": row["source"],
+            "behavior_ordered": row["behavior_ordered"],
+        }
+        for row in sorted(matrix["rows"], key=lambda item: item["id"])
+        if "castle" in canonical_json_bytes(row).decode("utf-8").lower()
+    ]
+    required_mask = {
+        "families": REQUIRED_RESIDENT_FAMILIES,
+        "required_mask": sum(REQUIRED_RESIDENT_FAMILIES.values()),
+    }
+    return {
+        "matrix_sha256": sha256_hex(matrix_path.read_bytes()),
+        "row_id_sha256": matrix_row_id_digest(matrix),
+        "source_span_sha256": matrix_source_span_digest(matrix),
+        "ordered_behavior_sha256": matrix_ordered_behavior_digest(matrix),
+        "reachable_row_id_sha256": matrix_reachable_row_id_digest(matrix),
+        "authored_census_sha256": sha256_hex(
+            canonical_json_bytes(matrix["authored_census"])
+        ),
+        "dispatch_census_sha256": sha256_hex(
+            canonical_json_bytes(matrix["dispatch_census"])
+        ),
+        "castle_profile_sha256": sha256_hex(canonical_json_bytes(castle_rows)),
+        "required_observation_mask_sha256": sha256_hex(
+            canonical_json_bytes(required_mask)
+        ),
+    }
+
+
+def load_trusted_closure_contract(
+    path: Path, expected_sha256: str
+) -> dict[str, Any]:
+    expected_sha256 = expect_sha256(expected_sha256, "expected contract SHA-256")
+    raw = path.read_bytes()
+    actual_file_sha256 = sha256_hex(raw)
+    if actual_file_sha256 != expected_sha256:
+        fail("closure contract file SHA-256 does not match reviewed expected hash")
+    contract = load_matrix(path)
+    if contract.get("schema") != FINAL_CONTRACT_SCHEMA:
+        fail(f"closure contract: expected schema {FINAL_CONTRACT_SCHEMA}")
+    specification = expect_object(contract.get("specification"), "contract.specification")
+    if specification.get("remc2_commit") != PINNED_REMC2_COMMIT:
+        fail("closure contract: wrong pinned remc2 commit")
+    if specification.get("row_count") != EXPECTED_MATRIX_ROWS:
+        fail(f"closure contract: expected {EXPECTED_MATRIX_ROWS} rows")
+    if specification.get("dispatch_slot_count") != EXPECTED_DISPATCH_SLOTS:
+        fail(f"closure contract: expected {EXPECTED_DISPATCH_SLOTS} dispatch slots")
+    if specification.get("authored_index_count") != EXPECTED_AUTHORED_INDICES:
+        fail(f"closure contract: expected {EXPECTED_AUTHORED_INDICES} authored indices")
+    claimed = expect_sha256(contract.get("contract_sha256"), "contract.contract_sha256")
+    unsigned = dict(contract)
+    del unsigned["contract_sha256"]
+    if sha256_hex(canonical_json_bytes(unsigned)) != claimed:
+        fail("closure contract self-hash mismatch")
+    if contract.get("blocked_until") != []:
+        fail("closure contract retains blocked rows")
+    return contract
+
+
+def _validate_identity(
+    actual: dict[str, str], expected: Any, path: str
+) -> None:
+    expected_object = expect_object(expected, path)
+    if expected_object != actual:
+        for key, value in actual.items():
+            if expected_object.get(key) != value:
+                fail(f"{path}.{key}: identity mismatch")
+        fail(f"{path}: identity mismatch")
+
+
+def load_executed_receipts(path: Path) -> dict[str, Any]:
+    receipts = load_matrix(path)
+    if receipts.get("schema") != FINAL_RECEIPT_SCHEMA:
+        fail(f"closure receipts: expected schema {FINAL_RECEIPT_SCHEMA}")
+    if receipts.get("remc2_commit") != PINNED_REMC2_COMMIT:
+        fail("closure receipts: wrong source commit")
+    return receipts
+
+
+def validate_receipt_set(
+    matrix: dict[str, Any], contract: dict[str, Any], receipts: dict[str, Any]
+) -> dict[str, Any]:
+    identity = expect_object(contract.get("trusted_identity"), "contract.trusted_identity")
+    _validate_identity(identity, receipts.get("identity"), "receipts.identity")
+    reachable = sorted(
+        row["id"]
+        for row in matrix["rows"]
+        if row["reachability"]["status"] == "reachable"
+    )
+    execution_ids: set[str] = set()
+    receipt_ids: list[str] = []
+    layers = expect_object(receipts.get("layers"), "receipts.layers")
+    for layer in ("rust", "c_abi", "unity", "cross_layer"):
+        receipt = expect_object(layers.get(layer), f"receipts.layers.{layer}")
+        if receipt.get("status") != "PASS" or receipt.get("exit_code") != 0:
+            fail(f"receipts.layers.{layer}: requires executed PASS with exit code zero")
+        execution_id = expect_string(
+            receipt.get("execution_id"), f"receipts.layers.{layer}.execution_id"
+        )
+        if execution_id in execution_ids:
+            fail("closure receipts: duplicate execution ID")
+        execution_ids.add(execution_id)
+        receipt_ids.append(execution_id)
+        expect_sha256(receipt.get("command_sha256"), f"receipts.layers.{layer}.command_sha256")
+        expect_sha256(receipt.get("output_sha256"), f"receipts.layers.{layer}.output_sha256")
+        if receipt.get("source_commit") != PINNED_REMC2_COMMIT:
+            fail(f"receipts.layers.{layer}: wrong source commit")
+        if receipt.get("ordered_behavior_sha256") != identity.get(
+            "ordered_behavior_sha256"
+        ):
+            fail(f"receipts.layers.{layer}: ordered behavior digest mismatch")
+        if sorted(receipt.get("row_ids", [])) != reachable:
+            fail(f"receipts.layers.{layer}: reachable row coverage mismatch")
+    scenarios = expect_object(receipts.get("scenarios"), "receipts.scenarios")
+    for scenario in ("victory", "failure", "restart", "replay", "privacy", "provenance"):
+        item = expect_object(scenarios.get(scenario), f"receipts.scenarios.{scenario}")
+        if item.get("status") != "PASS":
+            fail(f"receipts.scenarios.{scenario}: required PASS receipt")
+        expect_sha256(item.get("digest"), f"receipts.scenarios.{scenario}.digest")
+    return {"receipt_ids": receipt_ids, "reachable_rows": len(reachable)}
+
+
+def validate_required_observation_receipts(receipts: dict[str, Any]) -> int:
+    observation = expect_object(
+        receipts.get("required_observation"), "receipts.required_observation"
+    )
+    required = expect_int(observation.get("required_mask"), "required_mask")
+    observed = expect_int(observation.get("observed_mask"), "observed_mask")
+    remaining = expect_int(observation.get("remaining_mask"), "remaining_mask")
+    expected = sum(REQUIRED_RESIDENT_FAMILIES.values())
+    if required != expected or required == 0:
+        fail("required observation mask must start from the nonzero pinned family mask")
+    if observed != required or remaining != (required & ~observed) or remaining != 0:
+        fail("required observation mask was not fully observed through production dispatch")
+    families = expect_object(observation.get("family_receipts"), "family_receipts")
+    if set(families) != set(REQUIRED_RESIDENT_FAMILIES):
+        fail("required observation family receipts are incomplete")
+    for family, bit in REQUIRED_RESIDENT_FAMILIES.items():
+        receipt = expect_object(families[family], f"family_receipts.{family}")
+        if receipt.get("bit") != bit or receipt.get("status") != "PASS":
+            fail(f"family_receipts.{family}: invalid production observation")
+        expect_sha256(receipt.get("dispatch_digest"), f"family_receipts.{family}.dispatch_digest")
+    return remaining
+
+
+def validate_cache_conformance_identity(
+    cache_path: Path, contract_sha256: str, identity: dict[str, str]
+) -> str:
+    seal_path = cache_path / "conformance-identity.json"
+    seal = load_matrix(seal_path)
+    if seal.get("schema") != FINAL_CACHE_SEAL_SCHEMA:
+        fail(f"cache seal: expected schema {FINAL_CACHE_SEAL_SCHEMA}")
+    if seal.get("contract_file_sha256") != contract_sha256:
+        fail("cache seal: contract hash mismatch")
+    _validate_identity(identity, seal.get("identity"), "cache seal.identity")
+    claimed = expect_sha256(seal.get("seal_sha256"), "cache seal.seal_sha256")
+    unsigned = dict(seal)
+    del unsigned["seal_sha256"]
+    if sha256_hex(canonical_json_bytes(unsigned)) != claimed:
+        fail("cache seal self-hash mismatch")
+    return claimed
+
+
+def validate_qualification_policy(
+    policy_path: Path, contract_file_sha256: str, contract_self_sha256: str
+) -> str:
+    policy = load_matrix(policy_path)
+    if policy.get("schema") != FINAL_POLICY_SCHEMA:
+        fail(f"qualification policy: expected schema {FINAL_POLICY_SCHEMA}")
+    behavior = expect_object(
+        policy.get("behavior_contract"), "qualification_policy.behavior_contract"
+    )
+    if (
+        behavior.get("file_sha256") != contract_file_sha256
+        or behavior.get("self_sha256") != contract_self_sha256
+    ):
+        fail("qualification policy: behavior-contract binding mismatch")
+    acceptance = expect_object(
+        policy.get("acceptance"), "qualification_policy.acceptance"
+    )
+    if (
+        acceptance.get("required_clean_runs") != 1
+        or acceptance.get("required_run_labels") != ["run-a"]
+        or acceptance.get("run_b_required") is not False
+        or acceptance.get("run_b_permitted") is not False
+        or policy.get("override_scope") != ["receipt_requirements.clean_run_count"]
+    ):
+        fail("qualification policy: exactly run A must be required and permitted")
+    claimed = expect_sha256(
+        policy.get("policy_sha256"), "qualification_policy.policy_sha256"
+    )
+    unsigned = dict(policy)
+    del unsigned["policy_sha256"]
+    if sha256_hex(canonical_json_bytes(unsigned)) != claimed:
+        fail("qualification policy: self-hash mismatch")
+    return sha256_hex(policy_path.read_bytes())
+
+
+def validate_clean_run(
+    receipts: dict[str, Any], identity: dict[str, str], policy_sha256: str
+) -> list[str]:
+    aggregate = expect_object(receipts.get("clean_runs"), "receipts.clean_runs")
+    if aggregate.get("schema") != "mc2-plan29-full-gate/v1":
+        fail("clean runs: wrong aggregate schema")
+    runs = expect_array(aggregate.get("runs"), "clean_runs.runs")
+    if aggregate.get("exact_run_count") != 1 or len(runs) != 1:
+        fail("clean runs: exactly one run is required")
+    if (
+        aggregate.get("qualification_policy_sha256") != policy_sha256
+        or receipts.get("qualification_policy_sha256") != policy_sha256
+    ):
+        fail("clean runs: qualification-policy binding mismatch")
+    run_policy = expect_object(
+        aggregate.get("run_count_policy"), "clean_runs.run_count_policy"
+    )
+    if (
+        run_policy.get("required_runs") != 1
+        or run_policy.get("completed_runs") != 1
+        or run_policy.get("run_b_required") is not False
+        or run_policy.get("run_b_permitted") is not False
+    ):
+        fail("clean runs: run-count policy is not 1/1")
+    run_ids = [expect_string(run.get("run_id"), "clean_runs.runs[].run_id") for run in runs]
+    if not run_ids[0].startswith("run-a"):
+        fail("clean runs: the required run is not run A")
+    for run in runs:
+        expect_string(run.get("run_root"), "clean_runs.runs[].run_root")
+        if run.get("status") != "PASS" or run.get("identity") != identity:
+            fail("clean runs: each run must PASS with the trusted identity")
+        claimed = expect_sha256(
+            run.get("receipt_sha256"), "clean_runs.runs[].receipt_sha256"
+        )
+        unsigned = dict(run)
+        del unsigned["receipt_sha256"]
+        if sha256_hex(canonical_json_bytes(unsigned)) != claimed:
+            fail("clean runs: run receipt self-hash mismatch")
+        clean = expect_object(run.get("clean"), "clean_runs.runs[].clean")
+        for key in (
+            "cargo_target_isolated",
+            "unity_library_isolated",
+            "cache_isolated",
+            "preexisting_artifacts_rejected",
+        ):
+            if clean.get(key) is not True:
+                fail(f"clean runs: missing isolation proof {key}")
+        gates = expect_object(run.get("gates"), "clean_runs.runs[].gates")
+        required = {
+            "rust", "c_abi", "sim_cli", "matrix_closed", "cache",
+            "unity_edit_mode", "unity_play_mode", "victory", "failure",
+            "restart", "replay", "privacy", "provenance", "presentation",
+        }
+        if set(gates) != required or any(value != "PASS" for value in gates.values()):
+            fail("clean runs: required gate set is incomplete")
+        semantics = expect_object(
+            run.get("semantic_digests"), "clean_runs.runs[].semantic_digests"
+        )
+        for key in (
+            "reset", "victory", "failure", "restart", "replay",
+            "observation_mask", "unity_checkpoints", "full_run",
+        ):
+            expect_sha256(semantics.get(key), f"clean_runs.runs[].semantic_digests.{key}")
+    if aggregate.get("status") != "PASS":
+        fail("clean runs: aggregate status is not PASS")
+    return run_ids
+
+
+def level1_matrix_closed(
+    matrix_path: Path,
+    contract_path: Path,
+    policy_path: Path,
+    receipt_path: Path,
+    cache_path: Path,
+    expected_contract_sha256: str,
+    inventory: collections.Counter[str] | None = None,
+) -> dict[str, Any]:
+    """Strict final predicate. Ordinary matrix validation never implies closure."""
+    if inventory is None:
+        inventory = capture_cargo_test_inventory(SIM_WORKSPACE_ROOT)
+    matrix = load_matrix(matrix_path)
+    ordinary = validate_document(matrix, inventory)
+    ordinary.update(validate_audio_call_ledger(matrix))
+    if ordinary["rows"] != EXPECTED_MATRIX_ROWS or ordinary["non_exact_rows"] != 0:
+        fail("final closure requires exactly 182 Exact rows")
+    identity = matrix_identity(matrix, matrix_path)
+    contract = load_trusted_closure_contract(contract_path, expected_contract_sha256)
+    contract_self_sha256 = expect_sha256(
+        contract.get("contract_sha256"), "contract.contract_sha256"
+    )
+    policy_sha256 = validate_qualification_policy(
+        policy_path, expected_contract_sha256, contract_self_sha256
+    )
+    _validate_identity(identity, contract.get("trusted_identity"), "contract.trusted_identity")
+    expected_reachable = sorted(
+        row["id"]
+        for row in matrix["rows"]
+        if row["reachability"]["status"] == "reachable"
+    )
+    if contract.get("reachable", {}).get("row_ids") != expected_reachable:
+        fail("closure contract reachable row set mismatch")
+    receipts = load_executed_receipts(receipt_path)
+    receipt_summary = validate_receipt_set(matrix, contract, receipts)
+    remaining_mask = validate_required_observation_receipts(receipts)
+    cache_seal = validate_cache_conformance_identity(
+        cache_path, expected_contract_sha256, identity
+    )
+    run_ids = validate_clean_run(receipts, identity, policy_sha256)
+    return {
+        **ordinary,
+        "closed": True,
+        "trusted_contract_sha256": expected_contract_sha256,
+        "qualification_policy_sha256": policy_sha256,
+        "identity": identity,
+        "receipt_ids": receipt_summary["receipt_ids"],
+        "remaining_observation_mask": remaining_mask,
+        "cache_seal_sha256": cache_seal,
+        "clean_run_ids": run_ids,
+    }
 
 
 def mask_cpp_noncode(text: str) -> str:
@@ -1613,6 +2023,25 @@ def validate_file(
     return summary
 
 
+def require_closed(
+    matrix_path: Path,
+    inventory: collections.Counter[str] | None = None,
+) -> dict[str, Any]:
+    """Require the canonical matrix itself to be closed, without implying final qualification."""
+    if inventory is None:
+        inventory = capture_cargo_test_inventory(SIM_WORKSPACE_ROOT)
+    document = load_matrix(matrix_path)
+    summary = validate_document(document, inventory)
+    summary.update(validate_audio_call_ledger(document))
+    if summary["rows"] != EXPECTED_MATRIX_ROWS:
+        fail(f"closed matrix requires exactly {EXPECTED_MATRIX_ROWS} rows")
+    if summary["non_exact_rows"] != 0 or summary["exact_rows"] != EXPECTED_MATRIX_ROWS:
+        fail("closed matrix requires every one of the 182 rows to be Exact")
+    if document["meta"]["remc2_commit"] != PINNED_REMC2_COMMIT:
+        fail("closed matrix uses the wrong pinned remc2 commit")
+    return {**summary, "closed": True}
+
+
 def parse_args(arguments: list[str]) -> argparse.Namespace:
     workspace_root = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(
@@ -1627,6 +2056,18 @@ def parse_args(arguments: list[str]) -> argparse.Namespace:
         / "level1-conformance-matrix.json",
         help="matrix JSON (default: canonical repository matrix)",
     )
+    parser.add_argument(
+        "--require-closed",
+        action="store_true",
+        help="require exactly 182 Exact rows after all ordinary validation",
+    )
+    parser.add_argument("--final-closure", action="store_true")
+    parser.add_argument("--closure-contract", type=Path)
+    parser.add_argument("--qualification-policy", type=Path)
+    parser.add_argument("--receipts", type=Path)
+    parser.add_argument("--cache", type=Path)
+    parser.add_argument("--expected-contract-sha256")
+    parser.add_argument("--json", action="store_true")
     return parser.parse_args(arguments)
 
 
@@ -1636,12 +2077,35 @@ def main(arguments: list[str] | None = None) -> int:
     matrix_path = args.matrix.resolve()
     try:
         inventory = capture_cargo_test_inventory(workspace_root)
-        summary = validate_file(matrix_path, inventory)
+        if args.final_closure:
+            missing = [
+                name
+                for name, value in (
+                    ("--closure-contract", args.closure_contract),
+                    ("--qualification-policy", args.qualification_policy),
+                    ("--receipts", args.receipts),
+                    ("--cache", args.cache),
+                    ("--expected-contract-sha256", args.expected_contract_sha256),
+                )
+                if value is None
+            ]
+            if missing:
+                fail("--final-closure requires " + ", ".join(missing))
+            summary = level1_matrix_closed(
+                matrix_path,
+                args.closure_contract.resolve(),
+                args.qualification_policy.resolve(),
+                args.receipts.resolve(),
+                args.cache.resolve(),
+                args.expected_contract_sha256,
+                inventory,
+            )
+        elif args.require_closed:
+            summary = require_closed(matrix_path, inventory)
+        else:
+            summary = validate_file(matrix_path, inventory)
     except ValidationError as error:
-        print(
-            json.dumps({"ok": False, "error": str(error)}, sort_keys=True),
-            file=sys.stderr,
-        )
+        print(json.dumps({"ok": False, "closed": False, "error": str(error)}, sort_keys=True))
         return 1
     print(json.dumps({"matrix": str(matrix_path), **summary}, sort_keys=True))
     return 0

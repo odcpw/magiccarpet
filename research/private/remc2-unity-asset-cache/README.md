@@ -151,15 +151,15 @@ decoder and the qualified owner catalog hashes. The canonical manifest records
 source asset identities, decoder and generator hashes, output hashes, exact
 bindings, inclusion reasons, and palette status.
 
-The PLAN28 CP4 correction-2 cache identity is 1,248 outputs, manifest SHA-256
-`3909be6b29c1f879208f0a15ec2bccee58d65311cefd6698f0870d16c9742a8d`,
+The PLAN29 final sealed cache identity is 1,249 outputs, manifest SHA-256
+`1050b4f1e3f0e63fa292fe7798d19f4b390c063aa5afd5a350fba9e300298082`,
 content SHA-256
-`ee063ce1d5f804c8efc412dff2bedb0800d6fd347b38a6d0376e2a2e4dccd9dc`,
+`b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf`,
 and source-frame-census SHA-256
-`3ca66e8258fb239c51aa728d321029e2f5364b61d674abb3499e86c92f5f6e59`.
+`8a9fb362badbeb37d0b5ef4dae15be4fcdee92c690e0f2017689c5cf0af31f5e`.
 Earlier cache identities remain accepted only on the historical native load
 paths that explicitly name them; qualified current Unity presentation pins
-this CP4 pair.
+this PLAN29 pair and its sealed closure-contract identity.
 
 ## Build and validate
 
@@ -174,7 +174,7 @@ python3 -m unittest discover \
 ```
 
 The default output is
-`research/private/generated/level1-unity-asset-cache`. The generator refuses
+`research/private/generated/level1-unity-asset-cache-plan29-final`. The generator refuses
 outputs outside `research/private` and specifically refuses Unity `Assets`,
 `StreamingAssets`, and `Builds`.
 

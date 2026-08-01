@@ -14,6 +14,8 @@ import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from composite_editmode import EXPECTED_EDITMODE_NAMES, validate_composite
+
 
 HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parent
@@ -23,7 +25,7 @@ BUILD = PROJECT / "Builds/Linux"
 PLAYER = BUILD / "MagicCarpetNative.x86_64"
 PACKAGE = REPO / "research/private/generated/level1-export-m"
 CLOSURE = REPO / "research/private/generated/level1-asset-closure.json"
-CACHE = REPO / "research/private/generated/level1-unity-asset-cache"
+CACHE = REPO / "research/private/generated/level1-unity-asset-cache-plan29-final"
 
 FORBIDDEN_OWNER_EXTENSIONS = {
     ".dat",
@@ -79,51 +81,14 @@ def parse_test_result(
 
 
 def verify_test_evidence(args: argparse.Namespace) -> int:
-    edit_prefix = "MagicCarpet.Native.Tests.NativeSessionEditModeTests."
-    parse_test_result(
-        args.edit_results,
-        {
-            edit_prefix + "AbiAndManagedLayoutsArePinned",
-            edit_prefix + "BulkTerrainCheckpointReusesBuffersWithinAnAllocationBudget",
-            edit_prefix + "CombatManagedFallbackIsSuppressedForEveryNativeFamily",
-            edit_prefix + "EconomyManagedFallbackIsSuppressedOnlyByItsNativeCapability",
-            edit_prefix + "ExitPresentationResetStateIsGenerationAndTickBound",
-            edit_prefix + "ExitPresentationUsesHistoryFovAndIntegerRgb6PaletteMath",
-            edit_prefix + "KnownInputAndCameraRouteMatchesTheQualifiedGolden",
-            edit_prefix + "MissingOrTamperedOwnerInputsFailClosed",
-            edit_prefix
-            + "LiveTerrainAndCastleLifecycleAreTypedHashedResettableAndSessionLocal",
-            edit_prefix + "OpenResetDisposeAndTwoSessionsRemainIndependent",
-            edit_prefix + "OwnerCacheUsesItsSemanticClosureIdentity",
-            edit_prefix + "SpellAssignmentOpcodesDriveTheSourceHandAndTierSnapshot",
-            edit_prefix
-            + "ObjectiveTextboxBlendsAllPaletteInputsThenOverwritesWithForeground",
-            edit_prefix
-            + "ObjectiveTextboxUsesPixelCentreNearestSamplingAndClearsAtExpiry",
-            edit_prefix + "GoatBulkRowsAreExactReusableResettableAndSessionLocal",
-            edit_prefix + "LevelOneMissionActorsAndFireballAreLiveNativeState",
-            edit_prefix + "LevelOneAutopilotCompletesThroughOrdinaryPlayerInputs",
-            edit_prefix + "LevelOneAutopilotFreshSessionsHaveIdenticalDigests",
-            edit_prefix + "LevelOneAutopilotNegativeControlsStopAtTheirObjectives",
-            edit_prefix + "LevelOneAutopilotObservationExcludesHiddenEnemyState",
-            edit_prefix
-            + "LevelOnePostCompletionPilotKeepsAVisibleMultipartTargetLock",
-            edit_prefix
-            + "LevelOnePostCompletionAutopilotFightsGroups33And34BeforeExit",
-            edit_prefix
-            + "LevelOneNaturalFireflyRetaliationUsesOnlyOrdinaryPlayerInputs",
-            edit_prefix
-            + "SelectorFramesAdvanceOnlyFromNativeCpuAdmissionOrQualificationFeedback",
-            edit_prefix
-            + "WorldFrameCompositesSupportedFamiliesWithoutChangingTerrainOnlyContract",
-            edit_prefix
-            + "FrozenActorManagedFallbackIsSuppressedOnlyForTheQualifiedThirtyOne",
-            edit_prefix + "LiveSimulationUsesTheRemc2DefaultThirtyHertzCadence",
-            edit_prefix + "MissionActorManagedFallbackIsSuppressedOnlyByItsNativeCapability",
-            edit_prefix + "NativePaletteIsAtomicAndMatchesQualifiedPalnAtReset",
-        },
-        "EditMode",
-    )
+    if args.edit_composite is not None:
+        composite = json.loads(args.edit_composite.read_text())
+        require(
+            set(validate_composite(composite)) == EXPECTED_EDITMODE_NAMES,
+            "composite EditMode registry changed",
+        )
+    else:
+        parse_test_result(args.edit_results, EXPECTED_EDITMODE_NAMES, "EditMode")
     parse_test_result(
         args.play_results,
         {
@@ -145,9 +110,10 @@ def verify_test_evidence(args: argparse.Namespace) -> int:
     allocated = int(match.group(1))
     require(allocated <= 64 * 1024, "bulk ABI managed allocation budget exceeded")
     require(
-        "MC_ASSET_CACHE VERIFIED outputs=570 " in play_log
+        "MC_ASSET_CACHE VERIFIED outputs=1249 " in play_log
         and "MC_PRESENTATION_MODE mode=qualified ownerCache=True" in play_log
-        and "MC_OBJECTIVE_INDEXED_BLEND LIVE selector=48 ticks=33 " in play_log
+        and "MC_HUD_DESCRIPTOR VERIFIED bitmaps=204 bank=HSPRN-native "
+        "objectives=48-53/indexed-live-framebuffer " in play_log
         and "GfxDevice: creating device client;" in play_log
         and "Renderer:" in play_log
         and "Renderer: Null Device" not in play_log,
@@ -368,7 +334,7 @@ def verify_positive_player() -> None:
         log_path.unlink(missing_ok=True)
     require(result.returncode == 0, "qualified built-player self-test failed")
     for marker in (
-        "MC_ASSET_CACHE VERIFIED outputs=570 ",
+        "MC_ASSET_CACHE VERIFIED outputs=1249 ",
         "MC_IDLE_QUAL PASS ",
         "MC_ROUTE_QUAL PASS checkpoints=5 steps=440 ",
         "MC_SELF_TEST PASS abi=2 ",
@@ -388,7 +354,7 @@ def verify_negative_player_paths() -> int:
         "-mc-package", str(PACKAGE),
         "-mc-closure", str(CLOSURE),
     ]
-    launch(common, "qualified mode requires the exact owner asset cache")
+    launch(common, "exact presentation mode requires the owner asset cache")
     launch([], "Owner data is never bundled", graphical=True)
 
     with tempfile.TemporaryDirectory(prefix="magiccarpet-player-tamper-") as temp:
@@ -439,12 +405,29 @@ def verify_negative_player_paths() -> int:
 
 
 def main() -> None:
+    global PROJECT, BUILD, PLAYER, PACKAGE, CLOSURE, CACHE, CORPUS_PATH
     parser = argparse.ArgumentParser()
-    parser.add_argument("--edit-results", type=Path, required=True)
+    edit_evidence = parser.add_mutually_exclusive_group(required=True)
+    edit_evidence.add_argument("--edit-results", type=Path)
+    edit_evidence.add_argument("--edit-composite", type=Path)
     parser.add_argument("--edit-log", type=Path, required=True)
     parser.add_argument("--play-results", type=Path, required=True)
     parser.add_argument("--play-log", type=Path, required=True)
+    parser.add_argument("--project", type=Path, default=PROJECT)
+    parser.add_argument("--build", type=Path)
+    parser.add_argument("--package", type=Path, default=PACKAGE)
+    parser.add_argument("--closure", type=Path, default=CLOSURE)
+    parser.add_argument("--cache", type=Path, default=CACHE)
+    parser.add_argument("--corpus", type=Path, default=CORPUS_PATH)
     args = parser.parse_args()
+
+    PROJECT = args.project.resolve()
+    BUILD = (args.build or PROJECT / "Builds/Linux").resolve()
+    PLAYER = BUILD / "MagicCarpetNative.x86_64"
+    PACKAGE = args.package.resolve()
+    CLOSURE = args.closure.resolve()
+    CACHE = args.cache.resolve()
+    CORPUS_PATH = args.corpus.resolve()
 
     corpus = json.loads(CORPUS_PATH.read_text())
     allocated = verify_test_evidence(args)
@@ -453,7 +436,7 @@ def main() -> None:
     negative_cases = verify_negative_player_paths()
     print(
         "MC_UNITY_LIFECYCLE_PRIVACY PASS "
-        "editMode=29/29 playMode=1/1 "
+        "editMode=31/31 playMode=1/1 "
         f"bulkAllocatedBytes={allocated} "
         f"surfaceFiles={surface_files} "
         f"registeredOwnerHashes={registered_hashes} "

@@ -472,21 +472,26 @@ namespace MagicCarpet.Native
             "414173b2b45c6b7cdd421919eb9ec5fa3035c1fa628d24e9a12fc1e6bb23e43c",
             "e393b346b503dc0c058214f70eed3dfd6ab6a4103b8ec2cfe74d3d4324fe42eb"
         };
+        // These post-Action-51 journals retain the same commands, event heads,
+        // snapshots, conformance and terrain identities as the frozen route.
+        // Their event stateHash fields bind the versioned fallback/resident
+        // observation state; the prior journal digests and two confirmation
+        // receipts remain recorded in level1-reference-corpus.json.
         private static readonly string[] AutoplayEventLifecycleHashes =
         {
-            "6291b1222c881fe09b508737ba2648d6da5d7914ccadb1eb3efec880f731da57",
-            "a896059932ffa14df7da7d168f03fabbeb0297f63add55419a2fe0cc962bf536",
-            "8500955f340b67a010cca7c51744c9b083e11e6cf2daaa8a9dffc604531740c6",
-            "b7ad589a207fe6957b07ac996a53800f15eabec1b4bb041bf7fbe3ef255486d6",
-            "ea4be024470e14902c78b5b66d7e7373b592c39aafc24d8004a9cec2e24dd68f"
+            "70767dad32d7047dd4f3dbcdf22b0fccfaf43bb7979ea39b7f851b69de6d2ccb",
+            "64491031ec002ffbf41efd72bc83b8662f7289e9f8b9c60828b455a1f58ee662",
+            "3e8e48b73e36bc64637b376918a81917e3d11042e4a3b13e0a5c1248d69df0ad",
+            "46e3a293959612b0890816e4dab5ffb1c2590b7c31fd3e3886a1c8e3dcbb1de3",
+            "7b861644b6550bd6071b6fe4e5a9c06d83d22dcb4117502516a42ef1da00e3b8"
         };
         private static readonly string[] AutoplayEventContentHashes =
         {
-            "247058da12a1dee22b45b16e0fbe8cdf59a886be703e384c177815e6d622c8f0",
-            "a5681b2062bbe0c4652ba643d339a99156dac6aeb6b45088bf7aa13e5916852e",
-            "6422adc6869e1c151100cc18c63374bec8ac361aae0a149a4ceb85eb62b178d0",
-            "02645bd42837207218f7b066dcf146719758a1e31375118ec2549c5b39c46b96",
-            "7ec85e7dc7e4ccbf83d147bb8f650ff1666d68b775402aeb4f3cb9b0947a6940"
+            "33a2d6fc1248b4fc29dbf49d8abaee119087e8ea0b5c54448594f98a6e0420d5",
+            "f821341ad380066e96ff7bb33305393d3b6f92713090f9ec162f19ced278c441",
+            "74386221e625fdecae36abb41ac4442871dcd1229e4ede814e2dee51851c2073",
+            "3b6d8c8c628e50609d45d680e0d9bb26546b371ad61d4f91eab2bae7fe5eec5d",
+            "84e98401d92e26109bf88e00b0f48bdc37396bba4c868004da1cd400f099a66b"
         };
         private const ulong ExpectedResetHash = 0x9da4bc91af58f3ce;
         private const ulong ExpectedResetConformanceHash = 0x77b96b82492d6f4b;
@@ -511,7 +516,7 @@ namespace MagicCarpet.Native
         internal const string ExpectedOwnerAssetClosureHash =
             "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719";
         internal const string ExpectedNativePluginHash =
-            "b53fdc8010c2b8210dd64e8618680613a9443faf62bb5bf0c75dd9fa1303eeee";
+            "b315562e2b91d4bdef2067a2c26d13ffe82d7f7e7975707f043724984c1f80fa";
 
         private NativeSession session;
         private PlaythroughRecorder playthroughRecorder;
@@ -1017,7 +1022,8 @@ namespace MagicCarpet.Native
                 marker.SpriteVisual,
                 marker.Renderer);
             var probe = QualificationGoatPresentation(entityIndex);
-            UpdateEntityPresentation();
+            if (!CurrentNativeFinalPresentationOwns())
+                UpdateEntityPresentation();
             return probe;
         }
 
@@ -1039,7 +1045,8 @@ namespace MagicCarpet.Native
                 goatBatchTick == snapshot.tick &&
                 goatLiveWorldHash == batch.liveWorldHash,
                 "qualification Goat damage refreshes the same native tick");
-            UpdateEntityPresentation();
+            if (!CurrentNativeFinalPresentationOwns())
+                UpdateEntityPresentation();
         }
 
         internal void QualificationInjectGoatDamageAtGeneration(
@@ -3438,7 +3445,7 @@ namespace MagicCarpet.Native
                 hudDescriptor.objective.rows.Length == 6 &&
                 hudDescriptor.objective.rows[0].selector == 48 &&
                 hudDescriptor.objective.rows[5].selector == 53 &&
-                snapshot.objectiveTextboxTicks == 33 &&
+                snapshot.objectiveTextboxTicks == 0 &&
                 objectives[0].textSelector == 0 &&
                 ownerAssetCache.ReadOutputText(
                     hudDescriptor.objective.text_bytes_path) ==

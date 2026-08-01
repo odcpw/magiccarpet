@@ -391,7 +391,7 @@ def verify_native_final_main_contract(contract: dict) -> None:
     )
     cache = final.get("cache", {})
     require(
-        cache.get("output_count") == 1248
+        cache.get("output_count") == 1249
         and cache.get("source_frame_census_path")
         == "frame/source-frame-census.json"
         and all(

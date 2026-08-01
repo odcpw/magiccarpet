@@ -15,6 +15,8 @@ use std::{
 };
 
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use sim_core::native_world::resolve_level1_presentation_cache_root;
 use sim_core::{
     FlightContext, FlightEvent, FlightState, FlightWorld, POSITIONAL_SOUND_PLAY_IF_NOT_PLAYING,
     PlayerCommand, Position, PositionalSoundCommand, StepEvidence,
@@ -65,11 +67,12 @@ use sim_core::{
         FIREBALL_IMPACT_LOGICAL_HEIGHT, FIREBALL_IMPACT_RENDER_INDEX, FIREBALL_IMPACT_RENDER_MODE,
         FIREBALL_LOGICAL_HEIGHT, FIREBALL_PROJECTILE_CLASS, FIREBALL_PROJECTILE_MODEL,
         FIREBALL_RENDER_INDEX, FIREBALL_RENDER_MODE, FireballImpact, GROUND_FIRE_BASE_TMAP,
-        GROUND_FIRE_MODEL, GROUND_FIRE_RENDER_MODE, LEVEL1_MINIMAP_COMMAND_BLEND_PIXEL,
-        LEVEL1_MINIMAP_MAX_ENTITY_COMMANDS, LEVEL1_MINIMAP_MAX_MARKS, Level1Actor, Level1ActorKind,
-        Level1AmbientEntity, Level1CollisionTarget, Level1MinimapEntityCommand,
-        Level1MinimapEntityInput, Level1MinimapMarks, Level1MissionEvent, Level1MissionState,
-        Level1MultipartSegment, Level1PossessedBuilding, Level1Projectile, Level1ResetSourceSlot,
+        GROUND_FIRE_MODEL, GROUND_FIRE_RENDER_MODE, HouseConstructionSourceEffect,
+        LEVEL1_MINIMAP_COMMAND_BLEND_PIXEL, LEVEL1_MINIMAP_MAX_ENTITY_COMMANDS,
+        LEVEL1_MINIMAP_MAX_MARKS, Level1Actor, Level1ActorKind, Level1AmbientEntity,
+        Level1CollisionTarget, Level1MinimapEntityCommand, Level1MinimapEntityInput,
+        Level1MinimapMarks, Level1MissionEvent, Level1MissionState, Level1MultipartSegment,
+        Level1PossessedBuilding, Level1Projectile, Level1ResetSourceSlot, Level1SourceEntityView,
         MANA_CARRIER_ACTION, MANA_CARRIER_BASE_TMAP, MANA_CARRIER_CLASS,
         MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_MAX_LIFE, MANA_CARRIER_MAX_MANA,
         MANA_CARRIER_MODEL, MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_SPEED, MANA_SPHERE_ACTION,
@@ -177,6 +180,8 @@ pub const MC_AUTHORITY_SELECTOR_FRAME_LIVE: u8 = 5;
 pub const MC_AUTHORITY_LEVEL1_MISSION_LIVE: u8 = 6;
 pub const MC_AUTHORITY_SESSION_TERRAIN_LIVE: u8 = 7;
 pub const MC_AUTHORITY_VILLAGER_LIVE: u8 = 8;
+pub const MC_LEVEL1_HOUSE_COMPLETION_ALLOCATED: u32 = 1;
+pub const MC_LEVEL1_HOUSE_COMPLETION_ALLOCATION_FAILED: u32 = 2;
 pub const MC_LEVEL1_EXIT_FLAG_PALETTE_VISUAL_CURRENT: u8 = 1 << 0;
 pub const MC_LEVEL1_EXIT_FLAG_FOV_POST_ACTION_NEXT_HISTORY: u8 = 1 << 1;
 pub const MC_LEVEL1_EXIT_FLAG_END_SEQUENCE: u8 = 1 << 2;
@@ -928,6 +933,47 @@ pub struct McLevel1CastleLifecycleSnapshotV2 {
     pub terrain_mutation_sequence: u64,
 }
 
+/// One source-ordered `sub_377A0` completion allocation attempt.
+///
+/// Allocated rows expose the full class-10/model-42/action-44 constructor
+/// state. Failed rows retain the parent selector/state and leave child fields
+/// zero, making the no-write branch observable without inspecting Rust state.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McLevel1HouseCompletionEffectV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub tick: u64,
+    pub kind: u32,
+    pub house_entity_index: u16,
+    pub parent_entity_index: u16,
+    pub source_entity_index: u16,
+    pub source_id: u16,
+    pub class_id: u8,
+    pub model: u8,
+    pub action: u8,
+    pub construction_selector: u8,
+    pub house_building_index: u8,
+    pub constructor_latch: u8,
+    pub active: u8,
+    pub phase: u8,
+    pub parent_word_2e: i16,
+    pub parent_construction_selector: i16,
+    pub x: u16,
+    pub y: u16,
+    pub z: i16,
+    pub collision_half_width: i16,
+    pub collision_half_depth: i16,
+    pub yaw: i16,
+    pub fov: i16,
+    pub effect_ordinal: u16,
+    pub max_life: i32,
+    pub life: i32,
+    pub control_flags: u32,
+    pub effect_count: u32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct McManaSphereSnapshotV2 {
@@ -1218,6 +1264,19 @@ pub struct McEventQueryV2 {
     pub struct_size: u32,
     pub generation: u64,
     pub cursor: u64,
+    pub reserved: [u32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McLevel1ResidentObservationV1 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub required_mask: u8,
+    pub observed_mask: u8,
+    pub remaining_mask: u8,
+    pub reserved_0: u8,
+    pub digest: u64,
     pub reserved: [u32; 4],
 }
 
@@ -2434,6 +2493,13 @@ impl SessionRecord {
 
     fn new(world: NativeWorld) -> AbiResult<Self> {
         let terrain_frame_assets = load_optional_terrain_frame_assets()?.map(Arc::new);
+        Self::new_with_terrain_frame_assets(world, terrain_frame_assets)
+    }
+
+    fn new_with_terrain_frame_assets(
+        world: NativeWorld,
+        terrain_frame_assets: Option<Arc<TerrainFrameAssets>>,
+    ) -> AbiResult<Self> {
         let world = Arc::new(world);
         let archer_selector_frames = terrain_frame_assets
             .as_ref()
@@ -2467,6 +2533,7 @@ impl SessionRecord {
             1_000,
         );
         mission.set_source_turn_counter(source_turn.cast_unsigned());
+        mission.set_reset_source_map_chains(world.reset_source_map_chains().clone());
         let camera_fov = 128;
         let camera_history = CameraHistory::capture(
             &state,
@@ -2552,6 +2619,8 @@ impl SessionRecord {
             self.world.entities()[usize::from(self.state.entity_index)].life,
             1_000,
         );
+        self.mission
+            .set_reset_source_map_chains(self.world.reset_source_map_chains().clone());
         self.selector_frames = self.world.goat_tmap_bank().map(GoatTmapClocks::from_bank);
         self.archer_selector_frames = self
             .terrain_frame_assets
@@ -2896,7 +2965,7 @@ impl SessionRecord {
         dispositions.extend(legacy);
 
         let mut imported_rows = Vec::new();
-        for source_entity_index in self.mission.source_map_chains().linked_entity_indices() {
+        for source_entity_index in self.renderable_map_chains.linked_entity_indices() {
             if qualified.contains(&source_entity_index) {
                 continue;
             }
@@ -3006,7 +3075,7 @@ impl SessionRecord {
         qualified.extend(imported.iter().map(source_sprite_disposition_index));
         dispositions.extend(imported);
         dispositions.sort_unstable_by_key(source_sprite_disposition_index);
-        for source_entity_index in self.mission.source_map_chains().linked_entity_indices() {
+        for source_entity_index in self.renderable_map_chains.linked_entity_indices() {
             if !qualified.contains(&source_entity_index) {
                 let (class, model, action) = self
                     .mission
@@ -3026,7 +3095,7 @@ impl SessionRecord {
 
     fn source_render_inputs(&self, map_right_viewport: bool) -> AbiResult<SourceRenderInputs> {
         let dispositions = self.source_sprite_dispositions()?;
-        let mut map_chains = self.mission.source_map_chains().clone();
+        let mut map_chains = self.renderable_map_chains.clone();
         for disposition in &dispositions {
             let SourceSpriteDisposition::Render(submission) = disposition else {
                 continue;
@@ -4004,6 +4073,7 @@ impl SessionRecord {
         );
         let mut source_views =
             level1_turn_start_source_views(&self.mission, &self.state, &self.live_world);
+        let frozen_house_source_views = source_views.clone();
         let mut evidence = Vec::new();
         let mut released_holder_handoff = false;
         for source_slot in 1_u16..1_000 {
@@ -4014,10 +4084,15 @@ impl SessionRecord {
                     .submit_house_possession(source_slot, owner_entity_index, payload)
                     .expect("possession mailbox targets a live eligible house");
             }
-            let house_events = self
-                .live_world
-                .step_house_source_slot(source_slot, &self.terrain);
-            self.apply_house_event_side_effects(&house_events);
+            let action_51_blocked = self
+                .mission
+                .current_house_action_51_blocked(&frozen_house_source_views, source_slot);
+            let house_events = self.live_world.step_house_source_slot_with_action_51_block(
+                source_slot,
+                &self.terrain,
+                action_51_blocked,
+            );
+            self.apply_house_event_side_effects(&house_events, &frozen_house_source_views);
             let player_target = [GoatPlayerTarget {
                 entity_index: self.state.entity_index,
                 position: self.state.position,
@@ -4146,13 +4221,14 @@ impl SessionRecord {
                             &mut self.context,
                             flight_proposed,
                         );
-                    released_holder_handoff = lifecycle_action
+                    let released_holder_this_pass = lifecycle_action
                         == sim_core::level1_mission::PLAYER_ACTION_DYING
                         && self.mission.player_lifecycle_trace().iter().any(|entry| {
                             entry.step
                                 == sim_core::level1_mission::PLAYER_LIFECYCLE_TRACE_HOLDER_FAMILY
                         });
-                    if released_holder_handoff {
+                    released_holder_handoff |= released_holder_this_pass;
+                    if released_holder_this_pass {
                         for released in self.mission.released_spell_holders().iter().flatten() {
                             let tile = (
                                 released.position.x.to_be_bytes()[0],
@@ -4247,8 +4323,6 @@ impl SessionRecord {
             // synchronized again after their action below.
             self.sync_source_slot_renderable_records(source_slot)
                 .expect("validated pre-dispatch source map update");
-            self.mission
-                .set_source_map_chains(self.renderable_map_chains.clone());
             let mission_event_start = self.mission.events().len();
             if !self.mission.exit_sequence_owns_player_action()
                 && self.mission.player_action == sim_core::level1_mission::PLAYER_ACTION_ACTIVE
@@ -4328,12 +4402,19 @@ impl SessionRecord {
                         y: released.position.y,
                     })
                     .expect("qualified released spell holder map insertion");
+                debug_assert!(
+                    self.renderable_map_chains
+                        .entity_chain(
+                            released.position.x.to_be_bytes()[0],
+                            released.position.y.to_be_bytes()[0],
+                        )
+                        .contains(&released.source_entity_index),
+                    "final released holder insertion must restore current map membership"
+                );
             }
         }
         self.finalize_supported_renderable_records()
             .expect("validated source renderable active set");
-        self.mission
-            .set_source_map_chains(self.renderable_map_chains.clone());
         if let Some(fire) = self.context.spell_fire.as_mut() {
             // The class-15 handlers consume one active tick after their
             // same-turn projectile factories: model 0 in `sub_693F0` and
@@ -4428,9 +4509,75 @@ impl SessionRecord {
         }
     }
 
-    fn apply_house_event_side_effects(&mut self, events: &[HouseStepEvent]) {
+    fn apply_house_event_side_effects(
+        &mut self,
+        events: &[HouseStepEvent],
+        frozen_source_views: &[Level1SourceEntityView],
+    ) {
         for event in events {
             match *event {
+                HouseStepEvent::ConstructionPass {
+                    entity_index,
+                    source_id,
+                    position,
+                    building_index,
+                    remaining,
+                    first_pass,
+                } => {
+                    let footprint = self
+                        .world
+                        .house_build_footprint(building_index)
+                        .expect("Level 1 action-51 house BUILD footprint");
+                    if first_pass {
+                        let effect_start = self.mission.house_construction_effects().len();
+                        self.mission.apply_house_construction_first_pass(
+                            frozen_source_views,
+                            entity_index,
+                            source_id,
+                            position,
+                            footprint,
+                        );
+                        let effects =
+                            self.mission.house_construction_effects()[effect_start..].to_vec();
+                        self.live_world
+                            .apply_house_construction_source_effects(&effects);
+                    }
+                    self.terrain
+                        .apply_house_construction(position, Some(remaining), footprint)
+                        .expect("qualified Level 1 action-51 construction pass");
+                    self.pending_house_effects.push(*event);
+                }
+                HouseStepEvent::ConstructionCompleted {
+                    entity_index,
+                    position,
+                    building_index,
+                    collision_half_width,
+                    collision_half_depth,
+                    ..
+                } => {
+                    let footprint = self
+                        .world
+                        .house_build_footprint(building_index)
+                        .expect("Level 1 action-51 house BUILD footprint");
+                    self.terrain
+                        .apply_house_construction(position, None, footprint)
+                        .expect("qualified Level 1 action-51 construction completion");
+                    self.mission
+                        .apply_house_construction_completion(
+                            frozen_source_views,
+                            entity_index,
+                            position,
+                            collision_half_width,
+                            collision_half_depth,
+                            |index| {
+                                self.world
+                                    .house_build_footprint(index)
+                                    .map(|value| (value.width, value.height))
+                            },
+                        )
+                        .expect("qualified Level 1 action-51 completion links");
+                    self.pending_house_effects.push(*event);
+                }
                 HouseStepEvent::Possessed {
                     entity_index,
                     owner_entity_index,
@@ -4696,18 +4843,29 @@ impl SessionRecord {
 
     fn sync_source_slot_renderable_records(&mut self, source_slot: u16) -> Result<(), String> {
         if self.renderable_map_chains.tracks(source_slot) {
-            if let Some(goat) = self
+            if source_slot == self.state.entity_index {
+                let seed = RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: true,
+                    x: self.state.position.x,
+                    y: self.state.position.y,
+                };
+                self.mission.sync_source_map_entity(seed)?;
+                self.renderable_map_chains.sync_entity(seed)?;
+            } else if let Some(goat) = self
                 .live_world
                 .goats()
                 .iter()
                 .find(|goat| goat.entity_index == source_slot)
             {
-                self.renderable_map_chains.sync_entity(RenderableMapSeed {
+                let seed = RenderableMapSeed {
                     entity_index: goat.entity_index,
                     active: goat.active,
                     x: goat.position.x,
                     y: goat.position.y,
-                })?;
+                };
+                self.mission.sync_source_map_entity(seed)?;
+                self.renderable_map_chains.sync_entity(seed)?;
             } else if let Some(villager) = self
                 .live_world
                 .villagers()
@@ -4722,12 +4880,14 @@ impl SessionRecord {
                     actor.position = villager.position;
                     actor.yaw = villager.yaw;
                 }
-                self.renderable_map_chains.sync_entity(RenderableMapSeed {
+                let seed = RenderableMapSeed {
                     entity_index: villager.entity_index,
                     active: villager.active,
                     x: villager.position.x,
                     y: villager.position.y,
-                })?;
+                };
+                self.mission.sync_source_map_entity(seed)?;
+                self.renderable_map_chains.sync_entity(seed)?;
             } else if let Some(actor) = self.mission.actors().iter().find(|actor| {
                 native_composited_actor_kind(actor.kind) && actor.source_entity_index == source_slot
             }) {
@@ -6436,6 +6596,40 @@ pub extern "C" fn mc_native_session_source_arena_hash(handle: u64, out_hash: *mu
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn mc_native_level1_action_51_fallback_state_hash_v1(
+    handle: u64,
+    out_hash: *mut u64,
+) -> i32 {
+    boundary_value(out_hash, struct_size::<u64>(), || {
+        with_session(handle, |session| {
+            Ok(session.mission.action_51_fallback_state_hash_v1())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_level1_resident_observation_v1(
+    handle: u64,
+    out_observation: *mut McLevel1ResidentObservationV1,
+    out_observation_size: u32,
+) -> i32 {
+    boundary_value(out_observation, out_observation_size, || {
+        with_session(handle, |session| {
+            Ok(McLevel1ResidentObservationV1 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McLevel1ResidentObservationV1>(),
+                required_mask: session.mission.required_resident_behavior_mask(),
+                observed_mask: session.mission.observed_resident_behavior_mask(),
+                remaining_mask: session.mission.remaining_resident_behavior_mask(),
+                reserved_0: 0,
+                digest: session.mission.resident_behavior_observation_digest_v1(),
+                reserved: [0; 4],
+            })
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn mc_native_presentation_state(
     handle: u64,
     out_state: *mut McPresentationStateV2,
@@ -7385,6 +7579,140 @@ pub extern "C" fn mc_native_level1_player_inject_damage_for_qualification(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn mc_native_level1_action_51_blocker_setup_for_qualification(
+    handle: u64,
+    house_entity_index: u16,
+    house_action: u8,
+) -> i32 {
+    boundary(|| {
+        if !matches!(
+            house_action,
+            sim_core::house::HOUSE_TERRAIN_TO_LIVE_ACTION | u8::MAX
+        ) {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "action-51 qualification house action must be 51 or 255",
+            ));
+        }
+        with_session_mut(handle, |session| {
+            let mut mission = session.mission.clone();
+            let mut live_world = session.live_world.clone();
+            let mut house = live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == house_entity_index)
+                .copied()
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_BOUNDS,
+                        format!("action-51 qualification house {house_entity_index} is absent"),
+                    )
+                })?;
+            house.action = house_action;
+            house.max_life = 2;
+            house.life = 2;
+            house.owner_entity_index = session.state.entity_index;
+            house.control_flags |= 1;
+            live_world
+                .initialize_builder_house(house)
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+            mission
+                .inject_action_51_blocker_for_qualification(
+                    house.position,
+                    house.collision_half_width,
+                    house.collision_half_depth,
+                )
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        "action-51 qualification blocker allocation failed",
+                    )
+                })?;
+            session.mission = mission;
+            session.live_world = live_world;
+            Ok(())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_level1_action_51_completion_setup_for_qualification(
+    handle: u64,
+    house_entity_index: u16,
+    parent_entity_index: u16,
+    construction_selector: u8,
+) -> i32 {
+    boundary(|| {
+        with_session_mut(handle, |session| {
+            if session
+                .world
+                .house_build_footprint(construction_selector)
+                .is_none()
+            {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    format!("action-51 qualification BUILD {construction_selector} is absent"),
+                ));
+            }
+            let mut mission = session.mission.clone();
+            let mut live_world = session.live_world.clone();
+            let views = level1_turn_start_source_views(&mission, &session.state, &live_world);
+            let parent = views
+                .iter()
+                .copied()
+                .find(|view| view.source_entity_index == parent_entity_index)
+                .filter(|view| view.class == 3 && view.life >= 0)
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_BOUNDS,
+                        format!(
+                            "action-51 qualification parent {parent_entity_index} is not a live class-3 row"
+                        ),
+                    )
+                })?;
+            let construction_axis = Position {
+                x: parent.position.x.wrapping_add(0x0101),
+                y: parent.position.y.wrapping_add(0x0202),
+                z: parent.position.z.wrapping_add(33),
+            };
+            if !mission.configure_action_51_completion_parent_for_qualification(
+                parent_entity_index,
+                construction_selector,
+                construction_axis,
+            ) {
+                return Err(AbiError::new(
+                    MC_STATUS_VALIDATION_FAILED,
+                    "action-51 qualification parent source fields could not be configured",
+                ));
+            }
+            let mut house = live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == house_entity_index)
+                .copied()
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_BOUNDS,
+                        format!("action-51 qualification house {house_entity_index} is absent"),
+                    )
+                })?;
+            house.action = sim_core::house::HOUSE_TERRAIN_TO_LIVE_ACTION;
+            house.max_life = 1;
+            house.life = 1;
+            house.owner_entity_index = session.state.entity_index;
+            house.control_flags |= 1;
+            house.position = parent.position;
+            live_world
+                .initialize_builder_house(house)
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
+            session.mission = mission;
+            session.live_world = live_world;
+            Ok(())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn mc_native_level1_hud_snapshot(
     handle: u64,
     out_snapshot: *mut McLevel1HudSnapshotV2,
@@ -7561,6 +7889,45 @@ pub extern "C" fn mc_native_level1_castle_lifecycle_snapshot(
     boundary_value(out_snapshot, out_snapshot_size, || {
         with_session(handle, |session| {
             Ok(level1_castle_lifecycle_snapshot(session))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_level1_house_completion_effect_count(
+    handle: u64,
+    out_count: *mut u32,
+) -> i32 {
+    boundary_value(out_count, struct_size::<u32>(), || {
+        with_session(handle, |session| {
+            Ok(
+                u32::try_from(level1_house_completion_effects(session).len())
+                    .expect("completion effect count fits u32"),
+            )
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_level1_house_completion_effect_snapshot(
+    handle: u64,
+    effect_ordinal: u32,
+    out_snapshot: *mut McLevel1HouseCompletionEffectV2,
+    out_snapshot_size: u32,
+) -> i32 {
+    boundary_value(out_snapshot, out_snapshot_size, || {
+        with_session(handle, |session| {
+            level1_house_completion_effects(session)
+                .get(usize::try_from(effect_ordinal).expect("u32 ordinal fits usize"))
+                .copied()
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_BOUNDS,
+                        format!(
+                            "Level 1 house-completion effect ordinal {effect_ordinal} is out of bounds"
+                        ),
+                    )
+                })
         })
     })
 }
@@ -9445,6 +9812,133 @@ fn level1_castle_lifecycle_snapshot(session: &SessionRecord) -> McLevel1CastleLi
         reserved_0: [0; 2],
         terrain_mutation_sequence: session.terrain.mutation_sequence(),
     }
+}
+
+fn level1_house_completion_effects(
+    session: &SessionRecord,
+) -> Vec<McLevel1HouseCompletionEffectV2> {
+    let completion_effects = session
+        .mission
+        .house_construction_effects()
+        .iter()
+        .copied()
+        .filter(|effect| {
+            matches!(
+                effect,
+                HouseConstructionSourceEffect::ConstructionAllocated { .. }
+                    | HouseConstructionSourceEffect::ConstructionAllocationFailed { .. }
+            )
+        })
+        .collect::<Vec<_>>();
+    let effect_count =
+        u32::try_from(completion_effects.len()).expect("completion effect count fits u32");
+    completion_effects
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, effect)| {
+            let (kind, house_entity_index, parent_entity_index, source_entity_index, selector) =
+                match effect {
+                    HouseConstructionSourceEffect::ConstructionAllocated {
+                        house_entity_index,
+                        parent_entity_index,
+                        source_entity_index,
+                        building_index,
+                    } => (
+                        MC_LEVEL1_HOUSE_COMPLETION_ALLOCATED,
+                        house_entity_index,
+                        parent_entity_index,
+                        source_entity_index,
+                        building_index,
+                    ),
+                    HouseConstructionSourceEffect::ConstructionAllocationFailed {
+                        house_entity_index,
+                        parent_entity_index,
+                        building_index,
+                    } => (
+                        MC_LEVEL1_HOUSE_COMPLETION_ALLOCATION_FAILED,
+                        house_entity_index,
+                        parent_entity_index,
+                        0,
+                        building_index,
+                    ),
+                    _ => unreachable!("filtered completion effect"),
+                };
+            let construction = (source_entity_index != 0)
+                .then(|| {
+                    session
+                        .mission
+                        .house_completion_constructions()
+                        .iter()
+                        .find(|construction| {
+                            construction.source_entity_index == source_entity_index
+                        })
+                })
+                .flatten();
+            let source = (source_entity_index != 0)
+                .then(|| {
+                    session
+                        .mission
+                        .source_slots()
+                        .get(usize::from(source_entity_index))
+                })
+                .flatten();
+            let parent_word_2e = session
+                .mission
+                .raw_house_construction_state(parent_entity_index)
+                .map_or(0, |state| state.4);
+            let parent_construction_selector = session
+                .mission
+                .raw_source_construction_selector(parent_entity_index)
+                .unwrap_or_default();
+            let house_building_index = session
+                .live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == house_entity_index)
+                .map(|house| house.building_index)
+                .or_else(|| {
+                    session
+                        .mission
+                        .authored_houses()
+                        .find(|house| house.entity_index == house_entity_index)
+                        .map(|house| house.building_index)
+                })
+                .unwrap_or_default();
+            McLevel1HouseCompletionEffectV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McLevel1HouseCompletionEffectV2>(),
+                generation: session.generation,
+                tick: session.state.tick,
+                kind,
+                house_entity_index,
+                parent_entity_index,
+                source_entity_index,
+                source_id: construction.map_or(0, |value| value.owner_entity_index),
+                class_id: source.map_or(0, |value| value.class),
+                model: source.map_or(0, |value| value.model),
+                action: source.map_or(0, |value| value.action),
+                construction_selector: selector,
+                house_building_index,
+                constructor_latch: construction.map_or(0, |value| value.constructor_latch),
+                active: u8::from(construction.is_some_and(|value| value.active)),
+                phase: source.map_or(0, |value| value.phase),
+                parent_word_2e,
+                parent_construction_selector,
+                x: construction.map_or(0, |value| value.position.x),
+                y: construction.map_or(0, |value| value.position.y),
+                z: construction.map_or(0, |value| value.position.z),
+                collision_half_width: construction.map_or(0, |value| value.collision_half_width),
+                collision_half_depth: construction.map_or(0, |value| value.collision_half_depth),
+                yaw: construction.map_or(0, |value| value.yaw),
+                fov: construction.map_or(0, |value| value.fov),
+                effect_ordinal: u16::try_from(ordinal).expect("completion effect ordinal fits u16"),
+                max_life: construction.map_or(0, |value| value.max_life),
+                life: construction.map_or(0, |value| value.life),
+                control_flags: construction.map_or(0, |value| value.control_flags),
+                effect_count,
+            }
+        })
+        .collect()
 }
 
 fn mana_sphere_snapshot(sphere: &ManaSphere) -> McManaSphereSnapshotV2 {
@@ -11690,9 +12184,9 @@ mod tests {
 
         let chain_handle = open_fixture_with_presentation_cache();
         let mut ordered_chains = with_session(chain_handle, |session| {
-            Ok(session.mission.source_map_chains().clone())
+            Ok(session.renderable_map_chains.clone())
         })
-        .expect("isolated baseline source-map topology");
+        .expect("isolated baseline painter-map topology");
         for entity_index in [113_u16, 114] {
             ordered_chains
                 .sync_entity(RenderableMapSeed {
@@ -11704,12 +12198,10 @@ mod tests {
                 .expect("live same-tile source-map insert");
         }
         with_session_mut(chain_handle, |session| {
-            session
-                .mission
-                .set_source_map_chains(ordered_chains.clone());
+            session.renderable_map_chains = ordered_chains.clone();
             Ok(())
         })
-        .expect("install ordered live source map");
+        .expect("install ordered live painter map");
         let mut chain_indices = vec![0_u8; LEVEL1_VIEW_PIXELS];
         let mut chain_provenance = vec![0_u8; LEVEL1_VIEW_PIXELS];
         let mut chain_info = McPresentationFrameInfoV2::default();
@@ -11750,10 +12242,10 @@ mod tests {
             })
             .expect("live same-tile head reinsert");
         with_session_mut(chain_handle, |session| {
-            session.mission.set_source_map_chains(reordered_chains);
+            session.renderable_map_chains = reordered_chains;
             Ok(())
         })
-        .expect("install reordered live source map");
+        .expect("install reordered live painter map");
         assert_eq!(
             chain_copy(&mut chain_indices, &mut chain_provenance, &mut chain_info),
             MC_STATUS_GENERATION_MISMATCH,
@@ -11772,10 +12264,10 @@ mod tests {
         })
         .expect("chain rejection preserves history/cache/clocks");
         with_session_mut(chain_handle, |session| {
-            session.mission.set_source_map_chains(ordered_chains);
+            session.renderable_map_chains = ordered_chains;
             Ok(())
         })
-        .expect("restore source-map order");
+        .expect("restore painter-map order");
         assert_eq!(
             chain_copy(&mut chain_indices, &mut chain_provenance, &mut chain_info),
             MC_STATUS_OK,
@@ -12654,10 +13146,17 @@ mod tests {
             );
         }
         with_session(handle, |session| {
-            assert_eq!(
-                session.mission.source_map_chains().linked_entity_indices(),
-                session.renderable_map_chains.linked_entity_indices(),
-                "the finalized production painter chain replaces the per-dispatch snapshot so reclaimed rows cannot reach FINAL MAIN"
+            assert!(
+                session
+                    .world
+                    .raw_source_entity_indices()
+                    .iter()
+                    .copied()
+                    .any(|entity_index| {
+                        session.mission.source_map_chains().tracks(entity_index)
+                            && !session.renderable_map_chains.tracks(entity_index)
+                    }),
+                "FINAL MAIN keeps its filtered painter chain separate from the durable raw gameplay topology"
             );
             Ok(())
         })
@@ -12897,7 +13396,12 @@ mod tests {
 
     fn open_fixture() -> u64 {
         let (package, closure) = fixture_paths();
-        open_paths(&package, &closure).expect("package M opens")
+        let world = NativeWorld::load_without_owner_cache(package, closure)
+            .expect("package M opens without an owner cache");
+        let session = SessionRecord::new_with_terrain_frame_assets(world, None)
+            .expect("cache-free fixture session constructs");
+        with_registry_mut(|registry| registry.insert(session))
+            .expect("cache-free fixture session registers")
     }
 
     fn configured_goat_pitch_handle(retain_action_14: bool) -> u64 {
@@ -13146,8 +13650,7 @@ mod tests {
     }
 
     fn open_fixture_with_terrain_frame_assets() -> u64 {
-        let (package, closure) = fixture_paths();
-        let world = NativeWorld::load(package, closure).expect("package M loads");
+        let world = presentation_test_world();
         let mut session = SessionRecord::new(world).expect("fixture session constructs");
         let assets = Arc::new(terrain_frame_assets_fixture());
         session.archer_selector_frames =
@@ -13170,66 +13673,33 @@ mod tests {
         with_registry_mut(|registry| registry.insert(session)).expect("fixture session registers")
     }
 
-    fn terrain_frame_assets_fixture() -> TerrainFrameAssets {
+    fn presentation_test_cache() -> PathBuf {
         let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let cache = private.join("generated/level1-unity-asset-cache");
-        TerrainFrameAssets {
-            terrain_atlas: fs::read(cache.join("terrain/bl32n.atlas.indices.u8"))
-                .unwrap()
-                .into_boxed_slice(),
-            tablesn: fs::read(cache.join("palette/tablesn.u8"))
-                .unwrap()
-                .into_boxed_slice(),
-            sky: fs::read(cache.join("sky/skyn.indices.u8"))
-                .unwrap()
-                .into_boxed_slice(),
-            palette_rgb6: fs::read(cache.join("palette/paln.rgb6"))
-                .unwrap()
-                .into_boxed_slice(),
-            archer_tmap_bank: load_qualified_archer_tmap_bank(&cache)
-                .expect("qualified Archer TMAP fixture"),
-            firefly_tmap_bank: load_qualified_firefly_tmap_bank(&cache)
-                .expect("qualified Firefly TMAP fixture"),
-            frozen_actor_tmap_bank: load_qualified_frozen_actor_tmap_bank(&cache)
-                .expect("qualified frozen actor TMAP fixture"),
-            combat_tmap_bank: load_qualified_combat_tmap_bank(&cache)
-                .expect("qualified combat TMAP fixture"),
-            static_world_tmap_bank: load_qualified_static_world_tmap_bank(&cache)
-                .expect("qualified static world TMAP fixture"),
-            economy_tmap_bank: load_qualified_economy_tmap_bank(&cache)
-                .expect("qualified economy TMAP fixture"),
-            indexed_overlays: IndexedOverlayAssets::load(
-                private.join("generated/plan28-cp2-revise.fTjahZ/cache"),
-            )
-            .expect("CP1 fixed indexed overlay fixture"),
-        }
+        resolve_level1_presentation_cache_root(private)
+    }
+
+    fn presentation_test_world() -> NativeWorld {
+        let (package, closure) = fixture_paths();
+        NativeWorld::load_with_owner_cache(package, closure, presentation_test_cache())
+            .expect("package M and manifest/hash-qualified presentation cache load")
+    }
+
+    fn terrain_frame_assets_fixture() -> TerrainFrameAssets {
+        load_terrain_frame_assets(&presentation_test_cache())
+            .expect("manifest/hash-qualified presentation assets load")
     }
 
     fn open_fixture_with_owner_cache() -> u64 {
-        let (package, closure) = fixture_paths();
-        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let world = NativeWorld::load_with_owner_cache(
-            package,
-            closure,
-            private.join("generated/level1-unity-asset-cache"),
-        )
-        .expect("package M and qualified owner cache load");
+        let world = presentation_test_world();
         let session = SessionRecord::new(world).expect("owner-cache fixture session constructs");
         with_registry_mut(|registry| registry.insert(session))
             .expect("owner-cache fixture session registers")
     }
 
     fn open_fixture_with_presentation_cache() -> u64 {
-        let (package, closure) = fixture_paths();
-        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let cache = std::env::var_os("MC_OWNER_ASSET_CACHE").map_or_else(
-            || private.join("generated/level1-unity-asset-cache"),
-            PathBuf::from,
-        );
-        let world = NativeWorld::load_with_owner_cache(package, closure, &cache)
-            .expect("package M and CP1/CP2 owner cache load");
+        let world = presentation_test_world();
         let mut session = SessionRecord::new(world).expect("presentation session constructs");
-        let assets = Arc::new(load_terrain_frame_assets(&cache).expect("presentation assets load"));
+        let assets = Arc::new(terrain_frame_assets_fixture());
         session.selector_frames = session
             .world
             .goat_tmap_bank()
@@ -13256,14 +13726,7 @@ mod tests {
     }
 
     fn open_fixture_with_owner_cache_and_terrain_frame_assets() -> u64 {
-        let (package, closure) = fixture_paths();
-        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let world = NativeWorld::load_with_owner_cache(
-            package,
-            closure,
-            private.join("generated/level1-unity-asset-cache"),
-        )
-        .expect("package M and qualified owner cache load");
+        let world = presentation_test_world();
         let mut session =
             SessionRecord::new(world).expect("owner-cache fixture session constructs");
         let assets = Arc::new(terrain_frame_assets_fixture());
@@ -13289,14 +13752,7 @@ mod tests {
     }
 
     fn open_fixture_with_world_frame_assets() -> u64 {
-        let (package, closure) = fixture_paths();
-        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let world = NativeWorld::load_with_owner_cache(
-            package,
-            closure,
-            private.join("generated/level1-unity-asset-cache"),
-        )
-        .expect("package M and qualified owner cache load");
+        let world = presentation_test_world();
         let mut session =
             SessionRecord::new(world).expect("owner-cache fixture session constructs");
         let assets = Arc::new(terrain_frame_assets_fixture());
@@ -13380,6 +13836,7 @@ mod tests {
         assert_eq!(size_of::<McLevel1CastleSnapshotV2>(), 80);
         assert_eq!(size_of::<McTerrainStateV2>(), 64);
         assert_eq!(size_of::<McLevel1CastleLifecycleSnapshotV2>(), 80);
+        assert_eq!(size_of::<McLevel1HouseCompletionEffectV2>(), 80);
         assert_eq!(size_of::<McManaSphereSnapshotV2>(), 64);
         assert_eq!(size_of::<McManaCarrierSnapshotV2>(), 80);
         assert_eq!(size_of::<McLevel1ActorSnapshotV2>(), 56);
@@ -13394,6 +13851,11 @@ mod tests {
         assert_eq!(size_of::<McEventQueryV2>(), 40);
         assert_eq!(size_of::<McEventBatchV2>(), 56);
         assert_eq!(size_of::<McEventV2>(), 72);
+        assert_eq!(size_of::<McLevel1ResidentObservationV1>(), 40);
+        assert_eq!(
+            std::mem::offset_of!(McLevel1ResidentObservationV1, digest),
+            16
+        );
         assert_eq!(size_of::<McAudioCommandV2>(), 88);
         assert_eq!(size_of::<McPresentationStateV2>(), 64);
         assert_eq!(size_of::<McRenderCameraStateV2>(), 72);
@@ -13554,6 +14016,18 @@ mod tests {
         assert_eq!(
             std::mem::offset_of!(McLevel1CastleLifecycleSnapshotV2, terrain_mutation_sequence),
             72
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1HouseCompletionEffectV2, parent_word_2e),
+            44
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1HouseCompletionEffectV2, max_life),
+            64
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1HouseCompletionEffectV2, effect_count),
+            76
         );
         assert_eq!(std::mem::offset_of!(McManaSphereSnapshotV2, mana), 44);
         assert_eq!(std::mem::offset_of!(McManaSphereSnapshotV2, reserved), 52);
@@ -14254,6 +14728,7 @@ _Static_assert(sizeof(McLevel1ExitPresentationV2) == 64, "McLevel1ExitPresentati
 _Static_assert(sizeof(McLevel1CastleSnapshotV2) == 80, "McLevel1CastleSnapshotV2 size");
 _Static_assert(sizeof(McTerrainStateV2) == 64, "McTerrainStateV2 size");
 _Static_assert(sizeof(McLevel1CastleLifecycleSnapshotV2) == 80, "McLevel1CastleLifecycleSnapshotV2 size");
+_Static_assert(sizeof(McLevel1HouseCompletionEffectV2) == 80, "McLevel1HouseCompletionEffectV2 size");
 _Static_assert(sizeof(McManaSphereSnapshotV2) == 64, "McManaSphereSnapshotV2 size");
 _Static_assert(sizeof(McManaCarrierSnapshotV2) == 80, "McManaCarrierSnapshotV2 size");
 _Static_assert(sizeof(McLevel1ActorSnapshotV2) == 56, "McLevel1ActorSnapshotV2 size");
@@ -14268,6 +14743,8 @@ _Static_assert(sizeof(McAssetRefInfoV2) == 32, "McAssetRefInfoV2 size");
 _Static_assert(sizeof(McEventQueryV2) == 40, "McEventQueryV2 size");
 _Static_assert(sizeof(McEventBatchV2) == 56, "McEventBatchV2 size");
 _Static_assert(sizeof(McEventV2) == 72, "McEventV2 size");
+_Static_assert(sizeof(McLevel1ResidentObservationV1) == 40, "McLevel1ResidentObservationV1 size");
+_Static_assert(offsetof(McLevel1ResidentObservationV1, digest) == 16, "resident observation digest offset");
 _Static_assert(sizeof(McAudioCommandV2) == 88, "McAudioCommandV2 size");
 _Static_assert(sizeof(McPresentationStateV2) == 64, "McPresentationStateV2 size");
 _Static_assert(sizeof(McRenderCameraStateV2) == 72, "McRenderCameraStateV2 size");
@@ -14335,6 +14812,9 @@ _Static_assert(offsetof(McTerrainStateV2, reserved) == 48, "terrain state reserv
 _Static_assert(offsetof(McLevel1CastleLifecycleSnapshotV2, root_life) == 44, "castle lifecycle life offset");
 _Static_assert(offsetof(McLevel1CastleLifecycleSnapshotV2, construction_timer) == 64, "castle lifecycle timer offset");
 _Static_assert(offsetof(McLevel1CastleLifecycleSnapshotV2, terrain_mutation_sequence) == 72, "castle lifecycle terrain sequence offset");
+_Static_assert(offsetof(McLevel1HouseCompletionEffectV2, parent_word_2e) == 44, "house completion parent state offset");
+_Static_assert(offsetof(McLevel1HouseCompletionEffectV2, max_life) == 64, "house completion life offset");
+_Static_assert(offsetof(McLevel1HouseCompletionEffectV2, effect_count) == 76, "house completion count offset");
 _Static_assert(offsetof(McManaSphereSnapshotV2, mana) == 44, "mana sphere mana offset");
 _Static_assert(offsetof(McManaSphereSnapshotV2, reserved) == 52, "mana sphere reserved offset");
 _Static_assert(offsetof(McManaCarrierSnapshotV2, carried_mana) == 60, "mana carrier payload offset");
@@ -14781,7 +15261,7 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
                 };
             let reset_full = render_ambient_ablation(&reset_ambient)?;
             let reset_without_ambient = render_ambient_ablation(&[])?;
-            assert_eq!(reset_full.index_hash, 0x6cbc_716b_dcd0_4ed6);
+            assert_eq!(reset_full.index_hash, 0xaca8_5f81_ab89_d6ef);
             assert_eq!(
                 reset_full.terrain_coverage,
                 reset_without_ambient.terrain_coverage
@@ -14830,33 +15310,33 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
                     .framebuffer_writes,
                 0
             );
-            assert_eq!(reset_full.ambient_raster_stats.framebuffer_writes, 6_396);
+            assert_eq!(reset_full.ambient_raster_stats.framebuffer_writes, 16_000);
             assert_eq!(
                 changed_summary(&reset_full, &reset_without_ambient),
-                (5_362, Some((25, 114, 252, 199)))
+                (10_989, Some((0, 114, 252, 199)))
             );
 
             for (model, row_count, index_hash, framebuffer_writes, delta) in [
                 (
                     1,
                     8,
-                    0x0537_4b45_3e37_1501,
-                    1_482,
-                    (1_482, Some((57, 138, 99, 178))),
+                    0xfba7_2c67_ec5b_9bac,
+                    10_627,
+                    (8_894, Some((0, 128, 242, 199))),
                 ),
                 (
                     14,
                     9,
-                    0x7ca3_63e6_8e1e_8ada,
-                    104,
-                    (102, Some((134, 114, 211, 168))),
+                    0x734e_f184_f4c0_cdaa,
+                    259,
+                    (256, Some((66, 114, 211, 168))),
                 ),
                 (
                     0,
                     14,
-                    0x4bf1_e2b9_86a1_ab89,
-                    4_810,
-                    (4_309, Some((25, 134, 252, 199))),
+                    0x4831_3b7f_97f3_30ed,
+                    5_114,
+                    (4_539, Some((25, 134, 252, 199))),
                 ),
             ] {
                 let family = reset_ambient
@@ -15524,12 +16004,70 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
         assert_eq!(command.pan_q16, 0x7fff);
         assert_eq!(command.loop_count, 0);
         assert_eq!(command.action, MC_AUDIO_ACTION_START);
-        assert_eq!(command.voice_index, 1);
+        assert_eq!(command.voice_index, 2);
         with_session(handle, |session| {
+            let event_for = |kind, code| {
+                session
+                    .events
+                    .iter()
+                    .find(|event| event.kind == kind && event.code == code)
+                    .copied()
+                    .expect("source-ledger event is present")
+            };
+            let periodic_43 = event_for(MC_EVENT_PREPARE_SOUND, 43);
+            let land_2 = event_for(MC_EVENT_PREPARE_SOUND, 2);
+            let land_end_1 = event_for(MC_EVENT_END_LOOP, 1);
+            let ambient_fire_3 = session
+                .audio_commands
+                .iter()
+                .find_map(|(sequence, audio)| {
+                    (audio.sound_id == 3
+                        && audio.voice_index == 1
+                        && audio.action == MC_AUDIO_ACTION_START)
+                        .then(|| {
+                            session
+                                .events
+                                .iter()
+                                .find(|event| event.sequence == *sequence)
+                                .copied()
+                                .expect("winning sound-3 command retains its source event")
+                        })
+                })
+                .expect("one ambient-fire source occurrence wins pooled sound 3");
+            assert!(
+                periodic_43.sequence < land_2.sequence
+                    && land_2.sequence < land_end_1.sequence
+                    && land_end_1.sequence < ambient_fire_3.sequence,
+                "flight emits synthetic periodic 43 then pinned SurfaceLandLoop 2/1 before the pinned ambient-fire mission occurrence"
+            );
+            // Pinned source occurrence identities:
+            // sound 2 SurfaceLandLoop = a8fdf305...3f1e8;
+            // sound 3 AmbientFireAction01FirstEligibleSound = ac35f9a0...a9a9.
+            let allocated = [land_2.sequence, ambient_fire_3.sequence, periodic_43.sequence]
+                .map(|sequence| session.audio_commands[&sequence]);
             assert_eq!(
-                session.audio_voices[0].map(|voice| voice.sound_id),
-                Some(2),
-                "the local ambient loop owns shared voice zero first"
+                allocated.map(|audio| {
+                    (
+                        audio.sound_id,
+                        audio.voice_index,
+                        audio.pooled_flush_rank,
+                        audio.action,
+                    )
+                }),
+                [
+                    (2, 0, 0, MC_AUDIO_ACTION_START),
+                    (3, 1, 1, MC_AUDIO_ACTION_START),
+                    (43, 2, 2, MC_AUDIO_ACTION_START),
+                ],
+                "direct sound 2 claims voice 0 before sound-id-ordered pooled 3 and synthetic/excluded 43 claim voices 1 and 2"
+            );
+            assert_eq!(
+                session.audio_voices[..3]
+                    .iter()
+                    .map(|voice| voice.map(|voice| voice.sound_id))
+                    .collect::<Vec<_>>(),
+                [Some(2), Some(3), Some(43)],
+                "source-ordered land ambience and ambient-fire sound claim voices zero and one before pooled sound 43"
             );
             Ok(())
         })
@@ -18077,7 +18615,10 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
             (snapshot.x, snapshot.y, snapshot.z),
             (19_840, 56_960, 5_024)
         );
-        assert_eq!(snapshot.objective_textbox_ticks, 33);
+        assert_eq!(
+            snapshot.objective_textbox_ticks, 0,
+            "package M captures remc2 before PresentObjective installs its 200-tick textbox"
+        );
         assert_eq!(snapshot.objective_count, 8);
         assert_eq!(snapshot.objectives_authority, MC_AUTHORITY_FROZEN_OBSERVED);
 
@@ -18397,7 +18938,7 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
         assert_eq!(reset_rows, second_rows);
         assert_eq!(reset_batch.live_world_hash, second_batch.live_world_hash);
         assert_eq!(
-            reset_batch.live_world_hash, 0x498e_4302_1f82_80b8,
+            reset_batch.live_world_hash, 0xc5f2_8129_5e04_4de5,
             "C ABI publishes the explicit v2 reset hash"
         );
         assert_eq!(rng_only_reset_rows, reset_rows);
@@ -18959,9 +19500,7 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
             ),
             MC_STATUS_OK
         );
-        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        let expected =
-            fs::read(private.join("generated/level1-unity-asset-cache/palette/paln.rgb8")).unwrap();
+        let expected = fs::read(presentation_test_cache().join("palette/paln.rgb8")).unwrap();
         assert_eq!(rgb8.as_slice(), expected);
         assert_eq!(info.rgb8_sha256.as_slice(), Sha256::digest(rgb8).as_slice());
         assert_eq!(
@@ -19272,7 +19811,8 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
     }
 
     #[test]
-    fn source_projection_hash_normalizes_only_the_additive_session_tick() {
+    fn source_projection_hash_has_complete_preimage_without_action_51_terrain_and_normalizes_tick()
+    {
         let handle = open_fixture();
         let command = valid_command();
         let mut snapshot = McSessionSnapshotV2::default();
@@ -19292,8 +19832,85 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
             mc_native_session_source_projection_hash(handle, &raw mut projected_hash),
             MC_STATUS_OK
         );
-        assert_eq!(snapshot.state_hash, 0x061b_7ffc_8213_1a7e);
-        assert_eq!(projected_hash, 0x0e45_47b4_2a98_c976);
+        with_session(handle, |session| {
+            assert_eq!(
+                session.state,
+                FlightState {
+                    entity_index: 152,
+                    position: Position {
+                        x: 19_840,
+                        y: 56_960,
+                        z: 5_024,
+                    },
+                    yaw: 0,
+                    display_pitch: 0,
+                    effective_pitch: 0,
+                    roll_accumulator: 0,
+                    pitch_accumulator: 0,
+                    target_speed: 0,
+                    speed_changed_flag: 0,
+                    actual_speed: 0,
+                    strafe_speed: 0,
+                    roll_delta: 0,
+                    pitch_delta: 0,
+                    recoil_speed: 0,
+                    recoil_yaw: 0,
+                    impulse_x: 0,
+                    impulse_y: 0,
+                    impulse_z: 0,
+                    entity_fov: 0,
+                    water_counter: 0,
+                    speed_modifier: 0,
+                    speed_modifier_counter: 0,
+                    immobilize_counter: 0,
+                    immobilize_subcounter: 0,
+                    tether_prior_distance: 0,
+                    tether_target_index: 0,
+                    tether_holder_index: 0,
+                    tether_tier: 0,
+                    speed_spell_holder_index: 0,
+                    entity_phase: 197,
+                    ambient_loop_5_distance: 2_048,
+                    ambient_loop_31_distance: 1_746,
+                    player_color_index: 0,
+                    music_countdown: 0,
+                    recovery_latch: false,
+                    skip_flight_once: false,
+                    tick: 300,
+                },
+                "all 39 fixed-width state-hash fields have an explicit preimage"
+            );
+            assert_eq!(
+                (
+                    session.terrain.deterministic_hash(),
+                    session.terrain.mutation_sequence(),
+                ),
+                (0x5acb_822a_a12a_962f, 2),
+                "the paired terrain generation is independently identified"
+            );
+            assert!(session.mission.house_construction_effects().is_empty());
+            assert!(session.pending_house_effects.iter().all(|effect| !matches!(
+                effect,
+                HouseStepEvent::ConstructionPass { .. }
+                    | HouseStepEvent::ConstructionCompleted { .. }
+            )));
+            Ok(())
+        })
+        .expect("complete 300-turn hash preimage");
+        assert_eq!(
+            (snapshot.state_hash, projected_hash),
+            (0x5fec_9398_db9c_e681, 0x372c_5311_579c_f80a)
+        );
+        with_session(handle, |session| {
+            let shifted = FlightState {
+                tick: session.state.tick.wrapping_add(10_000),
+                ..session.state
+            };
+            assert_ne!(state_hash(&shifted), snapshot.state_hash);
+            assert_eq!(source_projection_hash(&shifted), projected_hash);
+            Ok(())
+        })
+        .expect("source-projection tick normalization");
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 
@@ -19834,6 +20451,30 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
             ),
             MC_STATUS_OK
         );
+        let mut observation = McLevel1ResidentObservationV1::default();
+        assert_eq!(
+            mc_native_level1_resident_observation_v1(
+                handle,
+                &raw mut observation,
+                struct_size::<McLevel1ResidentObservationV1>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            (
+                observation.required_mask,
+                observation.observed_mask,
+                observation.remaining_mask,
+                observation.digest,
+            ),
+            (
+                direct.mission.required_resident_behavior_mask(),
+                direct.mission.observed_resident_behavior_mask(),
+                direct.mission.remaining_resident_behavior_mask(),
+                direct.mission.resident_behavior_observation_digest_v1(),
+            ),
+            "the public C ABI observation receipt must exactly match direct Rust state"
+        );
         with_session(handle, |capi| {
             assert!(direct.mission.resident_projection_is_linked(resident_slot));
             assert!(capi.mission.resident_projection_is_linked(resident_slot));
@@ -20156,7 +20797,34 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
         assert_eq!(lifecycle.menu_state, 0);
 
         let mut mission = McLevel1MissionSnapshotV2::default();
-        for _ in 0..300 {
+        const DYING_OUTER_FRAMES: u8 = 78;
+        with_session(handle, |session| {
+            assert_eq!(
+                (
+                    session.state.position,
+                    session.mission.player_fall_velocity,
+                    session
+                        .terrain
+                        .ground_height(session.state.position)
+                        .wrapping_add(100),
+                    session.terrain.mutation_sequence(),
+                ),
+                (
+                    Position {
+                        x: 19_684,
+                        y: 56_918,
+                        z: 5_020,
+                    },
+                    -2,
+                    4_864,
+                    2,
+                ),
+                "fixed owner-data position, source fall velocity, +100 collision floor, and terrain generation form the independent action-2 preimage"
+            );
+            Ok(())
+        })
+        .unwrap();
+        for dying_step in 0..DYING_OUTER_FRAMES {
             assert_eq!(
                 mc_native_level1_mission_snapshot(
                     handle,
@@ -20173,9 +20841,48 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
                 ),
                 MC_STATUS_OK
             );
-            if lifecycle.player_action == 3 {
-                break;
-            }
+            assert_eq!(lifecycle.player_action, 2);
+            let (expected_position, expected_velocity, expected_contact) =
+                with_session(handle, |session| {
+                    let mut expected_state = session.state;
+                    let mut expected_context = session.context.clone();
+                    step_entity_body_with_context(
+                        &mut expected_state,
+                        session.world.profile(),
+                        &session.terrain,
+                        &mut expected_context,
+                    );
+                    expected_state.position.z = expected_state
+                        .position
+                        .z
+                        .wrapping_add(session.mission.player_fall_velocity);
+                    let mut expected_velocity = session
+                        .mission
+                        .player_fall_velocity
+                        .wrapping_sub(2)
+                        .max(-256);
+                    if expected_velocity > 0 {
+                        expected_velocity = 0;
+                    }
+                    let ground = session
+                        .terrain
+                        .ground_height(expected_state.position)
+                        .wrapping_add(100);
+                    if expected_state.position.z < ground {
+                        expected_state.position.z = ground;
+                    }
+                    Ok((
+                        expected_state.position,
+                        expected_velocity,
+                        expected_state.position.z == ground,
+                    ))
+                })
+                .unwrap();
+            assert_eq!(
+                expected_contact,
+                dying_step == DYING_OUTER_FRAMES - 1,
+                "the source recurrence independently reaches contact only on outer frame 78"
+            );
             let mut step = McSessionSnapshotV2::default();
             assert_eq!(
                 mc_native_session_step(
@@ -20186,10 +20893,40 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
                 ),
                 MC_STATUS_OK
             );
+            with_session(handle, |session| {
+                assert_eq!(session.state.position, expected_position);
+                assert_eq!(session.mission.player_fall_velocity, expected_velocity);
+                assert_eq!(
+                    session.mission.player_action,
+                    if expected_contact { 3 } else { 2 }
+                );
+                Ok(())
+            })
+            .unwrap();
         }
+        assert_eq!(
+            mc_native_level1_mission_snapshot(
+                handle,
+                &raw mut mission,
+                struct_size::<McLevel1MissionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_native_level1_player_lifecycle_snapshot(
+                handle,
+                &raw mut lifecycle,
+                struct_size::<McLevel1PlayerLifecycleSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
         assert_eq!(lifecycle.player_action, 3);
         assert_eq!(mission.player_dead, 1);
-        assert_eq!(mission.objective_textbox_ticks, 0);
+        assert_eq!(
+            mission.objective_textbox_ticks,
+            200_u8 - DYING_OUTER_FRAMES,
+            "PresentObjective remains frame-driven while dead-player input is suppressed"
+        );
         assert_eq!(
             (
                 lifecycle.player_active,
@@ -20637,13 +21374,35 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
                     .contains(&(0, retried.source_entity_index, retried_tile.0, retried_tile.1)),
                 "the current action-2 invocation publishes CopyEntityPosition immediately before later source slots dispatch"
             );
+            let final_alias = session
+                .mission
+                .released_spell_holders()
+                .iter()
+                .flatten()
+                .filter(|released| released.source_entity_index == retried.source_entity_index)
+                .last()
+                .copied()
+                .expect("at least one literal-one release");
+            let final_tile = (
+                final_alias.position.x.to_be_bytes()[0],
+                final_alias.position.y.to_be_bytes()[0],
+            );
             assert!(
                 session
                     .renderable_map_chains
-                    .entity_chain(retried_tile.0, retried_tile.1)
+                    .entity_chain(final_tile.0, final_tile.1)
                     .contains(&retried.source_entity_index),
-                "the failed-contact retry publishes literal row one at its current release position"
+                "the last family writing the aliased literal-one row owns its final map position"
             );
+            if final_tile != retried_tile {
+                assert!(
+                    !session
+                        .renderable_map_chains
+                        .entity_chain(retried_tile.0, retried_tile.1)
+                        .contains(&retried.source_entity_index),
+                    "an earlier family alias cannot retain duplicate raw map membership"
+                );
+            }
             assert!(
                 !session
                     .renderable_map_chains
@@ -20826,6 +21585,1066 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
 
         assert_eq!(mc_native_session_destroy(first), MC_STATUS_OK);
         assert_eq!(mc_native_session_destroy(second), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn capi_terrain_projection_exposes_target_list_block_and_action_51_planes() {
+        let world = presentation_test_world();
+        let mut direct = world.session();
+        let handle = open_fixture_with_owner_cache();
+        let configure = |live_world: &mut LiveWorldState, owner_entity_index: u16| {
+            let mut house = live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == 11)
+                .copied()
+                .expect("house 11");
+            house.action = sim_core::house::HOUSE_TERRAIN_TO_LIVE_ACTION;
+            house.max_life = 2;
+            house.life = 2;
+            house.owner_entity_index = owner_entity_index;
+            house.control_flags |= 1;
+            live_world.initialize_builder_house(house).unwrap();
+        };
+        configure(&mut direct.live_world, direct.state.entity_index);
+        with_session_mut(handle, |session| {
+            configure(&mut session.live_world, session.state.entity_index);
+            Ok(())
+        })
+        .expect("configure registered C API session");
+
+        let command = valid_command();
+        let mut snapshot = McSessionSnapshotV2::default();
+        let copy_plane_for = |session_handle: u64, kind: u32| {
+            let mut plane = vec![0_u8; 65_536];
+            let mut written = 0;
+            assert_eq!(
+                mc_native_terrain_plane_copy_u8(
+                    session_handle,
+                    kind,
+                    plane.as_mut_ptr(),
+                    65_536,
+                    &raw mut written,
+                ),
+                MC_STATUS_OK
+            );
+            assert_eq!(written, 65_536);
+            plane
+        };
+        let copy_plane = |kind: u32| copy_plane_for(handle, kind);
+        let copy_entity_indices = || {
+            let mut plane = vec![0_i16; 65_536];
+            let mut written = 0;
+            assert_eq!(
+                mc_native_terrain_entity_indices_copy(
+                    handle,
+                    plane.as_mut_ptr(),
+                    65_536,
+                    &raw mut written,
+                ),
+                MC_STATUS_OK
+            );
+            assert_eq!(written, 65_536);
+            plane
+        };
+
+        let blocked_handle = open_fixture_with_owner_cache();
+        let blocked_control_handle = open_fixture_with_owner_cache();
+        assert_eq!(
+            mc_native_level1_action_51_blocker_setup_for_qualification(
+                blocked_handle,
+                11,
+                sim_core::house::HOUSE_TERRAIN_TO_LIVE_ACTION,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_native_level1_action_51_blocker_setup_for_qualification(
+                blocked_control_handle,
+                11,
+                u8::MAX,
+            ),
+            MC_STATUS_OK
+        );
+        let blocked_before = with_session(blocked_handle, |session| {
+            let house = session
+                .live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == 11)
+                .expect("blocked house 11");
+            let views = level1_turn_start_source_views(
+                &session.mission,
+                &session.state,
+                &session.live_world,
+            );
+            assert!(
+                Level1MissionState::house_action_51_blocked(&views, 11),
+                "public setup must materialize a real overlapping model-42 source row: house={:?}, blockers={:?}, constructions={:?}",
+                views.iter().find(|view| view.source_entity_index == 11),
+                views
+                    .iter()
+                    .filter(|view| view.class == 10 && view.model == 42)
+                    .collect::<Vec<_>>(),
+                session.mission.house_completion_constructions()
+            );
+            Ok((house.action, house.life, house.phase))
+        })
+        .expect("public blocked-session setup");
+        let mut blocked_snapshot = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                blocked_handle,
+                &raw const command,
+                &raw mut blocked_snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let mut blocked_control_snapshot = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                blocked_control_handle,
+                &raw const command,
+                &raw mut blocked_control_snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let blocked_after = with_session(blocked_handle, |session| {
+            let house = session
+                .live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == 11)
+                .expect("blocked house 11 after public step");
+            Ok((house.action, house.life, house.phase))
+        })
+        .expect("public blocked-session result");
+        assert_eq!(
+            blocked_before.0,
+            sim_core::house::HOUSE_TERRAIN_TO_LIVE_ACTION
+        );
+        assert_eq!(blocked_before.1, 2);
+        assert_eq!(blocked_after.0, blocked_before.0);
+        assert_eq!(blocked_after.1, blocked_before.1);
+        assert_eq!(blocked_after.2, blocked_before.2.wrapping_add(1));
+        for (kind, before) in [
+            MC_TERRAIN_HEIGHT_U8,
+            MC_TERRAIN_TYPES_U8,
+            MC_TERRAIN_SHADE_U8,
+            MC_TERRAIN_ANGLE_U8,
+            MC_TERRAIN_SECONDARY_U8,
+        ]
+        .into_iter()
+        .map(|kind| (kind, copy_plane_for(blocked_control_handle, kind)))
+        {
+            assert!(
+                copy_plane_for(blocked_handle, kind) == before,
+                "blocked action 51 changed terrain plane kind {kind}"
+            );
+        }
+        assert_eq!(mc_native_session_destroy(blocked_handle), MC_STATUS_OK);
+        assert_eq!(
+            mc_native_session_destroy(blocked_control_handle),
+            MC_STATUS_OK
+        );
+
+        direct.step(PlayerCommand::default());
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            copy_plane(MC_TERRAIN_HEIGHT_U8),
+            direct.terrain.planes().ground_heights.as_ref()
+        );
+        assert_eq!(
+            copy_plane(MC_TERRAIN_TYPES_U8),
+            direct.terrain.planes().terrain_types.as_ref()
+        );
+        assert_eq!(
+            copy_plane(MC_TERRAIN_ANGLE_U8),
+            direct.terrain.planes().angles.as_ref()
+        );
+        assert_eq!(
+            copy_plane(MC_TERRAIN_SHADE_U8),
+            direct.terrain.planes().shading.as_ref()
+        );
+        assert_eq!(
+            copy_plane(MC_TERRAIN_SECONDARY_U8),
+            direct.terrain.planes().secondary_heights.as_ref()
+        );
+        assert_eq!(
+            copy_entity_indices(),
+            direct.terrain.planes().entity_indices.as_ref()
+        );
+        assert_eq!(
+            direct
+                .live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == 11)
+                .unwrap()
+                .action,
+            sim_core::house::HOUSE_TERRAIN_TO_LIVE_ACTION
+        );
+
+        direct.step(PlayerCommand::default());
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            copy_plane(MC_TERRAIN_HEIGHT_U8),
+            direct.terrain.planes().ground_heights.as_ref()
+        );
+        assert_eq!(
+            copy_plane(MC_TERRAIN_TYPES_U8),
+            direct.terrain.planes().terrain_types.as_ref()
+        );
+        assert_eq!(
+            copy_plane(MC_TERRAIN_ANGLE_U8),
+            direct.terrain.planes().angles.as_ref()
+        );
+        assert_eq!(
+            copy_plane(MC_TERRAIN_SHADE_U8),
+            direct.terrain.planes().shading.as_ref()
+        );
+        assert_eq!(
+            copy_plane(MC_TERRAIN_SECONDARY_U8),
+            direct.terrain.planes().secondary_heights.as_ref()
+        );
+        assert_eq!(
+            copy_entity_indices(),
+            direct.terrain.planes().entity_indices.as_ref()
+        );
+        with_session(handle, |session| {
+            assert_eq!(session.terrain, direct.terrain);
+            assert_eq!(session.live_world, direct.live_world);
+            assert_eq!(
+                session.mission.source_arena_hash_v2(),
+                direct.mission.source_arena_hash_v2()
+            );
+            assert_eq!(
+                session.mission.house_construction_effects(),
+                direct.mission.house_construction_effects()
+            );
+            assert_eq!(
+                session.mission.house_completion_constructions(),
+                direct.mission.house_completion_constructions()
+            );
+            assert_eq!(session.pending_house_effects, direct.pending_house_effects);
+            Ok(())
+        })
+        .expect("direct/C ABI action-51 full-state equality");
+        let capi_action = with_session(handle, |session| {
+            Ok(session
+                .live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == 11)
+                .expect("C API house 11")
+                .action)
+        })
+        .expect("registered C API house action");
+        assert_eq!(capi_action, sim_core::house::HOUSE_LIVE_ACTION);
+        assert_eq!(
+            direct
+                .live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == 11)
+                .unwrap()
+                .action,
+            capi_action
+        );
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn capi_action_51_completion_exposes_rich_model_42_effect() {
+        let handle = open_fixture_with_owner_cache();
+        let parent_entity_index = 152;
+        let house_building_index = with_session(handle, |session| {
+            Ok(session
+                .live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == 11)
+                .expect("qualification house 11")
+                .building_index)
+        })
+        .expect("qualification house selector");
+        let construction_selector = [17, 26]
+            .into_iter()
+            .find(|selector| *selector != house_building_index)
+            .expect("two distinct qualified construction selectors");
+        let (parent_source_id, parent_position, expected_half_width, expected_half_depth) =
+            with_session(handle, |session| {
+                let parent = level1_turn_start_source_views(
+                    &session.mission,
+                    &session.state,
+                    &session.live_world,
+                )
+                .into_iter()
+                .find(|view| view.source_entity_index == parent_entity_index)
+                .expect("qualification class-3 parent");
+                let footprint = session
+                    .world
+                    .house_build_footprint(construction_selector)
+                    .expect("qualification construction footprint");
+                Ok((
+                    parent.source_id,
+                    parent.position,
+                    i16::try_from(((i32::from(footprint.width) << 8) + 1_280) >> 1)
+                        .expect("qualification width shift fits i16"),
+                    i16::try_from(((i32::from(footprint.height) << 8) + 1_280) >> 1)
+                        .expect("qualification depth shift fits i16"),
+                ))
+            })
+            .expect("qualification parent state");
+        let mut effect_count = u32::MAX;
+        assert_eq!(
+            mc_native_level1_house_completion_effect_count(handle, &raw mut effect_count),
+            MC_STATUS_OK
+        );
+        assert_eq!(effect_count, 0);
+        let mut hash_before = 0;
+        assert_eq!(
+            mc_native_session_source_arena_hash(handle, &raw mut hash_before),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_native_level1_action_51_completion_setup_for_qualification(
+                handle,
+                11,
+                parent_entity_index,
+                construction_selector,
+            ),
+            MC_STATUS_OK
+        );
+        let command = valid_command();
+        let mut session_snapshot = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut session_snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_native_level1_house_completion_effect_count(handle, &raw mut effect_count),
+            MC_STATUS_OK
+        );
+        assert!(effect_count >= 1);
+        let mut effect = McLevel1HouseCompletionEffectV2::default();
+        assert_eq!(
+            mc_native_level1_house_completion_effect_snapshot(
+                handle,
+                0,
+                &raw mut effect,
+                struct_size::<McLevel1HouseCompletionEffectV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(effect.abi_version, MC_NATIVE_ABI_VERSION);
+        assert_eq!(effect.struct_size, 80);
+        assert_eq!(effect.kind, MC_LEVEL1_HOUSE_COMPLETION_ALLOCATED);
+        assert_eq!(effect.house_entity_index, 11);
+        assert_eq!(effect.parent_entity_index, parent_entity_index);
+        assert_ne!(effect.source_entity_index, 0);
+        assert_eq!(effect.source_id, parent_source_id);
+        assert_eq!((effect.class_id, effect.model, effect.action), (10, 42, 44));
+        assert_eq!(effect.construction_selector, construction_selector);
+        assert_ne!(
+            effect.house_building_index, effect.construction_selector,
+            "house byte 0x46 must remain distinct from the parent dword-0x10 selector"
+        );
+        assert_eq!(effect.constructor_latch, 1);
+        assert_eq!(effect.active, 1);
+        assert_eq!(
+            effect.phase,
+            effect.source_entity_index.to_le_bytes()[0].wrapping_add(1),
+            "the newly allocated higher slot receives its ordinary outer phase increment later in the same source pass"
+        );
+        assert_eq!(effect.parent_word_2e, 4);
+        assert_eq!(
+            effect.parent_construction_selector,
+            i16::from(construction_selector)
+        );
+        assert_eq!(
+            (effect.x, effect.y, effect.z),
+            (
+                parent_position.x.wrapping_add(0x0101),
+                parent_position.y.wrapping_add(0x0202),
+                parent_position.z.wrapping_add(33),
+            )
+        );
+        assert_eq!(effect.collision_half_width, expected_half_width);
+        assert_eq!(effect.collision_half_depth, expected_half_depth);
+        assert_eq!((effect.yaw, effect.fov), (0, 256));
+        assert_eq!(
+            (effect.max_life, effect.life, effect.control_flags),
+            (0, 0, 1)
+        );
+        assert_eq!(effect.effect_ordinal, 0);
+        assert_eq!(effect.effect_count, effect_count);
+        let mut hash_after = 0;
+        assert_eq!(
+            mc_native_session_source_arena_hash(handle, &raw mut hash_after),
+            MC_STATUS_OK
+        );
+        assert_ne!(hash_after, hash_before);
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut session_snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_native_level1_house_completion_effect_count(handle, &raw mut effect_count),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            effect_count, 0,
+            "completion-effect snapshots are scoped to their source turn"
+        );
+        assert_eq!(
+            mc_native_level1_house_completion_effect_snapshot(
+                handle,
+                0,
+                &raw mut effect,
+                struct_size::<McLevel1HouseCompletionEffectV2>(),
+            ),
+            MC_STATUS_BOUNDS
+        );
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn action_51_raw_only_first_pass_survives_prior_public_finalization() {
+        let world = presentation_test_world();
+        let mut direct = world.session();
+        let handle = open_fixture_with_owner_cache();
+        let command = valid_command();
+        let mut snapshot = McSessionSnapshotV2::default();
+
+        direct.step(PlayerCommand::default());
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+
+        let (
+            class_2_slot,
+            class_5_slot,
+            building_index,
+            house_position,
+            house_source_id,
+            raw_tile_before,
+        ) = with_session_mut(handle, |session| {
+            let raw_only = session
+                .mission
+                .source_map_chains()
+                .linked_entity_indices()
+                .into_iter()
+                .filter(|entity_index| {
+                    *entity_index > 11
+                        && session.mission.imported_source_slot_is_live(*entity_index)
+                        && !session
+                            .live_world
+                            .houses()
+                            .iter()
+                            .any(|house| house.entity_index == *entity_index)
+                        && !session
+                            .live_world
+                            .goats()
+                            .iter()
+                            .any(|goat| goat.entity_index == *entity_index)
+                        && !session
+                            .live_world
+                            .villagers()
+                            .iter()
+                            .any(|villager| villager.entity_index == *entity_index)
+                })
+                .take(2)
+                .collect::<Vec<_>>();
+            assert_eq!(raw_only.len(), 2, "two raw-only qualification rows");
+            let retained_presentation = session
+                .renderable_map_chains
+                .linked_entity_indices()
+                .into_iter()
+                .filter(|entity_index| !raw_only.contains(entity_index))
+                .collect::<Vec<_>>();
+            session
+                .renderable_map_chains
+                .retain_entities(&retained_presentation)
+                .expect("remove qualification rows from presentation only");
+            let footprint = (0..=u8::MAX)
+                .filter_map(|index| session.world.house_build_footprint(index))
+                .find(|footprint| footprint.cells().iter().any(|cell| cell[0] == 0xff))
+                .cloned()
+                .expect("qualification BUILD contains a 0xff material cell");
+            let (start_x, start_y) = (0..=u8::MAX)
+                .flat_map(|y| (0..=u8::MAX).map(move |x| (x, y)))
+                .find(|(start_x, start_y)| {
+                    (0..footprint.height).all(|row| {
+                        (0..footprint.width).all(|column| {
+                            session
+                                .mission
+                                .source_map_chains()
+                                .entity_chain(
+                                    start_x.wrapping_add(column),
+                                    start_y.wrapping_add(row),
+                                )
+                                .is_empty()
+                        })
+                    })
+                })
+                .expect("empty wrapped BUILD footprint");
+            let ff_ordinal = footprint
+                .cells()
+                .iter()
+                .position(|cell| cell[0] == 0xff)
+                .expect("0xff footprint cell");
+            let ff_x = start_x.wrapping_add(
+                u8::try_from(ff_ordinal % usize::from(footprint.width))
+                    .expect("footprint x fits u8"),
+            );
+            let ff_y = start_y.wrapping_add(
+                u8::try_from(ff_ordinal / usize::from(footprint.width))
+                    .expect("footprint y fits u8"),
+            );
+            let raw_position = Position {
+                x: u16::from(ff_x) << 8,
+                y: u16::from(ff_y) << 8,
+                z: 0,
+            };
+            let house_position = Position {
+                x: u16::from(start_x.wrapping_add(footprint.width / 2)) << 8,
+                y: u16::from(start_y.wrapping_add(footprint.height / 2)) << 8,
+                z: 0,
+            };
+            assert!(
+                session
+                    .mission
+                    .configure_action_51_raw_entity_for_qualification(
+                        raw_only[0],
+                        2,
+                        1,
+                        raw_only[0],
+                        raw_position,
+                    )
+            );
+            assert!(
+                session
+                    .mission
+                    .configure_action_51_raw_entity_for_qualification(
+                        raw_only[1],
+                        5,
+                        25,
+                        raw_only[1],
+                        raw_position,
+                    )
+            );
+            assert!(!session.renderable_map_chains.tracks(raw_only[0]));
+            assert!(!session.renderable_map_chains.tracks(raw_only[1]));
+
+            let mut house = session
+                .live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == 11)
+                .copied()
+                .expect("qualification house 11");
+            house.action = sim_core::house::HOUSE_TERRAIN_TO_LIVE_ACTION;
+            house.max_life = 2;
+            house.life = 2;
+            house.owner_entity_index = session.state.entity_index;
+            house.control_flags |= 1;
+            house.building_index = footprint.index;
+            house.position = house_position;
+            let house_source_id = house.source_id;
+            session.live_world.initialize_builder_house(house).unwrap();
+            Ok((
+                raw_only[0],
+                raw_only[1],
+                footprint.index,
+                house_position,
+                house_source_id,
+                session.mission.source_map_chains().entity_chain(ff_x, ff_y),
+            ))
+        })
+        .expect("configure public raw-only action-51 pass");
+
+        let footprint = world
+            .house_build_footprint(building_index)
+            .expect("direct qualification BUILD");
+        let ff_ordinal = footprint
+            .cells()
+            .iter()
+            .position(|cell| cell[0] == 0xff)
+            .expect("direct 0xff footprint cell");
+        let center_x = house_position.x.wrapping_add(128).to_be_bytes()[0];
+        let center_y = house_position.y.wrapping_add(128).to_be_bytes()[0];
+        let ff_x = center_x
+            .wrapping_sub(footprint.width / 2)
+            .wrapping_add(u8::try_from(ff_ordinal % usize::from(footprint.width)).unwrap());
+        let ff_y = center_y
+            .wrapping_sub(footprint.height / 2)
+            .wrapping_add(u8::try_from(ff_ordinal / usize::from(footprint.width)).unwrap());
+        let raw_position = Position {
+            x: u16::from(ff_x) << 8,
+            y: u16::from(ff_y) << 8,
+            z: 0,
+        };
+        assert!(
+            direct
+                .mission
+                .configure_action_51_raw_entity_for_qualification(
+                    class_2_slot,
+                    2,
+                    1,
+                    class_2_slot,
+                    raw_position,
+                )
+        );
+        assert!(
+            direct
+                .mission
+                .configure_action_51_raw_entity_for_qualification(
+                    class_5_slot,
+                    5,
+                    25,
+                    class_5_slot,
+                    raw_position,
+                )
+        );
+        let mut direct_house = direct
+            .live_world
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == 11)
+            .copied()
+            .expect("direct qualification house 11");
+        direct_house.action = sim_core::house::HOUSE_TERRAIN_TO_LIVE_ACTION;
+        direct_house.max_life = 2;
+        direct_house.life = 2;
+        direct_house.owner_entity_index = direct.state.entity_index;
+        direct_house.control_flags |= 1;
+        direct_house.building_index = building_index;
+        direct_house.position = house_position;
+        direct
+            .live_world
+            .initialize_builder_house(direct_house)
+            .unwrap();
+        assert_eq!(
+            direct.mission.source_map_chains().entity_chain(ff_x, ff_y),
+            raw_tile_before
+        );
+
+        direct.step(PlayerCommand::default());
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        with_session(handle, |session| {
+            assert_eq!(
+                session.mission.house_construction_effects(),
+                direct.mission.house_construction_effects(),
+                "direct and public C ABI preserve identical raw-chain effect order"
+            );
+            assert_eq!(
+                session.mission.source_map_chains().entity_chain(ff_x, ff_y),
+                raw_tile_before,
+                "sub_57390 leaves the raw head and old links untouched"
+            );
+            assert_eq!(
+                session.mission.raw_house_construction_state(class_2_slot),
+                direct.mission.raw_house_construction_state(class_2_slot)
+            );
+            assert_eq!(
+                session.mission.raw_house_construction_state(class_5_slot),
+                direct.mission.raw_house_construction_state(class_5_slot)
+            );
+            Ok(())
+        })
+        .expect("public raw-only action-51 result");
+        let class_2 = direct
+            .mission
+            .raw_house_construction_state(class_2_slot)
+            .unwrap();
+        let class_5 = direct
+            .mission
+            .raw_house_construction_state(class_5_slot)
+            .unwrap();
+        assert!(
+            !direct.mission.house_construction_effects().is_empty(),
+            "raw action-51 emitted no effects: house={:?} pending={:?} raw_chain={:?}",
+            direct
+                .live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == 11),
+            direct.pending_house_effects,
+            direct.mission.source_map_chains().entity_chain(ff_x, ff_y),
+        );
+        assert_ne!(
+            class_2.0 & sim_core::level1_mission::SOURCE_DISABLED_FLAG,
+            0
+        );
+        assert_eq!(
+            (class_5.1, class_5.2, class_5.3),
+            (-1, house_source_id, house_source_id)
+        );
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn public_turn_preserves_raw_map_rows_excluded_from_final_presentation() {
+        let handle = open_fixture_with_owner_cache();
+        let raw_only_entity = with_session_mut(handle, |session| {
+            let seeds = session
+                .world
+                .raw_source_entity_indices()
+                .iter()
+                .copied()
+                .map(|entity_index| {
+                    let entity = &session.world.entities()[usize::from(entity_index)];
+                    RenderableMapSeed {
+                        entity_index,
+                        active: true,
+                        x: entity.position.x,
+                        y: entity.position.y,
+                    }
+                })
+                .collect::<Vec<_>>();
+            let raw = RenderableMapChains::from_reset(
+                &seeds,
+                &session.world.terrain_planes().entity_indices,
+                |entity_index| {
+                    session
+                        .world
+                        .entities()
+                        .get(usize::from(entity_index))
+                        .map(EntitySnapshot::old_map_entity)
+                },
+            )
+            .expect("qualified raw reset map topology");
+            let raw_only_entity = raw
+                .linked_entity_indices()
+                .into_iter()
+                .find(|entity_index| !session.renderable_map_chains.tracks(*entity_index))
+                .expect("qualification fixture has a raw row excluded from presentation");
+            session.mission.set_source_map_chains(raw);
+            Ok(raw_only_entity)
+        })
+        .expect("install complete raw gameplay map");
+
+        let command = valid_command();
+        let mut snapshot = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        with_session(handle, |session| {
+            assert!(
+                session
+                    .mission
+                    .source_map_chains()
+                    .entity_chain(
+                        session.world.entities()[usize::from(raw_only_entity)]
+                            .position
+                            .x
+                            .to_be_bytes()[0],
+                        session.world.entities()[usize::from(raw_only_entity)]
+                            .position
+                            .y
+                            .to_be_bytes()[0],
+                    )
+                    .contains(&raw_only_entity),
+                "public presentation finalization must not replace the raw gameplay chain"
+            );
+            Ok(())
+        })
+        .expect("raw gameplay topology after public turn");
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn public_action_51_ordinary_then_fallback_then_exhaustion_matches_direct_exact_state() {
+        let world = presentation_test_world();
+        let mut direct = world.session();
+        let handle = open_fixture_with_owner_cache();
+        let (first, second, last, ordinary, replacement) =
+            (900_u16, 901_u16, 902_u16, 903_u16, 904_u16);
+        let construction_selector = (0..=u8::MAX)
+            .find(|index| world.house_build_footprint(*index).is_some())
+            .expect("qualified construction selector");
+        let construction_axis = Position { x: 0, y: 0, z: 33 };
+        assert!(
+            direct
+                .mission
+                .configure_action_51_ordinary_fallback_exhaustion_for_qualification(
+                    [first, second, last],
+                    ordinary,
+                    replacement,
+                    construction_selector,
+                    construction_axis,
+                )
+        );
+        with_session_mut(handle, |session| {
+            assert!(
+                session
+                    .mission
+                    .configure_action_51_ordinary_fallback_exhaustion_for_qualification(
+                        [first, second, last],
+                        ordinary,
+                        replacement,
+                        construction_selector,
+                        construction_axis,
+                    )
+            );
+            Ok(())
+        })
+        .expect("configure public fallback arena");
+
+        let configure_house = |house: &mut sim_core::house::HouseState, owner: u16| {
+            house.action = sim_core::house::HOUSE_TERRAIN_TO_LIVE_ACTION;
+            house.max_life = 1;
+            house.life = 1;
+            house.owner_entity_index = owner;
+            house.control_flags |= 1;
+            house.building_index = construction_selector;
+            house.position = Position::default();
+            house.collision_half_width = 40;
+            house.collision_half_depth = 40;
+        };
+        let mut direct_house = direct
+            .live_world
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == 11)
+            .copied()
+            .expect("direct fallback house");
+        configure_house(&mut direct_house, direct.state.entity_index);
+        direct
+            .live_world
+            .initialize_builder_house(direct_house)
+            .unwrap();
+        with_session_mut(handle, |session| {
+            let mut house = session
+                .live_world
+                .houses()
+                .iter()
+                .find(|house| house.entity_index == 11)
+                .copied()
+                .expect("public fallback house");
+            configure_house(&mut house, session.state.entity_index);
+            session.live_world.initialize_builder_house(house).unwrap();
+            Ok(())
+        })
+        .expect("configure public fallback house");
+
+        direct.step(PlayerCommand::default());
+        let command = valid_command();
+        let mut snapshot = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                handle,
+                &raw const command,
+                &raw mut snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert!(matches!(
+            direct.mission.house_construction_effects(),
+            [
+                HouseConstructionSourceEffect::ConstructionAllocated {
+                    parent_entity_index,
+                    source_entity_index,
+                    ..
+                },
+                HouseConstructionSourceEffect::ConstructionAllocated {
+                    parent_entity_index: fallback_parent,
+                    source_entity_index: fallback_source,
+                    ..
+                },
+                HouseConstructionSourceEffect::ConstructionAllocationFailed {
+                    parent_entity_index: failed_parent,
+                    ..
+                }
+            ] if *parent_entity_index == first
+                && *source_entity_index == ordinary
+                && *fallback_parent == second
+                && *fallback_source == replacement
+                && *failed_parent == last
+        ));
+        assert_eq!(
+            direct
+                .mission
+                .house_completion_constructions()
+                .iter()
+                .map(|child| (child.source_entity_index, child.parent_entity_index))
+                .collect::<Vec<_>>(),
+            [(ordinary, first), (replacement, second)]
+        );
+        assert_eq!(
+            (
+                direct
+                    .mission
+                    .raw_house_construction_state(first)
+                    .unwrap()
+                    .4,
+                direct
+                    .mission
+                    .raw_house_construction_state(second)
+                    .unwrap()
+                    .4,
+                direct.mission.raw_house_construction_state(last).unwrap().4,
+                direct
+                    .mission
+                    .raw_house_construction_state(ordinary)
+                    .unwrap()
+                    .4,
+                direct
+                    .mission
+                    .raw_house_construction_state(replacement)
+                    .unwrap()
+                    .4,
+            ),
+            (4, 4, 9, 0, 0)
+        );
+
+        let mut effect_count = 0;
+        assert_eq!(
+            mc_native_level1_house_completion_effect_count(handle, &raw mut effect_count),
+            MC_STATUS_OK
+        );
+        assert_eq!(effect_count, 3);
+        let mut ordinary_effect = McLevel1HouseCompletionEffectV2::default();
+        let mut fallback_effect = McLevel1HouseCompletionEffectV2::default();
+        let mut failed = McLevel1HouseCompletionEffectV2::default();
+        assert_eq!(
+            mc_native_level1_house_completion_effect_snapshot(
+                handle,
+                0,
+                &raw mut ordinary_effect,
+                struct_size::<McLevel1HouseCompletionEffectV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_native_level1_house_completion_effect_snapshot(
+                handle,
+                1,
+                &raw mut fallback_effect,
+                struct_size::<McLevel1HouseCompletionEffectV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_native_level1_house_completion_effect_snapshot(
+                handle,
+                2,
+                &raw mut failed,
+                struct_size::<McLevel1HouseCompletionEffectV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            (
+                ordinary_effect.kind,
+                ordinary_effect.parent_entity_index,
+                ordinary_effect.source_entity_index,
+                ordinary_effect.parent_word_2e,
+            ),
+            (MC_LEVEL1_HOUSE_COMPLETION_ALLOCATED, first, ordinary, 4,)
+        );
+        assert_eq!(
+            (
+                fallback_effect.kind,
+                fallback_effect.parent_entity_index,
+                fallback_effect.source_entity_index,
+                fallback_effect.parent_word_2e,
+            ),
+            (MC_LEVEL1_HOUSE_COMPLETION_ALLOCATED, second, replacement, 4,)
+        );
+        assert_eq!(
+            (
+                failed.kind,
+                failed.parent_entity_index,
+                failed.source_entity_index,
+                failed.parent_word_2e,
+            ),
+            (MC_LEVEL1_HOUSE_COMPLETION_ALLOCATION_FAILED, last, 0, 9,)
+        );
+        let direct_digest = direct.mission.action_51_fallback_state_hash_v1();
+        let mut public_digest = 0_u64;
+        assert_eq!(
+            mc_native_level1_action_51_fallback_state_hash_v1(handle, &raw mut public_digest,),
+            MC_STATUS_OK
+        );
+        assert_eq!(public_digest, direct_digest);
+        with_session(handle, |session| {
+            assert_eq!(
+                session.mission.house_construction_effects(),
+                direct.mission.house_construction_effects()
+            );
+            assert_eq!(
+                session.mission.house_completion_constructions(),
+                direct.mission.house_completion_constructions()
+            );
+            assert_eq!(
+                session.mission.action_51_fallback_state_hash_v1(),
+                direct_digest,
+                "the public digest covers exact direct/C-ABI allocator, raw-list, map, and construction state"
+            );
+            let views = level1_turn_start_source_views(
+                &session.mission,
+                &session.state,
+                &session.live_world,
+            );
+            assert!(
+                !session.mission.current_house_action_51_blocked(&views, 11),
+                "fallback clears the later dword_38535 head as well as dword_38519"
+            );
+            Ok(())
+        })
+        .expect("public fallback result");
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 
     #[test]

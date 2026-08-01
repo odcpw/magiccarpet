@@ -48,15 +48,15 @@ use crate::{
         GROUND_FIRE_LOGICAL_HEIGHTS, GROUND_FIRE_PRESENTATION_BYTE_11,
         GROUND_FIRE_PRESENTATION_SPEEDS, GROUND_FIRE_RENDER_MODE, HouseResidentRequest,
         Level1AmbientEntity, Level1CastlePlacementBlocker, Level1CollisionTarget,
-        Level1MissionState, Level1MissionTemplate, Level1ResetSourceSlot,
-        Level1SourceCollisionTarget, Level1SourceEffect, Level1SourceEntityAuthority,
-        Level1SourceEntityView, MANA_CARRIER_BASE_TMAP, MANA_CARRIER_LOGICAL_HEIGHT,
-        MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_RENDER_MODE, POSSESSION_ATTRACTION_BASE_TMAP,
-        POSSESSION_ATTRACTION_LOGICAL_HEIGHT, POSSESSION_ATTRACTION_RENDER_INDEX,
-        POSSESSION_ATTRACTION_RENDER_MODE, POSSESSION_IMPACT_BASE_TMAP,
-        POSSESSION_IMPACT_LOGICAL_HEIGHT, POSSESSION_IMPACT_RENDER_INDEX,
-        POSSESSION_IMPACT_RENDER_MODE, SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT,
-        SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE,
+        Level1MissionState, Level1MissionTemplate, Level1ResetRawSourceState,
+        Level1ResetSourceSlot, Level1SourceCollisionTarget, Level1SourceEffect,
+        Level1SourceEntityAuthority, Level1SourceEntityView, MANA_CARRIER_BASE_TMAP,
+        MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_RENDER_MODE,
+        POSSESSION_ATTRACTION_BASE_TMAP, POSSESSION_ATTRACTION_LOGICAL_HEIGHT,
+        POSSESSION_ATTRACTION_RENDER_INDEX, POSSESSION_ATTRACTION_RENDER_MODE,
+        POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_LOGICAL_HEIGHT,
+        POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_IMPACT_RENDER_MODE, SPELL_JAR_BASE_TMAP,
+        SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE,
     },
     renderable_map_chain::{RenderableMapChains, RenderableMapSeed, raw_source_map_chain_entries},
     source_sprite_tmap::{
@@ -115,6 +115,11 @@ const CP4_CORRECTION6_CACHE_MANIFEST_SHA256: &str =
     "474d4b24c157896ce98f0a8baa1593f98762fc314f081600c44a94f97743fad8";
 const CP4_CORRECTION6_CACHE_CONTENT_SHA256: &str =
     "a1dc7c3fca20da019807093530c601b872c3d81284a19d17d5e1aa1bccafd752";
+const PLAN29_FINAL_CACHE_MANIFEST_SHA256: &str =
+    "1050b4f1e3f0e63fa292fe7798d19f4b390c063aa5afd5a350fba9e300298082";
+const PLAN29_FINAL_CACHE_CONTENT_SHA256: &str =
+    "b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf";
+pub const FINAL_LEVEL1_CACHE_DIRECTORY: &str = "level1-unity-asset-cache-plan29-final";
 const RESET_SCHEMA: &str = "mc2-flight-reset-projection/v1";
 const ENTITY_COUNT: usize = 1_000;
 const ENTITY_COUNT_U32: u32 = 1_000;
@@ -169,6 +174,24 @@ impl fmt::Display for NativeWorldError {
 impl std::error::Error for NativeWorldError {}
 
 type Result<T> = std::result::Result<T, NativeWorldError>;
+
+/// Resolve the single Level 1 presentation-cache root used by Rust fixtures.
+///
+/// `private_root` is the repository's `research/private` directory.  The
+/// environment override is intentionally common to sim-core and sim-capi;
+/// without it, the sealed PLAN29 final cache is selected.
+#[must_use]
+pub fn resolve_level1_presentation_cache_root(private_root: impl AsRef<Path>) -> PathBuf {
+    std::env::var_os("MC_OWNER_ASSET_CACHE").map_or_else(
+        || {
+            private_root
+                .as_ref()
+                .join("generated")
+                .join(FINAL_LEVEL1_CACHE_DIRECTORY)
+        },
+        PathBuf::from,
+    )
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MapType {
@@ -279,7 +302,28 @@ impl EntitySnapshot {
     /// terrain-cell painter traversal.
     #[must_use]
     pub fn old_map_entity(&self) -> u16 {
-        u16::from_le_bytes([self.record[22], self.record[23]])
+        // The private package prepends the four-byte exported entity header
+        // (slot, active, padding) before the remc2 record body.
+        u16::from_le_bytes([self.record[26], self.record[27]])
+    }
+
+    /// Raw zero-terminated `nextEntity_0x18_24` link toward the terrain-cell
+    /// head. Together with `oldMapEntity`, this validates exact map surgery.
+    #[must_use]
+    pub fn next_entity(&self) -> u16 {
+        u16::from_le_bytes([self.record[28], self.record[29]])
+    }
+
+    /// Raw source `word_0x24_36` targeted by the action-51 first pass.
+    #[must_use]
+    pub fn word_24(&self) -> u16 {
+        u16::from_le_bytes([self.record[40], self.record[41]])
+    }
+
+    /// Raw source `word_0x26_38` targeted by the action-51 first pass.
+    #[must_use]
+    pub fn word_26(&self) -> u16 {
+        u16::from_le_bytes([self.record[42], self.record[43]])
     }
 
     /// Raw reset `animationFrame_0x60_96` used by fixed and base-plus-frame
@@ -691,6 +735,56 @@ impl SessionTerrain {
         })
     }
 
+    /// Apply one source action-51 BUILD terrain event transactionally.
+    pub fn apply_house_construction(
+        &mut self,
+        position: Position,
+        remaining: Option<i32>,
+        footprint: &CastleBuildFootprint,
+    ) -> std::result::Result<(), String> {
+        let expected = usize::from(footprint.width) * usize::from(footprint.height);
+        if footprint.cells().len() != expected {
+            return Err(format!(
+                "house BUILD {} has {} cells, expected {expected}",
+                footprint.index,
+                footprint.cells().len()
+            ));
+        }
+        let mut staged = self.clone();
+        match remaining {
+            Some(remaining) => {
+                let remaining = u8::try_from(remaining).map_err(|_| {
+                    format!("house action-51 remaining count {remaining} does not fit u8")
+                })?;
+                if remaining == 0 {
+                    return Err(
+                        "house action-51 construction pass requires remaining > 0".to_owned()
+                    );
+                }
+                apply_level1_load_house_sweep(
+                    &mut staged.planes,
+                    &mut staged.terrain_rng,
+                    position,
+                    footprint,
+                    remaining,
+                );
+            }
+            None => {
+                apply_level1_load_house_sweep(
+                    &mut staged.planes,
+                    &mut staged.terrain_rng,
+                    position,
+                    footprint,
+                    0,
+                );
+                apply_level1_load_house_edge_smoothing(&mut staged.planes, position, footprint);
+            }
+        }
+        staged.mutation_sequence = staged.mutation_sequence.wrapping_add(1);
+        *self = staged;
+        Ok(())
+    }
+
     fn apply_castle_update_inner(
         &mut self,
         update: CastleTerrainUpdate,
@@ -1095,8 +1189,8 @@ pub(crate) fn apply_level1_load_house_sweep(
     footprint: &CastleBuildFootprint,
     remaining: u8,
 ) {
-    let center_x = position.x.to_be_bytes()[0];
-    let center_y = position.y.to_be_bytes()[0];
+    let center_x = position.x.wrapping_add(128).to_be_bytes()[0];
+    let center_y = position.y.wrapping_add(128).to_be_bytes()[0];
     let start_x = center_x.wrapping_sub(footprint.width / 2);
     let start_y = center_y.wrapping_sub(footprint.height / 2);
     let construction_base = position.z >> 5;
@@ -1182,8 +1276,8 @@ pub(crate) fn apply_level1_load_house_edge_smoothing(
     position: Position,
     footprint: &CastleBuildFootprint,
 ) {
-    let center_x = position.x.to_be_bytes()[0];
-    let center_y = position.y.to_be_bytes()[0];
+    let center_x = position.x.wrapping_add(128).to_be_bytes()[0];
+    let center_y = position.y.wrapping_add(128).to_be_bytes()[0];
     let footprint_start_x = center_x.wrapping_sub(footprint.width / 2);
     let footprint_start_y = center_y.wrapping_sub(footprint.height / 2);
     let half_width = footprint.width / 2;
@@ -1898,6 +1992,24 @@ impl NativeWorld {
         )
     }
 
+    /// Load without a private owner-asset cache, independent of the process
+    /// environment.
+    ///
+    /// This keeps cache-free conformance fixtures deterministic when a parent
+    /// qualification runner supplies `MC_ASSET_CACHE_PATH` for production-path
+    /// tests in the same process.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on any package, closure, identity, size, version,
+    /// relation, reset, or frame-resolution mismatch.
+    pub fn load_without_owner_cache(
+        package_dir: impl AsRef<Path>,
+        closure_path: impl AsRef<Path>,
+    ) -> Result<Self> {
+        Self::load_internal(package_dir.as_ref(), closure_path.as_ref(), None)
+    }
+
     /// Load with an explicit qualified private owner-asset cache.
     ///
     /// This is the deterministic equivalent of setting `MC_ASSET_CACHE_PATH`
@@ -2105,7 +2217,7 @@ impl NativeWorld {
             )?,
             None => LevelOneCacheAssets::default(),
         };
-        let level1_mission =
+        let mut level1_mission =
             Level1MissionTemplate::decode_with_source_slots_and_placement_blockers(
                 authored,
                 &terrain,
@@ -2121,6 +2233,29 @@ impl NativeWorld {
                 runtime.objective_textbox_ticks,
                 cache_assets.castle_stage_one_footprint,
             )
+            .map_err(NativeWorldError::new)?;
+        let raw_source_states = entities
+            .iter()
+            .map(|entity| Level1ResetRawSourceState {
+                index: entity.index,
+                source_id: entity.source_id,
+                life: entity.life,
+                building_index: i16::from_le_bytes([
+                    entity.record_bytes()[20],
+                    entity.record_bytes()[21],
+                ]),
+                axis: Position {
+                    x: u16::from_le_bytes([entity.record_bytes()[158], entity.record_bytes()[159]]),
+                    y: u16::from_le_bytes([entity.record_bytes()[160], entity.record_bytes()[161]]),
+                    z: i16::from_le_bytes([entity.record_bytes()[162], entity.record_bytes()[163]]),
+                },
+                word_24: entity.word_24(),
+                word_26: entity.word_26(),
+                word_2e: i16::from_le_bytes([entity.record_bytes()[50], entity.record_bytes()[51]]),
+            })
+            .collect::<Vec<_>>();
+        level1_mission
+            .bind_initial_raw_source_states(&raw_source_states)
             .map_err(NativeWorldError::new)?;
         let raw_source_entries =
             raw_source_map_chain_entries(&terrain_planes.entity_indices, |source_entity_index| {
@@ -2145,13 +2280,18 @@ impl NativeWorld {
                 }
             })
             .collect::<Vec<_>>();
-        let reset_source_map_chains = RenderableMapChains::from_reset(
+        let reset_source_map_chains = RenderableMapChains::from_raw_reset(
             &reset_source_map_seeds,
             &terrain_planes.entity_indices,
             |source_entity_index| {
                 entities
                     .get(usize::from(source_entity_index))
                     .map(EntitySnapshot::old_map_entity)
+            },
+            |source_entity_index| {
+                entities
+                    .get(usize::from(source_entity_index))
+                    .map(EntitySnapshot::next_entity)
             },
         )
         .map_err(NativeWorldError::new)?;
@@ -2271,6 +2411,11 @@ impl NativeWorld {
     }
 
     #[must_use]
+    pub const fn reset_source_map_chains(&self) -> &RenderableMapChains {
+        &self.reset_source_map_chains
+    }
+
+    #[must_use]
     pub const fn reset_state(&self) -> &FlightState {
         &self.reset_state
     }
@@ -2366,7 +2511,7 @@ impl NativeWorld {
                 .turn
                 .cast_unsigned(),
         );
-        mission.set_source_map_chains(self.reset_source_map_chains.clone());
+        mission.set_reset_source_map_chains(self.reset_source_map_chains.clone());
         NativeSession {
             world: self,
             terrain: SessionTerrain::from_world(self),
@@ -3070,7 +3215,7 @@ impl NativeSession<'_> {
                 .cast_unsigned(),
         );
         self.mission
-            .set_source_map_chains(self.world.reset_source_map_chains.clone());
+            .set_reset_source_map_chains(self.world.reset_source_map_chains.clone());
     }
 
     pub fn step(&mut self, command: PlayerCommand) -> Vec<crate::StepEvidence> {
@@ -3139,6 +3284,7 @@ impl NativeSession<'_> {
             self.process_goat_events(&begin_goat_events);
             source_views =
                 level1_turn_start_source_views(&self.mission, &self.state, &self.live_world);
+            let frozen_house_source_views = source_views.clone();
             for source_slot in 1..ENTITY_COUNT {
                 let source_slot = u16::try_from(source_slot).expect("source cursor fits u16");
                 if let Some((owner_entity_index, payload)) =
@@ -3163,10 +3309,13 @@ impl NativeSession<'_> {
                                         && i32::from(house.capacity) == house.occupants)))
                     })
                     .then(|| self.live_world.clone());
-                let house_events = self
-                    .live_world
-                    .step_house_source_slot(source_slot, &self.terrain);
-                if !self.process_house_events(&house_events) {
+                let house_events = self.live_world.step_house_source_slot_with_action_51_block(
+                    source_slot,
+                    &self.terrain,
+                    self.mission
+                        .current_house_action_51_blocked(&frozen_house_source_views, source_slot),
+                );
+                if !self.process_house_events(&house_events, &frozen_house_source_views) {
                     self.live_world =
                         house_state_before_dispatch.expect("failed house dispatch was staged");
                 }
@@ -3467,7 +3616,11 @@ impl NativeSession<'_> {
         }
     }
 
-    fn process_house_events(&mut self, events: &[HouseStepEvent]) -> bool {
+    fn process_house_events(
+        &mut self,
+        events: &[HouseStepEvent],
+        frozen_source_views: &[Level1SourceEntityView],
+    ) -> bool {
         let allocation_transaction = events.iter().any(|event| {
             matches!(
                 event,
@@ -3479,6 +3632,68 @@ impl NativeSession<'_> {
         let pending_effect_count = self.pending_house_effects.len();
         for event in events {
             match *event {
+                HouseStepEvent::ConstructionPass {
+                    entity_index,
+                    source_id,
+                    position,
+                    building_index,
+                    remaining,
+                    first_pass,
+                } => {
+                    let footprint = self
+                        .world
+                        .house_build_footprint(building_index)
+                        .expect("Level 1 action-51 house BUILD footprint");
+                    if first_pass {
+                        let effect_start = self.mission.house_construction_effects().len();
+                        self.mission.apply_house_construction_first_pass(
+                            frozen_source_views,
+                            entity_index,
+                            source_id,
+                            position,
+                            footprint,
+                        );
+                        let effects =
+                            self.mission.house_construction_effects()[effect_start..].to_vec();
+                        self.live_world
+                            .apply_house_construction_source_effects(&effects);
+                    }
+                    self.terrain
+                        .apply_house_construction(position, Some(remaining), footprint)
+                        .expect("qualified Level 1 action-51 construction pass");
+                    self.pending_house_effects.push(*event);
+                }
+                HouseStepEvent::ConstructionCompleted {
+                    entity_index,
+                    position,
+                    building_index,
+                    collision_half_width,
+                    collision_half_depth,
+                    ..
+                } => {
+                    let footprint = self
+                        .world
+                        .house_build_footprint(building_index)
+                        .expect("Level 1 action-51 house BUILD footprint");
+                    self.terrain
+                        .apply_house_construction(position, None, footprint)
+                        .expect("qualified Level 1 action-51 construction completion");
+                    self.mission
+                        .apply_house_construction_completion(
+                            frozen_source_views,
+                            entity_index,
+                            position,
+                            collision_half_width,
+                            collision_half_depth,
+                            |index| {
+                                self.world
+                                    .house_build_footprint(index)
+                                    .map(|value| (value.width, value.height))
+                            },
+                        )
+                        .expect("qualified Level 1 action-51 completion links");
+                    self.pending_house_effects.push(*event);
+                }
                 HouseStepEvent::Possessed {
                     entity_index,
                     owner_entity_index,
@@ -4155,7 +4370,7 @@ fn parse_entities(bytes: &[u8]) -> Result<Vec<EntitySnapshot>> {
             class: read_u8(record, 67, "entity class")?,
             model: read_u8(record, 68, "entity model")?,
             control_flags: read_u32(record, 16, "entity control flags")?,
-            entity_rng: read_u16(record, 20, "entity RNG")?,
+            entity_rng: read_u16(record, 24, "entity RNG")?,
             action: read_u8(record, 73, "entity action")?,
             action_marker: read_i8(record, 64, "entity action marker")?,
             level_gate: read_i8(record, 74, "entity level gate")?,
@@ -5204,6 +5419,100 @@ fn read_owner_cache_output(root: &Path, relative: &str) -> Result<Vec<u8>> {
     read_file(&resolved)
 }
 
+/// One independently identity-qualified view of a private owner cache.
+///
+/// Consumers must obtain every parsed output through `read`: the manifest is
+/// checked once, duplicate paths fail closed, and each read is bound to both
+/// its declared byte count and SHA-256.
+pub(crate) struct QualifiedOwnerCacheReader {
+    root: PathBuf,
+    manifest: Value,
+    outputs: BTreeMap<String, (String, u64)>,
+}
+
+impl QualifiedOwnerCacheReader {
+    pub(crate) fn open(root: impl AsRef<Path>) -> Result<Self> {
+        let root = root.as_ref();
+        let manifest_bytes = read_owner_cache_output(root, "manifest.json")?;
+        let manifest_sha256 = sha256_hex(&manifest_bytes);
+        let manifest: Value = serde_json::from_slice(&manifest_bytes).map_err(|error| {
+            NativeWorldError::new(format!("invalid owner cache manifest JSON: {error}"))
+        })?;
+        let object = as_object(&manifest, "owner cache manifest")?;
+        let content_sha256 =
+            require_hash_string(object, "cache_content_sha256", "owner cache manifest")?;
+        let qualified_identity = matches!(
+            (manifest_sha256.as_str(), content_sha256),
+            (AUDIO_CACHE_MANIFEST_SHA256, AUDIO_CACHE_CONTENT_SHA256)
+                | (CP1_CACHE_MANIFEST_SHA256, CP1_CACHE_CONTENT_SHA256)
+                | (CP2_CACHE_MANIFEST_SHA256, CP2_CACHE_CONTENT_SHA256)
+                | (CP3_CACHE_MANIFEST_SHA256, CP3_CACHE_CONTENT_SHA256)
+                | (CP4_CACHE_MANIFEST_SHA256, CP4_CACHE_CONTENT_SHA256)
+                | (
+                    CP4_CORRECTION1_CACHE_MANIFEST_SHA256,
+                    CP4_CORRECTION1_CACHE_CONTENT_SHA256
+                )
+                | (
+                    CP4_CORRECTION2_CACHE_MANIFEST_SHA256,
+                    CP4_CORRECTION2_CACHE_CONTENT_SHA256
+                )
+                | (
+                    CP4_CORRECTION6_CACHE_MANIFEST_SHA256,
+                    CP4_CORRECTION6_CACHE_CONTENT_SHA256
+                )
+                | (
+                    PLAN29_FINAL_CACHE_MANIFEST_SHA256,
+                    PLAN29_FINAL_CACHE_CONTENT_SHA256
+                )
+        );
+        if require_string(object, "schema", "owner cache manifest")? != AUDIO_CACHE_SCHEMA
+            || require_string(object, "scope", "owner cache manifest")?
+                != "PRIVATE_TRACK_P_OWNER_DATA"
+            || !qualified_identity
+        {
+            return Err(NativeWorldError::new(
+                "owner cache identity or private scope mismatch",
+            ));
+        }
+        let mut outputs = BTreeMap::new();
+        for output in require_array(object, "outputs", "owner cache manifest")? {
+            let output = as_object(output, "owner cache output")?;
+            let path = require_string(output, "path", "owner cache output")?.to_owned();
+            let hash = require_hash_string(output, "sha256", "owner cache output")?.to_owned();
+            let bytes = require_value(output, "bytes", "owner cache output")?
+                .as_u64()
+                .ok_or_else(|| NativeWorldError::new("owner cache output size is not u64"))?;
+            if outputs.insert(path, (hash, bytes)).is_some() {
+                return Err(NativeWorldError::new(
+                    "owner cache manifest has duplicate output paths",
+                ));
+            }
+        }
+        Ok(Self {
+            root: root.to_path_buf(),
+            manifest,
+            outputs,
+        })
+    }
+
+    fn manifest_object(&self) -> Result<&serde_json::Map<String, Value>> {
+        as_object(&self.manifest, "owner cache manifest")
+    }
+
+    pub(crate) fn read(&self, relative: &str) -> Result<Vec<u8>> {
+        let (expected_hash, expected_bytes) = self.outputs.get(relative).ok_or_else(|| {
+            NativeWorldError::new(format!("owner cache output is undeclared: {relative}"))
+        })?;
+        let bytes = read_owner_cache_output(&self.root, relative)?;
+        if bytes.len() as u64 != *expected_bytes || sha256_hex(&bytes) != *expected_hash {
+            return Err(NativeWorldError::new(format!(
+                "owner cache output hash/size mismatch: {relative}"
+            )));
+        }
+        Ok(bytes)
+    }
+}
+
 #[derive(Debug, Default)]
 struct LevelOneCacheAssets {
     sound_asset_refs: BTreeMap<u16, u32>,
@@ -5220,57 +5529,8 @@ fn append_level_one_cache_assets(
     closure_sha256: &str,
     refs: &mut Vec<AssetRef>,
 ) -> Result<LevelOneCacheAssets> {
-    let manifest_bytes = read_owner_cache_output(root, "manifest.json")?;
-    let manifest_sha256 = sha256_hex(&manifest_bytes);
-    if !matches!(
-        manifest_sha256.as_str(),
-        AUDIO_CACHE_MANIFEST_SHA256
-            | CP1_CACHE_MANIFEST_SHA256
-            | CP2_CACHE_MANIFEST_SHA256
-            | CP3_CACHE_MANIFEST_SHA256
-            | CP4_CACHE_MANIFEST_SHA256
-            | CP4_CORRECTION1_CACHE_MANIFEST_SHA256
-            | CP4_CORRECTION2_CACHE_MANIFEST_SHA256
-            | CP4_CORRECTION6_CACHE_MANIFEST_SHA256
-    ) {
-        return Err(NativeWorldError::new(
-            "owner audio cache manifest is not the qualified Level 1 manifest",
-        ));
-    }
-    let manifest: Value = serde_json::from_slice(&manifest_bytes)
-        .map_err(|error| NativeWorldError::new(format!("invalid audio manifest JSON: {error}")))?;
-    let manifest = as_object(&manifest, "audio cache manifest")?;
-    let cache_content_sha256 =
-        require_hash_string(manifest, "cache_content_sha256", "audio cache manifest")?;
-    let qualified_identity = matches!(
-        (manifest_sha256.as_str(), cache_content_sha256),
-        (AUDIO_CACHE_MANIFEST_SHA256, AUDIO_CACHE_CONTENT_SHA256)
-            | (CP1_CACHE_MANIFEST_SHA256, CP1_CACHE_CONTENT_SHA256)
-            | (CP2_CACHE_MANIFEST_SHA256, CP2_CACHE_CONTENT_SHA256)
-            | (CP3_CACHE_MANIFEST_SHA256, CP3_CACHE_CONTENT_SHA256)
-            | (CP4_CACHE_MANIFEST_SHA256, CP4_CACHE_CONTENT_SHA256)
-            | (
-                CP4_CORRECTION1_CACHE_MANIFEST_SHA256,
-                CP4_CORRECTION1_CACHE_CONTENT_SHA256
-            )
-            | (
-                CP4_CORRECTION2_CACHE_MANIFEST_SHA256,
-                CP4_CORRECTION2_CACHE_CONTENT_SHA256
-            )
-            | (
-                CP4_CORRECTION6_CACHE_MANIFEST_SHA256,
-                CP4_CORRECTION6_CACHE_CONTENT_SHA256
-            )
-    );
-    if require_string(manifest, "schema", "audio cache manifest")? != AUDIO_CACHE_SCHEMA
-        || require_string(manifest, "scope", "audio cache manifest")?
-            != "PRIVATE_TRACK_P_OWNER_DATA"
-        || !qualified_identity
-    {
-        return Err(NativeWorldError::new(
-            "owner audio cache identity or private scope mismatch",
-        ));
-    }
+    let cache = QualifiedOwnerCacheReader::open(root)?;
+    let manifest = cache.manifest_object()?;
     let bindings = require_object(manifest, "bindings", "audio cache manifest")?;
     if require_hash_string(
         bindings,
@@ -5287,20 +5547,6 @@ fn append_level_one_cache_assets(
             "owner audio cache package/closure binding mismatch",
         ));
     }
-    let mut outputs = BTreeMap::new();
-    for output in require_array(manifest, "outputs", "audio cache manifest")? {
-        let output = as_object(output, "audio cache output")?;
-        let path = require_string(output, "path", "audio cache output")?.to_owned();
-        let hash = require_hash_string(output, "sha256", "audio cache output")?.to_owned();
-        let bytes = require_value(output, "bytes", "audio cache output")?
-            .as_u64()
-            .ok_or_else(|| NativeWorldError::new("audio cache output size is not u64"))?;
-        if outputs.insert(path, (hash, bytes)).is_some() {
-            return Err(NativeWorldError::new(
-                "audio cache manifest has duplicate output paths",
-            ));
-        }
-    }
     let assets = require_object(manifest, "assets", "audio cache manifest")?;
     let castle_asset = require_object(assets, "level1_castle_stage", "owner cache assets")?;
     require_exact_u64(castle_asset, "build_index", 1, "Castle cache asset")?;
@@ -5314,18 +5560,7 @@ fn append_level_one_cache_assets(
     let audio = require_object(assets, "level1_audio", "audio cache assets")?;
     let sound_path = require_string(audio, "sound_descriptor_path", "audio cache Level 1 assets")?;
     let music_path = require_string(audio, "music_descriptor_path", "audio cache Level 1 assets")?;
-    let load_output = |path: &str| -> Result<Vec<u8>> {
-        let (expected_hash, expected_bytes) = outputs
-            .get(path)
-            .ok_or_else(|| NativeWorldError::new(format!("audio output is undeclared: {path}")))?;
-        let bytes = read_owner_cache_output(root, path)?;
-        if bytes.len() as u64 != *expected_bytes || sha256_hex(&bytes) != *expected_hash {
-            return Err(NativeWorldError::new(format!(
-                "audio output hash/size mismatch: {path}"
-            )));
-        }
-        Ok(bytes)
-    };
+    let load_output = |path: &str| cache.read(path);
     let source_sprite_tmap_bank = if assets.contains_key("source_frame_census") {
         let terrain_assets = require_object(assets, "terrain_materials", "owner cache assets")?;
         let terrain_path = require_string(terrain_assets, "path", "owner terrain cache asset")?;
@@ -6487,7 +6722,8 @@ mod tests {
     #[test]
     fn package_m_loads_the_exact_native_world() {
         let (package, closure) = fixture_paths();
-        let world = NativeWorld::load(package, closure).expect("validated package M");
+        let world = NativeWorld::load_without_owner_cache(package, closure)
+            .expect("validated cache-free package M");
         assert_eq!(world.metadata.map_type, MapType::Night);
         assert_eq!(world.profile, FlightProfile::OUTDOOR);
         assert_eq!(
@@ -7171,7 +7407,7 @@ mod tests {
             .apply_house_removal(house.position, house.entity_rng, 2, true, footprint)
             .expect("action-53 terrain mutation");
         assert_eq!(outcome.final_occupants, 0);
-        assert_eq!(outcome.final_rng, 2);
+        assert_eq!(outcome.final_rng, house.entity_rng);
         assert_eq!(
             outcome
                 .residents
@@ -7316,6 +7552,133 @@ mod tests {
     }
 
     #[test]
+    fn direct_session_action_51_applies_source_ordered_synthetic_build_planes() {
+        let (package, closure) = fixture_paths();
+        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let mut world = NativeWorld::load_with_owner_cache(
+            package,
+            closure,
+            private.join("generated/level1-unity-asset-cache"),
+        )
+        .expect("validated package M and owner cache");
+        let footprint =
+            CastleBuildFootprint::from_owner_cells(29, 2, 2, &[8, 4, 0xff, 0xff, 9, 2, 1, 6])
+                .expect("synthetic action-51 BUILD");
+        world.house_build_footprints.insert(29, footprint);
+        let mut session = world.session();
+        let position = Position {
+            x: 100 << 8,
+            y: 100 << 8,
+            z: 20 * 32,
+        };
+        let start_x = 99_u8;
+        let start_y = 99_u8;
+        for row in 0..4_u8 {
+            for column in 0..4_u8 {
+                let index = terrain_index(
+                    start_x.wrapping_sub(1).wrapping_add(column),
+                    start_y.wrapping_sub(1).wrapping_add(row),
+                );
+                session.terrain.planes.ground_heights[index] = 10;
+                session.terrain.planes.terrain_types[index] = 42;
+                session.terrain.planes.angles[index] = 0;
+                session.terrain.planes.shading[index] = 0;
+            }
+        }
+        let mut house = session
+            .live_world
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == 11)
+            .copied()
+            .expect("house 11");
+        house.position = position;
+        house.building_index = 29;
+        house.action = crate::house::HOUSE_TERRAIN_TO_LIVE_ACTION;
+        house.max_life = 6;
+        house.life = 6;
+        house.owner_entity_index = session.state.entity_index;
+        house.control_flags |= 1;
+        session.live_world.initialize_builder_house(house).unwrap();
+        let frozen_source_views =
+            level1_turn_start_source_views(&session.mission, &session.state, &session.live_world);
+
+        let sample = |terrain: &SessionTerrain| {
+            [(0_u8, 0_u8), (0, 1), (1, 1)].map(|(column, row)| {
+                let index = terrain_index(start_x.wrapping_add(column), start_y.wrapping_add(row));
+                (
+                    terrain.planes.ground_heights[index],
+                    terrain.planes.terrain_types[index],
+                    terrain.planes.angles[index],
+                    terrain.planes.shading[index],
+                )
+            })
+        };
+        assert_eq!(sample(&session.terrain), [(10, 42, 0, 0); 3]);
+
+        let first = session
+            .live_world
+            .step_house_source_slot(house.entity_index, &session.terrain);
+        assert!(matches!(
+            first.as_slice(),
+            [HouseStepEvent::ConstructionPass { remaining: 5, .. }]
+        ));
+        assert!(session.process_house_events(&first, &frozen_source_views));
+        let mid = sample(&session.terrain);
+        assert_eq!(mid, [(12, 8, 145, 35), (12, 9, 129, 32), (13, 37, 1, 30)]);
+
+        for expected_remaining in (1..=4).rev() {
+            let events = session
+                .live_world
+                .step_house_source_slot(house.entity_index, &session.terrain);
+            assert!(matches!(
+                events.as_slice(),
+                [HouseStepEvent::ConstructionPass { remaining, .. }]
+                    if *remaining == expected_remaining
+            ));
+            assert!(session.process_house_events(&events, &frozen_source_views));
+        }
+        let before_completion = sample(&session.terrain);
+        assert_eq!(before_completion.map(|cell| cell.0), [24, 22, 26]);
+
+        let completed = session
+            .live_world
+            .step_house_source_slot(house.entity_index, &session.terrain);
+        assert!(matches!(
+            completed.as_slice(),
+            [HouseStepEvent::ConstructionCompleted { .. }]
+        ));
+        assert!(session.process_house_events(&completed, &frozen_source_views));
+        let final_planes = sample(&session.terrain);
+        assert_eq!(
+            final_planes,
+            [(24, 8, 145, 36), (22, 9, 129, 32), (26, 37, 1, 18)]
+        );
+        let live = session
+            .live_world
+            .houses()
+            .iter()
+            .find(|house| house.entity_index == 11)
+            .copied()
+            .expect("completed house 11");
+        assert_eq!(live.action, crate::house::HOUSE_LIVE_ACTION);
+        assert_eq!(live.owner_entity_index, session.state.entity_index);
+        assert_eq!(live.control_flags & 1, 0);
+        assert_eq!(session.terrain.mutation_sequence(), 6);
+        assert!(matches!(
+            session.pending_house_effects.as_slice(),
+            [
+                HouseStepEvent::ConstructionPass { remaining: 5, .. },
+                HouseStepEvent::ConstructionPass { remaining: 4, .. },
+                HouseStepEvent::ConstructionPass { remaining: 3, .. },
+                HouseStepEvent::ConstructionPass { remaining: 2, .. },
+                HouseStepEvent::ConstructionPass { remaining: 1, .. },
+                HouseStepEvent::ConstructionCompleted { .. },
+            ]
+        ));
+    }
+
+    #[test]
     fn house_action_53_interleaves_resident_and_height_rng_in_one_cell() {
         let mut boundary_20_rng = 3;
         assert_eq!(reduce_house_height(100, 10, &mut boundary_20_rng), 90);
@@ -7417,7 +7780,7 @@ mod tests {
             .expect("house 11 retained for deterministic history");
         assert!(!removed.active);
         assert_eq!(removed.occupants, 0);
-        assert_eq!(removed.rng, 2);
+        assert_eq!(removed.rng, world.entities()[11].entity_rng);
         assert_eq!(
             session.terrain.mutation_sequence(),
             3,
@@ -7474,7 +7837,12 @@ mod tests {
         let removal = exhausted
             .live_world
             .step_house_source_slot(11, &exhausted.terrain);
-        assert!(!exhausted.process_house_events(&removal));
+        let frozen_source_views = level1_turn_start_source_views(
+            &exhausted.mission,
+            &exhausted.state,
+            &exhausted.live_world,
+        );
+        assert!(!exhausted.process_house_events(&removal, &frozen_source_views));
         exhausted.live_world = live_before.clone();
         assert_eq!(exhausted.live_world, live_before);
         assert_eq!(exhausted.terrain, terrain_before);

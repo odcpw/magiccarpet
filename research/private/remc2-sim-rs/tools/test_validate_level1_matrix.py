@@ -18,6 +18,9 @@ WORKSPACE_ROOT = TOOLS_DIR.parent
 CANONICAL_MATRIX = (
     WORKSPACE_ROOT / "level1-conformance" / "level1-conformance-matrix.json"
 )
+QUALIFICATION_POLICY = (
+    WORKSPACE_ROOT / "level1-conformance" / "plan29-final-qualification-policy.json"
+)
 sys.path.insert(0, str(TOOLS_DIR))
 
 import validate_level1_matrix as validator  # noqa: E402
@@ -49,6 +52,21 @@ class Level1MatrixValidatorTests(unittest.TestCase):
             validator.ValidationError, message_fragment
         ):
             self.validate_temporary(document)
+
+    @staticmethod
+    def make_one_row_non_exact(document: dict[str, Any]) -> dict[str, Any]:
+        row = document["rows"][0]
+        row["classification"] = "Partial"
+        row["mismatch_detail"] = ["synthetic mutation for validator coverage"]
+        row["plan_item"] = "PLAN-01"
+        document["plan_items"][0]["owned_rows"] = [row["id"]]
+        totals = document["meta"]["totals"]
+        totals["by_classification"]["Exact"] -= 1
+        totals["by_classification"]["Partial"] += 1
+        subsystem = totals["by_subsystem"][row["subsystem"]]
+        subsystem["Exact"] -= 1
+        subsystem["Partial"] = subsystem.get("Partial", 0) + 1
+        return row
 
     def validate_temporary_audio_ledger(self, document: dict[str, Any]) -> None:
         with tempfile.TemporaryDirectory(prefix="level1-audio-ledger-test-") as directory:
@@ -118,18 +136,44 @@ class Level1MatrixValidatorTests(unittest.TestCase):
             {
                 "ok": True,
                 "rows": 182,
-                "exact_rows": 104,
-                "non_exact_rows": 78,
-                "exclusions": 22,
+                "exact_rows": 182,
+                "non_exact_rows": 0,
+                "exclusions": 29,
                 "plan_items": 22,
                 "authored_indices": 308,
                 "dispatch_slots": 845,
-                "cargo_tests": 458,
+                "cargo_tests": 481,
                 "audio_calls": 119,
                 "audio_reachable_calls": 46,
                 "audio_excluded_calls": 73,
             },
         )
+        closed = validator.require_closed(CANONICAL_MATRIX, self.inventory)
+        self.assertTrue(closed["closed"])
+        self.assertEqual(closed["exact_rows"], 182)
+
+    def test_require_closed_rejects_non_exact_row(self) -> None:
+        document = copy.deepcopy(self.canonical)
+        self.make_one_row_non_exact(document)
+        with tempfile.TemporaryDirectory(prefix="level1-matrix-closed-") as directory:
+            path = Path(directory) / "matrix.json"
+            path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                validator.ValidationError, "requires every one of the 182 rows to be Exact"
+            ):
+                validator.require_closed(path, self.inventory)
+
+    def test_require_closed_rejects_duplicate_row_id(self) -> None:
+        document = copy.deepcopy(self.canonical)
+        document["rows"][1]["id"] = document["rows"][0]["id"]
+        with self.assertRaisesRegex(validator.ValidationError, "duplicate ID"):
+            self.validate_temporary(document)
+
+    def test_require_closed_rejects_wrong_pin(self) -> None:
+        document = copy.deepcopy(self.canonical)
+        document["meta"]["remc2_commit"] = "0" * 40
+        with self.assertRaisesRegex(validator.ValidationError, "pinned remc2 commit"):
+            self.validate_temporary(document)
 
     def test_audio_ledger_mutations_are_rejected(self) -> None:
         ledger = validator.load_matrix(validator.AUDIO_LEDGER_PATH)
@@ -311,9 +355,7 @@ class Level1MatrixValidatorTests(unittest.TestCase):
 
     def test_dangling_plan_reference_is_rejected(self) -> None:
         def mutate(document: dict[str, Any]) -> None:
-            row = next(
-                row for row in document["rows"] if row["classification"] != "Exact"
-            )
+            row = self.make_one_row_non_exact(document)
             row["plan_item"] = "PLAN-DOES-NOT-EXIST"
 
         self.assert_mutation_rejected(mutate, "dangling plan_item reference")
@@ -371,9 +413,7 @@ class Level1MatrixValidatorTests(unittest.TestCase):
 
     def test_non_exact_row_without_owned_rows_entry_is_rejected(self) -> None:
         def mutate(document: dict[str, Any]) -> None:
-            row = next(
-                row for row in document["rows"] if row["classification"] != "Exact"
-            )
+            row = self.make_one_row_non_exact(document)
             owner = next(
                 plan
                 for plan in document["plan_items"]
@@ -385,9 +425,7 @@ class Level1MatrixValidatorTests(unittest.TestCase):
 
     def test_non_exact_row_with_duplicate_ownership_is_rejected(self) -> None:
         def mutate(document: dict[str, Any]) -> None:
-            row = next(
-                row for row in document["rows"] if row["classification"] != "Exact"
-            )
+            row = self.make_one_row_non_exact(document)
             other = next(
                 plan
                 for plan in document["plan_items"]
@@ -470,7 +508,93 @@ class Level1MatrixValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(
             validator.ValidationError, "does not resolve exactly once"
         ):
-            validator.validate_document(copy.deepcopy(self.canonical), inventory)
+                validator.validate_document(copy.deepcopy(self.canonical), inventory)
+
+    def test_one_run_policy_and_receipt_mutations_fail_closed(self) -> None:
+        policy = validator.load_matrix(QUALIFICATION_POLICY)
+        with tempfile.TemporaryDirectory(prefix="plan29-policy-test-") as directory:
+            path = Path(directory) / "policy.json"
+            path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
+            policy_file_sha = validator.validate_qualification_policy(
+                path,
+                policy["behavior_contract"]["file_sha256"],
+                policy["behavior_contract"]["self_sha256"],
+            )
+
+            identity = {"matrix_sha256": "a" * 64}
+            run = {
+                "schema": "mc2-plan29-clean-run/v1",
+                "run_id": "run-a-test",
+                "run_root": "/private/run-a",
+                "clean": {
+                    "cargo_target_isolated": True,
+                    "unity_library_isolated": True,
+                    "cache_isolated": True,
+                    "preexisting_artifacts_rejected": True,
+                },
+                "gates": {
+                    key: "PASS"
+                    for key in {
+                        "rust", "c_abi", "sim_cli", "matrix_closed", "cache",
+                        "unity_edit_mode", "unity_play_mode", "victory", "failure",
+                        "restart", "replay", "privacy", "provenance", "presentation",
+                    }
+                },
+                "identity": identity,
+                "semantic_digests": {
+                    key: "b" * 64
+                    for key in (
+                        "reset", "victory", "failure", "restart", "replay",
+                        "observation_mask", "unity_checkpoints", "full_run",
+                    )
+                },
+                "status": "PASS",
+            }
+            run["receipt_sha256"] = validator.sha256_hex(
+                validator.canonical_json_bytes(run)
+            )
+            receipts = {
+                "qualification_policy_sha256": policy_file_sha,
+                "clean_runs": {
+                    "schema": "mc2-plan29-full-gate/v1",
+                    "qualification_policy_sha256": policy_file_sha,
+                    "exact_run_count": 1,
+                    "runs": [run],
+                    "run_count_policy": {
+                        "required_runs": 1,
+                        "completed_runs": 1,
+                        "run_b_required": False,
+                        "run_b_permitted": False,
+                    },
+                    "status": "PASS",
+                },
+            }
+            self.assertEqual(
+                validator.validate_clean_run(receipts, identity, policy_file_sha),
+                ["run-a-test"],
+            )
+
+            for count in (0, 2):
+                mutated = copy.deepcopy(receipts)
+                mutated["clean_runs"]["exact_run_count"] = count
+                mutated["clean_runs"]["runs"] = [copy.deepcopy(run) for _ in range(count)]
+                with self.subTest(count=count), self.assertRaises(
+                    validator.ValidationError
+                ):
+                    validator.validate_clean_run(mutated, identity, policy_file_sha)
+
+            bad_policy = copy.deepcopy(policy)
+            bad_policy["acceptance"]["required_clean_runs"] = 2
+            bad_policy_path = Path(directory) / "bad-policy.json"
+            bad_policy_path.write_text(
+                json.dumps(bad_policy, indent=2) + "\n", encoding="utf-8"
+            )
+            with self.assertRaises(validator.ValidationError):
+                validator.validate_qualification_policy(
+                    bad_policy_path,
+                    policy["behavior_contract"]["file_sha256"],
+                    policy["behavior_contract"]["self_sha256"],
+                )
 
 
 if __name__ == "__main__":

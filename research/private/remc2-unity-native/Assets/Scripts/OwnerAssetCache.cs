@@ -12,9 +12,17 @@ namespace MagicCarpet.Native
     {
         public const string Schema = "mc2-owner-unity-asset-cache/v1";
         private const string ExactManifestFileHash =
-            "474d4b24c157896ce98f0a8baa1593f98762fc314f081600c44a94f97743fad8";
+            "1050b4f1e3f0e63fa292fe7798d19f4b390c063aa5afd5a350fba9e300298082";
         private const string ExactContentHash =
-            "a1dc7c3fca20da019807093530c601b872c3d81284a19d17d5e1aa1bccafd752";
+            "b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf";
+        private const string ExactContractFileHash =
+            "e8b2f760f24e8de2003e856027420fce4609c47c481d7ad5cf67b51f668f3f0a";
+        private const string ExactContractSelfHash =
+            "0d59fdb5f43ef794308bc45614a6b2edbffa46f23e29286695406838185b08a7";
+        private const string ExactSealHash =
+            "988058c2d08a3ebf7eed089de0e4ecd5a7739e7278689462d67a65856854342b";
+        private const string PinnedRemc2Commit =
+            "6806c7204d17220ecc0430759f784aea8ee2ddb2";
 
         [Serializable]
         private sealed class Manifest
@@ -30,6 +38,18 @@ namespace MagicCarpet.Native
         {
             public string level_export_package_sha256;
             public string level_asset_closure_sha256;
+            public string plan29_contract_file_sha256;
+            public string plan29_contract_self_sha256;
+        }
+
+        [Serializable]
+        private sealed class ConformanceSeal
+        {
+            public string schema;
+            public string contract_file_sha256;
+            public string contract_self_sha256;
+            public string remc2_commit;
+            public string seal_sha256;
         }
 
         [Serializable]
@@ -106,6 +126,9 @@ namespace MagicCarpet.Native
                 throw new InvalidDataException("owner asset cache package binding mismatch");
             if (manifest.bindings.level_asset_closure_sha256 != expectedClosureHash)
                 throw new InvalidDataException("owner asset cache closure binding mismatch");
+            if (manifest.bindings.plan29_contract_file_sha256 != ExactContractFileHash ||
+                manifest.bindings.plan29_contract_self_sha256 != ExactContractSelfHash)
+                throw new InvalidDataException("owner asset cache PLAN29 contract binding mismatch");
             if (manifest.outputs == null || manifest.outputs.Length == 0)
                 throw new InvalidDataException("owner asset cache has no outputs");
 
@@ -159,6 +182,14 @@ namespace MagicCarpet.Native
                 throw new InvalidDataException("owner asset cache identity mismatch");
             if (identityHash != ExactContentHash)
                 throw new InvalidDataException("owner asset cache is not the qualified Level 1 cache");
+            var seal = JsonUtility.FromJson<ConformanceSeal>(
+                File.ReadAllText(ConfinedPath(root, "conformance-identity.json")));
+            if (seal == null || seal.schema != "mc2-plan29-cache-conformance-identity/v1" ||
+                seal.contract_file_sha256 != ExactContractFileHash ||
+                seal.contract_self_sha256 != ExactContractSelfHash ||
+                seal.remc2_commit != PinnedRemc2Commit ||
+                seal.seal_sha256 != ExactSealHash)
+                throw new InvalidDataException("owner asset cache PLAN29 conformance seal mismatch");
             return new OwnerAssetCache(root, identityHash, manifest.outputs.Length, paths);
         }
 

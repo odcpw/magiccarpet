@@ -23,7 +23,11 @@ SOURCE_HISTORY_FOV = 128
 SOURCE_PROJECTION_SCALE = 7 * 377 * SOURCE_HISTORY_FOV >> 11
 FOCAL_PIXELS = HEIGHT * SOURCE_PROJECTION_SCALE / 240.0
 BACKGROUND = (14, 17, 23)
-CACHE_CONTENT_SHA256 = "d299990e300117d065eb3a75008f6a69911b1ba356e4e06452c0a826450a01e5"
+# This verifier belongs to the preserved controlled-debug-gallery evidence lane,
+# not the current Level 1 qualification player/cache lane.
+HISTORICAL_GALLERY_CACHE_CONTENT_SHA256 = (
+    "d299990e300117d065eb3a75008f6a69911b1ba356e4e06452c0a826450a01e5"
+)
 PALN_RGB8_SHA256 = "7c4dfbbc6c0f68a99214fe3ca93d7a1cf0dd658e17a40ad7ecb302152264f507"
 SPECS = {
     "dolmen": (-7.0, 0.6, 400, 110, 66),
@@ -90,7 +94,10 @@ def main() -> int:
         raise SystemExit(f"expected {WIDTH}x{HEIGHT}, got {image.size}")
 
     cache_manifest = json.loads((args.cache / "manifest.json").read_text())
-    if cache_manifest["cache_content_sha256"] != CACHE_CONTENT_SHA256:
+    if (
+        cache_manifest["cache_content_sha256"]
+        != HISTORICAL_GALLERY_CACHE_CONTENT_SHA256
+    ):
         raise SystemExit("owner-cache identity mismatch")
     palette = (args.cache / "palette/paln.rgb8").read_bytes()
     if len(palette) != 768 or sha256_bytes(palette) != PALN_RGB8_SHA256:
@@ -254,7 +261,7 @@ def main() -> int:
 
     report = {
         "capture": str(args.capture.resolve()),
-        "owner_cache_content_sha256": CACHE_CONTENT_SHA256,
+        "owner_cache_content_sha256": HISTORICAL_GALLERY_CACHE_CONTENT_SHA256,
         "palette_rgb8_sha256": PALN_RGB8_SHA256,
         "authority": "controlled-debug-gallery",
         "simulation_mutation": False,

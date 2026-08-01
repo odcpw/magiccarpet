@@ -192,8 +192,50 @@ impl HouseState {
     /// diverge between the two ownership paths.
     #[must_use]
     pub fn step_source_action<W: FlightWorld>(&mut self, world: &W) -> Vec<HouseStepEvent> {
+        self.step_source_action_with_action_51_block(world, false)
+    }
+
+    #[must_use]
+    pub fn step_source_action_with_action_51_block<W: FlightWorld>(
+        &mut self,
+        world: &W,
+        action_51_blocked: bool,
+    ) -> Vec<HouseStepEvent> {
         let mut events = Vec::new();
-        if !self.dispatch_build_entry(world) {
+        let dispatched_action = self.action;
+        let life_before_dispatch = self.life;
+        let terrain_action_blocked = action_51_blocked
+            && matches!(
+                dispatched_action,
+                HOUSE_TERRAIN_REMOVE_ACTION | HOUSE_TERRAIN_TO_LIVE_ACTION
+            );
+        if terrain_action_blocked {
+            // `IsNextEvent0A_2A_37740` returns before life, ownership, or
+            // terrain work; the outer dispatcher still advances phase.
+        } else if self.dispatch_build_entry(world) {
+            if dispatched_action == HOUSE_TERRAIN_TO_LIVE_ACTION {
+                let remaining = life_before_dispatch.wrapping_sub(1);
+                if remaining > 0 {
+                    events.push(HouseStepEvent::ConstructionPass {
+                        entity_index: self.entity_index,
+                        source_id: self.source_id,
+                        position: self.position,
+                        building_index: self.building_index,
+                        remaining,
+                        first_pass: life_before_dispatch == self.max_life,
+                    });
+                } else {
+                    events.push(HouseStepEvent::ConstructionCompleted {
+                        entity_index: self.entity_index,
+                        source_id: self.source_id,
+                        position: self.position,
+                        building_index: self.building_index,
+                        collision_half_width: self.collision_half_width,
+                        collision_half_depth: self.collision_half_depth,
+                    });
+                }
+            }
+        } else {
             match self.action {
                 HOUSE_LIVE_ACTION => {
                     step_live_house(self, &mut events);
@@ -222,6 +264,22 @@ impl HouseState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HouseStepEvent {
+    ConstructionPass {
+        entity_index: u16,
+        source_id: u16,
+        position: Position,
+        building_index: u8,
+        remaining: i32,
+        first_pass: bool,
+    },
+    ConstructionCompleted {
+        entity_index: u16,
+        source_id: u16,
+        position: Position,
+        building_index: u8,
+        collision_half_width: i16,
+        collision_half_depth: i16,
+    },
     Damaged {
         entity_index: u16,
         attacker_entity_index: u16,
@@ -457,6 +515,26 @@ impl HouseFamily {
         world: &W,
     ) -> Vec<HouseStepEvent> {
         self.try_step_source_slot(source_slot, world, |_| true)
+    }
+
+    #[must_use]
+    pub fn step_source_slot_with_action_51_block<W: FlightWorld>(
+        &mut self,
+        source_slot: u16,
+        world: &W,
+        action_51_blocked: bool,
+    ) -> Vec<HouseStepEvent> {
+        let Some(index) = self
+            .houses
+            .iter()
+            .position(|house| house.entity_index == source_slot && house.active)
+        else {
+            return Vec::new();
+        };
+        let mut house = self.houses[index];
+        let events = house.step_source_action_with_action_51_block(world, action_51_blocked);
+        self.houses[index] = house;
+        events
     }
 
     /// Stage one source dispatch and commit it only when all cross-system
@@ -820,6 +898,51 @@ mod tests {
                 "eligibility and resident-selection draws"
             );
         }
+    }
+
+    #[test]
+    fn action_51_emits_post_decrement_passes_then_completion_after_state_transition() {
+        let world = load_world();
+        let mut family = HouseFamily::from_entities(world.entities()).expect("house family");
+        let mut house = family.houses()[0];
+        house.action = HOUSE_TERRAIN_TO_LIVE_ACTION;
+        house.life = 2;
+        house.max_life = 2;
+        house.owner_entity_index = 152;
+        house.control_flags |= 1;
+        family.initialize_builder_house(house).unwrap();
+
+        let blocked_phase = family.houses()[0].phase;
+        assert!(
+            family
+                .step_source_slot_with_action_51_block(house.entity_index, &world, true)
+                .is_empty()
+        );
+        assert_eq!(family.houses()[0].life, 2);
+        assert_eq!(family.houses()[0].action, HOUSE_TERRAIN_TO_LIVE_ACTION);
+        assert_eq!(family.houses()[0].phase, blocked_phase.wrapping_add(1));
+
+        let first = family.step_source_slot(house.entity_index, &world);
+        assert!(matches!(
+            first.as_slice(),
+            [HouseStepEvent::ConstructionPass { remaining: 1, .. }]
+        ));
+        assert_eq!(family.houses()[0].action, HOUSE_TERRAIN_TO_LIVE_ACTION);
+        assert_eq!(family.houses()[0].life, 1);
+
+        let final_events = family.step_source_slot(house.entity_index, &world);
+        assert!(matches!(
+            final_events.as_slice(),
+            [HouseStepEvent::ConstructionCompleted { .. }]
+        ));
+        let live = family.houses()[0];
+        assert_eq!(live.action, HOUSE_LIVE_ACTION);
+        assert_eq!(
+            live.life,
+            i32::from(live.parameter.life_mana_scalar) * 1_000
+        );
+        assert_eq!(live.owner_entity_index, 152);
+        assert_eq!(live.control_flags & 1, 0);
     }
 
     #[test]

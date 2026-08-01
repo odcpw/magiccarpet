@@ -54,6 +54,8 @@ extern "C" {
 #define MC_AUTHORITY_LEVEL1_MISSION_LIVE 6u
 #define MC_AUTHORITY_SESSION_TERRAIN_LIVE 7u
 #define MC_AUTHORITY_VILLAGER_LIVE 8u
+#define MC_LEVEL1_HOUSE_COMPLETION_ALLOCATED 1u
+#define MC_LEVEL1_HOUSE_COMPLETION_ALLOCATION_FAILED 2u
 #define MC_LEVEL1_EXIT_FLAG_PALETTE_VISUAL_CURRENT 0x01u
 #define MC_LEVEL1_EXIT_FLAG_FOV_POST_ACTION_NEXT_HISTORY 0x02u
 #define MC_LEVEL1_EXIT_FLAG_END_SEQUENCE 0x04u
@@ -694,6 +696,40 @@ typedef struct McLevel1CastleLifecycleSnapshotV2 {
     uint64_t terrain_mutation_sequence;
 } McLevel1CastleLifecycleSnapshotV2;
 
+typedef struct McLevel1HouseCompletionEffectV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint32_t kind;
+    uint16_t house_entity_index;
+    uint16_t parent_entity_index;
+    uint16_t source_entity_index;
+    uint16_t source_id;
+    uint8_t class_id;
+    uint8_t model;
+    uint8_t action;
+    uint8_t construction_selector;
+    uint8_t house_building_index;
+    uint8_t constructor_latch;
+    uint8_t active;
+    uint8_t phase;
+    int16_t parent_word_2e;
+    int16_t parent_construction_selector;
+    uint16_t x;
+    uint16_t y;
+    int16_t z;
+    int16_t collision_half_width;
+    int16_t collision_half_depth;
+    int16_t yaw;
+    int16_t fov;
+    uint16_t effect_ordinal;
+    int32_t max_life;
+    int32_t life;
+    uint32_t control_flags;
+    uint32_t effect_count;
+} McLevel1HouseCompletionEffectV2;
+
 typedef struct McManaSphereSnapshotV2 {
     uint32_t abi_version;
     uint32_t struct_size;
@@ -950,6 +986,17 @@ typedef struct McEventQueryV2 {
     uint64_t cursor;
     uint32_t reserved[4];
 } McEventQueryV2;
+
+typedef struct McLevel1ResidentObservationV1 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint8_t required_mask;
+    uint8_t observed_mask;
+    uint8_t remaining_mask;
+    uint8_t reserved_0;
+    uint64_t digest;
+    uint32_t reserved[4];
+} McLevel1ResidentObservationV1;
 
 typedef struct McEventBatchV2 {
     uint32_t abi_version;
@@ -1286,6 +1333,11 @@ int32_t mc_native_session_source_projection_hash(uint64_t handle,
                                                  uint64_t *out_hash);
 int32_t mc_native_session_source_arena_hash(uint64_t handle,
                                             uint64_t *out_hash);
+int32_t mc_native_level1_action_51_fallback_state_hash_v1(
+    uint64_t handle, uint64_t *out_hash);
+int32_t mc_native_level1_resident_observation_v1(
+    uint64_t handle, McLevel1ResidentObservationV1 *out_observation,
+    uint32_t out_observation_size);
 int32_t mc_native_level1_player_menu_state(uint64_t handle,
                                            uint8_t menu_state);
 int32_t mc_native_level1_game_paused(uint64_t handle, uint8_t paused);
@@ -1293,6 +1345,11 @@ int32_t mc_native_level1_presentation_input(
     uint64_t handle, const McLevel1PresentationInputV2 *input);
 int32_t mc_native_level1_player_inject_damage_for_qualification(
     uint64_t handle, int32_t damage, uint16_t attacker_entity_index);
+int32_t mc_native_level1_action_51_blocker_setup_for_qualification(
+    uint64_t handle, uint16_t house_entity_index, uint8_t house_action);
+int32_t mc_native_level1_action_51_completion_setup_for_qualification(
+    uint64_t handle, uint16_t house_entity_index,
+    uint16_t parent_entity_index, uint8_t construction_selector);
 int32_t mc_native_presentation_state(uint64_t handle,
                                      McPresentationStateV2 *out_state,
                                      uint32_t out_state_size);
@@ -1393,6 +1450,12 @@ int32_t mc_native_level1_castle_snapshot(
     uint32_t out_snapshot_size);
 int32_t mc_native_level1_castle_lifecycle_snapshot(
     uint64_t handle, McLevel1CastleLifecycleSnapshotV2 *out_snapshot,
+    uint32_t out_snapshot_size);
+int32_t mc_native_level1_house_completion_effect_count(
+    uint64_t handle, uint32_t *out_count);
+int32_t mc_native_level1_house_completion_effect_snapshot(
+    uint64_t handle, uint32_t effect_ordinal,
+    McLevel1HouseCompletionEffectV2 *out_snapshot,
     uint32_t out_snapshot_size);
 int32_t mc_native_level1_mana_carrier_snapshot(
     uint64_t handle, McManaCarrierSnapshotV2 *out_snapshot,

@@ -12,7 +12,7 @@ use sim_core::{
     FlightContext, FlightProfile, FlightState, FlightWorld, PlayerCommand, Position, Tile,
     latch_command, state_hash, step_entity_pass_with_context, step_turn,
 };
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 struct FlatWorld;
 
@@ -77,6 +77,7 @@ impl FlightWorld for FlatWorld {
 fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
         Some("atlas-check") => atlas_check(),
+        Some("conformance-validate") => conformance_validate(),
         Some("inspect-recording") => inspect_recording(),
         Some("inspect-regression") => inspect_regression(),
         Some("inspect-forward") => inspect_forward(),
@@ -86,10 +87,62 @@ fn main() -> ExitCode {
         Some("trace") => trace(),
         _ => {
             eprintln!(
-                "usage: sim-cli <atlas-check|find-castle-site|inspect-forward|inspect-idle-diff|inspect-recording|inspect-regression|reset-from-authored|trace> ..."
+                "usage: sim-cli <atlas-check|conformance-validate|find-castle-site|inspect-forward|inspect-idle-diff|inspect-recording|inspect-regression|reset-from-authored|trace> ..."
             );
             ExitCode::from(2)
         }
+    }
+}
+
+fn conformance_validate() -> ExitCode {
+    let mut arguments = std::env::args().skip(2).collect::<Vec<_>>();
+    let default_validator = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tools/validate_level1_matrix.py");
+    let validator = if arguments.first().map(String::as_str) == Some("--validator") {
+        if arguments.len() < 2 {
+            println!("{{\"ok\":false,\"closed\":false,\"error\":\"--validator requires a path\"}}");
+            return ExitCode::from(2);
+        }
+        let path = std::path::PathBuf::from(arguments.remove(1));
+        arguments.remove(0);
+        path
+    } else {
+        default_validator
+    };
+    if !validator.is_file() {
+        println!(
+            "{{\"ok\":false,\"closed\":false,\"error\":\"matrix validator is missing: {}\"}}",
+            json_escape(&validator.display().to_string())
+        );
+        return ExitCode::from(2);
+    }
+    if !arguments
+        .iter()
+        .any(|argument| argument == "--require-closed" || argument == "--final-closure")
+    {
+        arguments.insert(0, "--require-closed".to_owned());
+    }
+    if !arguments.iter().any(|argument| argument == "--json") {
+        arguments.insert(0, "--json".to_owned());
+    }
+    let status = match Command::new("/usr/bin/python3")
+        .arg(&validator)
+        .args(&arguments)
+        .status()
+    {
+        Ok(status) => status,
+        Err(error) => {
+            println!(
+                "{{\"ok\":false,\"closed\":false,\"error\":\"{}\"}}",
+                json_escape(&format!("failed to execute matrix validator: {error}"))
+            );
+            return ExitCode::from(2);
+        }
+    };
+    match status.code() {
+        Some(0) => ExitCode::SUCCESS,
+        Some(2) => ExitCode::from(2),
+        _ => ExitCode::FAILURE,
     }
 }
 

@@ -26,7 +26,7 @@ namespace MagicCarpet.Native.Tests
             Path.Combine(PrivateRoot, "generated/level1-asset-closure.json");
 
         private static string AssetCachePath =>
-            Path.Combine(PrivateRoot, "generated/level1-unity-asset-cache");
+            Path.Combine(PrivateRoot, "generated/level1-unity-asset-cache-plan29-final");
 
         private static string QualifiedAssetCachePath =>
             Path.GetFullPath(
@@ -343,11 +343,11 @@ namespace MagicCarpet.Native.Tests
                 QualifiedAssetCachePath,
                 MagicCarpetRuntime.ExpectedPackageHash,
                 MagicCarpetRuntime.ExpectedOwnerAssetClosureHash);
-            Assert.That(cache.OutputCount, Is.EqualTo(1248));
+            Assert.That(cache.OutputCount, Is.EqualTo(1249));
             Assert.That(
                 cache.ContentHash,
                 Is.EqualTo(
-                    "a1dc7c3fca20da019807093530c601b872c3d81284a19d17d5e1aa1bccafd752"));
+                    "b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf"));
             Assert.That(
                 cache.ReadOutput("frame/source-frame-census.json"),
                 Is.Not.Empty);
@@ -365,16 +365,9 @@ namespace MagicCarpet.Native.Tests
                 "\"MC_TERRAIN_FRAME_NON_TERRAIN_OMITTED\"",
                 census);
             Assert.That(
-                QualifiedAssetCachePath,
-                Is.Not.EqualTo(AssetCachePath),
-                "the focused CP4 route supplies the accepted immutable cache");
-            Assert.Throws<InvalidDataException>(
-                () => OwnerAssetCache.OpenAndValidate(
-                    AssetCachePath,
-                    MagicCarpetRuntime.ExpectedPackageHash,
-                    MagicCarpetRuntime.ExpectedOwnerAssetClosureHash),
-                "the old 570-output cache is incomplete and must fail before " +
-                "qualified exact-mode initialization");
+                Path.GetFileName(QualifiedAssetCachePath),
+                Is.EqualTo("level1-unity-asset-cache-plan29-final"),
+                "the promoted sealed final cache is the ordinary exact-mode default");
         }
 
         [Test]
@@ -2026,11 +2019,12 @@ namespace MagicCarpet.Native.Tests
             Assert.That(mission.currentStage, Is.EqualTo(5));
             Assert.That(mission.exitSequenceComplete, Is.EqualTo(1));
             Assert.That(mission.exitResultCode, Is.EqualTo(10));
-            // Eighteen Castle growth passes plus its final stable resample
-            // are followed by one source-exact house action-53 footprint
-            // removal and three source-ordered ambient terrain updates on
-            // this deterministic combat route.
-            Assert.That(peakTerrainMutationSequence, Is.EqualTo(23));
+            // The independently locked pre-Action-51 route contributes 23
+            // mutations: eighteen Castle growth passes, its final stable
+            // resample, one action-53 footprint removal and three ambient
+            // updates. Pinned Action 51 adds four source-ordered BUILD passes
+            // on this route; direct Rust and C-ABI tests lock their planes.
+            Assert.That(peakTerrainMutationSequence, Is.EqualTo(23 + 4));
             Assert.That(terrain.terrainHash, Is.Not.EqualTo(initialTerrainHash));
             var resetSnapshot = session.Reset();
             for (ushort entityIndex = 51; entityIndex <= 78; entityIndex++)

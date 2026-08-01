@@ -147,7 +147,7 @@ Then run the composed gate:
 ```bash
 python3 qualification/verify_presentation_correspondence.py \
   /tmp/magiccarpet-presentation \
-  --owner-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache-plan28-cp4-correction6 \
+  --owner-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache-plan29-final \
   --unity-captures /tmp/magiccarpet-level1-qual-v5-a \
   --second-unity-captures /tmp/magiccarpet-level1-qual-v5-b \
   --unity-log-a /tmp/magiccarpet-autoplay-v5-a.log \
@@ -188,7 +188,7 @@ The production scripts compile into `MagicCarpet.Native.Runtime.dll`; test
 code remains in separate EditMode and PlayMode assemblies and is not included
 in the player. The focused suite is:
 
-- twenty-eight Linux EditMode native-integration tests for ABI/layout, exact input and
+- thirty-one Linux EditMode native-integration tests for ABI/layout, exact input and
   camera routing, reset/generation behavior, two-session isolation,
   idempotent disposal, bad owner inputs, preallocated bulk copying, and the
   qualified selector-clock seam, live Level 1 actor/exit exposure,
@@ -233,13 +233,19 @@ player-boundary gate:
 
 ```bash
 python3 qualification/verify_unity_lifecycle_privacy.py \
-  --edit-results /tmp/magiccarpet-unity-editmode.xml \
+  --edit-composite /absolute/path/to/editmode-composite.json \
   --edit-log /tmp/magiccarpet-unity-editmode.log \
   --play-results /tmp/magiccarpet-unity-playmode.xml \
   --play-log /tmp/magiccarpet-unity-playmode.log
 ```
 
-It requires exactly 29/29 and 1/1 tests; pins the rebuilt launcher, runtime
+The composite receipt is permitted only when one full 31-case XML and one
+focused XML prove the exact failed-case replacement set. It rejects missing,
+duplicate, or unrelated focused cases and binds both XML files plus the native
+plug-in, runtime source, and EditMode source hashes. It does not rerun cases
+that are already green.
+
+The privacy gate requires exactly 31/31 and 1/1 tests; pins the rebuilt launcher, runtime
 assembly, global managers, plug-in, and build GUID; inspects Unity build
 metadata; rejects StreamingAssets, symlinks, owner container/audio
 extensions, and registered owner-payload hash intersections; reruns the full
@@ -247,6 +253,30 @@ built-player self-test; and exercises seven isolated negative launches.
 Missing inputs and package/closure/cache corruption all exit 2 without a PASS.
 The ordinary graphical missing-input case is included, so a failed player can
 no longer remain as a frozen window.
+
+## PLAN29 final closure
+
+The final qualification policy requires exactly one clean end-to-end run:
+run A. Run B is neither required nor permitted. The cache remains sealed to
+the reviewed behavioral closure contract; the separate qualification policy
+overrides only that contract's historical clean-run count.
+
+To execute a fresh candidate:
+
+```bash
+python3 qualification/run_plan29_full_gate.py \
+  --exact-runs 1 \
+  --output-root /absolute/new/plan29-final-root
+```
+
+To finalize preserved run-A checkpoints after targeted failure resumes without
+replaying green suites:
+
+```bash
+python3 qualification/run_plan29_full_gate.py \
+  --exact-runs 1 \
+  --resume-run-root /absolute/plan29-final-root/run-a
+```
 
 ## Provenance and privacy
 

@@ -40,7 +40,7 @@ def verify_runtime_pins(manifest: dict) -> None:
         "closure_file_sha256":
             REPO / "research/private/generated/level1-asset-closure.json",
         "owner_cache_manifest_file_sha256":
-            REPO / "research/private/generated/level1-unity-asset-cache/manifest.json",
+            REPO / "research/private/generated/level1-unity-asset-cache-plan29-final/manifest.json",
         "unity_player_file_sha256":
             REPO / "research/private/remc2-unity-native/Builds/Linux/MagicCarpetNative.x86_64",
         "unity_managed_assembly_sha256":
@@ -338,7 +338,7 @@ def run_native_route_qualification(manifest: dict) -> dict[int, dict]:
         "-mc-closure",
         str(REPO / "research/private/generated/level1-asset-closure.json"),
         "-mc-asset-cache",
-        str(REPO / "research/private/generated/level1-unity-asset-cache"),
+        str(REPO / "research/private/generated/level1-unity-asset-cache-plan29-final"),
         "-logFile",
         str(log_path),
     ]

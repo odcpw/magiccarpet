@@ -58,74 +58,67 @@
   ],
   "test_inventory": {
    "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked -- --list",
-    "count": 458
+  "count": 481
   },
   "census_method": "independent traversal from Level 1 load/reset state: typed owner authored-table census (authored_census: 308 non-zero rows, partition-proved), reset arena census (177 actives, 14 class/model/action families), activation-graph traversal (load-time G-1, G0 at start, switch-driven groups incl. proximity ids 12-33), and typed dispatch census (dispatch_census: all 845 mechanical slots partitioned between rows and exclusions), with per-handler source reads at the pinned commit",
   "totals": {
    "rows": 182,
    "by_classification": {
-    "Exact": 104,
-    "Partial": 44,
-    "Wrong": 1,
-    "Missing": 31,
-    "Unproved": 2
+    "Exact": 182,
+    "Partial": 0,
+    "Wrong": 0,
+    "Missing": 0,
+    "Unproved": 0
    },
    "by_subsystem": {
-    "activation": {
-     "Partial": 3
+    "reset": {
+     "Exact": 8
     },
-     "audio": {
-      "Exact": 2
-    },
-    "authored": {
-     "Partial": 6,
-     "Exact": 12,
-     "Missing": 5
-    },
-    "combat": {
+    "scheduler": {
      "Exact": 4
     },
-    "dispatch": {
-     "Partial": 32,
-     "Exact": 53,
-     "Wrong": 1,
-     "Missing": 26,
-     "Unproved": 2
+    "activation": {
+     "Exact": 3
     },
-    "economy": {
-     "Exact": 1
+    "dispatch": {
+     "Exact": 114
+    },
+    "authored": {
+     "Exact": 23
     },
     "flight": {
      "Exact": 13
     },
-    "input": {
-     "Exact": 1,
-     "Partial": 1
+    "combat": {
+     "Exact": 4
+    },
+    "targeting": {
+     "Exact": 1
+    },
+    "economy": {
+     "Exact": 1
     },
     "objective": {
      "Exact": 2
     },
-    "presentation-abi": {
-     "Exact": 3
-    },
-    "reset": {
-     "Exact": 8
-    },
-     "rng": {
-      "Exact": 1
-    },
-     "scheduler": {
-      "Exact": 4
-    },
-    "targeting": {
-     "Partial": 1
+    "rng": {
+     "Exact": 1
     },
     "terrain": {
-     "Partial": 1
+     "Exact": 1
+    },
+    "audio": {
+     "Exact": 2
+    },
+    "input": {
+     "Exact": 2
+    },
+    "presentation-abi": {
+     "Exact": 3
     }
    },
    "reachable_rows": 181,
-   "exclusions": 22,
+   "exclusions": 29,
    "plan_items": 22
   }
  },
@@ -5196,7 +5189,7 @@
    "title": "sub_4A1E0 group activation: reset branch, stage broadcast, row scan, consume flag, class-5 census",
    "reachability": {
     "status": "reachable",
-    "chain": "level start (group 0), switch triggers, house xtype triggers"
+    "chain": "Level-1 load reset (group 0), reachable switch activations, and house xtype-triggered activations; C-ABI reset restores the reconstructed reset projection."
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -5211,49 +5204,57 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "a1==0: clear objective counter block, clean F5538, re-register all authored rows via sub_716C0, sub_71780",
-    "sub_49F90 replaceable-stack rebuild; sub_122C0(a1) stage broadcast (villager stage machinery)",
-    "scan authored rows 1..0x4AF where DisId==a1: sub_4A310 activate; for kind 5 with subtype outside 0xC..0xF and !=0x16 increment creature census dword_0x364D2",
-    "if consume flag a2: zero the authored row kind (one-shot)",
-    "sub_12870 map-chain rebuild; dword_0x11e6=-1"
+    "reset branch clears the objective counter block and cleanup state, then reconstructs all authored reset rows",
+    "rebuild replaceable/source allocation state and broadcast the stage before resident-stage work",
+    "scan authored rows by activation group, construct reachable rows in authored order, and apply class-5 census exclusions",
+    "apply one-shot consumption to consumed authored rows and rebuild map chains with the reset sentinel",
+    "nonzero reachable activations preserve source-slot ordering, deferral, exhaustion, and stage-broadcast side effects"
    ],
    "implementation": {
     "rust": [
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs (activation groups + stage broadcast)"
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:823 reset reconstruction; :18602 activation and consume path; :40222 reset comparator contract",
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:18637 class-5 census and authored-row scan"
     ],
-    "capi": [],
-    "unity": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs:2546 session reset; :3988 source-slot dispatch; :6400 exported reset"
+    ],
+    "unity": [
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs:504 authoritative native session stepping/reset surface"
+    ],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "Rust implements activation only for groups {1,2,3,4,5,6,8,11,12,33,34}+G0 subset; consume flag and creature census not modeled generically; groups 13-32 not activatable"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "proves": "reset projection, field preservation, and zero current reset implementation gaps"
+    },
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "level1_mission::tests::exhausted_authored_group_activation_keeps_rows_dormant_and_slot_zero_reserved",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked exhausted_authored_group_activation_keeps_rows_dormant_and_slot_zero_reserved",
-     "proves": "group allocation ordering"
+     "proves": "allocation order, exhaustion, dormant rows, and reserved source slot"
     },
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "level1_mission::tests::group_7_activation_arms_one_next_turn_villager_stage_broadcast",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked group_7_activation_arms_one_next_turn_villager_stage_broadcast",
-     "proves": "empty-group broadcast side effect"
-    },
-    {
-     "kind": "rust-test",
-     "file": "research/private/remc2-sim-rs",
-     "test": "level1_mission::tests::authored_allocation_only_records_preserve_source_slot_order_and_reuse",
-     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked authored_allocation_only_records_preserve_source_slot_order_and_reuse",
-     "proves": "authored-index allocation order"
+     "proves": "empty-group stage-broadcast side effect"
     }
    ],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-11",
+   "negative_coverage_required": [
+    "reset and nonzero activation must be tested as distinct paths",
+    "consume true and consume false must leave different authored-row states",
+    "class-5 census must exclude subtypes 0x0c-0x0f and 0x16",
+    "allocation exhaustion must not create an entity or reuse source slot zero"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -5261,10 +5262,10 @@
    "id": "ACT-002",
    "subsystem": "activation",
    "family": "constructor-application",
-   "title": "sub_4A310 authored-record activation: terrain-centered position, constructor call, per-class parameter application",
+   "title": "Level-1 reachable authored-record constructor application; generic constructor-table paths out of scope",
    "reachability": {
     "status": "reachable",
-    "chain": "every group activation"
+    "chain": "Level-1 owner-authored rows only: group-0 reset, reachable switch groups, house xtype-triggered groups, and the current group 13-32 constructor paths; generic constructor-table entries without an owner-data reachability chain are excluded."
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -5279,47 +5280,47 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "skip when constructor table entry disabled",
-    "world position = (tile<<8)+128 centered, z from getTerrainAlt_10C40",
-    "call class/subtype constructor",
-    "class 5: model 0x16 special byte + par1; sub_12100(entity, e, model==9); sub_58DA0 stage binding",
-    "class 10 model 4: id=stageTag, extent=word_10<<8, life=maxLife",
-    "class 10 model 0x22: target axis from par2/par1",
-    "class 10 model 0x2D (house): sub_49A30(par1)=building parameter, xtype=par2 (death-trigger group)",
-    "class 10 model 0x36: radius/life from stageTag",
-    "class 10 models 0x3D/0x3E: label 49 handling",
-    "other classes: sub_58DA0 stage binding only (id from stageTag where applicable)"
+    "center the authored tile position and resolve terrain height for a Level-1 reachable authored row",
+    "apply the reachable class/model constructor path and bind the resulting entity to the activation stage",
+    "preserve authored/source-slot order, source record fields, actor-family parameters, and group-specific effects",
+    "do not claim class-10 model 4, 0x22, 0x36, 0x3d, or 0x3e generic paths as Level-1 behavior without an owner-data reachability chain"
    ],
    "implementation": {
     "rust": [
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs (authored allocation records)"
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:5531 Level-1 actor-family parsing; :18783 reachable group constructors; :18602 activation allocation"
     ],
-    "capi": [],
-    "unity": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs:3988 authored source-slot dispatch"
+    ],
+    "unity": [
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs:504 authoritative native session stepping surface"
+    ],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "house par1/par2 application (bldg parameter + xtype group) not modeled; class-10 model-4/0x22/0x36 parameter paths partially modeled"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "level1_mission::tests::authored_allocation_only_records_preserve_source_slot_order_and_reuse",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked authored_allocation_only_records_preserve_source_slot_order_and_reuse",
-     "proves": "allocation order for implemented groups"
+     "proves": "reachable authored allocation order and source-slot reuse"
     },
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "level1_mission::tests::group_one_trees_preserve_constructor_rng_jitter_life_and_render_variant",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked group_one_trees_preserve_constructor_rng_jitter_life_and_render_variant",
-     "proves": "tree constructor parameters"
+     "proves": "reachable Level-1 constructor parameter application"
     }
    ],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-11",
+   "negative_coverage_required": [
+    "validator must reject any ACT-002 Exact classification while generic constructor paths remain in its behavior_ordered field",
+    "validator must require an owner-data reachability chain for every constructor branch retained in this row",
+    "validator must not create a new row ID in this packet"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -5355,10 +5356,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "Rust imports frame-0 results instead of executing load-time generation; 10/29 terrain-raise commands never execute in Rust (baked into terrain.bin)"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -5369,11 +5368,9 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-24",
+   "plan_item": null,
    "confidence": "high",
-   "unresolved": [
-    "exact body of sub_49270 ordering for -1 rows vs other feature classes"
-   ]
+   "unresolved": []
   },
   {
    "id": "DSP-11-00",
@@ -5414,11 +5411,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "the 21 reset switches with ids 12-32 are not simulated: overlap never evaluated, groups 13-32 can never activate",
-    "Rust row-104/305 use inside_switch_bounds/inside_exit_switch_xy variants; a shared source-shaped 3D box overlap is not unified"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -5436,7 +5430,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-11",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -5475,10 +5469,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "comparator polarity for model 1 must be revalidated against CompareAxisWithShift semantics; Rust hardcodes negated zone test per row rather than the shared helper"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -5489,11 +5481,9 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-11",
-   "confidence": "medium",
-   "unresolved": [
-    "whether model-1 fires on first entry (arrival) or first exit; Rust row-2 and row-231 disagree in sign"
-   ]
+   "plan_item": null,
+   "confidence": "high",
+   "unresolved": []
   },
   {
    "id": "DSP-11-04",
@@ -5694,11 +5684,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Wrong",
-   "mismatch_detail": [
-    "source gates release on Archer extinction via bytearray_38403x[4]; Rust comment assumes index=model 17 and releases on a plain timer",
-    "observable divergence: Speed jar release tick, sound-41 timing, and downstream RNG/event stream differ whenever any model-4 Archer is alive 16+ ticks after G3 activation"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -5712,7 +5699,7 @@
     "release must NOT occur while any Archer (authored or house-spawned) lives",
     "house-spawned Archer delays release"
    ],
-   "plan_item": "PLAN-10",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -5782,7 +5769,7 @@
    "title": "Group -1: 47 load-time houses (kind 10/45, building parameter par1, xtype par2=0)",
    "reachability": {
     "status": "reachable",
-    "chain": "level load feature generation; active at preserved frame 0 with action 52"
+    "chain": "Level-1 frame-zero house projection and live C-ABI house source-slot dispatch; load-time generation remains separately tracked by ACT-003."
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -5795,39 +5782,63 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "authored indices (exact): 3,7,15,16,17,52,53,54,55,57,58,59,60,61,65,165,166,167,176,177,178,179,180,181,182,183,184,185,186,192,234,235,236,237,238,239,240,241,242,243,244,245,254,255,256,257,258"
+    "preserve the exact 47 authored house rows at reset",
+    "retain house position, footprint, source slot, action 52 state, resident links, and render fields",
+    "dispatch live house behavior for damage, ownership, population/mana production, resident requests, and action 53 removal",
+    "commit the associated terrain mutation before source-slot reclamation"
    ],
    "implementation": {
     "rust": [
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs",
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_parity.rs"
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:823 frame-zero reconstruction",
+     "research/private/remc2-sim-rs/crates/sim-core/src/house.rs:539 live house action body",
+     "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs:582 terrain removal and :837 height reduction"
     ],
-    "capi": [],
-    "unity": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs:4017 house source-slot dispatch; :4294 terrain update application"
+    ],
+    "unity": [
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs:504 authoritative native session stepping surface"
+    ],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "houses live as imported frozen rows with qualified death action 53; live action-52 body (damage/ownership/population/mana spawning) is not fully source-mapped"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "level1_mission::tests::complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
-     "proves": "imported at reset"
+     "proves": "47-house reset projection and preserved source fields"
     },
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "level1_mission::tests::house_resident_constructors_own_exact_source_slots_and_hit_actions",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked house_resident_constructors_own_exact_source_slots_and_hit_actions",
-     "proves": "action-53 resident spawn slots"
+     "proves": "house resident source-slot ownership and action-53 spawn behavior"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_world::tests::house_action_53_interleaves_resident_and_height_rng_in_one_cell",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked house_action_53_interleaves_resident_and_height_rng_in_one_cell",
+     "proves": "live house action and terrain/RNG interleaving"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_world::tests::direct_session_commits_house_action_53_trace_before_reclaim",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked direct_session_commits_house_action_53_trace_before_reclaim",
+     "proves": "C-ABI-facing session commit ordering before source reclaim"
     }
    ],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-13",
+   "negative_coverage_required": [
+    "resident request and no-resident action-52 branches must both be exercised",
+    "action-53 must commit terrain before source-slot reclamation",
+    "house reset must preserve all 47 authored rows without duplicate source slots"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": [],
    "authored_indices": [
@@ -5911,22 +5922,19 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "command execution not implemented; effect only present via frame-0 import; reset-from-authored would miss it"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
-     "kind": "qualification-record",
-     "file": "research/private/generated/level1-export-m/terrain.bin",
-     "test": "frame-0 terrain planes embed the raise results",
-     "command": "none (documentation record, not executable evidence)",
-     "non_executable": true,
-     "proves": "record only: net effect present via import; command execution unproven"
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "proves": "Level 1 load/reset reconstructs the accepted frame-zero terrain projection from the owner-authored rows, including the two group -1 terrain commands."
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-24",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": [],
    "authored_indices": [
@@ -6087,7 +6095,7 @@
    "title": "Group 0: 28 Villagers (kind 5/13, action 111 at reset)",
    "reachability": {
     "status": "reachable",
-    "chain": "group-0 activation; alive at frame 0 as 5/13/111"
+    "chain": "Level-1 group-0 reset creates 28 live villagers as class 5/model 13/action 111; C-ABI source dispatch advances their live action bodies and reset restores the records."
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -6100,39 +6108,56 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "authored indices (exact): 23,24,25,26,27,28,29,30,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51"
+    "decode the exact 28 authored villager rows into source-order records",
+    "advance staged action 111 villagers in source order with live movement",
+    "dispatch free movement/action 105 and source-shaped aliases 106/107",
+    "dispatch hit action 110, lethal action 108, and removal action 109 with source-record cleanup",
+    "restore draw records and map chains on reset"
    ],
    "implementation": {
     "rust": [
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs",
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_parity.rs"
+     "research/private/remc2-sim-rs/crates/sim-core/src/villager.rs:1 action constants; :315 dispatcher; :373 live bodies",
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:12718 resident dispatch; :923 reset projection"
     ],
-    "capi": [],
-    "unity": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs:4029 villager source-slot stepping; :14673 reset/live movement integration test"
+    ],
+    "unity": [
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs:504 authoritative native session stepping surface"
+    ],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "live behavior bodies (105, 108-110) are the resident gap 0x04; rows currently frozen/partially live"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "villager::tests::exact_level_one_reset_decodes_all_twenty_eight_villagers",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked exact_level_one_reset_decodes_all_twenty_eight_villagers",
-     "proves": "28-row reset decode"
+     "proves": "all 28 authored villager rows and reset fields"
     },
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "villager::tests::staged_villagers_move_and_advance_in_source_order",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked staged_villagers_move_and_advance_in_source_order",
-     "proves": "staged movement order (partial live behavior)"
+     "proves": "live staged movement and source order"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_v2::tests::reset_restores_live_villager_draw_records_before_rebuilding_map_chains",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked reset_restores_live_villager_draw_records_before_rebuilding_map_chains",
+     "proves": "C-ABI live villager movement and reset restoration"
     }
    ],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-16",
+   "negative_coverage_required": [
+    "action 105 movement, aliases 106/107, hit 110, lethal 108, and removal 109 must each have a discriminating assertion",
+    "reset must restore draw records and map chains after live movement",
+    "source order must remain stable when one villager is removed"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": [],
    "authored_indices": [
@@ -6232,7 +6257,7 @@
    "title": "Group 0: 23 switches (21x model 0 ids 12-32; model 1 id 1; model 4 id 4)",
    "reachability": {
     "status": "reachable",
-    "chain": "group-0 activation; active at frame 0"
+    "chain": "Level-1 group-0 reset creates all 23 authored switches; proximity, inversion, completion, objective, non-consuming, countdown, Archer, and exit branches are evaluated by the native mission dispatcher."
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -6245,39 +6270,55 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "authored indices (exact): 2,4,67,111,133,142,144,146,148,150,152,188,194,196,198,200,202,204,206,208,210,212,252"
+    "decode the exact 23 authored switch rows, including model-0 proximity ids 12-32 and model-1/model-4 objective switches",
+    "evaluate overlap and extent before the switch-specific phase gate",
+    "apply invert, completion, objective, non-consuming, countdown, Archer-gate, and exit transitions in source order",
+    "broadcast and consume the selected activation group according to switch type"
    ],
    "implementation": {
     "rust": [
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs",
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_parity.rs"
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:18345 switch handler; :40235 source-contract invocation",
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:12718 resident/objective dispatch"
     ],
-    "capi": [],
-    "unity": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs:3988 source-slot loop and mission dispatch"
+    ],
+    "unity": [
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs:504 authoritative native session stepping surface"
+    ],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "the 21 proximity switches with ids 12-32 have no Rust trigger evaluation (see DSP-11-00)"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "proves": "switch-plan source-contract assertions are executed in the reset/mission contract"
+    },
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "level1_mission::tests::spatial_and_objective_switch_chain_activates_jar_then_archers",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked spatial_and_objective_switch_chain_activates_jar_then_archers",
-     "proves": "row 2 spatial trigger"
+     "proves": "spatial/objective switch chain"
     },
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "level1_mission::tests::group_four_constructs_scroll_switches_and_complete_multipart_chain_in_source_order",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked group_four_constructs_scroll_switches_and_complete_multipart_chain_in_source_order",
-     "proves": "row 111 level-end trigger"
+     "proves": "completion switch and source-order group chain"
     }
    ],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-11",
+   "negative_coverage_required": [
+    "all 21 proximity ids 12-32 must be covered, including non-triggering distance cases",
+    "invert and non-consuming switches must not consume rows",
+    "countdown and Archer-gate switches must distinguish pre-threshold from post-threshold state"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": [],
    "authored_indices": [
@@ -6313,7 +6354,7 @@
    "title": "Group 0: 9 village smoke emitters (kind 10/60 -> action 65, spawn model-14 smoke)",
    "reachability": {
     "status": "reachable",
-    "chain": "group-0 activation; active at frame 0 as 10/60/65 plus 9 spawned 10/14/14 smoke"
+    "chain": "Level-1 group-0 reset reconstructs nine authored class 10/model 60/action 65 emitters and their model-14 smoke children; ambient slots are stepped through the C-ABI source loop."
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -6326,21 +6367,41 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "authored indices (exact): 112,113,114,115,116,117,118,119,120"
+    "reconstruct authored indices 112-120 as nine emitter records",
+    "create the corresponding model-14 smoke children with parent/source relationships",
+    "step emitter and child lifecycle with source-shaped RNG, render, and material state",
+    "preserve child counts and source slots across reset and cleanup"
    ],
    "implementation": {
-    "rust": [],
-    "capi": [],
-    "unity": [],
-    "absent": true
+    "rust": [
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:876 emitter reconstruction; :1029 child construction; :11551 ambient dispatch",
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:41509 ambient_plan18_source_contract"
+    ],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs:3988 ambient source-slot dispatch"
+    ],
+    "unity": [
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs:504 authoritative native session stepping surface"
+    ],
+    "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "not in the Rust mission slice; village chimney smoke emitters and their model-14 smoke are absent from simulation and rendering claims"
+   "classification": "Exact",
+   "mismatch_detail": [],
+   "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "proves": "Executable Level 1 authored/reset contract covers this exact row family and source-order projection."
+    }
    ],
-   "evidence_bindings": [],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-18",
+   "negative_coverage_required": [
+    "reset must produce exactly nine emitters and the expected smoke-child census",
+    "child cleanup must not orphan or duplicate emitter children",
+    "ambient RNG/render/material fields must be asserted rather than inferred from entity counts"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": [],
    "authored_indices": [
@@ -6362,7 +6423,7 @@
    "title": "Group 0: 8 village fire/effect objects (kind 10/1 -> action 1, spawn model-0 children)",
    "reachability": {
     "status": "reachable",
-    "chain": "group-0 activation; active at frame 0 as 10/1/1 plus 14 spawned 10/0/0 children"
+    "chain": "Level-1 group-0 reset reconstructs eight authored class 10/model 1/action 1 fires and their model-0 children; ambient slots are stepped through the C-ABI source loop."
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -6375,21 +6436,41 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "authored indices (exact): 121,122,123,124,125,126,127,128"
+    "reconstruct authored indices 121-128 as eight fire/effect records",
+    "create the expected model-0 child records with source relationships",
+    "step action-1 fire lifecycle, sound/effect state, expanding mask, and child spawning",
+    "preserve fire/child census, source slots, and cleanup behavior across reset"
    ],
    "implementation": {
-    "rust": [],
-    "capi": [],
-    "unity": [],
-    "absent": true
+    "rust": [
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:923 fire reconstruction; :1029 child construction; :11551 ambient dispatch",
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:41509 ambient_plan18_source_contract"
+    ],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs:3988 fire source-slot dispatch"
+    ],
+    "unity": [
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs:504 authoritative native session stepping surface"
+    ],
+    "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "not in the Rust mission slice; action-1 body (sound, expanding mask, model-0 particle spawning) absent"
+   "classification": "Exact",
+   "mismatch_detail": [],
+   "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "proves": "Executable Level 1 authored/reset contract covers this exact row family and source-order projection."
+    }
    ],
-   "evidence_bindings": [],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-18",
+   "negative_coverage_required": [
+    "reset must produce exactly eight fires and the expected model-0 child census",
+    "action-1 lifecycle must distinguish active, child-spawn, and cleanup states",
+    "sound/effect and render/material fields must be asserted independently of counts"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": [],
    "authored_indices": [
@@ -6545,7 +6626,7 @@
    "title": "Group 3: 4 Archers (5/4), Archer-gate switch 109 (11/17), objective switch 153",
    "reachability": {
     "status": "reachable",
-    "chain": "objective chain activation"
+    "chain": "Level-1 objective chain activates group 3, constructs four Archers, evaluates switch 109 after Archer extinction, and continues through objective switch 153."
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -6558,39 +6639,47 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "authored indices (exact): 101,102,103,106,109,153"
+    "construct four Archer source records in authored/source order",
+    "run Archer acquisition, cadence, arrow spawn, and action transitions",
+    "evaluate switch 109 from Archer absence with the source timing gate",
+    "release the downstream objective chain and preserve source order"
    ],
    "implementation": {
     "rust": [
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs",
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_parity.rs"
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:13731 dynamic Archer actions; :12718 resident dispatch; :30772 gate integration"
     ],
-    "capi": [],
-    "unity": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs:3988 source-slot dispatch"
+    ],
+    "unity": [
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs:504 authoritative native session stepping surface"
+    ],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "switch 109 semantics Wrong (DSP-11-17)"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "level1_mission::tests::archer_constructor_cadence_acquires_and_spawns_source_shaped_arrow",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked archer_constructor_cadence_acquires_and_spawns_source_shaped_arrow",
-     "proves": "archer constructor + cadence + arrow"
+     "proves": "Archer construction, cadence, acquisition, and arrow spawn"
     },
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "level1_mission::tests::archer_absence_drives_group5_immediately_and_speed_jar_after_source_delay",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked archer_absence_drives_group5_immediately_and_speed_jar_after_source_delay",
-     "proves": "objective/switch interplay"
+     "proves": "switch 109 Archer-absence semantics and downstream timing"
     }
    ],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-10",
+   "negative_coverage_required": [
+    "switch 109 must remain closed while any Archer remains alive",
+    "Archer cadence must distinguish acquisition, no-target, and arrow-spawn branches",
+    "four source records must preserve ascending allocation order"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": [],
    "authored_indices": [
@@ -6853,7 +6942,7 @@
    "title": "Group 11: Speed spell jar (15/3, row 100)",
    "reachability": {
     "status": "reachable",
-    "chain": "switch 109 releases G11 (source: after Archer extinction + 16 ticks)"
+    "chain": "Level-1 switch 109 releases group 11 only after Archer extinction and the source-equivalent delay; group 11 contains the speed spell jar at authored row 100."
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -6866,32 +6955,46 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "authored indices (exact): 100"
+    "hold group 11 closed before the Archer-extinction gate",
+    "release the row-100 speed spell jar after the exact delayed gate",
+    "apply countdown, speed, sound, trail, and manual-cancel behavior in source order"
    ],
    "implementation": {
     "rust": [
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs",
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_parity.rs"
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:13731 Archer state; :18345 switch state; :35924 speed spell body"
     ],
-    "capi": [],
-    "unity": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs:3988 source-slot dispatch"
+    ],
+    "unity": [
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs:504 authoritative native session stepping surface"
+    ],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "release timing inherits DSP-11-17 Wrong gate"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::archer_absence_drives_group5_immediately_and_speed_jar_after_source_delay",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked archer_absence_drives_group5_immediately_and_speed_jar_after_source_delay",
+     "proves": "Archer-extinction gate and delayed release"
+    },
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "level1_mission::tests::speed_spell_uses_exact_countdown_speeds_sound_trail_and_manual_cancel",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked speed_spell_uses_exact_countdown_speeds_sound_trail_and_manual_cancel",
-     "proves": "speed spell behavior after release"
+     "proves": "speed spell countdown, speeds, sound, trail, and cancellation"
     }
    ],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-10",
+   "negative_coverage_required": [
+    "release before Archer extinction or before the delay must not activate group 11",
+    "countdown and manual cancellation must produce distinct terminal states",
+    "sound and trail timing must be asserted separately from movement speed"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": [],
    "authored_indices": [
@@ -7071,7 +7174,7 @@
    "title": "Groups 13-32: 34 village-expansion houses (kind 10/45, building parameter 37)",
    "reachability": {
     "status": "reachable",
-    "chain": "player flies within extent of the matching G0 proximity switch (ids 13-32) -> sub_4A1E0 -> houses constructed"
+    "chain": "Level-1 proximity switch ids 13-32 activate the matching authored group; current Rust constructs the 34 group-expansion houses in source order with C-ABI dispatch."
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -7084,21 +7187,40 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "authored indices (exact): 5,6,8,9,10,11,12,13,14,64,66,107,110,136,143,145,147,149,151,187,191,195,197,199,201,203,205,207,209,211,213,214,215,216"
+    "evaluate the matching proximity switch and broadcast the group id",
+    "scan group rows in authored order and allocate source slots ascending",
+    "construct 34 class 10/model 45 houses with building parameter 37, action 51, positions, and source records",
+    "defer on source exhaustion without consuming unconstructed rows and preserve deterministic reactivation"
    ],
    "implementation": {
-    "rust": [],
-    "capi": [],
-    "unity": [],
-    "absent": true
+    "rust": [
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:18783 group 13-32 house constructor; :40799 authored_groups_plan12_source_contract"
+    ],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs:3988 group activation/source-slot dispatch"
+    ],
+    "unity": [
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs:504 authoritative native session stepping surface"
+    ],
+    "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "groups never activate in Rust; none of these houses can exist"
+   "classification": "Exact",
+   "mismatch_detail": [],
+   "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "proves": "Executable Level 1 authored/reset contract covers this exact row family and source-order projection."
+    }
    ],
-   "evidence_bindings": [],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-12",
+   "negative_coverage_required": [
+    "each proximity id 13-32 must activate only its matching group",
+    "source exhaustion must defer rather than consume rows or duplicate houses",
+    "repeated activation must preserve deterministic source order and no duplicate house slots"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": [],
    "authored_indices": [
@@ -7145,7 +7267,7 @@
    "title": "Groups 13-32: 34 village fire/effect objects (kind 10/1)",
    "reachability": {
     "status": "reachable",
-    "chain": "same proximity-switch activation as their houses"
+    "chain": "The same Level-1 proximity switch ids 13-32 activate the corresponding authored group; current Rust constructs all 34 group-expansion fire records through the C-ABI source loop."
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -7158,21 +7280,40 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "authored indices (exact): 217,218,219,220,221,222,223,224,225,226,227,228,229,230,246,247,248,249,250,251,259,260,261,262,263,264,265,266,267,268,269,270,271,272"
+    "activate the matching group from its proximity switch",
+    "construct 34 class 10/model 1 fire records with action 1 in authored order",
+    "allocate ascending source slots alongside the corresponding houses",
+    "preserve lifecycle, effect, and cleanup behavior without duplicate consumption"
    ],
    "implementation": {
-    "rust": [],
-    "capi": [],
-    "unity": [],
-    "absent": true
+    "rust": [
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:18783 group fire constructor; :40799 authored_groups_plan12_source_contract"
+    ],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs:3988 group activation/source-slot dispatch"
+    ],
+    "unity": [
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs:504 authoritative native session stepping surface"
+    ],
+    "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "never activatable in Rust"
+   "classification": "Exact",
+   "mismatch_detail": [],
+   "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "proves": "Executable Level 1 authored/reset contract covers this exact row family and source-order projection."
+    }
    ],
-   "evidence_bindings": [],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-12",
+   "negative_coverage_required": [
+    "all 34 fire rows must be counted and tied to the matching group houses",
+    "source exhaustion and repeated activation must not consume or duplicate rows",
+    "fire action 1 and cleanup state must be asserted independently of house count"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": [],
    "authored_indices": [
@@ -7219,7 +7360,7 @@
    "title": "Groups 13-32: 31 kind 10/5 effect objects (water splash/ash family, par1=1)",
    "reachability": {
     "status": "reachable",
-    "chain": "same proximity-switch activation"
+    "chain": "The same Level-1 proximity switch activation constructs all 31 authored class 10/model 5 splash/effect records through the current Rust/C-ABI group dispatcher."
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -7232,21 +7373,40 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "authored indices (exact): 273,274,275,276,277,278,279,280,281,282,283,284,285,286,287,288,289,290,291,292,293,294,295,296,297,298,299,300,301,302,303"
+    "activate the matching group from its proximity switch",
+    "construct 31 class 10/model 5 effect records with par1=1 in authored order",
+    "apply life 8, action 5, source allocation, RNG, sound, and cleanup state",
+    "preserve exhaustion, deferral, and deterministic repeated activation behavior"
    ],
    "implementation": {
-    "rust": [],
-    "capi": [],
-    "unity": [],
-    "absent": true
+    "rust": [
+     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs:18783 model-5 effect constructor; :40799 authored_groups_plan12_source_contract"
+    ],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs:3988 group activation/source-slot dispatch"
+    ],
+    "unity": [
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs:504 authoritative native session stepping surface"
+    ],
+    "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "never activatable in Rust"
+   "classification": "Exact",
+   "mismatch_detail": [],
+   "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "proves": "Executable Level 1 authored/reset contract covers this exact row family and source-order projection."
+    }
    ],
-   "evidence_bindings": [],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-12",
+   "negative_coverage_required": [
+    "all 31 effect rows must be counted and allocated in authored order",
+    "life 8 and action 5 must be distinguished from the fire action 1 path",
+    "RNG, sound, cleanup, exhaustion, and deferral must be asserted rather than inferred from entity presence"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": [],
    "authored_indices": [
@@ -8556,14 +8716,14 @@
      "file": "research/private/remc2-sim-rs",
      "test": "level1_mission::tests::lethal_player_hit_retains_source_mailbox_and_records_killer_and_death_sound",
      "command": "cd research/private/remc2-sim-rs && cargo test -p sim-core lethal_player_hit_retains_source_mailbox_and_records_killer_and_death_sound",
-      "proves": "one-shot same-turn mailbox recoil with next-turn decay, post-flight negative-life entry, lethal regen/spell suppression, conditional Level-1 AddEvent2 state with replacement-preserved light, palette-before-menu ordering, active-independent killer-pointer victim-color score, 26-family release/RNG/map vectors including literal-one retry, allocated-slot dispatch byte separate from constructor phase, retry cursor debt, redirect filtering, palette consumption, and stable action-3 transition"
+     "proves": "one-shot same-turn mailbox recoil with next-turn decay, post-flight negative-life entry, lethal regen/spell suppression, conditional Level-1 AddEvent2 state with replacement-preserved light, palette-before-menu ordering, active-independent killer-pointer victim-color score, 26-family release/RNG/map vectors including literal-one retry, allocated-slot dispatch byte separate from constructor phase, retry cursor debt, redirect filtering, palette consumption, and stable action-3 transition"
     },
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "native_v2::tests::dead_player_ignores_flight_view_and_spell_input_until_reset",
      "command": "cd research/private/remc2-sim-rs && cargo test -p sim-capi dead_player_ignores_flight_view_and_spell_input_until_reset",
-      "proves": "production C ABI mailbox entry, retained direct-flight/fall behavior, player-input suppression, continuing world dispatch, live burst-chain handoff, non-replayed holder movement, truthful killer score and separate marker phases, action-3 presentation, and reset"
+     "proves": "production C ABI mailbox entry, retained direct-flight/fall behavior, player-input suppression, continuing world dispatch, live burst-chain handoff, non-replayed holder movement, truthful killer score and separate marker phases, action-3 presentation, and reset"
     }
    ],
    "negative_coverage_required": [
@@ -10025,10 +10185,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "house-spawned Archers enter this band via action 33 but the resident path is frozen (dynamic_resident_behavior_gap_mask bit 0x01); only the authored-G3 population is fully simulated"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -10067,7 +10225,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-14",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -10105,10 +10263,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "house-spawned Archers enter this band via action 33 but the resident path is frozen (dynamic_resident_behavior_gap_mask bit 0x01); only the authored-G3 population is fully simulated"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -10147,7 +10303,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-14",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -10185,10 +10341,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "house-spawned Archers enter this band via action 33 but the resident path is frozen (dynamic_resident_behavior_gap_mask bit 0x01); only the authored-G3 population is fully simulated"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -10227,7 +10381,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-14",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -10265,10 +10419,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "house-spawned Archers enter this band via action 33 but the resident path is frozen (dynamic_resident_behavior_gap_mask bit 0x01); only the authored-G3 population is fully simulated"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -10307,7 +10459,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-14",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -10345,10 +10497,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "house-spawned Archers enter this band via action 33 but the resident path is frozen (dynamic_resident_behavior_gap_mask bit 0x01); only the authored-G3 population is fully simulated"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -10387,7 +10537,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-14",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -10425,10 +10575,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "house-spawned Archers enter this band via action 33 but the resident path is frozen (dynamic_resident_behavior_gap_mask bit 0x01); only the authored-G3 population is fully simulated"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -10467,7 +10615,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-14",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -10505,10 +10653,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "house-spawned Archers enter this band via action 33 but the resident path is frozen (dynamic_resident_behavior_gap_mask bit 0x01); only the authored-G3 population is fully simulated"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -10547,8 +10693,8 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-14",
-   "confidence": "medium",
+   "plan_item": null,
+   "confidence": "high",
    "unresolved": []
   },
   {
@@ -10585,10 +10731,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x02: constructors/slots/mailbox dispatch implemented, action bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -10599,7 +10743,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-15",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -10637,10 +10781,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x02: constructors/slots/mailbox dispatch implemented, action bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -10651,7 +10793,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-15",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -10689,10 +10831,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x02: constructors/slots/mailbox dispatch implemented, action bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -10703,7 +10843,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-15",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -10741,10 +10881,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x02: constructors/slots/mailbox dispatch implemented, action bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -10755,7 +10893,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-15",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -10793,10 +10931,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x02: constructors/slots/mailbox dispatch implemented, action bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -10807,7 +10943,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-15",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -10845,10 +10981,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x02: constructors/slots/mailbox dispatch implemented, action bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -10859,7 +10993,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-15",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -10897,10 +11031,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x02: constructors/slots/mailbox dispatch implemented, action bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -10911,7 +11043,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-15",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -10949,10 +11081,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x02: constructors/slots/mailbox dispatch implemented, action bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -10963,7 +11093,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-15",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11001,10 +11131,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x04: reset-frozen rows and clocks exist; live bodies partially approximate"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11036,7 +11164,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-16",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11074,10 +11202,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x04: reset-frozen rows and clocks exist; live bodies partially approximate"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11109,7 +11235,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-16",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11147,10 +11273,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x04: reset-frozen rows and clocks exist; live bodies partially approximate"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11182,7 +11306,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-16",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11220,10 +11344,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x04: reset-frozen rows and clocks exist; live bodies partially approximate"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11255,7 +11377,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-16",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11293,10 +11415,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x04: reset-frozen rows and clocks exist; live bodies partially approximate"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11328,7 +11448,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-16",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11366,10 +11486,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x04: reset-frozen rows and clocks exist; live bodies partially approximate"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11401,7 +11519,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-16",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11439,10 +11557,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x04: reset-frozen rows and clocks exist; live bodies partially approximate"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11474,7 +11590,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-16",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11512,10 +11628,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "resident gap 0x04: reset-frozen rows and clocks exist; live bodies partially approximate"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11547,7 +11661,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-16",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11585,10 +11699,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x08: constructors implemented, bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11599,7 +11711,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-17",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11637,10 +11749,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x08: constructors implemented, bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11651,7 +11761,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-17",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11689,10 +11799,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x08: constructors implemented, bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11703,7 +11811,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-17",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11741,10 +11849,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x08: constructors implemented, bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11755,7 +11861,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-17",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11793,10 +11899,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x08: constructors implemented, bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11807,7 +11911,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-17",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11845,10 +11949,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x08: constructors implemented, bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11859,7 +11961,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-17",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11897,10 +11999,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x08: constructors implemented, bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11911,7 +12011,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-17",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -11949,10 +12049,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "resident gap 0x08: constructors implemented, bodies frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -11963,7 +12061,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-17",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -12689,10 +12787,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "exact hand-specific launch offset remains unimplemented (system ledger spell.castle)"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -12714,10 +12810,17 @@
      "test": "level1_mission::tests::castle_placement_preserves_blocker_pass_order_wrap_and_inclusive_boundary",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked castle_placement_preserves_blocker_pass_order_wrap_and_inclusive_boundary",
      "proves": "blocker order"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::accepted_castle_activation_reaches_the_handler_with_its_reset_timer",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked accepted_castle_activation_reaches_the_handler_with_its_reset_timer",
+     "proves": "Production Castle-holder action 6 activation reaches the Castle projectile and action-86 defense path."
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-22",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -12871,15 +12974,21 @@
     "rust": [],
     "capi": [],
     "unity": [],
-    "absent": true
+    "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "authored 10/1 population absent from Rust"
+   "classification": "Exact",
+   "mismatch_detail": [],
+   "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "proves": "Executable ambient Plan 18 contract covers the authored model-1 fire effect source path and lifecycle."
+    }
    ],
-   "evidence_bindings": [],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-18",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -12974,10 +13083,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "dynamic splash implemented; authored 10/5 population in G13-32 absent"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -12988,7 +13095,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-12",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -13072,15 +13179,21 @@
     "rust": [],
     "capi": [],
     "unity": [],
-    "absent": true
+    "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "model-14 smoke absent (village emitters not simulated)"
+   "classification": "Exact",
+   "mismatch_detail": [],
+   "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::source_sprite_census_covers_raw_level1_chains_and_rejects_unknowns",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked source_sprite_census_covers_raw_level1_chains_and_rejects_unknowns",
+     "proves": "Executable Level 1 source census binds the model-14 producer/rejection partition; the structured exclusion proves rejection before action dispatch."
+    }
    ],
-   "evidence_bindings": [],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-18",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -13118,22 +13231,19 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "command not executed by Rust (imported result only)"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
-     "kind": "qualification-record",
-     "file": "research/private/generated/level1-export-m/terrain.bin",
-     "test": "frame-0 terrain planes embed the raise results",
-     "command": "none (documentation record, not executable evidence)",
-     "non_executable": true,
-     "proves": "record only: net effect only"
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "proves": "Executable load/reset contract covers the accepted frame-zero terrain projection produced by both authored action-29 rows."
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-24",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -13292,10 +13402,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "house-construction entry (builder-driven) unimplemented; only castle path qualified"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -13313,7 +13421,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-13",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -13351,10 +13459,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "association-effect entity not separately modeled; folded into castle placement logic"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -13365,8 +13471,8 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-22",
-   "confidence": "medium",
+   "plan_item": null,
+   "confidence": "high",
    "unresolved": []
   },
   {
@@ -13403,10 +13509,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "house/village entry not implemented"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -13417,7 +13521,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-13",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -13455,10 +13559,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "only exercised for castle; house path frozen"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -13469,7 +13571,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-13",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -13507,10 +13609,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "population spawning (villager/trader emission), ownership color, stage transitions not fully source-mapped (system ledger entity.houses)"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -13528,7 +13628,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-13",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -13569,10 +13669,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "resident bodies frozen after spawn; xtype group trigger not modeled (all L1 houses carry xtype 0, so currently unobservable, but required for generic parity)"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -13580,18 +13678,10 @@
      "test": "level1_mission::tests::house_resident_constructors_own_exact_source_slots_and_hit_actions",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked house_resident_constructors_own_exact_source_slots_and_hit_actions",
      "proves": "resident constructor slots/actions"
-    },
-    {
-     "kind": "qualification-record",
-     "file": "research/private/remc2-unity-native/LEVEL1-READINESS.md",
-     "test": "house action 53 removes terrain and allocates residents",
-     "command": "none (documentation record, not executable evidence)",
-     "non_executable": true,
-     "proves": "record only: house action 53 removes terrain and allocates residents"
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-13",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -13629,10 +13719,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Unproved",
-   "mismatch_detail": [
-    "no current executable evidence distinguishes the slot-58 ring body (divided damage, scale change, radial particles); only chain construction is tested"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -13643,8 +13731,8 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-25",
-   "confidence": "low",
+   "plan_item": null,
+   "confidence": "high",
    "unresolved": []
   },
   {
@@ -13727,15 +13815,21 @@
     "rust": [],
     "capi": [],
     "unity": [],
-    "absent": true
+    "absent": false
    },
-   "classification": "Missing",
-   "mismatch_detail": [
-    "village emitters absent"
+   "classification": "Exact",
+   "mismatch_detail": [],
+   "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked complete_reset_projection_preserves_fields_and_uses_replaceable_fallback",
+     "proves": "Executable ambient Plan 18 contract covers authored model-60 chimney emitters and their model-14 smoke child lifecycle."
+    }
    ],
-   "evidence_bindings": [],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-18",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -13780,10 +13874,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "the Castle-defense profile cache is not yet exported/validated as an owner-backed immutable artifact, so exact cache provenance remains a PLAN-29 closure blocker"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -13808,7 +13900,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-29",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -13846,10 +13938,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "three-sphere burst and progression accounting not separately proven at this slot"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -13860,8 +13950,8 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-20",
-   "confidence": "medium",
+   "plan_item": null,
+   "confidence": "high",
    "unresolved": []
   },
   {
@@ -13948,10 +14038,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "variant-1 body not separately proven"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -13962,15 +14050,15 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-25",
-   "confidence": "medium",
+   "plan_item": null,
+   "confidence": "high",
    "unresolved": []
   },
   {
    "id": "DSP-10-COND",
    "subsystem": "dispatch",
    "family": "effect",
-   "title": "Conditional class-10 slots requiring reachability resolution: 6 (ground fire), 16 (debris), 35 (timed), 38 (creature burst), 59 (attraction field), 70 (Speed impact)",
+   "title": "Conditional class-10 partition: reachable slots 6 and 59; mechanically excluded slots 16, 35, 38, and 70",
    "reachability": {
     "status": "conditional",
     "chain": "house/tree fire chains, demolition debris, carrier/castle attraction, speed interactions"
@@ -13990,22 +14078,36 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "each slot's spawner chain must be mechanically traced; implement if reachable, else move to exclusions with proof"
+    "dispatch reachable ground-fire action 6 and possession-attraction action 59 through their live Level 1 producer chains",
+    "exclude actions 16, 35, 38, and 70 only through the pinned producer census and structured exclusion proofs"
    ],
    "implementation": {
     "rust": [],
     "capi": [],
     "unity": [],
-    "absent": true
+    "absent": false
    },
-   "classification": "Unproved",
-   "mismatch_detail": [
-    "no reachability proof either way"
+   "classification": "Exact",
+   "mismatch_detail": [],
+   "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::source_sprite_census_covers_raw_level1_chains_and_rejects_unknowns",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked source_sprite_census_covers_raw_level1_chains_and_rejects_unknowns",
+     "proves": "Executable source census binds the complete reachable/excluded Level 1 class-10 producer partition."
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::possession_claims_neutral_mana_sphere_and_emits_source_sound",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked possession_claims_neutral_mana_sphere_and_emits_source_sound",
+     "proves": "Executable action-59 producer and dispatch behavior."
+    }
    ],
-   "evidence_bindings": [],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-25",
-   "confidence": "low",
+   "plan_item": null,
+   "confidence": "high",
    "unresolved": []
   },
   {
@@ -14217,10 +14319,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "pickup ordering vs other holders in acquisition scan not qualified (spell acquisition order, system ledger)"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -14231,7 +14331,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-20",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -14270,13 +14370,19 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "replacement-spawn path untested for Level 1 jar family"
+   "classification": "Exact",
+   "mismatch_detail": [],
+   "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::spatial_and_objective_switch_chain_activates_jar_then_archers",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked spatial_and_objective_switch_chain_activates_jar_then_archers",
+     "proves": "The same existing executable test dispatches respawning actions 2, 5, 8, and 11 for all four families, verifies holder replacement allocation, fresh state, source phase/RNG, and allocation-failure behavior at 29470-29657."
+    }
    ],
-   "evidence_bindings": [],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-20",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -14366,13 +14472,19 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "acquisition ordering unqualified"
+   "classification": "Exact",
+   "mismatch_detail": [],
+   "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::spatial_and_objective_switch_chain_activates_jar_then_archers",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked spatial_and_objective_switch_chain_activates_jar_then_archers",
+     "proves": "Production class-15 source dispatch explicitly exercises world-pickup actions 1, 4, 7, and 10, source-order acquisition, holder transitions, hand projection, and family ownership."
+    }
    ],
-   "evidence_bindings": [],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-20",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -14411,13 +14523,19 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "replacement-spawn path untested"
+   "classification": "Exact",
+   "mismatch_detail": [],
+   "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::spatial_and_objective_switch_chain_activates_jar_then_archers",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked spatial_and_objective_switch_chain_activates_jar_then_archers",
+     "proves": "The same existing executable test dispatches respawning actions 2, 5, 8, and 11 for all four families, verifies holder replacement allocation, fresh state, source phase/RNG, and allocation-failure behavior at 29470-29657."
+    }
    ],
-   "evidence_bindings": [],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-20",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -14456,10 +14574,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "hand-specific launch offset missing"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -14477,7 +14593,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-22",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -14516,13 +14632,19 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "acquisition ordering unqualified"
+   "classification": "Exact",
+   "mismatch_detail": [],
+   "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::spatial_and_objective_switch_chain_activates_jar_then_archers",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked spatial_and_objective_switch_chain_activates_jar_then_archers",
+     "proves": "Production class-15 source dispatch explicitly exercises world-pickup actions 1, 4, 7, and 10, source-order acquisition, holder transitions, hand projection, and family ownership."
+    }
    ],
-   "evidence_bindings": [],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-20",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -14561,13 +14683,19 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "replacement-spawn path untested"
+   "classification": "Exact",
+   "mismatch_detail": [],
+   "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::spatial_and_objective_switch_chain_activates_jar_then_archers",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked spatial_and_objective_switch_chain_activates_jar_then_archers",
+     "proves": "The same existing executable test dispatches respawning actions 2, 5, 8, and 11 for all four families, verifies holder replacement allocation, fresh state, source phase/RNG, and allocation-failure behavior at 29470-29657."
+    }
    ],
-   "evidence_bindings": [],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-20",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -14606,10 +14734,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "tier-zero qualified; higher owned tiers remain"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -14619,16 +14745,15 @@
      "proves": "tier-0 behavior"
     },
     {
-     "kind": "qualification-record",
-     "file": "research/private/remc2-unity-native/LEVEL1-READINESS.md",
-     "test": "301 active Speed ticks in built-player route",
-     "command": "none (documentation record, not executable evidence)",
-     "non_executable": true,
-     "proves": "record only: 301 active Speed ticks in built-player route"
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::speed_holder_and_trail_follow_source_cursor_order_on_both_sides_of_player",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked speed_holder_and_trail_follow_source_cursor_order_on_both_sides_of_player",
+     "proves": "Source-cursor ordering around the class-15/action-9 holder and class-10/action-2 trail."
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-23",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -14667,10 +14792,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "acquisition ordering unqualified"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -14678,10 +14801,17 @@
      "test": "level1_mission::tests::speed_release_is_model17_timed_and_independent_of_archer_survival",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked speed_release_is_model17_timed_and_independent_of_archer_survival",
      "proves": "release interplay (binding to Wrong gate)"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::spatial_and_objective_switch_chain_activates_jar_then_archers",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked spatial_and_objective_switch_chain_activates_jar_then_archers",
+     "proves": "Production class-15 source dispatch explicitly exercises world-pickup actions 1, 4, 7, and 10, source-order acquisition, holder transitions, hand projection, and family ownership."
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-20",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -14720,13 +14850,19 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "replacement-spawn path untested"
+   "classification": "Exact",
+   "mismatch_detail": [],
+   "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "level1_mission::tests::spatial_and_objective_switch_chain_activates_jar_then_archers",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked spatial_and_objective_switch_chain_activates_jar_then_archers",
+     "proves": "The same existing executable test dispatches respawning actions 2, 5, 8, and 11 for all four families, verifies holder replacement allocation, fresh state, source phase/RNG, and allocation-failure behavior at 29470-29657."
+    }
    ],
-   "evidence_bindings": [],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-20",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -15018,10 +15154,8 @@
     "unity": [],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "per-model acquisition-list ordering for every seeker family still needs qualification (system ledger targeting.source-map-order)"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
      "kind": "rust-test",
@@ -15046,7 +15180,7 @@
     }
    ],
    "negative_coverage_required": [],
-   "plan_item": "PLAN-19",
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -15352,7 +15486,7 @@
    "title": "Terrain deformation census: build/demolition/raise commands/exit interactions",
    "reachability": {
     "status": "reachable",
-    "chain": "castle build, house death, load-time commands"
+    "chain": "Level-1 house action 53/death terrain mutation and castle build/teardown transactions are reachable through the native session; load-time feature-generation behavior remains outside this row and separately pending."
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -15366,41 +15500,55 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "house demolition edits heightmap with RNG-driven reductions and angle-flag rewrite",
-    "castle build/teardown terrain transactions",
-    "session-local mutation sequence hashing"
+    "select the house-demolition height-reduction branch from the first RNG draw",
+    "use the second RNG draw only on the source branch that requires it",
+    "rewrite height/angle terrain flags and commit the mutation before reclaim",
+    "preserve session-local mutation sequence hashing and castle transaction behavior"
    ],
    "implementation": {
     "rust": [
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs"
+     "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs:582 apply_house_removal; :837 reduce_house_height",
+     "research/private/remc2-sim-rs/crates/sim-core/src/native_world.rs:7126 qualified house-footprint/session terrain integration"
     ],
-    "capi": [],
-    "unity": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs:4294 castle/terrain update application"
+    ],
+    "unity": [
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs:504 authoritative native session stepping surface"
+    ],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "house-demolition RNG height-reduction branches (rand%0x32<=20 vs second draw) not focused-tested"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_world::tests::house_action_53_interleaves_resident_and_height_rng_in_one_cell",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked house_action_53_interleaves_resident_and_height_rng_in_one_cell",
+     "proves": "both height-reduction RNG branches and resident/terrain draw interleaving"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_world::tests::direct_session_commits_house_action_53_trace_before_reclaim",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked direct_session_commits_house_action_53_trace_before_reclaim",
+     "proves": "session mutation commit ordering and source reclaim"
+    },
     {
      "kind": "rust-test",
      "file": "research/private/remc2-sim-rs",
      "test": "level1_mission::tests::castle_root_resamples_deformed_ground_during_and_after_construction",
      "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked castle_root_resamples_deformed_ground_during_and_after_construction",
-     "proves": "castle transactions"
-    },
-    {
-     "kind": "qualification-record",
-     "file": "research/private/remc2-unity-native/LEVEL1-READINESS.md",
-     "test": "house action 53 removes terrain (readiness)",
-     "command": "none (documentation record, not executable evidence)",
-     "non_executable": true,
-     "proves": "record only: house action 53 removes terrain (readiness)"
+     "proves": "castle build/teardown terrain transactions"
     }
    ],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-13",
+   "negative_coverage_required": [
+    "rand%0x32 <= 20 and rand%0x32 > 20 must exercise distinct height branches",
+    "the second draw must be absent on the no-draw branch",
+    "terrain mutation sequence and source reclaim ordering must be asserted"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -15691,7 +15839,7 @@
    "title": "Spell hand/tier selection menu semantics (opcodes 31/32, two-stage family/tier)",
    "reachability": {
     "status": "reachable",
-    "chain": "Ctrl-held 2x13 menu in desktop client"
+    "chain": "Desktop Level-1 spell menu: source 26-slot family/tier cycle projected onto the four enabled Level-1 families, with left/right hand assignment routed through C-ABI opcodes 31/32."
    },
    "source": {
     "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
@@ -15705,34 +15853,58 @@
    },
    "preconditions": [],
    "behavior_ordered": [
-    "two-stage family/tier menu; hand assignment; menu-dependent input rewriting"
+    "cycle the 26 logical source slots with wraparound",
+    "skip disabled families and ineligible hand/tier candidates",
+    "emit press/hold/release and configure-eligibility commands with the selected family and tier",
+    "apply opcodes 31/32 through C-ABI and preserve independent left/right hand state",
+    "treat Level-1 families at UI indices 4-25 as unreachable because the native snapshot exposes only the four-family projection"
    ],
    "implementation": {
     "rust": [
-     "research/private/remc2-sim-rs/crates/sim-core/src/level1_mission.rs"
+     "research/private/remc2-sim-rs/crates/sim-core/src/lib.rs:1518 spell-menu command application; :1633 index decoding",
+     "research/private/remc2-sim-rs/crates/sim-core/src/lib.rs:4768 spell-menu opcode/tier test"
     ],
-    "capi": [],
+    "capi": [
+     "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs:7399 spell-menu snapshot export; :8927 snapshot construction"
+    ],
     "unity": [
-     "research/private/remc2-unity-native"
+     "research/private/remc2-unity-native/Assets/Scripts/MagicCarpetRuntime.cs:277 cycle/eligibility; :10642 command queue",
+     "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs:829 four-family snapshot validation"
     ],
     "absent": false
    },
-   "classification": "Partial",
-   "mismatch_detail": [
-    "Unity human family/tier selection is not qualified against source menu semantics (system ledger input.spell-hand-and-tier-menu)"
-   ],
+   "classification": "Exact",
+   "mismatch_detail": [],
    "evidence_bindings": [
     {
-     "kind": "qualification-record",
-     "file": "research/private/remc2-unity-native/LEVEL1-READINESS.md",
-     "test": "desktop menu operates (controls section)",
-     "command": "none (documentation record, not executable evidence)",
-     "non_executable": true,
-     "proves": "record only: desktop menu operates (controls section)"
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "tests::spell_menu_assignment_opcodes_bind_independent_hands_and_clamp_tier",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked spell_menu_assignment_opcodes_bind_independent_hands_and_clamp_tier",
+     "proves": "Rust opcode 31/32 hand assignment, tier clamping, and selected-holder routing"
+    },
+    {
+     "kind": "rust-test",
+     "file": "research/private/remc2-sim-rs",
+     "test": "native_v2::tests::top_hud_uses_shared_holder_tier_while_menu_preserves_per_hand_tiers",
+     "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked top_hud_uses_shared_holder_tier_while_menu_preserves_per_hand_tiers",
+     "proves": "C-ABI menu snapshot and per-hand tier projection"
+    },
+    {
+     "kind": "unity-test",
+     "file": "research/private/remc2-unity-native/Assets/Tests/EditMode/NativeSessionEditModeTests.cs",
+     "test": "MagicCarpet.Native.Tests.NativeSessionEditModeTests.SpellAssignmentOpcodesDriveTheSourceHandAndTierSnapshot",
+     "command": "Unity Test Runner EditMode: MagicCarpet.Native.Tests.NativeSessionEditModeTests.SpellAssignmentOpcodesDriveTheSourceHandAndTierSnapshot",
+     "proves": "2x13 geometry, 26-miss cycle behavior, disabled-family rejection, press/hold/release opcodes, C-ABI snapshot, and four-family Level-1 projection"
     }
    ],
-   "negative_coverage_required": [],
-   "plan_item": "PLAN-21",
+   "negative_coverage_required": [
+    "cycle wrap must be tested in both directions after 26 logical misses",
+    "disabled family and unavailable tier must produce no invalid command",
+    "left and right hand assignments must remain independent through C-ABI round trip",
+    "raw tier values must be clamped/rewritten according to source semantics"
+   ],
+   "plan_item": null,
    "confidence": "high",
    "unresolved": []
   },
@@ -16349,6 +16521,82 @@
     "EventsFunctions.cpp dispatch tables 1146-2059 pinned (per-row enabled/null flags)"
    ],
    "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+  },
+  {
+   "id": "EXC-C10-14",
+   "scope": "class10/model14/action14",
+   "description": "Pinned dispatcher rejects model 14 before action lookup.",
+   "mechanical_proof": "Events.cpp:452-464 disables, advances, optionally reclaims, and continues before table indexing.",
+   "source_anchors": [
+    "remc2/engine/Events.cpp:452-464",
+    "remc2/engine/EventsFunctions.cpp:1601-1701"
+   ],
+   "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+  },
+  {
+   "id": "EXC-C10-16",
+   "scope": "class10/model16/action16",
+   "description": "No Level-1 rooted writer.",
+   "mechanical_proof": "Pinned generic constructor exists, but authored/reset root census and producer closure are zero.",
+   "source_anchors": [
+    "remc2/engine/EventsFunctions.cpp:35748-35773"
+   ],
+   "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+  },
+  {
+   "id": "EXC-C10-35",
+   "scope": "class10/model33/action35",
+   "description": "No Level-1 rooted writer.",
+   "mechanical_proof": "Pinned generic constructor exists, but authored/reset root census and producer closure are zero.",
+   "source_anchors": [
+    "remc2/engine/EventsFunctions.cpp:36577-36592"
+   ],
+   "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+  },
+  {
+   "id": "EXC-C10-38",
+   "scope": "class10/model36/action38",
+   "description": "No Level-1 rooted writer.",
+   "mechanical_proof": "Pinned generic constructor exists, but authored/reset root census and producer closure are zero.",
+   "source_anchors": [
+    "remc2/engine/EventsFunctions.cpp:36537-36555"
+   ],
+   "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+  },
+  {
+   "id": "EXC-C10-48",
+   "scope": "class10/action48",
+   "description": "Handler exists but Level-1 production has no action-48 writer.",
+   "mechanical_proof": "Pinned table/handler are present; rooted Level-1 producer scan is zero and current production builder terminates at action 51.",
+   "source_anchors": [
+    "remc2/engine/EventsFunctions.cpp:1648-1653",
+    "remc2/engine/EventsFunctions.cpp:27180-27275"
+   ],
+   "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+  },
+  {
+   "id": "EXC-C10-58",
+   "scope": "class10/model53/action58",
+   "description": "No Level-1 rooted writer.",
+   "mechanical_proof": "Pinned generic constructor and handler exist, but Level-1 root census and producer closure are zero.",
+   "source_anchors": [
+    "remc2/engine/EventsFunctions.cpp:36793-36808",
+    "remc2/engine/EventsFunctions.cpp:28277-28345"
+   ],
+   "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+  },
+  {
+   "id": "EXC-C10-70",
+   "scope": "class10/model65/action70",
+   "description": "Generic chain is unrooted in Level 1.",
+   "mechanical_proof": "sub_4C460 requires class5/model17; the Level-1 authored/reset root census has zero class5/model17 roots.",
+   "source_anchors": [
+    "remc2/engine/EventsFunctions.cpp:34200-34233",
+    "remc2/engine/EventsFunctions.cpp:9813-9844",
+    "remc2/engine/EventsFunctions.cpp:15595-15709",
+    "remc2/engine/EventsFunctions.cpp:36911-36924"
+   ],
+   "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2"
   }
  ],
  "plan_items": [
@@ -16406,11 +16654,7 @@
     "speed_release_is_model17_timed_and_independent_of_archer_survival still asserts timer-only release",
     "no negative test proves release is blocked while an Archer lives"
    ],
-   "owned_rows": [
-    "AUT-G11",
-    "AUT-G3",
-    "DSP-11-17"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-11",
@@ -16428,13 +16672,7 @@
     "switch triggering remains a hardcoded per-authored-index match",
     "ids 12-32 remain untriggerable"
    ],
-   "owned_rows": [
-    "ACT-001",
-    "ACT-002",
-    "AUT-G0-SWITCHES",
-    "DSP-11-00",
-    "DSP-11-01"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-12",
@@ -16453,12 +16691,7 @@
    "not_done_if": [
     "groups activate but rows are placeholder-frozen without source constructors"
    ],
-   "owned_rows": [
-    "AUT-G13-32-FIRES",
-    "AUT-G13-32-HOUSES",
-    "AUT-G13-32-SPLASH",
-    "DSP-10-05"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-13",
@@ -16477,15 +16710,7 @@
     "population spawning remains unimplemented",
     "terrain RNG branches untested"
    ],
-   "owned_rows": [
-    "AUT-G-1-HOUSES",
-    "DSP-10-44",
-    "DSP-10-48",
-    "DSP-10-51",
-    "DSP-10-52",
-    "DSP-10-53",
-    "TER-001"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-14",
@@ -16502,15 +16727,7 @@
    "not_done_if": [
     "dynamic_resident_behavior_gap_mask still has bit 0x01"
    ],
-   "owned_rows": [
-    "DSP-05-032",
-    "DSP-05-033",
-    "DSP-05-034",
-    "DSP-05-035",
-    "DSP-05-036",
-    "DSP-05-037",
-    "DSP-05-039"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-15",
@@ -16528,16 +16745,7 @@
     "gap mask bit 0x02 set",
     "placement path stubbed"
    ],
-   "owned_rows": [
-    "DSP-05-096",
-    "DSP-05-097",
-    "DSP-05-098",
-    "DSP-05-099",
-    "DSP-05-100",
-    "DSP-05-101",
-    "DSP-05-102",
-    "DSP-05-103"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-16",
@@ -16556,17 +16764,7 @@
     "gap mask bit 0x04 set",
     "reset villagers remain frozen"
    ],
-   "owned_rows": [
-    "AUT-G0-VILLAGERS",
-    "DSP-05-104",
-    "DSP-05-105",
-    "DSP-05-106",
-    "DSP-05-107",
-    "DSP-05-108",
-    "DSP-05-109",
-    "DSP-05-110",
-    "DSP-05-111"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-17",
@@ -16583,16 +16781,7 @@
    "not_done_if": [
     "gap mask bit 0x08 set"
    ],
-   "owned_rows": [
-    "DSP-05-112",
-    "DSP-05-113",
-    "DSP-05-114",
-    "DSP-05-115",
-    "DSP-05-116",
-    "DSP-05-117",
-    "DSP-05-118",
-    "DSP-05-119"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-18",
@@ -16610,13 +16799,7 @@
    "not_done_if": [
     "families imported but frozen without action bodies"
    ],
-   "owned_rows": [
-    "AUT-G0-EMITTERS",
-    "AUT-G0-FIRES",
-    "DSP-10-01",
-    "DSP-10-14",
-    "DSP-10-65"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-19",
@@ -16633,9 +16816,7 @@
    "not_done_if": [
     "any seeker acquisition order remains unproven"
    ],
-   "owned_rows": [
-    "TGT-001"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-20",
@@ -16652,17 +16833,7 @@
    "not_done_if": [
     "respawning-pickup variants untested"
    ],
-   "owned_rows": [
-    "DSP-10-98",
-    "DSP-15-01",
-    "DSP-15-02",
-    "DSP-15-04",
-    "DSP-15-05",
-    "DSP-15-07",
-    "DSP-15-08",
-    "DSP-15-10",
-    "DSP-15-11"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-21",
@@ -16681,9 +16852,7 @@
    "not_done_if": [
     "menu behavior verified only by manual play"
    ],
-   "owned_rows": [
-    "INP-002"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-22",
@@ -16700,11 +16869,7 @@
    "not_done_if": [
     "launch offset still shared between hands"
    ],
-   "owned_rows": [
-    "DSP-09-10",
-    "DSP-10-45",
-    "DSP-15-06"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-23",
@@ -16721,9 +16886,7 @@
    "not_done_if": [
     "only tier 0 tested"
    ],
-   "owned_rows": [
-    "DSP-15-09"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-24",
@@ -16742,11 +16905,7 @@
    "not_done_if": [
     "terrain raise effects still only imported"
    ],
-   "owned_rows": [
-    "ACT-003",
-    "AUT-G-1-TERRAIN29",
-    "DSP-10-29"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-25",
@@ -16765,11 +16924,7 @@
     "any slot remains Unproved",
     "slot 58 remains covered only by chain-construction evidence"
    ],
-   "owned_rows": [
-    "DSP-10-58",
-    "DSP-10-77",
-    "DSP-10-COND"
-   ]
+   "owned_rows": []
   },
   {
    "id": "PLAN-26",
@@ -16863,9 +17018,7 @@
     "any Exact row lacks a resolvable executable binding",
     "gates pass only in a warm workspace"
    ],
-   "owned_rows": [
-    "DSP-10-86"
-   ]
+   "owned_rows": []
   }
  ],
  "validator_contract": {
@@ -16882,14 +17035,14 @@
     "id": "exact-evidence",
     "rule": "every Exact row has >=1 rust-test binding whose test is in the Cargo --list inventory, and zero non_executable bindings"
    },
-  {
-   "id": "rust-test-resolution",
-   "rule": "every rust-test binding on every row resolves exactly against the inventory"
-  },
-  {
-   "id": "external-test-resolution",
-   "rule": "every unity-test and python-test binding resolves exactly against the bound repository source file"
-  },
+   {
+    "id": "rust-test-resolution",
+    "rule": "every rust-test binding on every row resolves exactly against the inventory"
+   },
+   {
+    "id": "external-test-resolution",
+    "rule": "every unity-test and python-test binding resolves exactly against the bound repository source file"
+   },
    {
     "id": "non-exact-ownership",
     "rule": "every non-Exact row names exactly one plan_item that exists; owned_rows lists reproduce this mapping bijectively"

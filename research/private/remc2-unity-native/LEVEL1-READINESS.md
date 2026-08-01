@@ -106,7 +106,7 @@ and `Space` also casts the left hand. `Esc` releases capture, click recaptures,
 | Gate | Result |
 |---|---|
 | Rust workspace | 442 tests in the locked Cargo inventory: atlas 4, C ABI 57, sim core 377, WASM proof 4; exact row bindings resolve against that list |
-| Owner cache | 1,248 outputs; deterministic rebuild, accepted native FINAL MAIN source-frame census, and corruption negatives |
+| Owner cache | 1,249 outputs; deterministic rebuild, sealed PLAN29 identity, accepted native FINAL MAIN source-frame census, and corruption negatives |
 | Unity EditMode | 29/29 passed |
 | Unity PlayMode | 1/1 passed |
 | Built-player route | Stage 5, result 10 at tick 14,720 in the rebuilt desktop player |
@@ -148,20 +148,26 @@ Current local artifact identities:
 - player launcher SHA-256:
   `8027f7d1f9ae7dacfc826fb218adcc1ae7464af098a8a59397e7531c0f7ec0bc`;
 - native plug-in SHA-256:
-  `3dbde36981b66d7b37e0a946f55ad1707ac357b4f8ee8bca1c0f53baca82589b`;
+  `b315562e2b91d4bdef2067a2c26d13ffe82d7f7e7975707f043724984c1f80fa`;
 - managed runtime SHA-256:
-  `724d3a38d8cb8935680d302d9b20f11e8785be9ea5dee86ad43b9148a05e5175`;
+  `c05d076eb2922bd929790f7fea699fd0d48993d73bc8696fbfd3ff9f451fa577`;
 - `globalgamemanagers` SHA-256:
   `8abee05c17b175ff5f5b089ac2fd131f61041b1f320e47891678e07c829ae1d6`;
-- Unity build GUID: `ca97e2bdb3044fcf8514f2ad7db0fdf8`;
+- Unity build GUID: `7ad6d1a242bf421cb5ddf3bac3c2f6fe`;
 - owner-cache content SHA-256:
-  `a1dc7c3fca20da019807093530c601b872c3d81284a19d17d5e1aa1bccafd752`;
+  `b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf`;
 - owner-cache manifest SHA-256:
-  `474d4b24c157896ce98f0a8baa1593f98762fc314f081600c44a94f97743fad8`;
+  `1050b4f1e3f0e63fa292fe7798d19f4b390c063aa5afd5a350fba9e300298082`;
 - owner-cache source-frame census SHA-256:
-  `57188c96853bfd9964c978c8ac9561fe69f69610d3e95aa3c7bbb0b2e5222722`.
+  `8a9fb362badbeb37d0b5ef4dae15be4fcdee92c690e0f2017689c5cf0af31f5e`.
 
 Current evidence from the final rebuilt player:
+
+- PLAN29 acceptance: 1/1 required clean run (run A); run B is not permitted;
+- run receipt: `/home/oliver/plan29-final-qualification-20260801/run-a/receipts/run-receipt.json`;
+- aggregate receipt: `/home/oliver/plan29-final-qualification-20260801/aggregate.json`;
+- final closure receipt: `/home/oliver/plan29-final-qualification-20260801/closure-receipts.json`;
+- final closure log: `/home/oliver/plan29-final-qualification-20260801/final-closure.log`;
 
 - self-test: `/tmp/magiccarpet-native-selftest-v41.log`;
 - built-player route: `/tmp/magiccarpet-level1-autoplay-v41.log`;

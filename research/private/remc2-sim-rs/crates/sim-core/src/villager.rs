@@ -239,6 +239,23 @@ impl VillagerFamily {
         &self.villagers
     }
 
+    pub(crate) fn apply_house_construction_kill(
+        &mut self,
+        source_entity_index: u16,
+        source_id: u16,
+    ) {
+        let Some(villager) = self
+            .villagers
+            .iter_mut()
+            .find(|villager| villager.entity_index == source_entity_index)
+        else {
+            return;
+        };
+        villager.life = -1;
+        villager.kill_credit_entity = source_id.cast_signed();
+        villager.current_attacker = source_id.cast_signed();
+    }
+
     /// `sub_12500` class-5 stage service for Level 1's kind-7 broadcast.
     /// This runs before source slot one and does not consume an entity phase.
     pub fn release_stage_group_7(&mut self) -> usize {

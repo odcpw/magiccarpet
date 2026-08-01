@@ -84,6 +84,20 @@ pub struct Level1ResetSourceSlot {
     pub control_flags: u32,
 }
 
+/// Reset-time raw fields required by action-51 map-chain effects but kept
+/// separate from the compact dispatch tuple.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level1ResetRawSourceState {
+    pub index: u16,
+    pub source_id: u16,
+    pub life: i32,
+    pub building_index: i16,
+    pub axis: Position,
+    pub word_24: u16,
+    pub word_26: u16,
+    pub word_2e: i16,
+}
+
 /// Live class-10 village fire/smoke state reconstructed from the owner reset.
 ///
 /// The reset comparator intentionally remains limited to its established
@@ -163,6 +177,26 @@ impl Level1ResetSourceSlot {
 }
 
 pub const LEVEL1_FRAME_ZERO_ACTIVE_ENTITY_COUNT: usize = 177;
+/// remc2 frame-zero `rand_0x14` values for the complete active Level 1 arena,
+/// indexed by source slot 1..=177. These are pinned independently of the
+/// exported record parser so offset regressions cannot make the reset
+/// comparator agree with itself.
+const LEVEL1_FRAME_ZERO_ENTITY_RNG: [u16; LEVEL1_FRAME_ZERO_ACTIVE_ENTITY_COUNT] = [
+    39205, 35111, 39207, 39208, 39209, 39210, 39211, 39212, 39213, 39214, 39215, 39216, 39217,
+    39218, 39219, 39220, 39221, 39222, 39223, 39224, 39225, 39226, 39227, 39228, 39229, 39230,
+    39231, 39232, 39233, 39234, 39235, 39236, 39237, 39238, 39239, 39240, 39241, 39242, 39243,
+    39244, 39245, 39246, 39247, 39248, 39249, 39250, 39251, 33971, 33972, 4306, 10931, 3733, 48086,
+    26903, 5720, 50073, 28890, 7707, 52060, 30877, 9694, 54047, 32864, 11681, 56034, 34851, 51395,
+    58021, 36838, 15655, 60008, 38825, 17642, 61995, 40812, 19629, 63982, 42799, 13553, 34003,
+    32307, 41684, 51061, 60438, 4279, 13656, 23033, 32410, 41787, 51164, 60541, 4382, 13759, 23136,
+    10368, 41890, 51267, 60644, 4485, 13862, 23239, 32616, 41993, 51370, 60747, 4588, 13965, 23342,
+    32719, 42096, 64656, 34035, 2447, 43184, 18385, 59122, 34323, 9524, 50261, 25462, 663, 6358,
+    63253, 57338, 32539, 7740, 48477, 46906, 1917, 34053, 34054, 34055, 34056, 34057, 34058, 34059,
+    34060, 34061, 34062, 34063, 34064, 34065, 34066, 34067, 34068, 34069, 34070, 34071, 34072,
+    34073, 34074, 34075, 34076, 34077, 12379, 50651, 17083, 49915, 58011, 48539, 61435, 38331,
+    19163, 28540, 24348, 47294, 56671, 26335, 5152, 19266, 28643, 7139, 51492, 56774, 615, 53479,
+    19369,
+];
 pub const LEVEL1_RESET_COMPARATOR_SCHEMA: &str = "mc2-level1-reset-from-authored/v1";
 pub const LEVEL1_FEATURE_COMPARATOR_SCHEMA: &str = "mc2-level1-load-features/v1";
 pub const LEVEL1_RESET_SOURCE_RECORD_BYTES: usize = 13;
@@ -846,7 +880,7 @@ fn reconstruct_level1_frame_zero(
             45,
             52,
             house.frame_zero_phase,
-            2,
+            house.entity_rng,
             0x0000_000d,
         ));
     }
@@ -1081,6 +1115,16 @@ fn reconstruct_level1_frame_zero(
             "Level 1 frame-zero reconstruction produced {} entities and next slot {source_slot}",
             expected.len()
         ));
+    }
+    for (offset, entity) in expected.iter_mut().enumerate() {
+        let slot = u16::try_from(offset + 1).expect("Level 1 active slot fits u16");
+        if entity.slot.index != slot {
+            return Err(format!(
+                "Level 1 frame-zero RNG census expected slot {slot}, found {}",
+                entity.slot.index
+            ));
+        }
+        entity.slot.entity_rng = LEVEL1_FRAME_ZERO_ENTITY_RNG[offset];
     }
     Ok(expected)
 }
@@ -2091,6 +2135,11 @@ pub const BUILDER_HIT_RELEASE_RANGE: u32 = 0x0e00;
 pub const BUILDER_BUILD_SOUND: u16 = 10;
 pub const TRADER_MODEL: u8 = 14;
 pub const TRADER_INITIAL_ACTION: u8 = 112;
+pub const REQUIRED_RESIDENT_BEHAVIOR_MASK: u8 = 0x0f;
+const RESIDENT_ARCHER_OBSERVATION: u8 = 0x01;
+const RESIDENT_BUILDER_OBSERVATION: u8 = 0x02;
+const RESIDENT_VILLAGER_OBSERVATION: u8 = 0x04;
+const RESIDENT_TRADER_OBSERVATION: u8 = 0x08;
 pub const TRADER_FREE_ACTION: u8 = 113;
 pub const TRADER_FREE_ALIAS_ACTION_A: u8 = 114;
 pub const TRADER_FREE_ALIAS_ACTION_B: u8 = 115;
@@ -3675,6 +3724,35 @@ pub enum HouseDemolitionCommitEvent {
     BuildingDisabled(u16),
 }
 
+/// Ordered source-visible effects emitted by action 51 around its terrain
+/// sweep. These are the literal `sub_57390` and `sub_377A0` side effects, not
+/// presentation notifications.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HouseConstructionSourceEffect {
+    DrawingDisabled {
+        house_entity_index: u16,
+        tile: u16,
+        source_entity_index: u16,
+    },
+    ActorKilledAndLinked {
+        house_entity_index: u16,
+        house_source_id: u16,
+        tile: u16,
+        source_entity_index: u16,
+    },
+    ConstructionAllocated {
+        house_entity_index: u16,
+        parent_entity_index: u16,
+        source_entity_index: u16,
+        building_index: u8,
+    },
+    ConstructionAllocationFailed {
+        house_entity_index: u16,
+        parent_entity_index: u16,
+        building_index: u8,
+    },
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level1Actor {
     pub authored_index: u16,
@@ -4095,18 +4173,16 @@ fn bind_dynamic_source_record(
     record.control_flags = 8;
 }
 
-fn allocate_castle_association(
-    source_pool: &mut Level1SourcePool,
+fn bind_castle_association(
+    association_slot: u16,
     source_slots: &mut [Level1ResetSourceSlot],
     castle_associations: &mut Vec<CastleAssociationEffect>,
     next_effect_id: &mut u32,
     global_rng: u32,
     owner_entity_index: u16,
     position: Position,
-) -> Option<u16> {
+) -> u16 {
     let association_id = *next_effect_id;
-    let association_slot =
-        source_pool.allocate(SourceOccupant::CastleAssociation(association_id))?;
     let occupant = SourceOccupant::CastleAssociation(association_id);
     bind_dynamic_source_record(source_slots, association_slot, occupant, global_rng);
     *next_effect_id = next_effect_id.wrapping_add(1).max(1);
@@ -4120,7 +4196,7 @@ fn allocate_castle_association(
         collision_attempted: false,
         active: true,
     });
-    Some(association_slot)
+    association_slot
 }
 
 /// The bounded remc2 entity arena for the Level 1 slice.
@@ -4139,6 +4215,7 @@ struct Level1SourcePool {
     raw_replaceable_cursor: i32,
     replaced_imported_slots: Vec<u16>,
     replaced_authored_slots: Vec<(u16, u16)>,
+    fallback_allocation_count: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4151,6 +4228,19 @@ struct SourcePoolAllocationRollback {
     raw_replaceable_cursor: i32,
     replaced_imported_len: usize,
     replaced_authored_len: usize,
+    fallback_allocation_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourceAllocationKind {
+    Ordinary,
+    Replacement,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SourceAllocation {
+    slot: u16,
+    kind: SourceAllocationKind,
 }
 
 impl Level1SourcePool {
@@ -4179,6 +4269,7 @@ impl Level1SourcePool {
             raw_replaceable_cursor: -1,
             replaced_imported_slots: Vec::new(),
             replaced_authored_slots: Vec::new(),
+            fallback_allocation_count: 0,
         })
     }
 
@@ -4229,10 +4320,11 @@ impl Level1SourcePool {
             raw_replaceable_cursor,
             replaced_imported_slots: Vec::new(),
             replaced_authored_slots: Vec::new(),
+            fallback_allocation_count: 0,
         })
     }
 
-    fn allocate(&mut self, occupant: SourceOccupant) -> Option<u16> {
+    fn allocate_with_kind(&mut self, occupant: SourceOccupant) -> Option<SourceAllocation> {
         let (slot, from_free_stack) = if let Some(slot) = self.free_stack.pop() {
             (slot, true)
         } else {
@@ -4243,6 +4335,9 @@ impl Level1SourcePool {
             self.raw_replaceable_cursor = self.raw_replaceable_cursor.wrapping_sub(1);
             (slot, false)
         };
+        if !from_free_stack {
+            self.fallback_allocation_count = self.fallback_allocation_count.wrapping_add(1);
+        }
         let index = usize::from(slot);
         let was_replaceable = self.replaceable[index];
         let entry = self
@@ -4277,7 +4372,20 @@ impl Level1SourcePool {
                         .expect("replaceable stack length fits i32")
                         - 1
         );
-        Some(slot)
+        Some(SourceAllocation {
+            slot,
+            kind: if from_free_stack {
+                SourceAllocationKind::Ordinary
+            } else {
+                SourceAllocationKind::Replacement
+            },
+        })
+    }
+
+    #[cfg(test)]
+    fn allocate(&mut self, occupant: SourceOccupant) -> Option<u16> {
+        self.allocate_with_kind(occupant)
+            .map(|allocation| allocation.slot)
     }
 
     fn next_allocation_rollback(&self) -> Option<SourcePoolAllocationRollback> {
@@ -4302,6 +4410,7 @@ impl Level1SourcePool {
             raw_replaceable_cursor: self.raw_replaceable_cursor,
             replaced_imported_len: self.replaced_imported_slots.len(),
             replaced_authored_len: self.replaced_authored_slots.len(),
+            fallback_allocation_count: self.fallback_allocation_count,
         })
     }
 
@@ -4314,6 +4423,7 @@ impl Level1SourcePool {
             .truncate(rollback.replaced_imported_len);
         self.replaced_authored_slots
             .truncate(rollback.replaced_authored_len);
+        self.fallback_allocation_count = rollback.fallback_allocation_count;
         self.raw_replaceable_cursor = rollback.raw_replaceable_cursor;
         if rollback.from_free_stack {
             self.free_stack.push(rollback.slot);
@@ -4706,9 +4816,22 @@ pub struct CastleConstruction {
     pub id: u32,
     pub source_entity_index: u16,
     pub parent_entity_index: u16,
+    /// Source `id_0x1A`, copied from the overlapping class-3 parent.
     pub owner_entity_index: u16,
     pub position: Position,
+    /// Source `byte_0x46`, copied from the parent's `dword_0x10` selector.
     pub stage: u8,
+    /// `SetShiftByCastle_49EC0` footprint shifts installed immediately after
+    /// construction.
+    pub collision_half_width: i16,
+    pub collision_half_depth: i16,
+    pub max_life: i32,
+    pub life: i32,
+    pub control_flags: u32,
+    /// Source `byte_0x3B`, set by the model-42 creator.
+    pub constructor_latch: u8,
+    pub yaw: i16,
+    pub fov: i16,
     /// Source `dword_0x10`: zero before first dispatch, then 18..1, -1, 0.
     pub timer: i16,
     pub initialized: bool,
@@ -4774,18 +4897,118 @@ pub struct CastleDefenseShot {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TargetingSourceLists {
-    players: Vec<u16>,
-    class_5_models: [Vec<u16>; 29],
-    class_10_auxiliary: Vec<u16>,
+    class_5_model_heads: [u16; 29],
+    /// Pinned `dword_38519`: live class-3 rows.
+    players_head: u16,
+    /// Pinned `dword_38523`: class-10 models 39, 40, and 57.
+    class_10_auxiliary_head: u16,
+    /// Pinned `dword_38527`: class-10 model 45 only.
+    class_10_buildings_head: u16,
+    /// Pinned `dword_38531`: every class-9 row.
+    class_9_head: u16,
+    /// Pinned `dword_38535`: class-10 models 42/67/78 and class-11 models 12/31.
+    class_10_11_collision_head: u16,
+    /// One shared per-record `next_0`, used by every frozen source list.
+    next: Box<[u16]>,
 }
 
 impl Default for TargetingSourceLists {
     fn default() -> Self {
         Self {
-            players: Vec::new(),
-            class_5_models: std::array::from_fn(|_| Vec::new()),
-            class_10_auxiliary: Vec::new(),
+            class_5_model_heads: [0; 29],
+            players_head: 0,
+            class_10_auxiliary_head: 0,
+            class_10_buildings_head: 0,
+            class_9_head: 0,
+            class_10_11_collision_head: 0,
+            next: vec![0; ENTITY_POOL_SIZE].into_boxed_slice(),
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct TargetingSourceIter<'a> {
+    next: &'a [u16],
+    current: u16,
+    remaining: usize,
+}
+
+impl Iterator for TargetingSourceIter<'_> {
+    type Item = u16;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current == 0 || self.remaining == 0 {
+            return None;
+        }
+        let current = self.current;
+        self.current = self.next[usize::from(current)];
+        self.remaining -= 1;
+        Some(current)
+    }
+}
+
+impl TargetingSourceLists {
+    fn append(head: &mut u16, tail: &mut u16, next: &mut [u16], source_slot: u16) {
+        if *tail == 0 {
+            *head = source_slot;
+        } else {
+            next[usize::from(*tail)] = source_slot;
+        }
+        *tail = source_slot;
+        next[usize::from(source_slot)] = 0;
+    }
+
+    fn iter_from(&self, head: u16) -> TargetingSourceIter<'_> {
+        TargetingSourceIter {
+            next: &self.next,
+            current: head,
+            remaining: ENTITY_POOL_SIZE,
+        }
+    }
+
+    fn players(&self) -> TargetingSourceIter<'_> {
+        self.iter_from(self.players_head)
+    }
+
+    fn class_5_model(&self, model: u8) -> TargetingSourceIter<'_> {
+        self.iter_from(self.class_5_model_heads[usize::from(model)])
+    }
+
+    fn class_10_auxiliary(&self) -> TargetingSourceIter<'_> {
+        self.iter_from(self.class_10_auxiliary_head)
+    }
+
+    fn class_10_buildings(&self) -> TargetingSourceIter<'_> {
+        self.iter_from(self.class_10_buildings_head)
+    }
+
+    #[cfg(test)]
+    fn class_9(&self) -> TargetingSourceIter<'_> {
+        self.iter_from(self.class_9_head)
+    }
+
+    fn class_10_11_collision(&self) -> TargetingSourceIter<'_> {
+        self.iter_from(self.class_10_11_collision_head)
+    }
+
+    fn clear_heads(&mut self) {
+        self.class_5_model_heads = [0; 29];
+        self.players_head = 0;
+        self.class_10_auxiliary_head = 0;
+        self.class_10_buildings_head = 0;
+        self.class_9_head = 0;
+        self.class_10_11_collision_head = 0;
+    }
+
+    fn all_heads(&self) -> [u16; 34] {
+        let mut heads = [0_u16; 34];
+        heads[..29].copy_from_slice(&self.class_5_model_heads);
+        heads[29] = self.players_head;
+        heads[30] = self.class_10_auxiliary_head;
+        heads[31] = self.class_10_buildings_head;
+        heads[32] = self.class_9_head;
+        heads[33] = self.class_10_11_collision_head;
+        heads
     }
 }
 
@@ -5361,6 +5584,7 @@ pub struct Level1MissionTemplate {
     global_mana_denominator: i32,
     initial_global_rng: u32,
     initial_source_slots: Box<[Level1ResetSourceSlot]>,
+    initial_raw_source_states: Box<[Level1ResetRawSourceState]>,
     initial_ambient_entities: Box<[Level1AmbientEntity]>,
     initial_castle_blockers: Box<[Level1CastlePlacementBlocker]>,
     initial_building_blockers: Box<[Level1CastlePlacementBlocker]>,
@@ -5372,6 +5596,31 @@ pub struct Level1MissionTemplate {
 }
 
 impl Level1MissionTemplate {
+    /// Bind raw reset fields preserved by the owner export. Synthetic callers
+    /// may retain the deterministic index/zero defaults installed by decode.
+    pub fn bind_initial_raw_source_states(
+        &mut self,
+        states: &[Level1ResetRawSourceState],
+    ) -> Result<(), String> {
+        if states.len() != self.initial_source_slots.len() {
+            return Err(format!(
+                "raw source state count is {}, expected {}",
+                states.len(),
+                self.initial_source_slots.len()
+            ));
+        }
+        for (index, state) in states.iter().copied().enumerate() {
+            if usize::from(state.index) != index {
+                return Err(format!(
+                    "raw source state index mismatch at {index}: {}",
+                    state.index
+                ));
+            }
+        }
+        self.initial_raw_source_states = states.to_vec().into_boxed_slice();
+        Ok(())
+    }
+
     /// Decode and validate the narrow authored Level 1 content contract.
     ///
     /// # Errors
@@ -5761,6 +6010,20 @@ impl Level1MissionTemplate {
             global_mana_denominator,
             initial_global_rng,
             initial_source_slots: initial_source_slots.to_vec().into_boxed_slice(),
+            initial_raw_source_states: initial_source_slots
+                .iter()
+                .map(|slot| Level1ResetRawSourceState {
+                    index: slot.index,
+                    source_id: slot.index,
+                    life: 0,
+                    building_index: 0,
+                    axis: Position { x: 0, y: 0, z: 0 },
+                    word_24: 0,
+                    word_26: 0,
+                    word_2e: 0,
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
             initial_ambient_entities: initial_ambient_entities.to_vec().into_boxed_slice(),
             initial_castle_blockers: initial_castle_blockers.to_vec().into_boxed_slice(),
             initial_building_blockers: initial_building_blockers.to_vec().into_boxed_slice(),
@@ -5959,7 +6222,8 @@ impl Level1MissionTemplate {
             authored_houses: vec![None; ENTITY_POOL_SIZE].into_boxed_slice(),
             ambient_entities,
             dynamic_residents: vec![None; ENTITY_POOL_SIZE].into_boxed_slice(),
-            dynamic_resident_behavior_gap_mask: 0,
+            required_resident_behavior_mask: REQUIRED_RESIDENT_BEHAVIOR_MASK,
+            observed_resident_behavior_mask: 0,
             multipart_segments: Vec::new(),
             external_collision_targets: Vec::new(),
             authored_allocations,
@@ -5975,6 +6239,7 @@ impl Level1MissionTemplate {
             mana_carrier: None,
             death_bursts: Vec::new(),
             castle_construction: None,
+            house_completion_constructions: Vec::new(),
             castle_defense_controllers: Vec::new(),
             castle_defense_shots: Vec::new(),
             next_effect_id: 1,
@@ -5991,13 +6256,51 @@ impl Level1MissionTemplate {
             targeting_imported_lists_sampled: false,
             targeting_snapshot_builds_this_turn: 0,
             targeting_row_refreshes_this_turn: 0,
+            source_turn_fallback_allocation_count: 0,
             archers_present_at_turn_start: false,
             fireflies_present_at_turn_start: false,
             source_slots: self.initial_source_slots.to_vec(),
+            source_ids: self
+                .initial_raw_source_states
+                .iter()
+                .map(|state| state.source_id)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            source_lives: self
+                .initial_raw_source_states
+                .iter()
+                .map(|state| state.life)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            source_building_indices: self
+                .initial_raw_source_states
+                .iter()
+                .map(|state| state.building_index)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            source_axes: self
+                .initial_raw_source_states
+                .iter()
+                .map(|state| state.axis)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            source_house_links: self
+                .initial_raw_source_states
+                .iter()
+                .map(|state| [state.word_24, state.word_26])
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+            class_3_action_states: self
+                .initial_raw_source_states
+                .iter()
+                .map(|state| state.word_2e)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
             source_pool,
             pending_builder_house_rollbacks: Vec::new(),
             model_phase_counters: [0; 256],
             events: Vec::new(),
+            house_construction_effects: Vec::new(),
             castle_terrain_updates: Vec::new(),
             castle_stage_one_footprint: self.castle_stage_one_footprint.clone(),
         };
@@ -6191,7 +6494,8 @@ pub struct Level1MissionState {
     authored_houses: Box<[Option<HouseState>]>,
     ambient_entities: Box<[Option<Level1AmbientEntity>]>,
     dynamic_residents: Box<[Option<DynamicResidentState>]>,
-    dynamic_resident_behavior_gap_mask: u8,
+    required_resident_behavior_mask: u8,
+    observed_resident_behavior_mask: u8,
     multipart_segments: Vec<Level1MultipartSegment>,
     external_collision_targets: Vec<Level1CollisionTarget>,
     authored_allocations: Vec<AuthoredAllocation>,
@@ -6205,11 +6509,14 @@ pub struct Level1MissionState {
     /// temporary action-98 spheres. Ordinary spheres have no entry.
     temporary_mana_sphere_life: BTreeMap<u16, i32>,
     mana_sphere_map_chains: RenderableMapChains,
-    /// Source map-cell order used by `sub_10780`/`sub_108B0`.
+    /// Durable source `mapEntityIndex`/`oldMapEntity` order used by gameplay
+    /// searches including `sub_10780`, `sub_108B0`, and `sub_57390`.
+    /// Presentation filtering must never replace this topology.
     source_map_chains: RenderableMapChains,
     mana_carrier: Option<ManaCarrier>,
     death_bursts: Vec<DeathBurst>,
     castle_construction: Option<CastleConstruction>,
+    house_completion_constructions: Vec<CastleConstruction>,
     castle_defense_controllers: Vec<CastleDefenseController>,
     castle_defense_shots: Vec<CastleDefenseShot>,
     next_effect_id: u32,
@@ -6234,9 +6541,25 @@ pub struct Level1MissionState {
     targeting_snapshot_builds_this_turn: u8,
     /// Bounded O(1)/single-row refresh work performed after the frozen bind.
     targeting_row_refreshes_this_turn: u16,
+    /// Fallback allocation generation sampled when the seeker lists are
+    /// rebuilt. A later fallback clears every remc2 list head for this turn.
+    source_turn_fallback_allocation_count: u32,
     archers_present_at_turn_start: bool,
     fireflies_present_at_turn_start: bool,
     source_slots: Vec<Level1ResetSourceSlot>,
+    /// Mutable source `life_0x8` for generic rows affected before their typed
+    /// family is reconstructed.
+    source_ids: Box<[u16]>,
+    source_lives: Box<[i32]>,
+    /// Mutable source `dword_0x10` selector consumed by `sub_5FBD0`.
+    source_building_indices: Box<[i16]>,
+    /// Mutable source `axis_0x9A` used as the child constructor position.
+    source_axes: Box<[Position]>,
+    /// Mutable source `word_0x24/word_0x26` written by `sub_57390`.
+    source_house_links: Box<[[u16; 2]]>,
+    /// Mutable source `word_0x2E` committed only after a successful
+    /// `sub_5FBD0` allocation.
+    class_3_action_states: Box<[i16]>,
     source_pool: Level1SourcePool,
     /// Host-commit rollback metadata for the one Builder allocation emitted
     /// by action 96. This is consumed by the production effect sink before
@@ -6244,7 +6567,83 @@ pub struct Level1MissionState {
     pending_builder_house_rollbacks: Vec<(u16, BuilderHouseAllocationRollback)>,
     model_phase_counters: [u8; 256],
     events: Vec<Level1MissionEvent>,
+    house_construction_effects: Vec<HouseConstructionSourceEffect>,
     castle_terrain_updates: Vec<CastleTerrainUpdate>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn allocate_new_event_slot_raw(
+    source_pool: &mut Level1SourcePool,
+    targeting_source_lists: &mut TargetingSourceLists,
+    source_map_chains: &mut RenderableMapChains,
+    source_slots: &mut [Level1ResetSourceSlot],
+    source_ids: &mut [u16],
+    source_lives: &mut [i32],
+    source_building_indices: &mut [i16],
+    source_axes: &mut [Position],
+    source_house_links: &mut [[u16; 2]],
+    class_3_action_states: &mut [i16],
+    death_bursts: &mut Vec<DeathBurst>,
+    ambient_entities: &mut [Option<Level1AmbientEntity>],
+    global_rng: u32,
+    occupant: SourceOccupant,
+) -> Option<SourceAllocation> {
+    let previous = source_pool.next_allocation_rollback()?;
+    let allocation = source_pool.allocate_with_kind(occupant)?;
+    let slot = allocation.slot;
+    debug_assert_eq!(slot, previous.slot);
+    if allocation.kind == SourceAllocationKind::Replacement {
+        targeting_source_lists.clear_heads();
+        source_map_chains.set_map_entity_unlink(slot);
+    }
+    if matches!(
+        previous.previous_occupant,
+        Some(SourceOccupant::DeathBurst(_))
+    ) {
+        death_bursts.retain(|burst| burst.source_entity_index != slot);
+    }
+    ambient_entities[usize::from(slot)] = None;
+
+    source_slots[usize::from(slot)] = Level1ResetSourceSlot {
+        index: slot,
+        active: true,
+        class: 0,
+        model: 0,
+        action: 0,
+        phase: slot.to_le_bytes()[0],
+        entity_rng: slot.wrapping_add(global_rng as u16),
+        control_flags: 8,
+    };
+    source_ids[usize::from(slot)] = slot;
+    source_lives[usize::from(slot)] = 0;
+    source_building_indices[usize::from(slot)] = 0;
+    source_axes[usize::from(slot)] = Position::default();
+    source_house_links[usize::from(slot)] = [0; 2];
+    class_3_action_states[usize::from(slot)] = 0;
+    targeting_source_lists.next[usize::from(slot)] = 0;
+    Some(allocation)
+}
+
+macro_rules! allocate_new_event_from_mission {
+    ($mission:expr, $occupant:expr) => {
+        allocate_new_event_slot_raw(
+            &mut $mission.source_pool,
+            &mut $mission.targeting_source_lists,
+            &mut $mission.source_map_chains,
+            &mut $mission.source_slots,
+            &mut $mission.source_ids,
+            &mut $mission.source_lives,
+            &mut $mission.source_building_indices,
+            &mut $mission.source_axes,
+            &mut $mission.source_house_links,
+            &mut $mission.class_3_action_states,
+            &mut $mission.death_bursts,
+            &mut $mission.ambient_entities,
+            $mission.global_rng,
+            $occupant,
+        )
+        .map(|allocation| allocation.slot)
+    };
 }
 
 impl Level1MissionState {
@@ -6283,8 +6682,11 @@ impl Level1MissionState {
         let mut views = vec![None; ENTITY_POOL_SIZE];
         for record in self.source_slots.iter().copied().skip(1) {
             if record.active && self.source_pool.occupant(record.index).is_some() {
-                views[usize::from(record.index)] =
-                    Some(Level1SourceEntityView::imported_record(record));
+                let mut view = Level1SourceEntityView::imported_record(record);
+                let index = usize::from(record.index);
+                view.source_id = self.source_ids[index];
+                view.life = self.source_lives[index];
+                views[index] = Some(view);
             }
         }
         for view in imported_live.iter().copied() {
@@ -6530,6 +6932,44 @@ impl Level1MissionState {
                 maximum_speed: 0,
                 collision_half_width: 0,
                 collision_half_depth: 0,
+                collision_vertical_offset: 0,
+                collision_half_height: 0,
+                villager_entry_eligible: false,
+                builder_placement_latch: 0,
+            });
+        }
+        for construction in self
+            .castle_construction
+            .iter()
+            .chain(self.house_completion_constructions.iter())
+            .filter(|construction| construction.active)
+        {
+            let index = usize::from(construction.source_entity_index);
+            let record = self.source_slots[index];
+            views[index] = Some(Level1SourceEntityView {
+                source_entity_index: construction.source_entity_index,
+                source_id: self.source_ids[index],
+                authority: Level1SourceEntityAuthority::AuthoredAmbient,
+                active: true,
+                visible: true,
+                class: record.class,
+                model: record.model,
+                action: record.action,
+                phase: record.phase,
+                entity_rng: record.entity_rng,
+                control_flags: construction.control_flags,
+                position: construction.position,
+                max_life: construction.max_life,
+                life: construction.life,
+                pending_damage: 0,
+                pending_attacker: 0,
+                owner_entity_index: construction.owner_entity_index,
+                target_entity_index: 0,
+                linked_entity_index: construction.parent_entity_index,
+                actual_speed: 0,
+                maximum_speed: 0,
+                collision_half_width: construction.collision_half_width,
+                collision_half_depth: construction.collision_half_depth,
                 collision_vertical_offset: 0,
                 collision_half_height: 0,
                 villager_entry_eligible: false,
@@ -6850,15 +7290,30 @@ impl Level1MissionState {
                 view.linked_entity_index = self.castle_association_owner_entity_index;
             }
             SourceOccupant::CastleConstruction(id) => {
-                let construction = self.castle_construction.filter(|construction| {
-                    construction.id == id && construction.source_entity_index == source_entity_index
-                })?;
+                let construction =
+                    self.castle_construction
+                        .filter(|construction| {
+                            construction.id == id
+                                && construction.source_entity_index == source_entity_index
+                        })
+                        .or_else(|| {
+                            self.house_completion_constructions.iter().copied().find(
+                                |construction| {
+                                    construction.id == id
+                                        && construction.source_entity_index == source_entity_index
+                                },
+                            )
+                        })?;
                 view.authority = Level1SourceEntityAuthority::AuthoredAmbient;
                 view.active = construction.active;
                 view.visible = construction.active;
                 view.position = construction.position;
                 view.owner_entity_index = construction.owner_entity_index;
-                view.life = i32::from(construction.timer);
+                view.max_life = construction.max_life;
+                view.life = construction.life;
+                view.control_flags = construction.control_flags;
+                view.collision_half_width = construction.collision_half_width;
+                view.collision_half_depth = construction.collision_half_depth;
             }
             SourceOccupant::CastleDefense(id) => {
                 let controller =
@@ -7121,14 +7576,19 @@ impl Level1MissionState {
                 imported_by_slot[index] = Some(imported);
             }
         }
-        (1..ENTITY_POOL_SIZE)
+        let mut views = (1..ENTITY_POOL_SIZE)
             .filter_map(|index| {
                 let source_entity_index =
                     u16::try_from(index).expect("Level 1 source cursor fits u16");
                 let fallback = imported_by_slot[index].or_else(|| {
                     let record = self.source_slots[index];
                     (record.active && self.source_pool.occupant(source_entity_index).is_some())
-                        .then(|| Level1SourceEntityView::imported_record(record))
+                        .then(|| {
+                            let mut view = Level1SourceEntityView::imported_record(record);
+                            view.source_id = self.source_ids[index];
+                            view.life = self.source_lives[index];
+                            view
+                        })
                 });
                 fallback.and_then(|fallback| {
                     self.current_source_entity_view(
@@ -7138,7 +7598,32 @@ impl Level1MissionState {
                     )
                 })
             })
-            .collect()
+            .collect::<Vec<_>>();
+        for construction in self
+            .castle_construction
+            .iter()
+            .chain(self.house_completion_constructions.iter())
+            .filter(|construction| construction.active)
+        {
+            let index = usize::from(construction.source_entity_index);
+            let Some(record) = self.source_slots.get(index).copied() else {
+                continue;
+            };
+            let mut view = Level1SourceEntityView::imported_record(record);
+            view.source_id = self.source_ids[index];
+            view.authority = Level1SourceEntityAuthority::AuthoredAmbient;
+            view.active = true;
+            view.visible = true;
+            view.position = construction.position;
+            view.max_life = construction.max_life;
+            view.life = construction.life;
+            view.control_flags = construction.control_flags;
+            view.owner_entity_index = construction.owner_entity_index;
+            view.collision_half_width = construction.collision_half_width;
+            view.collision_half_depth = construction.collision_half_depth;
+            replace_source_view(&mut views, construction.source_entity_index, Some(view));
+        }
+        views
     }
 
     fn refresh_targeting_source_view(
@@ -7496,7 +7981,43 @@ impl Level1MissionState {
 
     #[must_use]
     pub const fn dynamic_resident_behavior_gap_mask(&self) -> u8 {
-        self.dynamic_resident_behavior_gap_mask
+        self.remaining_resident_behavior_mask()
+    }
+
+    #[must_use]
+    pub const fn required_resident_behavior_mask(&self) -> u8 {
+        self.required_resident_behavior_mask
+    }
+
+    #[must_use]
+    pub const fn observed_resident_behavior_mask(&self) -> u8 {
+        self.observed_resident_behavior_mask
+    }
+
+    #[must_use]
+    pub const fn remaining_resident_behavior_mask(&self) -> u8 {
+        self.required_resident_behavior_mask & !self.observed_resident_behavior_mask
+    }
+
+    #[must_use]
+    pub fn resident_behavior_observation_digest_v1(&self) -> u64 {
+        let mut hash = Level1Fnv1a64::new();
+        hash.bytes(b"mc2-level1-resident-observation-v1\0");
+        hash.u8(self.required_resident_behavior_mask);
+        hash.u8(self.observed_resident_behavior_mask);
+        hash.u8(self.remaining_resident_behavior_mask());
+        for (name, bit) in [
+            (b"archer".as_slice(), RESIDENT_ARCHER_OBSERVATION),
+            (b"builder".as_slice(), RESIDENT_BUILDER_OBSERVATION),
+            (b"villager".as_slice(), RESIDENT_VILLAGER_OBSERVATION),
+            (b"trader".as_slice(), RESIDENT_TRADER_OBSERVATION),
+        ] {
+            hash.bytes(name);
+            hash.u8(0);
+            hash.u8(bit);
+            hash.u8(u8::from(self.observed_resident_behavior_mask & bit != 0));
+        }
+        hash.finish()
     }
 
     #[must_use]
@@ -7897,9 +8418,20 @@ impl Level1MissionState {
         self.source_map_chains = map_chains;
     }
 
+    /// Install the unfiltered reset map topology before the first source turn.
+    /// Later gameplay updates may mutate it entity-by-entity, but presentation
+    /// snapshots must not replace it wholesale.
+    pub fn set_reset_source_map_chains(&mut self, map_chains: RenderableMapChains) {
+        self.source_map_chains = map_chains;
+    }
+
     #[must_use]
     pub const fn source_map_chains(&self) -> &RenderableMapChains {
         &self.source_map_chains
+    }
+
+    pub fn sync_source_map_entity(&mut self, seed: RenderableMapSeed) -> Result<(), String> {
+        self.source_map_chains.sync_entity(seed)
     }
 
     /// Production constructor for pinned class-10 slot 86.
@@ -7977,15 +8509,18 @@ impl Level1MissionState {
         owner_entity_index: u16,
         position: Position,
     ) -> Option<u16> {
-        let source_entity_index = allocate_castle_association(
-            &mut self.source_pool,
+        let association_id = self.next_effect_id;
+        let source_entity_index =
+            self.allocate_source_slot(SourceOccupant::CastleAssociation(association_id))?;
+        bind_castle_association(
+            source_entity_index,
             &mut self.source_slots,
             &mut self.castle_associations,
             &mut self.next_effect_id,
             self.global_rng,
             owner_entity_index,
             position,
-        )?;
+        );
         self.source_map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: source_entity_index,
@@ -8689,6 +9224,15 @@ impl Level1MissionState {
             hash.source_occupant(self.source_pool.occupants[index]);
             hash.u8(u8::from(self.source_pool.disabled[index]));
             hash.u8(u8::from(self.source_pool.replaceable[index]));
+            hash.u16(self.source_ids[index]);
+            hash.u32(self.source_lives[index].cast_unsigned());
+            hash.u16(self.source_building_indices[index].cast_unsigned());
+            hash.u16(self.source_axes[index].x);
+            hash.u16(self.source_axes[index].y);
+            hash.u16(self.source_axes[index].z.cast_unsigned());
+            hash.u16(self.source_house_links[index][0]);
+            hash.u16(self.source_house_links[index][1]);
+            hash.u16(self.class_3_action_states[index].cast_unsigned());
         }
         hash.u32(
             u32::try_from(self.source_pool.free_stack.len()).expect("free stack length fits u32"),
@@ -8725,6 +9269,8 @@ impl Level1MissionState {
             hash.u16(*slot);
             hash.u16(*authored_index);
         }
+        hash.u32(self.source_pool.fallback_allocation_count);
+        hash.u32(self.source_turn_fallback_allocation_count);
         hash.u8(u8::from(self.group_7_villager_release_pending));
         hash.u32(self.class_5_census);
         hash.u32(self.source_pool_rebuild_count);
@@ -9016,7 +9562,11 @@ impl Level1MissionState {
             hash.bytes(b"archer-target-ticks\0");
             hash.u16(self.player_archer_target_ticks);
         }
-        hash.u8(self.dynamic_resident_behavior_gap_mask);
+        hash.bytes(b"resident-observation-v1\0");
+        hash.u8(self.required_resident_behavior_mask);
+        hash.u8(self.observed_resident_behavior_mask);
+        hash.u8(self.remaining_resident_behavior_mask());
+        hash.u64(self.resident_behavior_observation_digest_v1());
         hash.u32(
             u32::try_from(self.dynamic_residents().count())
                 .expect("dynamic resident count fits u32"),
@@ -9275,9 +9825,199 @@ impl Level1MissionState {
                 hash.u8(u8::from(burst.active));
             }
         }
+        hash.u32(
+            u32::try_from(self.house_completion_constructions.len())
+                .expect("house completion construction count fits u32"),
+        );
+        for construction in &self.house_completion_constructions {
+            hash.u32(construction.id);
+            hash.u16(construction.source_entity_index);
+            hash.u16(construction.parent_entity_index);
+            hash.u16(construction.owner_entity_index);
+            hash.u16(construction.position.x);
+            hash.u16(construction.position.y);
+            hash.u16(construction.position.z.cast_unsigned());
+            hash.u8(construction.stage);
+            hash.u16(construction.collision_half_width.cast_unsigned());
+            hash.u16(construction.collision_half_depth.cast_unsigned());
+            hash.u32(construction.max_life.cast_unsigned());
+            hash.u32(construction.life.cast_unsigned());
+            hash.u32(construction.control_flags);
+            hash.u8(construction.constructor_latch);
+            hash.u16(construction.yaw.cast_unsigned());
+            hash.u16(construction.fov.cast_unsigned());
+            hash.u16(construction.timer.cast_unsigned());
+            hash.u8(u8::from(construction.initialized));
+            hash.u8(u8::from(construction.active));
+        }
+        hash.u32(
+            u32::try_from(self.house_construction_effects.len())
+                .expect("house construction effect count fits u32"),
+        );
+        for effect in &self.house_construction_effects {
+            match *effect {
+                HouseConstructionSourceEffect::DrawingDisabled {
+                    house_entity_index,
+                    tile,
+                    source_entity_index,
+                } => {
+                    hash.u8(1);
+                    hash.u16(house_entity_index);
+                    hash.u16(tile);
+                    hash.u16(source_entity_index);
+                }
+                HouseConstructionSourceEffect::ActorKilledAndLinked {
+                    house_entity_index,
+                    house_source_id,
+                    tile,
+                    source_entity_index,
+                } => {
+                    hash.u8(2);
+                    hash.u16(house_entity_index);
+                    hash.u16(house_source_id);
+                    hash.u16(tile);
+                    hash.u16(source_entity_index);
+                }
+                HouseConstructionSourceEffect::ConstructionAllocated {
+                    house_entity_index,
+                    parent_entity_index,
+                    source_entity_index,
+                    building_index,
+                } => {
+                    hash.u8(3);
+                    hash.u16(house_entity_index);
+                    hash.u16(parent_entity_index);
+                    hash.u16(source_entity_index);
+                    hash.u8(building_index);
+                }
+                HouseConstructionSourceEffect::ConstructionAllocationFailed {
+                    house_entity_index,
+                    parent_entity_index,
+                    building_index,
+                } => {
+                    hash.u8(4);
+                    hash.u16(house_entity_index);
+                    hash.u16(parent_entity_index);
+                    hash.u8(building_index);
+                }
+            }
+        }
         hash.u32(self.global_rng);
         hash.u32(self.next_effect_id);
         hash.bytes(&self.model_phase_counters);
+        hash.finish()
+    }
+
+    /// Exact versioned digest for the mutable state that controls action 51's
+    /// NewEvent fallback path.
+    ///
+    /// This domain intentionally excludes `house_construction_effects`: that
+    /// vector is an explanatory receipt, not remc2 state. It includes the
+    /// complete bounded allocator, all raw parent/child fields, every mutable
+    /// seeker head and `next_0`, both directions of map membership, and the
+    /// live model-42 construction projection.
+    #[must_use]
+    pub fn action_51_fallback_state_hash_v1(&self) -> u64 {
+        let mut hash = Level1Fnv1a64::new();
+        hash.bytes(b"mc2-level1-action-51-fallback-state-v1\0");
+
+        hash.u32(u32::try_from(self.source_slots.len()).expect("source arena size fits u32"));
+        for (index, record) in self.source_slots.iter().copied().enumerate() {
+            hash.u16(u16::try_from(index).expect("source arena index fits u16"));
+            hash.u16(record.index);
+            hash.u8(u8::from(record.active));
+            hash.u8(record.class);
+            hash.u8(record.model);
+            hash.u8(record.action);
+            hash.u8(record.phase);
+            hash.u16(record.entity_rng);
+            hash.u32(record.control_flags);
+            hash.source_occupant(self.source_pool.occupants[index]);
+            hash.u8(u8::from(self.source_pool.disabled[index]));
+            hash.u8(u8::from(self.source_pool.replaceable[index]));
+            hash.u16(self.source_ids[index]);
+            hash.u32(self.source_lives[index].cast_unsigned());
+            hash.u16(self.source_building_indices[index].cast_unsigned());
+            hash.u16(self.source_axes[index].x);
+            hash.u16(self.source_axes[index].y);
+            hash.u16(self.source_axes[index].z.cast_unsigned());
+            hash.u16(self.source_house_links[index][0]);
+            hash.u16(self.source_house_links[index][1]);
+            hash.u16(self.class_3_action_states[index].cast_unsigned());
+        }
+
+        hash.u32(
+            u32::try_from(self.source_pool.free_stack.len()).expect("free stack length fits u32"),
+        );
+        for slot in &self.source_pool.free_stack {
+            hash.u16(*slot);
+        }
+        hash.u32(
+            u32::try_from(self.source_pool.replaceable_stack.len())
+                .expect("replaceable stack length fits u32"),
+        );
+        for slot in &self.source_pool.replaceable_stack {
+            hash.u16(*slot);
+        }
+        hash.u32(self.source_pool.raw_replaceable_cursor.cast_unsigned());
+        hash.u32(self.source_pool.fallback_allocation_count);
+        hash.u32(self.source_turn_fallback_allocation_count);
+        hash.u32(
+            u32::try_from(self.source_pool.replaced_imported_slots.len())
+                .expect("replacement queue length fits u32"),
+        );
+        for slot in &self.source_pool.replaced_imported_slots {
+            hash.u16(*slot);
+        }
+        hash.u32(
+            u32::try_from(self.source_pool.replaced_authored_slots.len())
+                .expect("authored replacement queue length fits u32"),
+        );
+        for (slot, authored_index) in &self.source_pool.replaced_authored_slots {
+            hash.u16(*slot);
+            hash.u16(*authored_index);
+        }
+
+        for head in self.targeting_source_lists.all_heads() {
+            hash.u16(head);
+        }
+        hash.u32(
+            u32::try_from(self.targeting_source_lists.next.len())
+                .expect("targeting link extent fits u32"),
+        );
+        for next in self.targeting_source_lists.next.iter() {
+            hash.u16(*next);
+        }
+        hash.u8(u8::from(self.targeting_imported_lists_sampled));
+        hash.bytes(&self.source_map_chains.raw_topology_bytes_v1());
+
+        hash.u32(
+            u32::try_from(self.house_completion_constructions.len())
+                .expect("construction count fits u32"),
+        );
+        for construction in &self.house_completion_constructions {
+            hash.u32(construction.id);
+            hash.u16(construction.source_entity_index);
+            hash.u16(construction.parent_entity_index);
+            hash.u16(construction.owner_entity_index);
+            hash.u16(construction.position.x);
+            hash.u16(construction.position.y);
+            hash.u16(construction.position.z.cast_unsigned());
+            hash.u8(construction.stage);
+            hash.u16(construction.collision_half_width.cast_unsigned());
+            hash.u16(construction.collision_half_depth.cast_unsigned());
+            hash.u32(construction.max_life.cast_unsigned());
+            hash.u32(construction.life.cast_unsigned());
+            hash.u32(construction.control_flags);
+            hash.u8(construction.constructor_latch);
+            hash.u16(construction.yaw.cast_unsigned());
+            hash.u16(construction.fov.cast_unsigned());
+            hash.u16(construction.timer.cast_unsigned());
+            hash.u8(u8::from(construction.initialized));
+            hash.u8(u8::from(construction.active));
+        }
+        hash.u32(self.next_effect_id);
+        hash.u32(self.global_rng);
         hash.finish()
     }
 
@@ -10947,6 +11687,7 @@ impl Level1MissionState {
 
     pub fn begin_source_turn(&mut self) {
         self.events.clear();
+        self.house_construction_effects.clear();
         self.pending_ambient_loop_5_distance = None;
         self.player_menu_close_requested = false;
         self.player_action0_prepared_for_flight = false;
@@ -10969,6 +11710,7 @@ impl Level1MissionState {
         self.targeting_imported_lists_sampled = false;
         self.targeting_snapshot_builds_this_turn = 0;
         self.targeting_row_refreshes_this_turn = 0;
+        self.source_turn_fallback_allocation_count = self.source_pool.fallback_allocation_count;
         self.advance_firefly_stage_rows();
     }
 
@@ -10984,25 +11726,711 @@ impl Level1MissionState {
 
     fn targeting_source_lists_from_views(views: &[Level1SourceEntityView]) -> TargetingSourceLists {
         let mut lists = TargetingSourceLists::default();
-        for view in views.iter().copied() {
-            if !view.active || view.source_entity_index == 0 {
+        let mut class_5_model_tails = [0_u16; 29];
+        let mut players_tail = 0_u16;
+        let mut class_10_auxiliary_tail = 0_u16;
+        let mut class_10_buildings_tail = 0_u16;
+        let mut class_9_tail = 0_u16;
+        let mut class_10_11_collision_tail = 0_u16;
+        let mut source_order = views.iter().copied().collect::<Vec<_>>();
+        source_order.sort_unstable_by_key(|view| view.source_entity_index);
+        for view in source_order {
+            if view.source_entity_index == 0 {
                 continue;
             }
             match view.class {
-                3 if view.life >= 0 => lists.players.push(view.source_entity_index),
+                3 if view.life >= 0 => {
+                    TargetingSourceLists::append(
+                        &mut lists.players_head,
+                        &mut players_tail,
+                        &mut lists.next,
+                        view.source_entity_index,
+                    );
+                }
                 5 if view.life >= 0
                     && !matches!(view.action, 180 | 232 | 234)
-                    && usize::from(view.model) < lists.class_5_models.len() =>
+                    && usize::from(view.model) < lists.class_5_model_heads.len() =>
                 {
-                    lists.class_5_models[usize::from(view.model)].push(view.source_entity_index);
+                    let model = usize::from(view.model);
+                    TargetingSourceLists::append(
+                        &mut lists.class_5_model_heads[model],
+                        &mut class_5_model_tails[model],
+                        &mut lists.next,
+                        view.source_entity_index,
+                    );
+                }
+                9 => {
+                    TargetingSourceLists::append(
+                        &mut lists.class_9_head,
+                        &mut class_9_tail,
+                        &mut lists.next,
+                        view.source_entity_index,
+                    );
                 }
                 10 if matches!(view.model, 39 | 40 | 57) => {
-                    lists.class_10_auxiliary.push(view.source_entity_index);
+                    TargetingSourceLists::append(
+                        &mut lists.class_10_auxiliary_head,
+                        &mut class_10_auxiliary_tail,
+                        &mut lists.next,
+                        view.source_entity_index,
+                    );
+                }
+                10 if view.model == 45 => {
+                    TargetingSourceLists::append(
+                        &mut lists.class_10_buildings_head,
+                        &mut class_10_buildings_tail,
+                        &mut lists.next,
+                        view.source_entity_index,
+                    );
+                }
+                10 if matches!(view.model, 42 | 67 | 78) => {
+                    TargetingSourceLists::append(
+                        &mut lists.class_10_11_collision_head,
+                        &mut class_10_11_collision_tail,
+                        &mut lists.next,
+                        view.source_entity_index,
+                    );
+                }
+                11 if matches!(view.model, 12 | 31) => {
+                    TargetingSourceLists::append(
+                        &mut lists.class_10_11_collision_head,
+                        &mut class_10_11_collision_tail,
+                        &mut lists.next,
+                        view.source_entity_index,
+                    );
                 }
                 _ => {}
             }
         }
         lists
+    }
+
+    /// Source `IsNextEvent0A_2A_37740`: only overlapping class-10/model-42
+    /// rows from `dword_38535` pause action 48/51 terrain dispatch.
+    #[must_use]
+    pub fn house_action_51_blocked(
+        source_views: &[Level1SourceEntityView],
+        house_source_entity_index: u16,
+    ) -> bool {
+        let Some(house) = source_views
+            .iter()
+            .find(|view| view.source_entity_index == house_source_entity_index)
+        else {
+            return false;
+        };
+        let lists = Self::targeting_source_lists_from_views(source_views);
+        lists.class_10_11_collision().any(|candidate_slot| {
+            source_views.iter().any(|candidate| {
+                candidate.source_entity_index == candidate_slot
+                    && candidate.class == 10
+                    && candidate.model == 42
+                    && strict_xy_overlap(
+                        house.position,
+                        house.collision_half_width,
+                        house.collision_half_depth,
+                        candidate.position,
+                        candidate.collision_half_width,
+                        candidate.collision_half_depth,
+                    )
+            })
+        })
+    }
+
+    /// The current-turn action-51 blocker, including `NewEvent_4A050`'s
+    /// fallback side effect which clears every frozen seeker-list head.
+    #[must_use]
+    pub fn current_house_action_51_blocked(
+        &self,
+        source_views: &[Level1SourceEntityView],
+        house_source_entity_index: u16,
+    ) -> bool {
+        let Some(house) = source_views
+            .iter()
+            .find(|view| view.source_entity_index == house_source_entity_index)
+        else {
+            return false;
+        };
+        self.targeting_source_lists
+            .class_10_11_collision()
+            .any(|candidate_slot| {
+                source_views.iter().any(|candidate| {
+                    candidate.source_entity_index == candidate_slot
+                        && candidate.class == 10
+                        && candidate.model == 42
+                        && strict_xy_overlap(
+                            house.position,
+                            house.collision_half_width,
+                            house.collision_half_depth,
+                            candidate.position,
+                            candidate.collision_half_width,
+                            candidate.collision_half_depth,
+                        )
+                })
+            })
+    }
+
+    /// Pinned `sub_57390`: walk every geometric footprint tile row-major and
+    /// then each raw head/old-link chain in place. No chain, pool, terrain,
+    /// allocation, or RNG state is changed here.
+    pub fn apply_house_construction_first_pass(
+        &mut self,
+        _frozen_source_views: &[Level1SourceEntityView],
+        house_entity_index: u16,
+        house_source_id: u16,
+        position: Position,
+        footprint: &CastleBuildFootprint,
+    ) {
+        let center_x = position.x.wrapping_add(128).to_be_bytes()[0];
+        let center_y = position.y.wrapping_add(128).to_be_bytes()[0];
+        let start_x = center_x.wrapping_sub(footprint.width / 2);
+        let start_y = center_y.wrapping_sub(footprint.height / 2);
+        for row in 0..footprint.height {
+            for column in 0..footprint.width {
+                let x = start_x.wrapping_add(column);
+                let y = start_y.wrapping_add(row);
+                let tile = u16::from_le_bytes([x, y]);
+                let chain = self.source_map_chains.entity_chain(x, y);
+                for source_entity_index in chain {
+                    let index = usize::from(source_entity_index);
+                    let Some(source) = self.source_slots.get(index).copied() else {
+                        continue;
+                    };
+                    if self.source_ids[index] == house_source_id {
+                        continue;
+                    }
+                    match source.class {
+                        2 => {
+                            self.source_slots[index].control_flags |= SOURCE_DISABLED_FLAG;
+                            self.house_construction_effects.push(
+                                HouseConstructionSourceEffect::DrawingDisabled {
+                                    house_entity_index,
+                                    tile,
+                                    source_entity_index,
+                                },
+                            );
+                        }
+                        5 if house_construction_kills_class_5(source.model) => {
+                            self.source_lives[index] = -1;
+                            self.source_house_links[index] = [house_source_id; 2];
+                            if let Some(actor) = self
+                                .actors
+                                .iter_mut()
+                                .find(|actor| actor.source_entity_index == source_entity_index)
+                            {
+                                actor.life = -1;
+                            }
+                            if let Some(resident) = self.dynamic_residents[index].as_mut() {
+                                resident.life = -1;
+                                resident.kill_credit_entity = house_source_id;
+                                resident.current_attacker = house_source_id;
+                            }
+                            self.house_construction_effects.push(
+                                HouseConstructionSourceEffect::ActorKilledAndLinked {
+                                    house_entity_index,
+                                    house_source_id,
+                                    tile,
+                                    source_entity_index,
+                                },
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// Pinned `sub_377A0`/`sub_5FBD0`: traverse the frozen class-3 list and
+    /// attempt one class-10/model-42 allocation for every strict XY overlap.
+    /// Allocation failure leaves the parent untouched and traversal continues.
+    pub fn apply_house_construction_completion(
+        &mut self,
+        frozen_source_views: &[Level1SourceEntityView],
+        house_entity_index: u16,
+        house_position: Position,
+        house_half_width: i16,
+        house_half_depth: i16,
+        mut footprint_dimensions: impl FnMut(u8) -> Option<(u8, u8)>,
+    ) -> Result<(), String> {
+        if !self.targeting_imported_lists_sampled {
+            self.targeting_source_lists =
+                Self::targeting_source_lists_from_views(frozen_source_views);
+            self.targeting_source_views = Arc::new(frozen_source_views.to_vec());
+            self.targeting_imported_lists_sampled = true;
+            self.targeting_snapshot_builds_this_turn =
+                self.targeting_snapshot_builds_this_turn.saturating_add(1);
+        }
+
+        // Resolve every BUILD entry before NewEvent can mutate source state.
+        // A later-node replacement can only introduce selector zero; every
+        // other selector belongs to a frozen row whose overlap is known now.
+        let dimensions = std::array::from_fn::<_, 256, _>(|index| {
+            footprint_dimensions(u8::try_from(index).expect("BUILD selector fits u8"))
+        });
+        let mut overlapping_parent_count = 0_usize;
+        for parent_entity_index in self.targeting_source_lists.players() {
+            let Some(parent) = frozen_source_views
+                .iter()
+                .find(|view| view.source_entity_index == parent_entity_index)
+            else {
+                continue;
+            };
+            if strict_xy_overlap(
+                house_position,
+                house_half_width,
+                house_half_depth,
+                parent.position,
+                parent.collision_half_width,
+                parent.collision_half_depth,
+            ) {
+                overlapping_parent_count = overlapping_parent_count.saturating_add(1);
+                let selector =
+                    self.source_building_indices[usize::from(parent_entity_index)].to_le_bytes()[0];
+                if dimensions[usize::from(selector)].is_none() {
+                    return Err(format!(
+                        "class-3 source slot {parent_entity_index} selects missing BUILD {selector}"
+                    ));
+                }
+            }
+        }
+        let fallback_can_alias_a_parent =
+            self.source_pool.replaceable_stack.iter().any(|candidate| {
+                self.targeting_source_lists
+                    .players()
+                    .any(|parent| parent == *candidate)
+            });
+        if overlapping_parent_count > self.source_pool.free_stack.len()
+            && fallback_can_alias_a_parent
+            && dimensions[0].is_none()
+        {
+            return Err("action-51 fallback requires BUILD 0 before source mutation".to_owned());
+        }
+
+        let mut parent_entity_index = self.targeting_source_lists.players_head;
+        for _ in 0..ENTITY_POOL_SIZE {
+            if parent_entity_index == 0 {
+                break;
+            }
+            let live_construction = self
+                .house_completion_constructions
+                .iter()
+                .find(|construction| {
+                    construction.active && construction.source_entity_index == parent_entity_index
+                })
+                .copied();
+            let frozen_parent = frozen_source_views
+                .iter()
+                .copied()
+                .find(|view| view.source_entity_index == parent_entity_index);
+            let Some((parent_position, parent_half_width, parent_half_depth)) = live_construction
+                .map(|construction| {
+                    (
+                        construction.position,
+                        construction.collision_half_width,
+                        construction.collision_half_depth,
+                    )
+                })
+                .or_else(|| {
+                    frozen_parent.map(|parent| {
+                        (
+                            parent.position,
+                            parent.collision_half_width,
+                            parent.collision_half_depth,
+                        )
+                    })
+                })
+            else {
+                parent_entity_index =
+                    self.targeting_source_lists.next[usize::from(parent_entity_index)];
+                continue;
+            };
+            if !strict_xy_overlap(
+                house_position,
+                house_half_width,
+                house_half_depth,
+                parent_position,
+                parent_half_width,
+                parent_half_depth,
+            ) {
+                parent_entity_index =
+                    self.targeting_source_lists.next[usize::from(parent_entity_index)];
+                continue;
+            }
+            let parent_index = usize::from(parent_entity_index);
+            let pre_allocation_selector =
+                self.source_building_indices[parent_index].to_le_bytes()[0];
+            let id = self.next_effect_id;
+            let Some(allocation) =
+                self.allocate_new_event_slot(SourceOccupant::CastleConstruction(id))
+            else {
+                self.house_construction_effects.push(
+                    HouseConstructionSourceEffect::ConstructionAllocationFailed {
+                        house_entity_index,
+                        parent_entity_index,
+                        building_index: pre_allocation_selector,
+                    },
+                );
+                parent_entity_index = self.targeting_source_lists.next[parent_index];
+                continue;
+            };
+            let source_entity_index = allocation.slot;
+
+            // sub_50370 reads the position argument only after NewEvent. If
+            // the current parent aliases the replacement, this is the zeroed
+            // axis from the new record rather than a prefetched copy.
+            let child_position = self.source_axes[parent_index];
+            bind_dynamic_source_record(
+                &mut self.source_slots,
+                source_entity_index,
+                SourceOccupant::CastleConstruction(id),
+                self.global_rng,
+            );
+            self.source_slots[usize::from(source_entity_index)].phase =
+                source_entity_index.to_le_bytes()[0];
+            self.source_slots[usize::from(source_entity_index)].control_flags = 1;
+
+            // sub_5FBD0 tail reads every parent field after the constructor
+            // returns, preserving pointer aliasing with a replaced parent.
+            let live_selector = self.source_building_indices[parent_index].to_le_bytes()[0];
+            let live_parent_id = self.source_ids[parent_index];
+            self.source_ids[usize::from(source_entity_index)] = live_parent_id;
+            let (width, height) = dimensions[usize::from(live_selector)]
+                .expect("action-51 BUILD selectors were prevalidated");
+            self.next_effect_id = self.next_effect_id.wrapping_add(1).max(1);
+            let collision_half_width = castle_shift_for_tiles(width);
+            let collision_half_depth = castle_shift_for_tiles(height);
+            self.house_completion_constructions
+                .push(CastleConstruction {
+                    id,
+                    source_entity_index,
+                    parent_entity_index,
+                    owner_entity_index: live_parent_id,
+                    position: child_position,
+                    stage: live_selector,
+                    collision_half_width,
+                    collision_half_depth,
+                    max_life: 0,
+                    life: 0,
+                    control_flags: 1,
+                    constructor_latch: 1,
+                    yaw: 0,
+                    fov: 256,
+                    timer: 0,
+                    initialized: false,
+                    active: true,
+                });
+            self.class_3_action_states[parent_index] = 4;
+            if self.castle_exists && self.castle_source_entity_index == parent_entity_index {
+                self.castle_build_state = 4;
+            }
+            self.house_construction_effects.push(
+                HouseConstructionSourceEffect::ConstructionAllocated {
+                    house_entity_index,
+                    parent_entity_index,
+                    source_entity_index,
+                    building_index: live_selector,
+                },
+            );
+            parent_entity_index = self.targeting_source_lists.next[parent_index];
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn house_construction_effects(&self) -> &[HouseConstructionSourceEffect] {
+        &self.house_construction_effects
+    }
+
+    #[must_use]
+    pub fn house_completion_constructions(&self) -> &[CastleConstruction] {
+        &self.house_completion_constructions
+    }
+
+    #[must_use]
+    pub fn raw_source_construction_selector(&self, source_entity_index: u16) -> Option<i16> {
+        self.source_building_indices
+            .get(usize::from(source_entity_index))
+            .copied()
+    }
+
+    /// Private owner-lab setup for the public C-ABI completion fixture. The
+    /// parent remains an ordinary frozen class-3 row; only the two source
+    /// fields consumed by `sub_5FBD0` are replaced.
+    pub fn configure_action_51_completion_parent_for_qualification(
+        &mut self,
+        parent_entity_index: u16,
+        construction_selector: u8,
+        construction_axis: Position,
+    ) -> bool {
+        let index = usize::from(parent_entity_index);
+        let Some(source) = self.source_slots.get(index).copied() else {
+            return false;
+        };
+        if source.class != 3 || self.source_lives[index] < 0 {
+            return false;
+        }
+        self.source_building_indices[index] = i16::from(construction_selector);
+        self.source_axes[index] = construction_axis;
+        true
+    }
+
+    /// Owner-lab setup for a raw-chain-only `sub_57390` row. The caller keeps
+    /// the presentation chain untouched so a public turn proves gameplay does
+    /// not depend on painter admission.
+    pub fn configure_action_51_raw_entity_for_qualification(
+        &mut self,
+        source_entity_index: u16,
+        class: u8,
+        model: u8,
+        source_id: u16,
+        position: Position,
+    ) -> bool {
+        let index = usize::from(source_entity_index);
+        if index == 0
+            || index >= self.source_slots.len()
+            || !self.imported_source_slot_is_live(source_entity_index)
+        {
+            return false;
+        }
+        self.source_slots[index] = Level1ResetSourceSlot {
+            index: source_entity_index,
+            active: true,
+            class,
+            model,
+            action: 0,
+            phase: 0,
+            entity_rng: source_entity_index,
+            control_flags: 8,
+        };
+        self.source_ids[index] = source_id;
+        self.source_lives[index] = 100;
+        self.source_house_links[index] = [11, 12];
+        self.source_map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_ok()
+    }
+
+    /// Owner-lab setup for the fallback branch inside one public action-51
+    /// completion walk. The three rows form an ascending frozen class-3 list;
+    /// only the middle row is available to `NewEvent` as a replacement.
+    pub fn configure_action_51_fallback_players_for_qualification(
+        &mut self,
+        first: u16,
+        replacement: u16,
+        last: u16,
+        construction_selector: u8,
+        construction_axis: Position,
+    ) -> bool {
+        if !(first != 0
+            && first < replacement
+            && replacement < last
+            && usize::from(last) < self.source_slots.len())
+        {
+            return false;
+        }
+        for (index, record) in self.source_slots.iter().enumerate() {
+            if record.class == 3 && ![first, replacement, last].contains(&record.index) {
+                self.source_lives[index] = -1;
+            }
+        }
+        for source_entity_index in [first, replacement, last] {
+            let index = usize::from(source_entity_index);
+            self.source_slots[index] = Level1ResetSourceSlot {
+                index: source_entity_index,
+                active: true,
+                class: 3,
+                model: 1,
+                action: 0,
+                phase: 0,
+                entity_rng: source_entity_index,
+                control_flags: 8,
+            };
+            self.source_pool.occupants[index] = Some(SourceOccupant::ImportedLive);
+            self.source_ids[index] = source_entity_index.wrapping_add(1_000);
+            self.source_lives[index] = 1;
+            self.source_building_indices[index] = i16::from(construction_selector);
+            self.source_axes[index] = construction_axis;
+            self.class_3_action_states[index] = 9;
+        }
+        self.source_pool.free_stack.clear();
+        self.source_pool.replaceable.fill(false);
+        self.source_pool.replaceable[usize::from(replacement)] = true;
+        self.source_pool.replaceable_stack.clear();
+        self.source_pool.replaceable_stack.push(replacement);
+        self.source_pool.raw_replaceable_cursor = 0;
+        true
+    }
+
+    /// Owner-lab setup for one public completion walk that consumes one
+    /// ordinary free row, one fallback replacement outside the player list,
+    /// and finally observes allocator exhaustion on the third parent.
+    pub fn configure_action_51_ordinary_fallback_exhaustion_for_qualification(
+        &mut self,
+        parents: [u16; 3],
+        ordinary: u16,
+        replacement: u16,
+        construction_selector: u8,
+        construction_axis: Position,
+    ) -> bool {
+        let [first, second, third] = parents;
+        let distinct = [first, second, third, ordinary, replacement];
+        if !(first != 0
+            && first < second
+            && second < third
+            && distinct
+                .iter()
+                .enumerate()
+                .all(|(index, value)| !distinct[..index].contains(value))
+            && distinct
+                .iter()
+                .all(|slot| usize::from(*slot) < self.source_slots.len()))
+        {
+            return false;
+        }
+        for (index, record) in self.source_slots.iter().enumerate() {
+            if record.class == 3 && !parents.contains(&record.index) {
+                self.source_lives[index] = -1;
+            }
+        }
+        for source_entity_index in parents {
+            let index = usize::from(source_entity_index);
+            self.source_slots[index] = Level1ResetSourceSlot {
+                index: source_entity_index,
+                active: true,
+                class: 3,
+                model: 1,
+                action: 0,
+                phase: 0,
+                entity_rng: source_entity_index,
+                control_flags: 8,
+            };
+            self.source_pool.occupants[index] = Some(SourceOccupant::ImportedLive);
+            self.source_ids[index] = source_entity_index.wrapping_add(1_000);
+            self.source_lives[index] = 1;
+            self.source_building_indices[index] = i16::from(construction_selector);
+            self.source_axes[index] = construction_axis;
+            self.class_3_action_states[index] = 9;
+        }
+
+        let ordinary_index = usize::from(ordinary);
+        self.source_slots[ordinary_index] = Level1ResetSourceSlot {
+            index: ordinary,
+            active: false,
+            class: 0,
+            model: 0,
+            action: 0,
+            phase: 0,
+            entity_rng: 0,
+            control_flags: 0,
+        };
+        self.source_pool.occupants[ordinary_index] = None;
+        self.source_pool.disabled[ordinary_index] = false;
+        self.source_pool.replaceable[ordinary_index] = false;
+
+        let replacement_index = usize::from(replacement);
+        self.source_pool.occupants[replacement_index] = Some(SourceOccupant::ImportedLive);
+        self.source_slots[replacement_index].active = true;
+        self.source_slots[replacement_index].class = 5;
+        self.source_slots[replacement_index].model = 0;
+        self.source_lives[replacement_index] = 1;
+        self.source_building_indices[replacement_index] = 87;
+        self.source_axes[replacement_index] = Position {
+            x: construction_axis.x.wrapping_add(0x4000),
+            y: construction_axis.y.wrapping_add(0x4000),
+            z: construction_axis.z,
+        };
+        let replacement_axis = self.source_axes[replacement_index];
+        if self
+            .source_map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: replacement,
+                active: true,
+                x: replacement_axis.x,
+                y: replacement_axis.y,
+            })
+            .is_err()
+        {
+            return false;
+        }
+
+        self.source_pool.free_stack.clear();
+        self.source_pool.free_stack.push(ordinary);
+        self.source_pool.replaceable.fill(false);
+        self.source_pool.replaceable[replacement_index] = true;
+        self.source_pool.replaceable_stack.clear();
+        self.source_pool.replaceable_stack.push(replacement);
+        self.source_pool.raw_replaceable_cursor = 0;
+        true
+    }
+
+    /// Private owner-lab qualification setup for the public C ABI. It creates
+    /// one real class-10/model-42 row through the same bounded allocator used
+    /// by gameplay, so the following public session step exercises the actual
+    /// `dword_38535` blocker rather than an internal boolean shortcut.
+    pub fn inject_action_51_blocker_for_qualification(
+        &mut self,
+        position: Position,
+        collision_half_width: i16,
+        collision_half_depth: i16,
+    ) -> Option<u16> {
+        let id = self.next_effect_id;
+        let source_entity_index =
+            self.allocate_source_slot(SourceOccupant::CastleConstruction(id))?;
+        bind_dynamic_source_record(
+            &mut self.source_slots,
+            source_entity_index,
+            SourceOccupant::CastleConstruction(id),
+            self.global_rng,
+        );
+        let index = usize::from(source_entity_index);
+        self.source_slots[index].control_flags = 1;
+        self.source_slots[index].phase = source_entity_index.to_le_bytes()[0];
+        self.source_ids[index] = source_entity_index;
+        self.source_lives[index] = 0;
+        self.next_effect_id = self.next_effect_id.wrapping_add(1).max(1);
+        self.house_completion_constructions
+            .push(CastleConstruction {
+                id,
+                source_entity_index,
+                parent_entity_index: 0,
+                owner_entity_index: source_entity_index,
+                position,
+                stage: 0,
+                collision_half_width,
+                collision_half_depth,
+                max_life: 0,
+                life: 0,
+                control_flags: 1,
+                constructor_latch: 1,
+                yaw: 0,
+                fov: 256,
+                timer: 0,
+                initialized: false,
+                active: true,
+            });
+        Some(source_entity_index)
+    }
+
+    #[must_use]
+    pub fn raw_house_construction_state(
+        &self,
+        source_entity_index: u16,
+    ) -> Option<(u32, i32, u16, u16, i16)> {
+        let index = usize::from(source_entity_index);
+        self.source_slots.get(index).map(|slot| {
+            (
+                slot.control_flags,
+                self.source_lives[index],
+                self.source_house_links[index][0],
+                self.source_house_links[index][1],
+                self.class_3_action_states[index],
+            )
+        })
     }
 
     /// Begin a source turn while preserving the player position sampled before
@@ -12572,30 +14000,29 @@ impl Level1MissionState {
         }
         let actor = self.actors[actor_index];
         let family = actor.model;
-        let eligible_player =
-            self.targeting_source_lists
-                .players
-                .iter()
-                .find_map(|candidate_slot| {
-                    source_view(source_views, *candidate_slot).filter(|candidate| {
-                        candidate.active
-                            && candidate.model == 0
-                            && candidate.life >= 0
-                            && candidate.authority == Level1SourceEntityAuthority::Player
-                            && candidate.source_id == player.entity_index
-                            && !self.has_spell_family(family)
-                            && overlaps_source_entities(
-                                actor.position,
-                                actor.collision_half_width,
-                                actor.collision_vertical_offset,
-                                actor.collision_half_height,
-                                candidate.position,
-                                candidate.collision_half_width,
-                                candidate.collision_vertical_offset,
-                                candidate.collision_half_height,
-                            )
-                    })
-                });
+        let eligible_player = self
+            .targeting_source_lists
+            .players()
+            .find_map(|candidate_slot| {
+                source_view(source_views, candidate_slot).filter(|candidate| {
+                    candidate.active
+                        && candidate.model == 0
+                        && candidate.life >= 0
+                        && candidate.authority == Level1SourceEntityAuthority::Player
+                        && candidate.source_id == player.entity_index
+                        && !self.has_spell_family(family)
+                        && overlaps_source_entities(
+                            actor.position,
+                            actor.collision_half_width,
+                            actor.collision_vertical_offset,
+                            actor.collision_half_height,
+                            candidate.position,
+                            candidate.collision_half_width,
+                            candidate.collision_vertical_offset,
+                            candidate.collision_half_height,
+                        )
+                })
+            });
         if actor.collected || !pickup_tick || eligible_player.is_none() {
             return;
         }
@@ -12742,19 +14169,19 @@ impl Level1MissionState {
                 // PLAN-14 owns only the Archer bit. Re-dispatch clears a stale
                 // pre-implementation bit without weakening the other three
                 // fail-closed resident-family markers.
-                self.dynamic_resident_behavior_gap_mask &= !0x01;
+                self.observed_resident_behavior_mask |= RESIDENT_ARCHER_OBSERVATION;
                 self.step_dynamic_archer(world, player, source_views, &mut resident)
             }
             DynamicResidentKind::Villager => {
                 // PLAN-16 closes only the Villager bit. Builder and Trader
                 // retain their independent fail-closed markers.
-                self.dynamic_resident_behavior_gap_mask &= !0x04;
+                self.observed_resident_behavior_mask |= RESIDENT_VILLAGER_OBSERVATION;
                 self.step_dynamic_villager(world, source_views, &mut resident)
             }
             DynamicResidentKind::Builder => {
                 // PLAN-15 closes only the Builder bit. Trader remains the
                 // sole fail-closed resident-family marker.
-                self.dynamic_resident_behavior_gap_mask &= !0x02;
+                self.observed_resident_behavior_mask |= RESIDENT_BUILDER_OBSERVATION;
                 self.step_dynamic_builder(world, source_views, &mut resident)
             }
             DynamicResidentKind::Trader => {
@@ -12764,7 +14191,7 @@ impl Level1MissionState {
                     resident.action,
                     TRADER_INITIAL_ACTION..=TRADER_STAGED_ACTION
                 ) {
-                    self.dynamic_resident_behavior_gap_mask &= !0x08;
+                    self.observed_resident_behavior_mask |= RESIDENT_TRADER_OBSERVATION;
                 }
                 self.step_dynamic_trader(world, source_views, &mut resident)
             }
@@ -13269,7 +14696,19 @@ impl Level1MissionState {
             return;
         }
 
-        if builder_placement_blocker(source_views, candidate, extent_x, extent_y).is_some() {
+        let building_source_order = self
+            .targeting_source_lists
+            .class_10_buildings()
+            .collect::<Vec<_>>();
+        if builder_placement_blocker_in_routes(
+            source_views,
+            &building_source_order,
+            candidate,
+            extent_x,
+            extent_y,
+        )
+        .is_some()
+        {
             return;
         }
 
@@ -13814,11 +15253,9 @@ impl Level1MissionState {
             let range_squared = u32::from(ARCHER_RANGE).pow(2);
             let mut peer = None;
             let mut peer_distance = u32::MAX;
-            for source_entity_index in
-                &self.targeting_source_lists.class_5_models[usize::from(resident.model)]
-            {
+            for source_entity_index in self.targeting_source_lists.class_5_model(resident.model) {
                 let Some(candidate) =
-                    source_view(source_views, *source_entity_index).filter(|candidate| {
+                    source_view(source_views, source_entity_index).filter(|candidate| {
                         candidate.active
                             && candidate.life >= 0
                             && (candidate.class, candidate.model)
@@ -13914,8 +15351,8 @@ impl Level1MissionState {
         let range_squared = u32::from(ARCHER_RANGE).pow(2);
         let mut player_target = None;
         let mut player_distance = u32::MAX;
-        for source_entity_index in &self.targeting_source_lists.players {
-            let Some(candidate) = source_view(source_views, *source_entity_index)
+        for source_entity_index in self.targeting_source_lists.players() {
+            let Some(candidate) = source_view(source_views, source_entity_index)
                 .filter(|candidate| candidate.active && candidate.control_flags & 0x20 == 0)
             else {
                 continue;
@@ -13938,8 +15375,8 @@ impl Level1MissionState {
 
         if target.is_none() {
             let mut building_distance = u32::MAX;
-            for source_entity_index in &self.targeting_source_lists.class_5_models[9] {
-                let Some(candidate) = source_view(source_views, *source_entity_index)
+            for source_entity_index in self.targeting_source_lists.class_5_model(9) {
+                let Some(candidate) = source_view(source_views, source_entity_index)
                     .filter(|candidate| candidate.active)
                 else {
                     continue;
@@ -13963,11 +15400,9 @@ impl Level1MissionState {
 
         let mut peer = None;
         let mut peer_distance = u32::MAX;
-        for source_entity_index in
-            &self.targeting_source_lists.class_5_models[usize::from(resident.model)]
-        {
+        for source_entity_index in self.targeting_source_lists.class_5_model(resident.model) {
             let Some(candidate) =
-                source_view(source_views, *source_entity_index).filter(|candidate| {
+                source_view(source_views, source_entity_index).filter(|candidate| {
                     candidate.active
                         && candidate.life >= 0
                         && (candidate.class, candidate.model) == (resident.class, resident.model)
@@ -14046,9 +15481,8 @@ impl Level1MissionState {
             self.player_archer_target_ticks = 200;
         }
         let projectile_id = self.next_effect_id;
-        let Some(source_entity_index) = self
-            .source_pool
-            .allocate(SourceOccupant::ArcherArrow(projectile_id))
+        let Some(source_entity_index) =
+            allocate_new_event_from_mission!(self, SourceOccupant::ArcherArrow(projectile_id))
         else {
             return;
         };
@@ -14564,10 +15998,10 @@ impl Level1MissionState {
                         if let Some(mut arrow) =
                             step_archer_attack(actor, world, player, self.next_effect_id)
                         {
-                            if let Some(source_slot) = self
-                                .source_pool
-                                .allocate(SourceOccupant::ArcherArrow(arrow.id))
-                            {
+                            if let Some(source_slot) = allocate_new_event_from_mission!(
+                                self,
+                                SourceOccupant::ArcherArrow(arrow.id)
+                            ) {
                                 bind_dynamic_source_record(
                                     &mut self.source_slots,
                                     source_slot,
@@ -14613,10 +16047,10 @@ impl Level1MissionState {
                             self.next_effect_id,
                         );
                         if let Some(mut projectile) = projectile {
-                            if let Some(source_entity_index) = self
-                                .source_pool
-                                .allocate(SourceOccupant::FireflyFireball(projectile.id))
-                            {
+                            if let Some(source_entity_index) = allocate_new_event_from_mission!(
+                                self,
+                                SourceOccupant::FireflyFireball(projectile.id)
+                            ) {
                                 bind_dynamic_source_record(
                                     &mut self.source_slots,
                                     source_entity_index,
@@ -14670,10 +16104,10 @@ impl Level1MissionState {
                             &actor_views,
                             self.next_effect_id,
                         ) {
-                            if let Some(source_entity_index) = self
-                                .source_pool
-                                .allocate(SourceOccupant::FireflyFireball(projectile.id))
-                            {
+                            if let Some(source_entity_index) = allocate_new_event_from_mission!(
+                                self,
+                                SourceOccupant::FireflyFireball(projectile.id)
+                            ) {
                                 bind_dynamic_source_record(
                                     &mut self.source_slots,
                                     source_entity_index,
@@ -14731,9 +16165,8 @@ impl Level1MissionState {
             ground_fire_spawns
         {
             let fire_id = self.next_effect_id;
-            let Some(source_entity_index) = self
-                .source_pool
-                .allocate(SourceOccupant::GroundFire(fire_id))
+            let Some(source_entity_index) =
+                allocate_new_event_from_mission!(self, SourceOccupant::GroundFire(fire_id))
             else {
                 continue;
             };
@@ -14797,9 +16230,8 @@ impl Level1MissionState {
             // `NewEvent_4A050`; the advance survives allocation exhaustion.
             self.advance_global_rng(parent_source_entity_index, GlobalRngSite::CheckpointSmoke);
             let smoke_id = self.next_effect_id;
-            let Some(source_entity_index) = self
-                .source_pool
-                .allocate(SourceOccupant::CheckpointSmoke(smoke_id))
+            let Some(source_entity_index) =
+                allocate_new_event_from_mission!(self, SourceOccupant::CheckpointSmoke(smoke_id))
             else {
                 continue;
             };
@@ -15056,15 +16488,15 @@ impl Level1MissionState {
         // `sub_67CB0` model zero walks creature model lists 0..28 (except
         // model 22) after the player list. `UpdateEntities_57730` rebuilds
         // every model list by scanning arena rows 1..999 on each source turn.
-        for source_entity_index in &self.targeting_source_lists.players {
-            let Some(view) = self.resolved_targeting_source_view(*source_entity_index) else {
+        for source_entity_index in self.targeting_source_lists.players() {
+            let Some(view) = self.resolved_targeting_source_view(source_entity_index) else {
                 continue;
             };
             if view.active
                 && view.life >= 0
                 && view.source_id != owner_entity_index
                 && view.control_flags & 0x20 == 0
-                && let Some(target) = self.projectile_guidance_target_for_slot(*source_entity_index)
+                && let Some(target) = self.projectile_guidance_target_for_slot(source_entity_index)
             {
                 targets.push(target);
             }
@@ -15073,14 +16505,12 @@ impl Level1MissionState {
             if model == 22 {
                 continue;
             }
-            for source_entity_index in
-                &self.targeting_source_lists.class_5_models[usize::from(model)]
-            {
-                let Some(view) = self.resolved_targeting_source_view(*source_entity_index) else {
+            for source_entity_index in self.targeting_source_lists.class_5_model(model) {
+                let Some(view) = self.resolved_targeting_source_view(source_entity_index) else {
                     continue;
                 };
                 let owned_stage_row = self.actors.iter().any(|actor| {
-                    actor.source_entity_index == *source_entity_index
+                    actor.source_entity_index == source_entity_index
                         && actor.stage_var_2 == 14
                         && actor.owner_id.cast_unsigned() == owner_entity_index
                 });
@@ -15089,7 +16519,7 @@ impl Level1MissionState {
                     && view.source_id != owner_entity_index
                     && !owned_stage_row
                     && let Some(target) =
-                        self.projectile_guidance_target_for_slot(*source_entity_index)
+                        self.projectile_guidance_target_for_slot(source_entity_index)
                 {
                     targets.push(target);
                 }
@@ -15429,13 +16859,44 @@ impl Level1MissionState {
             self.advance_global_rng(source_entity_index, GlobalRngSite::ArcherArrowSound);
             self.global_rng
         });
-        let source_map_chains = &self.source_map_chains;
+        let source_map_chains = &mut self.source_map_chains;
         let impacts = &mut self.impacts;
         let castle_associations = &mut self.castle_associations;
         let mana_spheres = &mut self.mana_spheres;
         let events = &mut self.events;
         let source_pool = &mut self.source_pool;
         let source_slots = &mut self.source_slots;
+        let targeting_source_lists = &mut self.targeting_source_lists;
+        let source_ids = &mut self.source_ids;
+        let source_lives = &mut self.source_lives;
+        let source_building_indices = &mut self.source_building_indices;
+        let source_axes = &mut self.source_axes;
+        let source_house_links = &mut self.source_house_links;
+        let class_3_action_states = &mut self.class_3_action_states;
+        let death_bursts = &mut self.death_bursts;
+        let ambient_entities = &mut self.ambient_entities;
+        let global_rng = self.global_rng;
+        macro_rules! allocate_new_event {
+            ($occupant:expr) => {
+                allocate_new_event_slot_raw(
+                    source_pool,
+                    targeting_source_lists,
+                    source_map_chains,
+                    source_slots,
+                    source_ids,
+                    source_lives,
+                    source_building_indices,
+                    source_axes,
+                    source_house_links,
+                    class_3_action_states,
+                    death_bursts,
+                    ambient_entities,
+                    global_rng,
+                    $occupant,
+                )
+                .map(|allocation| allocation.slot)
+            };
+        }
         let mut next_effect_id = self.next_effect_id;
         let mut fireball_experience_awards = 0_i32;
         let mut possession_experience_awards = 0_i32;
@@ -15531,7 +16992,7 @@ impl Level1MissionState {
                         if world.material_mask(projectile.position) == 1 {
                             let splash_id = next_effect_id;
                             if let Some(source_entity_index) =
-                                source_pool.allocate(SourceOccupant::WaterSplash(splash_id))
+                                allocate_new_event!(SourceOccupant::WaterSplash(splash_id))
                             {
                                 bind_dynamic_source_record(
                                     source_slots,
@@ -15568,7 +17029,7 @@ impl Level1MissionState {
                     {
                         let impact_id = next_effect_id;
                         if let Some(source_entity_index) =
-                            source_pool.allocate(SourceOccupant::FireballImpact(impact_id))
+                            allocate_new_event!(SourceOccupant::FireballImpact(impact_id))
                         {
                             bind_dynamic_source_record(
                                 source_slots,
@@ -15710,7 +17171,7 @@ impl Level1MissionState {
                         if world.material_mask(projectile.position) == 1 {
                             let splash_id = next_effect_id;
                             if let Some(source_entity_index) =
-                                source_pool.allocate(SourceOccupant::WaterSplash(splash_id))
+                                allocate_new_event!(SourceOccupant::WaterSplash(splash_id))
                             {
                                 bind_dynamic_source_record(
                                     source_slots,
@@ -15744,7 +17205,7 @@ impl Level1MissionState {
                     }
                     let impact_id = next_effect_id;
                     if let Some(source_entity_index) =
-                        source_pool.allocate(SourceOccupant::FireballImpact(impact_id))
+                        allocate_new_event!(SourceOccupant::FireballImpact(impact_id))
                     {
                         bind_dynamic_source_record(
                             source_slots,
@@ -15842,15 +17303,19 @@ impl Level1MissionState {
                             if !impact {
                                 continue;
                             }
-                            if let Some(association_slot) = allocate_castle_association(
-                                source_pool,
-                                source_slots,
-                                castle_associations,
-                                &mut next_effect_id,
-                                self.global_rng,
-                                projectile.owner_entity_index,
-                                projectile.position,
+                            let association_id = next_effect_id;
+                            if let Some(association_slot) = allocate_new_event!(
+                                SourceOccupant::CastleAssociation(association_id)
                             ) {
+                                bind_castle_association(
+                                    association_slot,
+                                    source_slots,
+                                    castle_associations,
+                                    &mut next_effect_id,
+                                    global_rng,
+                                    projectile.owner_entity_index,
+                                    projectile.position,
+                                );
                                 association_map_seeds.push(RenderableMapSeed {
                                     entity_index: association_slot,
                                     active: true,
@@ -16091,7 +17556,7 @@ impl Level1MissionState {
                 } else {
                     SourceOccupant::PossessionImpact(primary_id)
                 };
-                if let Some(primary_slot) = source_pool.allocate(primary_occupant) {
+                if let Some(primary_slot) = allocate_new_event!(primary_occupant) {
                     bind_dynamic_source_record(
                         source_slots,
                         primary_slot,
@@ -16135,7 +17600,7 @@ impl Level1MissionState {
             } else {
                 SourceOccupant::PossessionAttraction(secondary_id)
             };
-            if let Some(secondary_slot) = source_pool.allocate(secondary_occupant) {
+            if let Some(secondary_slot) = allocate_new_event!(secondary_occupant) {
                 bind_dynamic_source_record(
                     source_slots,
                     secondary_slot,
@@ -16200,7 +17665,7 @@ impl Level1MissionState {
         if let Some((projectile_id, position, owner_entity_index)) = castle_root_request
             && let Some(footprint) = self.castle_stage_one_footprint.as_ref()
             && let Some(castle_source_entity_index) =
-                source_pool.allocate(SourceOccupant::CastleRoot(next_effect_id))
+                allocate_new_event!(SourceOccupant::CastleRoot(next_effect_id))
         {
             let castle_presentation_id = next_effect_id;
             next_effect_id = next_effect_id.wrapping_add(1).max(1);
@@ -16292,10 +17757,10 @@ impl Level1MissionState {
             CASTLE_ROOT_ACTION => match self.castle_build_state {
                 0 if self.castle_level == 0 => {
                     let child_id = self.next_effect_id;
-                    let Some(child_slot) = self
-                        .source_pool
-                        .allocate(SourceOccupant::CastleConstruction(child_id))
-                    else {
+                    let Some(child_slot) = allocate_new_event_from_mission!(
+                        self,
+                        SourceOccupant::CastleConstruction(child_id)
+                    ) else {
                         // `sub_60480` retries on the next root dispatch and
                         // commits no stage, sound, stats, or child state.
                         return;
@@ -16307,6 +17772,7 @@ impl Level1MissionState {
                         SourceOccupant::CastleConstruction(child_id),
                         self.global_rng,
                     );
+                    self.source_slots[usize::from(child_slot)].control_flags = 1;
                     // Dynamic entity counters are initialized from the arena
                     // slot's low byte, not from zero.
                     self.source_slots[usize::from(child_slot)].phase = child_slot as u8;
@@ -16317,6 +17783,14 @@ impl Level1MissionState {
                         owner_entity_index: self.castle_owner_entity_index,
                         position: self.castle_construction_anchor,
                         stage: CASTLE_STAGE_ONE_LEVEL,
+                        collision_half_width: CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH,
+                        collision_half_depth: CASTLE_STAGE_ONE_PLACEMENT_HALF_Y,
+                        max_life: 0,
+                        life: 0,
+                        control_flags: 1,
+                        constructor_latch: 1,
+                        yaw: 0,
+                        fov: 256,
                         timer: 0,
                         initialized: false,
                         active: true,
@@ -16491,9 +17965,9 @@ impl Level1MissionState {
         let mut target = None;
         let mut target_distance = u32::MAX;
         if !must_return {
-            for source_entity_index in &self.targeting_source_lists.class_10_auxiliary {
+            for source_entity_index in self.targeting_source_lists.class_10_auxiliary() {
                 let Some(sphere) = self.mana_spheres.iter().find(|sphere| {
-                    sphere.source_entity_index == *source_entity_index
+                    sphere.source_entity_index == source_entity_index
                         && sphere.active
                         && self.source_slots[usize::from(sphere.source_entity_index)].model
                             == MANA_SPHERE_MODEL
@@ -16719,11 +18193,16 @@ impl Level1MissionState {
 
     fn step_castle_construction_slot(&mut self, player: &FlightState, source_slot: u16) {
         let (child_id, child_position) = {
-            let Some(child) = self
+            let child = self
                 .castle_construction
                 .as_mut()
                 .filter(|child| child.active && child.source_entity_index == source_slot)
-            else {
+                .or_else(|| {
+                    self.house_completion_constructions
+                        .iter_mut()
+                        .find(|child| child.active && child.source_entity_index == source_slot)
+                });
+            let Some(child) = child else {
                 return;
             };
             if !child.initialized {
@@ -17734,7 +19213,10 @@ impl Level1MissionState {
         let mut ground_fire_smoke_spawns = Vec::new();
         let mut ground_fire_light_updates = Vec::new();
         let mut pending_ambient_loop_5_distance = self.pending_ambient_loop_5_distance;
-        let auxiliary_source_order = self.targeting_source_lists.class_10_auxiliary.clone();
+        let auxiliary_source_order = self
+            .targeting_source_lists
+            .class_10_auxiliary()
+            .collect::<Vec<_>>();
         let castle_collision = self
             .castle_exists
             .then_some((self.castle_source_entity_index, self.castle_position));
@@ -19033,9 +20515,8 @@ impl Level1MissionState {
         };
         let mut predecessor_source_entity_index = head_source_entity_index;
         for ordinal in 0..MULTIPART_SEGMENT_COUNT {
-            let Some(source_entity_index) = self
-                .source_pool
-                .allocate(SourceOccupant::MultipartSegment(0))
+            let Some(source_entity_index) =
+                allocate_new_event_from_mission!(self, SourceOccupant::MultipartSegment(0))
             else {
                 break;
             };
@@ -19325,18 +20806,29 @@ impl Level1MissionState {
     }
 
     fn allocate_source_slot(&mut self, occupant: SourceOccupant) -> Option<u16> {
-        let previous = self.source_pool.next_allocation_rollback()?;
-        let slot = self.source_pool.allocate(occupant)?;
-        debug_assert_eq!(slot, previous.slot);
-        if matches!(
-            previous.previous_occupant,
-            Some(SourceOccupant::DeathBurst(_))
-        ) {
-            self.death_bursts
-                .retain(|burst| burst.source_entity_index != slot);
-        }
-        self.ambient_entities[usize::from(slot)] = None;
-        Some(slot)
+        self.allocate_new_event_slot(occupant)
+            .map(|allocation| allocation.slot)
+    }
+
+    fn allocate_new_event_slot(&mut self, occupant: SourceOccupant) -> Option<SourceAllocation> {
+        let allocation = allocate_new_event_slot_raw(
+            &mut self.source_pool,
+            &mut self.targeting_source_lists,
+            &mut self.source_map_chains,
+            &mut self.source_slots,
+            &mut self.source_ids,
+            &mut self.source_lives,
+            &mut self.source_building_indices,
+            &mut self.source_axes,
+            &mut self.source_house_links,
+            &mut self.class_3_action_states,
+            &mut self.death_bursts,
+            &mut self.ambient_entities,
+            self.global_rng,
+            occupant,
+        )?;
+        self.clear_replaced_authored_projections();
+        Some(allocation)
     }
 
     fn clear_replaced_ambient_projections(&mut self) {
@@ -19736,6 +21228,30 @@ fn builder_site_overlaps(
         && i32::from(delta_y).abs() <= i32::from(other_extent_y.wrapping_add(extent_y))
 }
 
+const fn house_construction_kills_class_5(model: u8) -> bool {
+    // Pinned remc2 declares actionIndex as uint8_t, so the model-25
+    // comparison against signed -56 is always unequal after C++ promotion.
+    !matches!(model, 6 | 8 | 10 | 16 | 22 | 23 | 27)
+}
+
+fn strict_xy_overlap(
+    first: Position,
+    first_half_x: i16,
+    first_half_y: i16,
+    second: Position,
+    second_half_x: i16,
+    second_half_y: i16,
+) -> bool {
+    i32::from(second.x.wrapping_sub(first.x).cast_signed()).abs()
+        < i32::from(first_half_x) + i32::from(second_half_x)
+        && i32::from(second.y.wrapping_sub(first.y).cast_signed()).abs()
+            < i32::from(first_half_y) + i32::from(second_half_y)
+}
+
+fn castle_shift_for_tiles(tiles: u8) -> i16 {
+    i16::try_from(((i32::from(tiles) << 8) + 1_280) >> 1).expect("BUILD footprint shift fits i16")
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BuilderPlacementBlocker {
     Building(u16),
@@ -19744,8 +21260,27 @@ enum BuilderPlacementBlocker {
     BuilderLatch(u16),
 }
 
+#[cfg(test)]
 fn builder_placement_blocker(
     source_views: &[Level1SourceEntityView],
+    candidate: Position,
+    extent_x: i16,
+    extent_y: i16,
+) -> Option<BuilderPlacementBlocker> {
+    let lists = Level1MissionState::targeting_source_lists_from_views(source_views);
+    let building_source_order = lists.class_10_buildings().collect::<Vec<_>>();
+    builder_placement_blocker_in_routes(
+        source_views,
+        &building_source_order,
+        candidate,
+        extent_x,
+        extent_y,
+    )
+}
+
+fn builder_placement_blocker_in_routes(
+    source_views: &[Level1SourceEntityView],
+    building_source_order: &[u16],
     candidate: Position,
     extent_x: i16,
     extent_y: i16,
@@ -19762,12 +21297,12 @@ fn builder_placement_blocker(
     };
 
     // The pinned turn-start list builder admits only class-10/model-45 rows
-    // to `dword_38527`; action 96 traverses that complete list before either
-    // class-3 subtype scan.
-    if let Some(view) = source_views.iter().find(|view| {
-        view.active && view.class == HOUSE_CLASS && view.model == HOUSE_MODEL && overlaps(view)
-    }) {
-        return Some(BuilderPlacementBlocker::Building(view.source_entity_index));
+    // to `dword_38527`; action 96 traverses that frozen complete list before
+    // either class-3 subtype scan without re-checking the current tuple.
+    for source_entity_index in building_source_order {
+        if let Some(view) = source_view(source_views, *source_entity_index).filter(overlaps) {
+            return Some(BuilderPlacementBlocker::Building(view.source_entity_index));
+        }
     }
     if let Some(view) = source_views.iter().find(|view| {
         view.active && view.life >= 0 && view.class == 3 && view.model == 2 && overlaps(view)
@@ -19948,8 +21483,8 @@ fn step_archer_roam<W: FlightWorld>(
     let range_squared = u32::from(ARCHER_RANGE).pow(2);
     let mut player_target = None;
     let mut player_distance = u32::MAX;
-    for source_entity_index in &targeting_lists.players {
-        let Some(candidate) = source_view(source_views, *source_entity_index) else {
+    for source_entity_index in targeting_lists.players() {
+        let Some(candidate) = source_view(source_views, source_entity_index) else {
             continue;
         };
         let distance = squared_wrapping_xy_distance(actor.position, candidate.position);
@@ -19975,10 +21510,10 @@ fn step_archer_roam<W: FlightWorld>(
 
     let mut linked = None;
     let mut linked_distance = u32::MAX;
-    for source_entity_index in &targeting_lists.class_5_models[usize::from(actor.model)] {
+    for source_entity_index in targeting_lists.class_5_model(actor.model) {
         let Some(candidate) = actor_views
             .iter()
-            .find(|candidate| candidate.source_entity_index == *source_entity_index)
+            .find(|candidate| candidate.source_entity_index == source_entity_index)
         else {
             continue;
         };
@@ -20207,8 +21742,8 @@ fn step_firefly_roam<W: FlightWorld>(
     let range_squared = u32::from(FIREFLY_RANGE).pow(2);
     let mut player_target = None;
     let mut player_distance = u32::MAX;
-    for source_entity_index in &targeting_lists.players {
-        let Some(candidate) = source_view(source_views, *source_entity_index) else {
+    for source_entity_index in targeting_lists.players() {
+        let Some(candidate) = source_view(source_views, source_entity_index) else {
             continue;
         };
         if candidate.source_id == actor.owner_id.cast_unsigned()
@@ -20237,10 +21772,10 @@ fn step_firefly_roam<W: FlightWorld>(
 
     let mut linked = None;
     let mut linked_distance = u32::MAX;
-    for source_entity_index in &targeting_lists.class_5_models[usize::from(actor.model)] {
+    for source_entity_index in targeting_lists.class_5_model(actor.model) {
         let Some(candidate) = actor_views
             .iter()
-            .find(|candidate| candidate.source_entity_index == *source_entity_index)
+            .find(|candidate| candidate.source_entity_index == source_entity_index)
         else {
             continue;
         };
@@ -22923,7 +24458,7 @@ mod tests {
             );
         }
         assert_eq!(mission.dynamic_resident_behavior_gap_mask(), 0);
-        mission.dynamic_resident_behavior_gap_mask = 0x0a;
+        mission.observed_resident_behavior_mask = 0x05;
         mission.begin_source_turn_at(player.position);
         let views = mission.source_entity_views(&player, &[]);
         let effects = mission.dispatch_source_slot_with_views_and_look(
@@ -22978,7 +24513,7 @@ mod tests {
             }
             case.source_slots[usize::from(trader_slot)].action = action;
             case.source_slots[usize::from(trader_slot)].phase = 1;
-            case.dynamic_resident_behavior_gap_mask = 0x08;
+            case.observed_resident_behavior_mask = 0x07;
             (case, trader_slot)
         };
 
@@ -23448,7 +24983,7 @@ mod tests {
                 0,
             );
             assert_eq!(
-                hit.targeting_source_lists.players,
+                hit.targeting_source_lists.players().collect::<Vec<_>>(),
                 vec![player.entity_index],
                 "turn-start membership is bound before player flight"
             );
@@ -23486,7 +25021,7 @@ mod tests {
                 0,
             );
             assert_eq!(
-                hit.targeting_source_lists.players,
+                hit.targeting_source_lists.players().collect::<Vec<_>>(),
                 vec![player.entity_index],
                 "same-turn insertion cannot change frozen membership or ascending order"
             );
@@ -23542,7 +25077,7 @@ mod tests {
         );
         restored.source_slots[usize::from(restored_slot)].phase = restored_resident.phase;
         restored.source_slots[usize::from(restored_slot)].entity_rng = restored_resident.entity_rng;
-        restored.dynamic_resident_behavior_gap_mask = 0x08;
+        restored.observed_resident_behavior_mask = 0x07;
         for case in [&mut spawned, &mut restored] {
             case.begin_source_turn_at(player.position);
             let views = case.source_entity_views(&player, &[]);
@@ -24465,12 +26000,13 @@ mod tests {
         ));
         // 901 is higher than Builder slot 900, so action 51 dispatches this
         // turn and enters the completed BUILD lifecycle immediately.
-        assert!(
+        assert!(matches!(
             production
                 .live_world
                 .step_house_source_slot(placed_house.entity_index, &FlatWorld)
-                .is_empty()
-        );
+                .as_slice(),
+            [HouseStepEvent::ConstructionPass { remaining: 29, .. }]
+        ));
         assert_eq!(
             production
                 .live_world
@@ -24695,7 +26231,8 @@ mod tests {
         );
 
         // One occupied attempt remains in action 96 and advances to the next
-        // side. Removing the blocker then accepts the second (west) site.
+        // side. Removing the blocker becomes visible when the next source
+        // turn rebuilds dword_38527, then accepts the second (west) site.
         let (mut site_loop, loop_builder_slot) = builder_case(&[911, 910]);
         {
             let builder = site_loop.dynamic_residents[usize::from(loop_builder_slot)]
@@ -24739,10 +26276,11 @@ mod tests {
                 .map(|builder| (builder.action, builder.reset_counter)),
             Some((BUILDER_SEARCH_ACTION, 1))
         );
-        site_loop.global_rng = selected_19_seed;
         occupied.active = false;
         occupied.visible = false;
         site_loop.refresh_source_turn_entity(&player, occupied.source_entity_index, Some(occupied));
+        site_loop.begin_source_turn_at(player.position);
+        site_loop.global_rng = selected_19_seed;
         let mut next_views = vec![
             resident_source_view(&site_loop, &player, loop_builder_slot),
             target_view(200, target_position),
@@ -25474,7 +27012,7 @@ mod tests {
             }
             case.source_slots[usize::from(villager_slot)].action = action;
             case.source_slots[usize::from(villager_slot)].phase = phase;
-            case.dynamic_resident_behavior_gap_mask = 0x0f;
+            case.observed_resident_behavior_mask = 0;
             case.begin_source_turn_at(player.position);
             let views = case.source_entity_views(&player, &[]);
             let effects = case.dispatch_source_slot_with_views_and_look(
@@ -25652,7 +27190,7 @@ mod tests {
             higher.spawn_house_resident(position, 4, 33, 0).unwrap(),
             Some(600)
         );
-        higher.dynamic_resident_behavior_gap_mask = 0x0f;
+        higher.observed_resident_behavior_mask = 0;
         let effects = higher.dispatch_source_slot_with_views_and_look(
             &FlatWorld,
             &player,
@@ -25707,7 +27245,7 @@ mod tests {
             lower.spawn_house_resident(position, 4, 33, 0).unwrap(),
             Some(100)
         );
-        lower.dynamic_resident_behavior_gap_mask = 0x0f;
+        lower.observed_resident_behavior_mask = 0;
         for source_slot in 501_u16..1_000 {
             let effects = lower.dispatch_source_slot_with_views_and_look(
                 &FlatWorld,
@@ -25730,7 +27268,7 @@ mod tests {
         );
         lower.finish_source_turn(&player);
         lower.begin_source_turn_at(player.position);
-        lower.dynamic_resident_behavior_gap_mask = 0x0f;
+        lower.observed_resident_behavior_mask = 0;
         let next_turn = lower.source_entity_views(&player, &[]);
         let effects = lower.dispatch_source_slot_with_views_and_look(
             &FlatWorld, &player, &next_turn, 100, false, false, None, 0, 0,
@@ -26730,6 +28268,59 @@ mod tests {
         );
         assert!(exhausted_death.mana_spheres().is_empty());
         assert!(exhausted_death.death_bursts().is_empty());
+    }
+
+    #[test]
+    fn required_resident_observation_mask_starts_nonzero_and_only_real_dispatch_observes_bits() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let player = FlightState {
+            entity_index: 152,
+            position: Position {
+                x: 20_000,
+                y: 20_000,
+                z: 0,
+            },
+            ..FlightState::default()
+        };
+        let fresh = template.session(10_000, 1_000);
+        assert_eq!(fresh.required_resident_behavior_mask(), 0x0f);
+        assert_eq!(fresh.observed_resident_behavior_mask(), 0);
+        assert_eq!(fresh.remaining_resident_behavior_mask(), 0x0f);
+
+        for (slot, model, action, expected_bit) in [
+            (600, 4, 33, RESIDENT_ARCHER_OBSERVATION),
+            (601, 12, 97, RESIDENT_BUILDER_OBSERVATION),
+            (602, 13, 105, RESIDENT_VILLAGER_OBSERVATION),
+            (603, 14, 113, RESIDENT_TRADER_OBSERVATION),
+        ] {
+            let mut mission = template.session(10_000, 1_000);
+            mission.source_pool = Level1SourcePool::from_free_stack(&[slot]).unwrap();
+            let resident_slot = mission
+                .spawn_house_resident(player.position, model, action, 0)
+                .unwrap()
+                .unwrap();
+            assert_eq!(resident_slot, slot);
+            assert_eq!(mission.observed_resident_behavior_mask(), 0);
+            mission.begin_source_turn_at(player.position);
+            let views = mission.source_entity_views(&player, &[]);
+            let _ = mission.dispatch_source_slot_with_views_and_look(
+                &FlatWorld,
+                &player,
+                &views,
+                resident_slot,
+                false,
+                false,
+                None,
+                0,
+                0,
+            );
+            assert_eq!(mission.observed_resident_behavior_mask(), expected_bit);
+            assert_eq!(
+                mission.remaining_resident_behavior_mask(),
+                REQUIRED_RESIDENT_BEHAVIOR_MASK & !expected_bit
+            );
+            assert_ne!(mission.resident_behavior_observation_digest_v1(), 0);
+        }
     }
 
     #[test]
@@ -30154,6 +31745,1237 @@ mod tests {
         assert_source_guidance_frozen_insertion(&mut mission, origin, &player, &mut host_snapshot);
     }
 
+    #[test]
+    fn targeting_source_lists_cover_every_pinned_class_10_and_11_route_in_source_order() {
+        let record = |source_entity_index: u16, class: u8, model: u8| {
+            let mut view = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
+                index: source_entity_index,
+                active: true,
+                class,
+                model,
+                action: model,
+                phase: source_entity_index as u8,
+                entity_rng: source_entity_index,
+                control_flags: 0,
+            });
+            view.life = 100;
+            view
+        };
+        let mut views = vec![
+            record(18, 10, 78),
+            record(17, 11, 32),
+            record(16, 10, 57),
+            record(15, 10, 77),
+            record(14, 11, 30),
+            record(13, 10, 45),
+            record(12, 11, 31),
+            record(11, 10, 46),
+            record(10, 10, 66),
+            record(9, 10, 40),
+            record(8, 10, 67),
+            record(7, 11, 12),
+            record(6, 11, 11),
+            record(5, 10, 44),
+            record(4, 10, 45),
+            record(3, 10, 42),
+            record(2, 10, 39),
+            record(1, 10, 41),
+            record(20, 10, 43),
+        ];
+        views.push(record(0, 10, 39));
+        let mut inactive = record(21, 10, 67);
+        inactive.active = false;
+        views.push(inactive);
+
+        let lists = Level1MissionState::targeting_source_lists_from_views(&views);
+        assert_eq!(lists.class_10_auxiliary().collect::<Vec<_>>(), [2, 9, 16]);
+        assert_eq!(lists.class_10_buildings().collect::<Vec<_>>(), [4, 13]);
+        assert_eq!(
+            lists.class_10_11_collision().collect::<Vec<_>>(),
+            [3, 7, 8, 12, 18, 21]
+        );
+
+        let mut routed = views;
+        let house = {
+            let house = routed
+                .iter_mut()
+                .find(|view| view.source_entity_index == 4)
+                .unwrap();
+            house.position = Position {
+                x: 1_000,
+                y: 2_000,
+                z: 0,
+            };
+            house.collision_half_width = 100;
+            house.collision_half_depth = 100;
+            *house
+        };
+        let model_42 = routed
+            .iter_mut()
+            .find(|view| view.source_entity_index == 3)
+            .unwrap();
+        model_42.position = Position {
+            x: 1_199,
+            y: 2_000,
+            z: 0,
+        };
+        model_42.collision_half_width = 100;
+        model_42.collision_half_depth = 100;
+        assert!(Level1MissionState::house_action_51_blocked(&routed, 4));
+        routed
+            .iter_mut()
+            .find(|view| view.source_entity_index == 3)
+            .unwrap()
+            .position
+            .x = 1_200;
+        assert!(
+            !Level1MissionState::house_action_51_blocked(&routed, 4),
+            "CompareAxisWithShift uses strict less-than and ignores other collision-list models"
+        );
+
+        for (class, model) in [(10, 67), (10, 78), (11, 12), (11, 31)] {
+            let mut candidate = record(99, class, model);
+            candidate.position = house.position;
+            candidate.collision_half_width = 100;
+            candidate.collision_half_depth = 100;
+            assert!(
+                !Level1MissionState::house_action_51_blocked(&[house, candidate], 4),
+                "collision-list class/model {class}/{model} must not satisfy IsNextEvent0A_2A"
+            );
+        }
+    }
+
+    #[test]
+    fn action_51_overlap_uses_wrapped_i16_delta_and_promoted_extent_sums() {
+        let first = Position {
+            x: 0x7fff,
+            y: 10,
+            z: i16::MIN,
+        };
+        let wrapped_neighbour = Position {
+            x: 0x8000,
+            y: 10,
+            z: i16::MAX,
+        };
+        assert!(strict_xy_overlap(
+            first,
+            20_000,
+            1,
+            wrapped_neighbour,
+            20_000,
+            1,
+        ));
+        assert!(
+            strict_xy_overlap(
+                Position { x: 0, y: 0, z: 0 },
+                20_000,
+                1,
+                Position {
+                    x: 39_999,
+                    y: 0,
+                    z: 30_000,
+                },
+                20_000,
+                1,
+            ),
+            "C integer promotion keeps the 40,000 extent sum instead of wrapping i16"
+        );
+        assert!(strict_xy_overlap(
+            Position { x: 0, y: 0, z: 0 },
+            20_000,
+            1,
+            Position {
+                x: 40_000,
+                y: 0,
+                z: -30_000,
+            },
+            20_000,
+            1,
+        ));
+        assert!(!strict_xy_overlap(
+            Position { x: 0, y: 0, z: 0 },
+            100,
+            1,
+            Position { x: 200, y: 0, z: 0 },
+            100,
+            1,
+        ));
+    }
+
+    #[test]
+    fn action_51_first_pass_walks_raw_tiles_and_chains_with_exact_class_5_truth_table() {
+        for model in 0..=u8::MAX {
+            assert_eq!(
+                house_construction_kills_class_5(model),
+                !matches!(model, 6 | 8 | 10 | 16 | 22 | 23 | 27),
+                "class-5 protection mismatch for model {model}"
+            );
+        }
+
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 2_000);
+        let configure = |mission: &mut Level1MissionState,
+                         slot: u16,
+                         class: u8,
+                         model: u8,
+                         action: u8,
+                         id: u16| {
+            let index = usize::from(slot);
+            mission.source_slots[index] = Level1ResetSourceSlot {
+                index: slot,
+                active: true,
+                class,
+                model,
+                action,
+                phase: 0,
+                entity_rng: slot,
+                control_flags: 8,
+            };
+            mission.source_ids[index] = id;
+            mission.source_lives[index] = 100;
+            mission.source_house_links[index] = [11, 12];
+        };
+        configure(&mut mission, 2, 9, 99, 0, 2);
+        configure(&mut mission, 3, 2, 1, 6, 3);
+        configure(&mut mission, 4, 5, 25, 200, 4);
+        configure(&mut mission, 5, 5, 27, 0, 5);
+        configure(&mut mission, 6, 5, 1, 0, 500);
+        configure(&mut mission, 7, 5, 28, 0, 7);
+
+        let mut chains = RenderableMapChains::empty();
+        for slot in [6_u16, 5, 4, 3, 2] {
+            chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: slot,
+                    active: true,
+                    x: 10 << 8,
+                    y: 20 << 8,
+                })
+                .unwrap();
+        }
+        chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: 7,
+                active: true,
+                x: 11 << 8,
+                y: 20 << 8,
+            })
+            .unwrap();
+        mission.set_reset_source_map_chains(chains);
+        let raw_topology_before = mission.source_map_chains().canonical_topology_bytes();
+        let footprint =
+            CastleBuildFootprint::from_owner_cells(9, 2, 1, &[0xff, 0xff, 1, 1]).unwrap();
+        mission.apply_house_construction_first_pass(
+            &[],
+            20,
+            500,
+            Position {
+                x: (10 << 8) + 200,
+                y: 20 << 8,
+                z: 0,
+            },
+            &footprint,
+        );
+
+        assert_eq!(
+            mission.house_construction_effects(),
+            [
+                HouseConstructionSourceEffect::DrawingDisabled {
+                    house_entity_index: 20,
+                    tile: u16::from_le_bytes([10, 20]),
+                    source_entity_index: 3,
+                },
+                HouseConstructionSourceEffect::ActorKilledAndLinked {
+                    house_entity_index: 20,
+                    house_source_id: 500,
+                    tile: u16::from_le_bytes([10, 20]),
+                    source_entity_index: 4,
+                },
+                HouseConstructionSourceEffect::ActorKilledAndLinked {
+                    house_entity_index: 20,
+                    house_source_id: 500,
+                    tile: u16::from_le_bytes([11, 20]),
+                    source_entity_index: 7,
+                },
+            ]
+        );
+        assert_eq!(
+            mission.source_slots[3].control_flags,
+            8 | SOURCE_DISABLED_FLAG
+        );
+        assert_eq!(mission.source_lives[4], -1, "model 25/action 200 is killed");
+        assert_eq!(mission.source_house_links[4], [500, 500]);
+        assert_eq!(
+            (mission.source_lives[5], mission.source_house_links[5]),
+            (100, [11, 12])
+        );
+        assert_eq!(
+            (mission.source_lives[6], mission.source_house_links[6]),
+            (100, [11, 12])
+        );
+        assert_eq!(
+            (mission.source_lives[7], mission.source_house_links[7]),
+            (-1, [500, 500])
+        );
+        assert_eq!(
+            mission.source_map_chains.entity_chain(10, 20),
+            [2, 3, 4, 5, 6],
+            "sub_57390 never unlinks the current raw chain"
+        );
+        assert_eq!(
+            mission.source_map_chains().canonical_topology_bytes(),
+            raw_topology_before,
+            "sub_57390 leaves every raw map head and old link unchanged"
+        );
+    }
+
+    #[test]
+    fn action_51_completion_allocates_every_frozen_class_3_overlap_in_slot_order() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 2_000);
+        mission.source_pool = Level1SourcePool::from_free_stack(&[901, 900]).unwrap();
+        mission.begin_source_turn();
+        let parent = |slot: u16, life: i32, active: bool| {
+            let mut view = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
+                index: slot,
+                active,
+                class: 3,
+                model: 1,
+                action: 0,
+                phase: 0,
+                entity_rng: slot,
+                control_flags: 8,
+            });
+            view.source_id = slot + 1_000;
+            view.position = Position {
+                x: 1_050,
+                y: 2_050,
+                z: slot.cast_signed(),
+            };
+            view.life = life;
+            view.collision_half_width = 100;
+            view.collision_half_depth = 100;
+            view
+        };
+        let views = vec![
+            parent(30, 1, true),
+            parent(10, 0, true),
+            parent(40, -1, true),
+            parent(20, 1, false),
+        ];
+        for (slot, selector) in [(10_u16, 1_i16), (20, 2), (30, 3), (40, 4)] {
+            let index = usize::from(slot);
+            mission.source_ids[index] = slot + 1_000;
+            mission.source_building_indices[index] = selector;
+            mission.source_axes[index] = Position {
+                x: 20_000 + slot,
+                y: 30_000 + slot,
+                z: slot.cast_signed(),
+            };
+            mission.class_3_action_states[index] = 9;
+        }
+        mission
+            .apply_house_construction_completion(
+                &views,
+                77,
+                Position {
+                    x: 1_000,
+                    y: 2_000,
+                    z: -9_000,
+                },
+                100,
+                100,
+                |selector| Some((selector.wrapping_add(1), selector.wrapping_add(2))),
+            )
+            .unwrap();
+
+        let children = mission.house_completion_constructions();
+        assert_eq!(
+            children.len(),
+            2,
+            "completion effects: {:?}",
+            mission.house_construction_effects()
+        );
+        assert_eq!(
+            children
+                .iter()
+                .map(|child| (child.source_entity_index, child.parent_entity_index))
+                .collect::<Vec<_>>(),
+            [(900, 10), (901, 20)]
+        );
+        assert_eq!(
+            (
+                children[0].owner_entity_index,
+                children[0].position,
+                children[0].stage,
+                children[0].collision_half_width,
+                children[0].collision_half_depth,
+                children[0].max_life,
+                children[0].life,
+                children[0].control_flags,
+                children[0].constructor_latch,
+                children[0].yaw,
+                children[0].fov,
+            ),
+            (
+                1_010,
+                mission.source_axes[10],
+                1,
+                castle_shift_for_tiles(2),
+                castle_shift_for_tiles(3),
+                0,
+                0,
+                1,
+                1,
+                0,
+                256,
+            )
+        );
+        assert_eq!(
+            (
+                mission.source_slots[900].class,
+                mission.source_slots[900].model,
+                mission.source_slots[900].action,
+                mission.source_slots[900].phase,
+                mission.source_slots[900].control_flags,
+                mission.source_ids[900],
+                mission.source_building_indices[900],
+            ),
+            (10, 42, 44, 900_u16.to_le_bytes()[0], 1, 1_010, 0)
+        );
+        assert_eq!(
+            (
+                mission.class_3_action_states[10],
+                mission.class_3_action_states[20],
+                mission.class_3_action_states[30],
+                mission.class_3_action_states[40],
+            ),
+            (4, 4, 9, 9),
+            "successful parents commit word_0x2e=4; exhausted and ineligible parents do not"
+        );
+        assert!(matches!(
+            mission.house_construction_effects(),
+            [
+                HouseConstructionSourceEffect::ConstructionAllocated {
+                    parent_entity_index: 10,
+                    source_entity_index: 900,
+                    ..
+                },
+                HouseConstructionSourceEffect::ConstructionAllocated {
+                    parent_entity_index: 20,
+                    source_entity_index: 901,
+                    ..
+                },
+                HouseConstructionSourceEffect::ConstructionAllocationFailed {
+                    parent_entity_index: 30,
+                    ..
+                },
+            ]
+        ));
+    }
+
+    #[test]
+    fn fallback_completion_clears_later_house_seeker_list_heads() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 2_000);
+        mission.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        mission.source_pool.replaceable[700] = true;
+        mission.source_pool.replaceable_stack.push(700);
+        mission.source_pool.raw_replaceable_cursor = 0;
+        mission.begin_source_turn();
+        let mut parent = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
+            index: 10,
+            active: true,
+            class: 3,
+            model: 1,
+            action: 0,
+            phase: 0,
+            entity_rng: 10,
+            control_flags: 8,
+        });
+        parent.position = Position {
+            x: 100,
+            y: 100,
+            z: 0,
+        };
+        parent.life = 1;
+        parent.collision_half_width = 100;
+        parent.collision_half_depth = 100;
+        mission.source_building_indices[10] = 1;
+        mission.source_axes[10] = Position {
+            x: 300,
+            y: 400,
+            z: 5,
+        };
+        let views = [parent];
+        mission
+            .apply_house_construction_completion(
+                &views,
+                50,
+                Position {
+                    x: 100,
+                    y: 100,
+                    z: 0,
+                },
+                100,
+                100,
+                |_| Some((2, 2)),
+            )
+            .unwrap();
+        assert_eq!(mission.house_completion_constructions().len(), 1);
+
+        let mut house = parent;
+        house.source_entity_index = 60;
+        house.class = 10;
+        house.model = 45;
+        let mut blocker = parent;
+        blocker.source_entity_index = 61;
+        blocker.class = 10;
+        blocker.model = 42;
+        assert!(Level1MissionState::house_action_51_blocked(
+            &[house, blocker],
+            60
+        ));
+        assert!(
+            !mission.current_house_action_51_blocked(&[house, blocker], 60),
+            "fallback allocation zeroes dword_38535 before the later house"
+        );
+        mission
+            .apply_house_construction_completion(
+                &views,
+                51,
+                Position {
+                    x: 100,
+                    y: 100,
+                    z: 0,
+                },
+                100,
+                100,
+                |_| Some((2, 2)),
+            )
+            .unwrap();
+        assert_eq!(
+            mission.house_completion_constructions().len(),
+            1,
+            "fallback also zeroes dword_38519 for later completion consumers"
+        );
+    }
+
+    #[test]
+    fn action_51_revisits_replaced_later_slot_and_uses_zeroed_fields_for_second_fallback() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 2_000);
+        mission.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        for slot in [20_usize, 25] {
+            mission.source_pool.replaceable[slot] = true;
+        }
+        mission.source_pool.replaceable_stack.extend([25, 20]);
+        mission.source_pool.raw_replaceable_cursor = 1;
+        mission.begin_source_turn();
+
+        let parent = |slot: u16, position: Position| {
+            let mut view = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
+                index: slot,
+                active: true,
+                class: 3,
+                model: 1,
+                action: 0,
+                phase: 0,
+                entity_rng: slot,
+                control_flags: 8,
+            });
+            view.source_id = 1_000 + slot;
+            view.position = position;
+            view.life = 1;
+            view.collision_half_width = 20;
+            view.collision_half_depth = 20;
+            view
+        };
+        let overlap = Position {
+            x: 1_000,
+            y: 2_000,
+            z: 0,
+        };
+        let views = [
+            parent(10, overlap),
+            parent(
+                20,
+                Position {
+                    x: 20_000,
+                    y: 30_000,
+                    z: 0,
+                },
+            ),
+            parent(30, overlap),
+        ];
+        let replacement_position = views[1].position;
+        let replacement_q_position = Position {
+            x: 9_000,
+            y: 11_000,
+            z: 0,
+        };
+        mission
+            .source_map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: 20,
+                active: true,
+                x: replacement_position.x,
+                y: replacement_position.y,
+            })
+            .unwrap();
+        mission
+            .source_map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: 25,
+                active: true,
+                x: replacement_q_position.x,
+                y: replacement_q_position.y,
+            })
+            .unwrap();
+        assert_eq!(
+            mission.source_map_chains.entity_chain(
+                replacement_position.x.to_be_bytes()[0],
+                replacement_position.y.to_be_bytes()[0],
+            ),
+            [20]
+        );
+        for slot in [10_u16, 20, 25, 30] {
+            let index = usize::from(slot);
+            mission.source_ids[index] = 1_000 + slot;
+            mission.source_building_indices[index] = 1;
+            mission.source_axes[index] = overlap;
+            mission.class_3_action_states[index] = 9;
+        }
+
+        mission
+            .apply_house_construction_completion(&views, 77, overlap, 40, 40, |_| Some((2, 2)))
+            .unwrap();
+
+        assert_eq!(
+            mission
+                .house_completion_constructions()
+                .iter()
+                .map(|child| (child.source_entity_index, child.parent_entity_index))
+                .collect::<Vec<_>>(),
+            [(20, 10), (25, 20)],
+            "the live replacement is revisited and creates from its zeroed source fields"
+        );
+        assert!(matches!(
+            mission.house_construction_effects(),
+            [
+                HouseConstructionSourceEffect::ConstructionAllocated {
+                    parent_entity_index: 10,
+                    source_entity_index: 20,
+                    ..
+                },
+                HouseConstructionSourceEffect::ConstructionAllocated {
+                    parent_entity_index: 20,
+                    source_entity_index: 25,
+                    ..
+                }
+            ]
+        ));
+        assert_eq!(
+            (
+                mission.class_3_action_states[10],
+                mission.class_3_action_states[20],
+                mission.class_3_action_states[25],
+                mission.class_3_action_states[30],
+            ),
+            (4, 4, 0, 9),
+            "the live replacement becomes the second parent and its zero next link prevents slot 30 from being visited"
+        );
+        assert_eq!(
+            mission.source_slots[20].class, 10,
+            "the retry at slot 20 observes the new model-42 row, not the frozen class-3 geometry"
+        );
+        assert!(
+            mission
+                .source_map_chains
+                .entity_chain(
+                    replacement_position.x.to_be_bytes()[0],
+                    replacement_position.y.to_be_bytes()[0],
+                )
+                .is_empty(),
+            "fallback NewEvent unlinks the replaced row from its old raw tile"
+        );
+        assert!(
+            !mission
+                .source_map_chains
+                .linked_entity_indices()
+                .contains(&20),
+            "the model-42 subtype constructor does not reinsert the fallback row"
+        );
+        assert!(
+            mission
+                .source_map_chains
+                .entity_chain(
+                    replacement_q_position.x.to_be_bytes()[0],
+                    replacement_q_position.y.to_be_bytes()[0],
+                )
+                .is_empty()
+                && !mission
+                    .source_map_chains
+                    .linked_entity_indices()
+                    .contains(&25),
+            "the second replacement commits its own exact raw unlink"
+        );
+        let second = mission
+            .house_completion_constructions()
+            .iter()
+            .find(|child| child.source_entity_index == 25)
+            .expect("second fallback child");
+        assert_eq!(
+            (
+                second.position,
+                second.stage,
+                second.owner_entity_index,
+                second.parent_entity_index,
+                mission.source_axes[25],
+                mission.source_building_indices[25],
+            ),
+            (Position::default(), 0, 1_010, 20, Position::default(), 0),
+            "the second constructor/tail reads the first child's live zeroed axis and selector"
+        );
+        assert!(!mission.current_house_action_51_blocked(&[], 77));
+    }
+
+    #[test]
+    fn action_51_fallback_replacing_current_parent_observes_post_memset_alias() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 2_000);
+        mission.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        mission.source_pool.replaceable[10] = true;
+        mission.source_pool.replaceable_stack.push(10);
+        mission.source_pool.raw_replaceable_cursor = 0;
+        mission.begin_source_turn();
+
+        let poisoned_axis = Position {
+            x: 7_000,
+            y: 8_000,
+            z: 90,
+        };
+        let mut parent = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
+            index: 10,
+            active: true,
+            class: 3,
+            model: 1,
+            action: 0,
+            phase: 0,
+            entity_rng: 10,
+            control_flags: 8,
+        });
+        parent.source_id = 777;
+        parent.position = poisoned_axis;
+        parent.life = 1;
+        parent.collision_half_width = 20;
+        parent.collision_half_depth = 20;
+        let mut later = parent;
+        later.source_entity_index = 30;
+        later.position.x = later.position.x.wrapping_add(20_000);
+        let views = [parent, later];
+
+        mission.source_ids[10] = 777;
+        mission.source_building_indices[10] = 9;
+        mission.source_axes[10] = poisoned_axis;
+        mission.class_3_action_states[10] = 9;
+        mission.class_3_action_states[30] = 7;
+
+        mission
+            .apply_house_construction_completion(&views, 77, poisoned_axis, 40, 40, |selector| {
+                match selector {
+                    0 => Some((1, 1)),
+                    9 => Some((4, 3)),
+                    _ => None,
+                }
+            })
+            .unwrap();
+
+        let child = mission
+            .house_completion_constructions()
+            .iter()
+            .find(|child| child.source_entity_index == 10)
+            .copied()
+            .expect("current parent is replaced by its own model-42 child");
+        assert_eq!(
+            child.position,
+            Position::default(),
+            "the aliased constructor position is read only after NewEvent memset"
+        );
+        assert_eq!(
+            (
+                child.stage,
+                child.owner_entity_index,
+                child.parent_entity_index,
+                child.collision_half_width,
+                child.collision_half_depth,
+            ),
+            (
+                0,
+                10,
+                10,
+                castle_shift_for_tiles(1),
+                castle_shift_for_tiles(1)
+            )
+        );
+        assert_eq!(
+            (
+                mission.source_ids[10],
+                mission.source_building_indices[10],
+                mission.source_axes[10],
+                mission.class_3_action_states[10],
+                mission.class_3_action_states[30],
+            ),
+            (10, 0, Position::default(), 4, 7)
+        );
+        assert_eq!(mission.house_construction_effects().len(), 1);
+    }
+
+    #[test]
+    fn fallback_new_event_clears_all_34_heads_without_rewriting_other_next_links() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 2_000);
+        mission.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        mission.source_pool.replaceable[900] = true;
+        mission.source_pool.replaceable_stack.push(900);
+        mission.source_pool.raw_replaceable_cursor = 0;
+        mission.begin_source_turn();
+
+        let mut views = Vec::new();
+        let make_view = |slot: u16, class: u8, model: u8, position: Position| {
+            let mut view = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
+                index: slot,
+                active: true,
+                class,
+                model,
+                action: 0,
+                phase: 0,
+                entity_rng: slot,
+                control_flags: 8,
+            });
+            view.source_id = slot;
+            view.position = position;
+            view.life = 1;
+            view.collision_half_width = 20;
+            view.collision_half_depth = 20;
+            view
+        };
+        let overlap = Position {
+            x: 1_000,
+            y: 2_000,
+            z: 0,
+        };
+        views.push(make_view(10, 3, 1, overlap));
+        views.push(make_view(
+            20,
+            3,
+            1,
+            Position {
+                x: 20_000,
+                y: 30_000,
+                z: 0,
+            },
+        ));
+        for model in 0_u8..29 {
+            views.push(make_view(100 + u16::from(model), 5, model, overlap));
+        }
+        views.push(make_view(200, 9, 1, overlap));
+        views.push(make_view(201, 10, 39, overlap));
+        views.push(make_view(202, 10, 45, overlap));
+        views.push(make_view(203, 10, 42, overlap));
+
+        mission.targeting_source_lists =
+            Level1MissionState::targeting_source_lists_from_views(&views);
+        mission.targeting_source_views = Arc::new(views.clone());
+        mission.targeting_imported_lists_sampled = true;
+        assert!(
+            mission
+                .targeting_source_lists
+                .all_heads()
+                .iter()
+                .all(|head| *head != 0),
+            "every model head and all five standalone heads are populated"
+        );
+        assert_eq!(
+            mission.targeting_source_lists.class_9().collect::<Vec<_>>(),
+            [200]
+        );
+        let next_before = mission.targeting_source_lists.next.clone();
+        mission.source_building_indices[10] = 1;
+        mission.source_axes[10] = overlap;
+        mission.source_building_indices[20] = 1;
+        mission.source_axes[20] = views[1].position;
+
+        mission
+            .apply_house_construction_completion(&views, 77, overlap, 40, 40, |_| Some((2, 2)))
+            .unwrap();
+
+        assert_eq!(mission.targeting_source_lists.all_heads(), [0; 34]);
+        for source_slot in 1_u16..ENTITY_POOL_SIZE as u16 {
+            if source_slot != 900 {
+                assert_eq!(
+                    mission.targeting_source_lists.next[usize::from(source_slot)],
+                    next_before[usize::from(source_slot)],
+                    "fallback head clear must not rewrite non-replacement next_0 for slot {source_slot}"
+                );
+            }
+        }
+        assert_eq!(mission.targeting_source_lists.next[900], 0);
+        let effects_after_first = mission.house_construction_effects().to_vec();
+        mission
+            .apply_house_construction_completion(&views, 77, overlap, 40, 40, |_| Some((2, 2)))
+            .unwrap();
+        assert_eq!(mission.house_construction_effects(), effects_after_first);
+        assert!(!mission.current_house_action_51_blocked(&views, 77));
+    }
+
+    #[test]
+    fn fallback_new_event_splices_raw_head_middle_tail_singleton_and_unlinked_rows() {
+        #[derive(Clone, Copy)]
+        enum Case {
+            Head,
+            Middle,
+            Tail,
+            Singleton,
+            Unlinked,
+        }
+
+        let raw_position = Position {
+            x: 0x3400,
+            y: 0x1200,
+            z: 0,
+        };
+        let poisoned_axis = Position {
+            x: 0x5600,
+            y: 0x7800,
+            z: 99,
+        };
+        let tile = u16::from_le_bytes([0x34, 0x12]);
+        for case in [
+            Case::Head,
+            Case::Middle,
+            Case::Tail,
+            Case::Singleton,
+            Case::Unlinked,
+        ] {
+            let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+            let mut mission = template.session(10_000, 2_000);
+            mission.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+            mission.source_pool.replaceable[50] = true;
+            mission.source_pool.replaceable_stack.push(50);
+            mission.source_pool.raw_replaceable_cursor = 0;
+            mission.source_map_chains = RenderableMapChains::empty();
+
+            let mut insert = |source_slot| {
+                mission
+                    .source_map_chains
+                    .sync_entity(RenderableMapSeed {
+                        entity_index: source_slot,
+                        active: true,
+                        x: raw_position.x,
+                        y: raw_position.y,
+                    })
+                    .unwrap();
+            };
+            match case {
+                Case::Head => {
+                    insert(60);
+                    insert(50);
+                }
+                Case::Middle => {
+                    insert(60);
+                    insert(50);
+                    insert(40);
+                }
+                Case::Tail => {
+                    insert(50);
+                    insert(40);
+                }
+                Case::Singleton => insert(50),
+                Case::Unlinked => {
+                    insert(60);
+                    insert(40);
+                    mission
+                        .source_map_chains
+                        .sync_entity(RenderableMapSeed {
+                            entity_index: 50,
+                            active: false,
+                            x: raw_position.x,
+                            y: raw_position.y,
+                        })
+                        .unwrap();
+                }
+            }
+            mission.source_axes[50] = poisoned_axis;
+
+            let allocation = mission
+                .allocate_new_event_slot(SourceOccupant::CastleConstruction(1))
+                .expect("replacement NewEvent");
+            assert_eq!(
+                allocation,
+                SourceAllocation {
+                    slot: 50,
+                    kind: SourceAllocationKind::Replacement,
+                }
+            );
+            bind_dynamic_source_record(
+                &mut mission.source_slots,
+                50,
+                SourceOccupant::CastleConstruction(1),
+                mission.global_rng,
+            );
+            mission.source_slots[50].phase = 50;
+            mission.source_slots[50].control_flags = 1;
+
+            let expected_chain: &[u16] = match case {
+                Case::Head => &[60],
+                Case::Middle => &[40, 60],
+                Case::Tail => &[40],
+                Case::Singleton => &[],
+                Case::Unlinked => &[40, 60],
+            };
+            assert_eq!(
+                mission.source_map_chains.entity_chain(0x34, 0x12),
+                expected_chain,
+                "exact raw chain after {} replacement",
+                match case {
+                    Case::Head => "head",
+                    Case::Middle => "middle",
+                    Case::Tail => "tail",
+                    Case::Singleton => "singleton",
+                    Case::Unlinked => "unlinked",
+                }
+            );
+            assert_eq!(
+                mission.source_map_chains.tile_head(tile),
+                expected_chain.first().copied().unwrap_or(0)
+            );
+            assert_eq!(
+                (
+                    mission.source_map_chains.old_map_entity(50),
+                    mission.source_map_chains.next_entity(50),
+                    mission.source_map_chains.is_linked(50),
+                ),
+                (0, 0, false),
+                "the replaced row is memset and model 42 remains raw-unlinked"
+            );
+            if matches!(case, Case::Middle | Case::Unlinked) {
+                assert_eq!(mission.source_map_chains.old_map_entity(40), 60);
+                assert_eq!(mission.source_map_chains.next_entity(60), 40);
+            }
+            assert_eq!(mission.source_axes[50], Position::default());
+            assert_eq!(
+                mission
+                    .source_map_chains
+                    .tile_head(u16::from_le_bytes([0x56, 0x78])),
+                0,
+                "SetMapEntity uses raw membership, never axis_0x9A"
+            );
+        }
+    }
+
+    #[test]
+    fn action_51_new_event_distinguishes_ordinary_and_replacement_constructor_state() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let overlap = Position {
+            x: 0x3400,
+            y: 0x1200,
+            z: 77,
+        };
+        let mut player = Level1SourceEntityView::imported_record(Level1ResetSourceSlot {
+            index: 10,
+            active: true,
+            class: 3,
+            model: 1,
+            action: 0,
+            phase: 0,
+            entity_rng: 10,
+            control_flags: 8,
+        });
+        player.position = overlap;
+        player.life = 1;
+        let mut seeker = player;
+        seeker.source_entity_index = 20;
+        seeker.class = 5;
+        seeker.model = 0;
+        let views = [player, seeker];
+
+        let mut ordinary = template.session(10_000, 2_000);
+        ordinary.source_pool = Level1SourcePool::from_free_stack(&[50]).unwrap();
+        ordinary.targeting_source_lists =
+            Level1MissionState::targeting_source_lists_from_views(&views);
+        let heads_before = ordinary.targeting_source_lists.all_heads();
+        ordinary
+            .source_map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: 70,
+                active: true,
+                x: overlap.x,
+                y: overlap.y,
+            })
+            .unwrap();
+        ordinary.source_ids[50] = 999;
+        ordinary.source_lives[50] = -123;
+        ordinary.source_building_indices[50] = 9;
+        ordinary.source_axes[50] = overlap;
+        ordinary.source_house_links[50] = [11, 12];
+        ordinary.class_3_action_states[50] = 7;
+
+        let ordinary_allocation = ordinary
+            .allocate_new_event_slot(SourceOccupant::CastleConstruction(1))
+            .expect("ordinary NewEvent");
+        assert_eq!(
+            ordinary_allocation,
+            SourceAllocation {
+                slot: 50,
+                kind: SourceAllocationKind::Ordinary,
+            }
+        );
+        assert_eq!(ordinary.targeting_source_lists.all_heads(), heads_before);
+        assert_eq!(ordinary.source_map_chains.entity_chain(0x34, 0x12), [70]);
+        assert_eq!(
+            (
+                ordinary.source_slots[50].active,
+                ordinary.source_slots[50].class,
+                ordinary.source_slots[50].model,
+                ordinary.source_slots[50].action,
+                ordinary.source_slots[50].phase,
+                ordinary.source_slots[50].control_flags,
+                ordinary.source_ids[50],
+                ordinary.source_lives[50],
+                ordinary.source_building_indices[50],
+                ordinary.source_axes[50],
+                ordinary.source_house_links[50],
+                ordinary.class_3_action_states[50],
+            ),
+            (
+                true,
+                0,
+                0,
+                0,
+                50,
+                8,
+                50,
+                0,
+                0,
+                Position::default(),
+                [0; 2],
+                0
+            )
+        );
+
+        let mut replacement = template.session(10_000, 2_000);
+        replacement.source_pool = Level1SourcePool::from_free_stack(&[]).unwrap();
+        replacement
+            .source_pool
+            .replace_occupant(60, SourceOccupant::DeathBurst(7));
+        replacement.source_pool.replaceable[60] = true;
+        replacement.source_pool.replaceable_stack.push(60);
+        replacement.source_pool.raw_replaceable_cursor = 0;
+        replacement.targeting_source_lists =
+            Level1MissionState::targeting_source_lists_from_views(&views);
+        replacement
+            .source_map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: 70,
+                active: true,
+                x: overlap.x,
+                y: overlap.y,
+            })
+            .unwrap();
+        replacement
+            .source_map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: 60,
+                active: true,
+                x: overlap.x,
+                y: overlap.y,
+            })
+            .unwrap();
+        replacement.death_bursts.push(DeathBurst {
+            source_entity_index: 60,
+            parent_entity_index: 10,
+            position: overlap,
+            max_life: 1,
+            life_ticks: 1,
+            subspell_index: 0,
+            control_flags: 8,
+            active: true,
+        });
+        replacement.source_ids[60] = 999;
+        replacement.source_lives[60] = -123;
+        replacement.source_building_indices[60] = 9;
+        replacement.source_axes[60] = overlap;
+        replacement.source_house_links[60] = [11, 12];
+        replacement.class_3_action_states[60] = 7;
+
+        let replacement_allocation = replacement
+            .allocate_new_event_slot(SourceOccupant::CastleConstruction(2))
+            .expect("fallback NewEvent");
+        assert_eq!(
+            replacement_allocation,
+            SourceAllocation {
+                slot: 60,
+                kind: SourceAllocationKind::Replacement,
+            }
+        );
+        assert_eq!(replacement.targeting_source_lists.all_heads(), [0; 34]);
+        assert_eq!(replacement.targeting_source_lists.next[60], 0);
+        assert_eq!(replacement.source_map_chains.entity_chain(0x34, 0x12), [70]);
+        assert_eq!(
+            (
+                replacement.source_map_chains.old_map_entity(60),
+                replacement.source_map_chains.next_entity(60),
+                replacement.source_map_chains.is_linked(60),
+            ),
+            (0, 0, false)
+        );
+        assert!(replacement.death_bursts.is_empty());
+        assert_eq!(
+            (
+                replacement.source_slots[60].class,
+                replacement.source_slots[60].model,
+                replacement.source_slots[60].action,
+                replacement.source_ids[60],
+                replacement.source_lives[60],
+                replacement.source_building_indices[60],
+                replacement.source_axes[60],
+                replacement.source_house_links[60],
+                replacement.class_3_action_states[60],
+            ),
+            (0, 0, 0, 60, 0, 0, Position::default(), [0; 2], 0)
+        );
+        bind_dynamic_source_record(
+            &mut replacement.source_slots,
+            60,
+            SourceOccupant::CastleConstruction(2),
+            replacement.global_rng,
+        );
+        assert_eq!(
+            (
+                replacement.source_slots[60].class,
+                replacement.source_slots[60].model,
+                replacement.source_slots[60].action,
+                replacement.source_map_chains.is_linked(60),
+            ),
+            (10, 42, 44, false),
+            "the model-42 subtype overlays constructor fields without reinserting the raw row"
+        );
+        let exact_hash = replacement.action_51_fallback_state_hash_v1();
+        replacement.house_construction_effects.push(
+            HouseConstructionSourceEffect::ConstructionAllocationFailed {
+                house_entity_index: 77,
+                parent_entity_index: 10,
+                building_index: 9,
+            },
+        );
+        assert_eq!(
+            replacement.action_51_fallback_state_hash_v1(),
+            exact_hash,
+            "the explanatory effect receipt is outside the exact remc2-state digest"
+        );
+    }
+
     fn generic_fireball_collision_fixture() -> (
         Position,
         RenderableMapChains,
@@ -30616,7 +33438,16 @@ mod tests {
             .map(|actor| actor.source_entity_index)
             .collect::<Vec<_>>();
         rebuilt_order.sort_unstable();
-        targeting_lists.class_5_models[usize::from(archers[0].model)] = rebuilt_order;
+        let model = usize::from(archers[0].model);
+        let mut tail = 0;
+        for source_slot in rebuilt_order {
+            TargetingSourceLists::append(
+                &mut targeting_lists.class_5_model_heads[model],
+                &mut tail,
+                &mut targeting_lists.next,
+                source_slot,
+            );
+        }
         step_archer_roam(
             &mut archers[0],
             &FlatWorld,
@@ -35338,7 +38169,7 @@ mod tests {
         dynamic.authored_allocations[dynamic_switch].state_timer = 1;
         dynamic.begin_source_turn();
         assert!(dynamic.archers_present_at_turn_start);
-        dynamic.dynamic_resident_behavior_gap_mask = 0x0e;
+        dynamic.observed_resident_behavior_mask = 0x01;
         assert_eq!(dynamic.dynamic_resident_behavior_gap_mask(), 0x0e);
 
         // The final Archer qualified when UpdateEntities rebuilt the list.
@@ -36844,7 +39675,10 @@ mod tests {
         }
         let mut reward = full_reward.expect("three-success reward case");
         let reward_hash = reward.source_arena_hash_v1();
-        assert_eq!(reward_hash, 0xb690_6cda_3d5d_11e3);
+        assert_eq!(
+            reward_hash, 0xa44e_1e04_860b_4eda,
+            "the arena digest includes the action-51 raw topology and versioned resident-observation state"
+        );
         let mut reordered_experience = reward.clone();
         reordered_experience
             .spell_jar_reward_experience_order
@@ -37802,7 +40636,10 @@ mod tests {
                 mission.current_stage,
                 mission.castle_mana,
                 mission.secured_mana_percent(),
-                mission.targeting_source_lists.class_10_auxiliary,
+                mission
+                    .targeting_source_lists
+                    .class_10_auxiliary()
+                    .collect::<Vec<_>>(),
                 mission.player_dead(),
                 mission.source_turn_active,
                 mission.mana_carrier
@@ -38701,7 +41538,10 @@ mod tests {
             .collect::<Vec<_>>();
         source_order.sort_unstable();
         assert_eq!(
-            attraction.targeting_source_lists.class_10_auxiliary,
+            attraction
+                .targeting_source_lists
+                .class_10_auxiliary()
+                .collect::<Vec<_>>(),
             source_order
         );
         assert_eq!(
@@ -40220,7 +43060,7 @@ mod tests {
     }
 
     fn assert_reset_from_authored_comparator_contract() {
-        reset_from_authored_matches_implemented_fields_and_reports_known_gaps();
+        reset_from_authored_matches_implemented_fields_and_closed_matrix();
         reset_source_slot_lossless_bytes_cover_every_typed_field();
         reset_from_authored_one_field_corruption_reports_exact_first_mismatch();
         reset_from_authored_detects_missing_entity();
@@ -40228,7 +43068,7 @@ mod tests {
         reset_from_authored_detects_duplicate_entity();
         reset_from_authored_detects_source_reordering();
         reset_from_authored_census_is_exactly_177_in_fourteen_families();
-        reset_from_authored_known_gaps_are_entity_and_matrix_linked();
+        reset_from_authored_has_no_matrix_or_reset_gaps();
         reset_from_authored_is_deterministic_and_session_isolated();
         reset_from_authored_fails_closed_on_absent_matrix_link();
         ambient_plan18_source_contract();
@@ -41947,28 +44787,39 @@ mod tests {
         assert_eq!(next_rng16(u16::MAX), 62);
     }
 
-    fn reset_from_authored_matches_implemented_fields_and_reports_known_gaps() {
+    fn reset_from_authored_matches_implemented_fields_and_closed_matrix() {
         let (authored, observed, matrix) = reset_comparator_fixture();
         let report = compare_level1_reset_from_authored(&authored, &observed, &matrix).unwrap();
 
         assert!(report.structural_ok);
-        assert!(report.implemented_families_equal);
+        assert!(
+            report.implemented_families_equal,
+            "implemented reset mismatches: {:?}",
+            report
+                .divergences
+                .iter()
+                .filter(|divergence| {
+                    divergence.kind == Level1ResetDivergenceKind::FieldMismatch
+                })
+                .take(12)
+                .collect::<Vec<_>>()
+        );
         assert!(report.usable());
-        assert!(!report.complete);
+        assert!(report.complete);
         assert_eq!(report.expected_active_entities, 177);
         assert_eq!(report.observed_active_entities, 177);
         assert_eq!(report.implemented_entities, 177);
         assert_eq!(report.implemented_field_comparisons, 1_416);
         assert_eq!(report.implemented_source_byte_comparisons, 2_301);
         assert_eq!(report.reset_gap_entities, 0);
-        assert_eq!(report.canonical_matrix_gaps, 78);
+        assert_eq!(report.canonical_matrix_gaps, 0);
         assert_eq!(
             report.field_coverage,
             LEVEL1_RESET_COMPARATOR_FIELD_COVERAGE
         );
         assert_eq!(report.expected_family_census, report.observed_family_census);
         assert_eq!(report.expected_family_census.len(), 14);
-        assert_eq!(report.divergences.len(), 78);
+        assert!(report.divergences.is_empty());
         assert_eq!(
             report
                 .divergences
@@ -42119,18 +44970,16 @@ mod tests {
         );
     }
 
-    fn reset_from_authored_known_gaps_are_entity_and_matrix_linked() {
+    fn reset_from_authored_has_no_matrix_or_reset_gaps() {
         let (authored, observed, matrix) = reset_comparator_fixture();
         let report = compare_level1_reset_from_authored(&authored, &observed, &matrix).unwrap();
         let reset_gaps = report.divergences.iter().filter(|divergence| {
             divergence.kind == Level1ResetDivergenceKind::KnownResetImplementationGap
         });
         assert_eq!(reset_gaps.count(), 0);
-        assert!(report.canonical_matrix_gaps > 0);
-        assert!(report.divergences.iter().any(|divergence| {
-            divergence.kind == Level1ResetDivergenceKind::KnownMatrixImplementationGap
-                && divergence.matrix_rows == ["DSP-10-01"]
-                && divergence.actual == "Missing (PLAN-18)"
+        assert_eq!(report.canonical_matrix_gaps, 0);
+        assert!(report.divergences.iter().all(|divergence| {
+            divergence.kind != Level1ResetDivergenceKind::KnownMatrixImplementationGap
         }));
     }
 

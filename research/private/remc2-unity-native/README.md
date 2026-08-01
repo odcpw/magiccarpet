@@ -265,7 +265,7 @@ player. A player must receive paths explicitly:
 -mc-qualified
 -mc-package /absolute/path/to/level1-export-m
 -mc-closure /absolute/path/to/level1-asset-closure.json
--mc-asset-cache /absolute/path/to/level1-unity-asset-cache-plan28-cp4-correction6
+-mc-asset-cache /absolute/path/to/level1-unity-asset-cache-plan29-final
 ```
 
 `MC_PACKAGE_PATH` and `MC_CLOSURE_PATH` are equivalent environment fallbacks.
@@ -277,12 +277,12 @@ optional only for the explicit `-mc-debug` fallback. Pass
 `MC_ASSET_CACHE_PATH`. Unity validates its schema, exact package/closure
 bindings, every size and SHA-256, and its aggregate content identity before
 accepting it. The cache remains external; raw DAT/TAB files are never loaded.
-The current qualified identity is 1,248 outputs, manifest SHA-256
-`474d4b24c157896ce98f0a8baa1593f98762fc314f081600c44a94f97743fad8`
+The current qualified identity is 1,249 outputs, manifest SHA-256
+`1050b4f1e3f0e63fa292fe7798d19f4b390c063aa5afd5a350fba9e300298082`
 and content SHA-256
-`a1dc7c3fca20da019807093530c601b872c3d81284a19d17d5e1aa1bccafd752`.
+`b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf`.
 Its `frame/source-frame-census.json` SHA-256 is
-`57188c96853bfd9964c978c8ac9561fe69f69610d3e95aa3c7bbb0b2e5222722`
+`8a9fb362badbeb37d0b5ef4dae15be4fcdee92c690e0f2017689c5cf0af31f5e`
 and is part of the exact FINAL MAIN admission contract.
 
 TMAP actor selection and native indexed presentation are qualified and loaded.
@@ -322,7 +322,7 @@ Builds/Linux/MagicCarpetNative.x86_64 \
   -batchmode -nographics -mc-qualified -mc-self-test \
   -mc-package /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-export-m \
   -mc-closure /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-asset-closure.json \
-  -mc-asset-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache \
+  -mc-asset-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache-plan29-final \
   -logFile /tmp/magiccarpet-native-selftest-v2.log
 ```
 
@@ -365,7 +365,7 @@ Builds/Linux/MagicCarpetNative.x86_64 \
   -screen-fullscreen 0 -screen-width 1600 -screen-height 900 \
   -mc-package /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-export-m \
   -mc-closure /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-asset-closure.json \
-  -mc-asset-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache
+  -mc-asset-cache /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-unity-asset-cache-plan29-final
 ```
 
 Use `-mc-debug -mc-debug-entities` instead of `-mc-qualified` to expose and
@@ -448,13 +448,17 @@ MC_AUTOPLAY_CAPTURE_DIR=/tmp/magiccarpet-autoplay-v2 \
   -logFile /tmp/magiccarpet-autoplay-v2.log
 ```
 
-After two runs into separate temporary directories, verify every manifest,
-recompute every PNG hash and magenta count, and require byte-identical PNG and
-manifest artifacts:
+For the required run A, verify every manifest and recompute every PNG hash and
+magenta count:
 
 ```bash
-python3 verify_qualified_full_frames.py /tmp/run-a /tmp/run-b
+python3 verify_qualified_full_frames.py /tmp/run-a
 ```
+
+The verifier retains an optional second-directory comparison for historical
+developer determinism work. PLAN29 final acceptance is exactly one clean run
+(run A); run B is neither required nor permitted by the final qualification
+policy.
 
 Autoplay asserts turning, altitude change, typed fire events, 177 registry
 rows, zero runtime `Rigidbody`/`Collider`, the absence of every diagnostic

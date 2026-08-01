@@ -8,14 +8,14 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use serde_json::Value;
 
 use crate::{
     indexed_postprocess::OVERLAY_PROVENANCE,
+    native_world::QualifiedOwnerCacheReader,
     terrain_frame::{LEVEL1_VIEW_HEIGHT, LEVEL1_VIEW_PIXELS, LEVEL1_VIEW_WIDTH},
 };
 
@@ -353,10 +353,12 @@ impl std::error::Error for IndexedOverlayError {}
 impl IndexedOverlayAssets {
     pub fn load(cache_root: impl AsRef<Path>) -> Result<Self, IndexedOverlayError> {
         let cache_root = cache_root.as_ref();
+        let cache = QualifiedOwnerCacheReader::open(cache_root)
+            .map_err(|error| IndexedOverlayError(error.to_string()))?;
         let census_path = cache_root.join("frame/source-frame-census.json");
-        let census_bytes = fs::read(&census_path).map_err(|error| {
-            IndexedOverlayError(format!("read {}: {error}", census_path.display()))
-        })?;
+        let census_bytes = cache
+            .read("frame/source-frame-census.json")
+            .map_err(|error| IndexedOverlayError(error.to_string()))?;
         let census: Value = serde_json::from_slice(&census_bytes).map_err(|error| {
             IndexedOverlayError(format!("parse {}: {error}", census_path.display()))
         })?;
@@ -369,8 +371,8 @@ impl IndexedOverlayAssets {
             let selector = json_u16(asset, "selector")?;
             let width = json_u16(asset, "stored_width")?;
             let height = json_u16(asset, "stored_height")?;
-            let indices = read_relative(cache_root, json_str(asset, "indices_path")?)?;
-            let mask = read_relative(cache_root, json_str(asset, "mask_path")?)?;
+            let indices = read_qualified(&cache, json_str(asset, "indices_path")?)?;
+            let mask = read_qualified(&cache, json_str(asset, "mask_path")?)?;
             let expected = usize::from(width) * usize::from(height);
             if indices.len() != expected || mask.len() != expected {
                 return Err(IndexedOverlayError(format!(
@@ -393,7 +395,7 @@ impl IndexedOverlayAssets {
         let font = census
             .pointer("/ui_mechanical_census/fixed_source_font")
             .ok_or_else(|| IndexedOverlayError("fixed FONT1 census missing".to_owned()))?;
-        let font_masks = read_relative(cache_root, json_str(font, "mask_blob_path")?)?;
+        let font_masks = read_qualified(&cache, json_str(font, "mask_blob_path")?)?;
         let glyphs = font
             .get("glyphs")
             .and_then(Value::as_array)
@@ -422,7 +424,7 @@ impl IndexedOverlayAssets {
             .pointer("/ui_mechanical_census/localization")
             .ok_or_else(|| IndexedOverlayError("localization census missing".to_owned()))?;
         let localization_blob =
-            read_relative(cache_root, json_str(localization_row, "records_path")?)?;
+            read_qualified(&cache, json_str(localization_row, "records_path")?)?;
         let localization = split_nul_records(&localization_blob);
         let expected_records = usize::from(json_u16(localization_row, "record_count")?);
         if localization.len() != expected_records {
@@ -432,7 +434,7 @@ impl IndexedOverlayAssets {
             )));
         }
 
-        let minimap_aperture = read_relative(cache_root, "hud/minimap-aperture-128.mask.u8")?;
+        let minimap_aperture = read_qualified(&cache, "hud/minimap-aperture-128.mask.u8")?;
         if minimap_aperture.len() != 128 * 128 {
             return Err(IndexedOverlayError(format!(
                 "minimap aperture has {} bytes, expected 16384",
@@ -440,9 +442,7 @@ impl IndexedOverlayAssets {
             )));
         }
         let hud_path = cache_root.join("hud/level1.json");
-        let hud_bytes = fs::read(&hud_path).map_err(|error| {
-            IndexedOverlayError(format!("read {}: {error}", hud_path.display()))
-        })?;
+        let hud_bytes = read_qualified(&cache, "hud/level1.json")?;
         let hud: Value = serde_json::from_slice(&hud_bytes).map_err(|error| {
             IndexedOverlayError(format!("parse {}: {error}", hud_path.display()))
         })?;
@@ -462,7 +462,7 @@ impl IndexedOverlayAssets {
                     "objective selector {selector} cannot use the fixed VGA1 half-size branch"
                 )));
             }
-            let bytes = read_relative(cache_root, json_str(row, "raster_path")?)?;
+            let bytes = read_qualified(&cache, json_str(row, "raster_path")?)?;
             let pixels = usize::from(width) * usize::from(height);
             if bytes.len() != pixels * 2 {
                 return Err(IndexedOverlayError(format!(
@@ -586,7 +586,7 @@ impl IndexedOverlayAssets {
                 "spell-tier vector ledger does not cover both hands".to_owned(),
             ));
         }
-        let clrn = read_relative(cache_root, "palette/clrn.indices.u8")?;
+        let clrn = read_qualified(&cache, "palette/clrn.indices.u8")?;
         if clrn.len() != 4_096 {
             return Err(IndexedOverlayError(format!(
                 "CLRN palette has {} entries, expected 4096",
@@ -600,8 +600,8 @@ impl IndexedOverlayAssets {
             glyphs: glyphs.into_boxed_slice(),
             localization: localization.into_boxed_slice(),
             clrn: clrn.into_boxed_slice(),
-            tablesn: read_relative(cache_root, "palette/tablesn.u8")?.into_boxed_slice(),
-            minimap_sine: read_i32le(&read_relative(cache_root, "hud/remc2-sine-2560.i32le")?)?
+            tablesn: read_qualified(&cache, "palette/tablesn.u8")?.into_boxed_slice(),
+            minimap_sine: read_i32le(&read_qualified(&cache, "hud/remc2-sine-2560.i32le")?)?
                 .into_boxed_slice(),
             minimap_aperture: minimap_aperture.into_boxed_slice(),
             objectives,
@@ -2620,21 +2620,13 @@ fn hash_command(command: &IndexedOverlayCommand, bytes: &mut Vec<u8>) {
     }
 }
 
-fn read_relative(root: &Path, relative: impl AsRef<Path>) -> Result<Vec<u8>, IndexedOverlayError> {
-    let relative = relative.as_ref();
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(IndexedOverlayError(format!(
-            "cache-relative path is unsafe: {}",
-            relative.display()
-        )));
-    }
-    let path: PathBuf = root.join(relative);
-    fs::read(&path)
-        .map_err(|error| IndexedOverlayError(format!("read {}: {error}", path.display())))
+fn read_qualified(
+    cache: &QualifiedOwnerCacheReader,
+    relative: &str,
+) -> Result<Vec<u8>, IndexedOverlayError> {
+    cache
+        .read(relative)
+        .map_err(|error| IndexedOverlayError(error.to_string()))
 }
 
 fn json_str<'a>(value: &'a Value, key: &str) -> Result<&'a str, IndexedOverlayError> {
@@ -3017,19 +3009,65 @@ fn byte_hash(bytes: &[u8]) -> u64 {
 mod tests {
     use super::*;
 
-    fn cache_root() -> PathBuf {
-        std::env::var_os("MC_OWNER_ASSET_CACHE").map_or_else(
-            || {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/level1-unity-asset-cache")
-            },
-            PathBuf::from,
+    fn cache_root() -> std::path::PathBuf {
+        let private = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let root = crate::native_world::resolve_level1_presentation_cache_root(&private);
+        crate::native_world::NativeWorld::load_with_owner_cache(
+            private.join("generated/level1-export-m"),
+            private.join("generated/level1-asset-closure.json"),
+            &root,
         )
+        .expect("manifest/hash-qualified interim presentation cache");
+        root
+    }
+
+    #[test]
+    fn presentation_census_and_hud_are_independently_manifest_hash_bound() {
+        let source = cache_root();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock follows epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "mc-plan29-overlay-hash-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("frame")).expect("temporary frame directory");
+        std::fs::create_dir_all(root.join("hud")).expect("temporary HUD directory");
+        std::fs::copy(source.join("manifest.json"), root.join("manifest.json"))
+            .expect("copy qualified manifest");
+        for relative in ["frame/source-frame-census.json", "hud/level1.json"] {
+            std::fs::copy(source.join(relative), root.join(relative))
+                .expect("copy manifest-declared presentation output");
+        }
+
+        let cache = QualifiedOwnerCacheReader::open(&root)
+            .expect("qualified identity does not depend on undeclared directory contents");
+        for relative in ["frame/source-frame-census.json", "hud/level1.json"] {
+            let original = cache
+                .read(relative)
+                .expect("unaltered presentation output matches manifest");
+            let mut corrupted = original.clone();
+            corrupted[0] ^= 1;
+            std::fs::write(root.join(relative), corrupted)
+                .expect("write isolated corrupt presentation output");
+            let error = cache
+                .read(relative)
+                .expect_err("content drift must fail before JSON parsing");
+            assert!(
+                error.to_string().contains("hash/size mismatch"),
+                "{relative}: {error}"
+            );
+            std::fs::write(root.join(relative), original)
+                .expect("restore isolated presentation output");
+        }
+        std::fs::remove_dir_all(&root).expect("remove isolated presentation-cache fixture");
     }
 
     #[test]
     fn reachable_fixed_overlay_tree_is_ordered_and_fail_closed() {
-        let assets = IndexedOverlayAssets::load(cache_root()).expect("real CP1 owner cache");
+        let assets =
+            IndexedOverlayAssets::load(cache_root()).expect("qualified interim presentation cache");
         for pointer in [
             "/palette_indirection/indexed_values/0",
             "/pause/selector_order/0",
@@ -3374,7 +3412,8 @@ mod tests {
 
     #[test]
     fn overlay_marks_only_actual_writes_and_help_recurses_from_prior_main() {
-        let assets = IndexedOverlayAssets::load(cache_root()).expect("real CP1 owner cache");
+        let assets =
+            IndexedOverlayAssets::load(cache_root()).expect("qualified interim presentation cache");
         let required_stages = assets
             .receipt_census
             .get("ordinary-0")

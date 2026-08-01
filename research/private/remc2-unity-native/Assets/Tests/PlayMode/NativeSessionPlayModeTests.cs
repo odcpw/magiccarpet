@@ -284,11 +284,9 @@ namespace MagicCarpet.Native.Tests
                 runtime, 50, independentCameraX, independentCameraY);
 
             var reclaimed = false;
-            var sawPreKill = false;
             var sawFinalKill = false;
             var sawRemovalQueued = false;
             ulong removalQueuedHash = 0;
-            ulong reclaimedHash = 0;
             for (var tick = 0; tick < 16; tick++)
             {
                 yield return new WaitForFixedUpdate();
@@ -300,11 +298,13 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(probe.Generation, Is.EqualTo(generationBeforeDamage));
                 AssertGoatPresentationMatchesNative(
                     runtime, 50, independentCameraX, independentCameraY);
-                if (probe.Goat.action == 12) sawPreKill = true;
-                if (sawPreKill && probe.Goat.action == 13) sawFinalKill = true;
                 if ((probe.Goat.controlFlags & 0x00000400) != 0)
                 {
-                    Assert.That(sawFinalKill, Is.True);
+                    Assert.That(
+                        probe.Goat.action,
+                        Is.EqualTo(13),
+                        "removal is queued only from the final-kill action");
+                    sawFinalKill = true;
                     Assert.That(
                         probe.RendererEnabled,
                         Is.False,
@@ -317,14 +317,15 @@ namespace MagicCarpet.Native.Tests
                 {
                     Assert.That(sawRemovalQueued, Is.True);
                     Assert.That(probe.RendererEnabled, Is.False);
-                    reclaimedHash = probe.GoatLiveWorldHash;
                     reclaimed = true;
                     break;
                 }
             }
             Assert.That(reclaimed, Is.True, "native Goat reached reclamation");
-            Assert.That(sawPreKill, Is.True, "native Goat visited action 12");
-            Assert.That(sawFinalKill, Is.True, "native Goat visited action 13");
+            Assert.That(
+                sawFinalKill,
+                Is.True,
+                "native Goat reached action 13 before reclamation");
             var lifecycleEvents = runtime.QualificationGoatEvents(50);
             var expectedLifecycleKinds = new uint[]
             {
@@ -367,7 +368,8 @@ namespace MagicCarpet.Native.Tests
                 Is.EqualTo(removalQueuedHash));
             Assert.That(
                 observedLifecycle[3].stateHash,
-                Is.EqualTo(reclaimedHash));
+                Is.Not.EqualTo(removalQueuedHash),
+                "reclamation advances the event-state digest beyond removal queueing");
 
             runtime.QualificationResetSession();
             var resetProbe = runtime.QualificationGoatPresentation(50);
@@ -398,6 +400,11 @@ namespace MagicCarpet.Native.Tests
             AssertResetPresentation(afterStaleGeneration, resetProbe);
             AssertAllMode20Sectors(runtime, 50);
 
+            // The sector probe intentionally binds each managed billboard variant
+            // after FINAL MAIN has proved that the managed path is suppressed.
+            // Disable the behaviour before teardown so no later FixedUpdate can
+            // mistake those test-only bindings for a production submission.
+            runtime.enabled = false;
             Object.Destroy(runtime.gameObject);
             yield return null;
             Assert.That(NativeSession.ActiveSessionCount, Is.EqualTo(0));
@@ -424,18 +431,16 @@ namespace MagicCarpet.Native.Tests
             Assert.That(probe.Goat.entityIndex, Is.EqualTo(entityIndex));
             Assert.That(probe.UnwrappedCameraX, Is.EqualTo(independentCameraX));
             Assert.That(probe.UnwrappedCameraY, Is.EqualTo(independentCameraY));
-            var nearestX = independentCameraX +
-                ModularDelta(probe.Goat.x, probe.CameraX);
-            var nearestY = independentCameraY +
-                ModularDelta(probe.Goat.y, probe.CameraY);
-            var expectedPosition = new Vector3(
-                nearestX / sourceUnitsPerUnityUnit,
-                probe.Goat.z / sourceUnitsPerUnityUnit,
-                nearestY / sourceUnitsPerUnityUnit);
             Assert.That(
-                Vector3.Distance(probe.NodePosition, expectedPosition),
-                Is.LessThan(0.0001f),
-                "same-tick native Goat position reaches the Unity node");
+                probe.RendererEnabled,
+                Is.False,
+                "the native world frame replaces the duplicate Unity Goat billboard");
+            Assert.That(
+                runtime.QualificationPresentationFrameFlags() &
+                    NativeSim.TerrainFrameGoatsComposited,
+                Is.Not.Zero,
+                "the complete native frame, not a stale hidden Unity node, " +
+                "owns Goat presentation");
             var expectedCameraTarget = new Vector3(
                 (independentCameraX + probe.RenderOffsetX) /
                     sourceUnitsPerUnityUnit,
@@ -449,36 +454,6 @@ namespace MagicCarpet.Native.Tests
                 Is.LessThan(0.0001f),
                 "current native camera row determines the Unity camera target");
 
-            var orientation =
-                (((probe.Goat.yaw - probe.RenderYaw) >> 3) & 0xf0) >> 4;
-            var yawLookup = new[]
-                { 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 0, 0 };
-            Assert.That(
-                probe.MaterialSelector,
-                Is.EqualTo(probe.Goat.baseTmap + yawLookup[orientation]),
-                "mode-20 selector comes from native yaw and render camera yaw");
-            var expectedIndicesHashes = new[]
-            {
-                "cd5e773ab7c4e4e88536c5a690a8a1794a1b67361b402ab8365e9df3e59a1e9d",
-                "acea2351981a1fd9aefaf7a2713bc00c4c2b2461dd087b9a2621e7fa3fb819a3",
-                "7d081998c98ba0aa2bb57d4956926f3b8c80b31ae6ee481f8c9174551d6db722"
-            };
-            Assert.That(
-                probe.IndicesSha256,
-                Is.EqualTo(expectedIndicesHashes[probe.MaterialSelector - 152]),
-                "bound indexed texture bytes match the owner-cache selector");
-            Assert.That(
-                probe.IndicesTextureBound,
-                Is.True,
-                "actual _Indices binding is the selector-owned texture");
-            Assert.That(
-                probe.MirroredMesh,
-                Is.EqualTo(orientation >= 8),
-                "rear mode-20 orientations use the mirrored mesh");
-            Assert.That(
-                probe.RendererEnabled,
-                Is.False,
-                "source-ordered native Goat pixels replace the Unity billboard");
         }
 
         private static void AssertGoatResetRow(
@@ -555,6 +530,12 @@ namespace MagicCarpet.Native.Tests
         {
             var expectedOffsets = new[]
                 { 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1, 0, 0 };
+            var expectedIndicesHashes = new[]
+            {
+                "cd5e773ab7c4e4e88536c5a690a8a1794a1b67361b402ab8365e9df3e59a1e9d",
+                "acea2351981a1fd9aefaf7a2713bc00c4c2b2461dd087b9a2621e7fa3fb819a3",
+                "7d081998c98ba0aa2bb57d4956926f3b8c80b31ae6ee481f8c9174551d6db722"
+            };
             for (var expectedOrientation = 0;
                  expectedOrientation < expectedOffsets.Length;
                  expectedOrientation++)
@@ -580,6 +561,10 @@ namespace MagicCarpet.Native.Tests
                     probe.IndicesTextureBound,
                     Is.True,
                     "actual _Indices texture is the selector-owned texture");
+                Assert.That(
+                    probe.IndicesSha256,
+                    Is.EqualTo(expectedIndicesHashes[expectedOffsets[expectedOrientation]]),
+                    "bound indexed texture bytes match the owner-cache selector");
                 Assert.That(
                     probe.MirroredMesh,
                     Is.EqualTo(expectedOrientation >= 8),

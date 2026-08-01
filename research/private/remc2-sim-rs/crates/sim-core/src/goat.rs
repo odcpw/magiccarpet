@@ -10,7 +10,7 @@ use crate::{
     goat_map_chain::{GoatMapChains, GoatMapSeed},
     heading_for_positions,
     house::{HouseFamily, HouseResidentEntry, HouseState, HouseStepEvent},
-    level1_mission::Level1SourceEntityView,
+    level1_mission::{HouseConstructionSourceEffect, Level1SourceEntityView},
     mark_source_audio_call, move_entity,
     native_world::EntitySnapshot,
     turn_toward,
@@ -385,6 +385,19 @@ impl GoatFamily {
     #[must_use]
     pub fn goats(&self) -> &[GoatState] {
         &self.goats
+    }
+
+    fn apply_house_construction_kill(&mut self, source_entity_index: u16, source_id: u16) {
+        let Some(goat) = self
+            .goats
+            .iter_mut()
+            .find(|goat| goat.entity_index == source_entity_index)
+        else {
+            return;
+        };
+        goat.life = -1;
+        goat.kill_credit_entity = source_id.cast_signed();
+        goat.current_attacker = source_id.cast_signed();
     }
 
     #[must_use]
@@ -1068,6 +1081,30 @@ impl LiveWorldState {
         self.villagers.villagers()
     }
 
+    /// Commit the host-owned class-5 writes emitted by remc2 `sub_57390`.
+    /// The raw source arena remains authoritative for generic rows; this keeps
+    /// the Goat/Villager typed authorities isomorphic before their later
+    /// same-turn dispatch.
+    pub fn apply_house_construction_source_effects(
+        &mut self,
+        effects: &[HouseConstructionSourceEffect],
+    ) {
+        for effect in effects {
+            let HouseConstructionSourceEffect::ActorKilledAndLinked {
+                house_source_id,
+                source_entity_index,
+                ..
+            } = *effect
+            else {
+                continue;
+            };
+            self.goats
+                .apply_house_construction_kill(source_entity_index, house_source_id);
+            self.villagers
+                .apply_house_construction_kill(source_entity_index, house_source_id);
+        }
+    }
+
     #[must_use]
     pub const fn goat_map_chains(&self) -> &GoatMapChains {
         &self.goat_map_chains
@@ -1163,6 +1200,17 @@ impl LiveWorldState {
     ) -> Vec<HouseStepEvent> {
         let events = self.houses.step_source_slot(source_slot, world);
         events
+    }
+
+    #[must_use]
+    pub fn step_house_source_slot_with_action_51_block<W: FlightWorld>(
+        &mut self,
+        source_slot: u16,
+        world: &W,
+        action_51_blocked: bool,
+    ) -> Vec<HouseStepEvent> {
+        self.houses
+            .step_source_slot_with_action_51_block(source_slot, world, action_51_blocked)
     }
 
     pub fn submit_house_possession(
@@ -1827,11 +1875,11 @@ mod tests {
         let reset_v1_hash = first.hash_v1();
         let reset_v2_hash = first.hash_v2(reset_rng);
         assert_eq!(
-            reset_v1_hash, 0xe19e_27c4_0ed9_f484,
+            reset_v1_hash, 0xd85c_8aee_41a9_dc64,
             "legacy v1 byte stream remains pinned"
         );
         assert_eq!(
-            reset_v2_hash, 0x498e_4302_1f82_80b8,
+            reset_v2_hash, 0xc5f2_8129_5e04_4de5,
             "v2 composes the pinned v1 hash with reset global RNG"
         );
         assert_eq!(first, second, "live rows start byte-for-byte identical");

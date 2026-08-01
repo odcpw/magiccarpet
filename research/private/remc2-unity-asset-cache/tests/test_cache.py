@@ -1422,7 +1422,7 @@ class OwnerCacheTests(unittest.TestCase):
 
     def test_source_frame_census_binds_accepted_native_final_main(self) -> None:
         manifest = cache.validate_cache(self.first)
-        self.assertEqual(len(manifest["outputs"]), 1248)
+        self.assertEqual(len(manifest["outputs"]), 1249)
         asset = manifest["assets"]["source_frame_census"]
         self.assertEqual(
             asset["status"],
@@ -1509,6 +1509,34 @@ class OwnerCacheTests(unittest.TestCase):
         with self.assertRaisesRegex(cache.CacheError, "hash mismatch"):
             cache.validate_cache(self.first)
         path.write_bytes(original)
+
+    def test_plan29_conformance_seal_is_contract_bound_and_tamper_evident(self) -> None:
+        manifest = cache.validate_cache(self.first)
+        seal_path = self.first / "conformance-identity.json"
+        seal = json.loads(seal_path.read_text(encoding="utf-8"))
+        contract, contract_file_sha256 = cache.load_conformance_contract()
+        self.assertEqual(seal["schema"], cache.CONFORMANCE_SEAL_SCHEMA)
+        self.assertEqual(seal["contract_file_sha256"], contract_file_sha256)
+        self.assertEqual(seal["contract_self_sha256"], contract["contract_sha256"])
+        self.assertEqual(seal["identity"], contract["trusted_identity"])
+        self.assertEqual(
+            manifest["bindings"]["plan29_contract_file_sha256"],
+            contract_file_sha256,
+        )
+
+        original = seal_path.read_bytes()
+        seal["identity"]["row_id_sha256"] = "0" * 64
+        seal_path.write_bytes(cache.canonical_json(seal))
+        with self.assertRaisesRegex(cache.CacheError, "output hash mismatch"):
+            cache.validate_cache(self.first)
+        seal_path.write_bytes(original)
+
+        with self.assertRaisesRegex(cache.CacheError, "contract file SHA-256 mismatch"):
+            cache.validate_cache(
+                self.first,
+                contract_path=cache.DEFAULT_CONFORMANCE_CONTRACT,
+                expected_contract_sha256="0" * 64,
+            )
 
     def test_extra_file_and_symlink_are_rejected(self) -> None:
         extra = self.first / "extra.bin"

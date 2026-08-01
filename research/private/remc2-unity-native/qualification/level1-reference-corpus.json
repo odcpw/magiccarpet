@@ -33,15 +33,15 @@
     "package_manifest_file_sha256": "169b4bda478df3c6d708041f911bf37a0b5779695b3677d500bb737ba8846c53",
     "closure_identity_sha256": "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719",
     "closure_file_sha256": "87c246b995714714baf20ec98c92657eb4349ded7c7ed462aa507eab4bea111a",
-    "owner_cache_content_sha256": "d299990e300117d065eb3a75008f6a69911b1ba356e4e06452c0a826450a01e5",
-    "owner_cache_manifest_file_sha256": "e3aaf1cf03e390850c5da44ed4b3880352b425bd063657e3cdbbcb8086a4d7ee",
+    "owner_cache_content_sha256": "b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf",
+    "owner_cache_manifest_file_sha256": "1050b4f1e3f0e63fa292fe7798d19f4b390c063aa5afd5a350fba9e300298082",
     "unity_player_file_sha256": "8027f7d1f9ae7dacfc826fb218adcc1ae7464af098a8a59397e7531c0f7ec0bc",
     "unity_managed_assembly_path": "MagicCarpetNative_Data/Managed/MagicCarpet.Native.Runtime.dll",
-    "unity_managed_assembly_sha256": "93507d28ffd9cc12efbfb65137749057326972dd26a1d44b8375e626c6c2a4eb",
+    "unity_managed_assembly_sha256": "c05d076eb2922bd929790f7fea699fd0d48993d73bc8696fbfd3ff9f451fa577",
     "unity_globalgamemanagers_sha256": "8abee05c17b175ff5f5b089ac2fd131f61041b1f320e47891678e07c829ae1d6",
-    "unity_build_guid": "10d6be82304e477a8a10e327a4f056aa",
-    "native_plugin_file_sha256": "9ab77cb11b0e561612fbc82e5bdc44de460951b6788e19829cacef66b92539dd",
-    "built_native_plugin_file_sha256": "9ab77cb11b0e561612fbc82e5bdc44de460951b6788e19829cacef66b92539dd",
+    "unity_build_guid": "7ad6d1a242bf421cb5ddf3bac3c2f6fe",
+    "native_plugin_file_sha256": "b315562e2b91d4bdef2067a2c26d13ffe82d7f7e7975707f043724984c1f80fa",
+    "built_native_plugin_file_sha256": "b315562e2b91d4bdef2067a2c26d13ffe82d7f7e7975707f043724984c1f80fa",
     "unity_version": "6000.3.20f1",
     "native_abi": 2
   },
@@ -376,12 +376,39 @@
         "generation_behavior": "generation-inclusive event hashes change after reset; generation-normalized content hashes remain exact",
         "old_generation_queries": "must fail after reset"
       },
+      "event_digest_revision": {
+        "schema": "mc2-plan29-action51-event-journal-revision/v1",
+        "reason": "event stateHash fields now bind the versioned Action-51 fallback and resident-observation state; command streams, event heads, snapshots, conformance hashes and terrain identities are unchanged",
+        "pinned_remc2_commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+        "source_preimage_tests": [
+          "native_world::tests::direct_session_action_51_applies_source_ordered_synthetic_build_planes",
+          "native_v2::tests::capi_terrain_projection_exposes_target_list_block_and_action_51_planes"
+        ],
+        "prior_content_sha256": [
+          "247058da12a1dee22b45b16e0fbe8cdf59a886be703e384c177815e6d622c8f0",
+          "a5681b2062bbe0c4652ba643d339a99156dac6aeb6b45088bf7aa13e5916852e",
+          "6422adc6869e1c151100cc18c63374bec8ac361aae0a149a4ceb85eb62b178d0",
+          "02645bd42837207218f7b066dcf146719758a1e31375118ec2549c5b39c46b96",
+          "7ec85e7dc7e4ccbf83d147bb8f650ff1666d68b775402aeb4f3cb9b0947a6940"
+        ],
+        "prior_lifecycle_sha256": [
+          "6291b1222c881fe09b508737ba2648d6da5d7914ccadb1eb3efec880f731da57",
+          "a896059932ffa14df7da7d168f03fabbeb0297f63add55419a2fe0cc962bf536",
+          "8500955f340b67a010cca7c51744c9b083e11e6cf2daaa8a9dffc604531740c6",
+          "b7ad589a207fe6957b07ac996a53800f15eabec1b4bb041bf7fbe3ef255486d6",
+          "ea4be024470e14902c78b5b66d7e7373b592c39aafc24d8004a9cec2e24dd68f"
+        ],
+        "independent_confirmation_logs": [
+          {"sha256":"d80ea5283eae136dcb9ce866bee011653149ed455b121dad1dab4cdf562ca98f","role":"run-A first built-player route"},
+          {"sha256":"9e9802f32b1a314e7c6b065d3eaea4d3df08527094d31e826428ad0ed05ab247","role":"run-A independent route confirmation"}
+        ]
+      },
       "checkpoints": [
         {
           "checkpoint_id": "unity-route-145", "unity_checkpoint_tick": 145, "last_command_index": 144, "source_turn": 146,
           "input_identity": {"last_command_raw_10_bytes": [0,0,0,38,0,1,0,0,0,0], "prefix_sha256": "a2eec00e0cdd9a65392775c8ccc2310b4004ae176639e4e5fc698818b0f62e40"},
           "state_identity": {"status": "available", "authority": "native C ABI post-step snapshot", "generation": 1, "tick": 145, "event_head": 953, "state_hash_fnv1a64": "4c3ead1f07462136", "conformance_hash_fnv1a64": "a6e0c8caeacf73f8", "entity_index": 152, "position": [24705,59043,4768], "yaw": 1277, "display_pitch": 0, "effective_pitch": 0, "roll": 73, "target_speed": 80, "actual_speed": 80, "strafe_speed": 0, "phase": 42, "last_resolution": 0, "profile": 0, "fire_sequence": 0},
-          "event_identity": {"status": "available", "authority": "native typed event journal", "generation": 1, "first_sequence": 1, "last_sequence": 953, "count": 953, "content_schema": "mc2-native-event-logical-content-le/sha256-v1", "content_sha256": "247058da12a1dee22b45b16e0fbe8cdf59a886be703e384c177815e6d622c8f0", "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1", "lifecycle_sha256": "6291b1222c881fe09b508737ba2648d6da5d7914ccadb1eb3efec880f731da57"},
+          "event_identity": {"status": "available", "authority": "native typed event journal", "generation": 1, "first_sequence": 1, "last_sequence": 953, "count": 953, "content_schema": "mc2-native-event-logical-content-le/sha256-v1", "content_sha256": "33a2d6fc1248b4fc29dbf49d8abaee119087e8ea0b5c54448594f98a6e0420d5", "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1", "lifecycle_sha256": "70767dad32d7047dd4f3dbcdf22b0fccfaf43bb7979ea39b7f851b69de6d2ccb"},
           "camera_identity": {"status": "available", "authority": "native stored pre-update camera", "presentation": {"generation":1,"tick":144,"source_turn":146,"position":[24762,58985,4896],"yaw":1268,"pitch":0,"roll":73,"fov":128,"authority":2,"flags":3}, "render": {"generation":1,"tick":144,"source_turn":146,"history":[24762,58985],"eye_z":4896,"yaw":1268,"pitch":0,"roll":73,"fov":128,"slope_target":[64,0],"render_offset":[56,8],"authority":2,"flags":1}},
           "terrain_identity": {"generation":1,"tick":144,"width":320,"height":200,"stride":320,"viewport_x":0,"viewport_y":0,"viewport_width":320,"viewport_height":200,"index_hash_fnv1a64":"0a49c01e798aa855","coverage_hash_fnv1a64":"4805132e71142646","reflected":0,"mode5":586,"mode26":0,"writes":57887,"gpu_bottom_up_fnv1a64":"6116176f23d78261","logical_top_down_fnv1a64":"6d2584eb3f5e1d21"},
           "unity_frame_identity": {"schema":"mc2-private-qualified-full-frame-v2","png_sha256":"d86c9971febbfc815fd6e4daa953521a3a6566d996794d856ec134a2a9ecda3d","raw_rgba_sha256":"d4bbf6f4711feeeb2ec5de9eeca2a39765c3298769826361c146b26f6ec9ac4b"},
@@ -391,7 +418,7 @@
           "checkpoint_id": "unity-route-163", "unity_checkpoint_tick": 163, "last_command_index": 162, "source_turn": 164,
           "input_identity": {"last_command_raw_10_bytes": [0,0,0,0,0,1,0,0,0,0], "prefix_sha256": "29e1f705610953107f09e61ed03309addcb5c3866a5dc647ead3e837311917a5"},
           "state_identity": {"status": "available", "authority": "native C ABI post-step snapshot", "generation": 1, "tick": 163, "event_head": 1073, "state_hash_fnv1a64": "14b0c5a8341ab28b", "conformance_hash_fnv1a64": "4bc2312004a14bd6", "entity_index": 152, "position": [23630,60010,4512], "yaw": 1300, "display_pitch": 0, "effective_pitch": 0, "roll": 3, "target_speed": 80, "actual_speed": 80, "strafe_speed": 0, "phase": 60, "last_resolution": 0, "profile": 0, "fire_sequence": 1},
-          "event_identity": {"status": "available", "authority": "native typed event journal", "generation": 1, "first_sequence": 954, "last_sequence": 1073, "count": 120, "content_schema": "mc2-native-event-logical-content-le/sha256-v1", "content_sha256": "a5681b2062bbe0c4652ba643d339a99156dac6aeb6b45088bf7aa13e5916852e", "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1", "lifecycle_sha256": "a896059932ffa14df7da7d168f03fabbeb0297f63add55419a2fe0cc962bf536"},
+          "event_identity": {"status": "available", "authority": "native typed event journal", "generation": 1, "first_sequence": 954, "last_sequence": 1073, "count": 120, "content_schema": "mc2-native-event-logical-content-le/sha256-v1", "content_sha256": "f821341ad380066e96ff7bb33305393d3b6f92713090f9ec162f19ced278c441", "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1", "lifecycle_sha256": "64491031ec002ffbf41efd72bc83b8662f7289e9f8b9c60828b455a1f58ee662"},
           "camera_identity": {"status": "available", "authority": "native stored pre-update camera", "presentation": {"generation":1,"tick":162,"source_turn":164,"position":[23690,59957,4656],"yaw":1300,"pitch":0,"roll":3,"fov":128,"authority":2,"flags":3}, "render": {"generation":1,"tick":162,"source_turn":164,"history":[23690,59957],"eye_z":4656,"yaw":1300,"pitch":0,"roll":3,"fov":128,"slope_target":[0,0],"render_offset":[0,4],"authority":2,"flags":1}},
           "terrain_identity": {"generation":1,"tick":162,"width":320,"height":200,"stride":320,"viewport_x":0,"viewport_y":0,"viewport_width":320,"viewport_height":200,"index_hash_fnv1a64":"ae4de9caf41d5473","coverage_hash_fnv1a64":"1606b3e784f10124","reflected":0,"mode5":606,"mode26":0,"writes":61935,"gpu_bottom_up_fnv1a64":"513fbc1f0ce27501","logical_top_down_fnv1a64":"24a3ce628a9b18e1"},
           "unity_frame_identity": {"schema":"mc2-private-qualified-full-frame-v2","png_sha256":"a5e8a7edbf7586b86081f71d4adc2d131849020c1d12949000595783228cea2a","raw_rgba_sha256":"cb5a8864a93e3080d6ffd869011e010f4410985ae379f19b398eb491ccc2ba13"},
@@ -401,7 +428,7 @@
           "checkpoint_id": "unity-route-220", "unity_checkpoint_tick": 220, "last_command_index": 219, "source_turn": 221,
           "input_identity": {"last_command_raw_10_bytes": [0,0,0,224,234,1,0,0,0,0], "prefix_sha256": "fd5aa43307fa298aceb3d7f6074bfa78968684a46680da2daf20508cb5ec80d5"},
           "state_identity": {"status": "available", "authority": "native C ABI post-step snapshot", "generation": 1, "tick": 220, "event_head": 1434, "state_hash_fnv1a64": "8d15e8c188324cb0", "conformance_hash_fnv1a64": "7f05e39bbd5b680d", "entity_index": 152, "position": [21215,63670,4458], "yaw": 1040, "display_pitch": 2007, "effective_pitch": 2007, "roll": -61, "target_speed": 80, "actual_speed": 80, "strafe_speed": 0, "phase": 117, "last_resolution": 0, "profile": 0, "fire_sequence": 1},
-          "event_identity": {"status": "available", "authority": "native typed event journal", "generation": 1, "first_sequence": 1074, "last_sequence": 1434, "count": 361, "content_schema": "mc2-native-event-logical-content-le/sha256-v1", "content_sha256": "6422adc6869e1c151100cc18c63374bec8ac361aae0a149a4ceb85eb62b178d0", "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1", "lifecycle_sha256": "8500955f340b67a010cca7c51744c9b083e11e6cf2daaa8a9dffc604531740c6"},
+          "event_identity": {"status": "available", "authority": "native typed event journal", "generation": 1, "first_sequence": 1074, "last_sequence": 1434, "count": 361, "content_schema": "mc2-native-event-logical-content-le/sha256-v1", "content_sha256": "74386221e625fdecae36abb41ac4442871dcd1229e4ede814e2dee51851c2073", "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1", "lifecycle_sha256": "3e8e48b73e36bc64637b376918a81917e3d11042e4a3b13e0a5c1248d69df0ad"},
           "camera_identity": {"status": "available", "authority": "native stored pre-update camera", "presentation": {"generation":1,"tick":219,"source_turn":221,"position":[21219,63591,4591],"yaw":1047,"pitch":-20,"roll":-61,"fov":128,"authority":2,"flags":3}, "render": {"generation":1,"tick":219,"source_turn":221,"history":[21219,63591],"eye_z":4591,"yaw":1047,"pitch":-20,"roll":-61,"fov":128,"slope_target":[6,2],"render_offset":[-7,-11],"authority":2,"flags":1}},
           "terrain_identity": {"generation":1,"tick":219,"width":320,"height":200,"stride":320,"viewport_x":0,"viewport_y":0,"viewport_width":320,"viewport_height":200,"index_hash_fnv1a64":"ba9873861a554bcf","coverage_hash_fnv1a64":"d1d7279797f670f3","reflected":0,"mode5":588,"mode26":6,"writes":29921,"gpu_bottom_up_fnv1a64":"9d5154f952c93735","logical_top_down_fnv1a64":"42e55c4ea9e59855"},
           "unity_frame_identity": {"schema":"mc2-private-qualified-full-frame-v2","png_sha256":"10888baa5b509f809419f95d8ab91c4023d2a359e8345686c8ab52e38e8f137f","raw_rgba_sha256":"82c307297e00791f5826ac34e077a6194a48e332bfaf22810eccec5920602a33"},
@@ -411,7 +438,7 @@
           "checkpoint_id": "unity-route-303", "unity_checkpoint_tick": 303, "last_command_index": 302, "source_turn": 304,
           "input_identity": {"last_command_raw_10_bytes": [0,0,0,0,24,1,0,0,0,0], "prefix_sha256": "414173b2b45c6b7cdd421919eb9ec5fa3035c1fa628d24e9a12fc1e6bb23e43c"},
           "state_identity": {"status": "available", "authority": "native C ABI post-step snapshot", "generation": 1, "tick": 303, "event_head": 1969, "state_hash_fnv1a64": "031307cd7b0a3e21", "conformance_hash_fnv1a64": "902cdb8f4d06504c", "entity_index": 152, "position": [24338,3730,4032], "yaw": 812, "display_pitch": 45, "effective_pitch": 45, "roll": -3, "target_speed": 80, "actual_speed": 80, "strafe_speed": 0, "phase": 200, "last_resolution": 0, "profile": 0, "fire_sequence": 2},
-          "event_identity": {"status": "available", "authority": "native typed event journal", "generation": 1, "first_sequence": 1435, "last_sequence": 1969, "count": 535, "content_schema": "mc2-native-event-logical-content-le/sha256-v1", "content_sha256": "02645bd42837207218f7b066dcf146719758a1e31375118ec2549c5b39c46b96", "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1", "lifecycle_sha256": "b7ad589a207fe6957b07ac996a53800f15eabec1b4bb041bf7fbe3ef255486d6"},
+          "event_identity": {"status": "available", "authority": "native typed event journal", "generation": 1, "first_sequence": 1435, "last_sequence": 1969, "count": 535, "content_schema": "mc2-native-event-logical-content-le/sha256-v1", "content_sha256": "3b6d8c8c628e50609d45d680e0d9bb26546b371ad61d4f91eab2bae7fe5eec5d", "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1", "lifecycle_sha256": "46e3a293959612b0890816e4dab5ffb1c2590b7c31fd3e3886a1c8e3dcbb1de3"},
           "camera_identity": {"status": "available", "authority": "native stored pre-update camera", "presentation": {"generation":1,"tick":302,"source_turn":304,"position":[24291,3667,4168],"yaw":812,"pitch":22,"roll":-3,"fov":128,"authority":2,"flags":3}, "render": {"generation":1,"tick":302,"source_turn":304,"history":[24291,3667],"eye_z":4168,"yaw":812,"pitch":22,"roll":-3,"fov":128,"slope_target":[-32,0],"render_offset":[-40,-7],"authority":2,"flags":1}},
           "terrain_identity": {"generation":1,"tick":302,"width":320,"height":200,"stride":320,"viewport_x":0,"viewport_y":0,"viewport_width":320,"viewport_height":200,"index_hash_fnv1a64":"b09bfe27ac05352f","coverage_hash_fnv1a64":"8e818be5a1fecac3","reflected":0,"mode5":362,"mode26":234,"writes":50474,"gpu_bottom_up_fnv1a64":"bf6fa51c101089b5","logical_top_down_fnv1a64":"5dde721e6b801ec5"},
           "unity_frame_identity": {"schema":"mc2-private-qualified-full-frame-v2","png_sha256":"fa4473b0536141f996e5ed0faefdc961c0c038a19f89b851de6101640f12a479","raw_rgba_sha256":"29e34d5d16b487d6810c376f938bf55e9a22f80da5bae93912039bab8d56806b"},
@@ -421,7 +448,7 @@
           "checkpoint_id": "unity-route-400", "unity_checkpoint_tick": 400, "last_command_index": 399, "source_turn": 401,
           "input_identity": {"last_command_raw_10_bytes": [0,0,0,0,0,0,0,0,0,0], "prefix_sha256": "e393b346b503dc0c058214f70eed3dfd6ab6a4103b8ec2cfe74d3d4324fe42eb"},
           "state_identity": {"status": "available", "authority": "native C ABI post-step snapshot", "generation": 1, "tick": 400, "event_head": 2600, "state_hash_fnv1a64": "6ea3b184dbd5eeb1", "conformance_hash_fnv1a64": "263fb33a7683a4da", "entity_index": 152, "position": [25849,12174,3802], "yaw": 812, "display_pitch": 3, "effective_pitch": 3, "roll": -3, "target_speed": 80, "actual_speed": 80, "strafe_speed": 0, "phase": 41, "last_resolution": 0, "profile": 0, "fire_sequence": 2},
-          "event_identity": {"status": "available", "authority": "native typed event journal", "generation": 1, "first_sequence": 1970, "last_sequence": 2600, "count": 631, "content_schema": "mc2-native-event-logical-content-le/sha256-v1", "content_sha256": "7ec85e7dc7e4ccbf83d147bb8f650ff1666d68b775402aeb4f3cb9b0947a6940", "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1", "lifecycle_sha256": "ea4be024470e14902c78b5b66d7e7373b592c39aafc24d8004a9cec2e24dd68f"},
+          "event_identity": {"status": "available", "authority": "native typed event journal", "generation": 1, "first_sequence": 1970, "last_sequence": 2600, "count": 631, "content_schema": "mc2-native-event-logical-content-le/sha256-v1", "content_sha256": "84e98401d92e26109bf88e00b0f48bdc37396bba4c868004da1cd400f099a66b", "lifecycle_schema": "mc2-native-event-logical-lifecycle-le/sha256-v1", "lifecycle_sha256": "7b861644b6550bd6071b6fe4e5a9c06d83d22dcb4117502516a42ef1da00e3b8"},
           "camera_identity": {"status": "available", "authority": "native stored pre-update camera", "presentation": {"generation":1,"tick":399,"source_turn":401,"position":[25802,12111,3946],"yaw":812,"pitch":1,"roll":-3,"fov":128,"authority":2,"flags":3}, "render": {"generation":1,"tick":399,"source_turn":401,"history":[25802,12111],"eye_z":3946,"yaw":812,"pitch":1,"roll":-3,"fov":128,"slope_target":[-16,-12],"render_offset":[-4,2],"authority":2,"flags":1}},
           "terrain_identity": {"generation":1,"tick":399,"width":320,"height":200,"stride":320,"viewport_x":0,"viewport_y":0,"viewport_width":320,"viewport_height":200,"index_hash_fnv1a64":"053d7e07096e5077","coverage_hash_fnv1a64":"35be7aa3bef7daef","reflected":924,"mode5":214,"mode26":36,"writes":6895,"gpu_bottom_up_fnv1a64":"42a6120608fd3c75","logical_top_down_fnv1a64":"501e861d317ae825"},
           "unity_frame_identity": {"schema":"mc2-private-qualified-full-frame-v2","png_sha256":"9a291ea9b0426d7fa921fa9a85afd91373b53160cd51868ced8e3395582c13bb","raw_rgba_sha256":"df506a62aaa923632e816c1221acfd4c7b1b3006fc3f65dfbeb85c49acef4fea"},

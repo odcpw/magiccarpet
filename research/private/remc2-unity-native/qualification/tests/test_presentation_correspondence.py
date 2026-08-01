@@ -23,7 +23,7 @@ CONTRACT = json.loads(
 )
 CORRECTION6_CACHE = (
     QUALIFICATION.parents[1]
-    / "generated/level1-unity-asset-cache-plan28-cp4-correction6"
+    / "generated/level1-unity-asset-cache-plan29-final"
 )
 
 

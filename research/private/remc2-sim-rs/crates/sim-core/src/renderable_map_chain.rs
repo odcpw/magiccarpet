@@ -106,7 +106,10 @@ impl RenderableMapSeed {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RenderableMapChains {
     heads: Box<[u16]>,
+    /// Source `oldMapEntity`: away from the tile head.
     next: Box<[u16]>,
+    /// Source `nextEntity`: toward the tile head.
+    previous: Box<[u16]>,
     tiles: Box<[u16]>,
     tracked: Box<[bool]>,
     linked: Box<[bool]>,
@@ -161,6 +164,7 @@ impl RenderableMapChains {
                     result.linked[source_ordinal] = true;
                     if let Some(previous) = previous_renderable {
                         result.next[usize::from(previous)] = source_entity;
+                        result.previous[source_ordinal] = previous;
                     } else {
                         result.heads[tile] = source_entity;
                     }
@@ -182,12 +186,54 @@ impl RenderableMapChains {
         Ok(result)
     }
 
+    /// Bind the complete raw reset topology and verify both source link
+    /// directions before gameplay starts.
+    pub fn from_raw_reset(
+        seeds: &[RenderableMapSeed],
+        terrain_heads: &[i16],
+        mut old_map_entity: impl FnMut(u16) -> Option<u16>,
+        mut next_entity: impl FnMut(u16) -> Option<u16>,
+    ) -> Result<Self, String> {
+        let old_links = (0..SOURCE_ENTITY_SLOTS)
+            .map(|index| old_map_entity(index as u16))
+            .collect::<Vec<_>>();
+        let result = Self::from_reset(seeds, terrain_heads, |entity_index| {
+            old_links[usize::from(entity_index)]
+        })?;
+        for seed in seeds {
+            let ordinal = usize::from(seed.entity_index);
+            let expected_old = result.next[ordinal];
+            let expected_new = result.previous[ordinal];
+            let actual_old = old_links[ordinal].ok_or_else(|| {
+                format!(
+                    "entity {} has no exported oldMapEntity link",
+                    seed.entity_index
+                )
+            })?;
+            let actual_new = next_entity(seed.entity_index).ok_or_else(|| {
+                format!(
+                    "entity {} has no exported nextEntity link",
+                    seed.entity_index
+                )
+            })?;
+            if (actual_old, actual_new) != (expected_old, expected_new) {
+                return Err(format!(
+                    "raw entity {} neighbor pair ({actual_old}, {actual_new}) disagrees with terrain topology ({expected_old}, {expected_new})",
+                    seed.entity_index
+                ));
+            }
+        }
+        result.validate()?;
+        Ok(result)
+    }
+
     /// Construct the empty dynamic chain used by synthetic worlds.
     #[must_use]
     pub fn empty() -> Self {
         Self {
             heads: vec![0; SOURCE_MAP_CELLS].into_boxed_slice(),
             next: vec![0; SOURCE_ENTITY_SLOTS].into_boxed_slice(),
+            previous: vec![0; SOURCE_ENTITY_SLOTS].into_boxed_slice(),
             tiles: vec![0; SOURCE_ENTITY_SLOTS].into_boxed_slice(),
             tracked: vec![false; SOURCE_ENTITY_SLOTS].into_boxed_slice(),
             linked: vec![false; SOURCE_ENTITY_SLOTS].into_boxed_slice(),
@@ -237,6 +283,7 @@ impl RenderableMapChains {
                 }
                 self.tracked[ordinal] = false;
                 self.next[ordinal] = 0;
+                self.previous[ordinal] = 0;
             }
         }
         Ok(())
@@ -267,6 +314,54 @@ impl RenderableMapChains {
         (1_u16..SOURCE_ENTITY_SLOTS as u16)
             .filter(|entity_index| self.linked[usize::from(*entity_index)])
             .collect()
+    }
+
+    #[must_use]
+    pub fn old_map_entity(&self, entity_index: u16) -> u16 {
+        self.next[usize::from(entity_index)]
+    }
+
+    #[must_use]
+    pub fn next_entity(&self, entity_index: u16) -> u16 {
+        self.previous[usize::from(entity_index)]
+    }
+
+    #[must_use]
+    pub fn tile_head(&self, tile: u16) -> u16 {
+        self.heads[usize::from(tile)]
+    }
+
+    #[must_use]
+    pub fn tile_of(&self, entity_index: u16) -> u16 {
+        self.tiles[usize::from(entity_index)]
+    }
+
+    #[must_use]
+    pub fn is_linked(&self, entity_index: u16) -> bool {
+        self.linked[usize::from(entity_index)]
+    }
+
+    /// Exact validated `SetMapEntity_57E50` unlink. Validation happens while
+    /// binding/resetting the topology, so the source transaction has no
+    /// fallible point after allocation.
+    pub fn set_map_entity_unlink(&mut self, entity_index: u16) {
+        let ordinal = usize::from(entity_index);
+        if !self.linked[ordinal] {
+            return;
+        }
+        let newer = self.previous[ordinal];
+        let older = self.next[ordinal];
+        if newer != 0 {
+            self.next[usize::from(newer)] = older;
+        } else {
+            self.heads[usize::from(self.tiles[ordinal])] = older;
+        }
+        if older != 0 {
+            self.previous[usize::from(older)] = newer;
+        }
+        self.linked[ordinal] = false;
+        self.previous[ordinal] = 0;
+        self.next[ordinal] = 0;
     }
 
     /// Lossless canonical encoding of the complete mutable chain topology.
@@ -314,10 +409,58 @@ impl RenderableMapChains {
         bytes
     }
 
+    /// Lossless encoding of the raw mutable map state used by NewEvent and
+    /// SetMapEntity conformance. Unlike the established presentation-cache
+    /// encoding, this domain includes source `nextEntity` as well as
+    /// `oldMapEntity` so either half of a splice changes the digest.
+    #[must_use]
+    pub fn raw_topology_bytes_v1(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(
+            32 + self.heads.len() * 2
+                + self.next.len() * 2
+                + self.previous.len() * 2
+                + self.tiles.len() * 2
+                + self.tracked.len()
+                + self.linked.len(),
+        );
+        bytes.extend_from_slice(b"mc2-raw-map-topology-v1\0");
+        bytes.extend_from_slice(
+            &u32::try_from(self.heads.len())
+                .expect("source map head extent fits u32")
+                .to_le_bytes(),
+        );
+        for value in &self.heads {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        for values in [&self.next, &self.previous, &self.tiles] {
+            bytes.extend_from_slice(
+                &u32::try_from(values.len())
+                    .expect("source entity extent fits u32")
+                    .to_le_bytes(),
+            );
+            for value in values.iter() {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        for values in [&self.tracked, &self.linked] {
+            bytes.extend_from_slice(
+                &u32::try_from(values.len())
+                    .expect("source entity flag extent fits u32")
+                    .to_le_bytes(),
+            );
+            bytes.extend(values.iter().map(|value| u8::from(*value)));
+        }
+        bytes
+    }
+
     fn insert_at_head(&mut self, entity_index: u16, tile: u16) {
         let ordinal = usize::from(entity_index);
         let tile_ordinal = usize::from(tile);
         self.next[ordinal] = self.heads[tile_ordinal];
+        self.previous[ordinal] = 0;
+        if self.heads[tile_ordinal] != 0 {
+            self.previous[usize::from(self.heads[tile_ordinal])] = entity_index;
+        }
         self.heads[tile_ordinal] = entity_index;
         self.tiles[ordinal] = tile;
         self.linked[ordinal] = true;
@@ -325,41 +468,20 @@ impl RenderableMapChains {
 
     fn unlink(&mut self, entity_index: u16) -> Result<(), String> {
         let ordinal = usize::from(entity_index);
-        let tile = usize::from(self.tiles[ordinal]);
-        let mut current = self.heads[tile];
-        let mut previous = 0_u16;
-        for _ in 0..SOURCE_ENTITY_SLOTS {
-            if current == 0 {
-                break;
-            }
-            let current_ordinal = usize::from(current);
-            if current_ordinal >= SOURCE_ENTITY_SLOTS || !self.tracked[current_ordinal] {
-                return Err(format!(
-                    "renderable map tile {tile:#06x} links unknown entity {current}"
-                ));
-            }
-            if current == entity_index {
-                if previous == 0 {
-                    self.heads[tile] = self.next[current_ordinal];
-                } else {
-                    self.next[usize::from(previous)] = self.next[current_ordinal];
-                }
-                self.next[current_ordinal] = 0;
-                self.linked[current_ordinal] = false;
-                return Ok(());
-            }
-            previous = current;
-            current = self.next[current_ordinal];
+        if !self.linked[ordinal] {
+            return Err(format!(
+                "linked renderable entity {entity_index} is not marked linked"
+            ));
         }
-        Err(format!(
-            "linked renderable entity {entity_index} is absent from tile {tile:#06x}"
-        ))
+        self.set_map_entity_unlink(entity_index);
+        Ok(())
     }
 
     fn validate(&self) -> Result<(), String> {
         let mut occurrences = [0_u8; SOURCE_ENTITY_SLOTS];
         for tile in 0..SOURCE_MAP_CELLS {
             let mut entity = self.heads[tile];
+            let mut previous = 0_u16;
             for _ in 0..SOURCE_ENTITY_SLOTS {
                 if entity == 0 {
                     break;
@@ -376,12 +498,19 @@ impl RenderableMapChains {
                         self.tiles[ordinal]
                     ));
                 }
+                if self.previous[ordinal] != previous {
+                    return Err(format!(
+                        "renderable entity {entity} nextEntity {} disagrees with chain predecessor {previous}",
+                        self.previous[ordinal]
+                    ));
+                }
                 occurrences[ordinal] = occurrences[ordinal].saturating_add(1);
                 if occurrences[ordinal] > 1 {
                     return Err(format!(
                         "renderable entity {entity} occurs in multiple live chains"
                     ));
                 }
+                previous = entity;
                 entity = self.next[ordinal];
             }
             if entity != 0 {
@@ -396,6 +525,11 @@ impl RenderableMapChains {
             }
             if self.linked[ordinal] && !self.tracked[ordinal] {
                 return Err(format!("untracked renderable entity {ordinal} is linked"));
+            }
+            if !self.linked[ordinal] && (self.next[ordinal] != 0 || self.previous[ordinal] != 0) {
+                return Err(format!(
+                    "unlinked renderable entity {ordinal} retains raw neighbor links"
+                ));
             }
         }
         Ok(())
@@ -491,6 +625,36 @@ mod tests {
             ],
             "the pre-filter census retains excluded middle nodes and exact source order"
         );
+    }
+
+    #[test]
+    fn raw_reset_validates_both_neighbor_directions_and_hashes_splices() {
+        let seeds = [seed(50, 4, 5), seed(60, 4, 5)];
+        let mut heads = vec![0_i16; SOURCE_MAP_CELLS];
+        heads[4 + 5 * 256] = 50;
+        let old = |entity| match entity {
+            50 => Some(60),
+            60 => Some(0),
+            _ => Some(0),
+        };
+        let next = |entity| match entity {
+            50 => Some(0),
+            60 => Some(50),
+            _ => Some(0),
+        };
+        let mut chains = RenderableMapChains::from_raw_reset(&seeds, &heads, old, next)
+            .expect("consistent oldMapEntity/nextEntity pair");
+        let before = chains.raw_topology_bytes_v1();
+        chains.set_map_entity_unlink(50);
+        assert_ne!(chains.raw_topology_bytes_v1(), before);
+        assert_eq!(chains.entity_chain(4, 5), [60]);
+        assert_eq!((chains.next_entity(60), chains.old_map_entity(60)), (0, 0));
+
+        let error = RenderableMapChains::from_raw_reset(&seeds, &heads, old, |entity| {
+            (entity == 50 || entity == 60).then_some(0)
+        })
+        .unwrap_err();
+        assert!(error.contains("neighbor pair"), "unexpected error: {error}");
     }
 
     #[test]

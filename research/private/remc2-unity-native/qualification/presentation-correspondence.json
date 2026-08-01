@@ -13,9 +13,9 @@
     "framebuffer_encoding": "320x200 row-major palette indices, top-to-bottom",
     "display_decode": {
       "authority": "base-PALN structural decode",
-      "palette_rgb6_path": "research/private/generated/level1-unity-asset-cache/palette/paln.rgb6",
+      "palette_rgb6_path": "research/private/generated/level1-unity-asset-cache-plan29-final/palette/paln.rgb6",
       "palette_rgb6_sha256": "6b55d0714b939e8bd25cef89466806299dbae933f2f2f96e0cf8402fc607d16f",
-      "palette_rgb8_path": "research/private/generated/level1-unity-asset-cache/palette/paln.rgb8",
+      "palette_rgb8_path": "research/private/generated/level1-unity-asset-cache-plan29-final/palette/paln.rgb8",
       "palette_rgb8_sha256": "7c4dfbbc6c0f68a99214fe3ca93d7a1cf0dd658e17a40ad7ecb302152264f507",
       "conversion": "channel_rgb8 = channel_rgb6 * 4",
       "active_dac_palette": "not captured at these checkpoints",
@@ -575,11 +575,11 @@
     "schema": "mc2-level1-native-final-main-correspondence/v1",
     "source_commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
     "cache": {
-      "manifest_sha256": "474d4b24c157896ce98f0a8baa1593f98762fc314f081600c44a94f97743fad8",
-      "content_sha256": "a1dc7c3fca20da019807093530c601b872c3d81284a19d17d5e1aa1bccafd752",
-      "output_count": 1248,
+      "manifest_sha256": "1050b4f1e3f0e63fa292fe7798d19f4b390c063aa5afd5a350fba9e300298082",
+      "content_sha256": "b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf",
+      "output_count": 1249,
       "source_frame_census_path": "frame/source-frame-census.json",
-      "source_frame_census_sha256": "57188c96853bfd9964c978c8ac9561fe69f69610d3e95aa3c7bbb0b2e5222722"
+      "source_frame_census_sha256": "8a9fb362badbeb37d0b5ef4dae15be4fcdee92c690e0f2017689c5cf0af31f5e"
     },
     "profile": {
       "level": 1,
@@ -603,7 +603,7 @@
     ],
     "preconditions": [
       "the exact owner package and closure identities validate",
-      "the CP4 1248-output owner cache and source-frame census validate",
+      "the PLAN29 1249-output sealed owner cache and source-frame census validate",
       "every reachable source occupant is Render or explicitly Excluded; unknown tuples hard-error",
       "generation and tick are current and contiguous, or the same tick is an idempotent read",
       "the fixed 320x200 Night single-local-player screen-size-0 profile is active",

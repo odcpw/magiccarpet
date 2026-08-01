@@ -86,7 +86,7 @@ def main() -> int:
         "--cache",
         type=Path,
         default=Path(__file__).resolve().parents[1]
-        / "generated/level1-unity-asset-cache",
+        / "generated/level1-unity-asset-cache-plan29-final",
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()

@@ -28,7 +28,13 @@ DEFAULT_OWNER = PRIVATE / "remc2-native-runtime/CD_Files"
 DEFAULT_PACKAGE = GENERATED / "level1-export-m"
 DEFAULT_CLOSURE = GENERATED / "level1-asset-closure.json"
 DEFAULT_CATALOG = PRIVATE / "remc2-atlas/semantics/generated/owner-asset-catalog.json"
-DEFAULT_OUTPUT = GENERATED / "level1-unity-asset-cache"
+DEFAULT_OUTPUT = GENERATED / "level1-unity-asset-cache-plan29-final"
+DEFAULT_CONFORMANCE_CONTRACT = (
+    PRIVATE / "remc2-sim-rs/level1-conformance/plan29-closure-contract.json"
+)
+EXPECTED_CONFORMANCE_CONTRACT_SHA256 = (
+    "e8b2f760f24e8de2003e856027420fce4609c47c481d7ad5cf67b51f668f3f0a"
+)
 CANONICAL_LEVEL1_MATRIX = (
     PRIVATE / "remc2-sim-rs/level1-conformance/level1-conformance-matrix.json"
 )
@@ -68,6 +74,7 @@ GOAT_TMAP_GOLDEN = (
 )
 
 SCHEMA = "mc2-owner-unity-asset-cache/v1"
+CONFORMANCE_SEAL_SCHEMA = "mc2-plan29-cache-conformance-identity/v1"
 GENERATOR_VERSION = "1.15.0"
 PINNED_REMC2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 PINNED_REMC2_SOURCE_SPANS = (
@@ -232,7 +239,7 @@ EXPECTED_RUNTIME_SHA256 = (
     "b078dbed443e2cc3bf3bfd08a0f519492546d9f939db74a3d9c185d58f9c559f"
 )
 EXPECTED_LEVEL1_MATRIX_SHA256 = (
-    "ed05db4db43e67151d0ad19df82592fa0a3777a2c5c1438d12398268f572f6ce"
+    "2469237003fb977a447d0ef2496c03cf598cb55f3eae77b7d094f9fa258509c7"
 )
 CASTLE_DEFENSE_SHOT_ROWS = (
     {
@@ -589,11 +596,42 @@ def canonical_json(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def canonical_identity_json(value: Any) -> bytes:
+    return (
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        + "\n"
+    ).encode("utf-8")
+
+
 def load_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise CacheError(f"cannot read canonical JSON {path}: {error}") from error
+
+
+def load_conformance_contract(
+    path: Path = DEFAULT_CONFORMANCE_CONTRACT,
+    expected_file_sha256: str = EXPECTED_CONFORMANCE_CONTRACT_SHA256,
+) -> tuple[dict[str, Any], str]:
+    path = path.expanduser().resolve()
+    actual_file_sha256 = sha256_file(path)
+    if actual_file_sha256 != expected_file_sha256:
+        raise CacheError("closure contract file SHA-256 mismatch")
+    contract = load_json(path)
+    if contract.get("schema") != "mc2-plan29-closure-contract/v1":
+        raise CacheError("unsupported closure contract schema")
+    if contract.get("specification", {}).get("remc2_commit") != PINNED_REMC2_COMMIT:
+        raise CacheError("closure contract remc2 pin mismatch")
+    claimed = contract.get("contract_sha256")
+    unsigned = dict(contract)
+    unsigned.pop("contract_sha256", None)
+    if sha256_bytes(canonical_identity_json(unsigned)) != claimed:
+        raise CacheError("closure contract self-hash mismatch")
+    identity = contract.get("trusted_identity")
+    if not isinstance(identity, dict) or not identity:
+        raise CacheError("closure contract has no trusted identity")
+    return contract, actual_file_sha256
 
 
 def pinned_remc2_blob(relative_path: str) -> bytes:
@@ -4256,12 +4294,17 @@ def build_cache(
     closure_path: Path,
     catalog_path: Path,
     output: Path,
+    contract_path: Path = DEFAULT_CONFORMANCE_CONTRACT,
+    expected_contract_sha256: str = EXPECTED_CONFORMANCE_CONTRACT_SHA256,
 ) -> dict[str, Any]:
     owner_root = owner_root.expanduser().resolve()
     package_dir = package_dir.expanduser().resolve()
     closure_path = closure_path.expanduser().resolve()
     catalog_path = catalog_path.expanduser().resolve()
     output = validate_output_path(output)
+    contract, contract_file_sha256 = load_conformance_contract(
+        contract_path, expected_contract_sha256
+    )
 
     package = load_json(package_dir / "manifest.json")
     closure = load_json(closure_path)
@@ -6703,6 +6746,24 @@ def build_cache(
             },
         )
 
+        seal = {
+            "schema": CONFORMANCE_SEAL_SCHEMA,
+            "contract_file_sha256": contract_file_sha256,
+            "contract_self_sha256": contract["contract_sha256"],
+            "remc2_commit": PINNED_REMC2_COMMIT,
+            "identity": contract["trusted_identity"],
+        }
+        seal["seal_sha256"] = sha256_bytes(canonical_identity_json(seal))
+        write_output(
+            stage,
+            outputs,
+            "conformance-identity.json",
+            canonical_json(seal),
+            kind="plan29_conformance_identity_seal",
+            source_asset_ids=[],
+            extra={"distribution": "private_non_owner_data_identity"},
+        )
+
         outputs.sort(key=lambda row: row["path"])
         identity_input = b"".join(
             f"{row['path']}\0{row['sha256']}\0{row['bytes']}\n".encode("ascii")
@@ -6721,6 +6782,8 @@ def build_cache(
                 "goat_tmap_golden_file_sha256": EXPECTED_GOAT_TMAP_GOLDEN,
                 "goat_tmap_oracle_manifest_sha256":
                     EXPECTED_GOAT_TMAP_ORACLE_MANIFEST,
+                "plan29_contract_file_sha256": contract_file_sha256,
+                "plan29_contract_self_sha256": contract["contract_sha256"],
             },
             "generator": {
                 "id": "remc2-unity-asset-cache",
@@ -6902,6 +6965,8 @@ def validate_cache(
     cache_dir: Path,
     expected_package: str = EXPECTED_PACKAGE,
     expected_closure: str = EXPECTED_CLOSURE,
+    contract_path: Path = DEFAULT_CONFORMANCE_CONTRACT,
+    expected_contract_sha256: str = EXPECTED_CONFORMANCE_CONTRACT_SHA256,
 ) -> dict[str, Any]:
     cache_dir = cache_dir.expanduser().resolve()
     manifest_path = cache_dir / "manifest.json"
@@ -6918,6 +6983,13 @@ def validate_cache(
         raise CacheError("cache package binding mismatch")
     if bindings.get("level_asset_closure_sha256") != expected_closure:
         raise CacheError("cache closure binding mismatch")
+    contract, contract_file_sha256 = load_conformance_contract(
+        contract_path, expected_contract_sha256
+    )
+    if bindings.get("plan29_contract_file_sha256") != contract_file_sha256:
+        raise CacheError("cache contract file binding mismatch")
+    if bindings.get("plan29_contract_self_sha256") != contract.get("contract_sha256"):
+        raise CacheError("cache contract self-hash binding mismatch")
     outputs = manifest.get("outputs")
     if not isinstance(outputs, list) or not outputs:
         raise CacheError("cache manifest has no outputs")
@@ -6948,6 +7020,18 @@ def validate_cache(
     actual_identity = sha256_bytes(b"".join(identity_parts))
     if actual_identity != manifest.get("cache_content_sha256"):
         raise CacheError("cache content identity mismatch")
+    seal = load_json(cache_dir / "conformance-identity.json")
+    if seal.get("schema") != CONFORMANCE_SEAL_SCHEMA:
+        raise CacheError("cache conformance seal schema mismatch")
+    if seal.get("contract_file_sha256") != contract_file_sha256:
+        raise CacheError("cache conformance seal contract mismatch")
+    if seal.get("identity") != contract.get("trusted_identity"):
+        raise CacheError("cache conformance seal identity mismatch")
+    seal_claim = seal.get("seal_sha256")
+    seal_unsigned = dict(seal)
+    seal_unsigned.pop("seal_sha256", None)
+    if sha256_bytes(canonical_identity_json(seal_unsigned)) != seal_claim:
+        raise CacheError("cache conformance seal self-hash mismatch")
     expected_tree = {"manifest.json", *seen}
     actual_tree: set[str] = set()
     for path in cache_dir.rglob("*"):
@@ -6969,10 +7053,20 @@ def parse_args() -> argparse.Namespace:
     build.add_argument("--closure", type=Path, default=DEFAULT_CLOSURE)
     build.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
     build.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    build.add_argument("--contract", type=Path, default=DEFAULT_CONFORMANCE_CONTRACT)
+    build.add_argument(
+        "--expected-contract-sha256",
+        default=EXPECTED_CONFORMANCE_CONTRACT_SHA256,
+    )
     validate = subparsers.add_parser("validate")
     validate.add_argument("--cache", type=Path, default=DEFAULT_OUTPUT)
     validate.add_argument("--package-sha256", default=EXPECTED_PACKAGE)
     validate.add_argument("--closure-sha256", default=EXPECTED_CLOSURE)
+    validate.add_argument("--contract", type=Path, default=DEFAULT_CONFORMANCE_CONTRACT)
+    validate.add_argument(
+        "--expected-contract-sha256",
+        default=EXPECTED_CONFORMANCE_CONTRACT_SHA256,
+    )
     return parser.parse_args()
 
 
@@ -6981,7 +7075,13 @@ def main() -> int:
     try:
         if args.command == "build":
             manifest = build_cache(
-                args.owner_root, args.package, args.closure, args.catalog, args.output
+                args.owner_root,
+                args.package,
+                args.closure,
+                args.catalog,
+                args.output,
+                args.contract,
+                args.expected_contract_sha256,
             )
             print(
                 f"cache={args.output} outputs={len(manifest['outputs'])} "
@@ -6989,7 +7089,11 @@ def main() -> int:
             )
         else:
             manifest = validate_cache(
-                args.cache, args.package_sha256, args.closure_sha256
+                args.cache,
+                args.package_sha256,
+                args.closure_sha256,
+                args.contract,
+                args.expected_contract_sha256,
             )
             print(
                 f"valid schema={manifest['schema']} "

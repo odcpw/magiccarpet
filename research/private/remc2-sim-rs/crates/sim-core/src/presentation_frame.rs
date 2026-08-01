@@ -500,14 +500,15 @@ mod tests {
     }
 
     fn overlays() -> IndexedOverlayAssets {
-        let root = std::env::var_os("MC_OWNER_ASSET_CACHE").map_or_else(
-            || {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../generated/level1-unity-asset-cache")
-            },
-            PathBuf::from,
-        );
-        IndexedOverlayAssets::load(root).expect("real CP1 owner cache")
+        let private = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let root = crate::native_world::resolve_level1_presentation_cache_root(&private);
+        crate::native_world::NativeWorld::load_with_owner_cache(
+            private.join("generated/level1-export-m"),
+            private.join("generated/level1-asset-closure.json"),
+            &root,
+        )
+        .expect("manifest/hash-qualified interim presentation cache");
+        IndexedOverlayAssets::load(root).expect("qualified interim presentation cache")
     }
 
     #[test]

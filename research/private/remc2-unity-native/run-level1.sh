@@ -11,5 +11,5 @@ exec "$script_dir/Builds/Linux/MagicCarpetNative.x86_64" \
   -screen-height "${MC_HEIGHT:-900}" \
   -mc-package "$project_root/research/private/generated/level1-export-m" \
   -mc-closure "$project_root/research/private/generated/level1-asset-closure.json" \
-  -mc-asset-cache "$project_root/research/private/generated/level1-unity-asset-cache" \
+  -mc-asset-cache "$project_root/research/private/generated/level1-unity-asset-cache-plan29-final" \
   "$@"
