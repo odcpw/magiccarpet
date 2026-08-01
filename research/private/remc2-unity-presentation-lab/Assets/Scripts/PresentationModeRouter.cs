@@ -23,6 +23,8 @@ namespace MagicCarpet.PresentationLab
         private const string CacheArgument = "-mc-asset-cache";
 
         private PresentationSessionLease sessionLease;
+        private UnityEnhancedWorldRoot enhancedRoot;
+        private bool ownsEnhancedRoot;
         private OwnerInputValidation ownerValidation;
         private ClassicHdSettingsLoadResult classicHdSettingsResult;
         private ClassicHdPresentation classicHdPresentation;
@@ -43,6 +45,7 @@ namespace MagicCarpet.PresentationLab
         {
             get { return classicHdSettingsResult == null ? string.Empty : classicHdSettingsResult.SettingsPath; }
         }
+        public UnityEnhancedWorldRoot EnhancedRoot { get { return enhancedRoot; } }
 
         private void Awake()
         {
@@ -103,6 +106,19 @@ namespace MagicCarpet.PresentationLab
                 }
             }
 
+            if (SelectedMode == PresentationModeId.UnityEnhanced)
+            {
+                enhancedRoot = UnityEngine.Object.FindFirstObjectByType<UnityEnhancedWorldRoot>();
+                if (enhancedRoot == null)
+                {
+                    GameObject rootObject = new GameObject("Unity Enhanced Presentation Root");
+                    enhancedRoot = rootObject.AddComponent<UnityEnhancedWorldRoot>();
+                    ownsEnhancedRoot = true;
+                }
+
+                enhancedRoot.Open(SelectedMode, sessionLease);
+            }
+
             statusLine = "PRESENTATION SESSION OPEN: " + ModeName(SelectedMode) +
                          " / " + PresentationDetail() +
                          " / gameplay authority remains Rust / visual history is presentation-only";
@@ -110,6 +126,18 @@ namespace MagicCarpet.PresentationLab
 
         private void OnDestroy()
         {
+            if (enhancedRoot != null)
+            {
+                enhancedRoot.Close();
+                if (ownsEnhancedRoot)
+                {
+                    Destroy(enhancedRoot.gameObject);
+                }
+
+                enhancedRoot = null;
+                ownsEnhancedRoot = false;
+            }
+
             if (sessionLease != null)
             {
                 sessionLease.Dispose();
