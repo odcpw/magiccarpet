@@ -3,9 +3,10 @@
 This is an owner-free toolchain proof, not gameplay and not headset support.
 The flat profile remains the default and does not initialize an XR loader or
 create an XR Origin. The PC profile initializes the selected OpenXR loader,
-creates a diagnostic `XR Origin` with tracked-head/left-controller/right-
+creates a diagnostic Unity `XROrigin` with tracked-head/left-controller/right-
 controller placeholders, reports loader/display/input-device counts, and
-tears the loader down deterministically.
+tears the loader down deterministically. The lab pins XR Core Utils 2.6.0
+explicitly because it owns the `XROrigin` component.
 
 Run the static profile/action-map guard from the repository root:
 

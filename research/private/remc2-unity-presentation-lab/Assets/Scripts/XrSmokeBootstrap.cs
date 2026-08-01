@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.XR;
 using UnityEngine.XR.Management;
+using Unity.XR.CoreUtils;
 
 namespace MagicCarpet.PresentationLab
 {
@@ -139,6 +140,7 @@ namespace MagicCarpet.PresentationLab
         private void CreateSyntheticOrigin()
         {
             syntheticOrigin = new GameObject("XR Origin");
+            syntheticOrigin.SetActive(false);
             GameObject cameraOffset = new GameObject("Camera Offset");
             cameraOffset.transform.SetParent(syntheticOrigin.transform, false);
 
@@ -151,6 +153,13 @@ namespace MagicCarpet.PresentationLab
             leftController.transform.SetParent(syntheticOrigin.transform, false);
             GameObject rightController = new GameObject("Right Controller");
             rightController.transform.SetParent(syntheticOrigin.transform, false);
+
+            XROrigin origin = syntheticOrigin.AddComponent<XROrigin>();
+            origin.Origin = syntheticOrigin;
+            origin.CameraFloorOffsetObject = cameraOffset;
+            origin.Camera = camera;
+            origin.RequestedTrackingOriginMode = XROrigin.TrackingOriginMode.Floor;
+            syntheticOrigin.SetActive(true);
         }
 
         private void ReportRuntimeIdentity()
@@ -158,7 +167,7 @@ namespace MagicCarpet.PresentationLab
             var devices = new List<InputDevice>();
             InputDevices.GetDevices(devices);
             var displays = new List<XRDisplaySubsystem>();
-            SubsystemManager.GetInstances(displays);
+            SubsystemManager.GetSubsystems(displays);
             LastStatus = "PC OPENXR ACTIVE: loader=" + XRGeneralSettings.Instance.Manager.activeLoader.name +
                          " / display-subsystems=" + displays.Count.ToString() +
                          " / input-devices=" + devices.Count.ToString();

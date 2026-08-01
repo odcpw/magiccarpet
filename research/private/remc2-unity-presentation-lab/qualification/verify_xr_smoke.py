@@ -15,6 +15,7 @@ PINS = {
     "com.unity.xr.management": "4.7.0",
     "com.unity.xr.openxr": "1.17.1",
     "com.unity.xr.interaction.toolkit": "3.0.9",
+    "com.unity.xr.core-utils": "2.6.0",
 }
 
 
@@ -69,7 +70,7 @@ def validate() -> dict[str, object]:
             fail(f"action map lacks binding token: {token}")
 
     script = script_path.read_text(encoding="utf-8")
-    for marker in ("-mc-xr-profile", "XRGeneralSettings", "XR Origin", "XR UNAVAILABLE", "owner-data=none", "simulation=none"):
+    for marker in ("-mc-xr-profile", "XRGeneralSettings", "XROrigin", "XR Origin", "XR UNAVAILABLE", "owner-data=none", "simulation=none"):
         if marker not in script:
             fail(f"XR bootstrap lacks marker: {marker}")
     for forbidden in ("NativeSession", "OwnerInputValidator", "PresentationSessionLease"):
