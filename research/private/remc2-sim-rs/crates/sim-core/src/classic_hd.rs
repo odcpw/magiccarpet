@@ -518,6 +518,11 @@ pub struct ClassicHdFrameWriter<'a> {
 
 impl ClassicHdFrameWriter<'_> {
     #[must_use]
+    pub const fn profile(&self) -> &ClassicHdRenderProfile {
+        &self.profile
+    }
+
+    #[must_use]
     pub const fn width(&self) -> u32 {
         self.profile.width
     }
@@ -538,6 +543,36 @@ impl ClassicHdFrameWriter<'_> {
 
     pub fn provenance_row_mut(&mut self, y: u32) -> Option<&mut [u8]> {
         row_mut(self.provenance, self.profile.stride, self.profile.height, y)
+    }
+
+    pub fn indices_mut(&mut self) -> &mut [u8] {
+        self.indices
+    }
+
+    #[must_use]
+    pub fn indices(&self) -> &[u8] {
+        self.indices
+    }
+
+    pub fn provenance_mut(&mut self) -> &mut [u8] {
+        self.provenance
+    }
+
+    #[must_use]
+    pub fn provenance(&self) -> &[u8] {
+        self.provenance
+    }
+
+    pub fn set_provenance(&mut self, x: i32, y: i32, provenance: u8) -> bool {
+        let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
+            return false;
+        };
+        if x >= self.profile.width || y >= self.profile.height {
+            return false;
+        }
+        let offset = (y as usize) * (self.profile.stride as usize) + (x as usize);
+        self.provenance[offset] = provenance;
+        true
     }
 
     pub fn set_pixel(&mut self, x: i32, y: i32, index: u8, provenance: u8) -> bool {

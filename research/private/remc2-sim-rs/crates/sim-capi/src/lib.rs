@@ -19,6 +19,7 @@ use sim_core::{
     state_hash, step_outer_turn_with_context,
 };
 
+mod classic_hd_abi;
 mod native_v2;
 mod presentation_bridge;
 

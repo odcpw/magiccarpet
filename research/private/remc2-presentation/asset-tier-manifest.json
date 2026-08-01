@@ -1,0 +1,47 @@
+{
+  "schema_id": "mc-classic-hd-asset-tier-v1",
+  "schema_version": 1,
+  "selected_tier": "original-indexed",
+  "selection_status": "baseline-only",
+  "owner_payload_embedded": false,
+  "entries": [
+    {
+      "family": "terrain",
+      "tier": "original-indexed",
+      "status": "not-discovered",
+      "source_path_class": "external-owner-cache",
+      "dimensions": [32, 32],
+      "format": "indexed-r8",
+      "selector_coverage": {"expected": 152, "validated": 0},
+      "sha256": null,
+      "fallback_reason": "optional-root-not-configured"
+    },
+    {
+      "family": "sky",
+      "tier": "original-indexed",
+      "status": "not-discovered",
+      "source_path_class": "external-owner-cache",
+      "dimensions": [256, 256],
+      "format": "indexed-r8",
+      "selector_coverage": {"expected": 2, "validated": 0},
+      "sha256": null,
+      "fallback_reason": "optional-root-not-configured"
+    },
+    {
+      "family": "sprites",
+      "tier": "original-indexed",
+      "status": "not-discovered",
+      "source_path_class": "external-owner-cache",
+      "dimensions": null,
+      "format": "indexed-r8",
+      "selector_coverage": {"expected": "owner-cache census", "validated": 0},
+      "sha256": null,
+      "fallback_reason": "optional-root-not-configured"
+    }
+  ],
+  "fallbacks": {
+    "terrain": "optional-root-not-configured",
+    "sky": "optional-root-not-configured",
+    "sprites": "optional-root-not-configured"
+  }
+}
