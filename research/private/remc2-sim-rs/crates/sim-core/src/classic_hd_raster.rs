@@ -11,6 +11,10 @@ use crate::{
     classic_hd_terrain::{
         ClassicHdTerrainRender, ClassicHdTerrainSubmissionPlan, ClassicHdTerrainTriangle,
     },
+    indexed_postprocess::{
+        PRIOR_MAIN_PROVENANCE, SOURCE_WORLD_PROVENANCE, TABLESN_BLEND_OFFSET,
+        TABLESN_REQUIRED_BYTES,
+    },
     mode5_raster::{Mode5Vertex, rasterize_mode5_triangle_from_atlas},
     mode26_raster::{NIGHT_TABLES_BYTES, rasterize_mode26_triangle_from_atlas_into_framebuffer},
     terrain_reflection::TerrainPass,
@@ -359,6 +363,71 @@ pub fn smooth_classic_hd_indexed(
     Ok(byte_hash(output))
 }
 
+/// Apply the source 2x2 indexed smoothing kernel to a profile-sized plane.
+/// `radius` repeats the source pass, which gives the HD presentation mode a
+/// bounded strength control while keeping every colour decision in TABLESN.
+pub fn smooth_classic_hd_indexed_with_tablesn(
+    profile: &ClassicHdRenderProfile,
+    input: &[u8],
+    output: &mut [u8],
+    input_provenance: &[u8],
+    output_provenance: &mut [u8],
+    tablesn: &[u8],
+    radius: u32,
+) -> Result<u64, ClassicHdRasterError> {
+    validate_plane(profile, input, "TABLESN smoothing input")?;
+    validate_plane(profile, output, "TABLESN smoothing output")?;
+    validate_plane(
+        profile,
+        input_provenance,
+        "TABLESN smoothing input provenance",
+    )?;
+    validate_plane(
+        profile,
+        output_provenance,
+        "TABLESN smoothing output provenance",
+    )?;
+    if radius == 0 || radius > 4 {
+        return Err(ClassicHdRasterError(
+            "Classic HD TABLESN smoothing radius must be between 1 and 4".to_owned(),
+        ));
+    }
+    if tablesn.len() < TABLESN_REQUIRED_BYTES {
+        return Err(ClassicHdRasterError(format!(
+            "Classic HD TABLESN smoothing requires at least {TABLESN_REQUIRED_BYTES} bytes, got {}",
+            tablesn.len()
+        )));
+    }
+    output.copy_from_slice(input);
+    output_provenance.copy_from_slice(input_provenance);
+    let width = usize::try_from(profile.width).unwrap();
+    let height = usize::try_from(profile.height).unwrap();
+    let stride = usize::try_from(profile.stride).unwrap();
+    for _ in 0..radius {
+        if width < 2 || height < 2 {
+            break;
+        }
+        for row in 0..height - 1 {
+            for column in 0..width - 1 {
+                let top_left = row * stride + column;
+                let top_right = top_left + 1;
+                let bottom_left = top_left + stride;
+                let bottom_right = bottom_left + 1;
+                let upper = tablesn[TABLESN_BLEND_OFFSET
+                    + (usize::from(output[bottom_left]) << 8)
+                    + usize::from(output[top_left])];
+                let lower = tablesn[TABLESN_BLEND_OFFSET
+                    + (usize::from(output[bottom_right]) << 8)
+                    + usize::from(output[top_right])];
+                output[top_left] =
+                    tablesn[TABLESN_BLEND_OFFSET + (usize::from(lower) << 8) + usize::from(upper)];
+                output_provenance[top_left] |= crate::indexed_postprocess::SPATIAL_PROVENANCE;
+            }
+        }
+    }
+    Ok(byte_hash(output))
+}
+
 /// Blend a frame against a prior presentation history only when the full
 /// generation/profile/tick/input key proves that the history is compatible.
 pub fn blend_classic_hd_history(
@@ -384,6 +453,61 @@ pub fn blend_classic_hd_history(
                 + u32::from(history[offset]) * history_weight
                 + 127;
             current[offset] = u8::try_from(value / 255).unwrap();
+        }
+    }
+    Ok(byte_hash(current))
+}
+
+/// Blend a Classic HD frame through the source indexed TABLESN pair table.
+///
+/// Mode 1 keeps the source's first-dword operand reversal while mode 2 uses
+/// the ordinary current/high-byte and prior/low-byte order. The helper is
+/// separate from the arithmetic fallback above so existing H-level callers
+/// remain source-compatible while the graph can prove the real postprocess
+/// table was used.
+pub fn blend_classic_hd_history_with_tablesn(
+    profile: &ClassicHdRenderProfile,
+    current: &mut [u8],
+    current_provenance: &mut [u8],
+    history: &[u8],
+    current_key: ClassicHdHistoryKey,
+    history_key: ClassicHdHistoryKey,
+    tablesn: &[u8],
+    mode: u8,
+) -> Result<u64, ClassicHdRasterError> {
+    validate_plane(profile, current, "TABLESN history current")?;
+    validate_plane(profile, current_provenance, "TABLESN current provenance")?;
+    validate_plane(profile, history, "TABLESN history previous")?;
+    validate_history_keys(current_key, history_key, profile.profile_revision)?;
+    if !matches!(mode, 1 | 2) {
+        return Err(ClassicHdRasterError(format!(
+            "Classic HD TABLESN history mode must be 1 or 2, got {mode}"
+        )));
+    }
+    if tablesn.len() < TABLESN_REQUIRED_BYTES {
+        return Err(ClassicHdRasterError(format!(
+            "Classic HD TABLESN history requires at least {TABLESN_REQUIRED_BYTES} bytes, got {}",
+            tablesn.len()
+        )));
+    }
+    let width = usize::try_from(profile.width).unwrap();
+    let height = usize::try_from(profile.height).unwrap();
+    let stride = usize::try_from(profile.stride).unwrap();
+    let dword_width = width / 4 * 4;
+    for y in 0..height {
+        let row_start = y * stride;
+        for column in 0..dword_width {
+            let offset = row_start + column;
+            let current_index = usize::from(current[offset]);
+            let prior_index = usize::from(history[offset]);
+            let reverse = mode == 1 && y == 0 && column < 4;
+            let pair = if reverse {
+                (prior_index << 8) | current_index
+            } else {
+                (current_index << 8) | prior_index
+            };
+            current[offset] = tablesn[TABLESN_BLEND_OFFSET + pair];
+            current_provenance[offset] = SOURCE_WORLD_PROVENANCE | PRIOR_MAIN_PROVENANCE;
         }
     }
     Ok(byte_hash(current))
