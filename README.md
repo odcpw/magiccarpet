@@ -43,6 +43,19 @@ Read these documents before changing the project:
 The pinned MC2HD/remc2 checkout is represented as a submodule. Local
 instrumentation is preserved as a small patch in `upstream/patches/`.
 
+## Level 1 conformance milestone
+
+The bounded private Level 1 preservation profile is closed at remc2 commit
+`6806c7204d17220ecc0430759f784aea8ee2ddb2`: 182/182 canonical matrix rows are
+Exact, zero are non-Exact, and 29 structured exclusions have mechanical
+proofs. The accepted PLAN29 evidence is exactly one clean Run A, with 481
+Rust tests, Unity EditMode 31/31, PlayMode 1/1, and passing presentation,
+privacy, provenance, victory, failure, restart, and replay gates.
+
+This is deliberately narrower than full-game parity. The fixed profile and
+nonclaims are recorded in the private [conformance matrix](research/private/remc2-sim-rs/level1-conformance/LEVEL1-CONFORMANCE-MATRIX.md)
+and [readiness record](research/private/remc2-unity-native/LEVEL1-READINESS.md).
+
 ## Data boundary
 
 The project is usable only with lawfully owned data supplied outside Git.
@@ -50,4 +63,3 @@ Nothing in this repository grants redistribution rights for the original
 game, its assets, or reconstructed expression. See
 [`PRIVATE_LAB.md`](PRIVATE_LAB.md) and the provenance policy for the controlling
 rules.
-

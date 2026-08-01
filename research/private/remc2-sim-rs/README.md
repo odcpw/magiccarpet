@@ -36,7 +36,21 @@ specification and synthetic tests may cross the Track P/Track S boundary.
 
 ## Current milestone
 
-The first slice maps class 3, action physical slot 0 and its active
+The bounded private Level 1 profile is closed against pinned remc2: the
+canonical matrix is 182/182 Exact with zero non-Exact rows and 29 mechanically
+proved exclusions. PLAN29 accepts exactly one clean Run A. The locked Rust
+inventory is 481 tests: 4 atlas-registry, 70 sim-capi, 3 sim-cli integration,
+400 sim-core, and 4 sim-wasm. See the generated
+[`level1-conformance/LEVEL1-CONFORMANCE-MATRIX.md`](level1-conformance/LEVEL1-CONFORMANCE-MATRIX.md)
+and the Unity [`LEVEL1-READINESS.md`](../remc2-unity-native/LEVEL1-READINESS.md).
+
+### Historical progression
+
+The following narrative records how the bounded slice was built. Intermediate
+`Partial` labels and older inventory descriptions are historical, not current
+Level 1 gaps.
+
+The first slice mapped class 3, action physical slot 0 and its active
 flight/terrain dependencies as `Partial`. It now includes the exact source
 angle/root tables, recovery, tether, collision spell-holder mutation, and
 original terrain-array interpolation. Player settings are generated from the
@@ -110,16 +124,16 @@ groups 33/34 are qualified through their authored allocation/activation
 order, four multipart heads with 16 linked segments apiece, six Fireflies,
 scroll, combat/death/mana paths, sounds 8/63, rendering snapshots, and reset.
 Archer terrain avoidance and linked action 35 are now active and tested. The
-native indexed world compositor also owns all 31 reset-frozen Level 1
-villager/dolmen rows, twelve selector-global villager clocks, their exact
+native indexed world compositor now owns 28 live Level 1 Villagers and three
+reset-observed dolmens, twelve selector-global villager clocks, their exact
 reset-chain membership, reflection-before-primary order, terrain shadows,
 source clipping, and managed-fallback capability.
 
 `COVERAGE.md` records the tested surface, `BRANCH-COVERAGE.md` maps each
 bounded source leaf to its focused test, and `DISCREPANCIES.md` records every
-known divergence. The canonical locked Cargo inventory now contains 442
-tests: 4 atlas-registry, 57 sim-capi, 377 sim-core, and 4 sim-wasm. In
-particular,
+known divergence. The canonical locked Cargo inventory now contains 481
+tests: 4 atlas-registry, 70 sim-capi, 3 sim-cli integration, 400 sim-core, and
+4 sim-wasm. In particular,
 material class `1` (strongly identified water) remains distinct from exact
 movement-redirection class `0x100`.
 

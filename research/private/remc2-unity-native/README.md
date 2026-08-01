@@ -49,14 +49,15 @@ finished.
   terrain-chain heads: 83 pass the reset-state renderer gate, 47 are suppressed,
   and 47 further active rows are off-chain.
 - Normal owner-cache mode registers exactly 64 stable managed actor fallbacks:
-  33 `GoatLive` goats plus 31 reset-frozen dolmen/villager sprites. In the
-  qualified view all 64 are suppressed by native compositor capabilities.
+  33 `GoatLive` goats, 28 `VillagerLive` villagers, and three reset-observed
+  dolmen sprites. In the qualified view all 64 are suppressed by native
+  compositor capabilities.
   Rust draws their exact TMAPs inside the indexed world frame using source
   map-cell order, facing/mirror selection, projection anchors, clipping,
   reflection-before-primary order, and terrain-projected shadows. Goat
   transforms and lifecycle come from the generation/tick/hash-bound 33-row
-  native snapshot; the 31 `FrozenObserved` actors retain their qualified reset
-  poses while their 12 selector-global villager clocks advance from actual
+  native snapshot; the three `FrozenObserved` dolmens retain their qualified
+  reset poses while the 12 selector-global villager clocks advance from actual
   native draw admission.
 - Atomic flight snapshots, exact integer simulation, live player row, ordered
   event journal, and eight immutable objective records.
@@ -179,12 +180,13 @@ Only explicit `-mc-debug` may run without the owner cache. With
 return as a test view. They are absent from `-mc-qualified`. The primitive
 carpet, lighting, depth proxy, and spell-event visual are debug-only and are
 not claims about original MC2 art, projectile simulation, or final asset
-fidelity. All objective rows are `FrozenObserved`. Of the 177 active entity
-rows, exactly 142 are `FrozenObserved`, 33 are `GoatLive`, entity 152 is
-`PlayerFlightLive`, and entity 153 is `SpellActivationLive`; the latter's
+fidelity. All objective rows are `FrozenObserved`. Of the 177 active reset
+rows, exactly 114 are `FrozenObserved`, 33 are `GoatLive`, 28 are
+`VillagerLive`, entity 152 is `PlayerFlightLive`, and entity 153 is
+`SpellActivationLive`; the latter's
 changing holder fields are not exposed by ABI v2. All 64 qualified reset
 actor records are drawn by the native indexed compositor: 33 live Goats, 28
-reset-frozen villagers, and three reset-frozen dolmens. Live Archers are also
+live Villagers, and three reset-observed dolmens. Live Archers are also
 native-composited from the mission registry.
 
 Unity owns no gameplay physics. The viewer creates no `Rigidbody`, gameplay
@@ -541,8 +543,9 @@ sphere/trail remains available only with explicit `-mc-debug`;
 `-mc-debug-entities` additionally shows unresolved entity diagnostics.
 
 The runtime-supplied owner-data boundary is now an executable gate:
-`qualification/verify_unity_lifecycle_privacy.py`. It requires exact 29/29
-EditMode and 1/1 graphics-backed PlayMode results; pins the launcher, runtime
+`qualification/verify_unity_lifecycle_privacy.py`. It requires the exact
+31/31 EditMode composite and 1/1 graphics-backed PlayMode results; pins the
+launcher, runtime
 assembly, global managers, plug-in, and build GUID; checks Unity build
 metadata; rejects StreamingAssets, symlinks, owner container/audio extensions,
 and registered owner-payload hash intersections; and reruns the full

@@ -1,8 +1,11 @@
 # Known conformance divergences
 
 Nothing in this file is silently normalized into a claim of parity. The
-current implementation is source-derived and `Partial`; it is not yet an
-exact-build conformance result.
+entries preserve historical investigations, terminology uncertainty, and
+upstream harness defects. Resolved entries and unresolved semantic names are
+not behavioral divergences in the closed bounded Level 1 profile. Current
+status is governed by the canonical matrix: 182/182 Exact with 29 explicit
+exclusions.
 
 ## DISC-001: Negative speed-effect arithmetic
 

@@ -133,6 +133,10 @@ structural-only comparisons, and forbidden claims. In particular:
   order; only the pixel-centre-nearest 320×200-to-640×480 display mapping is
   adapted.
 
+The following two-directory comparison is retained for optional historical
+presentation determinism review. It is not the PLAN29 acceptance count;
+PLAN29 accepts exactly one clean Run A as documented below.
+
 Materialize the private viewer only under a dedicated empty temporary
 directory:
 
@@ -157,7 +161,7 @@ python3 qualification/verify_presentation_correspondence.py \
 ```
 
 The composed gate requires the qualified native cache explicitly (or through
-`MC_OWNER_ASSET_CACHE`) and verifies its manifest, content, 1,248-output count,
+`MC_OWNER_ASSET_CACHE`) and verifies its manifest, content, 1,249-output count,
 source-frame census, and executable Rust/Unity test inventories before any
 native FINAL MAIN claim. The separate historical gallery check remains bound
 to the registered 570-output managed-gallery cache and is never reused as the

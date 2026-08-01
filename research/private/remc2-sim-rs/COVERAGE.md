@@ -1,5 +1,11 @@
 # Conformance coverage
 
+> **Historical bounded-flight ledger.** This file preserves the terminology
+> and evidence state of an earlier flight slice. Its `Partial` labels and test
+> count are not the current Level 1 verdict. The canonical current authority is
+> [`level1-conformance/LEVEL1-CONFORMANCE-MATRIX.md`](level1-conformance/LEVEL1-CONFORMANCE-MATRIX.md):
+> 182/182 Exact, zero non-Exact, 29 exclusions, and 481 Rust tests.
+
 This matrix describes the private source-derived milestone. `Partial` means
 that a behavior is present and tested without claiming exact-build parity.
 
@@ -24,7 +30,7 @@ that a behavior is present and tested without claiming exact-build parity.
 | Spell-fire dispatch boundary | Left/right/selected holder projections, exact request order, direction masks `256/512/256`, synchronous execution with holder aliasing, dispatch before one-pass flight skip | 2 | Partial |
 | Spell activation state machine | Sentinel, every holder-model branch family, signed gates/timers, mana threshold, caster special case, direction/pointer bits, help/sound event order, and an owned level-1 native left-fire checkpoint | 10 | Partial |
 
-Current atlas overlay: 43 `Partial`, 359 `StructuralOnly`, and 14,094
-`MappedOnly`. The workspace currently runs 197 tests: 159 `sim-core`, four
+Historical atlas overlay: 43 `Partial`, 359 `StructuralOnly`, and 14,094
+`MappedOnly`. At the time this ledger froze, the workspace ran 197 tests: 159 `sim-core`, four
 `atlas-registry`, 30 `sim-capi`, and four parked `sim-wasm` tests. No row is
 labeled `Implemented` or `Verified`.

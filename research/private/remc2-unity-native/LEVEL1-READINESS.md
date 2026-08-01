@@ -1,46 +1,33 @@
 # Level 1 playable-readiness record
 
-Date: 2026-07-27
+Date: 2026-08-01
 Scope: private owner-data preservation build, remc2 source to Rust simulation
 to Unity desktop. No DOSBox or original-binary analysis is part of this
 milestone.
 
 ## Verdict
 
-Level 1 is a playable mission slice, but it is not yet a complete remc2
-conformance slice. The ordinary-input desktop
-route starts from a fresh session, flies through all five source-mapped
-objective predicates and their completion message, collects and casts Fireball,
-Possession, Castle, and Speed, fights
-Archers and Fireflies, builds castle stage 1, possesses and deposits mana
-spheres, fills the castle, enters the authored exit, and reaches result code
-10 while alive. The separately tested post-completion group-33/34 multipart
-chain is implemented in the simulation and presentation, but the current
-ordinary-input completion route does not claim to fight that optional chain.
+The bounded private Level 1 profile is complete. The canonical remc2-derived
+matrix contains 182/182 Exact rows, zero non-Exact rows, and 29 structured
+exclusions with mechanical proofs. The final PLAN29 policy accepts exactly one
+clean Run A; run B is not permitted.
 
-That is a playable-readiness claim, not a frame-perfect-completion claim.
-The registered eight-bit Level 1 mission-simulation fidelity mask is now zero;
-it does not cover input, HUD, renderer, other presentation fidelity, or the
-newer house-spawned resident action-body register. House action 53 now removes
-terrain, allocates exact resident constructors and source slots, and renders
-qualified Archer/Villager families, but the four resident AI action bodies
-remain explicitly frozen with `dynamic_resident_behavior_gap_mask = 0x0f`.
-Every reachable
-mission sound on the ordinary-input completion route is tied to its remc2
-emitter, listener-relative command, pitch family, play type, and shared
-ten-voice arbitration. The effective Level 1 transient palette, objective
-minimap marks, and one shared 4:3 DOS-display presentation rectangle are now
-native/source-mapped. The Level 1 minimap now uses Rust-owned source-slot
-ordering, entity filters, colors, phase rules, sprite anchors, castle rope,
-objective marks, and the single-player reveal rules. High-resolution HSPRN
-HUD composition is active. The Level 1 objective textbox now preserves exact
-source geometry, 33-turn timing, TABLESN selector-61 live indexed-world
-blending, HFONT3 text, and HSPRN frame draw order; its explicit
-pixel-centre-nearest 320×200-to-640×480 mapping is a presentation adaptation.
-Exact sprite hotspots and complete whole-frame source interleaving remain
-registered presentation work.
-Unsupported presentation is absent or labelled; it is never silently treated
-as exact.
+The ordinary-input desktop route starts from a fresh session, traverses all
+five source-mapped objective predicates and their completion message, collects
+and casts Fireball, Possession, Castle, and Speed, fights Archers and
+Fireflies, builds castle stage 1, possesses and deposits mana spheres, fills
+the castle, enters the authored exit, and reaches result code 10 while alive.
+The post-completion route additionally fights group 33, the first multipart
+creature, and group 34 before exiting.
+
+Both the legacy mission fidelity register and the resident behavior
+observation remainder are zero in the accepted route. All reachable resident
+Archer, Builder, Villager, and Trader action bands are implemented and bound
+to executable evidence. Input, audio, minimap, HUD, objective textbox,
+palette, fixed-profile FINAL MAIN presentation, C ABI, Unity ownership,
+privacy, and provenance are separately qualified rather than inferred from
+those masks. Unsupported states remain absent, fail closed, or explicitly
+excluded; none is silently treated as Exact.
 
 ## Run it
 
@@ -67,8 +54,8 @@ and `Space` also casts the left hand. `Esc` releases capture, click recaptures,
   damage/death, group-33/34 activation, the authored exit, and result 10.
 - House action 53 uses the qualified BUILD footprints, row-major terrain/RNG
   order, real source allocations, exact Archer/Builder/Villager/Trader
-  constructor pairs, and exact initial damage-mailbox dispatch. Their
-  subsequent AI bodies remain the explicit resident gap described below.
+  constructor pairs, exact initial damage-mailbox dispatch, and the complete
+  reachable resident action bodies.
 - Four class-3/model-3 multipart heads, each with a source-slot-linked chain
   of 16 segments, plus six Fireflies and the group-34 scroll are allocated in
   authored order and participate in activation, AI, combat, death, mana
@@ -83,8 +70,8 @@ and `Space` also casts the left hand. `Esc` releases capture, click recaptures,
 - Owner Level 1 terrain, sky, palette, HUD inputs, minimap inputs, actor and
   projectile TMAPs, spell icons, effects, music, and sound records are loaded
   through the validated external owner cache.
-- The qualified indexed compositor covers terrain, Goats, Archers,
-  reset-frozen villagers and dolmens, Fireflies, multipart heads and segments,
+- The qualified indexed compositor covers terrain, Goats, Archers, live
+  Villagers, reset-observed dolmens, Fireflies, multipart heads and segments,
   Fireballs, arrows, castle
   projectiles, Possession, spell jars, exit target, impacts, splashes, castle
   root, mana carrier, and mana spheres in source-slot order, with the shared
@@ -105,13 +92,14 @@ and `Space` also casts the left hand. `Esc` releases capture, click recaptures,
 
 | Gate | Result |
 |---|---|
-| Rust workspace | 442 tests in the locked Cargo inventory: atlas 4, C ABI 57, sim core 377, WASM proof 4; exact row bindings resolve against that list |
+| Canonical matrix | 182/182 Exact, zero non-Exact, 29 structured exclusions; 308 authored indices and 845 dispatch slots partitioned |
+| Rust workspace | 481 tests in the locked Cargo inventory: atlas 4, C ABI 70, sim-cli integration 3, sim core 400, WASM proof 4; exact row bindings resolve against that list |
 | Owner cache | 1,249 outputs; deterministic rebuild, sealed PLAN29 identity, accepted native FINAL MAIN source-frame census, and corruption negatives |
-| Unity EditMode | 29/29 passed |
+| Unity EditMode | Composite 31/31 passed |
 | Unity PlayMode | 1/1 passed |
 | Built-player route | Stage 5, result 10 at tick 14,720 in the rebuilt desktop player |
 | Built-player post-completion route | Stage 5, result 10 at tick 21,039 after group 33, first multipart, and group 34 |
-| Native self-test | Five checkpoints, two sessions, reset replay, stale-generation rejection, and `fidelity_gap_flags=0x00` |
+| Native self-test | Five checkpoints, two sessions, reset replay, stale-generation rejection, `fidelity_gap_flags=0x00`, and resident observations 15/15 with zero remaining |
 | Lifecycle/privacy | Zero bulk managed allocations; seven negative launches; no embedded owner payload |
 | Full-frame presentation | Five 1600x900 checkpoints; two byte-identical runs; zero magenta |
 | Presentation correspondence | 3 historical original indexed captures, 5 historical managed Unity captures, 23 typed layers, 8 gallery records, plus a separate exact executable native FINAL MAIN timeline; no false cross-timeline pixel/clock or active-DAC RGB claims |
@@ -181,7 +169,7 @@ Current evidence from the final rebuilt player:
 - presentation materialization:
   `/tmp/magiccarpet-presentation-spell-final-v8`.
 
-## Simulation gap status and remaining work
+## Closed masks and explicit nonclaims
 
 The native mission snapshot reports `fidelity_gap_flags = 0x00`. This is a
 legacy bounded mission-simulation register, not a blanket fidelity
@@ -198,18 +186,17 @@ percentage. Every bit registered in that older mask is cleared:
   completion sequence;
 - `0x80`: secondary groups 33/34 and their reachable creature chain.
 
-The separate resident register currently reports `0x0f` after each frozen
-family reaches its unported body:
+The separate resident observation register is also closed. Its four bits are:
 
 - `0x01`: house-spawned Archer actions 33–37;
 - `0x02`: Builder actions 97–103 and construction action 96;
 - `0x04`: Villager actions 105 and 108–110;
 - `0x08`: Trader actions 113–119.
 
-Constructors, source-slot ownership, initial action-53 mailbox dispatch, source
-projection, collision participation, supported rendering, hashing, cleanup and
-reset are implemented. The subsequent action bodies must be ported before this
-record may claim complete Level 1 simulation parity.
+All four families are implemented through their reachable action bodies,
+source-slot ownership, projection, collision, supported rendering, hashing,
+cleanup, and reset. The accepted route observes all four bits (15/15), leaving
+`remaining_resident_behavior_mask = 0x00`.
 
 The owner cache exposes 30 materialized effect records, the explicit silent
 sound-12 contract, and the Level 1 music stream. The complete ordinary-input

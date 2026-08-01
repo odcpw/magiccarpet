@@ -4,6 +4,11 @@ Status: private Track P implementation contract
 Bead: `mc-dl0r.17.11.8.1`  
 Scope: Oliver's exact qualified Level 1 owner-data package only
 
+> **Fulfilled historical family contract.** This document records the first
+> live non-player slice. Its original downstream limitations were subsequently
+> closed or explicitly scoped by the canonical Level 1 conformance matrix and
+> PLAN29 receipt; they are not current Level 1 gaps.
+
 ## Decision
 
 The first live non-player family is the Goat family: class `5`, model `1`.

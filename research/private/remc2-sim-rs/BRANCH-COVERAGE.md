@@ -1,5 +1,10 @@
 # Bounded flight branch coverage
 
+> **Historical focused evidence ledger.** This remains valid proof for the
+> original class-3/action-0 slice, but it is not a list of current Level 1
+> gaps. Overall Level 1 status is governed by the canonical 182-row matrix and
+> PLAN29 Run-A receipt.
+
 This is the executable leaf ledger for the class-3/action-0 flight slice at
 upstream pin `6806c7204d17220ecc0430759f784aea8ee2ddb2`. A row marked
 `source fixture` means a focused state vector exercises the exact mapped

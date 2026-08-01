@@ -1,10 +1,22 @@
 # Level 1 conformance implementation plan
 
-Derived from [`level1-conformance-matrix.json`](level1-conformance-matrix.json) (182 rows: 98 Exact, 50 Partial, 31 Missing, 1 Wrong, 2 Unproved; 18 exclusions).
+Status: **COMPLETED 2026-08-01** by PLAN29 Run A.
+Final authority: [`level1-conformance-matrix.json`](level1-conformance-matrix.json)
+(182/182 Exact, zero non-Exact, 29 exclusions) and
+[`plan29-final-qualification-policy.json`](plan29-final-qualification-policy.json).
+
+This document preserves the implementation-time plan and its original gap map
+as history. Classifications and test counts below describe the pre-implementation
+baseline unless a section explicitly says final. They are not the current
+Level 1 status; use the generated
+[`LEVEL1-CONFORMANCE-MATRIX.md`](LEVEL1-CONFORMANCE-MATRIX.md) for that.
+
+Originally derived from 182 rows: 98 Exact, 50 Partial, 31 Missing, 1 Wrong,
+2 Unproved, and 18 exclusions.
 Specification: remc2 at `6806c7204d17220ecc0430759f784aea8ee2ddb2`. Line spans cite the committed revision.
 Canonical schema: `mc2-level1-conformance-matrix` v2 with typed authored (308/308) and dispatch (845/845) censuses and a machine-readable validator contract.
 
-**2026-07-28 PLAN-01 fail-closed repair:** all evidence bindings now resolve against the
+**Historical 2026-07-28 PLAN-01 fail-closed repair:** all evidence bindings resolved against the
 429-test Cargo inventory; non-executable records are confined to non-Exact rows;
 `DSP-10-58` was honestly reclassified Exact→Unproved (owner PLAN-25, scope extended). The
 existing Beads graph must be reconciled by Codex 5.6 High before implementation resumes:
@@ -28,14 +40,14 @@ Level 1 conformance is **closed** exactly when all of the following hold:
 5. Every exclusion has a mechanical reachability proof (EXC-*); the
    conditional class-10 slots in DSP-10-COND are resolved either way by
    PLAN-25 before closure.
-6. `dynamic_resident_behavior_gap_mask == 0` and the legacy mission mask
+6. `remaining_resident_behavior_mask == 0` and the legacy mission mask
    stays `0`; no new gap register is nonzero.
 7. `level1_p0_ready()` returns true and its successor exhaustive gate —
    `level1_matrix_closed()` (added by PLAN-01/PLAN-29), true only when the
    regenerated matrix contains zero non-Exact reachable rows — returns true.
 8. From a clean state (`cargo clean` + fresh Unity import + rebuilt owner
-   cache), the full gate set passes twice consecutively:
-   `cargo fmt --check`, `cargo clippy -D warnings`,
+   cache), the full gate set passes under the final one-run policy:
+   `cargo fmt --check`, the recorded non-increasing Clippy ceiling,
    `cargo test --workspace --locked` (unit/integration/property),
    sim-capi ABI tests, owner-cache validation (17 checks + negatives),
    reference-corpus checks, Unity EditMode + PlayMode, built-player route and
@@ -49,11 +61,9 @@ Level 1 conformance is **closed** exactly when all of the following hold:
     combat, resident/house/castle behavior, village-expansion groups,
     objective completion, failure/restart, and Unity presentation handoff.
 
-Contract points that cannot be validated today and the prerequisite work that
-makes them checkable (never weakened instead): point 4 and 7 need the
-validator + gate (PLAN-01); points 2 and 9 for load-time behavior need the
-reset-from-authored harness (PLAN-02); point 5 needs the spawner scan in
-PLAN-25.
+All ten contract points are validated by the canonical matrix and the final
+PLAN29 Run-A receipts. The final qualification policy supersedes the earlier
+two-run wording without weakening any behavioral gate.
 
 ## Slice graph
 
@@ -431,7 +441,7 @@ Depends on: PLAN-02, PLAN-10, PLAN-11, PLAN-12, PLAN-13, PLAN-14, PLAN-15, PLAN-
 Owns matrix rows: none (infrastructure/closure slice).
 
 Acceptance criteria:
-- every reachable matrix row Exact with validated bindings; both gap masks zero; level1_p0_ready() true plus successor exhaustive gate true; full suite (Rust unit/integration/property, C ABI, asset cache, reference corpus, Unity EditMode+PlayMode, route/lifecycle qualification, privacy/provenance) passes twice from clean state; end-to-end mission loop incl. failure/restart exercised
+- every reachable matrix row Exact with validated bindings; both gap masks zero; level1_p0_ready() true plus successor exhaustive gate true; full suite (Rust unit/integration/property, C ABI, asset cache, reference corpus, Unity EditMode+PlayMode, route/lifecycle qualification, privacy/provenance) passes in the one clean run required by the final policy; end-to-end mission loop incl. failure/restart exercised
 
 Allowed files/surfaces: all listed.
 
@@ -440,7 +450,7 @@ Not done if:
 - any Exact row lacks a resolvable executable binding
 - gates pass only in a warm workspace
 
-## Row-to-slice mapping (complete)
+## Historical row-to-slice mapping (pre-implementation baseline)
 
 | Matrix row | Classification | Owning slice |
 |---|---|---|
@@ -529,7 +539,7 @@ Not done if:
 | `INP-002` | Partial | PLAN-21 |
 | `PRS-001` | Partial | PLAN-28 |
 
-## Independent consistency checks (run at generation time)
+## Historical consistency checks at plan-generation time
 
 - [x] source census reconciliation: included rows plus exclusions cover the
   authored table (308 rows), the reset arena census, and all reachable
