@@ -84,6 +84,10 @@ pub struct VoxelComponentReport {
     pub support_footprint_x_um: Option<[i64; 2]>,
     pub support_footprint_z_um: Option<[i64; 2]>,
     pub center_of_mass: VoxelCenterOfMass,
+    /// Coarse diagonal inertia about the rounded centre of mass, in
+    /// micro-kg·µm².  This is a structural classification value, not a
+    /// rigid-body/physics-engine handoff.
+    pub inertia_diag_um2_microkg: [u128; 3],
     pub classification: VoxelComponentClassification,
 }
 
@@ -416,6 +420,7 @@ fn component_report(
     } else {
         VoxelComponentClassification::Topple
     };
+    let inertia_diag_um2_microkg = diagonal_inertia(structure, state, indexes, position_um)?;
 
     Ok(VoxelComponentReport {
         component_id,
@@ -427,6 +432,7 @@ fn component_report(
             mass_microkg: total_mass_microkg,
             position_um,
         },
+        inertia_diag_um2_microkg,
         classification,
     })
 }
@@ -453,6 +459,74 @@ fn whole_structure_decision(reports: &[VoxelComponentReport]) -> VoxelCollapseDe
     } else {
         VoxelCollapseDecision::Standing
     }
+}
+
+fn diagonal_inertia(
+    structure: &VoxelStructure,
+    state: &VoxelStructureState,
+    indexes: &[usize],
+    center_um: [i64; 3],
+) -> Result<[u128; 3], VoxelCollapseError> {
+    let cell_volume_um3 = cell_volume_um3(structure)?;
+    let mut result = [0_u128; 3];
+    for &index in indexes {
+        let cell = &state.cells()[index];
+        let density = structure
+            .materials
+            .iter()
+            .find(|material| material.id == cell.material_id)
+            .map(|material| material.density_kg_m3)
+            .ok_or_else(|| {
+                VoxelCollapseError::new(
+                    VoxelCollapseErrorKind::UnknownMaterial,
+                    format!("cell {} references unknown material", cell.id),
+                )
+            })?;
+        let mass = cell_mass_microkg(density, cell_volume_um3)?;
+        let center = cell_center_um(structure, cell.coord)?;
+        let mut squared = [0_u128; 3];
+        for axis in 0..3 {
+            let delta = i128::from(center[axis]) - i128::from(center_um[axis]);
+            squared[axis] = u128::try_from(delta.checked_mul(delta).ok_or_else(|| {
+                VoxelCollapseError::new(
+                    VoxelCollapseErrorKind::Overflow,
+                    "diagonal inertia offset square overflows fixed-point arithmetic",
+                )
+            })?)
+            .map_err(|_| {
+                VoxelCollapseError::new(
+                    VoxelCollapseErrorKind::Overflow,
+                    "diagonal inertia offset square is negative",
+                )
+            })?;
+        }
+        let contributions = [
+            squared[1].checked_add(squared[2]),
+            squared[0].checked_add(squared[2]),
+            squared[0].checked_add(squared[1]),
+        ];
+        for axis in 0..3 {
+            let contribution = contributions[axis].ok_or_else(|| {
+                VoxelCollapseError::new(
+                    VoxelCollapseErrorKind::Overflow,
+                    "diagonal inertia axis sum overflows fixed-point arithmetic",
+                )
+            })?;
+            let weighted = contribution.checked_mul(mass).ok_or_else(|| {
+                VoxelCollapseError::new(
+                    VoxelCollapseErrorKind::Overflow,
+                    "diagonal inertia mass product overflows fixed-point arithmetic",
+                )
+            })?;
+            result[axis] = result[axis].checked_add(weighted).ok_or_else(|| {
+                VoxelCollapseError::new(
+                    VoxelCollapseErrorKind::Overflow,
+                    "diagonal inertia accumulator overflows fixed-point arithmetic",
+                )
+            })?;
+        }
+    }
+    Ok(result)
 }
 
 fn update_range(range: &mut Option<(i64, i64)>, value: i64) {
@@ -500,6 +574,9 @@ fn report_hash_sha256(
         hasher.update(component.center_of_mass.mass_microkg.to_le_bytes());
         for position in component.center_of_mass.position_um {
             hasher.update(position.to_le_bytes());
+        }
+        for inertia in component.inertia_diag_um2_microkg {
+            hasher.update(inertia.to_le_bytes());
         }
         hasher.update([classification_tag(component.classification)]);
     }
@@ -917,6 +994,14 @@ mod tests {
             changed.components[0].center_of_mass.mass_microkg
                 > baseline.components[0].center_of_mass.mass_microkg
         );
+        assert!(
+            changed.components[0]
+                .inertia_diag_um2_microkg
+                .iter()
+                .all(|inertia| *inertia > 0)
+        );
+        let repeated = VoxelCollapseAnalyzer::analyze(&structure, &state).unwrap();
+        assert_eq!(changed, repeated);
     }
 
     #[test]
