@@ -10,7 +10,7 @@ use crate::{
     SIN_16_16,
     classic_hd::{ClassicHdError, ClassicHdRenderProfile, Q16_ONE, byte_hash},
     render_camera::terrain_projection_divisor,
-    terrain_frame::{LEVEL1_SKY_BYTES, Level1TerrainFrameCamera, level1_projection},
+    terrain_frame::{Level1TerrainFrameCamera, level1_projection},
     terrain_grid::{
         TERRAIN_FEATURE_CHECKERBOARD, TERRAIN_FEATURE_CULLED, TERRAIN_FEATURE_SEAM_SIDE,
     },
@@ -883,7 +883,7 @@ fn hash_submissions(plan: &ClassicHdTerrainSubmissionPlan) -> u64 {
 mod tests {
     use super::*;
     use crate::{
-        terrain_frame::{draw_level1_sky, level1_projection},
+        terrain_frame::{LEVEL1_SKY_BYTES, draw_level1_sky, level1_projection},
         terrain_grid::{OutdoorGridInput, outdoor_grid},
     };
 
