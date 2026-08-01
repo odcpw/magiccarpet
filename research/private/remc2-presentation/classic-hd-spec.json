@@ -1,0 +1,201 @@
+{
+  "schema_version": 1,
+  "spec_id": "mc-classic-hd-render-v1",
+  "source": {
+    "repository": "upstream/magic-carpet-2-hd",
+    "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+    "read_policy": "git object at pinned commit; never infer from a dirty upstream worktree",
+    "configuration_anchor": "remc2-regression-test/renderer-config.json"
+  },
+  "milestone_1_policy": {
+    "internal_aspect": "4:3",
+    "supported_profiles": [
+      {"id": "hd-640", "game_resolution": [640, 480], "stride": 640},
+      {"id": "hd-1280", "game_resolution": [1280, 960], "stride": 1280}
+    ],
+    "window_policy": "maintain aspect ratio; pillarbox widescreen windows",
+    "hud_policy": "source-style 640x480 HUD with integer scaling and no v1 widescreen reflow",
+    "widescreen_world_expansion": "deferred",
+    "enhanced_replacement_art": "deferred; optional owner high-resolution banks only"
+  },
+  "source_anchors": [
+    {
+      "stage": "configuration",
+      "path": "remc2-regression-test/renderer-config.json",
+      "symbols_or_fields": [
+        "graphics.windowResWidth",
+        "graphics.windowResHeight",
+        "graphics.maintainAspectRatio",
+        "graphics.gameDetail.gameResWidth",
+        "graphics.gameDetail.gameResHeight",
+        "graphics.gameDetail.useEnhancedGraphics",
+        "graphics.gameDetail.sky",
+        "graphics.gameDetail.reflections",
+        "graphics.gameDetail.dynamicLighting"
+      ],
+      "observed_contract": "pinned regression profile uses 640x480 window/game resolution, aspect maintenance, source assets, sky, reflections, and dynamic lighting"
+    },
+    {
+      "stage": "buffer_and_history",
+      "path": "remc2/engine/GameRenderHD.cpp",
+      "symbols_or_fields": [
+        "GameRenderHD::GameRenderHD",
+        "m_ptrDWORD_E9C38_smalltit",
+        "m_preBlurBuffer_E9C3C",
+        "m_ptrBlurBuffer_E9C3C",
+        "GameRenderHD::~GameRenderHD"
+      ],
+      "observed_contract": "allocates resolution-bounded indexed buffers and three-plane blur padding; constructor/destructor own the render history lifetime"
+    },
+    {
+      "stage": "camera_and_world",
+      "path": "remc2/engine/GameRenderHD.cpp",
+      "symbols_or_fields": [
+        "GameRenderHD::DrawWorld_411A0",
+        "GameRenderHD::DrawTerrainAndParticles_3C080",
+        "m_viewDistanceScale",
+        "m_tileRows",
+        "m_tileColumns",
+        "dword0x15_tileRenderCutOffDistance",
+        "dword0x13_FogStart",
+        "dword0x16_FogEnd"
+      ],
+      "observed_contract": "viewport dimensions feed projection and terrain traversal; viewDistanceScale expands tile lattice and scales fog/cutoff quadratically"
+    },
+    {
+      "stage": "sky",
+      "path": "remc2/engine/GameRenderHD.cpp",
+      "symbols_or_fields": [
+        "GameRenderHD::DrawSky_40950_TH",
+        "GameRenderHD::DrawSky_40950",
+        "x_BYTE_D41B5_texture_size",
+        "skyTextSize",
+        "off_D41A8_sky"
+      ],
+      "observed_contract": "indexed sky is rendered into the current viewport; the pinned branch selects the base 256 bank or a 1024 high-resolution bank when the high-resolution texture-size flag is active"
+    },
+    {
+      "stage": "terrain_and_painter",
+      "path": "remc2/engine/GameRenderHD.cpp",
+      "symbols_or_fields": [
+        "GameRenderHD::SubDrawCaveTerrainAndParticles",
+        "GameRenderHD::SubDrawInverseTerrainAndParticles",
+        "GameRenderHD::SubDrawTerrainAndParticles",
+        "GameRenderHD::DrawTriangleInProjectionSpace_B6253",
+        "GameRenderHD::CheckViewPortCull"
+      ],
+      "observed_contract": "terrain and particles use a painter-style traversal with viewport clipping and indexed texture reads; exact ordering must be preserved while the buffer dimensions become profile parameters"
+    },
+    {
+      "stage": "sprites_and_billboards",
+      "path": "remc2/engine/GameRenderHD.cpp",
+      "symbols_or_fields": [
+        "GameRenderHD::SetBillboards_3B560",
+        "GameRenderHD::DrawSprites_3E360",
+        "GameRenderHD::DrawSprite_41BD3",
+        "GameRenderHD::sub_88740"
+      ],
+      "observed_contract": "billboard orientation, sprite projection, clipping, and palette-index writes are resolution-aware consumers of the same viewport and screen stride"
+    },
+    {
+      "stage": "ui_and_mouse",
+      "path": "remc2/engine/Basic.cpp",
+      "symbols_or_fields": [
+        "gameUiScale",
+        "screenWidth_18062C",
+        "screenHeight_180624",
+        "x_DWORD_1806F8_mousex",
+        "x_DWORD_1806F8_mousey",
+        "sub_7C120_draw_bitmap_640"
+      ],
+      "observed_contract": "UI scale and pointer mapping use the active screen dimensions; source 640-wide HUD geometry is centered inside the current surface"
+    },
+    {
+      "stage": "display_and_selection",
+      "path": "remc2/engine/EventsFunctions.cpp",
+      "symbols_or_fields": [
+        "screenWidth_18062C",
+        "screenHeight_180624",
+        "gameResWidth",
+        "gameResHeight",
+        "m_ptrGameRender",
+        "GameRenderHD"
+      ],
+      "observed_contract": "renderer selection and screen dimensions are chosen before the game render object is constructed; no mid-frame renderer-family switch is part of the Classic HD contract"
+    },
+    {
+      "stage": "asset_fallback",
+      "path": "enhancedassets/graphics/high-res/skyd1024.data",
+      "symbols_or_fields": ["skyd1024.data", "skyn1024.data", "biggraphics"],
+      "observed_contract": "high-resolution owner banks are optional capabilities; missing banks must fall back to the original indexed owner banks without changing gameplay"
+    }
+  ],
+  "pipeline_contract": [
+    {
+      "id": "input",
+      "inputs": ["mode profile", "game resolution", "window resolution", "camera state", "indexed owner banks"],
+      "output": "validated profile and owned indexed resources",
+      "ordering": 1,
+      "test": "reject non-4:3 internal profiles and missing required profile fields"
+    },
+    {
+      "id": "buffer",
+      "inputs": ["profile width", "profile height"],
+      "output": "R8 world buffer with stride equal to width plus isolated history buffers",
+      "ordering": 2,
+      "test": "for each profile, assert buffer length equals width*height and history reset clears all planes"
+    },
+    {
+      "id": "sky",
+      "inputs": ["camera roll/yaw", "sky bank", "viewport"],
+      "output": "indexed sky plane at profile dimensions",
+      "ordering": 3,
+      "filtering": "source-shaped integer lookup; no RGB interpolation claim",
+      "test": "same camera and bank produce identical bytes; 1024 bank selection is visible in a synthetic pattern"
+    },
+    {
+      "id": "terrain",
+      "inputs": ["terrain lattice", "camera projection", "viewDistanceScale", "indexed terrain banks"],
+      "output": "clipped indexed terrain/painter plane",
+      "ordering": 4,
+      "clipping": "viewport and source raster clipping must be explicit",
+      "test": "profile scaling changes only presentation buffers and preserves command/state hashes"
+    },
+    {
+      "id": "typed-sprites",
+      "inputs": ["typed actor snapshots", "billboard orientation", "sprite bank"],
+      "output": "indexed sprite/shadow/reflection submissions",
+      "ordering": 5,
+      "test": "actor submission order and clipping are stable across repeated renders"
+    },
+    {
+      "id": "postprocess",
+      "inputs": ["final indexed world", "lighting/reflection state", "history buffers"],
+      "output": "final indexed world plane",
+      "ordering": 6,
+      "history": "reset on new presentation session, level reset, and profile change; never leak between modes",
+      "test": "first frame after each reset is independent of the prior profile and mode"
+    },
+    {
+      "id": "hud-and-present",
+      "inputs": ["final world plane", "live HUD snapshot", "window rectangle"],
+      "output": "4:3 fitted window with integer source-style HUD",
+      "ordering": 7,
+      "filtering": "integer HUD scale; window fit is separate from internal game resolution",
+      "test": "widescreen window changes only pillarbox rectangle and pointer transform in v1"
+    }
+  ],
+  "unresolved_or_fail_closed": [
+    "exact per-stage reflection and blur ownership must be isolated before claiming Classic HD pixel parity",
+    "widescreen world expansion is deferred from milestone 1",
+    "temporal history equivalence across profile changes is not assumed",
+    "optional 4x sprite-bank coverage must be capability-tested before enabling",
+    "any unsupported renderer branch fails closed instead of silently substituting a final-frame upscale"
+  ],
+  "provenance": {
+    "source_comparison": "pinned source objects only",
+    "original_binary_oracle": false,
+    "dosbox": false,
+    "owner_assets_in_spec": false
+  }
+}
