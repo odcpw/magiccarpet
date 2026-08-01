@@ -121,7 +121,7 @@ fn load_flight_source(private_root: &std::path::Path) -> ([i16; 10], [i16; 10], 
     let events_bytes = fs::read(&events_source).expect("read pinned private EventsFunctions.cpp");
     let events_sha256 = format!("{:x}", Sha256::digest(&events_bytes));
     assert_eq!(
-        events_sha256, "fac00f7fb51f7f72996d208fb34600e8f06aee389faa3e60801be66d62fb92ac",
+        events_sha256, "3b01de678aff9f8662ef22a4790d5a47cb152de25592c3eeb42183e4783c503f",
         "pinned EventsFunctions.cpp content drift"
     );
     let events_text = String::from_utf8(events_bytes).expect("EventsFunctions.cpp is UTF-8");
