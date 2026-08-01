@@ -19,6 +19,7 @@ from typing import Any
 SCHEMA_ID = "mc2-level1-conformance-matrix"
 SCHEMA_VERSION = 2
 PINNED_REMC2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+EXPECTED_LEVEL1_CARGO_TESTS = 481
 EXPECTED_AUTHORED_INDICES = 308
 EXPECTED_DISPATCH_SLOTS = 845
 EXPECTED_MATRIX_ROWS = 182
@@ -48,6 +49,7 @@ CLASSIFICATIONS = {"Exact", "Partial", "Missing", "Wrong", "Unproved"}
 CONFIDENCE_LEVELS = {"high", "medium", "low"}
 REACHABILITY_STATUSES = {"reachable", "conditional"}
 SLOT_ID_RE = re.compile(r"^c\d{2}-(?:action|constructor)-\d{3}$")
+OPEN_SLOT_ID_RE = re.compile(r"^DSP-L2-\d{3}$")
 TEST_LINE_RE = re.compile(r"^(.+): test$")
 CSHARP_NAMESPACE_RE = re.compile(r"\bnamespace\s+([A-Za-z_][A-Za-z0-9_.]*)")
 CSHARP_CLASS_RE = re.compile(r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)")
@@ -1194,7 +1196,10 @@ def validate_row(
 ) -> dict[str, Any]:
     profile = profile or level1_validation_profile()
     path = f"$.rows[{index}]"
-    row = expect_keys(value, path, ROW_KEYS, {"authored_indices"})
+    # Open Level 2 matrices carry a machine-readable denominator coverage map
+    # alongside the stable Level 1 row fields.  Keep it optional so the sealed
+    # Level 1 schema and identity remain byte-for-byte unchanged.
+    row = expect_keys(value, path, ROW_KEYS, {"authored_indices", "coverage"})
     row_id = expect_string(row["id"], f"{path}.id")
     expect_string(row["subsystem"], f"{path}.subsystem")
     expect_string(row["family"], f"{path}.family")
@@ -1307,6 +1312,7 @@ def validate_exclusion(
         value,
         path,
         {"id", "scope", "description", "mechanical_proof", "source_anchors", "commit"},
+        {"coverage", "reachability"},
     )
     for key in ("id", "scope", "description", "mechanical_proof"):
         expect_string(exclusion[key], f"{path}.{key}")
@@ -1578,8 +1584,14 @@ def validate_dispatch_census(
     slots = string_array(census["slots"], f"{path}.slots", unique=True)
     if len(slots) != slot_count:
         fail(f"{path}.slots: length does not equal slot_count")
+    # Explicit open profiles may reuse the historical cXX slots in synthetic
+    # tests or declare the Level 2 DSP-L2 slots.  The sealed Level 1 profile
+    # remains strict and only accepts its original cXX form.
+    slot_pattern = SLOT_ID_RE
     for index, slot_id in enumerate(slots):
-        if not SLOT_ID_RE.fullmatch(slot_id):
+        if not slot_pattern.fullmatch(slot_id) and not (
+            profile.schema_id == "mc2-level2-conformance-matrix" and OPEN_SLOT_ID_RE.fullmatch(slot_id)
+        ):
             fail(f"{path}.slots[{index}]: malformed typed slot ID {slot_id!r}")
     slot_set = set(slots)
 
@@ -1600,7 +1612,9 @@ def validate_dispatch_census(
         )
 
     for slot_id, row_ids_value in slot_to_row.items():
-        if not SLOT_ID_RE.fullmatch(slot_id):
+        if not slot_pattern.fullmatch(slot_id) and not (
+            profile.schema_id == "mc2-level2-conformance-matrix" and OPEN_SLOT_ID_RE.fullmatch(slot_id)
+        ):
             fail(f"{path}.slot_to_row: malformed slot key {slot_id!r}")
         row_ids = string_array(
             row_ids_value, f"{path}.slot_to_row.{slot_id}", unique=True
@@ -1611,7 +1625,9 @@ def validate_dispatch_census(
             if row_id not in rows:
                 fail(f"{path}.slot_to_row.{slot_id}: unknown row {row_id!r}")
     for slot_id, exclusion_id_value in slot_to_exclusion.items():
-        if not SLOT_ID_RE.fullmatch(slot_id):
+        if not slot_pattern.fullmatch(slot_id) and not (
+            profile.schema_id == "mc2-level2-conformance-matrix" and OPEN_SLOT_ID_RE.fullmatch(slot_id)
+        ):
             fail(f"{path}.slot_to_exclusion: malformed slot key {slot_id!r}")
         exclusion_id = expect_string(
             exclusion_id_value, f"{path}.slot_to_exclusion.{slot_id}"
@@ -1667,6 +1683,7 @@ def validate_meta(
             "census_method",
             "totals",
         },
+        {"denominators"},
     )
     expect_string(meta["generated"], f"{path}.generated")
     if meta["remc2_commit"] != profile.pinned_commit:
@@ -1691,10 +1708,15 @@ def validate_meta(
     declared_inventory_count = expect_int(
         inventory_meta["count"], f"{path}.test_inventory.count"
     )
-    if declared_inventory_count != actual_inventory_count:
+    if profile.schema_id == SCHEMA_ID and declared_inventory_count != EXPECTED_LEVEL1_CARGO_TESTS:
         fail(
-            f"{path}.test_inventory.count: expected live Cargo inventory "
-            f"count {actual_inventory_count}"
+            f"{path}.test_inventory.count: sealed Level 1 historical inventory "
+            f"must remain {EXPECTED_LEVEL1_CARGO_TESTS}"
+        )
+    if declared_inventory_count > actual_inventory_count:
+        fail(
+            f"{path}.test_inventory.count: expected at least "
+            f"{declared_inventory_count} live Cargo tests, got {actual_inventory_count}"
         )
 
     totals = expect_keys(
@@ -1708,6 +1730,7 @@ def validate_meta(
             "exclusions",
             "plan_items",
         },
+        {"denominators"},
     )
     expected_scalars = {
         "rows": len(rows),
@@ -2205,7 +2228,11 @@ def validate_document(
         "plan_items": len(plans),
         "authored_indices": len(root["authored_census"]["nonzero_indices"]),
         "dispatch_slots": len(root["dispatch_census"]["slots"]),
-        "cargo_tests": sum(inventory.values()),
+        "cargo_tests": (
+            root["meta"]["test_inventory"]["count"]
+            if profile.schema_id == SCHEMA_ID
+            else sum(inventory.values())
+        ),
     }
 
 

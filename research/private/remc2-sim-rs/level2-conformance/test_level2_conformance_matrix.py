@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Production-bound and mutation-negative checks for the Level 2 matrix."""
+
+from __future__ import annotations
+
+import copy
+import json
+from pathlib import Path
+import subprocess
+import unittest
+
+import sys
+TOOLS = Path(__file__).resolve().parents[1] / "tools"
+sys.path.insert(0, str(TOOLS))
+import build_level2_matrix as builder  # noqa: E402
+import validate_level2_matrix as validator  # noqa: E402
+import validate_level1_matrix as generic  # noqa: E402
+
+
+class Level2ConformanceMatrixTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.matrix = json.loads(builder.MATRIX.read_text(encoding="utf-8"))
+
+    def test_production_denominators_are_discriminating(self) -> None:
+        """Join independent builders and exercise live/non-live branch values."""
+        counts = validator.validate_coverage(self.matrix)
+        self.assertEqual(counts, {
+            "authored": 1200, "reset": 1000, "activation_groups": 33,
+            "producer_edges": 31, "objectives": 5, "dispatch": 845,
+            "tuples": 373, "ai_helpers": 79, "rng": 494, "audio": 119,
+            "cache": 1008, "presentation_refs": 1361,
+        })
+        ledger = json.loads((builder.HERE / "denominator" / "level2-dispatch-rng-audio-presentation.json").read_text())
+        self.assertEqual(
+            {row["classification"] for row in ledger["dispatch"]["rows"] if row["runtime_class"] == 10 and row["table_kind"] == "action" and row["selector_word_4"] in {45, 48}},
+            {"reachable_level2", "mechanically_unreachable_level2"},
+        )
+        self.assertEqual(ledger["audio"]["counts"]["reachable_level2"], 26)
+        self.assertEqual(ledger["presentation"]["cache_denominator"], 1008)
+        self.assertEqual(ledger["presentation"]["source_reference_denominator"], 1361)
+        summary = validator.validate(builder.MATRIX)
+        self.assertFalse(summary["closed"])
+        self.assertEqual(summary["non_exact_rows"], 50)
+
+    def test_mutation_negative_rejects_duplicate_denominator_owner(self) -> None:
+        value = copy.deepcopy(self.matrix)
+        first = next(row for row in value["rows"] if any(row["coverage"].values()))
+        second = next(row for row in value["rows"] if row is not first)
+        family = next(key for key, ids in first["coverage"].items() if ids)
+        second["coverage"][family].append(first["coverage"][family][0])
+        with self.assertRaisesRegex(ValueError, "multiply owned"):
+            validator.validate_coverage(value)
+
+    def test_mutation_negative_rejects_stale_source_and_missing_chain(self) -> None:
+        value = copy.deepcopy(self.matrix)
+        value["rows"][0]["source"]["commit"] = "0" * 40
+        with self.assertRaisesRegex(ValueError, "pinned source anchor"):
+            validator.validate_source_and_ownership(value)
+
+    def test_sealed_level1_inventory_identity_cannot_be_rewritten(self) -> None:
+        canonical = generic.load_matrix(
+            generic.SIM_WORKSPACE_ROOT / "level1-conformance" / "level1-conformance-matrix.json"
+        )
+        canonical["meta"]["test_inventory"]["count"] = generic.EXPECTED_LEVEL1_CARGO_TESTS - 1
+        profile = generic.level1_validation_profile()
+        inventory = generic.capture_cargo_test_inventory(generic.SIM_WORKSPACE_ROOT)
+        with self.assertRaisesRegex(generic.ValidationError, "historical inventory"):
+            generic.validate_document(canonical, inventory, profile)
+        value = copy.deepcopy(self.matrix)
+        value["exclusions"][0]["reachability"]["chain"] = ""
+        with self.assertRaisesRegex(ValueError, "reachability chain"):
+            validator.validate_source_and_ownership(value)
+
+    def test_builder_is_byte_stable(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(builder.HERE.parent / "tools" / "build_level2_matrix.py"), "--check"],
+            cwd=builder.ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
