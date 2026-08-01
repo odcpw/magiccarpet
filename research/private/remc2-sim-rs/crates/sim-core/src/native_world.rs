@@ -145,6 +145,7 @@ const PLAYER_SPELL_COUNT: usize = 26;
 const PLAYER_SPELL_COUNT_I16: i16 = 26;
 const FRAME_ASSET_COUNT: usize = 76;
 const LEVEL_ONE_CONTROL_MODE_SEAM_DEFAULT: u8 = 0;
+const LEVEL2_UPSTREAM_COMMIT: &str = "6806c7204d17220ecc0430759f784aea8ee2ddb2";
 
 const PACKAGE_MEMBERS: [(&str, usize); 6] = [
     ("authored-level.bin", AUTHORED_LEVEL_BYTES),
@@ -152,6 +153,25 @@ const PACKAGE_MEMBERS: [(&str, usize); 6] = [
     ("players.bin", 12 + PLAYER_COUNT * PLAYER_RECORD_BYTES),
     ("presentation.bin", 10_720),
     ("runtime.bin", RUNTIME_BYTES),
+    ("terrain.bin", TERRAIN_BYTES),
+];
+
+const LEVEL2_PACKAGE_MEMBERS: [(&str, usize); 13] = [
+    ("authored-level.bin", AUTHORED_LEVEL_BYTES),
+    (
+        "entities-post-features.bin",
+        12 + ENTITY_COUNT * ENTITY_RECORD_BYTES,
+    ),
+    ("entities.bin", 12 + ENTITY_COUNT * ENTITY_RECORD_BYTES),
+    ("feature-allocator.bin", 4_032),
+    ("feature-construction-inputs.bin", 34_164),
+    ("feature-end.bin", 16),
+    ("feature-start.bin", 16),
+    ("players.bin", 12 + PLAYER_COUNT * PLAYER_RECORD_BYTES),
+    ("presentation.bin", 10_720),
+    ("runtime.bin", RUNTIME_BYTES),
+    ("terrain-post-features.bin", TERRAIN_BYTES),
+    ("terrain-pre-features.bin", TERRAIN_BYTES),
     ("terrain.bin", TERRAIN_BYTES),
 ];
 
@@ -174,6 +194,21 @@ impl fmt::Display for NativeWorldError {
 impl std::error::Error for NativeWorldError {}
 
 type Result<T> = std::result::Result<T, NativeWorldError>;
+
+/// The owner-package profile selects both the schema member set and the
+/// external/internal level identity. It is deliberately typed so a Level 2
+/// package cannot flow through the sealed Level 1 loader by accident.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OwnerPackageProfile {
+    Level1,
+    Level2,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OwnerPackageSchema {
+    V2,
+    V3,
+}
 
 /// Resolve the single Level 1 presentation-cache root used by Rust fixtures.
 ///
@@ -425,6 +460,11 @@ pub struct PlayerSnapshot {
     pub turn: i32,
     pub left_spell_slot: u8,
     pub right_spell_slot: u8,
+    /// Raw signed selectors. Level 2 uses -1/-1 for an empty local hand;
+    /// Level 1's normalized selectors remain available through the legacy
+    /// `left_spell_slot`/`right_spell_slot` fields.
+    pub left_spell_slot_raw: i16,
+    pub right_spell_slot_raw: i16,
     pub left_subspell_index: i8,
     pub right_subspell_index: i8,
     pub selected_spell_ui_index: u8,
@@ -1976,6 +2016,103 @@ pub struct NativeWorld {
     level1_mission: Level1MissionTemplate,
 }
 
+/// Common owner data decoded for a profile before mission-specific behavior is
+/// constructed. Level 2 uses this inspection seam while its mission dispatch
+/// remains intentionally unsupported; it shares the same typed component
+/// arenas and parsers as Level 1.
+#[derive(Clone, Debug)]
+pub struct NativeWorldInspection {
+    profile: OwnerPackageProfile,
+    schema: OwnerPackageSchema,
+    metadata: LevelMetadata,
+    package_sha256: String,
+    terrain_planes: TerrainPlanes,
+    terrain: LegacyTerrain,
+    entities: Box<[EntitySnapshot]>,
+    players: Box<[PlayerSnapshot]>,
+    runtime: RuntimeSnapshot,
+    presentation: PresentationSelectors,
+    reset_state: Option<FlightState>,
+}
+
+impl NativeWorldInspection {
+    #[must_use]
+    pub const fn schema(&self) -> OwnerPackageSchema {
+        self.schema
+    }
+
+    #[must_use]
+    pub const fn profile(&self) -> OwnerPackageProfile {
+        self.profile
+    }
+
+    #[must_use]
+    pub const fn metadata(&self) -> &LevelMetadata {
+        &self.metadata
+    }
+
+    #[must_use]
+    pub const fn package_sha256(&self) -> &str {
+        self.package_sha256.as_str()
+    }
+
+    #[must_use]
+    pub const fn terrain_planes(&self) -> &TerrainPlanes {
+        &self.terrain_planes
+    }
+
+    #[must_use]
+    pub const fn terrain(&self) -> &LegacyTerrain {
+        &self.terrain
+    }
+
+    #[must_use]
+    pub fn entities(&self) -> &[EntitySnapshot] {
+        &self.entities
+    }
+
+    #[must_use]
+    pub fn players(&self) -> &[PlayerSnapshot] {
+        &self.players
+    }
+
+    #[must_use]
+    pub const fn runtime(&self) -> &RuntimeSnapshot {
+        &self.runtime
+    }
+
+    #[must_use]
+    pub const fn presentation(&self) -> &PresentationSelectors {
+        &self.presentation
+    }
+
+    #[must_use]
+    pub const fn reset_state(&self) -> Option<&FlightState> {
+        self.reset_state.as_ref()
+    }
+
+    /// Mission construction is intentionally fail-closed until the Level 2
+    /// content profile is implemented by the later mission beads.
+    pub fn mission_unimplemented(&self) -> Result<()> {
+        Err(NativeWorldError::new(format!(
+            "mission behavior is unsupported for {:?} owner profile",
+            self.profile
+        )))
+    }
+}
+
+struct CommonPackage {
+    package: ValidatedPackage,
+    metadata: LevelMetadata,
+    terrain_planes: TerrainPlanes,
+    terrain: LegacyTerrain,
+    entities: Vec<EntitySnapshot>,
+    players: Vec<PlayerSnapshot>,
+    runtime: RuntimeSnapshot,
+    presentation: PresentationSelectors,
+    reset_state: Option<FlightState>,
+}
+
 impl NativeWorld {
     /// Load and validate an export package and its separately supplied closure.
     ///
@@ -2031,6 +2168,33 @@ impl NativeWorld {
         )
     }
 
+    /// Decode the Level 2 common owner package without constructing mission
+    /// behavior. This is the production-path seam for the Level 2 profile:
+    /// all package members, typed relations, reset state, and Day metadata
+    /// are validated before the explicit unsupported-mission boundary.
+    pub fn inspect_level2(package_dir: impl AsRef<Path>) -> Result<NativeWorldInspection> {
+        let package_dir = package_dir.as_ref();
+        let manifest_path = package_dir.join("manifest.json");
+        let manifest_bytes = read_file(&manifest_path)?;
+        let manifest: Value = serde_json::from_slice(&manifest_bytes)
+            .map_err(|error| NativeWorldError::new(format!("invalid manifest JSON: {error}")))?;
+        let object = as_object(&manifest, "manifest")?;
+        let common = parse_common_package(package_dir, object, OwnerPackageProfile::Level2)?;
+        Ok(NativeWorldInspection {
+            profile: OwnerPackageProfile::Level2,
+            schema: common.package.schema,
+            metadata: common.metadata,
+            package_sha256: common.package.package_sha256,
+            terrain_planes: common.terrain_planes,
+            terrain: common.terrain,
+            entities: common.entities.into_boxed_slice(),
+            players: common.players.into_boxed_slice(),
+            runtime: common.runtime,
+            presentation: common.presentation,
+            reset_state: common.reset_state,
+        })
+    }
+
     fn load_internal(
         package_dir: &Path,
         closure_path: &Path,
@@ -2041,54 +2205,25 @@ impl NativeWorld {
         let manifest: Value = serde_json::from_slice(&manifest_bytes)
             .map_err(|error| NativeWorldError::new(format!("invalid manifest JSON: {error}")))?;
         let object = as_object(&manifest, "manifest")?;
-        require_string(object, "schema", "manifest")?
-            .eq(MANIFEST_SCHEMA)
-            .then_some(())
-            .ok_or_else(|| {
-                NativeWorldError::new("manifest schema must be mc2-owner-level-export/v2")
-            })?;
-        require_string(object, "byte_order", "manifest")?
-            .eq("little-endian")
-            .then_some(())
-            .ok_or_else(|| NativeWorldError::new("manifest byte_order must be little-endian"))?;
-
-        let members = validate_package(package_dir, object)?;
-        let package_sha256 = require_hash_string(object, "package_sha256", "manifest")?.to_owned();
-        let metadata = parse_metadata(object)?;
-        let counts = require_object(object, "counts", "manifest")?;
-        validate_manifest_counts(counts)?;
-        validate_manifest_layouts(object)?;
+        let common = parse_common_package(package_dir, object, OwnerPackageProfile::Level1)?;
+        let CommonPackage {
+            package,
+            metadata,
+            terrain_planes,
+            terrain,
+            mut entities,
+            players,
+            runtime,
+            presentation,
+            reset_state,
+        } = common;
+        let reset_state = reset_state.ok_or_else(|| {
+            NativeWorldError::new("Level 1 common package is missing reset_projection")
+        })?;
+        let members = package.members;
+        let package_sha256 = package.package_sha256;
 
         let authored = member(&members, "authored-level.bin")?;
-        if authored[6] != metadata.map_type.id() {
-            return Err(NativeWorldError::new(
-                "authored-level.bin map type does not match manifest",
-            ));
-        }
-
-        let terrain_planes = parse_terrain(member(&members, "terrain.bin")?)?;
-        let terrain = LegacyTerrain::new(
-            terrain_planes.terrain_types.to_vec(),
-            terrain_planes.ground_heights.to_vec(),
-            (metadata.map_type == MapType::Cave).then(|| terrain_planes.secondary_heights.to_vec()),
-            terrain_planes.angles.to_vec(),
-        )
-        .map_err(NativeWorldError::new)?;
-
-        let mut entities = parse_entities(member(&members, "entities.bin")?)?;
-        let players = parse_players(member(&members, "players.bin")?)?;
-        let runtime = parse_runtime(member(&members, "runtime.bin")?)?;
-        validate_level_one_mission_stages(&runtime)?;
-        let presentation = parse_presentation(member(&members, "presentation.bin")?)?;
-        validate_level_one_mission_presentation(&presentation)?;
-        validate_manifest_relations(counts, &entities, &players, &runtime, &presentation)?;
-
-        let reset_state = parse_reset_state(
-            require_object(object, "reset_projection", "manifest")?,
-            member(&members, "entities.bin")?,
-            member(&members, "players.bin")?,
-            member(&members, "runtime.bin")?,
-        )?;
         let reset_context = build_level_one_context(&metadata, &reset_state, &players, &entities)?;
         validate_reset_contract(
             require_object(object, "reset_projection", "manifest")?,
@@ -4154,11 +4289,18 @@ fn parse_metadata(manifest: &serde_json::Map<String, Value>) -> Result<LevelMeta
     })
 }
 
-fn validate_manifest_counts(counts: &serde_json::Map<String, Value>) -> Result<()> {
+fn validate_manifest_counts(
+    counts: &serde_json::Map<String, Value>,
+    profile: OwnerPackageProfile,
+) -> Result<()> {
+    let expected_active = match profile {
+        OwnerPackageProfile::Level1 => 177,
+        OwnerPackageProfile::Level2 => 114,
+    };
     for (name, expected) in [
         ("authored_features", 1_200_u64),
         ("entity_slots", 1_000),
-        ("active_entities", 177),
+        ("active_entities", expected_active),
         ("players", 8),
         ("particle_parameters", 347),
         ("level_sprite_selectors", 504),
@@ -4172,6 +4314,206 @@ fn validate_manifest_counts(counts: &serde_json::Map<String, Value>) -> Result<(
                 "manifest count {name} must be {expected}, got {actual}"
             )));
         }
+    }
+    Ok(())
+}
+
+fn validate_profile(metadata: &LevelMetadata, profile: OwnerPackageProfile) -> Result<()> {
+    let expected = match profile {
+        OwnerPackageProfile::Level1 => (1, 0, MapType::Night),
+        OwnerPackageProfile::Level2 => (2, 1, MapType::Day),
+    };
+    if (
+        metadata.external_level,
+        metadata.internal_level,
+        metadata.map_type,
+    ) != (expected.0, expected.1, expected.2)
+    {
+        return Err(NativeWorldError::new(format!(
+            "owner package metadata does not match {:?} profile: external {}, internal {}, map {:?}",
+            profile, metadata.external_level, metadata.internal_level, metadata.map_type
+        )));
+    }
+    Ok(())
+}
+
+fn validate_level_two_profile(
+    manifest: &serde_json::Map<String, Value>,
+    runtime: &RuntimeSnapshot,
+    players: &[PlayerSnapshot],
+    entities: &[EntitySnapshot],
+) -> Result<()> {
+    if runtime.local_player_slot != 0 || runtime.player_count != 2 || runtime.maptype_music != 2 {
+        return Err(NativeWorldError::new(
+            "Level 2 runtime must select local player 0, two offline players, and Day music",
+        ));
+    }
+    if players.get(0).is_none_or(|player| player.is_ai)
+        || players.get(1).is_none_or(|player| !player.is_ai)
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 player ordering must be local player 0 followed by AI player 1",
+        ));
+    }
+    for (slot, player) in players.iter().take(2).enumerate() {
+        if entities
+            .get(usize::from(player.entity_index))
+            .is_none_or(|entity| !entity.active)
+        {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 player {slot} must reference an active entity"
+            )));
+        }
+    }
+    let dependencies = require_object(manifest, "presentation_dependencies", "manifest")?;
+    if require_string(dependencies, "map_type", "presentation_dependencies")? != "Day"
+        || as_u8(
+            require_value(
+                dependencies,
+                "vga_resolution_selector",
+                "presentation_dependencies",
+            )?,
+            "presentation_dependencies.vga_resolution_selector",
+        )? != 1
+        || as_u8(
+            require_value(dependencies, "texture_size", "presentation_dependencies")?,
+            "presentation_dependencies.texture_size",
+        )? != 32
+        || as_u8(
+            require_value(
+                dependencies,
+                "terrain_graphics_flags",
+                "presentation_dependencies",
+            )?,
+            "presentation_dependencies.terrain_graphics_flags",
+        )? != 0
+        || require_value(
+            dependencies,
+            "terrain_graphics_flag_2",
+            "presentation_dependencies",
+        )? != &Value::Bool(false)
+        || require_string(dependencies, "terrain_bank", "presentation_dependencies")? != "TMAPS0-0"
+        || require_string(dependencies, "sprite_bank", "presentation_dependencies")? != "MSPRD0-0"
+        || require_string(dependencies, "web_bank", "presentation_dependencies")? != "MWEBD0-0"
+        || require_string(dependencies, "block_bank", "presentation_dependencies")? != "BL32N0-0"
+        || require_string(dependencies, "palette", "presentation_dependencies")? != "PALD-0"
+        || require_string(dependencies, "sky_bank", "presentation_dependencies")? != "SKYD0-0"
+        || as_u8(
+            require_value(dependencies, "sound_bank", "presentation_dependencies")?,
+            "presentation_dependencies.sound_bank",
+        )? != 1
+        || as_u8(
+            require_value(dependencies, "cursor", "presentation_dependencies")?,
+            "presentation_dependencies.cursor",
+        )? != 9
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 Day presentation dependencies are not the qualified owner set",
+        ));
+    }
+    let resolved = require_object(dependencies, "resolved_files", "presentation_dependencies")?;
+    for (name, expected) in [
+        ("level_records", "owner:GAME/NETHERW/CLEVELS/LEVELS.DAT"),
+        ("terrain_bank", "owner:GAME/NETHERW/CDATA/TMAPS0-0.DAT"),
+        ("sprite_bank", "owner:CD_Files/DATA/MSPRD0-0.DAT"),
+        ("web_bank", "owner:CD_Files/DATA/MWEBD0-0.DAT"),
+        ("block_bank", "owner:CD_Files/DATA/BL32N0-0.DAT"),
+        ("palette", "owner:CD_Files/DATA/PALD-0.DAT"),
+        ("sky_bank", "owner:CD_Files/DATA/SKYD0-0.DAT"),
+        ("building_bank", "owner:CD_Files/DATA/BUILD0-0.DAT"),
+        ("spell_table", "owner:CD_Files/DATA/SPELLS.DAT"),
+        ("font_bank", "owner:CD_Files/DATA/FONT1.DAT"),
+        ("language", "owner:CD_Files/LANGUAGE/L1.TXT"),
+    ] {
+        if require_string(resolved, name, "presentation_dependencies.resolved_files")? != expected {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 presentation dependency {name} changed"
+            )));
+        }
+    }
+    let source = require_object(manifest, "source", "manifest")?;
+    if require_string(source, "upstream_commit", "manifest.source")? != LEVEL2_UPSTREAM_COMMIT {
+        return Err(NativeWorldError::new(
+            "Level 2 source pin does not match the remc2 specification",
+        ));
+    }
+    let normalization = require_object(manifest, "normalization", "manifest")?;
+    if require_string(normalization, "integer_encoding", "manifest.normalization")?
+        != "explicit fixed-width little-endian semantic fields"
+        || require_string(normalization, "native_pointers", "manifest.normalization")?
+            != "stable tagged relations; live/authored pools are one-based and zero is null"
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 normalization policy is not fixed-width little-endian",
+        ));
+    }
+    let volatile = require_array(
+        normalization,
+        "volatile_host_state",
+        "manifest.normalization",
+    )?;
+    if volatile.as_slice()
+        != [json!(
+            "player time_393 host-clock sample zeroed; secondary terrain plane preserved"
+        )]
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 normalization volatile-host policy changed",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_level_two_provenance_members(members: &BTreeMap<String, Vec<u8>>) -> Result<()> {
+    for (name, magic) in [
+        ("feature-start.bin", *b"MFS3"),
+        ("feature-end.bin", *b"MFE3"),
+        ("feature-allocator.bin", *b"MCA3"),
+        ("feature-construction-inputs.bin", *b"MCI3"),
+    ] {
+        let bytes = member(members, name)?;
+        if bytes.get(..4) != Some(magic.as_slice()) || read_u16(bytes, 4, name)? != 1 {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 {name} header/version mismatch"
+            )));
+        }
+    }
+    validate_header(
+        member(members, "entities-post-features.bin")?,
+        *b"MCE3",
+        1,
+        ENTITY_RECORD_BYTES_U16,
+        ENTITY_COUNT_U32,
+        "entities-post-features.bin",
+    )?;
+    if read_u16(
+        member(members, "feature-start.bin")?,
+        6,
+        "feature-start record size",
+    )? != 16
+        || read_u16(
+            member(members, "feature-end.bin")?,
+            6,
+            "feature-end record size",
+        )? != 16
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 feature boundary record size changed",
+        ));
+    }
+    let allocator = member(members, "feature-allocator.bin")?;
+    if read_u16(allocator, 6, "feature allocator header bytes")? != 32 || allocator.len() < 32 {
+        return Err(NativeWorldError::new(
+            "Level 2 feature allocator layout changed",
+        ));
+    }
+    let inputs = member(members, "feature-construction-inputs.bin")?;
+    if read_u16(inputs, 6, "feature construction record size")? != 16
+        || read_u16(inputs, 8, "feature construction record count")? != 9
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 feature construction input layout changed",
+        ));
     }
     Ok(())
 }
@@ -4231,24 +4573,176 @@ fn validate_manifest_layouts(manifest: &serde_json::Map<String, Value>) -> Resul
     Ok(())
 }
 
+fn parse_common_package(
+    package_dir: &Path,
+    manifest: &serde_json::Map<String, Value>,
+    profile: OwnerPackageProfile,
+) -> Result<CommonPackage> {
+    let schema = require_string(manifest, "schema", "manifest")?;
+    let expected_schema = match profile {
+        OwnerPackageProfile::Level1 => MANIFEST_SCHEMA,
+        OwnerPackageProfile::Level2 => "mc2-owner-level-export/v3",
+    };
+    if schema != expected_schema {
+        return Err(NativeWorldError::new(format!(
+            "manifest schema must be {expected_schema} for {profile:?}"
+        )));
+    }
+    if require_string(manifest, "byte_order", "manifest")? != "little-endian" {
+        return Err(NativeWorldError::new(
+            "manifest byte_order must be little-endian",
+        ));
+    }
+
+    let package = validate_package(package_dir, manifest)?;
+    if profile == OwnerPackageProfile::Level2 {
+        validate_level_two_provenance_members(&package.members)?;
+    }
+    let metadata = parse_metadata(manifest)?;
+    validate_profile(&metadata, profile)?;
+    let counts = require_object(manifest, "counts", "manifest")?;
+    validate_manifest_counts(counts, profile)?;
+    validate_manifest_layouts(manifest)?;
+
+    let authored = member(&package.members, "authored-level.bin")?;
+    if authored.get(6).copied() != Some(metadata.map_type.id()) {
+        return Err(NativeWorldError::new(
+            "authored-level.bin map type does not match manifest",
+        ));
+    }
+
+    let terrain_planes = parse_terrain(member(&package.members, "terrain.bin")?)?;
+    let terrain = LegacyTerrain::new(
+        terrain_planes.terrain_types.to_vec(),
+        terrain_planes.ground_heights.to_vec(),
+        (metadata.map_type == MapType::Cave).then(|| terrain_planes.secondary_heights.to_vec()),
+        terrain_planes.angles.to_vec(),
+    )
+    .map_err(NativeWorldError::new)?;
+    let entities = parse_entities(member(&package.members, "entities.bin")?)?;
+    let players = parse_players(member(&package.members, "players.bin")?, profile)?;
+    let runtime = parse_runtime(member(&package.members, "runtime.bin")?)?;
+    let presentation = parse_presentation(member(&package.members, "presentation.bin")?)?;
+    if profile == OwnerPackageProfile::Level1 {
+        validate_level_one_mission_stages(&runtime)?;
+        validate_level_one_mission_presentation(&presentation)?;
+    } else {
+        validate_level_two_profile(manifest, &runtime, &players, &entities)?;
+    }
+    validate_manifest_relations(counts, &entities, &players, &runtime, &presentation)?;
+    let reset_state = match (profile, manifest.get("reset_projection")) {
+        // Existing Level 2 captures may carry a copied Level 1 seal. Parse
+        // its mapping shape for tamper detection, but do not expose the stale
+        // state as Level 2 mission data; the generic reset bead owns that
+        // profile-specific projection.
+        (OwnerPackageProfile::Level2, Some(reset)) => {
+            let reset = as_object(reset, "reset_projection")?;
+            let _ = parse_reset_state(
+                reset,
+                member(&package.members, "entities.bin")?,
+                member(&package.members, "players.bin")?,
+                member(&package.members, "runtime.bin")?,
+            )?;
+            None
+        }
+        (OwnerPackageProfile::Level1, Some(reset)) => {
+            let reset = as_object(reset, "reset_projection")?;
+            let state = parse_reset_state(
+                reset,
+                member(&package.members, "entities.bin")?,
+                member(&package.members, "players.bin")?,
+                member(&package.members, "runtime.bin")?,
+            )?;
+            Some(state)
+        }
+        (OwnerPackageProfile::Level2, None) => None,
+        (OwnerPackageProfile::Level1, None) => {
+            return Err(NativeWorldError::new(
+                "manifest is missing reset_projection",
+            ));
+        }
+    };
+    Ok(CommonPackage {
+        package,
+        metadata,
+        terrain_planes,
+        terrain,
+        entities,
+        players,
+        runtime,
+        presentation,
+        reset_state,
+    })
+}
+
+struct ValidatedPackage {
+    schema: OwnerPackageSchema,
+    package_sha256: String,
+    members: BTreeMap<String, Vec<u8>>,
+}
+
 fn validate_package(
     package_dir: &Path,
     manifest: &serde_json::Map<String, Value>,
-) -> Result<BTreeMap<String, Vec<u8>>> {
+) -> Result<ValidatedPackage> {
+    let schema = match require_string(manifest, "schema", "manifest")? {
+        MANIFEST_SCHEMA => OwnerPackageSchema::V2,
+        "mc2-owner-level-export/v3" => OwnerPackageSchema::V3,
+        other => {
+            return Err(NativeWorldError::new(format!(
+                "unsupported owner package schema {other}"
+            )));
+        }
+    };
     let files = require_object(manifest, "files", "manifest")?;
-    if files.len() != PACKAGE_MEMBERS.len() {
+    let expected_members: &[(&str, usize)] = match schema {
+        OwnerPackageSchema::V2 => &PACKAGE_MEMBERS,
+        OwnerPackageSchema::V3 => &LEVEL2_PACKAGE_MEMBERS,
+    };
+    let mut allowed_paths = expected_members
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<BTreeSet<_>>();
+    allowed_paths.insert("manifest.json");
+    for entry in fs::read_dir(package_dir).map_err(|error| {
+        NativeWorldError::new(format!(
+            "cannot enumerate package {}: {error}",
+            package_dir.display()
+        ))
+    })? {
+        let entry = entry.map_err(|error| {
+            NativeWorldError::new(format!("cannot inspect package member: {error}"))
+        })?;
+        let name = entry.file_name();
+        let name = name
+            .to_str()
+            .ok_or_else(|| NativeWorldError::new("package contains a non-UTF-8 member name"))?;
+        if !allowed_paths.contains(name)
+            || !entry
+                .file_type()
+                .map_err(|error| {
+                    NativeWorldError::new(format!("cannot inspect package member {name}: {error}"))
+                })?
+                .is_file()
+        {
+            return Err(NativeWorldError::new(format!(
+                "package contains an unlisted or non-file member {name}"
+            )));
+        }
+    }
+    if files.len() != expected_members.len() {
         return Err(NativeWorldError::new(
-            "manifest files map must contain exactly six package members",
+            "manifest files map does not contain the exact typed package member set",
         ));
     }
     let mut members = BTreeMap::new();
     let mut identity = Vec::new();
-    for (name, expected_size) in PACKAGE_MEMBERS {
+    for (name, expected_size) in expected_members {
         let entry = require_object(files, name, "manifest.files")?;
-        require_exact_u64(entry, "bytes", expected_size as u64, name)?;
+        require_exact_u64(entry, "bytes", *expected_size as u64, name)?;
         let expected_hash = require_hash_string(entry, "sha256", name)?;
         let bytes = read_file(&package_dir.join(name))?;
-        if bytes.len() != expected_size {
+        if bytes.len() != *expected_size {
             return Err(NativeWorldError::new(format!(
                 "{name} has {} bytes, expected {expected_size}",
                 bytes.len()
@@ -4264,14 +4758,18 @@ fn validate_package(
         identity.push(0);
         identity.extend_from_slice(expected_size.to_string().as_bytes());
         identity.push(b'\n');
-        members.insert(name.to_owned(), bytes);
+        members.insert((*name).to_owned(), bytes);
     }
     let actual_package_hash = sha256_hex(&identity);
     let expected_package_hash = require_hash_string(manifest, "package_sha256", "manifest")?;
     if actual_package_hash != expected_package_hash {
         return Err(NativeWorldError::new("package_sha256 mismatch"));
     }
-    Ok(members)
+    Ok(ValidatedPackage {
+        schema,
+        package_sha256: expected_package_hash.to_owned(),
+        members,
+    })
 }
 
 fn parse_terrain(bytes: &[u8]) -> Result<TerrainPlanes> {
@@ -4397,7 +4895,7 @@ fn parse_entities(bytes: &[u8]) -> Result<Vec<EntitySnapshot>> {
     Ok(entities)
 }
 
-fn parse_players(bytes: &[u8]) -> Result<Vec<PlayerSnapshot>> {
+fn parse_players(bytes: &[u8], profile: OwnerPackageProfile) -> Result<Vec<PlayerSnapshot>> {
     validate_header(
         bytes,
         *b"MCP1",
@@ -4428,8 +4926,9 @@ fn parse_players(bytes: &[u8]) -> Result<Vec<PlayerSnapshot>> {
         }
         let left = read_i16(record, 554, "left spell slot")?;
         let right = read_i16(record, 556, "right spell slot")?;
-        if !(0..PLAYER_SPELL_COUNT_I16).contains(&left)
-            || !(0..PLAYER_SPELL_COUNT_I16).contains(&right)
+        let level2_empty_hand = profile == OwnerPackageProfile::Level2 && left == -1 && right == -1;
+        if (!level2_empty_hand && !(0..PLAYER_SPELL_COUNT_I16).contains(&left))
+            || (!level2_empty_hand && !(0..PLAYER_SPELL_COUNT_I16).contains(&right))
         {
             return Err(NativeWorldError::new(format!(
                 "player {slot} spell selection is out of bounds"
@@ -4470,8 +4969,10 @@ fn parse_players(bytes: &[u8]) -> Result<Vec<PlayerSnapshot>> {
             entity_index,
             active_player_index: read_i16(record, 6, "active player index")?,
             turn: read_i32(record, 8, "player turn")?,
-            left_spell_slot: u8::try_from(left).expect("validated spell slot"),
-            right_spell_slot: u8::try_from(right).expect("validated spell slot"),
+            left_spell_slot: u8::try_from(left.max(0)).expect("validated spell slot"),
+            right_spell_slot: u8::try_from(right.max(0)).expect("validated spell slot"),
+            left_spell_slot_raw: left,
+            right_spell_slot_raw: right,
             left_subspell_index,
             right_subspell_index,
             selected_spell_ui_index,
@@ -5024,13 +5525,11 @@ fn build_level_one_context(
     })
 }
 
-fn validate_reset_contract(
+fn validate_reset_state_hash_contract(
     reset: &serde_json::Map<String, Value>,
     state: &FlightState,
-    context: &FlightContext,
 ) -> Result<()> {
-    let expected_state = require_value(reset, "expected_state", "reset_projection")?;
-    if expected_state != &flight_state_json(state) {
+    if require_value(reset, "expected_state", "reset_projection")? != &flight_state_json(state) {
         return Err(NativeWorldError::new(
             "decoded reset state does not match manifest expected_state",
         ));
@@ -5105,6 +5604,15 @@ fn validate_reset_contract(
     if state_hash(state) != expected_hash {
         return Err(NativeWorldError::new("reset state hash mismatch"));
     }
+    Ok(())
+}
+
+fn validate_reset_contract(
+    reset: &serde_json::Map<String, Value>,
+    state: &FlightState,
+    context: &FlightContext,
+) -> Result<()> {
+    validate_reset_state_hash_contract(reset, state)?;
     let conformance = require_object(reset, "conformance_hash", "reset_projection")?;
     if require_string(conformance, "schema", "reset conformance_hash")?
         != "mc2-flight-conformance-hash/fnv1a64-v1"
@@ -6632,6 +7140,152 @@ mod tests {
             private.join("generated/level1-export-m"),
             private.join("generated/level1-asset-closure.json"),
         )
+    }
+
+    fn level_two_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../generated/l2-debug3.fJ3PaM/level2")
+    }
+
+    #[test]
+    fn level_two_common_inspection_uses_typed_profile_and_exact_component_order() {
+        let package = level_two_fixture_path();
+        let inspection = NativeWorld::inspect_level2(&package).expect("qualified Level 2 package");
+        assert_eq!(inspection.profile(), OwnerPackageProfile::Level2);
+        assert_eq!(inspection.schema(), OwnerPackageSchema::V3);
+        assert_eq!(inspection.metadata().external_level, 2);
+        assert_eq!(inspection.metadata().internal_level, 1);
+        assert_eq!(inspection.metadata().map_type, MapType::Day);
+        assert_eq!(inspection.entities().len(), ENTITY_COUNT);
+        assert_eq!(
+            inspection
+                .entities()
+                .iter()
+                .filter(|entity| entity.active)
+                .count(),
+            114
+        );
+        assert_eq!(inspection.players().len(), PLAYER_COUNT);
+        assert_eq!(inspection.runtime().stages.len(), 8);
+        assert_eq!(inspection.runtime().stage_variables.len(), 11);
+        assert_eq!(inspection.runtime().objectives.len(), 8);
+        assert_eq!(inspection.presentation().particles.len(), PARTICLE_COUNT);
+        assert_eq!(
+            inspection.presentation().level_sprite_selectors.len(),
+            LEVEL_SPRITE_SELECTOR_COUNT
+        );
+        assert_eq!(
+            inspection.presentation().entity_parameters.len(),
+            ENTITY_PARAMETER_COUNT
+        );
+        assert_eq!(inspection.entities()[0].index, 0);
+        assert_eq!(inspection.entities()[999].index, 999);
+        assert_eq!(inspection.players()[0].slot, 0);
+        assert_eq!(inspection.players()[7].slot, 7);
+        assert_eq!(inspection.players()[0].left_spell_slot_raw, -1);
+        assert_eq!(inspection.players()[0].right_spell_slot_raw, -1);
+        assert!(inspection.reset_state().is_none());
+        assert!(inspection.mission_unimplemented().is_err());
+    }
+
+    #[test]
+    fn level_two_fresh_common_package_without_reset_is_explicitly_inspectable() {
+        let source = level_two_fixture_path();
+        let root = std::env::temp_dir().join(format!(
+            "mc2-level2-fresh-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        for (name, _) in LEVEL2_PACKAGE_MEMBERS {
+            fs::copy(source.join(name), root.join(name)).unwrap();
+        }
+        let manifest_path = root.join("manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(source.join("manifest.json")).unwrap()).unwrap();
+        manifest.as_object_mut().unwrap().remove("reset_projection");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let inspection = NativeWorld::inspect_level2(&root).expect("fresh Level 2 package");
+        assert_eq!(inspection.metadata().external_level, 2);
+        assert!(inspection.reset_state().is_none());
+        let error = inspection.mission_unimplemented().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("mission behavior is unsupported")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn level_two_profile_rejects_cross_level_relabeling_and_level_one_loader() {
+        let package = level_two_fixture_path();
+        let root = std::env::temp_dir().join(format!(
+            "mc2-level2-profile-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let manifest_path = root.join("manifest.json");
+        fs::copy(package.join("manifest.json"), &manifest_path).unwrap();
+        for (name, _) in LEVEL2_PACKAGE_MEMBERS {
+            fs::copy(package.join(name), root.join(name)).unwrap();
+        }
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["level"]["external"] = json!(1);
+        manifest["level"]["internal"] = json!(0);
+        manifest["level"]["map_type"] = json!({"id": 1, "name": "Night"});
+        let mut identity = Vec::new();
+        for (name, expected_size) in LEVEL2_PACKAGE_MEMBERS {
+            let bytes = fs::read(root.join(name)).unwrap();
+            assert_eq!(bytes.len(), expected_size);
+            let hash = sha256_hex(&bytes);
+            identity.extend_from_slice(name.as_bytes());
+            identity.push(0);
+            identity.extend_from_slice(hash.as_bytes());
+            identity.push(0);
+            identity.extend_from_slice(expected_size.to_string().as_bytes());
+            identity.push(b'\n');
+        }
+        manifest["package_sha256"] = json!(sha256_hex(&identity));
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(NativeWorld::inspect_level2(&root).is_err());
+        let (_, closure) = fixture_paths();
+        assert!(NativeWorld::load(&root, closure).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn level_one_v2_rejects_level_two_extra_members() {
+        let (package, closure) = fixture_paths();
+        let temp = TempPackage::copy_from(&package, &closure);
+        let l2 = level_two_fixture_path();
+        fs::copy(
+            l2.join("feature-start.bin"),
+            temp.package.join("feature-start.bin"),
+        )
+        .unwrap();
+        let manifest_path = temp.package.join("manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        let l2_manifest: Value =
+            serde_json::from_slice(&fs::read(l2.join("manifest.json")).unwrap()).unwrap();
+        manifest["files"]["feature-start.bin"] = l2_manifest["files"]["feature-start.bin"].clone();
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let error = NativeWorld::load(&temp.package, &temp.closure).unwrap_err();
+        assert!(error.to_string().contains("exact typed package member set"));
     }
 
     #[test]
@@ -8368,7 +9022,7 @@ mod tests {
 
         let mut players = fs::read(package.join("players.bin")).unwrap();
         players[4] ^= 0xff;
-        assert!(parse_players(&players).is_err());
+        assert!(parse_players(&players, OwnerPackageProfile::Level1).is_err());
 
         let mut entities = fs::read(package.join("entities.bin")).unwrap();
         let relation_offset = 12 + 152 * ENTITY_RECORD_BYTES + 164;
@@ -8377,7 +9031,7 @@ mod tests {
 
         let mut players = fs::read(package.join("players.bin")).unwrap();
         players[16..18].copy_from_slice(&1_000_u16.to_le_bytes());
-        assert!(parse_players(&players).is_err());
+        assert!(parse_players(&players, OwnerPackageProfile::Level1).is_err());
 
         let mut runtime = fs::read(package.join("runtime.bin")).unwrap();
         let stage_relation_offset = 192 + 6;
