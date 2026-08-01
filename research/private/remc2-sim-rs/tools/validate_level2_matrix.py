@@ -35,6 +35,9 @@ def expected_denominators() -> dict[str, set[str]]:
     census = load(ROOT / "level2-conformance" / "census" / "level2-authored-reset-census.json")
     activation = load(ROOT / "level2-conformance" / "activation" / "level2-activation-closure.json")
     ledger = load(ROOT / "level2-conformance" / "denominator" / "level2-dispatch-rng-audio-presentation.json")
+    for name, artifact in (("census", census), ("activation", activation), ("denominator", ledger)):
+        if artifact.get("spec", {}).get("remc2_commit") != COMMIT:
+            raise Level2MatrixError(f"{name} artifact is not derived from the pinned remc2 commit")
     return {
         "authored": {row["id"] for row in census["authored"]["rows"]},
         "reset": {row["id"] for row in census["reset"]["slots"]},
