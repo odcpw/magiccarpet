@@ -1,8 +1,10 @@
-# Private remc2 Level 1 exporter
+# Private remc2 owner-level exporter
 
 This directory contains a private preservation tool for a lawfully owned copy of
-Magic Carpet 2. It initializes Level 1 through the stock remc2 program path and
-exports a deterministic, pointer-free scene package. The package and all owned
+Magic Carpet 2. It initializes an owner-data level through the stock remc2
+program path and exports a deterministic, pointer-free scene package. The
+external level number is one-based and defaults to Level 1; remc2 receives the
+corresponding zero-based internal index exactly once. The package and all owned
 game data remain inside `research/private`.
 
 The exporter deliberately does **not** maintain a second level loader. CMake
@@ -20,6 +22,16 @@ so local preservation fixes are not mislabeled as pristine upstream code.
 ./scripts/build.sh
 ```
 
+The build refuses to compile the protected `upstream/magic-carpet-2-hd`
+checkout when it is dirty and accepts only remc2 commit
+`6806c7204d17220ecc0430759f784aea8ee2ddb2`. Materialize that committed source
+in an isolated clean Git checkout and point the build at it:
+
+```sh
+MC2_LEVEL_EXPORTER_SOURCE_ROOT=/absolute/path/to/clean/remc2 \
+  ./scripts/build.sh
+```
+
 The build lives outside the source tree by default:
 `/tmp/magiccarpet-remc2-level-exporter-build`.
 
@@ -28,8 +40,16 @@ The build lives outside the source tree by default:
 ```sh
 /tmp/magiccarpet-remc2-level-exporter-build/remc2-level-exporter \
   --owner-root /absolute/path/to/private/MC2/runtime \
-  --output /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-a
+  --output /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-a \
+  --level 1
 ```
+
+`--level N` accepts external levels 1 through 25 and is optional (`1` is the
+default). Invalid, missing, duplicate, signed, or out-of-range values are
+rejected before the output directory or its `.staging` sibling is created.
+External Level 2 selects remc2 internal index 1 and must resolve to the Day
+profile; its manifest records both values. The Level 1 path keeps the sealed
+Night profile and its exact source-derived assertions.
 
 `--owner-root` must contain the owner-supplied `CD_Files` and `GAME`
 directories used by the existing private remc2 runtime. `--output` must be a
@@ -39,11 +59,19 @@ directory is created.
 
 ## Verify
 
+The strict verifier is sealed to the preserved historical Level 1 v3 package
+identity. Run it against that preserved package with the matching pinned source
+checkout; do not substitute the protected dirty worktree or a newly built
+clean-source package, whose provenance is intentionally different. The native
+clean-source profile and determinism gate below are the acceptance checks for
+new exports. The generic current-source verifier is introduced by the next
+conformance slice.
+
 ```sh
 python3 tests/verify_package.py \
-  --source-root /home/oliver/Projects/odcpw/magiccarpet/research/private/remc2-level-exporter \
-  --upstream-root /home/oliver/Projects/odcpw/magiccarpet/upstream/magic-carpet-2-hd \
-  /home/oliver/Projects/odcpw/magiccarpet/research/private/generated/level1-a
+  --source-root /path/to/magiccarpet/research/private/remc2-level-exporter \
+  --upstream-root /path/to/matching/pinned-level1-source \
+  /path/to/magiccarpet/research/private/generated/plan24-p-final3-20260730
 ```
 
 For the determinism gate, export twice into two empty destinations and run:
@@ -52,10 +80,11 @@ For the determinism gate, export twice into two empty destinations and run:
 python3 tests/verify_package.py --compare level1-a level1-b
 ```
 
-The package format is `mc2-owner-level-export/v2`. Integer fields are explicit
+The package format emitted by this exporter is `mc2-owner-level-export/v3`.
+Integer fields are explicit
 little-endian values. Native pointers, host paths, timestamps, and memory
 addresses are not package data. The verifier remains able to validate preserved
-v1 packages; the exporter only emits v2.
+v1 and v2 packages remain verifiable; the exporter emits v3.
 
 ## Package sections
 
@@ -79,7 +108,7 @@ v1 packages; the exporter only emits v2.
   experience, enablement, ordering, level, and selection arrays.
   `player.time_393` is an SDL/host-clock sample rather than simulation time and
   is explicitly zeroed; the deterministic global turn remains in
-  `runtime.bin`. The v2 record is 573 bytes: every v1 byte remains at its
+  `runtime.bin`. The player-record v2 layout is 573 bytes: every v1 byte remains at its
   original offset in the first 565 bytes, followed by signed little-endian
   `ambient_loop_5_distance` at offset 565 (`dword_0x19A_410`) and
   `ambient_loop_31_distance` at offset 569
@@ -96,7 +125,7 @@ v1 packages; the exporter only emits v2.
   records (the upstream type name retains its original-address suffix rather
   than describing its byte size).
 
-The v2 manifest also contains `mc2-flight-reset-projection/v1`: a field-by-field
+The v3 manifest also contains `mc2-flight-reset-projection/v1`: a field-by-field
 map from every Rust `FlightState` member to a package field/entity relation or
 an explicit frame-zero seam default. Its expected Level 1 reset state has
 entity 152 at `(19840, 56960, 5024)`, phase 153, ambient distances 2048/1746,
@@ -111,3 +140,21 @@ all reset-projection mappings, the reset state hash, and both ambient values in
 each preserved DOS frame 0 through 19. It also checks package file hashes and
 identity, current compiled-source hashes, private permissions, and byte
 identity between two independent exports.
+
+Focused selector tests use the production header and make the native CLI gate
+explicit:
+
+```sh
+python3 tests/test_exporter_cli.py
+MC2_LEVEL_EXPORTER_BIN=/absolute/path/to/remc2-level-exporter \
+MC2_LEVEL_EXPORTER_RUN_FULL=1 \
+  python3 tests/test_exporter_cli.py
+```
+
+The first command always runs the external-to-internal mapping and rejection
+tests; it prints a build-gated skip for native CLI checks when no binary is
+provided. The second command runs invalid-argument no-partial-output checks
+and four full production captures (default Level 1, explicit Level 1, and two
+Level 2 captures), comparing complete trees and asserting the Level 2 manifest
+is external `2`, internal `1`, and Day. Build the binary only from the clean
+pinned source described above.

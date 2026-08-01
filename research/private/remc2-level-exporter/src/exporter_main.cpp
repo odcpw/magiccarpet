@@ -1,4 +1,5 @@
 #include "mc2_exporter_source_provenance.h"
+#include "level_selection.h"
 
 #include "engine/Basic.h"
 #include "engine/CommandLineParser.h"
@@ -248,19 +249,29 @@ public:
 struct Arguments {
     fs::path owner_root;
     fs::path output;
+    mc2_exporter::ExternalLevelSelection level;
 };
 
 Arguments parse_arguments(int argc, char** argv) {
     Arguments result;
+    bool level_seen = false;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
-        if ((argument == "--owner-root" || argument == "--output") && index + 1 >= argc) {
+        if ((argument == "--owner-root" || argument == "--output" || argument == "--level") &&
+            index + 1 >= argc) {
             throw std::runtime_error("missing value after " + argument);
         }
         if (argument == "--owner-root") result.owner_root = argv[++index];
         else if (argument == "--output") result.output = argv[++index];
+        else if (argument == "--level") {
+            if (level_seen) throw std::runtime_error("--level may be specified only once");
+            level_seen = true;
+            result.level = mc2_exporter::parse_external_level(argv[++index]);
+        }
         else if (argument == "--help") {
-            std::cout << "usage: remc2-level-exporter --owner-root PATH --output PRIVATE_PATH\n";
+            std::cout << "usage: remc2-level-exporter --owner-root PATH --output PRIVATE_PATH "
+                         "[--level EXTERNAL_LEVEL]\n"
+                         "  --level EXTERNAL_LEVEL  owner-data level 1..25 (default: 1)\n";
             std::exit(0);
         } else {
             throw std::runtime_error("unknown argument: " + argument);
@@ -387,7 +398,7 @@ Bytes capture_feature_boundary(const char (&magic)[5]) {
     return result;
 }
 
-std::vector<std::uint16_t> level_one_building_selectors(
+std::vector<std::uint16_t> building_selectors(
     const Type_Level_2FECE& authored) {
     std::set<std::uint16_t> selectors;
     for (std::size_t index = 1; index < kAuthoredFeatures; ++index) {
@@ -396,7 +407,7 @@ std::vector<std::uint16_t> level_one_building_selectors(
             feature.type_0x30311 == 10 &&
             feature.subtype_0x30311 == 45) {
             if (feature.par1_14 >= str_D93C0_bldgprmbuffer.size()) {
-                throw std::runtime_error("Level 1 house BLDGPRM selector is outside the source table");
+                throw std::runtime_error("authored house BLDGPRM selector is outside the source table");
             }
             selectors.insert(feature.par1_14);
         }
@@ -406,12 +417,13 @@ std::vector<std::uint16_t> level_one_building_selectors(
 
 Bytes capture_feature_construction_inputs(
     const Type_Level_2FECE& authored,
-    std::vector<std::uint16_t>& selectors) {
-    if (x_WORD_180660_VGA_type_resolution != 1) {
+    std::vector<std::uint16_t>& selectors,
+    bool level_one) {
+    if (level_one && x_WORD_180660_VGA_type_resolution != 1) {
         throw std::runtime_error("isolated Level 1 feature seam requires VGA selector 1");
     }
-    selectors = level_one_building_selectors(authored);
-    if (selectors.empty()) {
+    selectors = building_selectors(authored);
+    if (level_one && selectors.empty()) {
         throw std::runtime_error("Level 1 has no source house construction selectors");
     }
 
@@ -430,7 +442,7 @@ Bytes capture_feature_construction_inputs(
             static_cast<std::uint32_t>(bitmap.width_4) *
             static_cast<std::uint32_t>(bitmap.height_5) * 2;
         if (bitmap.data == nullptr || bitmap.width_4 == 0 || bitmap.height_5 == 0) {
-            throw std::runtime_error("Level 1 BUILD selector has an empty source footprint");
+            throw std::runtime_error("authored BUILD selector has an empty source footprint");
         }
         result.u16(selector);
         result.u16(parameter.word_0);
@@ -671,18 +683,23 @@ std::vector<FeatureAllocatorTrace> expected_feature_allocator_trace(
     return trace;
 }
 
-Bytes capture_feature_allocator(const Type_Level_2FECE& authored) {
-    if (D41A0_0.dword_0x35 != 951 || D41A0_0.dword_0x11e6 != -1) {
+Bytes capture_feature_allocator(const Type_Level_2FECE& authored, bool level_one) {
+    if (level_one && (D41A0_0.dword_0x35 != 951 || D41A0_0.dword_0x11e6 != -1)) {
         throw std::runtime_error("isolated feature allocator counters differ from the pinned source seam");
     }
-    for (std::size_t index = 0; index <= 951; ++index) {
+    if (D41A0_0.dword_0x35 < 0 || D41A0_0.dword_0x35 >= static_cast<int>(kFeatureAllocatorRelationCount)) {
+        throw std::runtime_error("feature allocator free-stack count is outside the exported relation table");
+    }
+    for (std::size_t index = 0; index <= static_cast<std::size_t>(D41A0_0.dword_0x35); ++index) {
         const std::uint32_t relation = entity_relation(D41A0_0.pointers_0x246[index]);
         const std::uint32_t expected = 999 - static_cast<std::uint32_t>(index);
-        if (relation != expected + 1) {
+        if (level_one && relation != expected + 1) {
             throw std::runtime_error("isolated feature free-stack relation order changed");
         }
     }
-    const auto trace = expected_feature_allocator_trace(authored);
+    const auto trace = level_one
+        ? expected_feature_allocator_trace(authored)
+        : std::vector<FeatureAllocatorTrace>{};
     Bytes result;
     result.magic("MCA3");
     result.u16(1);
@@ -695,11 +712,15 @@ Bytes capture_feature_allocator(const Type_Level_2FECE& authored) {
     result.u16(2);
     result.u16(kFeatureAllocatorTraceRecordBytes);
     for (std::size_t index = 0; index < kFeatureAllocatorRelationCount; ++index) {
-        result.u16(
-            index <= static_cast<std::size_t>(D41A0_0.dword_0x35)
-                ? static_cast<std::uint16_t>(
-                      entity_relation(D41A0_0.pointers_0x246[index]) - 1)
-                : 0);
+        if (index > static_cast<std::size_t>(D41A0_0.dword_0x35)) {
+            result.u16(0);
+            continue;
+        }
+        const std::uint32_t relation = entity_relation(D41A0_0.pointers_0x246[index]);
+        if (relation == std::numeric_limits<std::uint32_t>::max() || relation == 0) {
+            throw std::runtime_error("feature allocator free-stack contains an invalid entity relation");
+        }
+        result.u16(static_cast<std::uint16_t>(relation - 1));
     }
     for (std::size_t index = 0; index < kFeatureAllocatorRelationCount; ++index) {
         result.u16(0);
@@ -1176,6 +1197,21 @@ Bytes capture_presentation() {
     return result;
 }
 
+struct MapTypeProfile {
+    std::uint8_t id;
+    const char* name;
+    char asset_code;
+};
+
+MapTypeProfile map_type_profile(MapType_t map_type) {
+    switch (map_type) {
+    case MapType_t::Day: return {0, "Day", 'D'};
+    case MapType_t::Night: return {1, "Night", 'N'};
+    case MapType_t::Cave: return {2, "Cave", 'C'};
+    }
+    throw std::runtime_error("remc2 returned an unknown map type");
+}
+
 Bytes serialize_authored_level(const Type_Level_2FECE& level) {
     Bytes result;
     result.u16(level.word_2FECE);
@@ -1256,29 +1292,37 @@ Bytes serialize_authored_level(const Type_Level_2FECE& level) {
     return result;
 }
 
-json make_owner_sources(const fs::path& owner_root) {
-    static constexpr const char* candidates[] = {
+json make_owner_sources(const fs::path& owner_root, const MapTypeProfile& map_profile) {
+    const std::string map_code(1, map_profile.asset_code);
+    const std::string terrain_bank = "TMAPS" + std::to_string(map_profile.id) + "-0";
+    const std::string medium_sprite = "MSPR" + map_code + "0-0";
+    const std::string high_sprite = "HSPR" + map_code + "0-0";
+    const std::string medium_web = "MWEB" + map_code + "0-0";
+    const std::string high_web = "HWEB" + map_code + "0-0";
+    const std::string palette = "PAL" + map_code + "-0";
+    const std::string sky = "SKY" + map_code + "0-0";
+    const std::vector<std::string> candidates = {
         "GAME/NETHERW/CLEVELS/LEVELS.DAT",
         "GAME/NETHERW/CLEVELS/LEVELS.TAB",
-        "GAME/NETHERW/CDATA/TMAPS1-0.DAT",
-        "GAME/NETHERW/CDATA/TMAPS1-0.TAB",
-        "CD_Files/DATA/TMAPS1-0.DAT",
-        "CD_Files/DATA/TMAPS1-0.TAB",
-        "CD_Files/DATA/MSPRN0-0.DAT",
-        "CD_Files/DATA/MSPRN0-0.TAB",
-        "CD_Files/DATA/HSPRN0-0.DAT",
-        "CD_Files/DATA/HSPRN0-0.TAB",
-        "CD_Files/DATA/PALN-0.DAT",
+        "GAME/NETHERW/CDATA/" + terrain_bank + ".DAT",
+        "GAME/NETHERW/CDATA/" + terrain_bank + ".TAB",
+        "CD_Files/DATA/" + terrain_bank + ".DAT",
+        "CD_Files/DATA/" + terrain_bank + ".TAB",
+        "CD_Files/DATA/" + medium_sprite + ".DAT",
+        "CD_Files/DATA/" + medium_sprite + ".TAB",
+        "CD_Files/DATA/" + high_sprite + ".DAT",
+        "CD_Files/DATA/" + high_sprite + ".TAB",
+        "CD_Files/DATA/" + palette + ".DAT",
         "CD_Files/DATA/PALF-0.DAT",
         "CD_Files/DATA/BL16N0-0.DAT",
         "CD_Files/DATA/BL16F0-0.DAT",
         "CD_Files/DATA/BL32N0-0.DAT",
         "CD_Files/DATA/BL32F0-0.DAT",
-        "CD_Files/DATA/SKYN0-0.DAT",
-        "CD_Files/DATA/MWEBN0-0.DAT",
-        "CD_Files/DATA/MWEBN0-0.TAB",
-        "CD_Files/DATA/HWEBN0-0.DAT",
-        "CD_Files/DATA/HWEBN0-0.TAB",
+        "CD_Files/DATA/" + sky + ".DAT",
+        "CD_Files/DATA/" + medium_web + ".DAT",
+        "CD_Files/DATA/" + medium_web + ".TAB",
+        "CD_Files/DATA/" + high_web + ".DAT",
+        "CD_Files/DATA/" + high_web + ".TAB",
         "CD_Files/LEVELS/LEVELS.DAT",
         "CD_Files/LEVELS/LEVELS.TAB",
         "CD_Files/DATA/TABLESN.DAT",
@@ -1294,7 +1338,7 @@ json make_owner_sources(const fs::path& owner_root) {
         "regression-config.json"
     };
     json result = json::array();
-    for (const char* logical_name : candidates) {
+    for (const std::string& logical_name : candidates) {
         const fs::path path = owner_root / logical_name;
         if (!fs::is_regular_file(path)) continue;
         result.push_back({
@@ -1402,21 +1446,26 @@ struct StagingCleanup {
 };
 
 int run(const Arguments& arguments) {
+    const bool level_one = arguments.level.external == 1;
     const fs::path owner_root = fs::canonical(arguments.owner_root);
     if (!fs::is_directory(owner_root / "GAME/NETHERW") ||
         !fs::is_directory(owner_root / "CD_Files") ||
-        !fs::is_directory(owner_root / "memimages/regressions")) {
+        (level_one && !fs::is_directory(owner_root / "memimages/regressions"))) {
         throw std::runtime_error(
-            "owner root must contain GAME/NETHERW, CD_Files, and memimages/regressions");
+            level_one
+                ? "owner root must contain GAME/NETHERW, CD_Files, and memimages/regressions"
+                : "owner root must contain GAME/NETHERW and CD_Files");
     }
-    require_reference_file(
-        owner_root / "memimages/regressions/sequence-002285FF-00356038.bin",
-        4495800,
-        "021ab6f582cae920546dc3bcf55b06d00937fea5ddaabfeae079c0368b314e7f");
-    require_reference_file(
-        owner_root / "memimages/regressions/sequence-002285FF-002DC4E0.bin",
-        9633792,
-        "16f0f778b120ddaab042f28b8a322efb37940bb68b4527b7d12dac82101db88f");
+    if (level_one) {
+        require_reference_file(
+            owner_root / "memimages/regressions/sequence-002285FF-00356038.bin",
+            4495800,
+            "021ab6f582cae920546dc3bcf55b06d00937fea5ddaabfeae079c0368b314e7f");
+        require_reference_file(
+            owner_root / "memimages/regressions/sequence-002285FF-002DC4E0.bin",
+            9633792,
+            "16f0f778b120ddaab042f28b8a322efb37940bb68b4527b7d12dac82101db88f");
+    }
 
     const fs::path output = validated_output(arguments.output);
     const fs::path staging = output.string() + ".staging";
@@ -1435,7 +1484,7 @@ int run(const Arguments& arguments) {
         "remc2-level-exporter",
         "--mode_test_regressions", "0",
         "--text_output_to_console",
-        "--set_level", "0",
+        "--set_level", std::to_string(arguments.level.internal),
         "--config_file_path", runtime_config.string(),
         "--set_max_regressions_steps", "0"
     };
@@ -1468,11 +1517,13 @@ int run(const Arguments& arguments) {
     StopProgrammableIntervalTimer();
     engine_cleanup.manual_engine_cleanup = end_code == 20 || sub_main_result != 0;
     if (sub_main_result != 0 || end_code != 20) {
-        throw std::runtime_error("remc2 did not stop at the Level 1 frame-zero regression seam");
+        throw std::runtime_error(
+            "remc2 did not stop at the requested frame-zero regression seam for external level " +
+            std::to_string(arguments.level.external));
     }
 
     Bytes terrain = capture_terrain();
-    normalize_level_one_inactive_terrain_plane(terrain);
+    if (level_one) normalize_level_one_inactive_terrain_plane(terrain);
     const std::string terrain_type_sha =
         sha256_range(terrain.data, 0x00000, 0x10000);
     const std::string terrain_height_sha =
@@ -1485,27 +1536,37 @@ int run(const Arguments& arguments) {
         sha256_range(terrain.data, 0x40000, 0x10000);
     const std::string terrain_entity_sha =
         sha256_range(terrain.data, 0x50000, 0x20000);
-    if (terrain_type_sha != kExpectedTerrainTypeSha256 ||
+    if (level_one && (terrain_type_sha != kExpectedTerrainTypeSha256 ||
         terrain_height_sha != kExpectedTerrainHeightSha256 ||
         terrain_shade_sha != kExpectedTerrainShadeSha256 ||
         terrain_angle_sha != kExpectedTerrainAngleSha256 ||
-        terrain_entity_sha != kExpectedTerrainEntitySha256) {
+        terrain_entity_sha != kExpectedTerrainEntitySha256)) {
         throw std::runtime_error(
             "one or more stock-regression-compared terrain planes differ from the preserved frame-zero snapshot");
     }
-    if (terrain_secondary_sha != kNormalizedInactivePlaneSha256) {
+    if (level_one && terrain_secondary_sha != kNormalizedInactivePlaneSha256) {
         throw std::runtime_error("inactive secondary terrain plane was not normalized");
     }
     std::uint32_t active_entities = 0;
     std::uint16_t entity_record_size = 0;
     Bytes entities = capture_entities(active_entities, entity_record_size);
-    if (active_entities != 177) {
+    if (level_one && active_entities != 177) {
         throw std::runtime_error(
             "live entity count does not match the preserved frame-zero snapshot (actual " +
             std::to_string(active_entities) + ")");
     }
-    if (D41A0_0.LevelIndex_0xc != 0 || D41A0_0.NumberOfPlayers_0xe != 1) {
+    if (arguments.level.external == 2 && active_entities != 114) {
+        throw std::runtime_error(
+            "external Level 2 active entity count differs from the preserved Day reset census (actual " +
+            std::to_string(active_entities) + ")");
+    }
+    if (level_one && (D41A0_0.LevelIndex_0xc != 0 || D41A0_0.NumberOfPlayers_0xe != 1)) {
         throw std::runtime_error("live LevelIndex/NumberOfPlayers do not match the preserved frame-zero snapshot");
+    }
+    if (arguments.level.external == 2 &&
+        (D41A0_0.LevelIndex_0xc != 0 || D41A0_0.NumberOfPlayers_0xe != 2)) {
+        throw std::runtime_error(
+            "external Level 2 must start with local player 0 and exactly one AI opponent");
     }
     std::uint16_t player_record_size = 0;
     Bytes players = capture_players(player_record_size);
@@ -1515,8 +1576,10 @@ int run(const Arguments& arguments) {
     const auto local_player_slot = static_cast<std::size_t>(D41A0_0.LevelIndex_0xc);
     const auto& local_state =
         D41A0_0.array_0x2BDE[local_player_slot].dword_0x3E6_2BE4_12228;
-    if (local_state.dword_0x19A_410 != 2048 ||
-        local_state.maxDistance_0x19E_414 != 1746) {
+    const std::int32_t ambient_loop_5_distance = local_state.dword_0x19A_410;
+    const std::int32_t ambient_loop_31_distance = local_state.maxDistance_0x19E_414;
+    if (level_one && (local_state.dword_0x19A_410 != 2048 ||
+        local_state.maxDistance_0x19E_414 != 1746)) {
         throw std::runtime_error(
             "local player ambient-distance fields differ from preserved DOS frames 0..19");
     }
@@ -1527,25 +1590,35 @@ int run(const Arguments& arguments) {
     // sub_4A1E0 consumes authored feature types in the live structure. Re-load
     // a pristine local copy only after all live state above has been copied.
     Type_Level_2FECE authored{};
-    if (!LevelDecompress_533B0(0, &authored, "")) {
-        throw std::runtime_error("stock remc2 LevelDecompress_533B0 failed for Level 1");
+    if (!LevelDecompress_533B0(arguments.level.internal, &authored, "")) {
+        throw std::runtime_error(
+            "stock remc2 LevelDecompress_533B0 failed for external level " +
+            std::to_string(arguments.level.external));
     }
     Bytes authored_bytes = serialize_authored_level(authored);
-    if (authored.MapType != MapType_t::Night) {
+    const MapTypeProfile map_profile = map_type_profile(D41A0_0.terrain_2FECE.MapType);
+    if (authored.MapType != D41A0_0.terrain_2FECE.MapType) {
+        throw std::runtime_error("authored and live map types disagree at the frame-zero seam");
+    }
+    if (level_one && authored.MapType != MapType_t::Night) {
         throw std::runtime_error("Level 1 MapType is not Night (1)");
     }
-    if (x_WORD_180660_VGA_type_resolution != 1) {
+    if (arguments.level.external == 2 && authored.MapType != MapType_t::Day) {
+        throw std::runtime_error("Level 2 MapType is not Day (0)");
+    }
+    if (level_one && x_WORD_180660_VGA_type_resolution != 1) {
         throw std::runtime_error("Level 1 isolated feature seam is not using VGA selector 1");
     }
     std::vector<std::uint16_t> feature_building_selectors;
     Bytes feature_construction_inputs =
-        capture_feature_construction_inputs(authored, feature_building_selectors);
+        capture_feature_construction_inputs(authored, feature_building_selectors, level_one);
     const Type_Level_2FECE feature_expectation = authored;
-    const auto feature_allocator_trace =
-        expected_feature_allocator_trace(feature_expectation);
+    const auto feature_allocator_trace = level_one
+        ? expected_feature_allocator_trace(feature_expectation)
+        : std::vector<FeatureAllocatorTrace>{};
     GenerateLevelMap_43830(&authored);
     Bytes terrain_pre_features = capture_terrain();
-    normalize_level_one_inactive_terrain_plane(terrain_pre_features);
+    if (level_one) normalize_level_one_inactive_terrain_plane(terrain_pre_features);
     if (!std::all_of(
             terrain_pre_features.data.begin() + 0x50000,
             terrain_pre_features.data.end(),
@@ -1553,8 +1626,8 @@ int run(const Arguments& arguments) {
         throw std::runtime_error("post-GenerateLevelMap entity-index plane is not zero");
     }
     Bytes feature_start = capture_feature_boundary("MFS3");
-    if (rand2_17B4E0 != kFeatureStartTerrainRng ||
-        D41A0_0.rand_0x8 != kFeatureStartGlobalRng) {
+    if (level_one && (rand2_17B4E0 != kFeatureStartTerrainRng ||
+        D41A0_0.rand_0x8 != kFeatureStartGlobalRng)) {
         throw std::runtime_error("isolated feature start RNGs differ from pristine Level 1");
     }
     std::memset(
@@ -1563,20 +1636,21 @@ int run(const Arguments& arguments) {
         sizeof(D41A0_0.struct_0x6E8E));
     sub_49F30();
     sub_49270_generate_level_features(&authored);
-    validate_feature_house_fixture(feature_expectation);
+    if (level_one) validate_feature_house_fixture(feature_expectation);
     Bytes terrain_post_features = capture_terrain();
-    normalize_level_one_inactive_terrain_plane(terrain_post_features);
+    if (level_one) normalize_level_one_inactive_terrain_plane(terrain_post_features);
     Bytes feature_end = capture_feature_boundary("MFE3");
     std::uint32_t feature_active_entities = 0;
     std::uint16_t feature_entity_record_size = 0;
     Bytes feature_entities = capture_normalized_feature_entities(
         feature_active_entities,
         feature_entity_record_size);
-    Bytes feature_allocator = capture_feature_allocator(feature_expectation);
-    if (feature_allocator_trace.size() != 51) {
+    Bytes feature_allocator = capture_feature_allocator(feature_expectation, level_one);
+    if (level_one && feature_allocator_trace.size() != 51) {
         throw std::runtime_error("immutable feature allocator expectation changed after generation");
     }
-    if (feature_active_entities != 47 || feature_entity_record_size != entity_record_size) {
+    if ((!level_one && feature_entity_record_size != entity_record_size) ||
+        (level_one && (feature_active_entities != 47 || feature_entity_record_size != entity_record_size))) {
         throw std::runtime_error(
             "isolated load-feature entity arena is not 47 source-compatible records");
     }
@@ -1614,21 +1688,37 @@ int run(const Arguments& arguments) {
     Sha256 package_hash;
     package_hash.update(identity_input);
 
+    const std::string map_code(1, map_profile.asset_code);
+    const std::string terrain_bank_name =
+        "TMAPS" + std::to_string(map_profile.id) + "-0";
+    const std::string medium_sprite_bank_name = "MSPR" + map_code + "0-0";
+    const std::string high_sprite_bank_name = "HSPR" + map_code + "0-0";
+    const std::string medium_web_bank_name = "MWEB" + map_code + "0-0";
+    const std::string high_web_bank_name = "HWEB" + map_code + "0-0";
+    const std::string palette_bank_name = "PAL" + map_code + "-0";
+    const std::string sky_bank_name = "SKY" + map_code + "0-0";
+    const std::string sprite_bank_name =
+        x_WORD_180660_VGA_type_resolution == 1 ? medium_sprite_bank_name : high_sprite_bank_name;
+    const std::string web_bank_name =
+        x_WORD_180660_VGA_type_resolution == 1 ? medium_web_bank_name : high_web_bank_name;
+
     json manifest = {
         {"schema", "mc2-owner-level-export/v3"},
         {"byte_order", "little-endian"},
         {"level", {
-            {"external", 1},
-            {"internal", 0},
-            {"map_type", {{"id", 1}, {"name", "Night"}}}
+            {"external", arguments.level.external},
+            {"internal", arguments.level.internal},
+            {"map_type", {{"id", map_profile.id}, {"name", map_profile.name}}}
         }},
         {"capture", {{"site", "0x002285ff"}, {"frame", 0}}},
         {"feature_generation_oracle", {
-            {"provenance", "pristine authored Level 1 rerun after live frame-zero outputs were copied"},
+            {"provenance", level_one
+                ? "pristine authored Level 1 rerun after live frame-zero outputs were copied"
+                : "authored level rerun after live frame-zero outputs were copied"},
             {"start_phase", "after-GenerateLevelMap_43830-before-sub_49F30-sub_49270"},
             {"end_phase", "after-sub_49270-before-group0"},
-            {"vga_selector", 1},
-            {"global_rng_barriers", {
+            {"vga_selector", x_WORD_180660_VGA_type_resolution},
+            {"global_rng_barriers", level_one ? json{
                 kFeatureGlobalRngBarriers[0],
                 kFeatureGlobalRngBarriers[1],
                 kFeatureGlobalRngBarriers[2],
@@ -1636,7 +1726,7 @@ int run(const Arguments& arguments) {
                 kFeatureGlobalRngBarriers[4],
                 kFeatureGlobalRngBarriers[5],
                 kFeatureGlobalRngBarriers[6]
-            }},
+            } : json::array()},
             {"start_record", {
                 {"file", "feature-start.bin"},
                 {"magic", "MFS3"},
@@ -1656,12 +1746,12 @@ int run(const Arguments& arguments) {
             {"pre_terrain", {
                 {"file", "terrain-pre-features.bin"},
                 {"bytes", kTerrainBytes},
-                {"inactive_secondary_plane", "zero-normalized-non-cave"}
+                {"inactive_secondary_plane", level_one ? "zero-normalized-non-cave" : "preserved-live-plane"}
             }},
             {"post_terrain", {
                 {"file", "terrain-post-features.bin"},
                 {"bytes", kTerrainBytes},
-                {"inactive_secondary_plane", "zero-normalized-non-cave"}
+                {"inactive_secondary_plane", level_one ? "zero-normalized-non-cave" : "preserved-live-plane"}
             }},
             {"post_entities", {
                 {"file", "entities-post-features.bin"},
@@ -1681,7 +1771,9 @@ int run(const Arguments& arguments) {
                 {"header_bytes", kFeatureAllocatorHeaderBytes},
                 {"relation_count", kFeatureAllocatorRelationCount},
                 {"trace_record_bytes", kFeatureAllocatorTraceRecordBytes},
-                {"trace_provenance", "source-derived expected operations; counters and relations captured live"}
+                {"trace_provenance", level_one
+                    ? "source-derived expected operations; counters and relations captured live"
+                    : "live allocator counters and relations; no Level 1 trace oracle applied"}
             }},
             {"construction_inputs", {
                 {"file", "feature-construction-inputs.bin"},
@@ -1750,7 +1842,9 @@ int run(const Arguments& arguments) {
         {"normalization", {
             {"native_pointers", "stable tagged relations; live/authored pools are one-based and zero is null"},
             {"volatile_host_state", {
-                "inactive non-Cave secondary terrain plane zeroed; player time_393 host-clock sample zeroed"
+                level_one
+                    ? "inactive non-Cave secondary terrain plane zeroed; player time_393 host-clock sample zeroed"
+                    : "player time_393 host-clock sample zeroed; secondary terrain plane preserved"
             }},
             {"integer_encoding", "explicit fixed-width little-endian semantic fields"}
         }},
@@ -1945,20 +2039,20 @@ int run(const Arguments& arguments) {
             }}
         }},
         {"presentation_dependencies", {
-            {"map_type", "Night"},
+            {"map_type", map_profile.name},
             {"vga_resolution_selector", x_WORD_180660_VGA_type_resolution},
             {"texture_size", x_BYTE_D41B5_texture_size},
             {"terrain_graphics_flags", D41A0_0.terrain_2FECE.byte_0x2FED2},
             {"terrain_graphics_flag_2", (D41A0_0.terrain_2FECE.byte_0x2FED2 & 2) != 0},
-            {"terrain_bank", "TMAPS1-0"},
-            {"sprite_bank", x_WORD_180660_VGA_type_resolution == 1 ? "MSPRN0-0" : "HSPRN0-0"},
-            {"web_bank", x_WORD_180660_VGA_type_resolution == 1 ? "MWEBN0-0" : "HWEBN0-0"},
+            {"terrain_bank", terrain_bank_name},
+            {"sprite_bank", sprite_bank_name},
+            {"web_bank", web_bank_name},
             {"block_bank",
                 std::string("BL") + std::to_string(x_BYTE_D41B5_texture_size) +
                 ((D41A0_0.terrain_2FECE.byte_0x2FED2 & 2) ? "F0-0" : "N0-0")},
             {"palette",
-                (D41A0_0.terrain_2FECE.byte_0x2FED2 & 2) ? "PALF-0" : "PALN-0"},
-            {"sky_bank", x_BYTE_D41B5_texture_size == 32 ? "SKYN0-0" : ""},
+                (D41A0_0.terrain_2FECE.byte_0x2FED2 & 2) ? "PALF-0" : palette_bank_name},
+            {"sky_bank", x_BYTE_D41B5_texture_size == 32 ? sky_bank_name : ""},
             {"resolved_files", {
                 {"level_records", resolved_owner_asset(
                     owner_root,
@@ -1966,20 +2060,20 @@ int run(const Arguments& arguments) {
                     "CD_Files/LEVELS/LEVELS.DAT")},
                 {"terrain_bank", resolved_owner_asset(
                     owner_root,
-                    "GAME/NETHERW/CDATA/TMAPS1-0.DAT",
-                    "CD_Files/DATA/TMAPS1-0.DAT")},
+                    std::string("GAME/NETHERW/CDATA/") + terrain_bank_name + ".DAT",
+                    std::string("CD_Files/DATA/") + terrain_bank_name + ".DAT")},
                 {"sprite_bank", resolved_owner_asset(
                     owner_root,
                     std::string("GAME/NETHERW/CDATA/") +
-                        (x_WORD_180660_VGA_type_resolution == 1 ? "MSPRN0-0.DAT" : "HSPRN0-0.DAT"),
+                        sprite_bank_name + ".DAT",
                     std::string("CD_Files/DATA/") +
-                        (x_WORD_180660_VGA_type_resolution == 1 ? "MSPRN0-0.DAT" : "HSPRN0-0.DAT"))},
+                        sprite_bank_name + ".DAT")},
                 {"web_bank", resolved_owner_asset(
                     owner_root,
                     std::string("GAME/NETHERW/CDATA/") +
-                        (x_WORD_180660_VGA_type_resolution == 1 ? "MWEBN0-0.DAT" : "HWEBN0-0.DAT"),
+                        web_bank_name + ".DAT",
                     std::string("CD_Files/DATA/") +
-                        (x_WORD_180660_VGA_type_resolution == 1 ? "MWEBN0-0.DAT" : "HWEBN0-0.DAT"))},
+                        web_bank_name + ".DAT")},
                 {"block_bank", resolved_owner_asset(
                     owner_root,
                     std::string("GAME/NETHERW/CDATA/BL") +
@@ -1991,13 +2085,15 @@ int run(const Arguments& arguments) {
                 {"palette", resolved_owner_asset(
                     owner_root,
                     std::string("GAME/NETHERW/CDATA/") +
-                        ((D41A0_0.terrain_2FECE.byte_0x2FED2 & 2) ? "PALF-0.DAT" : "PALN-0.DAT"),
+                        ((D41A0_0.terrain_2FECE.byte_0x2FED2 & 2)
+                             ? "PALF-0.DAT" : palette_bank_name + ".DAT"),
                     std::string("CD_Files/DATA/") +
-                        ((D41A0_0.terrain_2FECE.byte_0x2FED2 & 2) ? "PALF-0.DAT" : "PALN-0.DAT"))},
+                        ((D41A0_0.terrain_2FECE.byte_0x2FED2 & 2)
+                             ? "PALF-0.DAT" : palette_bank_name + ".DAT"))},
                 {"sky_bank", resolved_owner_asset(
                     owner_root,
-                    "GAME/NETHERW/CDATA/SKYN0-0.DAT",
-                    "CD_Files/DATA/SKYN0-0.DAT")},
+                    std::string("GAME/NETHERW/CDATA/") + sky_bank_name + ".DAT",
+                    std::string("CD_Files/DATA/") + sky_bank_name + ".DAT")},
                 {"building_bank", resolved_owner_asset(
                     owner_root,
                     "GAME/NETHERW/CDATA/BUILD0-0.DAT",
@@ -2025,12 +2121,12 @@ int run(const Arguments& arguments) {
             {"modified_paths", json::parse(MC2_UPSTREAM_STATUS_JSON)},
             {"modified_files", json::parse(MC2_MODIFIED_FILE_HASHES_JSON)},
             {"compiled_files", json::parse(MC2_SOURCE_INVENTORY_JSON)},
-            {"owner_files", make_owner_sources(owner_root)}
+            {"owner_files", make_owner_sources(owner_root, map_profile)}
         }},
         {"reference", {
-            {"terrain_frame0_sha256", kExpectedTerrainSha256},
-            {"terrain_full_match", false},
-            {"runtime_scalar_divergences", {
+            {"terrain_frame0_sha256", level_one ? kExpectedTerrainSha256 : sha256(terrain.data)},
+            {"terrain_full_match", level_one ? json(false) : json(nullptr)},
+            {"runtime_scalar_divergences", level_one ? json{
                 {
                     {"field", "maptypeMusic_0x235"},
                     {"original_state_offset", "0x235"},
@@ -2042,75 +2138,81 @@ int run(const Arguments& arguments) {
                     {"evidence",
                         "native remc2 selects the Night music bank when music is enabled; the oracle capture had music inactive"}
                 }
-            }},
+            } : json::array()},
             {"terrain_planes", {
                 {
                     {"name", "type"}, {"offset", 0x00000}, {"bytes", 0x10000},
                     {"stock_regression_compared", true},
                     {"exported_sha256", terrain_type_sha},
-                    {"oracle_sha256", kExpectedTerrainTypeSha256},
-                    {"match", true}
+                    {"oracle_sha256", level_one ? json(kExpectedTerrainTypeSha256) : json(nullptr)},
+                    {"match", level_one}
                 },
                 {
                     {"name", "height"}, {"offset", 0x10000}, {"bytes", 0x10000},
                     {"stock_regression_compared", true},
                     {"exported_sha256", terrain_height_sha},
-                    {"oracle_sha256", kExpectedTerrainHeightSha256},
-                    {"match", true}
+                    {"oracle_sha256", level_one ? json(kExpectedTerrainHeightSha256) : json(nullptr)},
+                    {"match", level_one}
                 },
                 {
                     {"name", "shade"}, {"offset", 0x20000}, {"bytes", 0x10000},
                     {"stock_regression_compared", true},
                     {"exported_sha256", terrain_shade_sha},
-                    {"oracle_sha256", kExpectedTerrainShadeSha256},
-                    {"match", true}
+                    {"oracle_sha256", level_one ? json(kExpectedTerrainShadeSha256) : json(nullptr)},
+                    {"match", level_one}
                 },
                 {
                     {"name", "angle"}, {"offset", 0x30000}, {"bytes", 0x10000},
                     {"stock_regression_compared", true},
                     {"exported_sha256", terrain_angle_sha},
-                    {"oracle_sha256", kExpectedTerrainAngleSha256},
-                    {"match", true}
+                    {"oracle_sha256", level_one ? json(kExpectedTerrainAngleSha256) : json(nullptr)},
+                    {"match", level_one}
                 },
                 {
                     {"name", "secondary_cave"}, {"offset", 0x40000}, {"bytes", 0x10000},
                     {"stock_regression_compared", false},
-                    {"source_status", "inactive_uninitialized_host_state"},
-                    {"normalization", "inactive_non_regression_compared_zeroed"},
+                    {"source_status", level_one ? "inactive_uninitialized_host_state" : "live_plane"},
+                    {"normalization", level_one ? "inactive_non_regression_compared_zeroed" : "preserved"},
                     {"exported_sha256", terrain_secondary_sha},
-                    {"oracle_sha256", kExpectedTerrainSecondarySha256},
+                    {"oracle_sha256", level_one ? json(kExpectedTerrainSecondarySha256) : json(nullptr)},
                     {"match", false}
                 },
                 {
                     {"name", "entity_indices"}, {"offset", 0x50000}, {"bytes", 0x20000},
                     {"stock_regression_compared", true},
                     {"exported_sha256", terrain_entity_sha},
-                    {"oracle_sha256", kExpectedTerrainEntitySha256},
-                    {"match", true}
+                    {"oracle_sha256", level_one ? json(kExpectedTerrainEntitySha256) : json(nullptr)},
+                    {"match", level_one}
                 }
             }},
             {"state_sequence", {
-                {"frames", 20},
+                {"frames", level_one ? 20 : 0},
                 {"bytes_per_frame", 224790},
-                {"sha256", "021ab6f582cae920546dc3bcf55b06d00937fea5ddaabfeae079c0368b314e7f"}
+                {"sha256", level_one
+                    ? "021ab6f582cae920546dc3bcf55b06d00937fea5ddaabfeae079c0368b314e7f"
+                    : ""}
             }},
             {"ambient_distance_sequence", {
                 {"capture_site", "0x002285ff"},
-                {"frames", {{"first", 0}, {"last", 19}, {"count", 20}}},
+                {"frames", level_one
+                    ? json{{"first", 0}, {"last", 19}, {"count", 20}}
+                    : json{{"first", 0}, {"last", 0}, {"count", 1}}},
                 {"local_player_slot", 0},
                 {"dword_0x19A_410", {
                     {"semantic", "ambient_loop_5_distance"},
-                    {"value", 2048}, {"invariant", true}
+                    {"value", ambient_loop_5_distance}, {"invariant", level_one}
                 }},
                 {"maxDistance_0x19E_414", {
                     {"semantic", "ambient_loop_31_distance"},
-                    {"value", 1746}, {"invariant", true}
+                    {"value", ambient_loop_31_distance}, {"invariant", level_one}
                 }}
             }},
             {"terrain_sequence", {
-                {"frames", 21},
+                {"frames", level_one ? 21 : 1},
                 {"bytes_per_frame", kTerrainBytes},
-                {"sha256", "16f0f778b120ddaab042f28b8a322efb37940bb68b4527b7d12dac82101db88f"}
+                {"sha256", level_one
+                    ? "16f0f778b120ddaab042f28b8a322efb37940bb68b4527b7d12dac82101db88f"
+                    : sha256(terrain.data)}
             }}
         }},
         {"files", file_manifest},
@@ -2120,7 +2222,8 @@ int run(const Arguments& arguments) {
 
     fs::rename(staging, output);
     staging_cleanup.committed = true;
-    std::cout << "exported deterministic private Level 1 package: " << output << "\n";
+    std::cout << "exported deterministic private external Level "
+              << arguments.level.external << " package: " << output << "\n";
     return 0;
 }
 
