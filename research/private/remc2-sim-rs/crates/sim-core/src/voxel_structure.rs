@@ -656,10 +656,22 @@ fn validate_value(
                 "strength and health must be positive",
             ));
         }
+        let density_kg_m3 = u32::try_from(fixed_unsigned(
+            density,
+            1.0,
+            &format!("{path}.density_kg_m3"),
+        )?)
+        .map_err(|_| {
+            VoxelManifestError::expect(
+                VoxelManifestErrorKind::Contract,
+                format!("{path}.density_kg_m3"),
+                "fixed-point density exceeds u32",
+            )
+        })?;
         let parsed = VoxelMaterial {
             id: material_ids[index].clone(),
             kind,
-            density_kg_m3: density.round() as u32,
+            density_kg_m3,
             strength_milli: fixed_milli(strength, &format!("{path}.strength"))?,
             health_milli: fixed_milli(health, &format!("{path}.health"))?,
         };
@@ -896,11 +908,14 @@ fn validate_value(
             &format!("manifest.cells[{index}].support_ids"),
         )?;
         for support_id in support_values {
-            if !support_map.contains_key(&support_id) {
+            if !support_map
+                .get(&support_id)
+                .is_some_and(|members| members.contains(&cell_ids[index]))
+            {
                 return Err(VoxelManifestError::expect(
                     VoxelManifestErrorKind::Reference,
                     format!("manifest.cells[{index}].support_ids"),
-                    format!("references unknown support {support_id}"),
+                    format!("support {support_id} does not contain this cell"),
                 ));
             }
         }
@@ -1333,6 +1348,13 @@ fn validate_value(
             required(observed, key, "manifest.budgets.observed")?,
             &format!("manifest.budgets.observed.{key}"),
         )?;
+        if is_integer_budget(key) && (limit.fract() != 0.0 || value.fract() != 0.0) {
+            return Err(VoxelManifestError::expect(
+                VoxelManifestErrorKind::Budget,
+                format!("manifest.budgets.{key}"),
+                "count budget values must be integral",
+            ));
+        }
         if limit > *frozen {
             return Err(VoxelManifestError::expect(
                 VoxelManifestErrorKind::Budget,
@@ -1754,14 +1776,14 @@ fn cell_bounds_volume(min: CellCoord, max: CellCoord) -> Result<u64, VoxelManife
     Ok(volume)
 }
 
-fn neighbors(coord: CellCoord) -> [CellCoord; 6] {
+fn neighbors(coord: CellCoord) -> [Option<CellCoord>; 6] {
     [
-        [coord[0] - 1, coord[1], coord[2]],
-        [coord[0] + 1, coord[1], coord[2]],
-        [coord[0], coord[1] - 1, coord[2]],
-        [coord[0], coord[1] + 1, coord[2]],
-        [coord[0], coord[1], coord[2] - 1],
-        [coord[0], coord[1], coord[2] + 1],
+        coord[0].checked_sub(1).map(|x| [x, coord[1], coord[2]]),
+        coord[0].checked_add(1).map(|x| [x, coord[1], coord[2]]),
+        coord[1].checked_sub(1).map(|y| [coord[0], y, coord[2]]),
+        coord[1].checked_add(1).map(|y| [coord[0], y, coord[2]]),
+        coord[2].checked_sub(1).map(|z| [coord[0], coord[1], z]),
+        coord[2].checked_add(1).map(|z| [coord[0], coord[1], z]),
     ]
 }
 
@@ -1772,7 +1794,7 @@ fn ensure_face_connected(
     let mut reachable = foundation.clone();
     let mut queue = VecDeque::from_iter(foundation.iter().copied());
     while let Some(current) = queue.pop_front() {
-        for neighbor in neighbors(current) {
+        for neighbor in neighbors(current).into_iter().flatten() {
             if coord_to_id.contains_key(&neighbor) && reachable.insert(neighbor) {
                 queue.push_back(neighbor);
             }
@@ -1816,7 +1838,15 @@ fn fixed_unsigned(value: f64, scale: f64, path: &str) -> Result<u64, VoxelManife
             "fixed-point value overflows",
         ));
     }
-    Ok(scaled.round() as u64)
+    let rounded = scaled.round();
+    if rounded < 1.0 {
+        return Err(VoxelManifestError::expect(
+            VoxelManifestErrorKind::Contract,
+            path,
+            "value is below the fixed-point precision",
+        ));
+    }
+    Ok(rounded as u64)
 }
 
 fn cap_as_usize(key: &str) -> usize {
@@ -1824,6 +1854,24 @@ fn cap_as_usize(key: &str) -> usize {
         .iter()
         .find(|(name, _)| *name == key)
         .map_or(usize::MAX, |(_, value)| *value as usize)
+}
+
+fn is_integer_budget(key: &str) -> bool {
+    matches!(
+        key,
+        "cells"
+            | "imported_triangles"
+            | "persistent_game_objects"
+            | "renderers"
+            | "materials"
+            | "collider_proxies"
+            | "major_clusters"
+            | "active_cosmetic_debris"
+            | "sidecar_snapshot_bytes"
+            | "added_memory_bytes"
+            | "managed_allocation_per_impact_bytes"
+            | "steady_frame_allocation_bytes"
+    )
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
@@ -1861,11 +1909,7 @@ fn write_canonical(value: &Value, output: &mut String) -> Result<(), VoxelManife
         Value::Null => output.push_str("null"),
         Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
         Value::Number(value) => output.push_str(&value.to_string()),
-        Value::String(value) => {
-            output.push_str(&serde_json::to_string(value).map_err(|error| {
-                VoxelManifestError::new(VoxelManifestErrorKind::Json, "manifest", error.to_string())
-            })?);
-        }
+        Value::String(value) => write_ascii_json_string(value, output),
         Value::Array(values) => {
             output.push('[');
             for (index, value) in values.iter().enumerate() {
@@ -1884,13 +1928,7 @@ fn write_canonical(value: &Value, output: &mut String) -> Result<(), VoxelManife
                 if index != 0 {
                     output.push(',');
                 }
-                output.push_str(&serde_json::to_string(key).map_err(|error| {
-                    VoxelManifestError::new(
-                        VoxelManifestErrorKind::Json,
-                        "manifest",
-                        error.to_string(),
-                    )
-                })?);
+                write_ascii_json_string(key, output);
                 output.push(':');
                 write_canonical(&values[key], output)?;
             }
@@ -1898,6 +1936,40 @@ fn write_canonical(value: &Value, output: &mut String) -> Result<(), VoxelManife
         }
     }
     Ok(())
+}
+
+fn write_ascii_json_string(value: &str, output: &mut String) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    output.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{08}' => output.push_str("\\b"),
+            '\u{0c}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            character if character.is_ascii() && character.is_control() => {
+                let value = character as u8;
+                output.push_str("\\u00");
+                output.push(HEX[(value >> 4) as usize] as char);
+                output.push(HEX[(value & 0x0f) as usize] as char);
+            }
+            character if character.is_ascii() => output.push(character),
+            character => {
+                let mut units = [0_u16; 2];
+                for unit in character.encode_utf16(&mut units) {
+                    output.push_str("\\u");
+                    output.push(HEX[(((*unit) >> 12) & 0x0f) as usize] as char);
+                    output.push(HEX[(((*unit) >> 8) & 0x0f) as usize] as char);
+                    output.push(HEX[(((*unit) >> 4) & 0x0f) as usize] as char);
+                    output.push(HEX[((*unit) & 0x0f) as usize] as char);
+                }
+            }
+        }
+    }
+    output.push('"');
 }
 
 #[cfg(test)]
@@ -1994,6 +2066,27 @@ mod tests {
             let error = load_manifest(&bytes, &schema).unwrap_err().to_string();
             assert!(error.contains(needle), "{error} did not contain {needle}");
         }
+
+        let mut value: Value = serde_json::from_slice(&manifest).unwrap();
+        value["materials"][1]["density_kg_m3"] = Value::from(0.1);
+        let error = load_manifest(&serde_json::to_vec(&value).unwrap(), &schema)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("fixed-point precision"), "{error}");
+
+        let mut value: Value = serde_json::from_slice(&manifest).unwrap();
+        value["budgets"]["limits"]["cells"] = Value::from(4_096.5);
+        let error = load_manifest(&serde_json::to_vec(&value).unwrap(), &schema)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("integral"), "{error}");
+
+        let mut value: Value = serde_json::from_slice(&manifest).unwrap();
+        value["cells"][3]["support_ids"] = serde_json::json!(["support-foundation"]);
+        let error = load_manifest(&serde_json::to_vec(&value).unwrap(), &schema)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("does not contain this cell"), "{error}");
     }
 
     #[test]
@@ -2047,5 +2140,27 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("budgets.limits.cells"), "{error}");
+    }
+
+    #[test]
+    fn canonical_strings_match_ascii_escaped_python_form() {
+        let value = serde_json::json!({"é": "😀", "line": "\n"});
+        let bytes = canonical_json(&value).unwrap();
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            r#"{"line":"\n","\u00e9":"\ud83d\ude00"}"#
+        );
+    }
+
+    #[test]
+    fn boundary_neighbors_are_checked_instead_of_wrapping_or_panicking() {
+        let minimum = neighbors([i32::MIN, i32::MIN, i32::MIN]);
+        assert!(minimum[0].is_none());
+        assert!(minimum[2].is_none());
+        assert!(minimum[4].is_none());
+        let maximum = neighbors([i32::MAX, i32::MAX, i32::MAX]);
+        assert!(maximum[1].is_none());
+        assert!(maximum[3].is_none());
+        assert!(maximum[5].is_none());
     }
 }
