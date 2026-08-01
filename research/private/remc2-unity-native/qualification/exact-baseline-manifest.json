@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "baseline": {
+    "source_commit": "c21df2e7495bdd7e4a5fe543a8dfa18e33ab4b17",
+    "submodules": {
+      "upstream/magic-carpet-2-hd": "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+    },
+    "unity_version": "6000.3.20f1",
+    "native_abi_version": 2,
+    "artifact_identities": {
+      "exact_unity_project": {
+        "kind": "source-tree",
+        "identity": "pinned source commit plus protected-file hashes"
+      },
+      "native_plugin": {
+        "kind": "rebuildable",
+        "path": "research/private/remc2-unity-native/Assets/Plugins/x86_64/libsim_capi.so",
+        "build": "cargo build -p sim-capi --release --locked"
+      },
+      "linux_player": {
+        "kind": "rebuildable",
+        "path": "research/private/remc2-unity-native/Builds/Linux/MagicCarpetNative.x86_64",
+        "build": "Unity 6000.3.20f1 BuildNativePlayer.BuildLinuxPlayer"
+      }
+    },
+    "exact_profile": {
+      "world_frame": {
+        "width": 320,
+        "height": 200,
+        "format": "R8 indexed FINAL MAIN",
+        "authority": "Rust source-shaped compositor"
+      },
+      "hud_display": {
+        "width": 640,
+        "height": 480,
+        "aspect": "corrected 4:3"
+      },
+      "startup_arguments": ["-mc-qualified", "-mc-debug"]
+    }
+  },
+  "protected_files": {
+    "project_settings": [
+      "research/private/remc2-unity-native/ProjectSettings/ProjectVersion.txt",
+      "research/private/remc2-unity-native/ProjectSettings/GraphicsSettings.asset",
+      "research/private/remc2-unity-native/ProjectSettings/QualitySettings.asset",
+      "research/private/remc2-unity-native/ProjectSettings/ProjectSettings.asset",
+      "research/private/remc2-unity-native/Packages/packages-lock.json"
+    ],
+    "unity_scene": [
+      "research/private/remc2-unity-native/Assets/Scenes/Main.unity"
+    ],
+    "exact_shaders": [
+      "research/private/remc2-unity-native/Assets/Resources/EntitySprite.shader",
+      "research/private/remc2-unity-native/Assets/Resources/Surface.shader",
+      "research/private/remc2-unity-native/Assets/Resources/Terrain.shader",
+      "research/private/remc2-unity-native/Assets/Resources/TerrainDepthOnly.shader",
+      "research/private/remc2-unity-native/Assets/Resources/TerrainFrameRawGolden.shader",
+      "research/private/remc2-unity-native/Assets/Resources/TerrainGolden.shader",
+      "research/private/remc2-unity-native/Assets/Resources/TerrainIndexedFrame.shader"
+    ],
+    "frame_contract": [
+      "research/private/remc2-sim-rs/crates/sim-core/src/terrain_frame.rs",
+      "research/private/remc2-sim-rs/crates/sim-core/src/presentation_frame.rs",
+      "research/private/remc2-sim-rs/crates/sim-core/src/indexed_postprocess.rs",
+      "research/private/remc2-sim-rs/crates/sim-core/src/indexed_overlay.rs",
+      "research/private/remc2-unity-native/Assets/Scripts/NativeSession.cs",
+      "research/private/remc2-unity-native/Assets/Scripts/MagicCarpetRuntime.cs"
+    ],
+    "abi_v2_layouts": [
+      "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs",
+      "research/private/remc2-sim-rs/crates/sim-capi/src/presentation_bridge.rs",
+      "research/private/remc2-unity-native/Assets/Scripts/NativeSim.cs"
+    ],
+    "level1_readiness": [
+      "research/private/remc2-unity-native/LEVEL1-READINESS.md",
+      "research/private/remc2-sim-rs/LEVEL1-GOAT-CONTRACT.md",
+      "research/private/remc2-sim-rs/level1-conformance/level1-conformance-matrix.json",
+      "research/private/remc2-sim-rs/level1-conformance/plan29-final-qualification-policy.json"
+    ],
+    "reference_corpus": [
+      "research/private/remc2-unity-native/qualification/level1-reference-corpus.json",
+      "research/private/remc2-unity-native/qualification/presentation-correspondence.json"
+    ],
+    "qualification_scripts": [
+      "research/private/remc2-unity-native/README.md",
+      "research/private/remc2-unity-native/qualification/README.md",
+      "research/private/remc2-unity-native/qualification/verify_reference_corpus.py",
+      "research/private/remc2-unity-native/qualification/verify_presentation_correspondence.py",
+      "research/private/remc2-unity-native/qualification/verify_unity_lifecycle_privacy.py",
+      "research/private/remc2-unity-native/qualification/run_plan29_full_gate.py",
+      "research/private/remc2-unity-native/run-level1.sh"
+    ]
+  },
+  "abi_v2_header": "research/private/remc2-sim-rs/crates/sim-capi/include/mc_sim.h",
+  "contract_assertions": [
+    {
+      "id": "native-abi-version",
+      "path": "research/private/remc2-unity-native/Assets/Scripts/NativeSim.cs",
+      "regex": "internal const uint AbiVersion = 2;"
+    },
+    {
+      "id": "exact-frame-width",
+      "path": "research/private/remc2-unity-native/Assets/Scripts/NativeSim.cs",
+      "regex": "internal const int TerrainFrameWidth = 320;"
+    },
+    {
+      "id": "exact-frame-height",
+      "path": "research/private/remc2-unity-native/Assets/Scripts/NativeSim.cs",
+      "regex": "internal const int TerrainFrameHeight = 200;"
+    },
+    {
+      "id": "corrected-hud-display",
+      "path": "research/private/remc2-unity-native/qualification/presentation-correspondence.json",
+      "regex": "640x480 owner layout"
+    },
+    {
+      "id": "qualified-startup",
+      "path": "research/private/remc2-unity-native/run-level1.sh",
+      "regex": "-mc-qualified"
+    },
+    {
+      "id": "debug-startup",
+      "path": "research/private/remc2-unity-native/README.md",
+      "regex": "-mc-debug"
+    }
+  ]
+}
