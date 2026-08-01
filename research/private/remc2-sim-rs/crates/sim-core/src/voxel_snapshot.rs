@@ -1004,6 +1004,7 @@ fn snapshot_encoded_size(snapshot: &VoxelSnapshot) -> Result<usize, VoxelSnapsho
     size_coords(&mut size, &snapshot.revealed_opening_cells)?;
     size_lifecycle(&mut size, &snapshot.lifecycle)?;
     size_component_report(&mut size, &snapshot.components)?;
+    size.string(&snapshot.snapshot_hash_sha256)?;
     Ok(size.finish())
 }
 
@@ -1020,6 +1021,7 @@ fn delta_encoded_size(delta: &VoxelSparseDelta) -> Result<usize, VoxelSnapshotEr
     size_coords(&mut size, &delta.revealed_opening_cells)?;
     size_lifecycle(&mut size, &delta.lifecycle)?;
     size_component_report(&mut size, &delta.components)?;
+    size.string(&delta.delta_hash_sha256)?;
     Ok(size.finish())
 }
 
