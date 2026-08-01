@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "project": "mc2-private-presentation-lab",
+  "editor": "6000.3.20f1",
+  "renderer": "universal-render-pipeline",
+  "modes": {
+    "classic-hd": {
+      "presentation_id": 2,
+      "owner_data": "external-optional",
+      "exact_project": false,
+      "stereo_ready": true
+    },
+    "unity-enhanced": {
+      "presentation_id": 3,
+      "owner_data": "external-optional",
+      "exact_project": false,
+      "stereo_ready": true
+    }
+  },
+  "startup": {
+    "mode_argument": "--mc-mode",
+    "owner_root_argument": "--mc-owner-root",
+    "required_owner_flag": "--mc-require-owner-data",
+    "default_mode": "unity-enhanced",
+    "synthetic_no_owner_allowed": true,
+    "mid_session_mode_swap": false
+  },
+  "lifecycle": {
+    "native_session_owner": "PresentationLabBootstrap",
+    "teardown": "OnApplicationQuit",
+    "unity_gameplay_authority": false
+  },
+  "forbidden_exact_paths": [
+    "research/private/remc2-unity-native",
+    "research/private/generated/level1-unity-asset-cache"
+  ]
+}

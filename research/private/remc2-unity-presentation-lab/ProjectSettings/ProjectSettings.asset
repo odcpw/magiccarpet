@@ -1,0 +1,42 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!129 &1
+PlayerSettings:
+  m_ObjectHideFlags: 0
+  serializedVersion: 26
+  productGUID: 8a34c1d4b0f74f9b9cc1aa87a4b67d22
+  productName: MC2 Private Presentation Lab
+  companyName: odcpw-private
+  defaultScreenOrientation: 4
+  defaultIsNativeResolution: 1
+  runInBackground: 1
+  usePlayerLog: 1
+  activeColorSpace: 0
+  m_ActiveColorSpace: 0
+  colorSpace: 0
+  useOSAutorotation: 1
+  use32BitDisplayBuffer: 1
+  preserveFramebufferAlpha: 0
+  disableDepthAndStencilBuffers: 0
+  androidStartInFullscreen: 1
+  androidRenderOutsideSafeArea: 1
+  androidUseSwappy: 1
+  androidResizableWindow: 0
+  androidDefaultWindowWidth: 1920
+  androidDefaultWindowHeight: 1080
+  androidMinimumWindowWidth: 400
+  androidMinimumWindowHeight: 300
+  macRetinaSupport: 1
+  forceSingleInstance: 0
+  useFlipModelSwapchain: 1
+  resizableWindow: 1
+  captureSingleScreen: 0
+  muteOtherAudioSources: 0
+  allowFullscreenSwitch: 1
+  fullscreenMode: 3
+  scriptingDefineSymbols: {}
+  additionalCompilerArguments: {}
+  platformArchitecture: {}
+  scriptingBackend: {}
+  il2cppCompilerConfiguration: {}
+  apiCompatibilityLevelPerPlatform: {}
