@@ -13223,6 +13223,488 @@ mod tests {
     }
 
     #[test]
+    fn level_two_economy_conformance_death_split_and_merge_vectors() {
+        // Pinned remc2 6806c72, EventsFunctions.cpp:26867-26915
+        // (TransformEntityToManaSphere_36BA0): fraction is clamp(mana / 1000,
+        // 1, 16), each sphere gets the floor share, and the final sphere gets
+        // the exact remainder. The source also advances the sphere-local RNG
+        // twice before deriving yaw and speed and clears the dying owner.
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut split = inspection
+            .level2_reset_session()
+            .expect("economy split session");
+        // The qualified Level 2 reset census has active source rows 1..=114;
+        // the source allocator therefore starts with the descending free
+        // stack 999..=115 and pops 115, 116, ... in allocation order.
+        let expected_free_stack = (115_u16..=999).rev().collect::<Vec<_>>();
+        assert_eq!(split.economy().free_slots, expected_free_stack);
+        let expected_slots = (115_u16..=130).collect::<Vec<_>>();
+        let first_slot = expected_slots[0];
+        let first_seed = split.economy().slot_rng[&first_slot];
+        let first_rng = level2_next_rng16(first_seed);
+        let second_rng = level2_next_rng16(first_rng);
+        let baseline_hash = split.economy().reset_hash();
+        split.economy_mut().begin_turn();
+        let sphere_ids = split.economy_mut().spawn_mana_spheres_from_death(
+            42,
+            Position {
+                x: 384,
+                y: 62_080,
+                z: 1_024,
+            },
+            0x120,
+            0x4321,
+            17_000,
+            121,
+            true,
+        );
+        assert_eq!(
+            sphere_ids,
+            expected_slots
+                .iter()
+                .map(|slot| u32::from(*slot))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(split.economy().source_rng.get(&42), Some(&0x4321));
+        assert_eq!(split.economy().source_owner(42), 0);
+        assert_eq!(split.economy().events().len(), 16);
+        let first = split
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.id == sphere_ids[0])
+            .expect("first spawned sphere");
+        assert_eq!(first.entity_rng, second_rng);
+        assert_eq!(
+            first.yaw,
+            i16::try_from((i32::from(first_rng % 0x71) + i32::from(0x120_i16) - 56) & 0x07ff)
+                .expect("source yaw fits")
+        );
+        assert_eq!(first.mana, 1_062);
+        assert_eq!(
+            split
+                .economy()
+                .spheres()
+                .iter()
+                .map(|sphere| sphere.mana)
+                .collect::<Vec<_>>(),
+            [vec![1_062; 15], vec![1_070]].concat()
+        );
+        for (event, &sphere_id) in split.economy().events().iter().zip(&sphere_ids) {
+            assert_eq!(
+                *event,
+                Level2EconomyEvent::ManaSphereSpawned {
+                    sphere_id,
+                    source_entity_index: 42,
+                    mana: split
+                        .economy()
+                        .spheres()
+                        .iter()
+                        .find(|sphere| sphere.id == sphere_id)
+                        .expect("spawned sphere")
+                        .mana,
+                }
+            );
+        }
+        split.reset();
+        assert_eq!(split.economy().reset_hash(), baseline_hash);
+        assert!(split.economy().spheres().is_empty());
+
+        // Pinned remc2 6806c72, EventsFunctions.cpp:26919-26997
+        // (sub_36D50): neutral ownership adopts the other side, class-10
+        // owners yield to non-class-10 owners, and non-class-10 ties choose
+        // the source side when maxMana is equal.
+        struct MergeVector {
+            target_owner: u16,
+            source_owner: u16,
+            target_class: u8,
+            source_class: u8,
+            target_max_mana: i32,
+            source_max_mana: i32,
+            expected_owner: u16,
+        }
+        let vectors = [
+            MergeVector {
+                target_owner: 0,
+                source_owner: 201,
+                target_class: 0,
+                source_class: 3,
+                target_max_mana: 0,
+                source_max_mana: 0,
+                expected_owner: 201,
+            },
+            MergeVector {
+                target_owner: 200,
+                source_owner: 201,
+                target_class: 10,
+                source_class: 3,
+                target_max_mana: 900,
+                source_max_mana: 100,
+                expected_owner: 201,
+            },
+            MergeVector {
+                target_owner: 200,
+                source_owner: 201,
+                target_class: 3,
+                source_class: 10,
+                target_max_mana: 900,
+                source_max_mana: 100,
+                expected_owner: 200,
+            },
+            MergeVector {
+                target_owner: 200,
+                source_owner: 201,
+                target_class: 3,
+                source_class: 3,
+                target_max_mana: 100,
+                source_max_mana: 100,
+                expected_owner: 201,
+            },
+        ];
+        for vector in vectors {
+            let mut session = inspection
+                .level2_reset_session()
+                .expect("merge vector session");
+            session
+                .economy_mut()
+                .owner_class
+                .insert(vector.target_owner, vector.target_class);
+            session
+                .economy_mut()
+                .owner_class
+                .insert(vector.source_owner, vector.source_class);
+            session
+                .economy_mut()
+                .set_owner_max_mana(vector.target_owner, vector.target_max_mana);
+            session
+                .economy_mut()
+                .set_owner_max_mana(vector.source_owner, vector.source_max_mana);
+            let target_id = session
+                .economy_mut()
+                .spawn_mana_sphere_from_death(
+                    45,
+                    Position::default(),
+                    0,
+                    0x1111,
+                    100,
+                    vector.target_owner,
+                )
+                .expect("merge target");
+            let source_id = session
+                .economy_mut()
+                .spawn_mana_sphere_from_death(
+                    46,
+                    Position::default(),
+                    0,
+                    0x2222,
+                    50,
+                    vector.source_owner,
+                )
+                .expect("merge source");
+            session.economy_mut().begin_turn();
+            assert!(session.economy_mut().merge_mana_spheres(
+                u16::try_from(target_id).expect("target slot"),
+                u16::try_from(source_id).expect("source slot"),
+            ));
+            let target = session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.id == target_id)
+                .expect("merged target");
+            assert_eq!(
+                (target.owner_entity_index, target.mana),
+                (vector.expected_owner, 150)
+            );
+            assert!(
+                !session
+                    .economy()
+                    .spheres()
+                    .iter()
+                    .find(|sphere| sphere.id == source_id)
+                    .expect("merged source")
+                    .active
+            );
+            assert_eq!(
+                session.economy().events(),
+                &[Level2EconomyEvent::ManaSpheresMerged {
+                    target_sphere_id: target_id,
+                    source_sphere_id: source_id,
+                    owner_entity_index: vector.expected_owner,
+                    mana: 50,
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn level_two_economy_conformance_addballon_carrier_vectors() {
+        // Pinned remc2 6806c72, EventsFunctions.cpp:61802-61904
+        // (AddBallon_60AB0): model-39 collection requires matching owner,
+        // wrapped attraction distance, and the strict source AABB before the
+        // carrier receives the payload and clears word96 on the sphere.
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let carrier_position = Position::default();
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("carrier vector session");
+        let carrier_slot = session
+            .economy_mut()
+            .spawn_mana_carrier(carrier_position, 111, 0)
+            .expect("carrier allocation");
+        let wrong_owner = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(47, carrier_position, 0, 0x3333, 1, 112)
+            .expect("wrong-owner sphere");
+        let far = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(
+                48,
+                Position {
+                    x: 2_048,
+                    ..carrier_position
+                },
+                0,
+                0x4444,
+                1,
+                111,
+            )
+            .expect("far sphere");
+        let near_but_outside_aabb = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(
+                49,
+                Position {
+                    x: 400,
+                    ..carrier_position
+                },
+                0,
+                0x5555,
+                1,
+                111,
+            )
+            .expect("near non-overlap sphere");
+        let valid = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(50, carrier_position, 0, 0x6666, 321, 111)
+            .expect("valid sphere");
+        session.economy_mut().begin_turn();
+        for rejected in [wrong_owner, far, near_but_outside_aabb] {
+            assert!(!session.economy_mut().absorb_sphere_into_carrier(
+                u16::try_from(rejected).expect("sphere slot"),
+                carrier_slot,
+            ));
+        }
+        assert!(
+            session.economy_mut().absorb_sphere_into_carrier(
+                u16::try_from(valid).expect("sphere slot"),
+                carrier_slot,
+            )
+        );
+        let carrier = session.economy().carrier().expect("active carrier");
+        assert_eq!((carrier.carried_mana, carrier.target_sphere_id), (321, 0));
+        assert_eq!(
+            session.economy().events(),
+            &[Level2EconomyEvent::ManaSphereCollected {
+                sphere_id: valid,
+                carrier_id: u32::from(carrier_slot),
+                mana: 321,
+            }]
+        );
+        assert!(
+            !session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.id == valid)
+                .expect("valid sphere")
+                .active
+        );
+        assert_eq!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .filter(|sphere| sphere.active)
+                .count(),
+            3
+        );
+    }
+
+    #[test]
+    fn level_two_economy_conformance_castle_action_vectors_and_allocator_fallback() {
+        // Pinned remc2 6806c72, Events.cpp:2937-2964 dispatches action 4/6
+        // through the Castle helpers; EventsFunctions.cpp:61162-61278 binds
+        // the construction state machine and sub_5FCA0's free-arena gate.
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let footprint = CastleBuildFootprint::from_owner_cells(1, 8, 8, &[0xff; 128])
+            .expect("source BUILD vector");
+        let projectile = Position {
+            x: 0x13_45,
+            y: 0x56_78,
+            z: 1_234,
+        };
+        let mut production = inspection
+            .level2_reset_session()
+            .expect("production Castle session");
+        let castle_slot = production
+            .economy_mut()
+            .build_castle_with_footprint(projectile, 111, &footprint)
+            .expect("production Castle allocation");
+        let castle = production.economy().castle().expect("production Castle");
+        assert_eq!((castle.position.x, castle.position.y), (0x14_00, 0x56_00));
+        assert_eq!(
+            (castle.anchor_position.x, castle.anchor_position.y),
+            (0x14_00, 0x56_00)
+        );
+        production.economy_mut().begin_turn();
+        assert!(production.economy_mut().step_castle_action(castle_slot));
+        let construction = production
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.active && child.model == 42)
+            .expect("production construction child");
+        assert_eq!(construction.position, castle.anchor_position);
+        assert_eq!(
+            production.economy().events()[0],
+            Level2EconomyEvent::CastleConstructionSound {
+                source_entity_index: castle_slot,
+                sound_id: 10,
+            }
+        );
+
+        // sub_5FF50/EndOfCastleProjectile's action-4 even-phase branch absorbs
+        // an owned sphere before the source phase byte advances.
+        let mut action4 = inspection
+            .level2_reset_session()
+            .expect("action-4 Castle session");
+        let action4_slot = action4
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("action-4 Castle");
+        let action4_position = action4.economy().castle().expect("Castle").position;
+        let action4_sphere = action4
+            .economy_mut()
+            .spawn_mana_sphere_from_death(51, action4_position, 0, 0x7777, 100, 111)
+            .expect("action-4 sphere");
+        action4
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("action-4 Castle")
+            .phase = 0;
+        action4.economy_mut().begin_turn();
+        assert!(action4.economy_mut().step_castle_action(action4_slot));
+        assert_eq!(action4.economy().castle().expect("Castle").mana, 100);
+        assert_eq!(action4.economy().castle().expect("Castle").phase, 1);
+        assert!(
+            !action4
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.id == action4_sphere)
+                .expect("action-4 sphere")
+                .active
+        );
+        assert_eq!(
+            action4.economy().events(),
+            &[Level2EconomyEvent::ManaSphereCollected {
+                sphere_id: action4_sphere,
+                carrier_id: u32::from(action4_slot),
+                mana: 100,
+            }]
+        );
+
+        // With a free slot, sub_5FCA0 emits destruction sound before the
+        // stage-destroyed and final Castle-destroyed events. This is a source
+        // ordering vector, not just a final-state assertion.
+        let mut teardown = inspection
+            .level2_reset_session()
+            .expect("action-6 Castle session");
+        let teardown_slot = teardown
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("action-6 Castle");
+        {
+            let castle = teardown.economy_mut().castle.as_mut().expect("Castle");
+            castle.action = 6;
+            castle.level = 1;
+            castle.life = -1;
+            castle.max_life = 20_000;
+        }
+        teardown.economy_mut().begin_turn();
+        assert!(teardown.economy_mut().step_castle_action(teardown_slot));
+        assert_eq!(
+            teardown.economy().events(),
+            &[
+                Level2EconomyEvent::CastleDestructionSound {
+                    source_entity_index: teardown_slot,
+                    sound_id: 30,
+                },
+                Level2EconomyEvent::CastleStageDestroyed {
+                    source_entity_index: teardown_slot,
+                    previous_level: 1,
+                    next_level: 0,
+                },
+                Level2EconomyEvent::CastleDestroyed {
+                    source_entity_index: teardown_slot,
+                    killer_entity_index: 0,
+                },
+            ]
+        );
+        assert!(
+            !teardown
+                .economy()
+                .castle()
+                .expect("destroyed Castle")
+                .active
+        );
+
+        // The source writes the dying source RNG/owner before allocation and
+        // leaves no partial event when the source arena is exhausted.
+        let mut exhausted = inspection
+            .level2_reset_session()
+            .expect("allocator fallback session");
+        exhausted.economy_mut().free_slots.clear();
+        exhausted.economy_mut().begin_turn();
+        assert!(
+            exhausted
+                .economy_mut()
+                .spawn_mana_sphere_from_death(52, Position::default(), 0, 0x9876, 12, 111)
+                .is_none()
+        );
+        assert_eq!(exhausted.economy().source_rng.get(&52), Some(&0x9876));
+        assert_eq!(exhausted.economy().source_owner(52), 0);
+        assert!(exhausted.economy().events().is_empty());
+
+        // sub_5FCA0's no-free-slot branch resets action to 4 and does not
+        // commit a destruction sound or stage transition.
+        let mut blocked = inspection
+            .level2_reset_session()
+            .expect("blocked action-6 session");
+        let blocked_slot = blocked
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("blocked Castle");
+        {
+            let economy = blocked.economy_mut();
+            economy.free_slots.clear();
+            let castle = economy.castle.as_mut().expect("blocked Castle");
+            castle.action = 6;
+            castle.level = 1;
+        }
+        blocked.economy_mut().begin_turn();
+        assert!(blocked.economy_mut().step_castle_action(blocked_slot));
+        let blocked_castle = blocked.economy().castle().expect("blocked Castle");
+        assert_eq!((blocked_castle.action, blocked_castle.level), (4, 1));
+        assert!(blocked.economy().events().is_empty());
+    }
+
+    #[test]
     fn level_two_castle_root_positions_follow_source_grid_and_anchor_vector() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -14510,7 +14992,6 @@ mod tests {
             session.shared_spells().activation_events(),
             [FlightEvent::PrepareSound { sound_id: 18, .. }]
         ));
-
         session.reset();
         assert_eq!(session.shared_spells().reset_hash(), baseline_hash);
         assert_eq!(session.shared_spells().pickups()[1].action, 10);
