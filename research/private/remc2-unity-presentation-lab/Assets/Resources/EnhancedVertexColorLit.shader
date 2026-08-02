@@ -34,6 +34,7 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
             #pragma multi_compile _ _ADDITIONAL_LIGHTS_VERTEX _ADDITIONAL_LIGHTS
             #pragma multi_compile_fragment _ _ADDITIONAL_LIGHT_SHADOWS
             #pragma multi_compile_fragment _ _SHADOWS_SOFT
+            #pragma multi_compile_fog
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
@@ -129,6 +130,7 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
                 half rim = pow(saturate(1.0h - dot(normalWS, viewDirectionWS)), 2.0h);
                 color += _RimColor.rgb * (rim * _RimStrength);
                 color += _EmissionColor.rgb * _EmissionStrength;
+                color = MixFog(color, ComputeFogFactor(input.positionHCS.z));
                 return half4(color, _BaseColor.a * input.color.a);
             }
             ENDHLSL

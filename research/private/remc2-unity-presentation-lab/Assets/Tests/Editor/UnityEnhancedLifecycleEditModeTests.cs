@@ -444,11 +444,14 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual(0.65f, lighting.AppliedExposure, 0.0001f);
             Assert.AreEqual(AmbientMode.Trilight, RenderSettings.ambientMode);
             Assert.AreEqual(FogMode.ExponentialSquared, RenderSettings.fogMode);
+            Shader enhancedNightSky = Shader.Find("MagicCarpet/Enhanced/NightSky");
             Shader proceduralSky = Shader.Find("Skybox/Procedural");
             Assert.AreEqual(
-                proceduralSky == null ? CameraClearFlags.SolidColor : CameraClearFlags.Skybox,
+                enhancedNightSky != null || proceduralSky != null
+                    ? CameraClearFlags.Skybox
+                    : CameraClearFlags.SolidColor,
                 camera.clearFlags);
-            if (proceduralSky == null)
+            if (enhancedNightSky == null && proceduralSky == null)
             {
                 Assert.AreNotEqual(backgroundBefore, camera.backgroundColor);
             }
@@ -546,6 +549,7 @@ namespace MagicCarpet.PresentationLab.Tests
         public void EnhancedVertexColorShaderIsAvailableForGeneratedPresentation()
         {
             Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/VertexColorLit"));
+            Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/NightSky"));
         }
 
         [Test]

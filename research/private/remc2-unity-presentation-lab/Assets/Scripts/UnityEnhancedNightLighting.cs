@@ -382,7 +382,12 @@ namespace MagicCarpet.PresentationLab
 
         private bool ApplyProceduralSkybox(UnityEnhancedNightLightingDescriptor descriptor)
         {
-            Shader shader = Shader.Find("Skybox/Procedural");
+            Shader shader = Shader.Find("MagicCarpet/Enhanced/NightSky");
+            bool customNightSky = shader != null;
+            if (shader == null)
+            {
+                shader = Shader.Find("Skybox/Procedural");
+            }
             if (shader == null)
             {
                 return false;
@@ -402,27 +407,42 @@ namespace MagicCarpet.PresentationLab
                 };
             }
 
-            if (generatedSkybox.HasProperty("_SkyTint"))
+            if (customNightSky)
+            {
+                generatedSkybox.SetColor("_ZenithColor", new Color(0.012f, 0.035f, 0.16f, 1f));
+                generatedSkybox.SetColor("_HorizonColor", new Color(0.045f, 0.12f, 0.32f, 1f));
+                generatedSkybox.SetColor("_GroundColor", new Color(0.004f, 0.012f, 0.04f, 1f));
+                generatedSkybox.SetColor("_StarColor", new Color(0.55f, 0.72f, 1f, 1f));
+                generatedSkybox.SetFloat("_StarDensity", 0.025f);
+                generatedSkybox.SetFloat("_StarIntensity", 0.8f);
+                generatedSkybox.SetVector("_MoonDirection", -descriptor.MoonDirection.normalized);
+                generatedSkybox.SetColor("_MoonColor", descriptor.MoonColor);
+                generatedSkybox.SetFloat("_MoonIntensity", descriptor.MoonIntensity);
+                generatedSkybox.SetFloat("_MoonSize", 0.035f);
+                generatedSkybox.SetFloat("_MoonGlow", 0.45f);
+                generatedSkybox.SetFloat("_Exposure", Mathf.Clamp(0.85f + descriptor.Exposure * 0.25f, 0f, 4f));
+            }
+            else if (generatedSkybox.HasProperty("_SkyTint"))
             {
                 generatedSkybox.SetColor("_SkyTint", descriptor.SkyColor);
             }
-            if (generatedSkybox.HasProperty("_GroundColor"))
+            if (!customNightSky && generatedSkybox.HasProperty("_GroundColor"))
             {
                 generatedSkybox.SetColor("_GroundColor", descriptor.GroundColor);
             }
-            if (generatedSkybox.HasProperty("_SunSize"))
+            if (!customNightSky && generatedSkybox.HasProperty("_SunSize"))
             {
                 generatedSkybox.SetFloat("_SunSize", 0.015f);
             }
-            if (generatedSkybox.HasProperty("_SunSizeConvergence"))
+            if (!customNightSky && generatedSkybox.HasProperty("_SunSizeConvergence"))
             {
                 generatedSkybox.SetFloat("_SunSizeConvergence", 5f);
             }
-            if (generatedSkybox.HasProperty("_AtmosphereThickness"))
+            if (!customNightSky && generatedSkybox.HasProperty("_AtmosphereThickness"))
             {
                 generatedSkybox.SetFloat("_AtmosphereThickness", 0.55f);
             }
-            if (generatedSkybox.HasProperty("_Exposure"))
+            if (!customNightSky && generatedSkybox.HasProperty("_Exposure"))
             {
                 generatedSkybox.SetFloat("_Exposure", Mathf.Clamp(0.45f + descriptor.Exposure * 0.45f, 0f, 8f));
             }
