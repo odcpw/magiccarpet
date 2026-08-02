@@ -503,12 +503,15 @@ namespace MagicCarpet.PresentationLab.Tests
         [Test]
         public void VfxEventsDeduplicateReplayAndRespectReducedMotion()
         {
+            Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/Vfx"));
             GameObject gameObject = new GameObject("enhanced-vfx-test");
             UnityEnhancedVfxPresentation vfx = gameObject.AddComponent<UnityEnhancedVfxPresentation>();
             vfx.ResetForGeneration(3);
             UnityEnhancedVfxEvent first = new UnityEnhancedVfxEvent(
                 1, 3, 10, 17, UnityEnhancedVfxKind.SpellCast, Vector3.zero, 1f, 4);
             Assert.IsTrue(vfx.ApplyEvent(first));
+            MeshRenderer renderer = gameObject.transform.Find("EnhancedVfxPool/EnhancedVfx").GetComponent<MeshRenderer>();
+            Assert.AreEqual("MagicCarpet/Enhanced/Vfx", renderer.sharedMaterial.shader.name);
             Assert.IsFalse(vfx.ApplyEvent(first));
             Assert.AreEqual(1, vfx.DuplicateEffectCount);
             vfx.SetReducedMotion(true);

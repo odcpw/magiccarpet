@@ -270,7 +270,9 @@ namespace MagicCarpet.PresentationLab
                 return material;
             }
 
-            Shader shader = Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
+            Shader customVfxShader = Shader.Find("MagicCarpet/Enhanced/Vfx");
+            Shader shader = customVfxShader ??
+                            Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
                             Shader.Find("Universal Render Pipeline/Lit") ??
                             Shader.Find("Standard");
             material = shader == null ? null : new Material(shader)
@@ -282,12 +284,26 @@ namespace MagicCarpet.PresentationLab
             if (material != null)
             {
                 material.enableInstancing = true;
-                material.SetFloat("_AmbientBoost", 0.58f);
-                material.SetFloat("_SpecularStrength", 0.06f);
-                material.SetColor("_RimColor", new Color(0.08f, 0.16f, 0.52f, 1f));
-                material.SetFloat("_RimStrength", 0.08f);
-                material.SetColor("_EmissionColor", VfxColor(kind));
-                material.SetFloat("_EmissionStrength", kind == UnityEnhancedVfxKind.Weather ? 0.05f : 0.38f);
+                if (shader == customVfxShader)
+                {
+                    float glow = kind == UnityEnhancedVfxKind.Weather ? 0.7f :
+                                 kind == UnityEnhancedVfxKind.Smoke ? 0.28f : 2.4f;
+                    float opacity = kind == UnityEnhancedVfxKind.Smoke ? 0.28f : 0.82f;
+                    material.SetColor("_GlowColor", VfxColor(kind));
+                    material.SetFloat("_GlowIntensity", glow);
+                    material.SetFloat("_Opacity", opacity);
+                    material.SetFloat("_PulseSpeed", kind == UnityEnhancedVfxKind.SpeedTrail ? 4.5f : 2.5f);
+                    material.SetFloat("_RimStrength", kind == UnityEnhancedVfxKind.Impact ? 1.8f : 1.2f);
+                }
+                else
+                {
+                    material.SetFloat("_AmbientBoost", 0.58f);
+                    material.SetFloat("_SpecularStrength", 0.06f);
+                    material.SetColor("_RimColor", new Color(0.08f, 0.16f, 0.52f, 1f));
+                    material.SetFloat("_RimStrength", 0.08f);
+                    material.SetColor("_EmissionColor", VfxColor(kind));
+                    material.SetFloat("_EmissionStrength", kind == UnityEnhancedVfxKind.Weather ? 0.05f : 0.38f);
+                }
             }
             materials.Add(kind, material);
             return material;
