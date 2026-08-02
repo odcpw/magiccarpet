@@ -318,6 +318,73 @@ typedef struct McCampaignSelectionV2 {
     uint32_t reserved[4];
 } McCampaignSelectionV2;
 
+/* Additive Level 2 outer-turn input. The embedded McCommandV2 preserves the
+ * legacy command projection; player_slot/position identify the active flight
+ * row for the campaign handle. */
+typedef struct McCampaignStepInputV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    McCommandV2 command;
+    uint8_t player_slot;
+    uint8_t speed_index;
+    uint16_t reserved_0;
+    uint16_t player_x;
+    uint16_t player_y;
+    int16_t player_z;
+    uint32_t reserved[4];
+} McCampaignStepInputV2;
+
+enum {
+    MC_CAMPAIGN_EVENT_SHARED_PICKUP = 1,
+    MC_CAMPAIGN_EVENT_SPELL_ACQUISITION = 2,
+    MC_CAMPAIGN_EVENT_BAD_STONE = 3,
+    MC_CAMPAIGN_EVENT_HOUSE = 4,
+    MC_CAMPAIGN_EVENT_VILLAGER = 5,
+    MC_CAMPAIGN_EVENT_DOLMEN = 6,
+    MC_CAMPAIGN_EVENT_CASTLE = 7,
+    MC_CAMPAIGN_EVENT_DYNAMIC_ARENA = 8,
+    MC_CAMPAIGN_EVENT_GOAT = 9,
+    MC_CAMPAIGN_EVENT_ERROR = 255
+};
+
+/* One bounded, explicitly typed Level 2 source-pass event. */
+typedef struct McCampaignEventV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint32_t ordinal;
+    uint8_t pass;
+    uint8_t kind;
+    uint8_t family;
+    uint8_t flags;
+    uint16_t source_slot;
+    uint16_t reserved_0;
+    uint32_t reserved[4];
+} McCampaignEventV2;
+
+/* Revisioned Level 2 outer-turn snapshot. dispatch_hash is the SHA-256
+ * digest of the typed event sequence returned by the same call. */
+typedef struct McCampaignStepSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t revision;
+    uint64_t state_hash;
+    uint64_t terrain_hash;
+    uint8_t dispatch_hash[32];
+    uint32_t event_count;
+    uint32_t event_kind_mask;
+    uint8_t player_slot;
+    uint8_t reserved_0[3];
+    uint16_t player_entity_index;
+    uint16_t reserved_1;
+    uint16_t x;
+    uint16_t y;
+    int16_t z;
+    uint32_t reserved[4];
+} McCampaignStepSnapshotV2;
+
 typedef struct McCampaignWorldInfoV2 {
     uint32_t abi_version;
     uint32_t struct_size;
@@ -1397,6 +1464,11 @@ int32_t mc_native_campaign_session_open(
     const McCampaignSelectionV2 *selection, uint64_t *out_handle);
 int32_t mc_native_campaign_session_destroy(uint64_t handle);
 int32_t mc_native_campaign_session_reset(uint64_t handle);
+int32_t mc_native_campaign_session_step(
+    uint64_t handle, const McCampaignStepInputV2 *input,
+    McCampaignStepSnapshotV2 *out_snapshot, uint32_t out_snapshot_size,
+    McCampaignEventV2 *events, uint32_t event_capacity,
+    uint32_t event_element_size, uint32_t *out_event_count);
 int32_t mc_native_campaign_world_info(
     uint64_t handle, McCampaignWorldInfoV2 *out_info, uint32_t out_info_size);
 int32_t mc_native_campaign_player_count(uint64_t handle, uint32_t *out_count);

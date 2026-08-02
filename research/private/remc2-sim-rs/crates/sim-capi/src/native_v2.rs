@@ -93,9 +93,9 @@ use sim_core::{
         level1_minimap_entity_command, mana_sphere_size_ordinal,
     },
     native_world::{
-        AssetRef, EntityAuthority, EntitySnapshot, Level2ResetSession, NativeWorld,
-        NativeWorldInspection, ParticleParameter, SessionTerrain, TerrainPlanes,
-        apply_level1_source_effects, level1_turn_start_source_views,
+        AssetRef, EntityAuthority, EntitySnapshot, Level2DispatchEvent, Level2DynamicArenaKind,
+        Level2ResetSession, NativeWorld, NativeWorldInspection, ParticleParameter, SessionTerrain,
+        TerrainPlanes, apply_level1_source_effects, level1_turn_start_source_views,
         refresh_level1_current_source_view,
     },
     positional_sound_should_replace, prepare_event_sound_command,
@@ -504,6 +504,70 @@ pub struct McCampaignSelectionV2 {
     pub internal_level: u16,
     pub map_type: u8,
     pub reserved_0: u8,
+    pub reserved: [u32; 4],
+}
+
+/// Additive Level 2 outer-turn input.  The embedded `McCommandV2` keeps the
+/// source ten-byte command projection stable; the explicit player slot and
+/// position let a Unity caller identify the active flight row without
+/// mutating the legacy Level 1 handle ABI.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignStepInputV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub command: McCommandV2,
+    pub player_slot: u8,
+    pub speed_index: u8,
+    pub reserved_0: u16,
+    pub player_x: u16,
+    pub player_y: u16,
+    pub player_z: i16,
+    pub reserved: [u32; 4],
+}
+
+/// One bounded typed event from a Level 2 source pass.  `kind` is one of the
+/// `MC_CAMPAIGN_EVENT_*` constants in the public C header; `flags` is a
+/// source-family-specific nonzero/result marker.  Detailed family state stays
+/// on the typed campaign snapshot surfaces rather than leaking Rust enums.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignEventV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub ordinal: u32,
+    pub pass: u8,
+    pub kind: u8,
+    pub family: u8,
+    pub flags: u8,
+    pub source_slot: u16,
+    pub reserved_0: u16,
+    pub reserved: [u32; 4],
+}
+
+/// Revisioned result of one Level 2 outer turn.  The digest is the exact
+/// typed-dispatch observability digest for the returned event sequence.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignStepSnapshotV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub revision: u64,
+    pub state_hash: u64,
+    pub terrain_hash: u64,
+    pub dispatch_hash: [u8; 32],
+    pub event_count: u32,
+    pub event_kind_mask: u32,
+    pub player_slot: u8,
+    pub reserved_0: [u8; 3],
+    pub player_entity_index: u16,
+    pub reserved_1: u16,
+    pub x: u16,
+    pub y: u16,
+    pub z: i16,
     pub reserved: [u32; 4],
 }
 
@@ -6835,6 +6899,143 @@ pub extern "C" fn mc_native_campaign_session_reset(handle: u64) -> i32 {
     })
 }
 
+/// Execute one additive Level 2 outer turn.  This path deliberately owns a
+/// separate campaign handle and never enters the legacy Level 1 session
+/// dispatcher.  The candidate session is stepped on a clone first so a short
+/// event buffer or invalid output cannot partially mutate the live handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_session_step(
+    handle: u64,
+    input: *const McCampaignStepInputV2,
+    out_snapshot: *mut McCampaignStepSnapshotV2,
+    out_snapshot_size: u32,
+    events: *mut McCampaignEventV2,
+    event_capacity: u32,
+    event_element_size: u32,
+    out_event_count: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_struct_output::<McCampaignStepSnapshotV2>(
+            out_snapshot,
+            out_snapshot_size,
+            "campaign step snapshot",
+        )?;
+        require_output(out_event_count, "campaign step event count")?;
+        require_element_size::<McCampaignEventV2>(event_element_size, "campaign step event")?;
+        let input = read_versioned_input(input, "campaign step input")?;
+        validate_reserved(&input.reserved, "campaign step input")?;
+        if input.reserved_0 != 0 {
+            return Err(AbiError::new(
+                MC_STATUS_RESERVED_NONZERO,
+                "campaign step input reserved_0 must be zero",
+            ));
+        }
+        if input.speed_index > 2 {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "campaign step speed_index must be 0, 1, or 2",
+            ));
+        }
+        validate_embedded_command(&input.command)?;
+        let command = player_command(input.command)?;
+        with_campaign_session_mut(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign step requires a Level 2 campaign session",
+                ));
+            };
+            if input.generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign step generation {} does not match {}",
+                        input.generation, session.generation
+                    ),
+                ));
+            }
+            let player = reset
+                .players()
+                .get(usize::from(input.player_slot))
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_BOUNDS,
+                        format!(
+                            "campaign player slot {} is out of bounds",
+                            input.player_slot
+                        ),
+                    )
+                })?;
+            if player.active_player_index < 0 {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    format!("campaign player slot {} is inactive", input.player_slot),
+                ));
+            }
+            if input.player_slot != reset.runtime().local_player_slot {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    format!(
+                        "campaign step player slot {} is not the local slot {}",
+                        input.player_slot,
+                        reset.runtime().local_player_slot
+                    ),
+                ));
+            }
+
+            let mut candidate = reset.clone();
+            candidate.state.entity_index = player.entity_index;
+            candidate.state.position = Position {
+                x: input.player_x,
+                y: input.player_y,
+                z: input.player_z,
+            };
+            candidate.step_outer_turn(command, input.speed_index);
+
+            let event_rows = candidate
+                .dispatch_events()
+                .iter()
+                .enumerate()
+                .map(|(ordinal, event)| campaign_event_snapshot(session.generation, ordinal, event))
+                .collect::<Vec<_>>();
+            copy_slice(&event_rows, events, event_capacity, out_event_count)?;
+            let mut event_kind_mask = 0_u32;
+            for event in &event_rows {
+                if (1..=32).contains(&event.kind) {
+                    event_kind_mask |= 1_u32 << u32::from(event.kind - 1);
+                }
+            }
+            let snapshot = McCampaignStepSnapshotV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McCampaignStepSnapshotV2>(),
+                generation: session.generation,
+                revision: candidate.state.tick,
+                state_hash: candidate.state_hash(),
+                terrain_hash: candidate.terrain_hash(),
+                dispatch_hash: decode_sha256_hex(&candidate.dispatch_observability_hash()),
+                event_count: u32::try_from(event_rows.len()).map_err(|_| {
+                    AbiError::new(MC_STATUS_BOUNDS, "campaign event count exceeds u32")
+                })?,
+                event_kind_mask,
+                player_slot: input.player_slot,
+                reserved_0: [0; 3],
+                player_entity_index: candidate.state.entity_index,
+                reserved_1: 0,
+                x: candidate.state.position.x,
+                y: candidate.state.position.y,
+                z: candidate.state.position.z,
+                reserved: [0; 4],
+            };
+            *reset = candidate;
+            Ok(snapshot)
+        })
+        .and_then(|snapshot| {
+            write_output(out_snapshot, snapshot);
+            Ok(())
+        })
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_native_campaign_world_info(
     handle: u64,
@@ -9374,6 +9575,143 @@ fn validate_command(command: &McCommandV2) -> AbiResult<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_embedded_command(command: &McCommandV2) -> AbiResult<()> {
+    if command.abi_version != MC_NATIVE_ABI_VERSION {
+        return Err(AbiError::new(
+            MC_STATUS_UNSUPPORTED_VERSION,
+            format!(
+                "campaign step command ABI version {} is unsupported",
+                command.abi_version
+            ),
+        ));
+    }
+    let required = struct_size::<McCommandV2>();
+    if command.struct_size < required {
+        return Err(AbiError::new(
+            MC_STATUS_STRUCT_TOO_SMALL,
+            format!(
+                "campaign step command struct_size {} is smaller than {required}",
+                command.struct_size
+            ),
+        ));
+    }
+    validate_command(command)
+}
+
+fn campaign_event_snapshot(
+    generation: u64,
+    ordinal: usize,
+    event: &Level2DispatchEvent,
+) -> McCampaignEventV2 {
+    let (pass, kind, family, source_slot, flags) = match event {
+        Level2DispatchEvent::SharedPickup {
+            pass,
+            source_slot,
+            result,
+        } => (*pass, 1, 0, *source_slot, u8::from(result.is_some())),
+        Level2DispatchEvent::SpellAcquisition {
+            pass,
+            source_slot,
+            family,
+            result,
+        } => (*pass, 2, *family, *source_slot, u8::from(result.is_some())),
+        Level2DispatchEvent::BadStone { pass, step } => (
+            *pass,
+            3,
+            0,
+            step.source_slot,
+            u8::from(step.position != step.previous_position),
+        ),
+        Level2DispatchEvent::House {
+            pass,
+            source_slot,
+            events,
+        } => (*pass, 4, 0, *source_slot, u8::from(!events.is_empty())),
+        Level2DispatchEvent::Villager {
+            pass,
+            source_slot,
+            effects,
+        } => (*pass, 5, 0, *source_slot, u8::from(!effects.is_empty())),
+        Level2DispatchEvent::Dolmen { pass, step } => (
+            *pass,
+            6,
+            0,
+            step.source_slot,
+            u8::from(step.position != step.previous_position),
+        ),
+        Level2DispatchEvent::Castle {
+            pass,
+            source_slot,
+            advanced,
+        } => (*pass, 7, 0, *source_slot, u8::from(*advanced)),
+        Level2DispatchEvent::DynamicArena {
+            pass,
+            source_slot,
+            kind,
+        } => (*pass, 8, dynamic_arena_family(*kind), *source_slot, 1),
+        Level2DispatchEvent::Goat {
+            pass,
+            source_slot,
+            events,
+        } => (*pass, 9, 0, *source_slot, u8::from(!events.is_empty())),
+        Level2DispatchEvent::Error {
+            pass, source_slot, ..
+        } => (*pass, 255, 0, *source_slot, 1),
+    };
+    McCampaignEventV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignEventV2>(),
+        generation,
+        ordinal: u32::try_from(ordinal).expect("bounded campaign event ordinal fits u32"),
+        pass,
+        kind,
+        family,
+        flags,
+        source_slot,
+        reserved_0: 0,
+        reserved: [0; 4],
+    }
+}
+
+const fn dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
+    match kind {
+        Level2DynamicArenaKind::CastleRoot => 1,
+        Level2DynamicArenaKind::CastleChild => 2,
+        Level2DynamicArenaKind::CastleAuxiliary => 3,
+        Level2DynamicArenaKind::CastleDefender => 4,
+        Level2DynamicArenaKind::CastleController => 5,
+        Level2DynamicArenaKind::ManaSphere => 6,
+        Level2DynamicArenaKind::ManaCarrier => 7,
+    }
+}
+
+fn decode_sha256_hex(value: &str) -> [u8; 32] {
+    let bytes = value.as_bytes();
+    let mut digest = [0_u8; 32];
+    if bytes.len() != 64 {
+        return digest;
+    }
+    let mut index = 0;
+    while index < 32 {
+        let high = hex_nibble(bytes[index * 2]);
+        let low = hex_nibble(bytes[index * 2 + 1]);
+        let Some(high) = high else { return [0; 32] };
+        let Some(low) = low else { return [0; 32] };
+        digest[index] = (high << 4) | low;
+        index += 1;
+    }
+    digest
+}
+
+const fn hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn validate_camera_input(camera_input: &McCameraInputV2) -> AbiResult<()> {
@@ -14439,6 +14777,15 @@ mod tests {
         assert_eq!(size_of::<McObjectiveSnapshotV2>(), 40);
         assert_eq!(size_of::<McEntitySnapshotV2>(), 52);
         assert_eq!(size_of::<McCampaignSelectionV2>(), 32);
+        assert_eq!(size_of::<McCampaignStepInputV2>(), 80);
+        assert_eq!(size_of::<McCampaignEventV2>(), 48);
+        assert_eq!(size_of::<McCampaignStepSnapshotV2>(), 112);
+        assert_eq!(std::mem::offset_of!(McCampaignStepInputV2, command), 16);
+        assert_eq!(std::mem::offset_of!(McCampaignEventV2, source_slot), 24);
+        assert_eq!(
+            std::mem::offset_of!(McCampaignStepSnapshotV2, dispatch_hash),
+            40
+        );
         assert_eq!(size_of::<McCampaignWorldInfoV2>(), 64);
         assert_eq!(size_of::<McCampaignPlayerSnapshotV2>(), 48);
         assert_eq!(size_of::<McCampaignEntitySnapshotV2>(), 52);
@@ -15214,6 +15561,176 @@ mod tests {
     }
 
     #[test]
+    fn level2_campaign_step_is_revisioned_reset_safe_and_keeps_level1_abi_untouched() {
+        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        let package = level2_package.to_string_lossy();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 2,
+            internal_level: 1,
+            map_type: 0,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut handle = 0;
+        assert_eq!(
+            mc_native_campaign_session_open(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                &raw const selection,
+                &raw mut handle,
+            ),
+            MC_STATUS_OK
+        );
+        let mut initial_info = McCampaignWorldInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_world_info(
+                handle,
+                &raw mut initial_info,
+                struct_size::<McCampaignWorldInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let input_command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            flags: 1,
+            requested_spell: MC_REQUESTED_SPELL_NONE,
+            ..McCommandV2::default()
+        };
+        let mut input = McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation: 0,
+            command: input_command,
+            player_slot: 0,
+            speed_index: 0,
+            player_x: 123,
+            player_y: 456,
+            player_z: 7,
+            ..McCampaignStepInputV2::default()
+        };
+        let mut snapshot = McCampaignStepSnapshotV2::default();
+        let mut events = [McCampaignEventV2::default(); 1024];
+        let mut event_count = 0;
+        let mut rejected_snapshot = McCampaignStepSnapshotV2::default();
+        let mut rejected_event_count = 99;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut rejected_snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                std::ptr::null_mut(),
+                0,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut rejected_event_count,
+            ),
+            MC_STATUS_BUFFER_TOO_SMALL
+        );
+        assert_eq!(rejected_event_count, 0);
+        let mut after_rejected_info = McCampaignWorldInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_world_info(
+                handle,
+                &raw mut after_rejected_info,
+                struct_size::<McCampaignWorldInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            after_rejected_info.reset_state_hash, initial_info.reset_state_hash,
+            "short event output must not commit the candidate turn"
+        );
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(snapshot.generation, 0);
+        assert!(snapshot.revision > 0);
+        assert_eq!(snapshot.event_count, event_count);
+        assert!(event_count > 0, "Level 2 source pass must expose events");
+        assert_ne!(snapshot.state_hash, initial_info.reset_state_hash);
+        assert!(
+            events[..event_count as usize]
+                .iter()
+                .all(|event| event.abi_version == MC_NATIVE_ABI_VERSION)
+        );
+        let stepped_hash = snapshot.state_hash;
+
+        assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        let mut reset_info = McCampaignWorldInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_world_info(
+                handle,
+                &raw mut reset_info,
+                struct_size::<McCampaignWorldInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(reset_info.reset_state_hash, initial_info.reset_state_hash);
+        input.generation = 0;
+        event_count = 0;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        input.generation = 1;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert_ne!(snapshot.state_hash, 0);
+        assert_eq!(snapshot.state_hash, stepped_hash);
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+
+        let (level1_package, level1_closure) = fixture_paths();
+        let level1_handle = open_paths(&level1_package, &level1_closure).expect("Level 1 open");
+        let legacy_command = valid_command();
+        let mut legacy_snapshot = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_step(
+                level1_handle,
+                &raw const legacy_command,
+                &raw mut legacy_snapshot,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(mc_native_session_destroy(level1_handle), MC_STATUS_OK);
+    }
+
+    #[test]
     fn camera_history_preserves_raw_wrapping_yaw_until_render_mapping() {
         let mut state = FlightState {
             yaw: 2_040,
@@ -15645,6 +16162,12 @@ _Static_assert(sizeof(McSessionSnapshotV2) == 120, "McSessionSnapshotV2 size");
 _Static_assert(sizeof(McObjectiveSnapshotV2) == 40, "McObjectiveSnapshotV2 size");
 _Static_assert(sizeof(McEntitySnapshotV2) == 52, "McEntitySnapshotV2 size");
 _Static_assert(sizeof(McCampaignSelectionV2) == 32, "McCampaignSelectionV2 size");
+_Static_assert(sizeof(McCampaignStepInputV2) == 80, "McCampaignStepInputV2 size");
+_Static_assert(sizeof(McCampaignEventV2) == 48, "McCampaignEventV2 size");
+_Static_assert(sizeof(McCampaignStepSnapshotV2) == 112, "McCampaignStepSnapshotV2 size");
+_Static_assert(offsetof(McCampaignStepInputV2, command) == 16, "campaign step command offset");
+_Static_assert(offsetof(McCampaignEventV2, source_slot) == 24, "campaign event source offset");
+_Static_assert(offsetof(McCampaignStepSnapshotV2, dispatch_hash) == 40, "campaign step hash offset");
 _Static_assert(sizeof(McCampaignWorldInfoV2) == 64, "McCampaignWorldInfoV2 size");
 _Static_assert(sizeof(McCampaignPlayerSnapshotV2) == 48, "McCampaignPlayerSnapshotV2 size");
 _Static_assert(sizeof(McCampaignEntitySnapshotV2) == 52, "McCampaignEntitySnapshotV2 size");

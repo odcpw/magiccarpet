@@ -81,7 +81,7 @@ use crate::{
     spell_activation::{
         PhysicalSpellActionRole, SpellActivationHolder, SpellCasterState,
         SpellHolderAcquisitionOutcome, SpellHolderAcquisitionResult, SpellHolderAcquisitionState,
-        acquire_level2_spell_holder, activate_spell,
+        acquire_level2_spell_holder_with_return_side, activate_spell,
     },
     state_hash,
     static_world_tmap::StaticWorldTmapBank,
@@ -473,6 +473,13 @@ impl EntitySnapshot {
     #[must_use]
     pub fn source_word_30(&self) -> u16 {
         u16::from_le_bytes([self.record[48], self.record[49]])
+    }
+
+    /// Raw source `word_0x4A_74`, the return-side hand override consumed by
+    /// `sub_68FF0` before it installs a holder.
+    #[must_use]
+    pub fn source_word_4a(&self) -> i16 {
+        i16::from_le_bytes([self.record[78], self.record[79]])
     }
 
     /// Raw reset `animationFrame_0x60_96` used by fixed and base-plus-frame
@@ -1104,6 +1111,14 @@ impl PlayerSnapshot {
     #[must_use]
     pub fn record_bytes(&self) -> &[u8] {
         &self.record
+    }
+
+    /// Source `playerColorIndex_0x38_56` from the linked player-state record.
+    /// `sub_68FF0` reads this dword_0xA4 field while walking model-0 entities;
+    /// it is not the entity's unrelated byte at record offset 60.
+    #[must_use]
+    pub fn player_color_index(&self) -> u8 {
+        self.record[40]
     }
 }
 
@@ -2808,8 +2823,8 @@ impl NativeWorldInspection {
         let goat_config = GoatBehaviorConfig::from_level_two_parameter_record(
             self.presentation
                 .entity_parameters
-                .get(99)
-                .ok_or_else(|| NativeWorldError::new("Level 2 Goat parameter row 99 is absent"))?,
+                .get(98)
+                .ok_or_else(|| NativeWorldError::new("Level 2 Goat parameter row 98 is absent"))?,
         )
         .map_err(NativeWorldError::new)?;
         let goats =
@@ -2889,6 +2904,13 @@ pub struct Level2SharedSpellResetSession {
     player_mana: i32,
     baseline_player_entity: EntitySnapshot,
     player_entity: EntitySnapshot,
+    /// All source player records/entities are retained for the generic
+    /// `sub_68FF0` linked-list scan.  The previous seam only kept player 0,
+    /// which made a pickup silently local-only.
+    baseline_players: Box<[PlayerSnapshot]>,
+    players: Box<[PlayerSnapshot]>,
+    baseline_player_entities: Box<[EntitySnapshot]>,
+    player_entities: Box<[EntitySnapshot]>,
     baseline_local_player: PlayerSnapshot,
     local_player: PlayerSnapshot,
     baseline_speed_pickup_state: Level2SpeedPickupState,
@@ -5848,6 +5870,21 @@ impl Level2SharedSpellResetSession {
                 "Level 2 shared spell player entity changed",
             ));
         }
+        let player_entities = players
+            .iter()
+            .map(|player| {
+                entities
+                    .get(usize::from(player.entity_index))
+                    .cloned()
+                    .ok_or_else(|| {
+                        NativeWorldError::new(format!(
+                            "Level 2 spell player entity {} is absent",
+                            player.entity_index
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_boxed_slice();
         let pickups = rows[..2].to_vec().into_boxed_slice();
         let holders = rows[2..].to_vec().into_boxed_slice();
         let caster = SpellCasterState {
@@ -5895,6 +5932,11 @@ impl Level2SharedSpellResetSession {
                 state.right_spell_slot = local_player.right_spell_slot_raw;
                 state.left_subspell_index = local_player.left_subspell_index;
                 state.right_subspell_index = local_player.right_subspell_index;
+                if let Some(source) = entities.get(usize::from(source_slot)) {
+                    state.source_life = source.life;
+                    state.source_draw_enabled = source.control_flags & 1 == 0;
+                    state.return_side = source.source_word_4a();
+                }
                 state
             })
             .collect::<Vec<_>>()
@@ -5910,6 +5952,10 @@ impl Level2SharedSpellResetSession {
             player_mana: player_entity.mana,
             baseline_player_entity: player_entity.clone(),
             player_entity: player_entity.clone(),
+            baseline_players: players.to_vec().into_boxed_slice(),
+            players: players.to_vec().into_boxed_slice(),
+            baseline_player_entities: player_entities.clone(),
+            player_entities,
             baseline_local_player: baseline_local_player.clone(),
             local_player: baseline_local_player,
             baseline_speed_pickup_state: Level2SpeedPickupState::default(),
@@ -6041,6 +6087,21 @@ impl Level2SharedSpellResetSession {
         role: PhysicalSpellActionRole,
         overlaps: bool,
     ) -> Result<SpellHolderAcquisitionOutcome> {
+        let owner_index = self
+            .players
+            .iter()
+            .position(|player| player.entity_index == self.player_entity.index)
+            .unwrap_or(0);
+        self.acquire_level2_spell_holder_for_player(family, role, overlaps, owner_index)
+    }
+
+    fn acquire_level2_spell_holder_for_player(
+        &mut self,
+        family: u8,
+        role: PhysicalSpellActionRole,
+        overlaps: bool,
+        owner_index: usize,
+    ) -> Result<SpellHolderAcquisitionOutcome> {
         let index = self
             .acquisitions
             .iter()
@@ -6048,15 +6109,31 @@ impl Level2SharedSpellResetSession {
             .ok_or_else(|| {
                 NativeWorldError::new(format!("unsupported Level 2 spell family {family}"))
             })?;
-        let left_spell_slot = self.local_player.left_spell_slot_raw;
-        let right_spell_slot = self.local_player.right_spell_slot_raw;
-        let left_subspell_index = self.local_player.left_subspell_index;
-        let right_subspell_index = self.local_player.right_subspell_index;
+        let owner = self.players[owner_index].clone();
+        let left_spell_slot = owner.left_spell_slot_raw;
+        let right_spell_slot = owner.right_spell_slot_raw;
+        let left_subspell_index = owner.left_subspell_index;
+        let right_subspell_index = owner.right_subspell_index;
+        self.acquisitions[index].owner_entity_index = owner.entity_index;
+        self.acquisitions[index].holder_relation = owner.enabled_spell_holders[usize::from(family)];
         self.acquisitions[index].left_spell_slot = left_spell_slot;
         self.acquisitions[index].right_spell_slot = right_spell_slot;
         self.acquisitions[index].left_subspell_index = left_subspell_index;
         self.acquisitions[index].right_subspell_index = right_subspell_index;
-        let result = acquire_level2_spell_holder(&mut self.acquisitions[index], role, overlaps);
+        if let Some(pickup) = self
+            .pickups
+            .iter()
+            .find(|entity| entity.index == self.acquisitions[index].source_slot)
+        {
+            self.acquisitions[index].return_side = pickup.source_word_4a();
+        }
+        let return_side = self.acquisitions[index].return_side;
+        let result = acquire_level2_spell_holder_with_return_side(
+            &mut self.acquisitions[index],
+            role,
+            overlaps,
+            return_side,
+        );
         let outcome = match result {
             SpellHolderAcquisitionResult::Acquired(outcome) => outcome,
             SpellHolderAcquisitionResult::Rejected(failure) => {
@@ -6067,30 +6144,32 @@ impl Level2SharedSpellResetSession {
         };
         let state = self.acquisitions[index];
         let family_index = usize::from(family);
-        self.local_player.enabled_spell_holders[family_index] = outcome.source_slot;
-        self.local_player.spell_hand_eligibility[family_index] = state.eligibility;
-        self.local_player.family_selected_tiers[family_index] = state.selected_tier;
-        self.local_player.record[268 + family_index * 2..270 + family_index * 2]
+        let owner = &mut self.players[owner_index];
+        owner.enabled_spell_holders[family_index] = outcome.source_slot;
+        owner.spell_hand_eligibility[family_index] = state.eligibility;
+        owner.family_selected_tiers[family_index] = state.selected_tier;
+        owner.record[268 + family_index * 2..270 + family_index * 2]
             .copy_from_slice(&outcome.source_slot.to_le_bytes());
-        self.local_player.record[424 + family_index] = state.eligibility;
-        self.local_player.record[528 + family_index] = state.selected_tier.to_le_bytes()[0];
+        owner.record[424 + family_index] = state.eligibility;
+        owner.record[528 + family_index] = state.selected_tier.to_le_bytes()[0];
         match outcome.hand {
             crate::spell_activation::SpellHand::Left => {
-                self.local_player.left_spell_slot_raw = state.left_spell_slot;
-                self.local_player.left_spell_slot = family;
-                self.local_player.left_subspell_index = state.left_subspell_index;
-                self.local_player.record[554..556]
-                    .copy_from_slice(&state.left_spell_slot.to_le_bytes());
-                self.local_player.record[558] = state.left_subspell_index.to_le_bytes()[0];
+                owner.left_spell_slot_raw = state.left_spell_slot;
+                owner.left_spell_slot = family;
+                owner.left_subspell_index = state.left_subspell_index;
+                owner.record[554..556].copy_from_slice(&state.left_spell_slot.to_le_bytes());
+                owner.record[558] = state.left_subspell_index.to_le_bytes()[0];
             }
             crate::spell_activation::SpellHand::Right => {
-                self.local_player.right_spell_slot_raw = state.right_spell_slot;
-                self.local_player.right_spell_slot = family;
-                self.local_player.right_subspell_index = state.right_subspell_index;
-                self.local_player.record[556..558]
-                    .copy_from_slice(&state.right_spell_slot.to_le_bytes());
-                self.local_player.record[559] = state.right_subspell_index.to_le_bytes()[0];
+                owner.right_spell_slot_raw = state.right_spell_slot;
+                owner.right_spell_slot = family;
+                owner.right_subspell_index = state.right_subspell_index;
+                owner.record[556..558].copy_from_slice(&state.right_spell_slot.to_le_bytes());
+                owner.record[559] = state.right_subspell_index.to_le_bytes()[0];
             }
+        }
+        if owner_index == 0 {
+            self.local_player = owner.clone();
         }
         if let Some(pickup) = self
             .pickups
@@ -6104,11 +6183,17 @@ impl Level2SharedSpellResetSession {
             pickup.action = outcome.holder_action;
             pickup.record[73] = outcome.holder_action;
             pickup.record[58..60].copy_from_slice(&state.presentation_timer.to_le_bytes());
+            // SetSpell_6D5E0's source-visible writes: selected tier and
+            // consumed return-side hand override.  The source keeps this
+            // entity in the pool but removes it from drawing via byte0 bit0.
+            pickup.record[74] = state.selected_tier.to_le_bytes()[0];
+            pickup.record[78..80].copy_from_slice(&0_i16.to_le_bytes());
+            self.acquisitions[index].source_draw_enabled = false;
         }
         self.pickup_events
             .push(Level2SharedSpellEvent::SpellAcquired {
                 source_slot: outcome.source_slot,
-                player_entity_index: self.player_entity.index,
+                player_entity_index: owner.entity_index,
                 family,
                 holder_action: outcome.holder_action,
             });
@@ -6116,18 +6201,19 @@ impl Level2SharedSpellResetSession {
         self.events.push(FlightEvent::PrepareSound {
             #[cfg(test)]
             audio_site: crate::MissionAudioSite::SpeedPickup,
-            entity_index: self.player_entity.index,
+            entity_index: owner.entity_index,
             player_index: 0,
             sound_id: 18,
         });
         Ok(outcome)
     }
 
-    /// Source-pass adapter for the authored Level 2 pickup rows.  Collision
-    /// remains row-local here only for the one frame-zero family-12 pickup;
-    /// authored rows 155/156 are constructed later by the source and are
-    /// therefore represented as non-overlapping until their constructor
-    /// supplies a live entity.
+    /// Source-pass adapter for the authored Level 2 pickup rows. This follows
+    /// the `sub_68FF0` prefix before calling the owner transition: life is
+    /// decremented first, the pickup is terrain-relaxed, and the source map
+    /// scan considers only live model-0 players with an empty SpellEnabled
+    /// relation. Rows 155/156 remain constructor-rooted metadata until their
+    /// event constructor materialises a map entity.
     pub fn step_level2_spell_acquisition(
         &mut self,
         family: u8,
@@ -6144,28 +6230,106 @@ impl Level2SharedSpellResetSession {
         self.player_entity.record[80..82].copy_from_slice(&player_position.x.to_le_bytes());
         self.player_entity.record[82..84].copy_from_slice(&player_position.y.to_le_bytes());
         self.player_entity.record[84..86].copy_from_slice(&player_position.z.to_le_bytes());
-        let Some(state) = self
+        if let Some(player_entity) = self
+            .player_entities
+            .iter_mut()
+            .find(|entity| entity.index == player_entity_index)
+        {
+            player_entity.position = player_position;
+            player_entity.record[80..82].copy_from_slice(&player_position.x.to_le_bytes());
+            player_entity.record[82..84].copy_from_slice(&player_position.y.to_le_bytes());
+            player_entity.record[84..86].copy_from_slice(&player_position.z.to_le_bytes());
+        }
+        let Some(index) = self
             .acquisitions
             .iter()
-            .find(|state| state.family == family)
+            .position(|state| state.family == family)
         else {
             return Err(NativeWorldError::new(format!(
                 "unsupported Level 2 spell family {family}"
             )));
         };
-        if state.holder_relation != 0 {
+        if !self.acquisitions[index].step_source_life() {
             return Ok(None);
         }
-        let overlaps = self
+        let source_slot = self.acquisitions[index].source_slot;
+        let Some(pickup_index) = self
             .pickups
             .iter()
-            .find(|entity| entity.index == state.source_slot)
-            .is_some_and(|pickup| level2_source_intersects(pickup, &self.player_entity));
-        if !overlaps {
+            .position(|entity| entity.index == source_slot)
+        else {
+            // Dynamic authored rows 155/156 are intentionally not fabricated
+            // as frame-zero entities. Their constructor path can call the
+            // public acquisition method once it has installed a source row.
+            return Ok(None);
+        };
+        let pickup = &mut self.pickups[pickup_index];
+        let ground = self.terrain.ground_height(pickup.position);
+        if pickup.position.z > ground {
+            pickup.position.z = pickup.position.z.wrapping_sub(128);
+        }
+        if pickup.position.z <= ground {
+            pickup.position.z = ground;
+        }
+        pickup.record[84..86].copy_from_slice(&pickup.position.z.to_le_bytes());
+        // Source `byte_0x3E_62` is the action cadence byte at record 66,
+        // distinct from the byte0 control flags at record 16.
+        if pickup.phase & 3 != 0 {
             return Ok(None);
         }
-        self.acquire_level2_spell_holder(family, PhysicalSpellActionRole::OrdinaryPickup, true)
-            .map(Some)
+        // First source-list pass: the active level/player-colour owner marks
+        // the pickup's byte0 flag before the collision owner pass. Level 2's
+        // local source colour is zero (the same `LevelIndex_0xc` selector
+        // used by the pinned routine); this branch is intentionally kept
+        // separate from the SpellEnabled collision gate below.
+        if pickup.control_flags & 1 == 0
+            && self
+                .players
+                .iter()
+                .enumerate()
+                .any(|(player_index, player)| {
+                    player.enabled_spell_holders[usize::from(family)] != 0
+                        && player.player_color_index() == 0
+                        && self
+                            .player_entities
+                            .get(player_index)
+                            .is_some_and(|entity| {
+                                entity.active && entity.model == 0 && entity.life >= 0
+                            })
+                })
+        {
+            pickup.control_flags |= 1;
+            pickup.record[16] |= 1;
+        }
+        let mut owner_index = None;
+        for (player_index, player) in self.players.iter().enumerate() {
+            if player.enabled_spell_holders[usize::from(family)] != 0 {
+                continue;
+            }
+            let Some(entity) = self.player_entities.get(player_index) else {
+                continue;
+            };
+            // The source linked-list filter is model==0 and life>=0. The
+            // collision query itself is exactly `sub_106C0`.
+            if entity.active
+                && entity.model == 0
+                && entity.life >= 0
+                && level2_source_intersects(pickup, entity)
+            {
+                owner_index = Some(player_index);
+                break;
+            }
+        }
+        let Some(owner_index) = owner_index else {
+            return Ok(None);
+        };
+        self.acquire_level2_spell_holder_for_player(
+            family,
+            PhysicalSpellActionRole::OrdinaryPickup,
+            true,
+            owner_index,
+        )
+        .map(Some)
     }
 
     /// Dispatch the authored Level 2 Speed pickup at source slot 75.
@@ -6338,6 +6502,12 @@ impl Level2SharedSpellResetSession {
             hasher.update(entity.record_bytes());
         }
         hasher.update(self.player_entity.record_bytes());
+        for player in &self.players {
+            hasher.update(player.record_bytes());
+        }
+        for entity in &self.player_entities {
+            hasher.update(entity.record_bytes());
+        }
         hasher.update(self.local_player.record_bytes());
         hasher.update(self.player_entity_sha256.as_bytes());
         hasher.update(self.terrain.deterministic_hash().to_le_bytes());
@@ -6362,7 +6532,10 @@ impl Level2SharedSpellResetSession {
                 state.left_subspell_index.to_le_bytes()[0],
                 state.right_subspell_index.to_le_bytes()[0],
                 state.selected_tier.to_le_bytes()[0],
+                u8::from(state.source_draw_enabled),
             ]);
+            hasher.update(state.source_life.to_le_bytes());
+            hasher.update(state.return_side.to_le_bytes());
         }
         hasher.update(self.speed_pickup_state.owner_entity_index.to_le_bytes());
         hasher.update([u8::from(self.speed_pickup_state.collected)]);
@@ -6377,6 +6550,9 @@ impl Level2SharedSpellResetSession {
         self.holders.clone_from(&self.baseline_holders);
         self.player_mana = self.baseline_player_mana;
         self.player_entity = self.baseline_player_entity.clone();
+        self.players.clone_from(&self.baseline_players);
+        self.player_entities
+            .clone_from(&self.baseline_player_entities);
         self.local_player = self.baseline_local_player.clone();
         self.speed_pickup_state = self.baseline_speed_pickup_state;
         self.caster = self.baseline_caster;
@@ -15608,6 +15784,8 @@ mod tests {
         // source transition writes the holder action/relation and the local
         // player's first hand, then becomes part of the reset digest.
         let pickup_position = session.shared_spells().pickups()[0].position;
+        session.shared_spells_mut().pickups[0].phase = 0;
+        session.shared_spells_mut().pickups[0].record[66] = 0;
         let outcome = session
             .shared_spells_mut()
             .step_level2_spell_acquisition(12, 111, pickup_position)
@@ -15681,6 +15859,139 @@ mod tests {
             .expect("family-6 generic acquisition");
         assert_eq!(first.hand, crate::spell_activation::SpellHand::Left);
         assert_eq!(second.hand, crate::spell_activation::SpellHand::Right);
+    }
+
+    #[test]
+    fn level_two_spell_holder_source_prefix_matches_life_draw_and_return_hand() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 acquisition production session");
+        let source_position = session.shared_spells().pickups()[0].position;
+        let family_index = session
+            .shared_spells()
+            .acquisition_states()
+            .iter()
+            .position(|state| state.family == 12)
+            .expect("family-12 acquisition state");
+
+        // `sub_68FF0` consumes positive life before it ever scans players,
+        // disabling drawing on the final decrement and only admitting the
+        // source on the subsequent zero-life pulse.
+        session.shared_spells_mut().acquisitions[family_index].source_life = 2;
+        assert!(
+            session
+                .shared_spells_mut()
+                .step_level2_spell_acquisition(12, 111, source_position)
+                .expect("life pulse 1")
+                .is_none()
+        );
+        assert_eq!(
+            session.shared_spells().acquisition_states()[family_index].source_life,
+            1
+        );
+        assert!(
+            session
+                .shared_spells_mut()
+                .step_level2_spell_acquisition(12, 111, source_position)
+                .expect("life pulse 2")
+                .is_none()
+        );
+        assert_eq!(
+            session.shared_spells().acquisition_states()[family_index].source_life,
+            0
+        );
+        assert!(!session.shared_spells().acquisition_states()[family_index].source_draw_enabled);
+
+        // The source's non-zero word_0x4A_74 return-side flag wins even with
+        // both hands occupied (2 means left); the source clears it and writes
+        // SetSpell's selected tier before exposing the holder.
+        session.shared_spells_mut().players[0].left_spell_slot_raw = 4;
+        session.shared_spells_mut().players[0].right_spell_slot_raw = 5;
+        session.shared_spells_mut().pickups[0].record[78..80].copy_from_slice(&2_i16.to_le_bytes());
+        let outcome = session
+            .shared_spells_mut()
+            .acquire_level2_spell_holder(12, PhysicalSpellActionRole::OrdinaryPickup, true)
+            .expect("return-side holder acquisition");
+        assert_eq!(outcome.hand, crate::spell_activation::SpellHand::Left);
+        assert_eq!(
+            session.shared_spells().pickups()[0].record_bytes()[78..80],
+            [0, 0]
+        );
+        assert_eq!(
+            session.shared_spells().pickups()[0].record_bytes()[74],
+            session.shared_spells().acquisition_states()[family_index]
+                .selected_tier
+                .to_le_bytes()[0]
+        );
+
+        // The independent player-colour pass is observable even when the
+        // collision owner is absent: a matching LevelIndex colour marks the
+        // pickup byte0 flag before the source returns without acquisition.
+        session.shared_spells_mut().reset();
+        session.shared_spells_mut().pickups[0].phase = 0;
+        session.shared_spells_mut().pickups[0].record[66] = 0;
+        session.shared_spells_mut().players[0].enabled_spell_holders[12] = 999;
+        let far_position = Position {
+            x: source_position.x.wrapping_add(0x2000),
+            y: source_position.y,
+            z: source_position.z,
+        };
+        assert!(
+            session
+                .shared_spells_mut()
+                .step_level2_spell_acquisition(12, 111, far_position)
+                .expect("colour-only source pass")
+                .is_none()
+        );
+        assert_ne!(session.shared_spells().pickups()[0].control_flags & 1, 0);
+
+        // A second model-0 player at the source wins ownership when local
+        // player 0 is far away; the event and SpellEnabled relation carry
+        // that overlapping candidate instead of hard-coding entity 111.
+        session.shared_spells_mut().reset();
+        session.shared_spells_mut().pickups[0].phase = 0;
+        session.shared_spells_mut().pickups[0].record[66] = 0;
+        session.shared_spells_mut().player_entities[1].active = true;
+        session.shared_spells_mut().player_entities[1].model = 0;
+        session.shared_spells_mut().player_entities[1].record[2] = 1;
+        session.shared_spells_mut().player_entities[1].record[68] = 0;
+        session.shared_spells_mut().player_entities[1].position = source_position;
+        session.shared_spells_mut().player_entities[1].record[80..82]
+            .copy_from_slice(&source_position.x.to_le_bytes());
+        session.shared_spells_mut().player_entities[1].record[82..84]
+            .copy_from_slice(&source_position.y.to_le_bytes());
+        session.shared_spells_mut().player_entities[1].record[84..86]
+            .copy_from_slice(&source_position.z.to_le_bytes());
+        let far_position = Position {
+            x: source_position.x.wrapping_add(0x2000),
+            y: source_position.y,
+            z: source_position.z,
+        };
+        let remote = session
+            .shared_spells_mut()
+            .step_level2_spell_acquisition(12, 111, far_position)
+            .expect("remote owner source pass")
+            .expect("remote model-0 candidate overlaps");
+        assert_eq!(remote.parent_entity_index, 112);
+        assert_eq!(
+            session.shared_spells().players[1].enabled_spell_holders[12],
+            38
+        );
+        assert_eq!(
+            session.shared_spells().players[0].enabled_spell_holders[12],
+            0
+        );
+        assert!(matches!(
+            session.shared_spells().pickup_events(),
+            [Level2SharedSpellEvent::SpellAcquired {
+                player_entity_index: 112,
+                source_slot: 38,
+                family: 12,
+                ..
+            }]
+        ));
     }
 
     #[test]
@@ -15814,11 +16125,11 @@ mod tests {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
         let mut tampered = inspection.clone();
-        tampered.presentation.entity_parameters[99][2] ^= 1;
+        tampered.presentation.entity_parameters[98][2] ^= 1;
         let error = tampered
             .level2_reset_session()
-            .expect_err("row 99 tamper must fail closed");
-        assert!(error.to_string().contains("row 99 mismatch"));
+            .expect_err("row 98 tamper must fail closed");
+        assert!(error.to_string().contains("row 98 mismatch"));
     }
 
     #[test]

@@ -79,20 +79,11 @@ impl GoatBehaviorConfig {
         behavior_flags: 9,
     };
 
-    /// Level 2 Day parameter row 99 consumed by the action-11 Goat band.
-    /// The row keeps the Level 1 material/vertical fields but widens the
-    /// turn/perception settings and clears the player-engagement flag.
-    pub const LEVEL_TWO: Self = Self {
-        turn_clamp: 91,
-        ground_clearance: 0,
-        vertical_relaxation: -256,
-        terrain_threshold: 20,
-        allowed_material_mask: 0xfff0_80fe,
-        perception_cadence: 40,
-        perception_radius: 3_584,
-        perception_half_angle: 1_991,
-        behavior_flags: 1,
-    };
+    /// Level 2 Day Goat rows use the same class-5/model-1 parameter row as
+    /// the source `AddCreature_4B490` constructor: zero-based presentation
+    /// row 98 (the exported one-based relation is 99). Row 99 belongs to the
+    /// class-5/model-26 constructor and is not a Goat parameter.
+    pub const LEVEL_TWO: Self = Self::LEVEL_ONE;
 
     /// Decode the consumed fields of exact entity-parameter row 98.
     ///
@@ -120,26 +111,10 @@ impl GoatBehaviorConfig {
         Ok(config)
     }
 
-    /// Decode the Level 2 Day Goat parameter row 99 without weakening the
-    /// Level 1 row-98 validator above.
+    /// Decode the Level 2 Day Goat parameter relation. The source relation is
+    /// one-based `99`, which the export parser resolves to row 98.
     pub fn from_level_two_parameter_record(bytes: &[u8; 34]) -> Result<Self, String> {
-        let config = Self {
-            turn_clamp: read_i16(bytes, 2),
-            ground_clearance: read_i16(bytes, 12),
-            vertical_relaxation: read_i16(bytes, 14),
-            terrain_threshold: read_i16(bytes, 16),
-            allowed_material_mask: read_u32(bytes, 20),
-            perception_cadence: read_u16(bytes, 26),
-            perception_radius: read_u16(bytes, 28),
-            perception_half_angle: read_i16(bytes, 30),
-            behavior_flags: bytes[32],
-        };
-        if config != Self::LEVEL_TWO {
-            return Err(format!(
-                "Level 2 Goat parameter row 99 mismatch: {config:?}"
-            ));
-        }
-        Ok(config)
+        Self::from_parameter_record(bytes)
     }
 }
 
@@ -2230,10 +2205,10 @@ mod tests {
             inspection
                 .presentation()
                 .entity_parameters
-                .get(99)
-                .expect("Level 2 Goat parameter row 99"),
+                .get(98)
+                .expect("Level 2 Goat parameter row 98"),
         )
-        .expect("exact Level 2 Goat parameter row 99");
+        .expect("exact Level 2 Goat parameter row 98");
         GoatFamily::from_level_two_entities(
             inspection.entities(),
             Position { x: 0, y: 0, z: 0 },
@@ -3031,14 +3006,14 @@ mod tests {
 
     #[test]
     fn level_two_reset_has_action11_only_at_source_slots_39_and_71() {
-        let row99 = [
-            0x28, 0x00, 0x5b, 0x00, 0x05, 0x00, 0x16, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0xff, 0x14, 0x00, 0x00, 0x02, 0xfe, 0x80, 0xf0, 0xff, 0x00, 0x09, 0x28, 0x00,
-            0x00, 0x0e, 0xc7, 0x07, 0x01, 0x00,
+        let row98 = [
+            0x27, 0x00, 0x2d, 0x00, 0x05, 0x00, 0x16, 0x00, 0x05, 0x00, 0x00, 0x01, 0x00, 0x00,
+            0x00, 0xff, 0x14, 0x00, 0x00, 0x02, 0xfe, 0x80, 0xf0, 0xff, 0x00, 0x09, 0x20, 0x00,
+            0x00, 0x06, 0x55, 0x03, 0x09, 0x00,
         ];
         assert_eq!(
-            GoatBehaviorConfig::from_level_two_parameter_record(&row99)
-                .expect("exact denominator row 99"),
+            GoatBehaviorConfig::from_level_two_parameter_record(&row98)
+                .expect("exact Goat parameter row 98"),
             GoatBehaviorConfig::LEVEL_TWO
         );
         let inspection = NativeWorld::inspect_level2(level_two_fixture_root())
@@ -3060,10 +3035,10 @@ mod tests {
             inspection
                 .presentation()
                 .entity_parameters
-                .get(99)
-                .expect("Level 2 Goat parameter row 99"),
+                .get(98)
+                .expect("Level 2 Goat parameter row 98"),
         )
-        .expect("exact Level 2 Goat parameter row 99");
+        .expect("exact Level 2 Goat parameter row 98");
         assert_eq!(config, GoatBehaviorConfig::LEVEL_TWO);
         for slot in action11_slots {
             let goat = inspection
@@ -3274,9 +3249,9 @@ mod tests {
         assert_eq!(primary.pending_damage, 0);
         assert_eq!(primary.pending_attacker, 0);
         // A non-zero but invalid relation still takes the damage branch. The
-        // Level 2 row-99 behavior flag clears the player-engagement bit, so
-        // source `sub_1C560(a2=8)` selects action 10 before the wrapper tail.
-        assert_eq!(primary.action, 10);
+        // source row-98 behavior flag preserves the player-engagement bit, so
+        // `sub_1C560(a2=8)` selects action 14 before the wrapper tail.
+        assert_eq!(primary.action, 14);
         assert_eq!(primary.partner_entity_index, None);
         assert_eq!(primary.phase, 1);
         assert!(events.is_empty(), "no sound chosen by this seed");
@@ -3287,8 +3262,8 @@ mod tests {
             .goats
             .iter()
             .find(|goat| goat.entity_index == 39)
-            .expect("primary action-10 Goat");
-        assert_eq!(primary.action, 10);
+            .expect("primary roaming Goat");
+        assert_eq!(primary.action, 9);
         assert_eq!(primary.phase, 2);
         assert_eq!(primary.rng, next_rng(rng_after_transition));
     }
@@ -3321,10 +3296,10 @@ mod tests {
             .find(|goat| goat.entity_index == 40)
             .unwrap();
         assert_eq!(primary.life, 500);
-        assert_eq!(primary.action, 10);
+        assert_eq!(primary.action, 14);
         assert_eq!(primary.target_entity_index, Some(152));
         assert_eq!(primary.partner_entity_index, None);
-        assert_eq!(partner.action, 10);
+        assert_eq!(partner.action, 14);
         assert_eq!(partner.target_entity_index, Some(152));
         assert_eq!(partner.partner_entity_index, None);
 
@@ -3357,7 +3332,7 @@ mod tests {
         assert_eq!(primary.life, -1);
         assert_eq!(primary.action, 12);
         assert_eq!(primary.partner_entity_index, None);
-        assert_eq!(partner.action, 10);
+        assert_eq!(partner.action, 14);
         assert_eq!(partner.target_entity_index, Some(152));
         assert_eq!(partner.partner_entity_index, None);
     }
@@ -3370,10 +3345,10 @@ mod tests {
             inspection
                 .presentation()
                 .entity_parameters
-                .get(99)
-                .expect("Level 2 Goat parameter row 99"),
+                .get(98)
+                .expect("Level 2 Goat parameter row 98"),
         )
-        .expect("exact Level 2 Goat parameter row 99");
+        .expect("exact Level 2 Goat parameter row 98");
         let baseline = GoatFamily::from_level_two_entities(
             inspection.entities(),
             Position { x: 0, y: 0, z: 0 },

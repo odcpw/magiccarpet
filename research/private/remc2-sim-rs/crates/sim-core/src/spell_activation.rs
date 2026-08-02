@@ -105,6 +105,15 @@ pub struct SpellHolderAcquisitionState {
     pub left_subspell_index: i8,
     pub right_subspell_index: i8,
     pub selected_tier: i8,
+    /// Source pickup life/cadence state consumed by `sub_68FF0` before the
+    /// player scan.  A positive value is decremented and suppresses the scan
+    /// for that pulse; reaching zero disables drawing while retaining the
+    /// source entity in the arena for the next source pulse.
+    pub source_life: i32,
+    pub source_draw_enabled: bool,
+    /// Source `word_0x4A_74`: a non-zero value requests the return-side hand
+    /// (1 = right, 2 = left) and is cleared by acquisition.
+    pub return_side: i16,
 }
 
 impl SpellHolderAcquisitionState {
@@ -132,7 +141,24 @@ impl SpellHolderAcquisitionState {
             left_subspell_index: 0,
             right_subspell_index: 0,
             selected_tier,
+            source_life: 0,
+            source_draw_enabled: true,
+            return_side: 0,
         }
+    }
+
+    /// Apply the life/drawing prefix of `sub_68FF0`.  This intentionally
+    /// leaves a zero-life source eligible for the following pulse, matching
+    /// the source's `if (life) ... else scan` branch.
+    pub fn step_source_life(&mut self) -> bool {
+        if self.source_life > 0 {
+            self.source_life -= 1;
+            if self.source_life == 0 {
+                self.source_draw_enabled = false;
+            }
+            return false;
+        }
+        true
     }
 }
 
@@ -175,6 +201,19 @@ pub fn acquire_level2_spell_holder(
     state: &mut SpellHolderAcquisitionState,
     role: PhysicalSpellActionRole,
     overlaps: bool,
+) -> SpellHolderAcquisitionResult {
+    acquire_level2_spell_holder_with_return_side(state, role, overlaps, state.return_side)
+}
+
+/// `sub_68FF0` with its source return-side override made explicit for the
+/// production entity dispatcher.  The compatibility wrapper above preserves
+/// the original renderer-free test seam while this path carries
+/// `word_0x4A_74` losslessly.
+pub fn acquire_level2_spell_holder_with_return_side(
+    state: &mut SpellHolderAcquisitionState,
+    role: PhysicalSpellActionRole,
+    overlaps: bool,
+    return_side: i16,
 ) -> SpellHolderAcquisitionResult {
     if !matches!(state.family, 6 | 11 | 12) {
         return SpellHolderAcquisitionResult::Rejected(
@@ -223,10 +262,13 @@ pub fn acquire_level2_spell_holder(
     state.holder_relation = state.source_slot;
     state.eligibility = 1;
 
-    // Exact source hand order: a remembered return-side flag is outside this
-    // bounded state. For a fresh acquisition, choose left when it is empty or
-    // the right hand is already occupied; otherwise choose right.
-    let hand = if state.left_spell_slot < 0 || state.right_spell_slot >= 0 {
+    // Exact source hand order: a remembered return-side flag wins and is
+    // consumed.  Otherwise choose left when it is empty or the right hand is
+    // already occupied; otherwise choose right.  This deliberately preserves
+    // the source's full-hand overwrite behavior.
+    let hand = if return_side == 2
+        || (return_side == 0 && (state.left_spell_slot < 0 || state.right_spell_slot >= 0))
+    {
         state.left_spell_slot = i16::from(state.family);
         state.left_subspell_index = state.selected_tier;
         SpellHand::Left
@@ -235,6 +277,7 @@ pub fn acquire_level2_spell_holder(
         state.right_subspell_index = state.selected_tier;
         SpellHand::Right
     };
+    state.return_side = 0;
 
     SpellHolderAcquisitionResult::Acquired(SpellHolderAcquisitionOutcome {
         family: state.family,
