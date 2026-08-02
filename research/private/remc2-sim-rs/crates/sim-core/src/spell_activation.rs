@@ -1493,17 +1493,32 @@ mod tests {
 
     #[test]
     fn level_two_setspell_profiles_follow_pinned_spells_rows() {
-        assert_eq!(
-            level2_set_spell_profile(12, 1),
-            Some(Level2SetSpellProfile {
-                subspell_index: 0,
-                word_0x30: 261,
-                byte_0x3b: 1,
-                mana_regen: 10_000,
-                max_mana: 2_400,
-                mana: 9,
-            })
-        );
+        let expected = [
+            (6, 0, 100, 101, 1, 0, 1_000, 9),
+            (6, 1, 100, 201, 1, 0, 1_500, 7),
+            (6, 2, 100, 301, 1, 0, 10_000, 33),
+            (11, 0, 0, 181, 1, 2_000, 2_000, 11),
+            (11, 1, 0, 183, 1, 3_000, 2_500, 13),
+            (11, 2, 0, 183, 1, 4_000, 3_000, 16),
+            (12, 0, 0, 151, 1, 0, 1_800, 11),
+            (12, 1, 0, 261, 1, 10_000, 2_400, 9),
+            (12, 2, 0, 361, 1, 10_000, 5_000, 13),
+        ];
+        for (family, tier, subspell_index, word_0x30, byte_0x3b, mana_regen, max_mana, mana) in
+            expected
+        {
+            assert_eq!(
+                level2_set_spell_profile(family, tier),
+                Some(Level2SetSpellProfile {
+                    subspell_index,
+                    word_0x30,
+                    byte_0x3b,
+                    mana_regen,
+                    max_mana,
+                    mana,
+                })
+            );
+        }
         assert_eq!(level2_set_spell_profile(6, 3), None);
         assert_eq!(level2_set_spell_profile(3, 0), None);
     }

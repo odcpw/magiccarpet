@@ -6190,6 +6190,22 @@ impl Level2SharedSpellResetSession {
         {
             self.acquisitions[index].return_side = pickup.source_word_4a();
         }
+        // `SetSpell_6D5E0` has a distinct active-holder branch: it only
+        // rewrites word_0x2C and must leave the cold payload/hash projection
+        // untouched.  Preserve those fields across the generic owner/hand
+        // transition so the typed state follows the same branch.
+        let active_setspell_projection = self
+            .pickups
+            .iter()
+            .find(|entity| entity.index == self.acquisitions[index].source_slot)
+            .and_then(|pickup| {
+                (u16::from_le_bytes(
+                    pickup.record[50..52]
+                        .try_into()
+                        .expect("entity word 0x2e record extent"),
+                ) != 0)
+                    .then_some(self.acquisitions[index])
+            });
         let return_side = self.acquisitions[index].return_side;
         let result = acquire_level2_spell_holder_with_return_side(
             &mut self.acquisitions[index],
@@ -6205,6 +6221,17 @@ impl Level2SharedSpellResetSession {
                 )));
             }
         };
+        if let Some(previous) = active_setspell_projection {
+            let state = &mut self.acquisitions[index];
+            state.subspell_index = previous.subspell_index;
+            state.word_0x30 = previous.word_0x30;
+            state.byte_0x3b = previous.byte_0x3b;
+            state.byte_0x3c = previous.byte_0x3c;
+            state.font_type_index = previous.font_type_index;
+            state.mana_regen = previous.mana_regen;
+            state.max_mana = previous.max_mana;
+            state.mana = previous.mana;
+        }
         let state = self.acquisitions[index];
         let owner = &mut self.players[owner_index];
         owner.enabled_spell_holders[family_index] = outcome.source_slot;
@@ -7167,6 +7194,90 @@ pub enum Level2DynamicArenaKind {
     ManaCarrier,
 }
 
+impl Level2DispatchEvent {
+    /// The lossless scalar projection used by the additive campaign C ABI.
+    /// Keeping this mapping in sim-core makes the Rust digest and exported
+    /// event rows derive from one source instead of hashing Rust `Debug`
+    /// formatting that a client cannot reproduce.
+    #[must_use]
+    pub fn campaign_projection(&self) -> (u8, u8, u8, u8, u16) {
+        match self {
+            Self::SharedPickup {
+                pass,
+                source_slot,
+                result,
+            } => (*pass, 1, 0, u8::from(result.is_some()), *source_slot),
+            Self::SpellAcquisition {
+                pass,
+                source_slot,
+                family,
+                result,
+            } => (*pass, 2, *family, u8::from(result.is_some()), *source_slot),
+            Self::BadStone { pass, step } => (
+                *pass,
+                3,
+                0,
+                u8::from(step.position != step.previous_position),
+                step.source_slot,
+            ),
+            Self::House {
+                pass,
+                source_slot,
+                events,
+            } => (*pass, 4, 0, u8::from(!events.is_empty()), *source_slot),
+            Self::Villager {
+                pass,
+                source_slot,
+                effects,
+            } => (*pass, 5, 0, u8::from(!effects.is_empty()), *source_slot),
+            Self::Dolmen { pass, step } => (
+                *pass,
+                6,
+                0,
+                u8::from(step.position != step.previous_position),
+                step.source_slot,
+            ),
+            Self::Castle {
+                pass,
+                source_slot,
+                advanced,
+            } => (*pass, 7, 0, u8::from(*advanced), *source_slot),
+            Self::DynamicArena {
+                pass,
+                source_slot,
+                kind,
+            } => (
+                *pass,
+                8,
+                level2_dynamic_arena_family(*kind),
+                1,
+                *source_slot,
+            ),
+            Self::Goat {
+                pass,
+                source_slot,
+                events,
+            } => (*pass, 9, 0, u8::from(!events.is_empty()), *source_slot),
+            Self::Error {
+                pass, source_slot, ..
+            } => (*pass, 255, 0, 1, *source_slot),
+        }
+    }
+}
+
+#[must_use]
+pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
+    match kind {
+        Level2DynamicArenaKind::CastleRoot => 1,
+        Level2DynamicArenaKind::CastleChild => 2,
+        Level2DynamicArenaKind::CastleAuxiliary => 3,
+        Level2DynamicArenaKind::CastleDefender => 4,
+        Level2DynamicArenaKind::CastleController => 5,
+        Level2DynamicArenaKind::ManaSphere => 6,
+        Level2DynamicArenaKind::ManaCarrier => 7,
+    }
+}
+
 impl Level2ResetSession {
     fn new(
         profile: FlightProfile,
@@ -7659,10 +7770,55 @@ impl Level2ResetSession {
     pub fn dispatch_observability_hash(&self) -> String {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
-        for event in &self.dispatch_events {
-            hasher.update(format!("{event:?}").as_bytes());
+        hasher.update(b"level2-campaign-events-v1");
+        for (ordinal, event) in self.dispatch_events.iter().enumerate() {
+            let (pass, kind, family, flags, source_slot) = event.campaign_projection();
+            hasher.update(u32::try_from(ordinal).unwrap_or(u32::MAX).to_le_bytes());
+            hasher.update([pass, kind, family, flags]);
+            hasher.update(source_slot.to_le_bytes());
         }
         format!("{:x}", hasher.finalize())
+    }
+
+    /// Composite Level 2 state fingerprint for the additive campaign ABI.
+    /// The legacy `state_hash()` remains the flight-only Level 1-compatible
+    /// value; this hash binds the flight state to every mutable Level 2
+    /// subsystem and the exported player/entity/runtime records.
+    #[must_use]
+    pub fn campaign_state_hash(&self) -> u64 {
+        let mut hasher = Sha256::new();
+        hasher.update(REMC2_SPEC_COMMIT.as_bytes());
+        hasher.update(b"level2-campaign-state-v1");
+        hasher.update(state_hash(&self.state).to_le_bytes());
+        hasher.update(self.terrain_hash().to_le_bytes());
+        for component in [
+            self.shared_spells.reset_hash(),
+            self.economy.reset_hash(),
+            self.ordinary.reset_hash(),
+            self.goat_hash(),
+            self.bad_stone_hash(),
+            self.mission.state_hash(),
+        ] {
+            hasher.update(
+                u32::try_from(component.len())
+                    .unwrap_or(u32::MAX)
+                    .to_le_bytes(),
+            );
+            hasher.update(component.as_bytes());
+        }
+        hasher.update(self.runtime.bytes());
+        for entity in &self.entities {
+            hasher.update(entity.record_bytes());
+        }
+        for player in &self.players {
+            hasher.update(player.record_bytes());
+        }
+        let digest = hasher.finalize();
+        u64::from_le_bytes(
+            digest[..8]
+                .try_into()
+                .expect("SHA-256 prefix is eight bytes"),
+        )
     }
 
     #[must_use]
@@ -16287,6 +16443,51 @@ mod tests {
             session.shared_spells().players[1].enabled_spell_holders[12],
             38
         );
+    }
+
+    #[test]
+    fn level_two_setspell_active_branch_preserves_cold_payload_projection() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 acquisition production session");
+        let family_index = session
+            .shared_spells()
+            .acquisition_states()
+            .iter()
+            .position(|state| state.family == 12)
+            .expect("family-12 acquisition state");
+        session.shared_spells_mut().players[0].family_selected_tiers[12] = 1;
+        session.shared_spells_mut().players[0].record[528 + 12] = 1;
+        let before_state = session.shared_spells().acquisition_states()[family_index];
+        let before_record = session.shared_spells().pickups()[0].record_bytes().to_vec();
+        session.shared_spells_mut().pickups[0].record[50..52].copy_from_slice(&7_u16.to_le_bytes());
+        let outcome = session
+            .shared_spells_mut()
+            .acquire_level2_spell_holder_for_player(
+                12,
+                PhysicalSpellActionRole::OrdinaryPickup,
+                true,
+                0,
+            )
+            .expect("active SetSpell branch");
+        assert_eq!(outcome.parent_entity_index, 111);
+        let pickup = &session.shared_spells().pickups()[0];
+        assert_eq!(pickup.record_bytes()[46..48], before_record[46..48]);
+        assert_eq!(pickup.record_bytes()[52..54], before_record[52..54]);
+        assert_eq!(pickup.record_bytes()[63..66], before_record[63..66]);
+        assert_eq!(pickup.record_bytes()[140..152], before_record[140..152]);
+        assert_eq!(pickup.record_bytes()[48..50], [2, 0]);
+        assert_eq!(pickup.record_bytes()[50..52], [7, 0]);
+        let after_state = session.shared_spells().acquisition_states()[family_index];
+        assert_eq!(after_state.subspell_index, before_state.subspell_index);
+        assert_eq!(after_state.word_0x30, before_state.word_0x30);
+        assert_eq!(after_state.byte_0x3b, before_state.byte_0x3b);
+        assert_eq!(after_state.mana_regen, before_state.mana_regen);
+        assert_eq!(after_state.max_mana, before_state.max_mana);
+        assert_eq!(after_state.mana, before_state.mana);
+        assert_eq!(after_state.selected_tier, 1);
     }
 
     #[test]

@@ -363,8 +363,10 @@ typedef struct McCampaignEventV2 {
     uint32_t reserved[4];
 } McCampaignEventV2;
 
-/* Revisioned Level 2 outer-turn snapshot. dispatch_hash is the SHA-256
- * digest of the typed event sequence returned by the same call. */
+/* Revisioned Level 2 outer-turn snapshot. state_hash is the composite
+ * Level 2 campaign fingerprint (flight plus mutable mission subsystems), and
+ * dispatch_hash is the SHA-256 digest of the canonical scalar event
+ * projection returned by the same call. */
 typedef struct McCampaignStepSnapshotV2 {
     uint32_t abi_version;
     uint32_t struct_size;

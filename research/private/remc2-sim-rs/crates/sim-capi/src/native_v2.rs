@@ -93,9 +93,9 @@ use sim_core::{
         level1_minimap_entity_command, mana_sphere_size_ordinal,
     },
     native_world::{
-        AssetRef, EntityAuthority, EntitySnapshot, Level2DispatchEvent, Level2DynamicArenaKind,
-        Level2ResetSession, NativeWorld, NativeWorldInspection, ParticleParameter, SessionTerrain,
-        TerrainPlanes, apply_level1_source_effects, level1_turn_start_source_views,
+        AssetRef, EntityAuthority, EntitySnapshot, Level2DispatchEvent, Level2ResetSession,
+        NativeWorld, NativeWorldInspection, ParticleParameter, SessionTerrain, TerrainPlanes,
+        apply_level1_source_effects, level1_turn_start_source_views,
         refresh_level1_current_source_view,
     },
     positional_sound_should_replace, prepare_event_sound_command,
@@ -7010,7 +7010,7 @@ pub extern "C" fn mc_native_campaign_session_step(
                 struct_size: struct_size::<McCampaignStepSnapshotV2>(),
                 generation: session.generation,
                 revision: candidate.state.tick,
-                state_hash: candidate.state_hash(),
+                state_hash: candidate.campaign_state_hash(),
                 terrain_hash: candidate.terrain_hash(),
                 dispatch_hash: decode_sha256_hex(&candidate.dispatch_observability_hash()),
                 event_count: u32::try_from(event_rows.len()).map_err(|_| {
@@ -7068,7 +7068,7 @@ pub extern "C" fn mc_native_campaign_world_info(
                             .count(),
                         inspection.players().len(),
                         inspection.runtime().objectives.len(),
-                        reset.state_hash(),
+                        reset.campaign_state_hash(),
                     ),
                 };
             Ok(McCampaignWorldInfoV2 {
@@ -9605,61 +9605,7 @@ fn campaign_event_snapshot(
     ordinal: usize,
     event: &Level2DispatchEvent,
 ) -> McCampaignEventV2 {
-    let (pass, kind, family, source_slot, flags) = match event {
-        Level2DispatchEvent::SharedPickup {
-            pass,
-            source_slot,
-            result,
-        } => (*pass, 1, 0, *source_slot, u8::from(result.is_some())),
-        Level2DispatchEvent::SpellAcquisition {
-            pass,
-            source_slot,
-            family,
-            result,
-        } => (*pass, 2, *family, *source_slot, u8::from(result.is_some())),
-        Level2DispatchEvent::BadStone { pass, step } => (
-            *pass,
-            3,
-            0,
-            step.source_slot,
-            u8::from(step.position != step.previous_position),
-        ),
-        Level2DispatchEvent::House {
-            pass,
-            source_slot,
-            events,
-        } => (*pass, 4, 0, *source_slot, u8::from(!events.is_empty())),
-        Level2DispatchEvent::Villager {
-            pass,
-            source_slot,
-            effects,
-        } => (*pass, 5, 0, *source_slot, u8::from(!effects.is_empty())),
-        Level2DispatchEvent::Dolmen { pass, step } => (
-            *pass,
-            6,
-            0,
-            step.source_slot,
-            u8::from(step.position != step.previous_position),
-        ),
-        Level2DispatchEvent::Castle {
-            pass,
-            source_slot,
-            advanced,
-        } => (*pass, 7, 0, *source_slot, u8::from(*advanced)),
-        Level2DispatchEvent::DynamicArena {
-            pass,
-            source_slot,
-            kind,
-        } => (*pass, 8, dynamic_arena_family(*kind), *source_slot, 1),
-        Level2DispatchEvent::Goat {
-            pass,
-            source_slot,
-            events,
-        } => (*pass, 9, 0, *source_slot, u8::from(!events.is_empty())),
-        Level2DispatchEvent::Error {
-            pass, source_slot, ..
-        } => (*pass, 255, 0, *source_slot, 1),
-    };
+    let (pass, kind, family, flags, source_slot) = event.campaign_projection();
     McCampaignEventV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
         struct_size: struct_size::<McCampaignEventV2>(),
@@ -9672,18 +9618,6 @@ fn campaign_event_snapshot(
         source_slot,
         reserved_0: 0,
         reserved: [0; 4],
-    }
-}
-
-const fn dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
-    match kind {
-        Level2DynamicArenaKind::CastleRoot => 1,
-        Level2DynamicArenaKind::CastleChild => 2,
-        Level2DynamicArenaKind::CastleAuxiliary => 3,
-        Level2DynamicArenaKind::CastleDefender => 4,
-        Level2DynamicArenaKind::CastleController => 5,
-        Level2DynamicArenaKind::ManaSphere => 6,
-        Level2DynamicArenaKind::ManaCarrier => 7,
     }
 }
 
@@ -15668,6 +15602,26 @@ mod tests {
                 .iter()
                 .all(|event| event.abi_version == MC_NATIVE_ABI_VERSION)
         );
+        let mut canonical_events = Sha256::new();
+        canonical_events.update(sim_core::mission_content::REMC2_SPEC_COMMIT.as_bytes());
+        canonical_events.update(b"level2-campaign-events-v1");
+        for (ordinal, event) in events[..event_count as usize].iter().enumerate() {
+            canonical_events.update((ordinal as u32).to_le_bytes());
+            canonical_events.update([event.pass, event.kind, event.family, event.flags]);
+            canonical_events.update(event.source_slot.to_le_bytes());
+        }
+        assert_eq!(
+            snapshot.dispatch_hash,
+            canonical_events.finalize().as_slice()
+        );
+        let composite_hash = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(reset.campaign_state_hash())
+        })
+        .expect("read composite Level 2 state hash");
+        assert_eq!(snapshot.state_hash, composite_hash);
         let stepped_hash = snapshot.state_hash;
 
         assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
