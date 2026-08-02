@@ -20,7 +20,7 @@ T14 run produced:
 
 | Internal profile | Frame bytes | Graph memory | p95 CPU | Reset deterministic | Current status |
 | --- | ---: | ---: | ---: | --- | --- |
-| 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; optimized owner route is deterministic with zero measured steady allocation and p95 total 31.65 ms, clearing the 30 Hz owner budget while GPU/window/corpus promotion remains open |
+| 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; owner route is qualified with deterministic zero-allocation evidence and p95 total 31.65 ms, clearing the 30 Hz owner budget while GPU/window/corpus promotion remains open |
 | 960x720 | 691,200 | 2,768,896 | 26.11 ms | yes | rejected for the current owner route; deterministic and zero-allocation, but p95 total is 56.52 ms, over the 30 Hz budget |
 | 1280x960 | 1,228,800 | 4,919,296 | 45.64 ms | yes | rejected by current CPU budget |
 
@@ -73,7 +73,7 @@ The mandatory 640x480 owner scenario receipt is recorded in
 `qualification/classic-hd-owner-route-scenarios.json`. It proves 49 persistent
 indexed uploads across idle, moving town, combat projectile/impact rows,
 ordinary high-speed flight, lethal player state, and tick-0 restart. This
-qualifies the route observation; it does not claim the separate Speed-jar
+qualifies the owner route observation; it does not claim the separate Speed-jar
 automatic blur/postprocess path, which remains open. It is still a
 route-observation receipt rather than a visual-corpus, sustained-GPU, or
 completion/window qualification.

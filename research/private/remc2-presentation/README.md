@@ -66,18 +66,19 @@ mode-26 terrain pass and reusing the generation-bound owner asset digest, the
 The 960x720 owner route still has a passing 64-frame reset-replay/upload
 artifact, but its measured full-route cost is not a real-time or player-facing
 production claim. The owner flight route at both profiles reaches the observed
-speed limit of 80; it does not by itself prove remc2's automatic high-speed
-postprocess. The explicit two-profile probe records that the effective mode
-remains 0 because no legitimate Speed-jar activation is exposed by the current owner ABI:
+speed limit of 80; the owner route is qualified, but it does not by itself
+prove remc2's automatic high-speed postprocess. The explicit two-profile probe
+records that the effective mode remains 0 because no legitimate Speed-jar
+activation is exposed by the current owner ABI:
 `qualification/classic-hd-owner-high-speed-probe.json`. Unity GPU, scenario,
 high-speed-postprocess, and preserved corpus evidence remain required for any
 broader promotion.
 
 The owner-lab performance and GPU receipts are separate from the owner-free
-Rust matrix. `qualification/classic-hd-owner-performance-smoke.json` proves
-steady allocations and deterministic 8+64-frame routes; 640x480 clears the
-30 Hz owner budget, while 960x720 is rejected at the current profile. The
-GPU receipt `qualification/classic-hd-owner-gpu-fence.json` proves changing
+Rust matrix. `qualification/classic-hd-owner-performance-smoke.json` records
+the supported 640x480 row and explicit 960x720 rejection, and proves steady
+allocations and deterministic 8+64-frame routes. The GPU receipt
+`qualification/classic-hd-owner-gpu-fence.json` proves changing
 raw indexed and palette-resolved readbacks with no readback errors; this T14
 OpenGLCore platform cannot report the async graphics fence and GPU timing is
 not captured.
@@ -85,5 +86,5 @@ not captured.
 `qualification/verify_three_mode_package.py` is the final package-integrity
 gate. A PASS means the Exact, Classic HD, and Unity Enhanced contracts and
 their current evidence are internally consistent. Its output separately lists
-`OPEN` gates; placeholder visual corpora, owner/GPU scenario capture, and human
+`OPEN` gates; placeholder visual corpora, GPU timing/fence capture, and human
 visual review must not be promoted by this command.

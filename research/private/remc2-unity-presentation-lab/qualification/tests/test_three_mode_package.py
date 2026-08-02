@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 import json
 import tempfile
@@ -18,6 +19,15 @@ def load_module():
 
 
 PACKAGE = load_module()
+
+
+MATRIX_SPEC = importlib.util.spec_from_file_location(
+    "validate_classic_hd_matrix",
+    ROOT / "qualification" / "validate_classic_hd_matrix.py",
+)
+assert MATRIX_SPEC and MATRIX_SPEC.loader
+MATRIX = importlib.util.module_from_spec(MATRIX_SPEC)
+MATRIX_SPEC.loader.exec_module(MATRIX)
 
 
 class ThreeModePackageTests(unittest.TestCase):
@@ -72,6 +82,35 @@ class ThreeModePackageTests(unittest.TestCase):
         self.assertEqual([], PACKAGE.validate_classic_hd_owner_performance_artifact())
         summary = PACKAGE.verify()
         self.assertFalse(any("performance remains over" in gate for gate in summary["open_gates"]))
+
+    def test_owner_route_matrix_split_does_not_promote_gpu_timing(self):
+        matrix = json.loads(
+            (ROOT / "qualification" / "classic-hd-resolution-matrix.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            "owner-route-qualified; gpu-timing-pending",
+            matrix["unity_gpu_and_owner_route"],
+        )
+        self.assertEqual("not-captured", matrix["owner_route_gpu_timing"])
+        summary = PACKAGE.verify()
+        self.assertFalse(any("owner/GPU matrix remains pending" in gate for gate in summary["open_gates"]))
+        self.assertTrue(any("GPU timing remains open" in gate for gate in summary["open_gates"]))
+
+    def test_owner_route_matrix_split_fails_closed_when_gpu_status_is_missing(self):
+        matrix_path = ROOT / "qualification" / "classic-hd-resolution-matrix.json"
+        matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+        candidate = copy.deepcopy(matrix)
+        candidate.pop("owner_route_gpu_timing")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "classic-hd-resolution-matrix.json"
+            path.write_text(json.dumps(candidate), encoding="utf-8")
+            errors = MATRIX.validate(path)
+        self.assertIn(
+            "qualified owner route must keep GPU timing explicitly not-captured",
+            errors,
+        )
 
     def test_os_window_lifecycle_records_both_real_player_cases_and_stays_open_for_review(self):
         self.assertEqual([], PACKAGE.validate_classic_hd_owner_os_window_lifecycle_artifact())

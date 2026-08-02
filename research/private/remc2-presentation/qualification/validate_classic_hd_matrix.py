@@ -47,8 +47,22 @@ def validate(path: Path = DEFAULT_MATRIX) -> list[str]:
 
     if data.get("window_resolution_is_separate_from_internal_render_resolution") is not True:
         errors.append("window/internal resolution separation must be explicit")
-    if data.get("unity_gpu_and_owner_route") != "pending-owner-lab-capture":
-        errors.append("owner route must not be promoted by this owner-free artifact")
+    owner_gpu_status = data.get("unity_gpu_and_owner_route")
+    if owner_gpu_status == "pending-owner-lab-capture":
+        pass
+    elif owner_gpu_status == "owner-route-qualified; gpu-timing-pending":
+        if data.get("owner_route_qualification_status") != "qualified-owner-lab-capture":
+            errors.append("qualified owner route must identify its qualification status")
+        if data.get("owner_route_profiles") != ["classic-hd-640x480", "classic-hd-960x720"]:
+            errors.append("qualified owner route must name the two captured profiles")
+        if data.get("owner_route_owner_payload_embedded") is not False:
+            errors.append("qualified owner route must keep owner payload external")
+        if data.get("owner_route_owner_inputs_external") is not True:
+            errors.append("qualified owner route must identify owner inputs as external")
+        if data.get("owner_route_gpu_timing") != "not-captured":
+            errors.append("qualified owner route must keep GPU timing explicitly not-captured")
+    else:
+        errors.append("owner/GPU route status must be pending or explicitly split")
     return errors
 
 
