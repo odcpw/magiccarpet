@@ -740,6 +740,22 @@ fn level2_castle_sphere_overlap(castle: Position, sphere: &ManaSphere) -> bool {
         && dy.abs() < i32::from(CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH + extent)
 }
 
+/// `sub_60810`'s stage table with the imported player spell coefficient
+/// normalised to 256 (the Level 2 economy projection has no live spell-tier
+/// mutator yet). The returned pair is `(max_life, mana_capacity)`.
+fn level2_castle_stage_stats(level: u8) -> (i32, i32) {
+    match level {
+        0 => (0, 5_000),
+        1 => (20_000, 8_500),
+        2 => (40_000, 18_000),
+        3 => (40_000, 38_800),
+        4 => (60_000, 78_600),
+        5 => (60_000, 158_200),
+        6 => (80_000, 317_400),
+        _ => (80_000, 300_000_000),
+    }
+}
+
 impl Level2Dolmen {
     fn from_entity(entity: &EntitySnapshot, planes: &TerrainPlanes) -> Result<Self> {
         let Some(ordinal) = [108_u16, 109, 110]
@@ -3512,16 +3528,13 @@ impl Level2EconomyState {
             let sphere_seed = self.slot_rng.get(&sphere_slot).copied().unwrap_or_default();
             let sphere_rng = level2_next_rng16(sphere_seed);
             let speed_rng = level2_next_rng16(sphere_rng);
-            let speed = i16::try_from(speed_rng % 0x30 + 16).expect("Castle sphere speed fits i16");
-            source_rng = level2_next_rng16(source_rng);
-            let yaw = i16::try_from(source_rng & 0x07ff).expect("Castle sphere yaw fits i16");
             source_rng = level2_next_rng16(source_rng);
             let radius =
                 i16::try_from(source_rng % 0x1400 + 3_840).expect("Castle sphere radius fits i16");
+            source_rng = level2_next_rng16(source_rng);
+            let yaw = i16::try_from(source_rng & 0x07ff).expect("Castle sphere yaw fits i16");
             let mut sphere_position = castle.position;
             crate::move_entity(&mut sphere_position, yaw, 0, radius);
-            let mut velocity = Position::default();
-            crate::move_entity(&mut velocity, yaw, 0, speed);
             let ground = self.terrain.ground_height(castle.position);
             let height_above_ground = i32::from(castle.position.z) - i32::from(ground);
             let vertical_velocity = (1_024 - height_above_ground).wrapping_div(8) as i16;
@@ -3537,10 +3550,10 @@ impl Level2EconomyState {
                 source_entity_index: sphere_slot,
                 entity_rng: speed_rng,
                 position: sphere_position,
-                velocity_x: velocity.x.cast_signed(),
-                velocity_y: velocity.y.cast_signed(),
+                velocity_x: 0,
+                velocity_y: 0,
                 vertical_velocity,
-                yaw,
+                yaw: 0,
                 mana: sphere_mana,
                 owner_entity_index: castle.owner_entity_index,
                 incoming_owner_entity_index: 0,
@@ -3584,6 +3597,16 @@ impl Level2EconomyState {
                     self.advance_castle_phase(castle_slot);
                     return false;
                 };
+                let next_level = snapshot.level.saturating_add(1).max(1);
+                let (stage_life, stage_mana_capacity) = level2_castle_stage_stats(next_level);
+                for child in &mut self.castle_children {
+                    if child.active
+                        && child.parent_entity_index == snapshot.source_entity_index
+                        && child.model == 79
+                    {
+                        child.active = false;
+                    }
+                }
                 self.castle_children.push(Level2CastleChild {
                     source_entity_index: child_slot,
                     id_entity_index: snapshot.source_id_entity_index,
@@ -3608,7 +3631,7 @@ impl Level2EconomyState {
                         parent_entity_index: snapshot.source_entity_index,
                         owner_entity_index: snapshot.owner_entity_index,
                         position: Position {
-                            z: ground.saturating_add(384),
+                            z: ground.saturating_add(if next_level <= 1 { 384 } else { 224 }),
                             ..snapshot.position
                         },
                         model: 79,
@@ -3631,10 +3654,10 @@ impl Level2EconomyState {
                 castle.child_chain_active[0] = true;
                 castle.construction_child_active = true;
                 castle.build_state = 4;
-                castle.level = 1;
-                castle.life = CASTLE_STAGE_ONE_LIFE;
-                castle.max_life = CASTLE_STAGE_ONE_LIFE;
-                castle.mana_capacity = CASTLE_STAGE_ONE_MANA_CAPACITY;
+                castle.level = next_level;
+                castle.life = stage_life;
+                castle.max_life = stage_life;
+                castle.mana_capacity = stage_mana_capacity;
                 castle.control_flags &= !0x40;
                 self.player_castle_entity_index = castle.source_entity_index;
                 self.player_castle_stage = castle.level;
@@ -11197,6 +11220,52 @@ mod tests {
         );
         let built = castle_lifecycle.economy().castle().expect("built Castle");
         assert_eq!((built.action, built.build_state, built.level), (4, 0, 1));
+
+        // Source sub_60810/sub_613D0 stage-two vector: the table updates
+        // life/capacity and the controller anchor drops from +384 to +224.
+        let mut stage_two = inspection
+            .level2_reset_session()
+            .expect("stage-two Castle session");
+        let stage_two_slot = stage_two
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("stage-two Castle");
+        assert!(
+            stage_two
+                .economy_mut()
+                .start_castle_construction(stage_two_slot)
+        );
+        assert!(stage_two.economy_mut().step_castle_action(stage_two_slot));
+        {
+            let economy = stage_two.economy_mut();
+            let castle = economy.castle.as_mut().expect("stage-two Castle");
+            castle.action = 5;
+            castle.build_state = 3;
+            castle.level = 1;
+            for child in &mut economy.castle_children {
+                if child.parent_entity_index == stage_two_slot && child.model == 42 {
+                    child.active = false;
+                }
+            }
+        }
+        assert!(stage_two.economy_mut().step_castle_action(stage_two_slot));
+        let stage_two_castle = stage_two.economy().castle().expect("stage-two Castle");
+        assert_eq!(
+            (
+                stage_two_castle.level,
+                stage_two_castle.life,
+                stage_two_castle.max_life,
+                stage_two_castle.mana_capacity
+            ),
+            (2, 40_000, 40_000, 18_000)
+        );
+        let stage_two_child = stage_two
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.active && child.model == 79)
+            .expect("stage-two controller");
+        assert_eq!(stage_two_child.position.z, 224);
 
         let mut defense_lifecycle = inspection
             .level2_reset_session()
