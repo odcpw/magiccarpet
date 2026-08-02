@@ -186,6 +186,73 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void OwnerHudReceiptCacheRequiresMatchingCameraTickAndGeneration()
+        {
+            const uint validFlags = 0x4000u | 0x10000u | 0x20000u | 0x40000u;
+
+            Assert.IsTrue(UnityEnhancedOwnerSessionSource.CanReuseOwnerHudFrame(
+                2,
+                128,
+                7,
+                12,
+                7,
+                12,
+                1,
+                1,
+                960,
+                720,
+                960,
+                960u * 720u,
+                960u * 720u,
+                validFlags));
+            Assert.IsFalse(UnityEnhancedOwnerSessionSource.CanReuseOwnerHudFrame(
+                2,
+                128,
+                7,
+                12,
+                7,
+                13,
+                1,
+                1,
+                960,
+                720,
+                960,
+                960u * 720u,
+                960u * 720u,
+                validFlags));
+            Assert.IsFalse(UnityEnhancedOwnerSessionSource.CanReuseOwnerHudFrame(
+                2,
+                128,
+                7,
+                12,
+                8,
+                12,
+                1,
+                1,
+                960,
+                720,
+                960,
+                960u * 720u,
+                960u * 720u,
+                validFlags));
+            Assert.IsFalse(UnityEnhancedOwnerSessionSource.CanReuseOwnerHudFrame(
+                2,
+                128,
+                7,
+                12,
+                7,
+                12,
+                1,
+                1,
+                960,
+                720,
+                960,
+                960u * 720u,
+                960u * 720u,
+                0x4000u));
+        }
+
+        [Test]
         public void PresentationTransformsCanInterpolateWithoutChangingSnapshotTick()
         {
             GameObject gameObject = new GameObject("enhanced-root-test");

@@ -157,6 +157,35 @@ namespace MagicCarpet.PresentationLab
         public ulong OwnerHudFrameTick { get { return ownerHudFrameInfo.tick; } }
         public int OwnerHudFrameWidth { get { return OwnerHudWidth; } }
         public int OwnerHudFrameHeight { get { return OwnerHudHeight; } }
+
+        public static bool CanReuseOwnerHudFrame(
+            uint receiptAbiVersion,
+            uint receiptStructSize,
+            ulong receiptGeneration,
+            ulong receiptCameraTick,
+            ulong expectedGeneration,
+            ulong expectedCameraTick,
+            ulong receiptRevision,
+            ulong expectedRevision,
+            uint receiptWidth,
+            uint receiptHeight,
+            uint receiptStride,
+            uint receiptIndexBytes,
+            uint receiptProvenanceBytes,
+            uint receiptFlags)
+        {
+            return receiptAbiVersion == AbiVersion &&
+                   receiptStructSize == OwnerHudInfoSize &&
+                   receiptGeneration == expectedGeneration &&
+                   receiptCameraTick == expectedCameraTick &&
+                   receiptRevision == expectedRevision &&
+                   receiptWidth == OwnerHudWidth &&
+                   receiptHeight == OwnerHudHeight &&
+                   receiptStride == OwnerHudStride &&
+                   receiptIndexBytes == OwnerHudWidth * OwnerHudHeight &&
+                   receiptProvenanceBytes == OwnerHudWidth * OwnerHudHeight &&
+                   (receiptFlags & RequiredOwnerHudFlags) == RequiredOwnerHudFlags;
+        }
         public byte MissionStage { get { return mission.currentStage; } }
         public byte TasksCompleted { get { return mission.tasksCompleted; } }
         public bool PlayerDead { get { return mission.playerDead != 0; } }
@@ -936,6 +965,25 @@ namespace MagicCarpet.PresentationLab
             {
                 reason = "Unity Enhanced owner HUD buffers are not configured";
                 return false;
+            }
+
+            if (CanReuseOwnerHudFrame(
+                    ownerHudFrameInfo.abiVersion,
+                    ownerHudFrameInfo.structSize,
+                    ownerHudFrameInfo.generation,
+                    ownerHudFrameInfo.tick,
+                    snapshot.generation,
+                    presentation.tick,
+                    ownerHudFrameInfo.presentationRevision,
+                    ownerHudPresentationRevision,
+                    ownerHudFrameInfo.width,
+                    ownerHudFrameInfo.height,
+                    ownerHudFrameInfo.stride,
+                    ownerHudFrameInfo.indexBytes,
+                    ownerHudFrameInfo.provenanceBytes,
+                    ownerHudFrameInfo.flags))
+            {
+                return true;
             }
 
             ownerHudFrameQuery = new McPresentationFrameQueryV2
