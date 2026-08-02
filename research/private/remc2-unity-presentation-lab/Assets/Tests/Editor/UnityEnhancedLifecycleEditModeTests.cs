@@ -600,6 +600,9 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsTrue(vfx.ApplyEvent(first));
             MeshRenderer renderer = gameObject.transform.Find("EnhancedVfxPool/EnhancedVfx").GetComponent<MeshRenderer>();
             Assert.AreEqual("MagicCarpet/Enhanced/Vfx", renderer.sharedMaterial.shader.name);
+            Assert.Less(renderer.sharedMaterial.GetFloat("_GlowIntensity"), 2f);
+            Assert.Less(renderer.sharedMaterial.GetFloat("_Opacity"), 0.8f);
+            Assert.Less(renderer.GetComponent<MeshFilter>().sharedMesh.bounds.size.x, 1f);
             Assert.IsFalse(vfx.ApplyEvent(first));
             Assert.AreEqual(1, vfx.DuplicateEffectCount);
             vfx.SetReducedMotion(true);

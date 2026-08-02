@@ -234,11 +234,13 @@ namespace MagicCarpet.PresentationLab
             switch (kind)
             {
                 case UnityEnhancedVfxKind.Fire:
+                    radius = 0.38f;
+                    break;
                 case UnityEnhancedVfxKind.Destruction:
-                    radius = 0.85f;
+                    radius = 0.60f;
                     break;
                 case UnityEnhancedVfxKind.SpellCast:
-                    radius = 0.65f;
+                    radius = 0.32f;
                     break;
                 case UnityEnhancedVfxKind.Smoke:
                     radius = 0.9f;
@@ -287,8 +289,12 @@ namespace MagicCarpet.PresentationLab
                 if (shader == customVfxShader)
                 {
                     float glow = kind == UnityEnhancedVfxKind.Weather ? 0.7f :
-                                 kind == UnityEnhancedVfxKind.Smoke ? 0.28f : 2.4f;
-                    float opacity = kind == UnityEnhancedVfxKind.Smoke ? 0.28f : 0.82f;
+                                 kind == UnityEnhancedVfxKind.Smoke ? 0.28f :
+                                 kind == UnityEnhancedVfxKind.Fire ? 1.5f :
+                                 kind == UnityEnhancedVfxKind.SpellCast ? 1.15f :
+                                 kind == UnityEnhancedVfxKind.Impact ? 1.25f : 1.6f;
+                    float opacity = kind == UnityEnhancedVfxKind.Smoke ? 0.28f :
+                                    kind == UnityEnhancedVfxKind.SpellCast ? 0.65f : 0.72f;
                     material.SetColor("_GlowColor", VfxColor(kind));
                     material.SetFloat("_GlowIntensity", glow);
                     material.SetFloat("_Opacity", opacity);

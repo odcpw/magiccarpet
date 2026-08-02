@@ -1651,7 +1651,9 @@ namespace MagicCarpet.PresentationLab
                         continue;
                     }
 
-                    kind = UnityEnhancedVfxKind.SpellCast;
+                    kind = source.kind == EventLevel1FireballSpawned
+                        ? UnityEnhancedVfxKind.Fire
+                        : UnityEnhancedVfxKind.SpellCast;
                     position = ProjectedPosition(projectile.x, projectile.y, projectile.z);
                     intensity = projectile.projectileKind == 2 ? 0.8f : 1f;
                     duration = 16;
