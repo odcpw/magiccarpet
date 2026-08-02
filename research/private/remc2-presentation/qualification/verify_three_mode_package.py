@@ -746,6 +746,81 @@ def validate_classic_hd_owner_gpu_fence_artifact(
     return errors
 
 
+def validate_classic_hd_visual_capture_tooling() -> list[str]:
+    """Keep the owner capture path present without promoting visual evidence."""
+    errors: list[str] = []
+    presentation_path = LAB_ROOT / "Assets" / "Scripts" / "ClassicHdPresentation.cs"
+    editor_path = LAB_ROOT / "Assets" / "Editor" / "CreatePresentationLabAssets.cs"
+    readme_path = LAB_ROOT / "README.md"
+    required_snippets = {
+        presentation_path: (
+            "CaptureResolvedFramePng",
+            "Graphics.Blit(IndexTexture, resolved, IndexedMaterial)",
+            "EncodeToPNG",
+            "screenshot cannot advance the authoritative Rust session",
+        ),
+        editor_path: (
+            "RunOwnerClassicHdVisualCaptureProbe",
+            "-mc-capture-dir",
+            "captured-for-human-review",
+            "visual_review_status=not-reviewed",
+            "owner_inputs_external=true",
+        ),
+        readme_path: (
+            "RunOwnerClassicHdVisualCaptureProbe",
+            "classic-hd-owner-visual-capture-receipt.json",
+            "placeholder corpus manifests",
+        ),
+    }
+    for path, snippets in required_snippets.items():
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as error:
+            errors.append(f"visual capture tooling file read failed: {error}")
+            continue
+        for snippet in snippets:
+            if snippet not in content:
+                errors.append(f"visual capture tooling is missing {snippet!r} in {path.name}")
+    return errors
+
+
+def validate_unity_enhanced_visual_capture_tooling() -> list[str]:
+    """Keep the owner Enhanced camera capture path separate and review-gated."""
+    errors: list[str] = []
+    root_path = LAB_ROOT / "Assets" / "Scripts" / "UnityEnhancedWorldRoot.cs"
+    editor_path = LAB_ROOT / "Assets" / "Editor" / "CreatePresentationLabAssets.cs"
+    readme_path = LAB_ROOT / "README.md"
+    required_snippets = {
+        root_path: (
+            "CapturePresentationFramePng",
+            "camera.Render()",
+            "never advances or mutates the authoritative owner session",
+        ),
+        editor_path: (
+            "RunOwnerUnityEnhancedVisualCaptureProbe",
+            "unity-enhanced-owner-visual-capture-receipt.json",
+            "captured-for-human-review",
+            "visual_review_status=not-reviewed",
+            "owner_inputs_external=true",
+        ),
+        readme_path: (
+            "RunOwnerUnityEnhancedVisualCaptureProbe",
+            "unity-enhanced-owner-visual-capture-receipt.json",
+            "placeholder corpus manifests",
+        ),
+    }
+    for path, snippets in required_snippets.items():
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as error:
+            errors.append(f"Unity Enhanced visual capture tooling file read failed: {error}")
+            continue
+        for snippet in snippets:
+            if snippet not in content:
+                errors.append(f"Unity Enhanced visual capture tooling is missing {snippet!r} in {path.name}")
+    return errors
+
+
 def validate_profile_sequence_failure_artifact(
     path: Path = PROFILE_960_SEQUENCE_FAILURE_ARTIFACT,
 ) -> list[str]:
@@ -881,6 +956,16 @@ def verify() -> dict[str, Any]:
     _validator_result(
         "owner-bound Classic HD effects matrix artifact",
         validate_classic_hd_owner_effects_matrix_artifact,
+        checks,
+    )
+    _validator_result(
+        "Classic HD visual capture tooling",
+        validate_classic_hd_visual_capture_tooling,
+        checks,
+    )
+    _validator_result(
+        "Unity Enhanced visual capture tooling",
+        validate_unity_enhanced_visual_capture_tooling,
         checks,
     )
     _validator_result(

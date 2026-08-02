@@ -397,6 +397,92 @@ namespace MagicCarpet.PresentationLab
             actorPresentation.ResetForSession();
         }
 
+        /// <summary>
+        /// Captures the current Enhanced camera for qualification tooling.
+        /// This renders the already-applied presentation snapshot only; it
+        /// never advances or mutates the authoritative owner session.
+        /// </summary>
+        public bool CapturePresentationFramePng(
+            int width,
+            int height,
+            out byte[] pngBytes,
+            out ulong resolvedHash,
+            out string reason)
+        {
+            pngBytes = null;
+            resolvedHash = 0;
+            reason = string.Empty;
+            if (State != UnityEnhancedLifecycleState.Open || cameraRig == null ||
+                cameraRig.PresentationCamera == null || !hasSnapshot)
+            {
+                reason = "Unity Enhanced camera is not ready for resolved capture";
+                return false;
+            }
+
+            if (width <= 0 || height <= 0 || width > 4096 || height > 4096)
+            {
+                reason = "Unity Enhanced capture dimensions are outside the bounded range";
+                return false;
+            }
+
+            Camera camera = cameraRig.PresentationCamera;
+            RenderTexture target = new RenderTexture(
+                width,
+                height,
+                24,
+                RenderTextureFormat.ARGB32,
+                RenderTextureReadWrite.Linear);
+            target.name = "UnityEnhanced_QualificationResolvedCapture";
+            Texture2D readback = null;
+            RenderTexture previousActive = RenderTexture.active;
+            RenderTexture previousTarget = camera.targetTexture;
+            try
+            {
+                target.Create();
+                // Editor/batch qualification does not get a LateUpdate pass
+                // between ApplySnapshot and capture. Advance only the
+                // presentation interpolation so the camera actually renders
+                // the latest accepted target pose.
+                InterpolatePresentation(1f);
+                camera.targetTexture = target;
+                camera.Render();
+                RenderTexture.active = target;
+                readback = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
+                readback.name = "UnityEnhanced_QualificationResolvedReadback";
+                readback.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
+                readback.Apply(false, false);
+                pngBytes = readback.EncodeToPNG();
+                if (pngBytes == null || pngBytes.Length == 0)
+                {
+                    reason = "resolved Unity Enhanced capture produced an empty PNG";
+                    pngBytes = null;
+                    return false;
+                }
+
+                resolvedHash = HashBytes(pngBytes);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                reason = "resolved Unity Enhanced capture failed: " + exception.Message;
+                pngBytes = null;
+                resolvedHash = 0;
+                return false;
+            }
+            finally
+            {
+                camera.targetTexture = previousTarget;
+                RenderTexture.active = previousActive;
+                if (readback != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(readback);
+                }
+
+                target.Release();
+                UnityEngine.Object.DestroyImmediate(target);
+            }
+        }
+
         private void OpenInternal(PresentationModeId selectedMode)
         {
             if (selectedMode != PresentationModeId.UnityEnhanced)
@@ -648,6 +734,26 @@ namespace MagicCarpet.PresentationLab
         private static bool IsFinite(float value)
         {
             return !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
+        private static ulong HashBytes(byte[] bytes)
+        {
+            unchecked
+            {
+                ulong hash = 0xcbf29ce484222325UL;
+                if (bytes == null)
+                {
+                    return hash;
+                }
+
+                for (int index = 0; index < bytes.Length; index++)
+                {
+                    hash ^= bytes[index];
+                    hash *= 0x100000001b3UL;
+                }
+
+                return hash;
+            }
         }
 
         private static bool IsFinite(Vector3 value)

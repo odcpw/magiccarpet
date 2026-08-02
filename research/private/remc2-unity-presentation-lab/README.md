@@ -164,6 +164,32 @@ resolves explicitly to `original-indexed` and still completes the 49-frame
 owner route. The native graph is not yet qualified to consume an optional pack,
 so this is a fail-closed fallback proof rather than an enhanced-asset claim.
 
+The qualification-only visual capture probe resolves the existing indexed
+surface through the same palette material used by the Classic HD display. It
+does not advance Rust, change the steady-state upload path, or overwrite an
+existing capture. Run it with a fresh private output directory:
+
+```text
+Unity -batchmode -force-glcore \
+  -projectPath research/private/remc2-unity-presentation-lab \
+  -executeMethod MagicCarpet.PresentationLab.Editor.CreatePresentationLabAssets.RunOwnerClassicHdVisualCaptureProbe \
+  -mc-presentation-mode classic-hd \
+  -mc-classic-profile hd-640x480 \
+  -mc-package /absolute/path/to/level1-export-m \
+  -mc-closure /absolute/path/to/level1-asset-closure.json \
+  -mc-asset-cache /absolute/path/to/level1-unity-asset-cache \
+  -mc-capture-dir /tmp/magiccarpet-classic-hd-visual-captures
+```
+
+The probe emits one resolved PNG for each Level 1 Night corpus route plus
+`classic-hd-owner-visual-capture-receipt.json`, including dimensions, upload
+counts, frame hashes, SHA-256 file hashes, GPU metadata, and external-owner
+provenance. The receipt intentionally remains `captured-for-human-review` /
+`not-reviewed`; it does not convert the placeholder corpus manifests into an
+acceptance claim. Review the PNGs for crushed blacks, over-bloom, fog washout,
+HUD readability, exposure stability, temporal artifacts, and whether the result
+still looks like the game rather than concept art before promoting a corpus.
+
 The bounded focus/pause and exit-sidecar probes are recorded in
 `qualification/classic-hd-owner-focus-pause.json` and
 `qualification/classic-hd-owner-exit-sidecar.json`. They prove that Unity
@@ -266,6 +292,28 @@ The route is still a private owner smoke, not a visual-corpus or GPU-support
 claim. The first run must be discarded if the lethal-damage boundary does not
 reach the authoritative player-dead state; the receipt records only a run that
 also proves projectile/impact rows and a fresh tick-0 restart.
+
+The matching Unity Enhanced visual capture probe renders the already-applied
+URP camera snapshot into a bounded 1280x720 target. It uses the same seven
+Level 1 Night routes as the Classic HD probe and is likewise qualification-only:
+
+```text
+Unity -batchmode -force-glcore \
+  -projectPath research/private/remc2-unity-presentation-lab \
+  -executeMethod MagicCarpet.PresentationLab.Editor.CreatePresentationLabAssets.RunOwnerUnityEnhancedVisualCaptureProbe \
+  -mc-presentation-mode unity-enhanced \
+  -mc-package /absolute/path/to/level1-export-m \
+  -mc-closure /absolute/path/to/level1-asset-closure.json \
+  -mc-asset-cache /absolute/path/to/level1-unity-asset-cache \
+  -mc-capture-dir /tmp/magiccarpet-unity-enhanced-visual-captures
+```
+
+It emits the seven PNGs and
+`unity-enhanced-owner-visual-capture-receipt.json` with generation/tick,
+active-entity/visual counts, PNG hashes, GPU metadata, and external-owner
+provenance. The receipt remains `captured-for-human-review` /
+`not-reviewed`; it does not promote the placeholder corpus or claim that the
+whole-hog look has passed the Night quality target.
 
 The owner smoke requires a temporary owner-local native plugin. Build and copy
 it only for the probe, then remove the library and Unity-generated metadata

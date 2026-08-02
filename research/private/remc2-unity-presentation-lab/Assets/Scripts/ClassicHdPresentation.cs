@@ -472,10 +472,108 @@ namespace MagicCarpet.PresentationLab
             return true;
         }
 
+        /// <summary>
+        /// Captures the palette-resolved Classic HD surface for qualification
+        /// tooling.  This is deliberately separate from CaptureFrame so a
+        /// screenshot cannot advance the authoritative Rust session or change
+        /// the steady-state upload/allocation path.
+        /// </summary>
+        public bool CaptureResolvedFramePng(
+            out byte[] pngBytes,
+            out ulong resolvedHash,
+            out string reason)
+        {
+            pngBytes = null;
+            resolvedHash = 0;
+            reason = string.Empty;
+            if (!IsConfigured || IndexTexture == null || IndexedMaterial == null)
+            {
+                reason = "Classic HD presentation is not configured for resolved capture";
+                return false;
+            }
+
+            RenderTexture resolved = new RenderTexture(
+                IndexTexture.width,
+                IndexTexture.height,
+                0,
+                RenderTextureFormat.ARGB32,
+                RenderTextureReadWrite.Linear);
+            resolved.name = "ClassicHd_QualificationResolvedCapture";
+            Texture2D readback = null;
+            RenderTexture previousActive = RenderTexture.active;
+            try
+            {
+                resolved.Create();
+                Graphics.Blit(IndexTexture, resolved, IndexedMaterial);
+                RenderTexture.active = resolved;
+                readback = new Texture2D(
+                    IndexTexture.width,
+                    IndexTexture.height,
+                    TextureFormat.RGBA32,
+                    false,
+                    false);
+                readback.name = "ClassicHd_QualificationResolvedReadback";
+                readback.ReadPixels(
+                    new Rect(0, 0, IndexTexture.width, IndexTexture.height),
+                    0,
+                    0,
+                    false);
+                readback.Apply(false, false);
+                pngBytes = readback.EncodeToPNG();
+                if (pngBytes == null || pngBytes.Length == 0)
+                {
+                    reason = "resolved Classic HD capture produced an empty PNG";
+                    pngBytes = null;
+                    return false;
+                }
+
+                resolvedHash = HashBytes(pngBytes);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                reason = "resolved Classic HD capture failed: " + exception.Message;
+                pngBytes = null;
+                resolvedHash = 0;
+                return false;
+            }
+            finally
+            {
+                RenderTexture.active = previousActive;
+                if (readback != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(readback);
+                }
+
+                resolved.Release();
+                UnityEngine.Object.DestroyImmediate(resolved);
+            }
+        }
+
         private static long ElapsedNanoseconds(long start)
         {
             long elapsedTicks = System.Diagnostics.Stopwatch.GetTimestamp() - start;
             return (long)(elapsedTicks * (1000000000.0 / System.Diagnostics.Stopwatch.Frequency));
+        }
+
+        private static ulong HashBytes(byte[] bytes)
+        {
+            unchecked
+            {
+                ulong hash = 0xcbf29ce484222325UL;
+                if (bytes == null)
+                {
+                    return hash;
+                }
+
+                for (int index = 0; index < bytes.Length; index++)
+                {
+                    hash ^= bytes[index];
+                    hash *= 0x100000001b3UL;
+                }
+
+                return hash;
+            }
         }
 
         private void Update()

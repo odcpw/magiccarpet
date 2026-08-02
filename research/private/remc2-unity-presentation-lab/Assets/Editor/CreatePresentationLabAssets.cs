@@ -1,7 +1,9 @@
 #if UNITY_EDITOR
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -267,7 +269,10 @@ namespace MagicCarpet.PresentationLab.Editor
             }
             finally
             {
-                UnityEngine.Object.DestroyImmediate(root);
+                if (root != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(root);
+                }
             }
         }
 
@@ -928,6 +933,415 @@ namespace MagicCarpet.PresentationLab.Editor
                     {
                         UnityEngine.Object.DestroyImmediate(rootObjects[index]);
                     }
+                }
+            }
+        }
+
+        [MenuItem("Magic Carpet/Presentation Lab/Run Owner Classic HD Visual Capture Probe")]
+        public static void RunOwnerClassicHdVisualCaptureProbe()
+        {
+            string packagePath = CommandLineValue("-mc-package");
+            string closurePath = CommandLineValue("-mc-closure");
+            string assetCachePath = CommandLineValue("-mc-asset-cache");
+            string captureDirectory = CommandLineValue("-mc-capture-dir");
+            if (string.IsNullOrWhiteSpace(packagePath) ||
+                string.IsNullOrWhiteSpace(closurePath) ||
+                string.IsNullOrWhiteSpace(assetCachePath) ||
+                string.IsNullOrWhiteSpace(captureDirectory))
+            {
+                throw new InvalidOperationException(
+                    "owner Classic HD visual capture probe requires -mc-package, -mc-closure, -mc-asset-cache, and -mc-capture-dir");
+            }
+
+            captureDirectory = Path.GetFullPath(captureDirectory);
+            Directory.CreateDirectory(captureDirectory);
+
+            var root = new GameObject("Owner Classic HD Visual Capture Probe Router");
+            var router = root.AddComponent<PresentationModeRouter>();
+            MethodInfo awake = typeof(PresentationModeRouter).GetMethod(
+                "Awake",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (awake == null)
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                throw new InvalidOperationException("presentation router Awake method is missing");
+            }
+
+            string[] routeIds =
+            {
+                "town-approach",
+                "town-overflight",
+                "fireball-fight",
+                "mana-castle",
+                "reflective-water",
+                "fog-depth",
+                "high-speed-flight"
+            };
+            string[] captureNames =
+            {
+                "l1-night-town-approach",
+                "l1-night-town-overflight",
+                "l1-night-fireball-fight",
+                "l1-night-mana-castle",
+                "l1-night-reflective-water",
+                "l1-night-fog-depth",
+                "l1-night-high-speed-flight"
+            };
+            int[] frameCounts = { 8, 12, 12, 8, 12, 12, 16 };
+            var entries = new List<ClassicHdVisualCaptureEntry>();
+
+            try
+            {
+                awake.Invoke(router, null);
+                if (!router.SessionIsOpen ||
+                    router.ClassicHdRenderer == null ||
+                    !router.ClassicHdRenderer.UsesNativeOwnerSession)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD VISUAL CAPTURE PROBE FAIL: owner route did not open");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                ClassicHdPresentation classic = router.ClassicHdRenderer;
+                string reason = string.Empty;
+                for (int routeIndex = 0; routeIndex < routeIds.Length; routeIndex++)
+                {
+                    if (routeIndex > 0 && !classic.ResetOwnerSession(out reason))
+                    {
+                        Debug.LogError(
+                            "OWNER CLASSIC HD VISUAL CAPTURE PROBE FAIL: reset " +
+                            routeIds[routeIndex] + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    bool castObserved = false;
+                    for (int frame = 0; frame < frameCounts[routeIndex]; frame++)
+                    {
+                        Vector2 input = VisualCaptureInput(routeIds[routeIndex], frame);
+                        bool cast = string.Equals(routeIds[routeIndex], "fireball-fight", StringComparison.Ordinal) &&
+                                    frame == 4;
+                        int spellSelection = cast ? 0 : -1;
+                        if (!classic.CaptureFrame(input.x, input.y, cast, spellSelection, out reason))
+                        {
+                            Debug.LogError(
+                                "OWNER CLASSIC HD VISUAL CAPTURE PROBE FAIL: route=" +
+                                routeIds[routeIndex] + " frame=" + frame + ": " + reason);
+                            EditorApplication.Exit(1);
+                            return;
+                        }
+
+                        castObserved |= cast;
+                    }
+
+                    byte[] pngBytes;
+                    ulong resolvedHash;
+                    if (!classic.CaptureResolvedFramePng(out pngBytes, out resolvedHash, out reason))
+                    {
+                        Debug.LogError(
+                            "OWNER CLASSIC HD VISUAL CAPTURE PROBE FAIL: resolved capture route=" +
+                            routeIds[routeIndex] + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    string fileName = captureNames[routeIndex] + ".png";
+                    string outputPath = Path.Combine(captureDirectory, fileName);
+                    string receiptPath = Path.Combine(
+                        captureDirectory,
+                        "classic-hd-owner-visual-capture-receipt.json");
+                    if (File.Exists(outputPath) || (routeIndex == 0 && File.Exists(receiptPath)))
+                    {
+                        Debug.LogError(
+                            "OWNER CLASSIC HD VISUAL CAPTURE PROBE FAIL: refusing to overwrite existing capture in " +
+                            captureDirectory);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    File.WriteAllBytes(outputPath, pngBytes);
+                    entries.Add(new ClassicHdVisualCaptureEntry
+                    {
+                        route_id = routeIds[routeIndex],
+                        capture_name = captureNames[routeIndex],
+                        file_name = fileName,
+                        file_sha256 = Sha256Hex(pngBytes),
+                        resolved_png_hash = resolvedHash.ToString("x16"),
+                        frame_count = frameCounts[routeIndex],
+                        cast_observed = castObserved,
+                        width = classic.IndexTexture.width,
+                        height = classic.IndexTexture.height,
+                        upload_count = classic.UploadCount,
+                        source_generation = classic.SourceGeneration.ToString(),
+                        source_tick = classic.SourceTick.ToString()
+                    });
+
+                    Debug.Log(
+                        "OWNER CLASSIC HD VISUAL CAPTURE CASE PASS: route=" + routeIds[routeIndex] +
+                        " file=" + fileName +
+                        " frames=" + frameCounts[routeIndex] +
+                        " width=" + classic.IndexTexture.width +
+                        " height=" + classic.IndexTexture.height +
+                        " upload_count=" + classic.UploadCount +
+                        " resolved_hash=" + resolvedHash.ToString("x16") +
+                        " png_sha256=" + Sha256Hex(pngBytes));
+                }
+
+                var receipt = new ClassicHdVisualCaptureReceipt
+                {
+                    schema_version = 1,
+                    mode = "classic-hd",
+                    profile = classic.Settings.profile,
+                    capture_status = "captured-for-human-review",
+                    visual_review_status = "not-reviewed",
+                    owner_payload_embedded = false,
+                    owner_inputs_external = true,
+                    unity_editor = Application.unityVersion,
+                    graphics_api = SystemInfo.graphicsDeviceType.ToString(),
+                    graphics_device = SystemInfo.graphicsDeviceName,
+                    graphics_driver = SystemInfo.graphicsDeviceVersion,
+                    captures = entries.ToArray()
+                };
+                string receiptJson = JsonUtility.ToJson(receipt, true) + "\n";
+                File.WriteAllText(
+                    Path.Combine(captureDirectory, "classic-hd-owner-visual-capture-receipt.json"),
+                    receiptJson);
+
+                Debug.Log(
+                    "OWNER CLASSIC HD VISUAL CAPTURE PROBE PASS: profile=" + classic.Settings.profile +
+                    " captures=" + entries.Count +
+                    " output_directory=" + captureDirectory +
+                    " visual_review_status=not-reviewed" +
+                    " owner_inputs_external=true");
+                // Batchmode can begin process teardown immediately after Exit;
+                // release the native-backed router before returning so the
+                // owner session is not destroyed concurrently with Unity's
+                // domain shutdown.
+                UnityEngine.Object.DestroyImmediate(root);
+                root = null;
+                EditorApplication.Exit(0);
+            }
+            finally
+            {
+                if (root != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(root);
+                }
+            }
+        }
+
+        [MenuItem("Magic Carpet/Presentation Lab/Run Owner Unity Enhanced Visual Capture Probe")]
+        public static void RunOwnerUnityEnhancedVisualCaptureProbe()
+        {
+            string packagePath = CommandLineValue("-mc-package");
+            string closurePath = CommandLineValue("-mc-closure");
+            string assetCachePath = CommandLineValue("-mc-asset-cache");
+            string captureDirectory = CommandLineValue("-mc-capture-dir");
+            if (string.IsNullOrWhiteSpace(packagePath) ||
+                string.IsNullOrWhiteSpace(closurePath) ||
+                string.IsNullOrWhiteSpace(assetCachePath) ||
+                string.IsNullOrWhiteSpace(captureDirectory))
+            {
+                throw new InvalidOperationException(
+                    "owner Unity Enhanced visual capture probe requires -mc-package, -mc-closure, -mc-asset-cache, and -mc-capture-dir");
+            }
+
+            captureDirectory = Path.GetFullPath(captureDirectory);
+            Directory.CreateDirectory(captureDirectory);
+
+            var root = new GameObject("Owner Unity Enhanced Visual Capture Probe Router");
+            var router = root.AddComponent<PresentationModeRouter>();
+            MethodInfo awake = typeof(PresentationModeRouter).GetMethod(
+                "Awake",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (awake == null)
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                throw new InvalidOperationException("presentation router Awake method is missing");
+            }
+
+            string[] routeIds =
+            {
+                "town-approach",
+                "town-overflight",
+                "fireball-fight",
+                "mana-castle",
+                "reflective-water",
+                "fog-depth",
+                "high-speed-flight"
+            };
+            string[] captureNames =
+            {
+                "l1-night-town-approach",
+                "l1-night-town-overflight",
+                "l1-night-fireball-fight",
+                "l1-night-mana-castle",
+                "l1-night-reflective-water",
+                "l1-night-fog-depth",
+                "l1-night-high-speed-flight"
+            };
+            int[] frameCounts = { 8, 12, 12, 8, 12, 12, 16 };
+            const int CaptureWidth = 1280;
+            const int CaptureHeight = 720;
+            var entries = new List<UnityEnhancedVisualCaptureEntry>();
+
+            try
+            {
+                awake.Invoke(router, null);
+                if (!router.SessionIsOpen ||
+                    router.EnhancedRoot == null ||
+                    router.EnhancedOwnerSession == null)
+                {
+                    Debug.LogError(
+                        "OWNER UNITY ENHANCED VISUAL CAPTURE PROBE FAIL: owner route did not open" +
+                        " status=" + router.StatusLine +
+                        " owner_validation=" + (router.OwnerValidation == null ? "null" : router.OwnerValidation.Reason));
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                UnityEnhancedWorldRoot enhanced = router.EnhancedRoot;
+                UnityEnhancedOwnerSessionSource source = router.EnhancedOwnerSession;
+                string reason = string.Empty;
+                for (int routeIndex = 0; routeIndex < routeIds.Length; routeIndex++)
+                {
+                    if (routeIndex > 0 && !router.ResetEnhancedOwnerSession(out reason))
+                    {
+                        Debug.LogError(
+                            "OWNER UNITY ENHANCED VISUAL CAPTURE PROBE FAIL: reset " +
+                            routeIds[routeIndex] + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    bool castObserved = false;
+                    for (int frame = 0; frame < frameCounts[routeIndex]; frame++)
+                    {
+                        Vector2 input = VisualCaptureInput(routeIds[routeIndex], frame);
+                        bool cast = string.Equals(routeIds[routeIndex], "fireball-fight", StringComparison.Ordinal) &&
+                                    frame == 4;
+                        int spellSelection = cast ? 0 : -1;
+                        if (!router.CaptureEnhancedFrame(
+                                input.x,
+                                input.y,
+                                cast,
+                                spellSelection,
+                                out reason))
+                        {
+                            Debug.LogError(
+                                "OWNER UNITY ENHANCED VISUAL CAPTURE PROBE FAIL: route=" +
+                                routeIds[routeIndex] + " frame=" + frame + ": " + reason);
+                            EditorApplication.Exit(1);
+                            return;
+                        }
+
+                        castObserved |= cast;
+                    }
+
+                    byte[] pngBytes;
+                    ulong resolvedHash;
+                    if (!enhanced.CapturePresentationFramePng(
+                            CaptureWidth,
+                            CaptureHeight,
+                            out pngBytes,
+                            out resolvedHash,
+                            out reason))
+                    {
+                        Debug.LogError(
+                            "OWNER UNITY ENHANCED VISUAL CAPTURE PROBE FAIL: resolved capture route=" +
+                            routeIds[routeIndex] + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    string fileName = captureNames[routeIndex] + ".png";
+                    string outputPath = Path.Combine(captureDirectory, fileName);
+                    string receiptPath = Path.Combine(
+                        captureDirectory,
+                        "unity-enhanced-owner-visual-capture-receipt.json");
+                    if (File.Exists(outputPath) || (routeIndex == 0 && File.Exists(receiptPath)))
+                    {
+                        Debug.LogError(
+                            "OWNER UNITY ENHANCED VISUAL CAPTURE PROBE FAIL: refusing to overwrite existing capture in " +
+                            captureDirectory);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    File.WriteAllBytes(outputPath, pngBytes);
+                    entries.Add(new UnityEnhancedVisualCaptureEntry
+                    {
+                        route_id = routeIds[routeIndex],
+                        capture_name = captureNames[routeIndex],
+                        file_name = fileName,
+                        file_sha256 = Sha256Hex(pngBytes),
+                        resolved_png_hash = resolvedHash.ToString("x16"),
+                        frame_count = frameCounts[routeIndex],
+                        cast_observed = castObserved,
+                        width = CaptureWidth,
+                        height = CaptureHeight,
+                        active_entity_count = source.ActiveEntityCount,
+                        active_visual_count = enhanced.ActorPresentation.ActiveVisualCount,
+                        source_generation = source.Generation.ToString(),
+                        source_tick = source.Tick.ToString()
+                    });
+
+                    Debug.Log(
+                        "OWNER UNITY ENHANCED VISUAL CAPTURE CASE PASS: route=" + routeIds[routeIndex] +
+                        " file=" + fileName +
+                        " frames=" + frameCounts[routeIndex] +
+                        " width=" + CaptureWidth +
+                        " height=" + CaptureHeight +
+                        " active_entities=" + source.ActiveEntityCount +
+                        " active_visuals=" + enhanced.ActorPresentation.ActiveVisualCount +
+                        " resolved_hash=" + resolvedHash.ToString("x16") +
+                        " png_sha256=" + Sha256Hex(pngBytes));
+                }
+
+                var receipt = new UnityEnhancedVisualCaptureReceipt
+                {
+                    schema_version = 1,
+                    mode = "unity-enhanced",
+                    profile = "level1-night-unity-enhanced",
+                    capture_status = "captured-for-human-review",
+                    visual_review_status = "not-reviewed",
+                    owner_payload_embedded = false,
+                    owner_inputs_external = true,
+                    unity_editor = Application.unityVersion,
+                    graphics_api = SystemInfo.graphicsDeviceType.ToString(),
+                    graphics_device = SystemInfo.graphicsDeviceName,
+                    graphics_driver = SystemInfo.graphicsDeviceVersion,
+                    captures = entries.ToArray()
+                };
+                string receiptJson = JsonUtility.ToJson(receipt, true) + "\n";
+                File.WriteAllText(
+                    Path.Combine(captureDirectory, "unity-enhanced-owner-visual-capture-receipt.json"),
+                    receiptJson);
+
+                Debug.Log(
+                    "OWNER UNITY ENHANCED VISUAL CAPTURE PROBE PASS: captures=" + entries.Count +
+                    " output_directory=" + captureDirectory +
+                    " visual_review_status=not-reviewed" +
+                    " owner_inputs_external=true");
+                // Release the native-backed owner route before batchmode begins
+                // domain teardown; destroying it from finally can race Unity's
+                // native shutdown after a successful capture.
+                source.Dispose();
+                enhanced.Close();
+                if (enhanced.gameObject != root)
+                {
+                    UnityEngine.Object.DestroyImmediate(enhanced.gameObject);
+                }
+                UnityEngine.Object.DestroyImmediate(root);
+                root = null;
+                EditorApplication.Exit(0);
+            }
+            finally
+            {
+                if (root != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(root);
                 }
             }
         }
@@ -2081,6 +2495,41 @@ namespace MagicCarpet.PresentationLab.Editor
             return Vector2.zero;
         }
 
+        private static Vector2 VisualCaptureInput(string route, int frame)
+        {
+            if (string.Equals(route, "town-approach", StringComparison.Ordinal))
+            {
+                return new Vector2(0.18f, 0.06f);
+            }
+
+            if (string.Equals(route, "town-overflight", StringComparison.Ordinal))
+            {
+                return new Vector2(frame % 8 < 4 ? 0.25f : -0.25f, 0.25f);
+            }
+
+            if (string.Equals(route, "mana-castle", StringComparison.Ordinal))
+            {
+                return new Vector2(0.2f, 0f);
+            }
+
+            if (string.Equals(route, "reflective-water", StringComparison.Ordinal))
+            {
+                return new Vector2(0f, 0.15f);
+            }
+
+            if (string.Equals(route, "fog-depth", StringComparison.Ordinal))
+            {
+                return new Vector2(0f, 0.1f);
+            }
+
+            if (string.Equals(route, "high-speed-flight", StringComparison.Ordinal))
+            {
+                return HighSpeedQualificationInput(frame);
+            }
+
+            return Vector2.zero;
+        }
+
         private static Vector2 HighSpeedQualificationInput(int frame)
         {
             float horizontal = frame % 8 < 4 ? 0.35f : -0.35f;
@@ -2142,6 +2591,84 @@ namespace MagicCarpet.PresentationLab.Editor
             }
 
             return maximum;
+        }
+
+        private static string Sha256Hex(byte[] bytes)
+        {
+            using (SHA256 sha256 = SHA256.Create())
+            {
+                byte[] digest = sha256.ComputeHash(bytes ?? Array.Empty<byte>());
+                return BitConverter.ToString(digest).Replace("-", string.Empty).ToLowerInvariant();
+            }
+        }
+
+        [Serializable]
+        private sealed class ClassicHdVisualCaptureReceipt
+        {
+            public int schema_version;
+            public string mode;
+            public string profile;
+            public string capture_status;
+            public string visual_review_status;
+            public bool owner_payload_embedded;
+            public bool owner_inputs_external;
+            public string unity_editor;
+            public string graphics_api;
+            public string graphics_device;
+            public string graphics_driver;
+            public ClassicHdVisualCaptureEntry[] captures;
+        }
+
+        [Serializable]
+        private sealed class ClassicHdVisualCaptureEntry
+        {
+            public string route_id;
+            public string capture_name;
+            public string file_name;
+            public string file_sha256;
+            public string resolved_png_hash;
+            public int frame_count;
+            public bool cast_observed;
+            public int width;
+            public int height;
+            public int upload_count;
+            public string source_generation;
+            public string source_tick;
+        }
+
+        [Serializable]
+        private sealed class UnityEnhancedVisualCaptureReceipt
+        {
+            public int schema_version;
+            public string mode;
+            public string profile;
+            public string capture_status;
+            public string visual_review_status;
+            public bool owner_payload_embedded;
+            public bool owner_inputs_external;
+            public string unity_editor;
+            public string graphics_api;
+            public string graphics_device;
+            public string graphics_driver;
+            public UnityEnhancedVisualCaptureEntry[] captures;
+        }
+
+        [Serializable]
+        private sealed class UnityEnhancedVisualCaptureEntry
+        {
+            public string route_id;
+            public string capture_name;
+            public string file_name;
+            public string file_sha256;
+            public string resolved_png_hash;
+            public int frame_count;
+            public bool cast_observed;
+            public int width;
+            public int height;
+            public int active_entity_count;
+            public int active_visual_count;
+            public string source_generation;
+            public string source_tick;
         }
 
         private static bool ReadGpuHashes(

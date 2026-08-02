@@ -57,6 +57,10 @@ class ThreeModePackageTests(unittest.TestCase):
             errors = PACKAGE.validate_profile_sequence_failure_artifact(candidate)
         self.assertIn("profile sequence failure artifact must remain explicitly unpromoted/open", errors)
 
+    def test_visual_capture_tooling_is_present_without_promoting_corpus(self):
+        self.assertEqual([], PACKAGE.validate_classic_hd_visual_capture_tooling())
+        self.assertEqual([], PACKAGE.validate_unity_enhanced_visual_capture_tooling())
+
 
 if __name__ == "__main__":
     unittest.main()
