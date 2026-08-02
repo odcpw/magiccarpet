@@ -3489,8 +3489,14 @@ impl Level2EconomyState {
             return;
         }
         let fraction = (release / 1_000).clamp(1, 32);
-        let each_mana = release / fraction;
         let sphere_count = fraction.min(i32::try_from(self.free_slots.len()).unwrap_or(i32::MAX));
+        if sphere_count == 0 {
+            return;
+        }
+        // The source recomputes the per-sphere share from the number of
+        // allocations that can actually be committed, then gives the final
+        // source-ordered sphere the exact remainder.
+        let each_mana = release / sphere_count;
         let mut remaining = release;
         let mut source_rng = self
             .source_rng
@@ -3519,7 +3525,7 @@ impl Level2EconomyState {
             let ground = self.terrain.ground_height(castle.position);
             let height_above_ground = i32::from(castle.position.z) - i32::from(ground);
             let vertical_velocity = (1_024 - height_above_ground).wrapping_div(8) as i16;
-            let sphere_mana = if sphere_count == fraction && sphere_index + 1 == fraction {
+            let sphere_mana = if sphere_index + 1 == sphere_count {
                 remaining
             } else {
                 each_mana
@@ -11363,6 +11369,39 @@ mod tests {
                     && sphere.owner_entity_index == 111
                     && sphere.mana == 1_000)
         );
+
+        // When the requested source fraction is larger than the remaining
+        // arena, sub_5FD00 recomputes the share from the committed count; it
+        // does not silently lose the unreleased remainder.
+        let mut partial_release = inspection
+            .level2_reset_session()
+            .expect("partial Castle release session");
+        let partial_slot = partial_release
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("partial release Castle");
+        {
+            let economy = partial_release.economy_mut();
+            economy.player_mana = 0;
+            economy.free_slots.truncate(2);
+            let castle = economy.castle.as_mut().expect("partial release Castle");
+            castle.mana = castle.mana_capacity + 3_500;
+            castle.phase &= !1;
+        }
+        assert!(
+            partial_release
+                .economy_mut()
+                .step_castle_action(partial_slot)
+        );
+        let partial = partial_release
+            .economy()
+            .spheres()
+            .iter()
+            .filter(|sphere| sphere.active && sphere.owner_entity_index == 111)
+            .map(|sphere| sphere.mana)
+            .collect::<Vec<_>>();
+        assert_eq!(partial, vec![1_750, 1_750]);
+        assert_eq!(partial.iter().sum::<i32>(), 3_500);
         action4_session
             .economy_mut()
             .castle
