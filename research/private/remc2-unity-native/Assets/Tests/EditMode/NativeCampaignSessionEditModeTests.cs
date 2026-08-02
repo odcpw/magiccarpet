@@ -46,6 +46,13 @@ namespace MagicCarpet.Native.Tests
             Assert.That(
                 stepped.events.Any(eventRow => eventRow.kind != NativeSim.CampaignEventError),
                 Is.True);
+            var economyEvents = session.EconomyEvents();
+            Assert.That(economyEvents, Is.Not.Empty);
+            Assert.That(
+                economyEvents.All(eventRow =>
+                    eventRow.abiVersion == NativeSim.AbiVersion &&
+                    eventRow.generation == stepped.snapshot.generation),
+                Is.True);
 
             session.Reset();
             Assert.That(session.Generation, Is.EqualTo(1));

@@ -345,7 +345,29 @@ enum {
     MC_CAMPAIGN_EVENT_CASTLE = 7,
     MC_CAMPAIGN_EVENT_DYNAMIC_ARENA = 8,
     MC_CAMPAIGN_EVENT_GOAT = 9,
+    MC_CAMPAIGN_EVENT_ECONOMY = 10,
     MC_CAMPAIGN_EVENT_ERROR = 255
+};
+
+/* Stable per-variant codes for the additive Level 2 economy sidecar.  The
+ * generic McCampaignEventV2 row remains unchanged and clients join these
+ * rows by generation + ordinal. */
+enum {
+    MC_CAMPAIGN_ECONOMY_MANA_SPHERE_SPAWNED = 1,
+    MC_CAMPAIGN_ECONOMY_MANA_SPHERE_CLAIMED = 2,
+    MC_CAMPAIGN_ECONOMY_MANA_SPHERE_COLLECTED = 3,
+    MC_CAMPAIGN_ECONOMY_MANA_SPHERES_MERGED = 4,
+    MC_CAMPAIGN_ECONOMY_MANA_CARRIER_SPAWNED = 5,
+    MC_CAMPAIGN_ECONOMY_MANA_CARRIER_ARRIVED = 6,
+    MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_ARRIVED = 7,
+    MC_CAMPAIGN_ECONOMY_DEATH_BURST_SPAWNED = 8,
+    MC_CAMPAIGN_ECONOMY_DEATH_BURST_EXPIRED = 9,
+    MC_CAMPAIGN_ECONOMY_CASTLE_BUILT = 10,
+    MC_CAMPAIGN_ECONOMY_CASTLE_DESTROYED = 11,
+    MC_CAMPAIGN_ECONOMY_CASTLE_CONSTRUCTION_SOUND = 12,
+    MC_CAMPAIGN_ECONOMY_CASTLE_DESTRUCTION_SOUND = 13,
+    MC_CAMPAIGN_ECONOMY_CASTLE_STAGE_DESTROYED = 14,
+    MC_CAMPAIGN_ECONOMY_DAMAGE_APPLIED = 15
 };
 
 /* One bounded, explicitly typed Level 2 source-pass event. */
@@ -362,6 +384,31 @@ typedef struct McCampaignEventV2 {
     uint16_t reserved_0;
     uint32_t reserved[4];
 } McCampaignEventV2;
+
+/* Detailed payload for a kind-10 McCampaignEventV2 row.  `ordinal` joins the
+ * sidecar to the generic event returned by mc_native_campaign_session_step;
+ * non-economy rows have no sidecar.  The two ids, two entity indices, and two
+ * values have code-specific meanings documented by the Rust projection and
+ * are never overloaded through the generic event's reserved bytes. */
+typedef struct McCampaignEconomyEventV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint32_t ordinal;
+    uint8_t pass;
+    uint8_t family;
+    uint8_t code;
+    uint8_t flags;
+    uint16_t source_slot;
+    uint16_t reserved_0;
+    uint32_t primary_id;
+    uint32_t secondary_id;
+    uint16_t entity_0;
+    uint16_t entity_1;
+    int32_t value_0;
+    int32_t value_1;
+    uint32_t reserved[4];
+} McCampaignEconomyEventV2;
 
 /* Revisioned Level 2 outer-turn snapshot. state_hash is the composite
  * Level 2 campaign fingerprint (flight plus mutable mission subsystems), and
@@ -1471,6 +1518,10 @@ int32_t mc_native_campaign_session_step(
     McCampaignStepSnapshotV2 *out_snapshot, uint32_t out_snapshot_size,
     McCampaignEventV2 *events, uint32_t event_capacity,
     uint32_t event_element_size, uint32_t *out_event_count);
+int32_t mc_native_campaign_economy_events(
+    uint64_t handle, McCampaignEconomyEventV2 *events,
+    uint32_t event_capacity, uint32_t event_element_size,
+    uint32_t *out_event_count);
 int32_t mc_native_campaign_world_info(
     uint64_t handle, McCampaignWorldInfoV2 *out_info, uint32_t out_info_size);
 int32_t mc_native_campaign_player_count(uint64_t handle, uint32_t *out_count);

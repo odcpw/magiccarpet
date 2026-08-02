@@ -93,9 +93,9 @@ use sim_core::{
         level1_minimap_entity_command, mana_sphere_size_ordinal,
     },
     native_world::{
-        AssetRef, EntityAuthority, EntitySnapshot, Level2DispatchEvent, Level2ResetSession,
-        NativeWorld, NativeWorldInspection, ParticleParameter, SessionTerrain, TerrainPlanes,
-        apply_level1_source_effects, level1_turn_start_source_views,
+        AssetRef, EntityAuthority, EntitySnapshot, Level2DispatchEvent, Level2EconomyEvent,
+        Level2ResetSession, NativeWorld, NativeWorldInspection, ParticleParameter, SessionTerrain,
+        TerrainPlanes, apply_level1_source_effects, level1_turn_start_source_views,
         refresh_level1_current_source_view,
     },
     positional_sound_should_replace, prepare_event_sound_command,
@@ -270,6 +270,25 @@ pub const MC_EVENT_LEVEL1_EXIT_SEQUENCE_STARTED: u32 = 35;
 pub const MC_EVENT_LEVEL1_EXIT_SEQUENCE_COMPLETED: u32 = 36;
 pub const MC_EVENT_LEVEL1_WATER_SPLASHED: u32 = 37;
 pub const MC_EVENT_LEVEL1_ABILITY_IMPROVED: u32 = 38;
+
+/// Additive Level 2 campaign economy events (`mc_sim.h`, kind 10).
+pub const MC_CAMPAIGN_EVENT_ECONOMY: u8 = 10;
+
+pub const MC_CAMPAIGN_ECONOMY_MANA_SPHERE_SPAWNED: u8 = 1;
+pub const MC_CAMPAIGN_ECONOMY_MANA_SPHERE_CLAIMED: u8 = 2;
+pub const MC_CAMPAIGN_ECONOMY_MANA_SPHERE_COLLECTED: u8 = 3;
+pub const MC_CAMPAIGN_ECONOMY_MANA_SPHERES_MERGED: u8 = 4;
+pub const MC_CAMPAIGN_ECONOMY_MANA_CARRIER_SPAWNED: u8 = 5;
+pub const MC_CAMPAIGN_ECONOMY_MANA_CARRIER_ARRIVED: u8 = 6;
+pub const MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_ARRIVED: u8 = 7;
+pub const MC_CAMPAIGN_ECONOMY_DEATH_BURST_SPAWNED: u8 = 8;
+pub const MC_CAMPAIGN_ECONOMY_DEATH_BURST_EXPIRED: u8 = 9;
+pub const MC_CAMPAIGN_ECONOMY_CASTLE_BUILT: u8 = 10;
+pub const MC_CAMPAIGN_ECONOMY_CASTLE_DESTROYED: u8 = 11;
+pub const MC_CAMPAIGN_ECONOMY_CASTLE_CONSTRUCTION_SOUND: u8 = 12;
+pub const MC_CAMPAIGN_ECONOMY_CASTLE_DESTRUCTION_SOUND: u8 = 13;
+pub const MC_CAMPAIGN_ECONOMY_CASTLE_STAGE_DESTROYED: u8 = 14;
+pub const MC_CAMPAIGN_ECONOMY_DAMAGE_APPLIED: u8 = 15;
 
 pub const MC_AUDIO_ACTION_PREPARED_PENDING: u8 = 0;
 pub const MC_AUDIO_ACTION_START: u8 = 1;
@@ -544,6 +563,33 @@ pub struct McCampaignEventV2 {
     pub flags: u8,
     pub source_slot: u16,
     pub reserved_0: u16,
+    pub reserved: [u32; 4],
+}
+
+/// Additive detailed payload for a kind-10 `McCampaignEventV2` row.  The
+/// `ordinal` joins this sidecar to the generic event emitted by the same
+/// campaign step.  `primary_id`, `secondary_id`, `entity_0`, `entity_1`, and
+/// `value_0`/`value_1` are explicitly code-specific; every reserved field is
+/// kept zero for forward-compatible extension.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignEconomyEventV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub ordinal: u32,
+    pub pass: u8,
+    pub family: u8,
+    pub code: u8,
+    pub flags: u8,
+    pub source_slot: u16,
+    pub reserved_0: u16,
+    pub primary_id: u32,
+    pub secondary_id: u32,
+    pub entity_0: u16,
+    pub entity_1: u16,
+    pub value_0: i32,
+    pub value_1: i32,
     pub reserved: [u32; 4],
 }
 
@@ -7036,6 +7082,55 @@ pub extern "C" fn mc_native_campaign_session_step(
     })
 }
 
+/// Copy the detailed Level 2 economy sidecars from the most recent outer
+/// turn.  Generic `McCampaignEventV2` rows remain the stable 48-byte event
+/// stream; callers join these rows by `generation + ordinal`.  Level 1
+/// campaign handles and reset/initial states have no kind-10 sidecars.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_economy_events(
+    handle: u64,
+    events: *mut McCampaignEconomyEventV2,
+    event_capacity: u32,
+    event_element_size: u32,
+    out_event_count: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_event_count, "campaign economy event count")?;
+        require_element_size::<McCampaignEconomyEventV2>(
+            event_element_size,
+            "campaign economy event",
+        )?;
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign economy events require a Level 2 campaign session",
+                ));
+            };
+            let rows = reset
+                .dispatch_events()
+                .iter()
+                .enumerate()
+                .filter_map(|(ordinal, dispatch)| match dispatch {
+                    Level2DispatchEvent::Economy {
+                        pass,
+                        source_slot,
+                        event,
+                    } => Some(campaign_economy_event_snapshot(
+                        session.generation,
+                        ordinal,
+                        *pass,
+                        *source_slot,
+                        *event,
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            copy_slice(&rows, events, event_capacity, out_event_count)
+        })
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_native_campaign_world_info(
     handle: u64,
@@ -9617,6 +9712,242 @@ fn campaign_event_snapshot(
         flags,
         source_slot,
         reserved_0: 0,
+        reserved: [0; 4],
+    }
+}
+
+fn campaign_economy_event_snapshot(
+    generation: u64,
+    ordinal: usize,
+    pass: u8,
+    source_slot: u16,
+    event: Level2EconomyEvent,
+) -> McCampaignEconomyEventV2 {
+    let (code, primary_id, secondary_id, entity_0, entity_1, value_0, value_1, flags) = match event
+    {
+        Level2EconomyEvent::ManaSphereSpawned {
+            sphere_id,
+            source_entity_index,
+            mana,
+        } => (
+            MC_CAMPAIGN_ECONOMY_MANA_SPHERE_SPAWNED,
+            sphere_id,
+            0,
+            source_entity_index,
+            0,
+            mana,
+            0,
+            0,
+        ),
+        Level2EconomyEvent::ManaSphereClaimed {
+            sphere_id,
+            owner_entity_index,
+        } => (
+            MC_CAMPAIGN_ECONOMY_MANA_SPHERE_CLAIMED,
+            sphere_id,
+            0,
+            owner_entity_index,
+            0,
+            0,
+            0,
+            0,
+        ),
+        Level2EconomyEvent::ManaSphereCollected {
+            sphere_id,
+            carrier_id,
+            mana,
+        } => (
+            MC_CAMPAIGN_ECONOMY_MANA_SPHERE_COLLECTED,
+            sphere_id,
+            carrier_id,
+            0,
+            0,
+            mana,
+            0,
+            0,
+        ),
+        Level2EconomyEvent::ManaSpheresMerged {
+            target_sphere_id,
+            source_sphere_id,
+            owner_entity_index,
+            mana,
+        } => (
+            MC_CAMPAIGN_ECONOMY_MANA_SPHERES_MERGED,
+            target_sphere_id,
+            source_sphere_id,
+            owner_entity_index,
+            0,
+            mana,
+            0,
+            0,
+        ),
+        Level2EconomyEvent::ManaCarrierSpawned {
+            source_entity_index,
+            owner_entity_index,
+        } => (
+            MC_CAMPAIGN_ECONOMY_MANA_CARRIER_SPAWNED,
+            u32::from(source_entity_index),
+            0,
+            source_entity_index,
+            owner_entity_index,
+            0,
+            0,
+            0,
+        ),
+        Level2EconomyEvent::ManaCarrierArrived {
+            carrier_id,
+            castle_id,
+            mana,
+        } => (
+            MC_CAMPAIGN_ECONOMY_MANA_CARRIER_ARRIVED,
+            carrier_id,
+            0,
+            castle_id,
+            0,
+            mana,
+            0,
+            0,
+        ),
+        Level2EconomyEvent::CastleDefenderArrived {
+            defender_slot,
+            castle_id,
+            mana,
+        } => (
+            MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_ARRIVED,
+            u32::from(defender_slot),
+            0,
+            castle_id,
+            0,
+            mana,
+            0,
+            0,
+        ),
+        Level2EconomyEvent::DeathBurstSpawned {
+            source_entity_index,
+            parent_entity_index,
+            id_entity_index,
+        } => (
+            MC_CAMPAIGN_ECONOMY_DEATH_BURST_SPAWNED,
+            u32::from(source_entity_index),
+            0,
+            parent_entity_index,
+            id_entity_index,
+            0,
+            0,
+            0,
+        ),
+        Level2EconomyEvent::DeathBurstExpired {
+            source_entity_index,
+            parent_entity_index,
+        } => (
+            MC_CAMPAIGN_ECONOMY_DEATH_BURST_EXPIRED,
+            u32::from(source_entity_index),
+            0,
+            parent_entity_index,
+            0,
+            0,
+            0,
+            0,
+        ),
+        Level2EconomyEvent::CastleBuilt {
+            source_entity_index,
+            owner_entity_index,
+        } => (
+            MC_CAMPAIGN_ECONOMY_CASTLE_BUILT,
+            u32::from(source_entity_index),
+            0,
+            owner_entity_index,
+            0,
+            0,
+            0,
+            0,
+        ),
+        Level2EconomyEvent::CastleDestroyed {
+            source_entity_index,
+            killer_entity_index,
+        } => (
+            MC_CAMPAIGN_ECONOMY_CASTLE_DESTROYED,
+            u32::from(source_entity_index),
+            0,
+            killer_entity_index,
+            0,
+            0,
+            0,
+            0,
+        ),
+        Level2EconomyEvent::CastleConstructionSound {
+            source_entity_index,
+            sound_id,
+        } => (
+            MC_CAMPAIGN_ECONOMY_CASTLE_CONSTRUCTION_SOUND,
+            u32::from(source_entity_index),
+            0,
+            sound_id,
+            0,
+            0,
+            0,
+            0,
+        ),
+        Level2EconomyEvent::CastleDestructionSound {
+            source_entity_index,
+            sound_id,
+        } => (
+            MC_CAMPAIGN_ECONOMY_CASTLE_DESTRUCTION_SOUND,
+            u32::from(source_entity_index),
+            0,
+            sound_id,
+            0,
+            0,
+            0,
+            0,
+        ),
+        Level2EconomyEvent::CastleStageDestroyed {
+            source_entity_index,
+            previous_level,
+            next_level,
+        } => (
+            MC_CAMPAIGN_ECONOMY_CASTLE_STAGE_DESTROYED,
+            u32::from(source_entity_index),
+            0,
+            0,
+            0,
+            i32::from(previous_level),
+            i32::from(next_level),
+            0,
+        ),
+        Level2EconomyEvent::DamageApplied {
+            target_entity_index,
+            attacker_entity_index,
+            damage,
+            lethal,
+        } => (
+            MC_CAMPAIGN_ECONOMY_DAMAGE_APPLIED,
+            u32::from(target_entity_index),
+            0,
+            attacker_entity_index,
+            0,
+            damage,
+            0,
+            u8::from(lethal),
+        ),
+    };
+    McCampaignEconomyEventV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignEconomyEventV2>(),
+        generation,
+        ordinal: u32::try_from(ordinal).expect("bounded campaign event ordinal fits u32"),
+        pass,
+        family: sim_core::native_world::level2_economy_event_family(event),
+        code,
+        flags,
+        source_slot,
+        reserved_0: 0,
+        primary_id,
+        secondary_id,
+        entity_0,
+        entity_1,
+        value_0,
+        value_1,
         reserved: [0; 4],
     }
 }
@@ -14715,9 +15046,15 @@ mod tests {
         assert_eq!(size_of::<McCampaignSelectionV2>(), 32);
         assert_eq!(size_of::<McCampaignStepInputV2>(), 80);
         assert_eq!(size_of::<McCampaignEventV2>(), 48);
+        assert_eq!(size_of::<McCampaignEconomyEventV2>(), 64);
         assert_eq!(size_of::<McCampaignStepSnapshotV2>(), 112);
         assert_eq!(std::mem::offset_of!(McCampaignStepInputV2, command), 16);
         assert_eq!(std::mem::offset_of!(McCampaignEventV2, source_slot), 24);
+        assert_eq!(
+            std::mem::offset_of!(McCampaignEconomyEventV2, primary_id),
+            28
+        );
+        assert_eq!(std::mem::offset_of!(McCampaignEconomyEventV2, value_0), 40);
         assert_eq!(
             std::mem::offset_of!(McCampaignStepSnapshotV2, dispatch_hash),
             40
@@ -15201,6 +15538,25 @@ mod tests {
     }
 
     #[test]
+    fn campaign_economy_event_kind_is_publicly_bound() {
+        let event = Level2DispatchEvent::Economy {
+            pass: 2,
+            source_slot: 157,
+            event: Level2EconomyEvent::ManaSphereSpawned {
+                sphere_id: 157,
+                source_entity_index: 39,
+                mana: 321,
+            },
+        };
+        let snapshot = campaign_event_snapshot(4, 7, &event);
+        assert_eq!(MC_CAMPAIGN_EVENT_ECONOMY, 10);
+        assert_eq!(snapshot.kind, MC_CAMPAIGN_EVENT_ECONOMY);
+        assert_eq!(snapshot.family, 1);
+        assert_eq!(snapshot.source_slot, 157);
+        assert_eq!(snapshot.ordinal, 7);
+    }
+
+    #[test]
     fn campaign_api_selects_level_profiles_and_preserves_old_level1_values() {
         let (level1_package, level1_closure) = fixture_paths();
         let package = level1_package.to_string_lossy();
@@ -15381,7 +15737,7 @@ mod tests {
         );
         assert_eq!(level2_info.active_entity_count, 114);
         assert_eq!(level2_info.player_count, 8);
-        assert_eq!(level2_info.reset_state_hash, 0xb4aa_5dbe_57f5_cf46);
+        assert_eq!(level2_info.reset_state_hash, 0xe716_9c09_4e93_6240);
         let mut level2_players = [McCampaignPlayerSnapshotV2::default(); 8];
         assert_eq!(
             mc_native_campaign_players_copy(
@@ -15604,6 +15960,30 @@ mod tests {
                 .iter()
                 .all(|event| event.abi_version == MC_NATIVE_ABI_VERSION)
         );
+        let mut economy_events = [McCampaignEconomyEventV2::default(); 1024];
+        let mut economy_event_count = 0;
+        assert_eq!(
+            mc_native_campaign_economy_events(
+                handle,
+                economy_events.as_mut_ptr(),
+                economy_events.len() as u32,
+                struct_size::<McCampaignEconomyEventV2>(),
+                &raw mut economy_event_count,
+            ),
+            MC_STATUS_OK
+        );
+        for row in &economy_events[..economy_event_count as usize] {
+            assert_eq!(row.abi_version, MC_NATIVE_ABI_VERSION);
+            assert_eq!(row.generation, snapshot.generation);
+            let generic = events
+                .get(row.ordinal as usize)
+                .expect("economy sidecar ordinal joins generic event stream");
+            assert_eq!(generic.kind, MC_CAMPAIGN_EVENT_ECONOMY);
+            assert_eq!(generic.pass, row.pass);
+            assert_eq!(generic.family, row.family);
+            assert_eq!(generic.source_slot, row.source_slot);
+            assert!((1..=15).contains(&row.code));
+        }
         let mut canonical_events = Sha256::new();
         canonical_events.update(sim_core::mission_content::REMC2_SPEC_COMMIT.as_bytes());
         canonical_events.update(b"level2-campaign-events-v1");
@@ -15684,6 +16064,136 @@ mod tests {
             MC_STATUS_OK
         );
         assert_eq!(mc_native_session_destroy(level1_handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn level2_campaign_economy_sidecar_copies_typed_payload_without_touching_legacy_rows() {
+        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        let package = level2_package.to_string_lossy();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 2,
+            internal_level: 1,
+            map_type: 0,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut handle = 0;
+        assert_eq!(
+            mc_native_campaign_session_open(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                &raw const selection,
+                &raw mut handle,
+            ),
+            MC_STATUS_OK
+        );
+        let (sphere_id, carrier_slot) = with_campaign_session_mut(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            let sphere_id = reset
+                .economy_mut()
+                .spawn_mana_sphere_from_death(901, Position::default(), 0, 0x3456, 111, 222)
+                .expect("test sphere allocation");
+            let carrier_slot = reset
+                .economy_mut()
+                .spawn_mana_carrier(Position::default(), 222, sphere_id)
+                .expect("test carrier allocation");
+            Ok((sphere_id, carrier_slot))
+        })
+        .expect("install source-derived carrier target before outer turn");
+
+        let input_command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            flags: 1,
+            requested_spell: MC_REQUESTED_SPELL_NONE,
+            ..McCommandV2::default()
+        };
+        let input = McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            command: input_command,
+            player_x: 123,
+            player_y: 456,
+            player_z: 7,
+            ..McCampaignStepInputV2::default()
+        };
+        let mut snapshot = McCampaignStepSnapshotV2::default();
+        let mut generic_events = [McCampaignEventV2::default(); 1024];
+        let mut generic_count = 0;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                generic_events.as_mut_ptr(),
+                generic_events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut generic_count,
+            ),
+            MC_STATUS_OK
+        );
+        let mut sidecars = [McCampaignEconomyEventV2::default(); 1024];
+        let mut sidecar_count = 0;
+        assert_eq!(
+            mc_native_campaign_economy_events(
+                handle,
+                sidecars.as_mut_ptr(),
+                sidecars.len() as u32,
+                struct_size::<McCampaignEconomyEventV2>(),
+                &raw mut sidecar_count,
+            ),
+            MC_STATUS_OK
+        );
+        let row = sidecars[..sidecar_count as usize]
+            .iter()
+            .find(|row| {
+                row.code == MC_CAMPAIGN_ECONOMY_MANA_SPHERE_COLLECTED && row.primary_id == sphere_id
+            })
+            .copied()
+            .expect("source carrier collection is published through sidecar");
+        assert_eq!(row.generation, snapshot.generation);
+        assert_eq!(row.family, 1);
+        assert_eq!(row.source_slot, carrier_slot);
+        assert_eq!(row.secondary_id, u32::from(carrier_slot));
+        assert_eq!(row.entity_0, 0);
+        assert_eq!(row.value_0, 111);
+        let generic = generic_events
+            .get(row.ordinal as usize)
+            .expect("sidecar ordinal is in generic event stream");
+        assert_eq!(generic.kind, MC_CAMPAIGN_EVENT_ECONOMY);
+        assert_eq!(generic.source_slot, row.source_slot);
+
+        assert_eq!(
+            mc_native_campaign_economy_events(
+                handle,
+                sidecars.as_mut_ptr(),
+                sidecars.len() as u32,
+                struct_size::<McCampaignEconomyEventV2>() - 1,
+                &raw mut sidecar_count,
+            ),
+            MC_STATUS_STRUCT_TOO_SMALL
+        );
+        assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        sidecar_count = 99;
+        assert_eq!(
+            mc_native_campaign_economy_events(
+                handle,
+                sidecars.as_mut_ptr(),
+                sidecars.len() as u32,
+                struct_size::<McCampaignEconomyEventV2>(),
+                &raw mut sidecar_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(sidecar_count, 0, "reset clears the retained sidecar stream");
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
     }
 
     #[test]
@@ -16120,9 +16630,12 @@ _Static_assert(sizeof(McEntitySnapshotV2) == 52, "McEntitySnapshotV2 size");
 _Static_assert(sizeof(McCampaignSelectionV2) == 32, "McCampaignSelectionV2 size");
 _Static_assert(sizeof(McCampaignStepInputV2) == 80, "McCampaignStepInputV2 size");
 _Static_assert(sizeof(McCampaignEventV2) == 48, "McCampaignEventV2 size");
+_Static_assert(sizeof(McCampaignEconomyEventV2) == 64, "McCampaignEconomyEventV2 size");
 _Static_assert(sizeof(McCampaignStepSnapshotV2) == 112, "McCampaignStepSnapshotV2 size");
 _Static_assert(offsetof(McCampaignStepInputV2, command) == 16, "campaign step command offset");
 _Static_assert(offsetof(McCampaignEventV2, source_slot) == 24, "campaign event source offset");
+_Static_assert(offsetof(McCampaignEconomyEventV2, primary_id) == 28, "campaign economy primary offset");
+_Static_assert(offsetof(McCampaignEconomyEventV2, value_0) == 40, "campaign economy value offset");
 _Static_assert(offsetof(McCampaignStepSnapshotV2, dispatch_hash) == 40, "campaign step hash offset");
 _Static_assert(sizeof(McCampaignWorldInfoV2) == 64, "McCampaignWorldInfoV2 size");
 _Static_assert(sizeof(McCampaignPlayerSnapshotV2) == 48, "McCampaignPlayerSnapshotV2 size");
