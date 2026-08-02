@@ -19,7 +19,7 @@ T14 run produced:
 
 | Internal profile | Frame bytes | Graph memory | p95 CPU | Reset deterministic | Current status |
 | --- | ---: | ---: | ---: | --- | --- |
-| 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; owner profile rerender and persistent Unity upload proven across a 32-frame reset/replay sequence; scenario qualification pending |
+| 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; owner profile rerender, persistent Unity upload, and owner idle/town/combat/flight/death-restart route smoke pass |
 | 960x720 | 691,200 | 2,768,896 | 26.11 ms | yes | candidate; owner profile rerender/upload and 64-frame two-pass reset replay now pass; traced owner terrain raster was ~1.52 s/frame, so real-time/GPU/scenario promotion remains pending |
 | 1280x960 | 1,228,800 | 4,919,296 | 45.64 ms | yes | rejected by current CPU budget |
 
@@ -48,9 +48,16 @@ real-time or player-facing GPU/scenario support. The earlier bounded failure
 record remains at `qualification/classic-hd-owner-route-960x720-sequence-failure.json`
 as a historical finding and is explicitly superseded by the passing rerun.
 
+The mandatory 640x480 owner scenario receipt is recorded in
+`qualification/classic-hd-owner-route-scenarios.json`. It proves 49 persistent
+indexed uploads across idle, moving town, combat projectile/impact rows,
+high-speed flight, lethal player state, and tick-0 restart. It is still a
+route-observation receipt rather than a visual-corpus, sustained-GPU, or
+completion/window qualification.
+
 Remaining GFX-O evidence is intentionally explicit in the JSON matrix:
-idle/town/combat/flight/restart/completion/fullscreen/alt-tab/asset-fallback,
-20-minute allocation growth, and owner-bound reflection/lighting/blur route
-cases still require the private owner-data Unity capture and preserved
-qualification artifacts. The invalid-config case is covered by the
-launcher/settings focused tests.
+completion/fullscreen/alt-tab/asset-fallback, 20-minute allocation growth,
+960x720 owner/GPU promotion, visual corpus review, and the complete
+owner-bound reflection/lighting/blur matrix still require the private
+owner-data Unity capture and preserved qualification artifacts. The
+invalid-config case is covered by the launcher/settings focused tests.

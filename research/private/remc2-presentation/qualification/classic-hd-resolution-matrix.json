@@ -7,6 +7,13 @@
   "owner_payload_embedded": false,
   "unity_gpu_and_owner_route": "pending-owner-lab-capture",
   "owner_route_binding_status": "640x480 and 960x720 profile-sized source compositor rerender and Unity upload proven across 32-frame reset/replay sequences; broader owner/GPU matrix remains pending",
+  "owner_route_scenario": {
+    "artifact": "qualification/classic-hd-owner-route-scenarios.json",
+    "profile": "hd-640x480",
+    "frame_count": 49,
+    "status": "idle-town-combat-flight-death-restart-route-pass; broader owner/GPU/window/corpus qualification remains pending",
+    "owner_payload_embedded": false
+  },
   "owner_route_smoke": {
     "artifact": "qualification/classic-hd-owner-route-smoke.json",
     "profile": "classic-hd-640x480",
@@ -56,7 +63,7 @@
       "p95_cpu_ns": 10949142,
       "deterministic_reset": true,
       "status": "supported-cpu-and-deterministic",
-      "unity_gpu_copy_status": "640x480 profile rerender and persistent Unity upload proven across 32-frame reset/replay sequence; sustained scenario capture pending"
+      "unity_gpu_copy_status": "640x480 profile rerender, persistent Unity upload, and owner idle/town/combat/flight/death-restart route smoke pass; sustained GPU/window/corpus qualification remains pending"
     },
     {
       "profile": "classic-hd-960x720",
@@ -87,11 +94,11 @@
     { "window_width": 2560, "window_height": 1440, "internal_profile": "classic-hd-960x720" }
   ],
   "route_cases": {
-    "idle": "pending-owner-lab-capture",
-    "town": "pending-owner-lab-capture",
-    "combat": "pending-owner-lab-capture",
-    "high_speed_flight": "pending-owner-lab-capture",
-    "death_restart": "pending-owner-lab-capture",
+    "idle": "owner-hd-640x480-scenario-pass",
+    "town": "owner-hd-640x480-scenario-pass",
+    "combat": "owner-hd-640x480-scenario-pass",
+    "high_speed_flight": "owner-hd-640x480-scenario-pass",
+    "death_restart": "owner-hd-640x480-scenario-pass",
     "completion_postgame": "pending-owner-lab-capture",
     "fullscreen_window_alt_tab": "pending-owner-lab-capture",
     "asset_tier_fallback": "pending-owner-lab-capture",

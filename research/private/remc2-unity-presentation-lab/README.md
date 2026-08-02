@@ -135,6 +135,27 @@ completion, window/alt-tab, asset-fallback, and sustained GPU cases remain
 separate owner-lab gates until their actual states and visual review artifacts
 are captured.
 
+The owner-bound Classic HD scenario smoke adds authoritative route observations
+at the mandatory 640x480 profile:
+
+```text
+Unity -batchmode -force-glcore \
+  -projectPath research/private/remc2-unity-presentation-lab \
+  -executeMethod MagicCarpet.PresentationLab.Editor.CreatePresentationLabAssets.RunOwnerClassicHdScenarioSmoke \
+  -mc-presentation-mode classic-hd \
+  -mc-classic-profile hd-640x480 \
+  -mc-package /absolute/path/to/level1-export-m \
+  -mc-closure /absolute/path/to/level1-asset-closure.json \
+  -mc-asset-cache /absolute/path/to/level1-unity-asset-cache
+```
+
+The receipt is
+`research/private/remc2-presentation/qualification/classic-hd-owner-route-scenarios.json`.
+It proves 49 persistent indexed uploads across idle, moving town, combat with
+projectile/impact rows, high-speed flight, lethal player state, and tick-0
+restart. This is route and Rust-observation evidence only; it does not promote
+the profile to sustained GPU support or capture a visual corpus.
+
 The owner-bound Unity Enhanced sequence smoke is also explicit:
 
 ```text

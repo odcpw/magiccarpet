@@ -32,6 +32,9 @@ ENHANCED_OWNER_SEQUENCE_ARTIFACT = Path(__file__).with_name(
 ENHANCED_OWNER_SCENARIO_ARTIFACT = Path(__file__).with_name(
     "unity-enhanced-owner-route-scenarios.json"
 )
+CLASSIC_HD_OWNER_SCENARIO_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-route-scenarios.json"
+)
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -229,6 +232,58 @@ def validate_enhanced_owner_scenario_artifact(
     return errors
 
 
+def validate_classic_hd_owner_scenario_artifact(
+    path: Path = CLASSIC_HD_OWNER_SCENARIO_ARTIFACT,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"Classic HD owner scenario artifact read failed: {error}"]
+
+    if artifact.get("schema_version") != 1:
+        errors.append("Classic HD owner scenario schema_version must be 1")
+    if artifact.get("kind") != "classic-hd-owner-route-scenarios/v1":
+        errors.append("Classic HD owner scenario artifact kind is wrong")
+    if artifact.get("mode") != "classic-hd" or artifact.get("native_abi") != "sim-capi-v2":
+        errors.append("Classic HD owner scenario must identify the sim-capi-v2 route")
+    if artifact.get("profile") != "hd-640x480":
+        errors.append("Classic HD owner scenario must identify the hd-640x480 profile")
+    if artifact.get("internal_width") != 640 or artifact.get("internal_height") != 480:
+        errors.append("Classic HD owner scenario extent must be 640x480")
+    if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
+        errors.append("Classic HD owner scenario must keep owner inputs external")
+    if artifact.get("scenario_frame_count") != 49 or artifact.get("upload_count") != 49:
+        errors.append("Classic HD owner scenario must retain 49 frame/upload receipts")
+
+    routes = artifact.get("routes")
+    required_routes = {"idle", "town", "combat", "high_speed_flight", "death_restart"}
+    if not isinstance(routes, dict) or not required_routes.issubset(routes):
+        errors.append("Classic HD owner scenario is missing a required route")
+    else:
+        for route in sorted(required_routes):
+            if routes[route].get("status") != "pass":
+                errors.append(f"Classic HD owner scenario route {route} is not pass")
+        if routes["town"].get("authoritative_camera_moved") is not True:
+            errors.append("Classic HD town scenario must observe authoritative camera movement")
+        if routes["combat"].get("projectile_rows", 0) <= 0 or routes["combat"].get("impact_rows", 0) <= 0:
+            errors.append("Classic HD combat scenario must observe projectile and impact rows")
+        if routes["high_speed_flight"].get("max_actual_speed", 0) <= 0:
+            errors.append("Classic HD flight scenario must observe positive authoritative speed")
+        if routes["death_restart"].get("death_observed") is not True or routes["death_restart"].get("restart_tick") != 0:
+            errors.append("Classic HD death/restart scenario must observe death and tick-0 reset")
+
+    if artifact.get("night_lighting") is not True or artifact.get("reflection") is not True:
+        errors.append("Classic HD owner scenario must retain night lighting and reflection")
+    for field in ("index_route_hash", "provenance_route_hash", "last_receipt_hash", "native_plugin_sha256", "log_sha256"):
+        if not isinstance(artifact.get(field), str) or not artifact[field]:
+            errors.append(f"Classic HD owner scenario is missing {field}")
+    status = str(artifact.get("qualification_status", ""))
+    if "remain open" not in status:
+        errors.append("Classic HD owner scenario must keep unqualified gates explicit")
+    return errors
+
+
 def validate_profile_sequence_failure_artifact(
     path: Path = PROFILE_960_SEQUENCE_FAILURE_ARTIFACT,
 ) -> list[str]:
@@ -342,6 +397,11 @@ def verify() -> dict[str, Any]:
         checks,
     )
     _validator_result(
+        "owner-bound Classic HD scenario artifact",
+        validate_classic_hd_owner_scenario_artifact,
+        checks,
+    )
+    _validator_result(
         "owner-bound Classic HD 960x720 sequence artifact",
         lambda: validate_sequence_artifact(PROFILE_960_SEQUENCE_ARTIFACT, "classic-hd-960x720", 960, 720),
         checks,
@@ -372,8 +432,15 @@ def verify() -> dict[str, Any]:
         open_gates.append("visual corpora are still placeholder-not-captured")
     if matrix.get("unity_gpu_and_owner_route") == "pending-owner-lab-capture":
         open_gates.append("owner/GPU matrix remains pending-owner-lab-capture")
-    if any(value == "pending-owner-lab-capture" for value in matrix.get("route_cases", {}).values()):
-        open_gates.append("Classic HD town/combat/flight/restart/window scenario routes remain pending")
+    pending_route_cases = [
+        name
+        for name, value in matrix.get("route_cases", {}).items()
+        if value == "pending-owner-lab-capture"
+    ]
+    if pending_route_cases:
+        open_gates.append(
+            "Classic HD remaining owner route cases remain pending: " + ", ".join(pending_route_cases)
+        )
 
     status = "PASS" if all(check["passed"] for check in checks) else "FAIL"
     return {
