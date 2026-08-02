@@ -3142,8 +3142,8 @@ pub struct Level2EconomyState {
     free_slots: Vec<u16>,
     baseline_slot_rng: BTreeMap<u16, u16>,
     slot_rng: BTreeMap<u16, u16>,
-    baseline_global_rng: u16,
-    global_rng: u16,
+    baseline_global_rng: u32,
+    global_rng: u32,
     baseline_source_rng: BTreeMap<u16, u16>,
     source_rng: BTreeMap<u16, u16>,
     baseline_source_owner: BTreeMap<u16, u16>,
@@ -3294,8 +3294,8 @@ impl Level2EconomyState {
             free_slots,
             baseline_slot_rng: slot_rng.clone(),
             slot_rng,
-            baseline_global_rng: global_rng as u16,
-            global_rng: global_rng as u16,
+            baseline_global_rng: global_rng,
+            global_rng,
             baseline_source_rng: BTreeMap::new(),
             source_rng: BTreeMap::new(),
             baseline_source_owner: source_owner.clone(),
@@ -3352,7 +3352,16 @@ impl Level2EconomyState {
     fn new_event_rng(&self, source_slot: u16) -> u16 {
         // Pinned remc2 NewEvent_4A050: rand_0x14 is the source slot plus the
         // global D41A0.rand_0x8 stream, not the inactive row's stale RNG.
-        source_slot.wrapping_add(self.global_rng)
+        source_slot.wrapping_add(self.global_rng as u16)
+    }
+
+    /// Advance the source-global `D41A0.rand_0x8` stream once for each
+    /// `ApplyEvents_498A0` invocation. The source keeps this as a full
+    /// 32-bit value; NewEvent consumes its low word only after adding the
+    /// allocated source slot. Keeping the full stream is required so the
+    /// next source pass does not silently repeat after a high-word carry.
+    fn advance_global_rng(&mut self) {
+        self.global_rng = level2_next_rng32(self.global_rng);
     }
 
     fn release_slot(&mut self, slot: u16, entity_rng: Option<u16>) {
@@ -5706,6 +5715,10 @@ fn level2_next_rng16(seed: u16) -> u16 {
     seed.wrapping_mul(9_377).wrapping_add(9_439)
 }
 
+fn level2_next_rng32(seed: u32) -> u32 {
+    seed.wrapping_mul(9_377).wrapping_add(9_439)
+}
+
 impl Level2SharedSpellResetSession {
     fn from_parts(
         terrain: SessionTerrain,
@@ -6801,6 +6814,7 @@ impl Level2ResetSession {
     fn step_level2_source_pass(&mut self, pass: u8) {
         let player_entity_index = self.state.entity_index;
         let player_position = self.state.position;
+        self.economy.advance_global_rng();
         self.synchronize_level2_terrain();
         let mut routes = LEVEL2_SHARED_SPELL_PICKUP_SLOTS
             .into_iter()
@@ -15322,6 +15336,83 @@ mod tests {
                     | Level2DispatchEvent::Dolmen { pass: 0, .. }
             )
         }));
+    }
+
+    #[test]
+    fn level_two_economy_global_new_event_rng_advances_per_source_pass() {
+        // Pinned remc2 Events.cpp:419-420 (ApplyEvents_498A0) advances the
+        // full D41A0.rand_0x8 stream once before walking source rows. Each
+        // NewEvent_4A050 then seeds rand_0x14 with the allocated slot plus
+        // the low word of that pass-global value.
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("global NewEvent RNG session");
+        let baseline_global = session.economy().global_rng;
+        let changed_global = 0xabcd_1234_u32;
+        session.economy_mut().global_rng = changed_global;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let pass_one_global = level2_next_rng32(changed_global);
+        assert_eq!(session.economy().global_rng, pass_one_global);
+        let first_slot = session
+            .economy()
+            .free_slots
+            .last()
+            .copied()
+            .expect("first free source slot");
+        let first_id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(901, Position::default(), 0, 0x1111, 321, 111)
+            .expect("first NewEvent allocation");
+        assert_eq!(first_id, u32::from(first_slot));
+        let first_seed = first_slot.wrapping_add(pass_one_global as u16);
+        let first_rng = level2_next_rng16(first_seed);
+        let first_speed_rng = level2_next_rng16(first_rng);
+        assert_eq!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.id == first_id)
+                .expect("first sphere")
+                .entity_rng,
+            first_speed_rng
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let pass_two_global = level2_next_rng32(pass_one_global);
+        assert_eq!(session.economy().global_rng, pass_two_global);
+        let second_slot = session
+            .economy()
+            .free_slots
+            .last()
+            .copied()
+            .expect("second free source slot");
+        let second_id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(902, Position::default(), 0, 0x2222, 654, 111)
+            .expect("second NewEvent allocation");
+        assert_eq!(second_id, u32::from(second_slot));
+        let second_seed = second_slot.wrapping_add(pass_two_global as u16);
+        let second_rng = level2_next_rng16(second_seed);
+        let second_speed_rng = level2_next_rng16(second_rng);
+        assert_eq!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.id == second_id)
+                .expect("second sphere")
+                .entity_rng,
+            second_speed_rng
+        );
+        assert_ne!(pass_one_global, pass_two_global);
+
+        session.reset();
+        assert_eq!(session.economy().global_rng, baseline_global);
+        assert!(session.economy().spheres().is_empty());
     }
 
     #[test]
