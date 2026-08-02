@@ -1345,7 +1345,8 @@ impl GoatFamily {
                     self.config.allowed_material_mask,
                     world,
                 ) || terrain_slope_measure(candidate, world)
-                    >= i32::from(self.config.terrain_threshold));
+                    >= i32::from(self.config.terrain_threshold)
+                    || world.cave_collision_blocked(candidate));
             if blocked {
                 self.goats[family_index].control_flags |= 0x0004_0000;
                 // `sub_1B8C0` commits each failed retry heading before it
@@ -2314,6 +2315,26 @@ mod tests {
 
         fn angle_flags(&self, _tile: Tile) -> u8 {
             0
+        }
+    }
+
+    struct CaveBoundaryWorld;
+
+    impl FlightWorld for CaveBoundaryWorld {
+        fn ground_height(&self, _position: Position) -> i16 {
+            0
+        }
+
+        fn ceiling_height(&self, _position: Position) -> Option<i16> {
+            Some(2_048)
+        }
+
+        fn material_mask(&self, _position: Position) -> u32 {
+            4
+        }
+
+        fn angle_flags(&self, _tile: Tile) -> u8 {
+            8
         }
     }
 
@@ -3663,5 +3684,28 @@ mod tests {
         );
         assert_eq!(family.goats[primary_index].life, -1);
         assert_ne!(family.goats[primary_index].control_flags & 0x0004_0000, 0);
+    }
+
+    #[test]
+    fn action11_rejects_cave_angle_bit_eight_candidates() {
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        family.goats[primary_index].position = Position {
+            x: 512,
+            y: 512,
+            z: 0,
+        };
+        family.goats[primary_index].yaw = 512;
+        family.goats[primary_index].actual_speed = 1_000;
+        family.move_action11_source(primary_index, &CaveBoundaryWorld);
+        assert_eq!(family.goats[primary_index].life, -1);
+        assert_eq!(
+            family.goats[primary_index].yaw,
+            source_retry_headings(512)[3]
+        );
     }
 }

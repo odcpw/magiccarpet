@@ -1415,6 +1415,19 @@ pub trait FlightWorld {
         }
     }
     fn angle_flags(&self, tile: Tile) -> u8;
+
+    /// Source `sub_102D0(..., 1)` rejects cave angle-bit-8 cells while
+    /// probing a movement candidate. World implementations may refine this
+    /// with their entity/cave topology; the terrain-only default keeps the
+    /// shared seam backward-compatible for non-cave worlds.
+    fn cave_collision_blocked(&self, position: Position) -> bool {
+        self.ceiling_height(position).is_some()
+            && self.angle_flags(Tile {
+                x: position.x.to_be_bytes()[0],
+                y: position.y.to_be_bytes()[0],
+            }) & 8
+                != 0
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
