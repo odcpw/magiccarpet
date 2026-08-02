@@ -27,10 +27,7 @@ use sim_core::{
         ClassicHdBlurBranch, ClassicHdBlurInput, ClassicHdGraphError, ClassicHdGraphInput,
         ClassicHdRenderGraph, ClassicHdWorldReceipt,
     },
-    classic_hd_sprites::{
-        ClassicHdSpritePass, ClassicHdSpritePlan, build_classic_hd_sprite_plan,
-        rasterize_classic_hd_sprite_pass,
-    },
+    classic_hd_sprites::{ClassicHdSpritePlan, build_classic_hd_sprite_plan},
     classic_hd_terrain::{ClassicHdSkyBank, ClassicHdTerrainResources, build_classic_hd_terrain},
     combat_tmap::{
         COMBAT_STATIC_EXTENTS, COMBAT_STATIC_SELECTORS, COMBAT_STATIC_SHA256, CombatTmapBank,
@@ -133,11 +130,13 @@ use sim_core::{
         LEVEL1_SKY_BYTES, LEVEL1_TERRAIN_ATLAS_BYTES, LEVEL1_VIEW_HEIGHT, LEVEL1_VIEW_PIXELS,
         LEVEL1_VIEW_WIDTH, Level1CastleRootRender, Level1FrozenActorRender, Level1TerrainFrame,
         Level1TerrainFrameCamera, Level1TerrainFrameResources, Level1WorldFrameResources,
-        render_level1_source_world_frame, render_level1_source_world_map_frame_composed,
-        render_level1_terrain_frame, render_level1_world_frame,
+        raster_level1_source_world_sprites, render_level1_source_world_frame,
+        render_level1_source_world_map_frame_composed, render_level1_terrain_frame,
+        render_level1_world_frame,
     },
     terrain_grid::{OUTDOOR_GRID_VERTICES, OutdoorGridInput, outdoor_grid},
     terrain_presentation::outdoor_terrain_pnt5,
+    terrain_reflection::OutdoorProjection,
     villager::{VILLAGER_CLASS, VILLAGER_MODEL, VillagerState},
 };
 
@@ -3402,39 +3401,103 @@ impl SessionRecord {
             self.classic_hd_sprite_plan = Some(plan);
             return Err(ClassicHdGraphError(error.to_string()));
         }
-        if !plan.legacy.is_empty() {
-            let legacy_count = plan.legacy.len();
-            self.classic_hd_sprite_plan = Some(plan);
-            return Err(ClassicHdGraphError(format!(
-                "Classic HD owner render has {legacy_count} legacy sprite families without a profile-sized adapter"
-            )));
-        }
 
-        for (pass, submissions) in [
-            (ClassicHdSpritePass::Reflection, &plan.reflections),
-            (ClassicHdSpritePass::Shadow, &plan.shadows),
-            (ClassicHdSpritePass::Primary, &plan.primary),
-        ] {
-            for submission in submissions {
-                rasterize_classic_hd_sprite_pass(
-                    profile,
-                    pass,
-                    submission,
-                    source_bank,
-                    writer.indices_mut(),
-                    &assets.tablesn,
-                )
-                .map_err(|error| ClassicHdGraphError(error.to_string()))?;
+        let tmap_clocks = self.selector_frames.as_ref().ok_or_else(|| {
+            ClassicHdGraphError("Classic HD owner render has no Goat TMAP clocks".to_owned())
+        })?;
+        let archer_tmap_clocks = self.archer_selector_frames.as_ref().ok_or_else(|| {
+            ClassicHdGraphError("Classic HD owner render has no Archer TMAP clocks".to_owned())
+        })?;
+        let firefly_tmap_clocks = self.firefly_selector_frames.as_ref().ok_or_else(|| {
+            ClassicHdGraphError("Classic HD owner render has no Firefly TMAP clocks".to_owned())
+        })?;
+        let villager_tmap_clocks = self.villager_selector_frames.as_ref().ok_or_else(|| {
+            ClassicHdGraphError("Classic HD owner render has no villager TMAP clocks".to_owned())
+        })?;
+        let fireball_tmap_clock = self.fireball_selector_frame.as_ref().ok_or_else(|| {
+            ClassicHdGraphError("Classic HD owner render has no Fireball TMAP clock".to_owned())
+        })?;
+        let possession_tmap_clock = self.possession_selector_frame.as_ref().ok_or_else(|| {
+            ClassicHdGraphError("Classic HD owner render has no Possession TMAP clock".to_owned())
+        })?;
+        let castle_tmap_clock = self.castle_selector_frame.as_ref().ok_or_else(|| {
+            ClassicHdGraphError("Classic HD owner render has no Castle TMAP clock".to_owned())
+        })?;
+        let planes = self.terrain.planes();
+        let terrain_projection = terrain.projection;
+        let projection = OutdoorProjection {
+            scale: terrain_projection.scale,
+            pitch_offset: terrain_projection.pitch_offset,
+            roll: terrain_projection.roll,
+            center_x: terrain_projection.center_x,
+            center_y: terrain_projection.center_y,
+            viewport_width: terrain_projection.viewport_width,
+            viewport_height: terrain_projection.viewport_height,
+        };
+        let sprite_receipt = match raster_level1_source_world_sprites(
+            inputs.camera,
+            projection,
+            Level1TerrainFrameResources {
+                terrain_types: &planes.terrain_types,
+                ground_heights: &planes.ground_heights,
+                shading: &planes.shading,
+                angles: &planes.angles,
+                terrain_atlas: &assets.terrain_atlas,
+                tablesn: &assets.tablesn,
+                sky: &assets.sky,
+            },
+            Level1WorldFrameResources {
+                local_player_entity_index: inputs.local_player_entity_index,
+                goats: &inputs.goats,
+                frozen_actors: &inputs.frozen_actors,
+                ambient_entities: &inputs.ambient_entities,
+                frozen_actor_tmap_bank: Some(&assets.frozen_actor_tmap_bank),
+                villager_tmap_clocks: Some(villager_tmap_clocks),
+                mission_actors: &inputs.mission_actors,
+                dynamic_residents: &inputs.dynamic_residents,
+                mission_segments: &inputs.mission_segments,
+                castle_root: inputs.castle_root,
+                mana_spheres: &inputs.mana_spheres,
+                mana_carrier: inputs.mana_carrier.as_ref(),
+                map_chains: &inputs.map_chains,
+                goat_tmap_clocks: tmap_clocks,
+                archer_tmap_bank: &assets.archer_tmap_bank,
+                archer_tmap_clocks,
+                firefly_tmap_bank: &assets.firefly_tmap_bank,
+                firefly_tmap_clocks,
+                projectiles: &inputs.projectiles,
+                impacts: &inputs.impacts,
+                possessed_buildings: &inputs.possessed_buildings,
+                combat_tmap_bank: &assets.combat_tmap_bank,
+                static_world_tmap_bank: &assets.static_world_tmap_bank,
+                economy_tmap_bank: &assets.economy_tmap_bank,
+                fireball_tmap_clock,
+                possession_tmap_clock,
+                castle_tmap_clock,
+                particle_parameters: &self.world.presentation().particles,
+                source_slots: &inputs.source_slots,
+                night: inputs.night,
+            },
+            SourceSpriteWorldResources {
+                dispositions: &dispositions,
+                tmap_bank: source_bank,
+            },
+            writer.indices_mut(),
+        ) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.classic_hd_sprite_plan = Some(plan);
+                return Err(ClassicHdGraphError(error.to_string()));
             }
-        }
+        };
 
         let receipt = ClassicHdWorldReceipt {
             world_hash: byte_hash(writer.indices()),
             provenance_hash: byte_hash(writer.provenance()),
             terrain_rendered: true,
             typed_sprites_rendered: true,
-            reflection_pass_rendered: true,
-            shadow_pass_rendered: true,
+            reflection_pass_rendered: sprite_receipt.reflection_pass_evaluated,
+            shadow_pass_rendered: sprite_receipt.shadow_pass_evaluated,
             water_pass_rendered: false,
         };
         self.classic_hd_sprite_plan = Some(plan);
