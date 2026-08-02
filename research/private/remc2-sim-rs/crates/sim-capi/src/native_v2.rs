@@ -9700,7 +9700,12 @@ fn campaign_event_snapshot(
     ordinal: usize,
     event: &Level2DispatchEvent,
 ) -> McCampaignEventV2 {
-    let (pass, kind, family, flags, source_slot) = event.campaign_projection();
+    let (pass, projected_kind, family, flags, source_slot) = event.campaign_projection();
+    let kind = if matches!(event, Level2DispatchEvent::Economy { .. }) {
+        MC_CAMPAIGN_EVENT_ECONOMY
+    } else {
+        projected_kind
+    };
     McCampaignEventV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
         struct_size: struct_size::<McCampaignEventV2>(),
