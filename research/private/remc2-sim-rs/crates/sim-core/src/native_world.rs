@@ -7711,6 +7711,8 @@ pub struct Level2OrdinaryResetSession {
     dolmens: Box<[Level2Dolmen]>,
     baseline_players: Box<[EntitySnapshot]>,
     players: Box<[EntitySnapshot]>,
+    baseline_population_census: u32,
+    population_census: u32,
 }
 
 impl Level2OrdinaryResetSession {
@@ -7755,6 +7757,14 @@ impl Level2OrdinaryResetSession {
             .cloned()
             .collect::<Vec<_>>()
             .into_boxed_slice();
+        let population_census = u32::try_from(
+            villagers
+                .villagers()
+                .iter()
+                .filter(|villager| villager.active)
+                .count(),
+        )
+        .expect("Level 2 ordinary population census fits u32");
         Ok(Self {
             baseline_terrain: terrain.clone(),
             terrain,
@@ -7766,6 +7776,8 @@ impl Level2OrdinaryResetSession {
             dolmens,
             baseline_players: player_entities.clone(),
             players: player_entities,
+            baseline_population_census: population_census,
+            population_census,
         })
     }
 
@@ -7796,12 +7808,30 @@ impl Level2OrdinaryResetSession {
     pub fn reset_hash(&self) -> String {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
+        hasher.update(self.population_census.to_le_bytes());
         hasher
             .update(format!("{:?}{:?}{:?}", self.houses, self.villagers, self.dolmens).as_bytes());
         for entity in &self.players {
             hasher.update(entity.record_bytes());
         }
         format!("{:x}", hasher.finalize())
+    }
+
+    /// Source `sub_1B8C0` decrements the class-5 population census when a
+    /// movement attempt exhausts all headings and kills the resident. Keep
+    /// this counter in the reset-scoped ordinary package; the Level 2 mission
+    /// allocator is a separate, later sink and must not be inferred here.
+    #[must_use]
+    pub const fn population_census(&self) -> u32 {
+        self.population_census
+    }
+
+    fn apply_villager_effects(&mut self, effects: &[VillagerStepEffect]) {
+        for effect in effects {
+            if matches!(effect, VillagerStepEffect::PopulationCensusDecrement { .. }) {
+                self.population_census = self.population_census.saturating_sub(1);
+            }
+        }
     }
 
     pub fn step_house_action_52(&mut self, source_slot: u16) -> Vec<HouseStepEvent> {
@@ -7878,6 +7908,7 @@ impl Level2OrdinaryResetSession {
         self.villagers = self.baseline_villagers.clone();
         self.dolmens = self.baseline_dolmens.clone();
         self.players = self.baseline_players.clone();
+        self.population_census = self.baseline_population_census;
     }
 }
 
@@ -8671,6 +8702,7 @@ impl Level2ResetSession {
                 }
                 3 => {
                     let effects = self.ordinary.step_villager_action_105(source_slot);
+                    self.ordinary.apply_villager_effects(&effects);
                     // `KillEntity_1C930` allocates the class-10/model-1
                     // death burst before disabling the dying villager's
                     // source row. Keep the typed villager source id for this
@@ -17547,6 +17579,7 @@ mod tests {
         assert_eq!(first.ordinary().houses().len(), 22);
         assert_eq!(first.ordinary().villagers().len(), 29);
         assert_eq!(first.ordinary().dolmens().len(), 3);
+        assert_eq!(first.ordinary().population_census(), 29);
         assert_eq!(
             first
                 .ordinary()
@@ -17601,6 +17634,21 @@ mod tests {
             first.ordinary().villagers()[0].control_flags & 0x0000_0400,
             0
         );
+        // Combat death is not the movement-exhaustion branch that decrements
+        // the source class-5 census; the counter remains at reset value.
+        assert_eq!(first.ordinary().population_census(), 29);
+
+        // `move_villager` emits this exact effect after all four headings are
+        // blocked. Feed that source-defined effect through the production
+        // Level 2 sink and verify hash/reset isolation.
+        let ordinary_hash = first.ordinary().reset_hash();
+        first
+            .ordinary
+            .apply_villager_effects(&[VillagerStepEffect::PopulationCensusDecrement {
+                source_entity_index: 77,
+            }]);
+        assert_eq!(first.ordinary().population_census(), 28);
+        assert_ne!(first.ordinary().reset_hash(), ordinary_hash);
 
         let dolmen_before = first.ordinary().dolmens()[0].entity().clone();
         let baseline_flags = first.ordinary().player_interaction_flags();
@@ -17619,6 +17667,7 @@ mod tests {
         assert_ne!(first.ordinary().player_interaction_flags(), baseline_flags);
         first.ordinary_mut().reset();
         assert_eq!(first.ordinary().reset_hash(), baseline_hash);
+        assert_eq!(first.ordinary().population_census(), 29);
         assert_eq!(first.ordinary().player_interaction_flags(), baseline_flags);
         let dolmen_position = first.ordinary().dolmens()[0].entity().position;
         first.ordinary_mut().players[0].position = Position {
