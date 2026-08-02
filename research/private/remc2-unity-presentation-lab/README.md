@@ -47,9 +47,13 @@ qualification:
   presentation-camera history and live terrain/entity records, and applies
   immutable generation-bound snapshots to the URP-only hierarchy. Unity owns
   only generated meshes, lights, effects, camera interpolation, and pooling;
-  Rust remains gameplay authority. The deterministic owner sequence smoke
-  covers flight input, spell selection/cast, reset replay, terrain/water/night
-  lighting, and native hash correspondence without embedding owner payloads.
+  Rust remains gameplay authority. The router applies a separate generation
+  reset snapshot at tick 0, publishes sequence-bound input in `Update`, and
+  advances one owner step per fixed simulation tick; unchanged terrain is not
+  rebuilt, while map-wrap epoch changes force a complete rebase. The
+  deterministic owner sequence smoke covers flight input, spell
+  selection/cast, 32-frame reset replay, terrain/water/night lighting, and
+  native hash correspondence without embedding owner payloads.
 - No copied owner assets, native libraries, Exact scripts, or Exact corpus.
 
 Run the editor setup once after opening the project:

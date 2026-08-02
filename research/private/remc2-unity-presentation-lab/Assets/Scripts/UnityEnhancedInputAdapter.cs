@@ -25,15 +25,18 @@ namespace MagicCarpet.PresentationLab
     }
 
     /// <summary>
-    /// Buffers host/XR input as presentation commands. The Rust bridge can
-    /// translate a consumed frame into its existing command ABI later; this
-    /// adapter has no simulation or owner-data dependency.
+    /// Buffers host/XR input as presentation commands. The Rust bridge consumes
+    /// one frame per fixed simulation tick; the latest flight/look values are
+    /// held between render updates while one-shot cast/selection edges clear
+    /// after their first fixed-tick use.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class UnityEnhancedInputAdapter : MonoBehaviour
     {
         private UnityEnhancedInputFrame pending;
+        private UnityEnhancedInputFrame held;
         private bool hasPending;
+        private bool hasHeld;
         private ulong lastPublishedSequence;
 
         public ulong LastPublishedSequence { get { return lastPublishedSequence; } }
@@ -65,15 +68,40 @@ namespace MagicCarpet.PresentationLab
             return true;
         }
 
+        public bool TryConsumeForTick(out UnityEnhancedInputFrame frame)
+        {
+            if (hasPending)
+            {
+                held = pending;
+                hasPending = false;
+                hasHeld = true;
+            }
+
+            if (!hasHeld)
+            {
+                frame = default(UnityEnhancedInputFrame);
+                return false;
+            }
+
+            frame = held;
+            held.Cast = false;
+            held.SpellSelection = -1;
+            held.Recenter = false;
+            return true;
+        }
+
         public void Clear()
         {
             hasPending = false;
+            hasHeld = false;
         }
 
         public void ResetForSession()
         {
             pending = default(UnityEnhancedInputFrame);
+            held = default(UnityEnhancedInputFrame);
             hasPending = false;
+            hasHeld = false;
             lastPublishedSequence = 0;
         }
     }

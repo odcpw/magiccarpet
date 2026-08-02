@@ -56,14 +56,16 @@ namespace MagicCarpet.PresentationLab
         private byte[] terrainAngles;
         private EntitySnapshot[] entities = Array.Empty<EntitySnapshot>();
         private ulong terrainMutationSequence;
+        private bool terrainChangedSinceLastObservation;
         private ushort previousCameraX;
         private ushort previousCameraY;
         private long unwrappedCameraX;
         private long unwrappedCameraY;
         private ulong cameraGeneration;
         private bool hasCameraHistory;
-        private ulong lastSnapshotGeneration;
-        private bool hasBuiltSnapshot;
+        private Vector3 lastPublishedTerrainOrigin;
+        private bool hasPublishedTerrainOrigin;
+        private UnityEnhancedWorldSnapshot pendingResetSnapshot;
         private ulong nextVfxSequence;
         private uint previousFireSequence;
         private SessionSnapshot snapshot;
@@ -79,6 +81,7 @@ namespace MagicCarpet.PresentationLab
         public ulong LastTerrainHash { get; private set; }
         public ulong LastWorldHash { get; private set; }
         public int EntityCount { get { return entities == null ? 0 : entities.Length; } }
+        public bool HasPendingResetSnapshot { get { return pendingResetSnapshot != null; } }
         public int ActiveEntityCount
         {
             get
@@ -198,13 +201,32 @@ namespace MagicCarpet.PresentationLab
             terrainAngles = null;
             entities = Array.Empty<EntitySnapshot>();
             terrainMutationSequence = ulong.MaxValue;
+            terrainChangedSinceLastObservation = true;
             cameraGeneration = 0;
             hasCameraHistory = false;
-            lastSnapshotGeneration = 0;
-            hasBuiltSnapshot = false;
+            lastPublishedTerrainOrigin = Vector3.zero;
+            hasPublishedTerrainOrigin = false;
+            pendingResetSnapshot = null;
             nextVfxSequence = 0;
             previousFireSequence = snapshot.fireSequence;
-            return ReadObservations(true, out reason);
+            if (!ReadObservations(true, out reason))
+            {
+                return false;
+            }
+
+            pendingResetSnapshot = BuildSnapshot(true);
+            return true;
+        }
+
+        /// <summary>
+        /// Takes the generation-bound tick-0 reset snapshot. The caller must
+        /// apply it before asking this source to advance the Rust session.
+        /// </summary>
+        public bool TryTakeResetSnapshot(out UnityEnhancedWorldSnapshot resetSnapshot)
+        {
+            resetSnapshot = pendingResetSnapshot;
+            pendingResetSnapshot = null;
+            return resetSnapshot != null;
         }
 
         /// <summary>
@@ -220,11 +242,38 @@ namespace MagicCarpet.PresentationLab
             out UnityEnhancedWorldSnapshot enhancedSnapshot,
             out string reason)
         {
+            return Advance(
+                horizontalInput,
+                verticalInput,
+                0f,
+                0f,
+                cast,
+                spellSelection,
+                out enhancedSnapshot,
+                out reason);
+        }
+
+        public bool Advance(
+            float horizontalInput,
+            float verticalInput,
+            float lookYawInput,
+            float lookPitchInput,
+            bool cast,
+            int spellSelection,
+            out UnityEnhancedWorldSnapshot enhancedSnapshot,
+            out string reason)
+        {
             enhancedSnapshot = null;
             reason = string.Empty;
             if (!IsConfigured || handle == 0)
             {
                 reason = "Unity Enhanced owner source is not configured";
+                return false;
+            }
+
+            if (pendingResetSnapshot != null)
+            {
+                reason = "Unity Enhanced reset snapshot must be applied before stepping the owner session";
                 return false;
             }
 
@@ -254,6 +303,8 @@ namespace MagicCarpet.PresentationLab
                 {
                     abiVersion = AbiVersion,
                     structSize = 28,
+                    lookYaw = CameraInputValue(lookYawInput),
+                    lookPitch = CameraInputValue(lookPitchInput),
                     reserved = new uint[4]
                 };
                 int status = mc_native_session_step_with_camera(
@@ -278,7 +329,7 @@ namespace MagicCarpet.PresentationLab
                     return false;
                 }
 
-                enhancedSnapshot = BuildSnapshot();
+                enhancedSnapshot = BuildSnapshot(false);
                 return true;
             }
             catch (Exception exception)
@@ -323,14 +374,16 @@ namespace MagicCarpet.PresentationLab
             presentation = default(PresentationState);
             renderCamera = default(RenderCameraState);
             terrainMutationSequence = 0;
+            terrainChangedSinceLastObservation = false;
             previousCameraX = 0;
             previousCameraY = 0;
             unwrappedCameraX = 0;
             unwrappedCameraY = 0;
             cameraGeneration = 0;
             hasCameraHistory = false;
-            lastSnapshotGeneration = 0;
-            hasBuiltSnapshot = false;
+            lastPublishedTerrainOrigin = Vector3.zero;
+            hasPublishedTerrainOrigin = false;
+            pendingResetSnapshot = null;
             nextVfxSequence = 0;
             previousFireSequence = 0;
         }
@@ -348,6 +401,9 @@ namespace MagicCarpet.PresentationLab
             if (presentation.abiVersion != AbiVersion ||
                 presentation.structSize != PresentationStateSize ||
                 presentation.generation != snapshot.generation ||
+                (snapshot.tick == 0
+                    ? presentation.tick != 0
+                    : presentation.tick + 1 != snapshot.tick) ||
                 presentation.cameraAuthority != CameraAuthorityPlayerFlightLive ||
                 (presentation.cameraFlags & (PresentationCameraExactInputs | PresentationCameraEyeZPlus128)) !=
                     (PresentationCameraExactInputs | PresentationCameraEyeZPlus128) ||
@@ -403,6 +459,7 @@ namespace MagicCarpet.PresentationLab
 
             LastTerrainHash = terrainState.terrainHash;
             bool terrainChanged = forceTerrain || terrainTypes == null || terrainState.mutationSequence != terrainMutationSequence;
+            terrainChangedSinceLastObservation = terrainChanged;
             if (terrainChanged)
             {
                 terrainTypes = ReadPlane(TerrainTypes, out reason);
@@ -454,6 +511,28 @@ namespace MagicCarpet.PresentationLab
                     reason = "Unity Enhanced owner entity batch failed its ABI/layout contract";
                     return false;
                 }
+            }
+
+            status = mc_native_session_terrain_state(handle, out TerrainState finalTerrainState, TerrainStateSize);
+            if (status != 0)
+            {
+                reason = StatusReason("Unity Enhanced owner final terrain state", status);
+                return false;
+            }
+
+            if (finalTerrainState.generation != terrainState.generation ||
+                finalTerrainState.tick != terrainState.tick ||
+                finalTerrainState.mutationSequence != terrainState.mutationSequence ||
+                finalTerrainState.terrainHash != terrainState.terrainHash ||
+                finalTerrainState.width != TerrainWidth ||
+                finalTerrainState.height != TerrainHeight ||
+                finalTerrainState.planeCount != 6 ||
+                finalTerrainState.hashSchema != TerrainHashSchema ||
+                finalTerrainState.authority != SessionTerrainLive ||
+                !AllZero(finalTerrainState.reserved))
+            {
+                reason = "Unity Enhanced owner terrain changed while observations were being copied";
+                return false;
             }
 
             LastWorldHash = HashEntities(entities);
@@ -513,11 +592,12 @@ namespace MagicCarpet.PresentationLab
             return true;
         }
 
-        private UnityEnhancedWorldSnapshot BuildSnapshot()
+        private UnityEnhancedWorldSnapshot BuildSnapshot(bool reset)
         {
-            bool reset = !hasBuiltSnapshot ||
-                         snapshot.generation != lastSnapshotGeneration ||
-                         snapshot.tick == 0;
+            Vector3 terrainOrigin = TerrainEpochOrigin();
+            bool originChanged = !hasPublishedTerrainOrigin ||
+                                 !Approximately(lastPublishedTerrainOrigin, terrainOrigin);
+            bool publishTerrain = reset || terrainChangedSinceLastObservation || originChanged;
             var result = new UnityEnhancedWorldSnapshot
             {
                 Generation = snapshot.generation,
@@ -525,16 +605,40 @@ namespace MagicCarpet.PresentationLab
                 Reset = reset,
                 CameraPose = BuildCameraPose(),
                 Entities = BuildEntities(),
-                Terrain = BuildTerrainSnapshot(reset),
-                Water = BuildWaterSnapshot(reset),
+                Terrain = publishTerrain
+                    ? BuildTerrainSnapshot(reset, terrainOrigin, terrainChangedSinceLastObservation || originChanged)
+                    : null,
+                Water = publishTerrain ? BuildWaterSnapshot(reset, terrainOrigin) : null,
                 NightLighting = UnityEnhancedNightLightingDescriptor.Level1Night(),
                 LocalLights = BuildLocalLights(),
                 VfxEvents = BuildVfxEvents(),
                 Quality = UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog)
             };
-            lastSnapshotGeneration = snapshot.generation;
-            hasBuiltSnapshot = true;
+            if (publishTerrain)
+            {
+                lastPublishedTerrainOrigin = terrainOrigin;
+                hasPublishedTerrainOrigin = true;
+            }
+            terrainChangedSinceLastObservation = false;
             return result;
+        }
+
+        private Vector3 TerrainEpochOrigin()
+        {
+            float mapSize = TerrainWidth * TerrainCellSize;
+            float cameraX = (float)unwrappedCameraX / SourceUnitsPerUnityUnit;
+            float cameraZ = (float)unwrappedCameraY / SourceUnitsPerUnityUnit;
+            return new Vector3(
+                Mathf.Floor(cameraX / mapSize) * mapSize,
+                0f,
+                Mathf.Floor(cameraZ / mapSize) * mapSize);
+        }
+
+        private static bool Approximately(Vector3 left, Vector3 right)
+        {
+            return Mathf.Abs(left.x - right.x) < 0.001f &&
+                   Mathf.Abs(left.y - right.y) < 0.001f &&
+                   Mathf.Abs(left.z - right.z) < 0.001f;
         }
 
         private UnityEnhancedCameraPose BuildCameraPose()
@@ -552,7 +656,10 @@ namespace MagicCarpet.PresentationLab
                 fov);
         }
 
-        private UnityEnhancedTerrainSnapshot BuildTerrainSnapshot(bool reset)
+        private UnityEnhancedTerrainSnapshot BuildTerrainSnapshot(
+            bool reset,
+            Vector3 origin,
+            bool fullUpdate)
         {
             float[] heights = new float[TerrainCellCount];
             for (int index = 0; index < heights.Length; index++)
@@ -568,19 +675,19 @@ namespace MagicCarpet.PresentationLab
                 Width = TerrainWidth,
                 Height = TerrainHeight,
                 CellSize = TerrainCellSize,
-                Origin = Vector3.zero,
+                Origin = origin,
                 Heights = heights,
                 TerrainTypes = (byte[])terrainTypes.Clone(),
                 Shade = (byte[])terrainShade.Clone(),
                 Angles = (byte[])terrainAngles.Clone(),
-                DirtyRegions = reset || snapshot.tick == 0
+                DirtyRegions = reset || fullUpdate
                     ? new[] { new UnityEnhancedTerrainDirtyRegion(0, 0, TerrainWidth, TerrainHeight) }
                     : Array.Empty<UnityEnhancedTerrainDirtyRegion>(),
                 WrapMode = UnityEnhancedTerrainWrapMode.Repeat
             };
         }
 
-        private UnityEnhancedWaterSnapshot BuildWaterSnapshot(bool reset)
+        private UnityEnhancedWaterSnapshot BuildWaterSnapshot(bool reset, Vector3 terrainOrigin)
         {
             byte[] shoreline = new byte[TerrainCellCount];
             bool hasWater = false;
@@ -599,7 +706,7 @@ namespace MagicCarpet.PresentationLab
                 Tick = snapshot.tick,
                 Reset = reset,
                 Level = 0f,
-                Center = new Vector3(TerrainWidth * TerrainCellSize * 0.5f, 0f, TerrainHeight * TerrainCellSize * 0.5f),
+                Center = terrainOrigin + new Vector3(TerrainWidth * TerrainCellSize * 0.5f, 0f, TerrainHeight * TerrainCellSize * 0.5f),
                 Size = new Vector2(TerrainWidth * TerrainCellSize, TerrainHeight * TerrainCellSize),
                 ReflectionEnabled = hasWater,
                 ShorelineMask = shoreline,
@@ -780,6 +887,13 @@ namespace MagicCarpet.PresentationLab
         {
             int rounded = Mathf.RoundToInt(value);
             return (sbyte)Mathf.Clamp(rounded, sbyte.MinValue, sbyte.MaxValue);
+        }
+
+        private static ushort CameraInputValue(float value)
+        {
+            int units = Mathf.RoundToInt(value * 64f);
+            units = Mathf.Clamp(units, short.MinValue, short.MaxValue);
+            return unchecked((ushort)(short)units);
         }
 
         private static short SignedAngle11(short value)

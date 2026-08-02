@@ -37,7 +37,8 @@ namespace MagicCarpet.PresentationLab
 
         public bool IsValid(int width, int height)
         {
-            return Width > 0 && Height > 0 && X >= 0 && Y >= 0 && X < width && Y < height;
+            return Width > 0 && Height > 0 && X >= 0 && Y >= 0 &&
+                   X <= width - Width && Y <= height - Height;
         }
     }
 
@@ -123,14 +124,18 @@ namespace MagicCarpet.PresentationLab
         {
             if (snapshot == null || snapshot.Width < 2 || snapshot.Height < 2 ||
                 snapshot.CellSize <= 0f || float.IsNaN(snapshot.CellSize) || float.IsInfinity(snapshot.CellSize) ||
+                !IsFinite(snapshot.Origin) ||
                 snapshot.Heights == null || snapshot.TerrainTypes == null || snapshot.Shade == null || snapshot.Angles == null)
             {
                 return false;
             }
 
-            int expected = snapshot.Width * snapshot.Height;
-            if (snapshot.Heights.Length != expected || snapshot.TerrainTypes.Length != expected ||
-                snapshot.Shade.Length != expected || snapshot.Angles.Length != expected)
+            long expected = (long)snapshot.Width * snapshot.Height;
+            if (expected > int.MaxValue ||
+                snapshot.Heights.Length != expected || snapshot.TerrainTypes.Length != expected ||
+                snapshot.Shade.Length != expected || snapshot.Angles.Length != expected ||
+                (snapshot.WrapMode != UnityEnhancedTerrainWrapMode.Clamp &&
+                 snapshot.WrapMode != UnityEnhancedTerrainWrapMode.Repeat))
             {
                 return false;
             }
@@ -143,6 +148,7 @@ namespace MagicCarpet.PresentationLab
             bool topologyChanged = !hasSnapshot || snapshot.Reset || snapshot.Generation != generation ||
                                     snapshot.Width != width || snapshot.Height != height ||
                                     !Mathf.Approximately(snapshot.CellSize, cellSize);
+            bool originChanged = !hasSnapshot || !Approximately(snapshot.Origin, origin);
             if (topologyChanged)
             {
                 width = snapshot.Width;
@@ -161,7 +167,7 @@ namespace MagicCarpet.PresentationLab
             {
                 origin = snapshot.Origin;
                 wrapMode = snapshot.WrapMode;
-                if (snapshot.DirtyRegions == null || snapshot.DirtyRegions.Length == 0)
+                if (originChanged || snapshot.DirtyRegions == null || snapshot.DirtyRegions.Length == 0)
                 {
                     UpdateRegion(snapshot, new UnityEnhancedTerrainDirtyRegion(0, 0, width, height));
                 }
@@ -181,6 +187,8 @@ namespace MagicCarpet.PresentationLab
                 terrainMesh.colors = colors;
                 terrainMesh.RecalculateNormals();
             }
+
+            UpdateBounds();
 
             generation = snapshot.Generation;
             lastTick = snapshot.Tick;
@@ -272,6 +280,11 @@ namespace MagicCarpet.PresentationLab
             terrainMesh.vertices = vertices;
             terrainMesh.colors = colors;
             terrainMesh.triangles = triangles;
+            UpdateBounds();
+        }
+
+        private void UpdateBounds()
+        {
             terrainMesh.bounds = new Bounds(
                 origin + new Vector3((width - 1) * cellSize * 0.5f, 0f, (height - 1) * cellSize * 0.5f),
                 new Vector3(width * cellSize, 512f, height * cellSize));
@@ -333,6 +346,23 @@ namespace MagicCarpet.PresentationLab
                 Mathf.Clamp01(baseColor.g * shadeFactor * angleFactor),
                 Mathf.Clamp01(baseColor.b * shadeFactor * angleFactor),
                 1f);
+        }
+
+        private static bool IsFinite(Vector3 value)
+        {
+            return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+        }
+
+        private static bool IsFinite(float value)
+        {
+            return !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
+        private static bool Approximately(Vector3 left, Vector3 right)
+        {
+            return Mathf.Abs(left.x - right.x) < 0.001f &&
+                   Mathf.Abs(left.y - right.y) < 0.001f &&
+                   Mathf.Abs(left.z - right.z) < 0.001f;
         }
 
         private void OnDestroy()

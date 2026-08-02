@@ -152,12 +152,14 @@ def validate_enhanced_owner_sequence_artifact(
         errors.append("Unity Enhanced owner sequence must identify sim-capi-v2")
     if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
         errors.append("Unity Enhanced owner sequence must keep owner inputs external")
-    if artifact.get("frames_per_pass") != 8 or artifact.get("pass_count") != 2:
-        errors.append("Unity Enhanced owner sequence must retain two eight-frame passes")
-    if artifact.get("frame_count") != 16 or artifact.get("reset_replay") is not True:
-        errors.append("Unity Enhanced owner sequence must prove reset replay over 16 frames")
-    if artifact.get("first_tick") != 8 or artifact.get("second_tick") != 8:
-        errors.append("Unity Enhanced owner sequence must reach tick 8 in both passes")
+    if artifact.get("frames_per_pass") != 32 or artifact.get("pass_count") != 2:
+        errors.append("Unity Enhanced owner sequence must retain two 32-frame passes")
+    if artifact.get("frame_count") != 64 or artifact.get("reset_replay") is not True:
+        errors.append("Unity Enhanced owner sequence must prove reset replay over 64 frames")
+    if artifact.get("reset_tick") != 0:
+        errors.append("Unity Enhanced owner sequence must apply an explicit tick-0 reset")
+    if artifact.get("first_tick") != 32 or artifact.get("second_tick") != 32:
+        errors.append("Unity Enhanced owner sequence must reach tick 32 in both passes")
     if artifact.get("active_entity_count", 0) <= 0 or artifact.get("active_visual_count", 0) <= 0:
         errors.append("Unity Enhanced owner sequence must apply active owner entities to Unity")
     if artifact.get("terrain_vertex_count", 0) <= 0 or artifact.get("shoreline_cell_count", 0) <= 0:

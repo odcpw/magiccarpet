@@ -512,7 +512,16 @@ namespace MagicCarpet.PresentationLab
 
         private bool ValidateSnapshot(UnityEnhancedWorldSnapshot snapshot)
         {
-            if (snapshot.Entities == null)
+            if (snapshot.Generation == 0 ||
+                (snapshot.Reset && snapshot.Tick != 0) ||
+                !IsFinite(snapshot.CameraPose.Position) ||
+                !IsFinite(snapshot.CameraPose.Rotation) ||
+                !IsFinite(snapshot.CameraPose.FieldOfView) ||
+                snapshot.CameraPose.FieldOfView <= 1f ||
+                snapshot.CameraPose.FieldOfView >= 179f ||
+                snapshot.Entities == null ||
+                snapshot.LocalLights == null ||
+                snapshot.VfxEvents == null)
             {
                 return false;
             }
@@ -521,7 +530,12 @@ namespace MagicCarpet.PresentationLab
             for (int index = 0; index < snapshot.Entities.Length; index++)
             {
                 UnityEnhancedEntitySnapshot entity = snapshot.Entities[index];
-                if (entity == null || entity.StableIdentity == 0 || entity.Generation != snapshot.Generation)
+                if (entity == null || entity.StableIdentity == 0 ||
+                    entity.Generation != snapshot.Generation ||
+                    !UnityEnhancedActorPresentation.HasCoverage(entity.PresentationFamily) ||
+                    !IsFinite(entity.Position) || !IsFinite(entity.Rotation) ||
+                    !IsFinite(entity.FacingDegrees) || !IsFinite(entity.AnimationPhase) ||
+                    !IsFinite(entity.Scale) || entity.Scale <= 0f)
                 {
                     return false;
                 }
@@ -532,7 +546,131 @@ namespace MagicCarpet.PresentationLab
                 }
             }
 
+            if (snapshot.Terrain != null)
+            {
+                UnityEnhancedTerrainSnapshot terrain = snapshot.Terrain;
+                long terrainCellCount = (long)terrain.Width * terrain.Height;
+                if (terrain.Generation != snapshot.Generation ||
+                    terrain.Tick != snapshot.Tick ||
+                    terrain.Reset != snapshot.Reset ||
+                    terrain.Width < 2 || terrain.Height < 2 ||
+                    terrainCellCount > int.MaxValue ||
+                    !IsFinite(terrain.Origin) ||
+                    !IsFinite(terrain.CellSize) || terrain.CellSize <= 0f ||
+                    terrain.Heights == null || terrain.TerrainTypes == null ||
+                    terrain.Shade == null || terrain.Angles == null ||
+                    terrain.DirtyRegions == null ||
+                    terrain.Heights.Length != terrainCellCount ||
+                    terrain.TerrainTypes.Length != terrainCellCount ||
+                    terrain.Shade.Length != terrainCellCount ||
+                    terrain.Angles.Length != terrainCellCount ||
+                    (terrain.WrapMode != UnityEnhancedTerrainWrapMode.Clamp &&
+                     terrain.WrapMode != UnityEnhancedTerrainWrapMode.Repeat))
+                {
+                    return false;
+                }
+
+                for (int index = 0; index < terrain.DirtyRegions.Length; index++)
+                {
+                    if (!IsValidDirtyRegion(terrain.DirtyRegions[index], terrain.Width, terrain.Height))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            if (snapshot.Water != null)
+            {
+                UnityEnhancedWaterSnapshot water = snapshot.Water;
+                long shorelineCellCount = (long)water.ShorelineWidth * water.ShorelineHeight;
+                if (water.Generation != snapshot.Generation ||
+                    water.Tick != snapshot.Tick ||
+                    water.Reset != snapshot.Reset ||
+                    shorelineCellCount > int.MaxValue ||
+                    !IsFinite(water.Center) || !IsFinite(water.Level) ||
+                    !IsFinite(water.Size.x) || !IsFinite(water.Size.y) ||
+                    water.Size.x <= 0f || water.Size.y <= 0f ||
+                    !IsFinite(water.ShorelineCellSize) || water.ShorelineCellSize <= 0f ||
+                    water.ShorelineWidth < 0 || water.ShorelineHeight < 0 ||
+                    water.ShorelineMask == null ||
+                    water.ShorelineMask.Length != shorelineCellCount)
+                {
+                    return false;
+                }
+            }
+
+            seenIdentities.Clear();
+            for (int index = 0; index < snapshot.LocalLights.Length; index++)
+            {
+                UnityEnhancedLocalLightRequest light = snapshot.LocalLights[index];
+                if (light.StableIdentity == 0 || !IsFinite(light.Position) ||
+                    !IsFinite(light.Color.r) || !IsFinite(light.Color.g) ||
+                    !IsFinite(light.Color.b) || !IsFinite(light.Color.a) ||
+                    !IsFinite(light.Intensity) || !IsFinite(light.Range) ||
+                    light.Intensity < 0f || light.Range <= 0f)
+                {
+                    return false;
+                }
+
+                if (!seenIdentities.Add(light.StableIdentity))
+                {
+                    return false;
+                }
+            }
+
+            ulong previousEffectSequence = 0;
+            for (int index = 0; index < snapshot.VfxEvents.Length; index++)
+            {
+                UnityEnhancedVfxEvent effect = snapshot.VfxEvents[index];
+                if (effect.Sequence == 0 || effect.Sequence <= previousEffectSequence ||
+                    effect.Generation != snapshot.Generation || effect.Tick > snapshot.Tick ||
+                    effect.StableIdentity == 0 || !UnityEnhancedVfxPresentation.HasCoverage(effect.Kind) ||
+                    !IsFinite(effect.Position) || !IsFinite(effect.Intensity) || effect.Intensity < 0f)
+                {
+                    return false;
+                }
+
+                previousEffectSequence = effect.Sequence;
+            }
+
+            if (snapshot.Quality != null)
+            {
+                string qualityReason;
+                if (!snapshot.Quality.TryValidate(out qualityReason))
+                {
+                    return false;
+                }
+            }
+
             return true;
+        }
+
+        private static bool IsFinite(float value)
+        {
+            return !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
+        private static bool IsFinite(Vector3 value)
+        {
+            return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+        }
+
+        private static bool IsFinite(Quaternion value)
+        {
+            return IsFinite(value.x) && IsFinite(value.y) &&
+                   IsFinite(value.z) && IsFinite(value.w) &&
+                   Quaternion.Dot(value, value) > 0.000001f;
+        }
+
+        private static bool IsValidDirtyRegion(
+            UnityEnhancedTerrainDirtyRegion region,
+            int width,
+            int height)
+        {
+            return region.X >= 0 && region.Y >= 0 &&
+                   region.Width > 0 && region.Height > 0 &&
+                   region.X <= width - region.Width &&
+                   region.Y <= height - region.Height;
         }
 
         private GameObject Acquire(ulong stableIdentity)

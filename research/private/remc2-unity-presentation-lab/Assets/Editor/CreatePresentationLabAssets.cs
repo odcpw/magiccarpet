@@ -296,7 +296,7 @@ namespace MagicCarpet.PresentationLab.Editor
                 throw new InvalidOperationException("presentation router Awake method is missing");
             }
 
-            const int FramesPerPass = 8;
+            const int FramesPerPass = 32;
             ulong[] firstStateHashes = new ulong[FramesPerPass];
             ulong[] firstTerrainHashes = new ulong[FramesPerPass];
             ulong[] firstWorldHashes = new ulong[FramesPerPass];
@@ -315,6 +315,24 @@ namespace MagicCarpet.PresentationLab.Editor
                 {
                     Debug.LogError(
                         "OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: router did not open the owner-bound Enhanced route");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                UnityEnhancedWorldRoot resetRoot = router.EnhancedRoot;
+                UnityEnhancedOwnerSessionSource resetSource = router.EnhancedOwnerSession;
+                if (resetRoot.LastTick != 0 || resetSource.Tick != 0 ||
+                    resetSource.PresentationTick != 0 || resetSource.HasPendingResetSnapshot ||
+                    !resetRoot.TerrainPresentation.HasSnapshot ||
+                    !resetRoot.WaterPresentation.HasSnapshot ||
+                    resetRoot.ActorPresentation.ActiveVisualCount == 0)
+                {
+                    Debug.LogError(
+                        "OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: explicit tick-0 reset was not applied " +
+                        "root_tick=" + resetRoot.LastTick +
+                        " source_tick=" + resetSource.Tick +
+                        " presentation_tick=" + resetSource.PresentationTick +
+                        " pending_reset=" + resetSource.HasPendingResetSnapshot);
                     EditorApplication.Exit(1);
                     return;
                 }
@@ -427,6 +445,7 @@ namespace MagicCarpet.PresentationLab.Editor
                 secondTick = router.EnhancedOwnerSession.Tick;
                 Debug.Log(
                     "OWNER UNITY ENHANCED SEQUENCE SMOKE PASS: frames_per_pass=" + FramesPerPass +
+                    " reset_tick=0" +
                     " first_generation=" + firstGeneration +
                     " first_tick=" + firstTick +
                     " second_generation=" + secondGeneration +

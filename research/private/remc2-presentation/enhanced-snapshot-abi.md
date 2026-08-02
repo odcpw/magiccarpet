@@ -32,6 +32,15 @@ feeds the URP presentation hierarchy; it does not submit gameplay state back
 to Rust. The fixture ABI and the owner-bound v2 route are complementary
 surfaces, not a claim that Unity owns simulation authority.
 
+The owner-bound route publishes the Rust reset boundary as an explicit
+generation-bound tick-0 snapshot before the first tick-1 step. Render-rate
+input is sequence-bound and held across fixed ticks, while cast and selection
+edges are consumed once. Terrain planes are copied only when their mutation
+sequence changes or the camera crosses a wrapping terrain epoch; the Unity
+mesh is rebased as one complete region in the latter case. Nested generation,
+tick, identity, finite-pose, array-extent, and quality checks run before the
+presentation hierarchy is mutated.
+
 Focused gates:
 
 ```text

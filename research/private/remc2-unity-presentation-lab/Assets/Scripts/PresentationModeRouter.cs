@@ -29,6 +29,7 @@ namespace MagicCarpet.PresentationLab
         private ClassicHdSettingsLoadResult classicHdSettingsResult;
         private ClassicHdPresentation classicHdPresentation;
         private UnityEnhancedOwnerSessionSource enhancedOwnerSession;
+        private ulong inputSequence;
         private string statusLine;
         private GUIStyle badgeStyle;
         private GUIStyle detailStyle;
@@ -140,6 +141,17 @@ namespace MagicCarpet.PresentationLab
                     statusLine = "UNITY ENHANCED PRESENTATION FAILED CLOSED: " + enhancedSourceError;
                     return;
                 }
+
+                if (!ApplyPendingEnhancedReset(out enhancedSourceError))
+                {
+                    enhancedOwnerSession.Dispose();
+                    enhancedOwnerSession = null;
+                    enhancedRoot.Close();
+                    sessionLease.Dispose();
+                    sessionLease = null;
+                    statusLine = "UNITY ENHANCED PRESENTATION FAILED CLOSED: " + enhancedSourceError;
+                    return;
+                }
             }
 
             statusLine = "PRESENTATION SESSION OPEN: " + ModeName(SelectedMode) +
@@ -184,12 +196,40 @@ namespace MagicCarpet.PresentationLab
                 return;
             }
 
+            inputSequence++;
+            enhancedRoot.InputAdapter.Publish(new UnityEnhancedInputFrame(
+                inputSequence,
+                new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical")),
+                new Vector2(Input.GetAxisRaw("Mouse X"), Input.GetAxisRaw("Mouse Y")),
+                false,
+                Input.GetMouseButton(0),
+                SpellSelectionFromInput()));
+        }
+
+        private void FixedUpdate()
+        {
+            if (SelectedMode != PresentationModeId.UnityEnhanced ||
+                enhancedOwnerSession == null ||
+                enhancedRoot == null ||
+                enhancedRoot.State != UnityEnhancedLifecycleState.Open)
+            {
+                return;
+            }
+
+            UnityEnhancedInputFrame input;
+            if (!enhancedRoot.InputAdapter.TryConsumeForTick(out input))
+            {
+                return;
+            }
+
             string reason;
             if (!CaptureEnhancedFrame(
-                    Input.GetAxisRaw("Horizontal"),
-                    Input.GetAxisRaw("Vertical"),
-                    Input.GetMouseButton(0),
-                    SpellSelectionFromInput(),
+                    input.Flight.x,
+                    input.Flight.y,
+                    input.Look.x,
+                    input.Look.y,
+                    input.Cast,
+                    input.SpellSelection,
                     out reason))
             {
                 statusLine = "UNITY ENHANCED CAPTURE STOPPED: " + reason;
@@ -199,11 +239,31 @@ namespace MagicCarpet.PresentationLab
         /// <summary>
         /// Advances the owner-backed Enhanced route once. Editor qualification
         /// commands use this method with a deterministic input recording; the
-        /// normal player loop samples the host input in Update above.
+        /// normal player loop publishes in Update and consumes one frame from
+        /// the sequence-bound adapter in FixedUpdate.
         /// </summary>
         public bool CaptureEnhancedFrame(
             float horizontalInput,
             float verticalInput,
+            bool cast,
+            int spellSelection,
+            out string reason)
+        {
+            return CaptureEnhancedFrame(
+                horizontalInput,
+                verticalInput,
+                0f,
+                0f,
+                cast,
+                spellSelection,
+                out reason);
+        }
+
+        public bool CaptureEnhancedFrame(
+            float horizontalInput,
+            float verticalInput,
+            float lookYawInput,
+            float lookPitchInput,
             bool cast,
             int spellSelection,
             out string reason)
@@ -218,6 +278,8 @@ namespace MagicCarpet.PresentationLab
             if (!enhancedOwnerSession.Advance(
                     horizontalInput,
                     verticalInput,
+                    lookYawInput,
+                    lookPitchInput,
                     cast,
                     spellSelection,
                     out UnityEnhancedWorldSnapshot snapshot,
@@ -253,7 +315,40 @@ namespace MagicCarpet.PresentationLab
                 return false;
             }
 
-            return enhancedOwnerSession.Reset(out reason);
+            if (!enhancedOwnerSession.Reset(out reason))
+            {
+                return false;
+            }
+
+            return ApplyPendingEnhancedReset(out reason);
+        }
+
+        private bool ApplyPendingEnhancedReset(out string reason)
+        {
+            reason = string.Empty;
+            if (enhancedOwnerSession == null || enhancedRoot == null)
+            {
+                reason = "Unity Enhanced owner session is not configured";
+                return false;
+            }
+
+            if (!enhancedOwnerSession.TryTakeResetSnapshot(out UnityEnhancedWorldSnapshot resetSnapshot))
+            {
+                reason = "Unity Enhanced owner reset snapshot is missing";
+                return false;
+            }
+
+            if (!enhancedRoot.ApplySnapshot(resetSnapshot))
+            {
+                reason = "Unity Enhanced rejected the owner reset snapshot at generation " +
+                         resetSnapshot.Generation + " tick " + resetSnapshot.Tick +
+                         (string.IsNullOrEmpty(enhancedRoot.LastRejectReason)
+                             ? string.Empty
+                             : ": " + enhancedRoot.LastRejectReason);
+                return false;
+            }
+
+            return true;
         }
 
         private void OnGUI()

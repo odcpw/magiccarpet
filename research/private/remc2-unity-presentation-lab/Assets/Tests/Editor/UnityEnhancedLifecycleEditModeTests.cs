@@ -62,6 +62,7 @@ namespace MagicCarpet.PresentationLab.Tests
             {
                 Generation = 4,
                 Tick = 9,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
                 Entities = new[] { Entity(4, 11, Vector3.one) }
             };
             Assert.IsFalse(root.ApplySnapshot(stale));
@@ -70,14 +71,15 @@ namespace MagicCarpet.PresentationLab.Tests
             UnityEnhancedWorldSnapshot reset = new UnityEnhancedWorldSnapshot
             {
                 Generation = 5,
-                Tick = 1,
+                Tick = 0,
                 Reset = true,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
                 Entities = new[] { Entity(5, 11, Vector3.one) }
             };
             Assert.IsTrue(root.ApplySnapshot(reset));
             Assert.AreEqual(1, root.ActiveEntityCount);
             Assert.AreEqual(5UL, root.Generation);
-            Assert.AreEqual(1UL, root.LastTick);
+            Assert.AreEqual(0UL, root.LastTick);
             Assert.GreaterOrEqual(root.PooledEntityCount, 1);
 
             Object.DestroyImmediate(gameObject);
@@ -94,12 +96,14 @@ namespace MagicCarpet.PresentationLab.Tests
             {
                 Generation = 1,
                 Tick = 1,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
                 Entities = new[] { Entity(1, 5, Vector3.zero) }
             }));
             Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
             {
                 Generation = 1,
                 Tick = 2,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
                 Entities = new[] { Entity(1, 5, new Vector3(10f, 0f, 0f)) }
             }));
 
@@ -123,6 +127,7 @@ namespace MagicCarpet.PresentationLab.Tests
             {
                 Generation = 2,
                 Tick = 1,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
                 Entities = new[] { Entity(2, 7, Vector3.zero), Entity(2, 7, Vector3.one) }
             };
             Assert.IsFalse(root.ApplySnapshot(duplicate));
@@ -145,6 +150,100 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual(3UL, consumed.Sequence);
             Assert.IsTrue(consumed.Cast);
             Assert.IsFalse(adapter.TryConsume(out consumed));
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void FixedTickInputHoldsAxesButConsumesEdgesOnce()
+        {
+            GameObject gameObject = new GameObject("enhanced-fixed-input-test");
+            UnityEnhancedInputAdapter adapter = gameObject.AddComponent<UnityEnhancedInputAdapter>();
+            UnityEnhancedInputFrame first = new UnityEnhancedInputFrame(
+                1, Vector2.right, Vector2.up, false, true, 2);
+            UnityEnhancedInputFrame consumed;
+
+            Assert.IsTrue(adapter.Publish(first));
+            Assert.IsTrue(adapter.TryConsumeForTick(out consumed));
+            Assert.AreEqual(Vector2.right, consumed.Flight);
+            Assert.AreEqual(Vector2.up, consumed.Look);
+            Assert.IsTrue(consumed.Cast);
+            Assert.AreEqual(2, consumed.SpellSelection);
+
+            Assert.IsTrue(adapter.TryConsumeForTick(out consumed));
+            Assert.AreEqual(Vector2.right, consumed.Flight);
+            Assert.AreEqual(Vector2.up, consumed.Look);
+            Assert.IsFalse(consumed.Cast);
+            Assert.AreEqual(-1, consumed.SpellSelection);
+
+            Assert.IsTrue(adapter.Publish(new UnityEnhancedInputFrame(
+                2, Vector2.left, Vector2.down, false, false, -1)));
+            Assert.IsTrue(adapter.TryConsumeForTick(out consumed));
+            Assert.AreEqual(Vector2.left, consumed.Flight);
+            Assert.AreEqual(Vector2.down, consumed.Look);
+            Assert.IsFalse(consumed.Cast);
+            Assert.AreEqual(-1, consumed.SpellSelection);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void InvalidNestedSnapshotDoesNotMutateAcceptedWorld()
+        {
+            GameObject gameObject = new GameObject("enhanced-invalid-snapshot-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 6,
+                Tick = 1,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Entities = new[] { Entity(6, 31, Vector3.zero) }
+            }));
+
+            Assert.IsFalse(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 6,
+                Tick = 2,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Entities = new[] { Entity(6, 31, new Vector3(float.NaN, 0f, 0f)) }
+            }));
+            Assert.AreEqual(1, root.ActiveEntityCount);
+            Assert.AreEqual(6UL, root.Generation);
+            Assert.AreEqual(1UL, root.LastTick);
+            Assert.AreEqual(UnityEnhancedLifecycleState.Faulted, root.State);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void MissingTerrainSnapshotPreservesTheLastTerrainBuild()
+        {
+            GameObject gameObject = new GameObject("enhanced-terrain-suppression-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 7,
+                Tick = 1,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Terrain = TerrainSnapshot(7, 1, false, new UnityEnhancedTerrainDirtyRegion[0]),
+                Entities = new[] { Entity(7, 41, Vector3.zero) }
+            }));
+            int builds = root.TerrainPresentation.DirtyRegionApplications;
+            Assert.Greater(builds, 0);
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 7,
+                Tick = 2,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Entities = new[] { Entity(7, 41, Vector3.one) }
+            }));
+            Assert.AreEqual(builds, root.TerrainPresentation.DirtyRegionApplications);
+            Assert.AreEqual(1UL, root.TerrainPresentation.LastTick);
 
             Object.DestroyImmediate(gameObject);
         }
@@ -175,6 +274,7 @@ namespace MagicCarpet.PresentationLab.Tests
             {
                 Generation = 1,
                 Tick = 1,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
                 Entities = new[] { Entity(1, 20, new Vector3(100f, 0f, 0f)) }
             }));
             root.InterpolatePresentation(1f);
@@ -182,8 +282,9 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
             {
                 Generation = 2,
-                Tick = 1,
+                Tick = 0,
                 Reset = true,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
                 Entities = new[] { Entity(2, 21, Vector3.zero) }
             }));
             Transform entity = gameObject.transform.Find("EnhancedWorldObjects/EnhancedEntity_0000000000000015");
@@ -225,10 +326,13 @@ namespace MagicCarpet.PresentationLab.Tests
 
             UnityEnhancedTerrainSnapshot update = TerrainSnapshot(
                 1, 2, false, new[] { new UnityEnhancedTerrainDirtyRegion(1, 1, 1, 1) });
+            update.Origin = new Vector3(4f, 0f, 8f);
             update.Heights[4] = 3f;
             Assert.IsTrue(terrain.ApplySnapshot(update));
             Assert.AreEqual(2, terrain.DirtyRegionApplications);
             Assert.That(terrain.GeneratedMesh.vertices[4].y, Is.EqualTo(3f).Within(0.001f));
+            Assert.That(terrain.GeneratedMesh.vertices[0].x, Is.EqualTo(4f).Within(0.001f));
+            Assert.That(terrain.GeneratedMesh.vertices[0].z, Is.EqualTo(8f).Within(0.001f));
 
             Object.DestroyImmediate(gameObject);
         }
@@ -302,6 +406,9 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual(UnityEnhancedWaterReflectionMode.ScreenSpaceWhenSupported, water.ReflectionMode);
             Assert.AreEqual(2, water.ShorelineCellCount);
             Assert.AreEqual(8, water.ShorelineVertexCount);
+            MeshFilter shoreline = gameObject.transform.Find("EnhancedShoreline").GetComponent<MeshFilter>();
+            Assert.That(shoreline.sharedMesh.vertices[0].x, Is.EqualTo(-4f).Within(0.001f));
+            Assert.That(shoreline.sharedMesh.vertices[0].z, Is.EqualTo(-4f).Within(0.001f));
 
             Object.DestroyImmediate(gameObject);
         }

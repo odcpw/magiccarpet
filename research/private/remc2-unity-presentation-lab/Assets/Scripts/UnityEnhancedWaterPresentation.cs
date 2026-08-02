@@ -55,8 +55,18 @@ namespace MagicCarpet.PresentationLab
         public bool ApplySnapshot(UnityEnhancedWaterSnapshot snapshot)
         {
             if (snapshot == null || snapshot.Size.x <= 0f || snapshot.Size.y <= 0f ||
-                float.IsNaN(snapshot.Level) || float.IsInfinity(snapshot.Level) ||
-                (snapshot.ShorelineMask == null && snapshot.ShorelineWidth * snapshot.ShorelineHeight != 0))
+                !IsFinite(snapshot.Center) ||
+                !IsFinite(snapshot.Size.x) || !IsFinite(snapshot.Size.y) ||
+                !IsFinite(snapshot.Level) ||
+                !IsFinite(snapshot.ShorelineCellSize) || snapshot.ShorelineCellSize <= 0f ||
+                snapshot.ShorelineWidth < 0 || snapshot.ShorelineHeight < 0)
+            {
+                return false;
+            }
+
+            long expectedShorelineCells = (long)snapshot.ShorelineWidth * snapshot.ShorelineHeight;
+            if (expectedShorelineCells > int.MaxValue || snapshot.ShorelineMask == null ||
+                snapshot.ShorelineMask.Length != expectedShorelineCells)
             {
                 return false;
             }
@@ -164,7 +174,10 @@ namespace MagicCarpet.PresentationLab
                 int x = index % snapshot.ShorelineWidth;
                 int z = index / snapshot.ShorelineWidth;
                 float cell = Mathf.Max(0.01f, snapshot.ShorelineCellSize);
-                Vector3 center = snapshot.Center + new Vector3(x * cell, snapshot.Level + 0.012f, z * cell);
+                Vector3 shorelineOrigin = snapshot.Center -
+                    new Vector3(snapshot.Size.x * 0.5f, 0f, snapshot.Size.y * 0.5f);
+                Vector3 center = shorelineOrigin +
+                    new Vector3((x + 0.5f) * cell, snapshot.Level + 0.012f, (z + 0.5f) * cell);
                 float half = cell * 0.5f;
                 int baseVertex = vertexIndex;
                 vertices[vertexIndex++] = center + new Vector3(-half, 0f, -half);
@@ -203,6 +216,16 @@ namespace MagicCarpet.PresentationLab
             };
             material.enableInstancing = true;
             return material;
+        }
+
+        private static bool IsFinite(float value)
+        {
+            return !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
+        private static bool IsFinite(Vector3 value)
+        {
+            return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
         }
 
         private void OnDestroy()
