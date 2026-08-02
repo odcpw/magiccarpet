@@ -19,7 +19,7 @@ T14 run produced:
 
 | Internal profile | Frame bytes | Graph memory | p95 CPU | Reset deterministic | Current status |
 | --- | ---: | ---: | ---: | --- | --- |
-| 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; owner profile rerender and persistent Unity upload proven on an idle frame; sustained Unity qualification pending |
+| 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; owner profile rerender and persistent Unity upload proven across a 32-frame reset/replay sequence; scenario qualification pending |
 | 960x720 | 691,200 | 2,768,896 | 26.11 ms | yes | candidate; Unity/owner route pending |
 | 1280x960 | 1,228,800 | 4,919,296 | 45.64 ms | yes | rejected by current CPU budget |
 
@@ -28,14 +28,16 @@ The window is independent of the internal render profile. For example,
 composition; changing the window does not silently promote the internal
 profile.
 
-The current owner-bound smoke is recorded in
+The current owner-bound idle smoke is recorded in
 `qualification/classic-hd-owner-route-smoke.json`. It passed through the real
 `PresentationModeRouter`, Rust native session, additive profile-sized Classic
 HD endpoint, source-ordered legacy/typed compositor, and persistent Unity R8
-upload at 640x480. Two independent runs produced the same index, provenance,
-and receipt hashes. No FINAL MAIN copy is used. This is binding evidence for
-the first idle frame, not a sustained performance or player-facing production
-claim.
+upload at 640x480. The sustained sequence is recorded separately in
+`qualification/classic-hd-owner-route-sequence-smoke.json`: two 32-frame input
+passes, 64 uploads, one allocation epoch, and matching indexed/provenance
+hashes after a native session reset. No FINAL MAIN copy is used. These are
+renderer-binding and replay evidence, not yet a full player-facing scenario
+or visual-corpus claim.
 
 Remaining GFX-O evidence is intentionally explicit in the JSON matrix:
 idle/town/combat/flight/restart/completion/fullscreen/alt-tab/asset-fallback,

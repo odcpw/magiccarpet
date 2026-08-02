@@ -24,7 +24,9 @@ binding under qualification:
   clocks, banks, reflection, and shadow rules for typed and legacy families. It
   never enlarges the 320x200 Exact FINAL MAIN. The route still fails closed
   when the native plugin is absent or a future source family is unbound; the
-  current Level 1 owner smoke proves the 640x480 idle frame and upload.
+  current Level 1 owner smoke proves the 640x480 idle frame and upload, and
+  the sequence smoke proves 32-frame rerender/upload plus reset replay without
+  surface reallocation.
   The additive Classic HD ABI fixture remains available for contract tests,
   while the direct component `Configure` overload remains a clearly
   synthetic, owner-free Level 1 Night source for EditMode tests.
@@ -86,6 +88,24 @@ python3 launcher/presentation_launcher.py --mode classic-hd \
 The lab does not accept `exact`; Exact stays in the protected project. Mode
 selection happens before a presentation session opens, and there is no
 mid-session pipeline swap.
+
+The owner-bound Classic HD sequence smoke is an explicit qualification command
+rather than an automatic boot action:
+
+```text
+Unity -batchmode -force-glcore \
+  -projectPath research/private/remc2-unity-presentation-lab \
+  -executeMethod MagicCarpet.PresentationLab.Editor.CreatePresentationLabAssets.RunOwnerClassicHdSequenceSmoke \
+  -mc-presentation-mode classic-hd \
+  -mc-package /absolute/path/to/level1-export-m \
+  -mc-closure /absolute/path/to/level1-asset-closure.json \
+  -mc-asset-cache /absolute/path/to/level1-unity-asset-cache
+```
+
+It records renderer-binding evidence only. Town, combat, death/restart,
+completion, window/alt-tab, asset-fallback, and sustained GPU cases remain
+separate owner-lab gates until their actual states and visual review artifacts
+are captured.
 
 Verify the project boundary and URP assignment with:
 

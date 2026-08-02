@@ -32,9 +32,11 @@ Focused gate:
 cargo test -p sim-core classic_hd_sprites --lib -j1  # 4 passed
 ```
 
-The owner-bound 640x480 idle smoke also exercises the complete profile-sized
-source compositor and one persistent Unity R8 upload; its hashes are preserved
-in `qualification/classic-hd-owner-route-smoke.json`. The broader town,
+The owner-bound 640x480 idle smoke exercises the complete profile-sized source
+compositor and one persistent Unity R8 upload; its hashes are preserved in
+`qualification/classic-hd-owner-route-smoke.json`. The sequence smoke adds two
+32-frame passes and reset replay evidence in
+`qualification/classic-hd-owner-route-sequence-smoke.json`. The broader town,
 combat, flight, restart, and sustained GPU/performance matrix remains open.
 
 The Exact sprite projector and compatibility route remain unchanged; the new
