@@ -54,9 +54,16 @@ the current owner-free matrix with:
 
 ```bash
 python3 research/private/remc2-presentation/qualification/validate_classic_hd_matrix.py
+python3 research/private/remc2-presentation/qualification/verify_three_mode_package.py
 ```
 
 This matrix promotes only the 640x480 Rust CPU/determinism row, leaves 960x720
 as a candidate, and records 1280x960 as over the current CPU budget. Unity GPU,
 copy/upload, owner-route, and preserved corpus evidence remain required before
 any higher profile becomes a player-facing production claim.
+
+`qualification/verify_three_mode_package.py` is the final package-integrity
+gate. A PASS means the Exact, Classic HD, and Unity Enhanced contracts and
+their current evidence are internally consistent. Its output separately lists
+`OPEN` gates; placeholder visual corpora, owner/GPU scenario capture, and human
+visual review must not be promoted by this command.
