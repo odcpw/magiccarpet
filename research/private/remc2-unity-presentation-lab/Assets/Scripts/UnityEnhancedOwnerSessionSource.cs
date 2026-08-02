@@ -116,6 +116,18 @@ namespace MagicCarpet.PresentationLab
         public int LastVfxEventCount { get { return lastVfxEventCount; } }
         public int MissionProjectileCount { get { return checked((int)mission.projectileCount); } }
         public int MissionImpactCount { get { return checked((int)mission.impactCount); } }
+        public byte MissionStage { get { return mission.currentStage; } }
+        public byte TasksCompleted { get { return mission.tasksCompleted; } }
+        public bool PlayerDead { get { return mission.playerDead != 0; } }
+        public bool ExitSequenceActive { get { return mission.exitSequenceActive != 0; } }
+        public bool ExitSequenceComplete { get { return mission.exitSequenceComplete != 0; } }
+        public int PlayerLife { get { return mission.playerLife; } }
+        public int PlayerMaxLife { get { return mission.playerMaxLife; } }
+        public int PlayerMana { get { return mission.playerMana; } }
+        public short TargetSpeed { get { return snapshot.targetSpeed; } }
+        public short ActualSpeed { get { return snapshot.actualSpeed; } }
+        public short StrafeSpeed { get { return snapshot.strafeSpeed; } }
+        public Vector3 CameraPosition { get { return BuildCameraPose().Position; } }
         public int ActiveProjectileCount
         {
             get
@@ -519,6 +531,51 @@ namespace MagicCarpet.PresentationLab
             catch (Exception exception)
             {
                 reason = "Unity Enhanced terrain mutation qualification setup failed: " +
+                         exception.Message;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Injects the existing private owner qualification damage boundary.
+        /// The damage is consumed by Rust on the next owner step; Unity never
+        /// writes mission state or decides whether the player is dead.
+        /// </summary>
+        public bool InjectPlayerDamageForQualification(
+            int damage,
+            ushort attackerEntityIndex,
+            out string reason)
+        {
+            reason = string.Empty;
+            if (!IsConfigured || handle == 0)
+            {
+                reason = "Unity Enhanced owner source is not configured";
+                return false;
+            }
+
+            if (damage <= 0 || attackerEntityIndex == 0)
+            {
+                reason = "Unity Enhanced qualification damage requires a positive amount and nonzero attacker";
+                return false;
+            }
+
+            try
+            {
+                int status = mc_native_level1_player_inject_damage_for_qualification(
+                    handle,
+                    damage,
+                    attackerEntityIndex);
+                if (status != 0)
+                {
+                    reason = StatusReason("Unity Enhanced player damage qualification", status);
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception exception)
+            {
+                reason = "Unity Enhanced player damage qualification failed: " +
                          exception.Message;
                 return false;
             }
@@ -1996,6 +2053,12 @@ namespace MagicCarpet.PresentationLab
             ushort houseEntityIndex,
             ushort parentEntityIndex,
             byte constructionSelector);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_level1_player_inject_damage_for_qualification(
+            ulong handle,
+            int damage,
+            ushort attackerEntityIndex);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         private static extern int mc_native_presentation_state(

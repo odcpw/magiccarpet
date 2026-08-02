@@ -648,6 +648,236 @@ namespace MagicCarpet.PresentationLab.Editor
             }
         }
 
+        [MenuItem("Magic Carpet/Presentation Lab/Run Owner Unity Enhanced Scenario Smoke")]
+        public static void RunOwnerUnityEnhancedScenarioSmoke()
+        {
+            string packagePath = CommandLineValue("-mc-package");
+            string closurePath = CommandLineValue("-mc-closure");
+            string assetCachePath = CommandLineValue("-mc-asset-cache");
+            if (string.IsNullOrWhiteSpace(packagePath) ||
+                string.IsNullOrWhiteSpace(closurePath) ||
+                string.IsNullOrWhiteSpace(assetCachePath))
+            {
+                throw new InvalidOperationException(
+                    "owner Unity Enhanced scenario smoke requires -mc-package, -mc-closure, and -mc-asset-cache");
+            }
+
+            var root = new GameObject("Owner Unity Enhanced Scenario Smoke Router");
+            var router = root.AddComponent<PresentationModeRouter>();
+            MethodInfo awake = typeof(PresentationModeRouter).GetMethod(
+                "Awake",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (awake == null)
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                throw new InvalidOperationException("presentation router Awake method is missing");
+            }
+
+            const int IdleFrames = 8;
+            const int TownFrames = 12;
+            const int CombatFrames = 12;
+            const int FlightFrames = 16;
+            var stateHashes = new List<ulong>();
+            var eventHeads = new List<ulong>();
+            int townEvents = 0;
+            int combatEvents = 0;
+            int combatProjectiles = 0;
+            int combatImpacts = 0;
+            short maxFlightSpeed = short.MinValue;
+            float flightCameraDistance = 0f;
+            bool deathObserved = false;
+            ulong generationBeforeRestart = 0;
+            ulong generationAfterRestart = 0;
+            ulong restartTick = ulong.MaxValue;
+
+            try
+            {
+                awake.Invoke(router, null);
+                if (!router.SessionIsOpen ||
+                    router.EnhancedRoot == null ||
+                    router.EnhancedOwnerSession == null)
+                {
+                    Debug.LogError(
+                        "OWNER UNITY ENHANCED SCENARIO SMOKE FAIL: owner route did not open");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                string reason;
+                UnityEnhancedOwnerSessionSource source = router.EnhancedOwnerSession;
+                UnityEnhancedWorldRoot enhanced = router.EnhancedRoot;
+                Vector3 townStart = source.CameraPosition;
+                Vector3 flightStart = Vector3.zero;
+
+                for (int frame = 0; frame < IdleFrames; frame++)
+                {
+                    if (!router.CaptureEnhancedFrame(0f, 0f, false, -1, out reason))
+                    {
+                        Debug.LogError("OWNER UNITY ENHANCED SCENARIO SMOKE FAIL: idle frame " + frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    stateHashes.Add(source.LastStateHash);
+                    eventHeads.Add(source.EventHead);
+                }
+
+                townStart = source.CameraPosition;
+                for (int frame = 0; frame < TownFrames; frame++)
+                {
+                    Vector2 input = ScenarioFlightInput("town", frame);
+                    if (!router.CaptureEnhancedFrame(input.x, input.y, false, -1, out reason))
+                    {
+                        Debug.LogError("OWNER UNITY ENHANCED SCENARIO SMOKE FAIL: town frame " + frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    townEvents += source.LastEventCount;
+                    stateHashes.Add(source.LastStateHash);
+                    eventHeads.Add(source.EventHead);
+                }
+
+                if (source.ActiveEntityCount <= 0 ||
+                    Vector3.Distance(townStart, source.CameraPosition) <= 0.001f)
+                {
+                    Debug.LogError(
+                        "OWNER UNITY ENHANCED SCENARIO SMOKE FAIL: town route did not publish a moving populated view");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                for (int frame = 0; frame < CombatFrames; frame++)
+                {
+                    bool cast = frame == 4;
+                    int spellSelection = frame == 3 ? 0 : -1;
+                    if (!router.CaptureEnhancedFrame(0f, 0f, cast, spellSelection, out reason))
+                    {
+                        Debug.LogError("OWNER UNITY ENHANCED SCENARIO SMOKE FAIL: combat frame " + frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    combatEvents += source.LastEventCount;
+                    combatProjectiles = Math.Max(combatProjectiles, source.MissionProjectileCount);
+                    combatImpacts = Math.Max(combatImpacts, source.MissionImpactCount);
+                    stateHashes.Add(source.LastStateHash);
+                    eventHeads.Add(source.EventHead);
+                }
+
+                if (combatEvents <= 0 || combatProjectiles <= 0 || combatImpacts <= 0)
+                {
+                    Debug.LogError(
+                        "OWNER UNITY ENHANCED SCENARIO SMOKE FAIL: combat route did not publish event/projectile/impact observations" +
+                        " events=" + combatEvents +
+                        " projectiles=" + combatProjectiles +
+                        " impacts=" + combatImpacts);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                flightStart = source.CameraPosition;
+                for (int frame = 0; frame < FlightFrames; frame++)
+                {
+                    Vector2 input = ScenarioFlightInput("flight", frame);
+                    if (!router.CaptureEnhancedFrame(input.x, input.y, false, -1, out reason))
+                    {
+                        Debug.LogError("OWNER UNITY ENHANCED SCENARIO SMOKE FAIL: flight frame " + frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    maxFlightSpeed = Math.Max(maxFlightSpeed, source.ActualSpeed);
+                    stateHashes.Add(source.LastStateHash);
+                    eventHeads.Add(source.EventHead);
+                }
+
+                flightCameraDistance = Vector3.Distance(
+                    flightStart,
+                    source.CameraPosition);
+                if (maxFlightSpeed <= 0 && flightCameraDistance <= 0.001f)
+                {
+                    Debug.LogError(
+                        "OWNER UNITY ENHANCED SCENARIO SMOKE FAIL: high-speed flight route did not move the authoritative camera");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                if (!source.InjectPlayerDamageForQualification(100000, 10, out reason))
+                {
+                    Debug.LogError("OWNER UNITY ENHANCED SCENARIO SMOKE FAIL: death setup: " + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                if (!router.CaptureEnhancedFrame(0f, 0f, false, -1, out reason))
+                {
+                    Debug.LogError("OWNER UNITY ENHANCED SCENARIO SMOKE FAIL: death frame: " + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                deathObserved = source.PlayerDead || source.PlayerLife <= 0;
+                generationBeforeRestart = source.Generation;
+                if (!deathObserved)
+                {
+                    Debug.LogError(
+                        "OWNER UNITY ENHANCED SCENARIO SMOKE FAIL: lethal owner qualification did not reach player-dead state" +
+                        " life=" + source.PlayerLife +
+                        " dead=" + source.PlayerDead);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                if (!router.ResetEnhancedOwnerSession(out reason))
+                {
+                    Debug.LogError("OWNER UNITY ENHANCED SCENARIO SMOKE FAIL: restart reset: " + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                generationAfterRestart = source.Generation;
+                restartTick = source.Tick;
+                if (generationAfterRestart <= generationBeforeRestart ||
+                    restartTick != 0 ||
+                    enhanced.Generation != generationAfterRestart ||
+                    enhanced.LastTick != 0)
+                {
+                    Debug.LogError(
+                        "OWNER UNITY ENHANCED SCENARIO SMOKE FAIL: restart did not produce a fresh tick-0 generation" +
+                        " before=" + generationBeforeRestart +
+                        " after=" + generationAfterRestart +
+                        " tick=" + restartTick);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                Debug.Log(
+                    "OWNER UNITY ENHANCED SCENARIO SMOKE PASS: idle_frames=" + IdleFrames +
+                    " town_frames=" + TownFrames +
+                    " combat_frames=" + CombatFrames +
+                    " flight_frames=" + FlightFrames +
+                    " town_events=" + townEvents +
+                    " combat_events=" + combatEvents +
+                    " combat_projectiles=" + combatProjectiles +
+                    " combat_impacts=" + combatImpacts +
+                    " max_flight_speed=" + maxFlightSpeed +
+                    " flight_camera_distance=" + flightCameraDistance.ToString("F3") +
+                    " death_observed=" + (deathObserved ? 1 : 0) +
+                    " restart_generation=" + generationAfterRestart +
+                    " restart_tick=" + restartTick +
+                    " state_route_hash=" + SequenceHash(stateHashes).ToString("x16") +
+                    " event_route_hash=" + SequenceHash(eventHeads).ToString("x16") +
+                    " lighting=" + enhanced.NightLighting.HasDescriptor +
+                    " reflection=" + enhanced.WaterPresentation.ReflectionEnabled);
+                EditorApplication.Exit(0);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
         private static Vector2 SequenceInput(int frame)
         {
             if (frame < 8)
@@ -666,6 +896,22 @@ namespace MagicCarpet.PresentationLab.Editor
             }
 
             return new Vector2(0f, 0.2f);
+        }
+
+        private static Vector2 ScenarioFlightInput(string route, int frame)
+        {
+            if (string.Equals(route, "town", StringComparison.Ordinal))
+            {
+                return new Vector2(0.18f, 0.06f);
+            }
+
+            if (string.Equals(route, "flight", StringComparison.Ordinal))
+            {
+                float horizontal = frame % 8 < 4 ? 0.35f : -0.35f;
+                return new Vector2(horizontal, 0.25f);
+            }
+
+            return Vector2.zero;
         }
 
         private static ulong SequenceHash(IReadOnlyList<ulong> values)
