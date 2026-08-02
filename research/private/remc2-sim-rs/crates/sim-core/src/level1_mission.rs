@@ -5196,6 +5196,16 @@ pub struct ManaSphere {
     pub incoming_owner_entity_index: u16,
     /// Source dword 0x64 written alongside the pending owner by `sub_112D0`.
     pub incoming_possession_payload: u32,
+    /// Source `sub_38D80` temporary attraction target (`word_0x7A_122`).
+    /// The field is written by class-10 model-54/69 and consumed by the
+    /// mana-sphere movement callback on its next source-cursor visit.
+    pub attraction_source_entity_index: u16,
+    /// Source `word_0x76_118` radial attraction step, capped at 42 by the
+    /// model-54/69 producer. `attraction_distance_high` preserves the upper
+    /// half of the source radix result even though qualified positions keep
+    /// it zero in the current owner package.
+    pub attraction_step: u16,
+    pub attraction_distance_high: u16,
     pub assigned_carrier_id: u32,
     /// Temporary class-3/model-3 defender relation installed by
     /// `AddBallon_60AB0`; it is distinct from the carrier assignment dword.
@@ -10229,6 +10239,9 @@ impl Level1MissionState {
             player_entity_index: 0,
             incoming_owner_entity_index: 0,
             incoming_possession_payload: 0,
+            attraction_source_entity_index: 0,
+            attraction_step: 0,
+            attraction_distance_high: 0,
             assigned_carrier_id: 0,
             assigned_defender_slot: 0,
             control_flags: 0,
@@ -10380,6 +10393,9 @@ impl Level1MissionState {
             player_entity_index: owner_entity_index,
             incoming_owner_entity_index: 0,
             incoming_possession_payload: 0,
+            attraction_source_entity_index: 0,
+            attraction_step: 0,
+            attraction_distance_high: 0,
             assigned_carrier_id: 0,
             assigned_defender_slot: 0,
             control_flags: 0,
@@ -18100,6 +18116,9 @@ impl Level1MissionState {
             player_entity_index: self.castle_owner_entity_index,
             incoming_owner_entity_index: 0,
             incoming_possession_payload: 0,
+            attraction_source_entity_index: 0,
+            attraction_step: 0,
+            attraction_distance_high: 0,
             assigned_carrier_id: 0,
             assigned_defender_slot: 0,
             control_flags: 0,

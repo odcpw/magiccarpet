@@ -11436,7 +11436,14 @@ fn mana_sphere_snapshot(sphere: &ManaSphere) -> McManaSphereSnapshotV2 {
             .expect("mana sphere logical height fits u16"),
         mana: sphere.mana,
         assigned_carrier_id: sphere.assigned_carrier_id,
-        reserved: [0; 3],
+        // Additive Level 2 mailbox projection. The public struct remains the
+        // sealed 64-byte record; reserved words carry the source attraction
+        // relation and the two source radial words.
+        reserved: [
+            u32::from(sphere.attraction_source_entity_index),
+            u32::from(sphere.attraction_step) | (u32::from(sphere.attraction_distance_high) << 16),
+            0,
+        ],
     }
 }
 
@@ -13292,6 +13299,9 @@ mod tests {
                 player_entity_index: 0,
                 incoming_owner_entity_index: 0,
                 incoming_possession_payload: 0,
+                attraction_source_entity_index: 0,
+                attraction_step: 0,
+                attraction_distance_high: 0,
                 assigned_carrier_id: 0,
                 assigned_defender_slot: 0,
                 control_flags: 0,
@@ -15856,6 +15866,36 @@ mod tests {
         assert_eq!(snapshot.family, 1);
         assert_eq!(snapshot.source_slot, 157);
         assert_eq!(snapshot.ordinal, 7);
+    }
+
+    #[test]
+    fn campaign_mana_sphere_snapshot_exposes_attraction_mailbox_without_layout_change() {
+        let snapshot = mana_sphere_snapshot(&ManaSphere {
+            id: 901,
+            source_entity_index: 901,
+            entity_rng: 0x1234,
+            position: Position::default(),
+            velocity_x: 0,
+            velocity_y: 0,
+            vertical_velocity: 0,
+            yaw: 0,
+            mana: 321,
+            owner_entity_index: 111,
+            player_entity_index: 111,
+            incoming_owner_entity_index: 0,
+            incoming_possession_payload: 0,
+            attraction_source_entity_index: 877,
+            attraction_step: 42,
+            attraction_distance_high: 3,
+            assigned_carrier_id: 0,
+            assigned_defender_slot: 0,
+            control_flags: 0,
+            phase: 7,
+            active: true,
+            pending_delete: false,
+        });
+        assert_eq!(size_of::<McManaSphereSnapshotV2>(), 64);
+        assert_eq!(snapshot.reserved, [877, 42 | (3 << 16), 0]);
     }
 
     #[test]

@@ -116,6 +116,12 @@ const LEVEL2_CASTLE_DEFENDER_MAX_MANA: i32 = 10_000;
 /// the 300/16 defaults used by model-15/41/42/79 auxiliary children.
 const LEVEL2_CASTLE_DEFENDER_MAX_LIFE: i32 = 10_000;
 const LEVEL2_CASTLE_DEFENDER_SPEED: i16 = 48;
+/// Source class-10 temporary mana-attraction effect tuple from
+/// `sub_4A310`/`sub_38D80` (EventsFunctions.cpp:28349-28385).
+const MANA_ATTRACTION_CLASS: u8 = 10;
+const MANA_ATTRACTION_MODEL: u8 = 54;
+const MANA_ATTRACTION_ACTION: u8 = 59;
+const MANA_ATTRACTION_ALIAS_ACTION: u8 = 76;
 /// `sub_60D50` receives the model-3 holder profile installed by the source
 /// class-3/subtype-3 constructor: particle row 169 has rotSpeed `0x320`, so
 /// `SetEntityIndexAndRot_49CD0` binds fov to 400.
@@ -3446,6 +3452,9 @@ fn level2_static_mana_spheres_from_entities(
                 player_entity_index,
                 incoming_owner_entity_index: 0,
                 incoming_possession_payload: 0,
+                attraction_source_entity_index: 0,
+                attraction_step: 0,
+                attraction_distance_high: 0,
                 assigned_carrier_id: 0,
                 assigned_defender_slot: 0,
                 control_flags: entity.control_flags,
@@ -3562,6 +3571,23 @@ pub struct Level2AuthoredModel45Source {
     pub parameter_1: u16,
     pub position: Position,
     pub phase: u8,
+    pub active: bool,
+}
+
+/// The temporary class-10/model-54 field created by `sub_4A310` for authored
+/// Level 2 rows (alias action 76 shares the same `sub_38D80` callback as
+/// action 59). It writes one pending attraction source to each eligible
+/// mana-sphere row, then expires through the normal source-arena reclaim.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2ManaAttractionField {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub authored_index: u16,
+    pub position: Position,
+    pub radius_squared: u32,
+    pub max_life: i16,
+    pub life: i16,
+    pub action: u8,
     pub active: bool,
 }
 
@@ -3693,6 +3719,8 @@ pub struct Level2EconomyState {
     spell_pickups: Vec<Level2SpellPickupSource>,
     baseline_authored_model45: Vec<Level2AuthoredModel45Source>,
     authored_model45: Vec<Level2AuthoredModel45Source>,
+    baseline_mana_attraction_fields: Vec<Level2ManaAttractionField>,
+    mana_attraction_fields: Vec<Level2ManaAttractionField>,
     baseline_carriers: Vec<ManaCarrier>,
     carriers: Vec<ManaCarrier>,
     baseline_castle: Option<Level2CastleState>,
@@ -3862,6 +3890,8 @@ impl Level2EconomyState {
             spell_pickups: Vec::new(),
             baseline_authored_model45: Vec::new(),
             authored_model45: Vec::new(),
+            baseline_mana_attraction_fields: Vec::new(),
+            mana_attraction_fields: Vec::new(),
             baseline_carriers: Vec::new(),
             carriers: Vec::new(),
             baseline_castle: None,
@@ -3964,6 +3994,64 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_model45(&self) -> &[Level2AuthoredModel45Source] {
         &self.authored_model45
+    }
+
+    #[must_use]
+    pub fn mana_attraction_fields(&self) -> &[Level2ManaAttractionField] {
+        &self.mana_attraction_fields
+    }
+
+    /// Allocate the source class-10/model-54 temporary field from an authored
+    /// feature. `sub_4A310` binds `dword_0x10` to `(stageTag << 8)^2` and
+    /// `maxLife` to `max(8 * stageTag + 16, 128)` before `sub_38D80` runs.
+    /// Action 76 is the pinned duplicate dispatch row and is accepted without
+    /// changing the source constructor payload.
+    pub fn allocate_mana_attraction_field(
+        &mut self,
+        authored_index: u16,
+        position: Position,
+        stage_tag: i16,
+        action: u8,
+    ) -> Option<u16> {
+        debug_assert_eq!((MANA_ATTRACTION_CLASS, MANA_ATTRACTION_MODEL), (10, 54));
+        if !matches!(
+            action,
+            MANA_ATTRACTION_ACTION | MANA_ATTRACTION_ALIAS_ACTION
+        ) || stage_tag < 0
+        {
+            return None;
+        }
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let stage = u32::try_from(stage_tag).ok()?;
+        let radius = stage.checked_mul(256)?;
+        let max_life = i16::try_from((8 * stage + 16).max(128)).ok()?;
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        self.mana_attraction_fields.push(Level2ManaAttractionField {
+            source_entity_index,
+            entity_rng,
+            authored_index,
+            position,
+            radius_squared: radius.saturating_mul(radius),
+            max_life,
+            life: max_life,
+            action,
+            active: true,
+        });
+        self.source_rng.insert(source_entity_index, entity_rng);
+        Some(source_entity_index)
     }
 
     /// Allocate an authored class-15 source row through the shared
@@ -4083,6 +4171,68 @@ impl Level2EconomyState {
                 y: source.position.y,
             })
             .is_ok()
+    }
+
+    /// Advance one class-10/model-54/69 temporary field through
+    /// `sub_38D80`. Eligible mana spheres receive one source-linked attraction
+    /// mailbox in source order; an already-targeted sphere is left untouched.
+    pub fn step_mana_attraction_slot(&mut self, source_slot: u16) -> bool {
+        let Some(field_index) = self
+            .mana_attraction_fields
+            .iter()
+            .position(|field| field.active && field.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        let (position, radius_squared, action, life_before) = {
+            let field = self.mana_attraction_fields[field_index];
+            (
+                field.position,
+                field.radius_squared,
+                field.action,
+                field.life,
+            )
+        };
+        debug_assert!(matches!(
+            action,
+            MANA_ATTRACTION_ACTION | MANA_ATTRACTION_ALIAS_ACTION
+        ));
+
+        // `sub_38D80` decrements before testing the signed life sentinel. A
+        // zero-life row therefore gets one final producer pass; the next
+        // cursor visit disables it and returns the slot to the arena stack.
+        if let Some(field) = self.mana_attraction_fields.get_mut(field_index) {
+            field.life = field.life.saturating_sub(1);
+            if life_before < 0 {
+                field.active = false;
+                self.map_chains
+                    .sync_entity(RenderableMapSeed {
+                        entity_index: source_slot,
+                        active: false,
+                        x: position.x,
+                        y: position.y,
+                    })
+                    .expect("Level 2 mana-attraction source slot fits the map chain");
+                return true;
+            }
+        }
+
+        for sphere in self
+            .spheres
+            .iter_mut()
+            .filter(|sphere| sphere.active && sphere.attraction_source_entity_index == 0)
+        {
+            let distance_squared = level2_wrapping_xy_distance(position, sphere.position);
+            if distance_squared < radius_squared {
+                let distance = crate::legacy_sqrt(distance_squared);
+                sphere.attraction_step =
+                    u16::try_from(distance.min(42)).expect("Level 2 attraction step fits u16");
+                sphere.attraction_distance_high = u16::try_from(distance >> 16)
+                    .expect("Level 2 attraction distance high word fits u16");
+                sphere.attraction_source_entity_index = source_slot;
+            }
+        }
+        true
     }
 
     /// Allocate the source class-15 row created by `sub_69250`. This uses the
@@ -4253,6 +4403,16 @@ impl Level2EconomyState {
             visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::AuthoredModel45,
+            );
+        }
+        for field in self
+            .mana_attraction_fields
+            .iter()
+            .filter(|field| field.active)
+        {
+            visit(
+                field.source_entity_index,
+                Level2DynamicArenaKind::ManaAttraction,
             );
         }
     }
@@ -4595,6 +4755,9 @@ impl Level2EconomyState {
                 player_entity_index: owner_entity_index,
                 incoming_owner_entity_index: 0,
                 incoming_possession_payload: 0,
+                attraction_source_entity_index: 0,
+                attraction_step: 0,
+                attraction_distance_high: 0,
                 assigned_carrier_id: 0,
                 assigned_defender_slot: 0,
                 control_flags: 0,
@@ -4786,6 +4949,51 @@ impl Level2EconomyState {
         else {
             return false;
         };
+        // `TransformArcherToMana_35940` consumes the source-linked attraction
+        // mailbox before the ordinary sphere physics and clears it after one
+        // movement attempt. A field that expired before this row's cursor
+        // visit is treated as a stale relation and cleared without movement.
+        let attraction = {
+            let sphere = self.spheres[sphere_index];
+            (
+                sphere.attraction_source_entity_index,
+                sphere.attraction_step,
+            )
+        };
+        if attraction.0 != 0 {
+            if let Some(field) = self
+                .mana_attraction_fields
+                .iter()
+                .find(|field| field.active && field.source_entity_index == attraction.0)
+            {
+                let heading = i16::try_from(heading_for_positions(
+                    self.spheres[sphere_index].position,
+                    field.position,
+                ))
+                .expect("Level 2 attraction heading fits i16");
+                let mut displacement = Position::default();
+                crate::move_entity(
+                    &mut displacement,
+                    heading,
+                    0,
+                    i16::try_from(attraction.1).expect("Level 2 attraction step fits i16"),
+                );
+                let sphere = &mut self.spheres[sphere_index];
+                sphere.position.x = sphere
+                    .position
+                    .x
+                    .wrapping_add_signed(displacement.x.cast_signed());
+                sphere.position.y = sphere
+                    .position
+                    .y
+                    .wrapping_add_signed(displacement.y.cast_signed());
+                sphere.yaw = heading;
+            }
+            let sphere = &mut self.spheres[sphere_index];
+            sphere.attraction_source_entity_index = 0;
+            sphere.attraction_step = 0;
+            sphere.attraction_distance_high = 0;
+        }
         let grounded;
         {
             let sphere = &mut self.spheres[sphere_index];
@@ -5920,6 +6128,9 @@ impl Level2EconomyState {
                 player_entity_index: castle.source_id_entity_index,
                 incoming_owner_entity_index: 0,
                 incoming_possession_payload: 0,
+                attraction_source_entity_index: 0,
+                attraction_step: 0,
+                attraction_distance_high: 0,
                 assigned_carrier_id: 0,
                 assigned_defender_slot: 0,
                 control_flags: 0,
@@ -7221,6 +7432,22 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_mana_attraction = self
+            .mana_attraction_fields
+            .iter()
+            .filter(|field| !field.active)
+            .map(|field| (field.source_entity_index, field.entity_rng))
+            .collect::<Vec<_>>();
+        self.mana_attraction_fields.retain(|field| field.active);
+        for (slot, entity_rng) in reclaimed_mana_attraction {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_children = self
             .castle_children
             .iter()
@@ -7309,6 +7536,9 @@ impl Level2EconomyState {
             hasher.update(sphere.player_entity_index.to_le_bytes());
             hasher.update(sphere.incoming_owner_entity_index.to_le_bytes());
             hasher.update(sphere.incoming_possession_payload.to_le_bytes());
+            hasher.update(sphere.attraction_source_entity_index.to_le_bytes());
+            hasher.update(sphere.attraction_step.to_le_bytes());
+            hasher.update(sphere.attraction_distance_high.to_le_bytes());
             hasher.update(sphere.assigned_carrier_id.to_le_bytes());
             hasher.update(sphere.assigned_defender_slot.to_le_bytes());
             hasher.update(sphere.control_flags.to_le_bytes());
@@ -7361,6 +7591,18 @@ impl Level2EconomyState {
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
             hasher.update([u8::from(source.active)]);
+        }
+        for field in &self.mana_attraction_fields {
+            hasher.update(field.source_entity_index.to_le_bytes());
+            hasher.update(field.entity_rng.to_le_bytes());
+            hasher.update(field.authored_index.to_le_bytes());
+            hasher.update(field.position.x.to_le_bytes());
+            hasher.update(field.position.y.to_le_bytes());
+            hasher.update(field.position.z.to_le_bytes());
+            hasher.update(field.radius_squared.to_le_bytes());
+            hasher.update(field.max_life.to_le_bytes());
+            hasher.update(field.life.to_le_bytes());
+            hasher.update([field.action, u8::from(field.active)]);
         }
         if self.carriers.is_empty() {
             hasher.update([0]);
@@ -7571,6 +7813,7 @@ impl Level2EconomyState {
         self.spell_replacements = self.baseline_spell_replacements.clone();
         self.spell_pickups = self.baseline_spell_pickups.clone();
         self.authored_model45 = self.baseline_authored_model45.clone();
+        self.mana_attraction_fields = self.baseline_mana_attraction_fields.clone();
         self.carriers = self.baseline_carriers.clone();
         self.castle = self.baseline_castle;
         self.castle_children = self.baseline_castle_children.clone();
@@ -9347,6 +9590,12 @@ pub struct Level2ResetSession {
     economy_event_cursor: usize,
     baseline_level2_group8_activated: bool,
     level2_group8_activated: bool,
+    /// Authored class-10/model-54 rows already consumed by a rooted class-11
+    /// stage-tag producer.  The source can run the same group again with
+    /// `a2 == 0`; retaining the authored identity prevents a normal outer
+    /// turn from repeatedly constructing the same temporary field.
+    baseline_level2_mana_attraction_activated: BTreeSet<u16>,
+    level2_mana_attraction_activated: BTreeSet<u16>,
 }
 
 /// One lossless, source-ordered result from the bounded Level 2 dispatcher.
@@ -9432,6 +9681,7 @@ pub enum Level2DynamicArenaKind {
     SpellReplacement,
     SpellPickup,
     AuthoredModel45,
+    ManaAttraction,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -9549,6 +9799,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::SpellReplacement => 9,
         Level2DynamicArenaKind::SpellPickup => 10,
         Level2DynamicArenaKind::AuthoredModel45 => 11,
+        Level2DynamicArenaKind::ManaAttraction => 12,
     }
 }
 
@@ -9717,6 +9968,8 @@ impl Level2ResetSession {
             economy_event_cursor: 0,
             baseline_level2_group8_activated: false,
             level2_group8_activated: false,
+            baseline_level2_mana_attraction_activated: BTreeSet::new(),
+            level2_mana_attraction_activated: BTreeSet::new(),
         }
     }
 
@@ -9787,6 +10040,35 @@ impl Level2ResetSession {
             return None;
         }
         Some(replacement)
+    }
+
+    /// Production entry for the authored class-10/model-54 temporary field.
+    /// The caller is the rooted Level 2 activation/objective path; the
+    /// feature's stage tag supplies the exact source radius/lifetime and the
+    /// economy owns allocation, map linkage, reset, and reclaim.
+    pub fn allocate_level2_mana_attraction_field(
+        &mut self,
+        authored_index: u16,
+        action: u8,
+    ) -> Option<u16> {
+        let feature = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .find(|feature| {
+                feature.index == authored_index
+                    && feature.kind == u16::from(MANA_ATTRACTION_CLASS)
+                    && feature.subtype == i16::from(MANA_ATTRACTION_MODEL)
+            })?;
+        let position =
+            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        self.economy.allocate_mana_attraction_field(
+            authored_index,
+            position,
+            feature.stage_tag,
+            action,
+        )
     }
 
     #[must_use]
@@ -10068,6 +10350,75 @@ impl Level2ResetSession {
                     .collect::<Vec<_>>()
                     .into_boxed_slice(),
             });
+    }
+
+    /// Consume authored model-54 rows when their retained class-11
+    /// stage-tag producer is live.  This is the smallest production bridge
+    /// for the source `sub_4A1E0` group filter: the class-11 constructor
+    /// stores `stageTag` in the live entity id, and the next authored group
+    /// uses that id as its exact activation group.  The full switch/objective
+    /// state machine remains separate; this hook does not invent a trigger
+    /// for a group whose class-11 producer is not live.
+    fn activate_level2_authored_mana_attraction_fields(&mut self, pass: u8) {
+        let producer_groups = self
+            .entities
+            .iter()
+            .filter(|entity| {
+                entity.active
+                    && entity.class == 11
+                    && matches!(entity.model, 0 | 1 | 12 | 32)
+                    && entity.source_id != 0
+            })
+            .map(|entity| (entity.index, entity.source_id))
+            .collect::<Vec<_>>();
+        for (producer_slot, producer_group) in producer_groups {
+            let rows = self
+                .mission
+                .authored_features()
+                .iter()
+                .copied()
+                .filter(|feature| {
+                    feature.kind == u16::from(MANA_ATTRACTION_CLASS)
+                        && feature.subtype == i16::from(MANA_ATTRACTION_MODEL)
+                        && feature.activation_group == producer_group.cast_signed()
+                        && !self
+                            .level2_mana_attraction_activated
+                            .contains(&feature.index)
+                })
+                .collect::<Vec<_>>();
+            for feature in rows {
+                let Some(source_slot) = self
+                    .allocate_level2_mana_attraction_field(feature.index, MANA_ATTRACTION_ACTION)
+                else {
+                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot: producer_slot,
+                        message: format!(
+                            "Level 2 authored model-54 row {} could not allocate",
+                            feature.index
+                        ),
+                    });
+                    continue;
+                };
+                self.level2_mana_attraction_activated.insert(feature.index);
+                self.dispatch_events
+                    .push(Level2DispatchEvent::AuthoredGroupActivated {
+                        pass,
+                        source_slot: producer_slot,
+                        group: producer_group,
+                        authored_indices: vec![feature.index].into_boxed_slice(),
+                    });
+                // The source cursor will see this newly allocated row in the
+                // same pass. Keep the local binding explicit so a future
+                // extension cannot accidentally discard the source identity.
+                debug_assert!(
+                    self.economy
+                        .mana_attraction_fields()
+                        .iter()
+                        .any(|field| field.source_entity_index == source_slot)
+                );
+            }
+        }
     }
 
     fn activate_level2_authored_spell_group(
@@ -10443,6 +10794,7 @@ impl Level2ResetSession {
                 _ => unreachable!("bounded Level 2 source route"),
             }
         }
+        self.activate_level2_authored_mana_attraction_fields(pass);
         // A root/typed handler may have allocated a Castle child, carrier, or
         // sphere after the initial cursor reached its slot.  Re-scan live
         // projections until no previously unseen slot remains, just as the
@@ -10644,6 +10996,9 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::AuthoredModel45 => {
                 self.economy.step_authored_model45_slot(source_slot)
             }
+            Level2DynamicArenaKind::ManaAttraction => {
+                self.economy.step_mana_attraction_slot(source_slot)
+            }
             Level2DynamicArenaKind::CastleAuxiliary
             | Level2DynamicArenaKind::CastleChild
             | Level2DynamicArenaKind::CastleController => {
@@ -10758,6 +11113,10 @@ impl Level2ResetSession {
             );
             hasher.update(component.as_bytes());
         }
+        hasher.update(b"level2-mana-attraction-activation-v1");
+        for authored_index in &self.level2_mana_attraction_activated {
+            hasher.update(authored_index.to_le_bytes());
+        }
         hasher.update(self.runtime.bytes());
         for entity in &self.entities {
             hasher.update(entity.record_bytes());
@@ -10821,6 +11180,8 @@ impl Level2ResetSession {
         self.dispatch_events.clear();
         self.economy_event_cursor = 0;
         self.level2_group8_activated = self.baseline_level2_group8_activated;
+        self.level2_mana_attraction_activated =
+            self.baseline_level2_mana_attraction_activated.clone();
     }
 }
 
@@ -21639,6 +22000,161 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(first_payloads, replay_payloads);
+    }
+
+    #[test]
+    fn level_two_mana_attraction_field_targets_spheres_in_source_order_and_expires() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 mana-attraction session");
+        let baseline_hash = session.campaign_state_hash();
+        let authored = session
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .find(|feature| feature.index == 16)
+            .expect("authored model-54 row");
+        assert_eq!(
+            (authored.kind, authored.subtype, authored.stage_tag),
+            (10, 54, 33)
+        );
+
+        // Allocate the spheres first so the authored field's later source slot
+        // writes a mailbox that remains observable after this outer pass.
+        let near_slot = u16::try_from(
+            session
+                .economy_mut()
+                .spawn_mana_sphere_from_death(
+                    901,
+                    Position {
+                        x: 640,
+                        y: 39_168,
+                        z: 0,
+                    },
+                    0,
+                    0x1234,
+                    10,
+                    111,
+                )
+                .expect("near sphere allocation"),
+        )
+        .expect("near sphere slot fits u16");
+        let far_slot = u16::try_from(
+            session
+                .economy_mut()
+                .spawn_mana_sphere_from_death(
+                    902,
+                    Position {
+                        x: 30_000,
+                        y: 50_000,
+                        z: 0,
+                    },
+                    0,
+                    0x2345,
+                    10,
+                    111,
+                )
+                .expect("far sphere allocation"),
+        )
+        .expect("far sphere slot fits u16");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let field = session
+            .economy()
+            .mana_attraction_fields()
+            .iter()
+            .find(|field| field.authored_index == 16)
+            .copied()
+            .expect("production model-54 field allocation");
+        let field_slot = field.source_entity_index;
+        assert_eq!(field.action, MANA_ATTRACTION_ACTION);
+        assert_eq!(field.radius_squared, (33_u32 * 256).pow(2));
+        assert_eq!(field.max_life, 280);
+        assert!(field_slot > near_slot && field_slot > far_slot);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::ManaAttraction,
+                    ..
+                } if *source_slot == field_slot
+            )
+        }));
+        let near = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == near_slot)
+            .copied()
+            .expect("near sphere");
+        let far = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == far_slot)
+            .copied()
+            .expect("far sphere");
+        assert_eq!(near.attraction_source_entity_index, field_slot);
+        assert!(near.attraction_step <= 42);
+        assert_eq!(far.attraction_source_entity_index, 0);
+
+        // The sphere callback consumes the mailbox and moves toward the
+        // source. The next source pass may re-target it, but the direct
+        // handler proves the one-shot consume/clear ordering.
+        let before = near.position;
+        assert!(session.economy_mut().step_mana_sphere_slot(near_slot));
+        let consumed = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == near_slot)
+            .copied()
+            .expect("consumed near sphere");
+        assert_eq!(consumed.attraction_source_entity_index, 0);
+        assert_ne!(consumed.position, before);
+
+        // Force the signed lifetime sentinel, exercise the real dynamic
+        // cursor/reclaim route, and verify reset returns the sealed baseline.
+        session
+            .economy_mut()
+            .mana_attraction_fields
+            .iter_mut()
+            .find(|field| field.source_entity_index == field_slot)
+            .expect("field remains live")
+            .life = -1;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .economy()
+                .mana_attraction_fields()
+                .iter()
+                .all(|field| field.source_entity_index != field_slot)
+        );
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        assert!(session.economy().mana_attraction_fields().is_empty());
+
+        let mut alias = inspection
+            .level2_reset_session()
+            .expect("Level 2 alias session");
+        let alias_slot = alias
+            .allocate_level2_mana_attraction_field(16, MANA_ATTRACTION_ALIAS_ACTION)
+            .expect("action-76 alias allocation");
+        let alias_field = alias
+            .economy()
+            .mana_attraction_fields()
+            .iter()
+            .find(|field| field.source_entity_index == alias_slot)
+            .copied()
+            .expect("alias field row");
+        assert_eq!(
+            (alias_field.radius_squared, alias_field.max_life),
+            (field.radius_squared, field.max_life)
+        );
+        assert_eq!(alias_field.action, MANA_ATTRACTION_ALIAS_ACTION);
     }
 
     #[test]
