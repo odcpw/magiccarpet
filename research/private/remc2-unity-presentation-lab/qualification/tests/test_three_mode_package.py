@@ -65,9 +65,25 @@ class ThreeModePackageTests(unittest.TestCase):
         self.assertEqual([], PACKAGE.validate_classic_hd_owner_visual_capture_artifact())
         self.assertEqual([], PACKAGE.validate_unity_enhanced_owner_visual_capture_artifact())
 
-    def test_os_window_lifecycle_remains_open_until_real_player_capture(self):
+    def test_os_window_lifecycle_records_both_real_player_cases_and_stays_open_for_review(self):
         self.assertEqual([], PACKAGE.validate_classic_hd_owner_os_window_lifecycle_artifact())
         self.assertEqual([], PACKAGE.validate_classic_hd_os_window_lifecycle_tooling())
+        windowed = json.loads(
+            (ROOT / "qualification" / "classic-hd-owner-os-window-lifecycle.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        fullscreen = json.loads(
+            (
+                ROOT
+                / "qualification"
+                / "classic-hd-owner-os-window-lifecycle-fullscreen-window.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(["windowed"], windowed["captured_external_cases"])
+        self.assertTrue(fullscreen["external_focus_transition_observed"])
+        self.assertTrue(fullscreen["external_focus_return_observed"])
+        self.assertTrue(fullscreen["post_regain_output_stable"])
 
     def test_standalone_player_build_path_is_documented(self):
         self.assertEqual([], PACKAGE.validate_standalone_player_build_tooling())

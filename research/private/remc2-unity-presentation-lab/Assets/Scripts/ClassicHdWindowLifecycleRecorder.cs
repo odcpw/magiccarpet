@@ -188,17 +188,22 @@ namespace MagicCarpet.PresentationLab
                 {
                     sawFocusLoss = true;
                 }
-                else if (sawFocusLoss && !router.IsApplicationSuspended)
-                {
-                    sawFocusReturn = true;
-                    awaitingPostRegainStability = true;
-                    stableRenderedFrames = 0;
-                    hasLastRenderedState = false;
-                }
             }
             else if (string.Equals(callbackName, "pause", StringComparison.Ordinal))
             {
                 actualPauseCallbackCount++;
+            }
+
+            // Unity may deliver OnApplicationFocus(true) before
+            // OnApplicationPause(false). Treat the pair as one real return
+            // once both state flags agree, regardless of callback order.
+            if (sawFocusLoss && !sawFocusReturn &&
+                router.ApplicationFocused && !router.IsApplicationSuspended)
+            {
+                sawFocusReturn = true;
+                awaitingPostRegainStability = true;
+                stableRenderedFrames = 0;
+                hasLastRenderedState = false;
             }
 
             RecordObservation(

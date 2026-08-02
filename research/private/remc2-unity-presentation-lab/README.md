@@ -253,8 +253,12 @@ MagicCarpetPresentationLab \
 
 Repeat with `-mc-fullscreen true`, `-mc-window-case fullscreen-window`, and a
 separate receipt path. The checked-in
-`qualification/classic-hd-owner-os-window-lifecycle.json` remains an honest
-open placeholder until both external cases are captured and reviewed.
+`qualification/classic-hd-owner-os-window-lifecycle.json` now records the real
+windowed owner-player case, while
+`qualification/classic-hd-owner-os-window-lifecycle-fullscreen-window.json`
+records the real `FullScreenWindow` case. Both receipts remain explicitly open
+for human review; the package still requires both cases and does not promote
+them merely because the recorder observed callbacks.
 
 The same route is qualified separately at the 960x720 candidate profile with
 `-mc-classic-profile hd-960x720`. Its receipt is

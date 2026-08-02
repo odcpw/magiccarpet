@@ -63,6 +63,9 @@ CLASSIC_HD_OWNER_EFFECTS_MATRIX_ARTIFACT = Path(__file__).with_name(
 CLASSIC_HD_OWNER_OS_WINDOW_LIFECYCLE_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-os-window-lifecycle.json"
 )
+CLASSIC_HD_OWNER_OS_WINDOW_FULLSCREEN_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-os-window-lifecycle-fullscreen-window.json"
+)
 CLASSIC_HD_OWNER_VISUAL_CAPTURE_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-visual-capture.json"
 )
@@ -435,8 +438,11 @@ def validate_classic_hd_owner_focus_pause_artifact(
         errors.append("Classic HD owner focus/pause must prove the native pause lifecycle")
     if artifact.get("suspended_capture_contract") != "capture-refused-while-suspended; authoritative-generation-and-tick-unchanged":
         errors.append("Classic HD owner focus/pause must prove suspended capture is refused before stepping")
-    if artifact.get("fullscreen_alt_tab_status") != "open-os-window-capture-required":
-        errors.append("Classic HD owner focus/pause must keep OS window capture open")
+    if artifact.get("fullscreen_alt_tab_status") not in {
+        "open-os-window-capture-required",
+        "captured-windowed-and-fullscreen-window-open-human-review",
+    }:
+        errors.append("Classic HD owner focus/pause must identify the OS window capture state")
     for field in ("source_revision", "native_plugin_sha256", "log_sha256", "log_path", "qualification_status"):
         if not isinstance(artifact.get(field), str) or not artifact[field]:
             errors.append(f"Classic HD owner focus/pause is missing {field}")
@@ -892,51 +898,81 @@ def validate_classic_hd_owner_visual_capture_artifact(
     )
 
 
+def _validate_classic_hd_owner_os_window_receipt(
+    artifact: dict[str, Any],
+    label: str,
+    expected_window_case: str | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    if artifact.get("schema_version") != 1:
+        errors.append(f"{label} schema_version must be 1")
+    if artifact.get("kind") != "classic-hd-owner-os-window-lifecycle/v1":
+        errors.append(f"{label} kind is wrong")
+    if artifact.get("mode") != "classic-hd" or artifact.get("profile") != "hd-640x480":
+        errors.append(f"{label} must target hd-640x480")
+    if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
+        errors.append(f"{label} must keep owner inputs external")
+    if artifact.get("required_consecutive_stable_frames") != 2:
+        errors.append(f"{label} must require two stable rendered frames")
+    if expected_window_case is not None and artifact.get("window_case") != expected_window_case:
+        errors.append(f"{label} must target {expected_window_case}")
+    status = str(artifact.get("qualification_status", ""))
+    if "open" not in status and "pending" not in status:
+        errors.append(f"{label} must remain open until final review")
+    if artifact.get("initial_output_stable") is True or artifact.get("post_regain_output_stable") is True:
+        if artifact.get("actual_focus_callback_count", 0) <= 0:
+            errors.append(f"{label} stable evidence requires an actual focus callback")
+
+    events = artifact.get("events")
+    if not isinstance(events, list):
+        errors.append(f"{label} events must be a list")
+    else:
+        for event in events:
+            if not isinstance(event, dict):
+                errors.append(f"{label} contains a non-object event")
+                continue
+            if event.get("synthetic_qualification") is True:
+                errors.append(f"{label} must reject synthetic events")
+            if event.get("actual_os_callback") is True and not str(event.get("observation", "")).startswith(
+                "unity-on-application-"
+            ):
+                errors.append(f"{label} actual callbacks must be named Unity application callbacks")
+    return errors
+
+
 def validate_classic_hd_owner_os_window_lifecycle_artifact(
     path: Path = CLASSIC_HD_OWNER_OS_WINDOW_LIFECYCLE_ARTIFACT,
 ) -> list[str]:
-    """Validate the fail-closed OS-window receipt contract.
-
-    The checked-in artifact is intentionally a placeholder until an actual
-    standalone player is driven by an external window-manager action.
-    """
+    """Validate the two real-player OS-window receipts without closing the gate."""
     errors: list[str] = []
     try:
         artifact = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         return [f"Classic HD OS window lifecycle artifact read failed: {error}"]
 
-    if artifact.get("schema_version") != 1:
-        errors.append("Classic HD OS window lifecycle schema_version must be 1")
-    if artifact.get("kind") != "classic-hd-owner-os-window-lifecycle/v1":
-        errors.append("Classic HD OS window lifecycle artifact kind is wrong")
-    if artifact.get("mode") != "classic-hd" or artifact.get("profile") != "hd-640x480":
-        errors.append("Classic HD OS window lifecycle artifact must target hd-640x480")
-    if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
-        errors.append("Classic HD OS window lifecycle must keep owner inputs external")
-    if artifact.get("required_consecutive_stable_frames") != 2:
-        errors.append("Classic HD OS window lifecycle must require two stable rendered frames")
-    status = str(artifact.get("qualification_status", ""))
-    if "open" not in status and "pending" not in status:
-        errors.append("Classic HD OS window lifecycle must remain open until external capture")
-    if artifact.get("initial_output_stable") is True or artifact.get("post_regain_output_stable") is True:
-        if artifact.get("actual_focus_callback_count", 0) <= 0:
-            errors.append("stable OS-window evidence requires an actual focus callback")
+    errors.extend(_validate_classic_hd_owner_os_window_receipt(artifact, "Classic HD OS window lifecycle artifact"))
 
-    events = artifact.get("events")
-    if not isinstance(events, list):
-        errors.append("Classic HD OS window lifecycle events must be a list")
+    required_cases = artifact.get("required_external_cases")
+    if required_cases != ["windowed", "fullscreen-window"]:
+        errors.append("Classic HD OS window lifecycle must require windowed and fullscreen-window cases")
+    captured_cases = artifact.get("captured_external_cases")
+    if not isinstance(captured_cases, list) or "windowed" not in captured_cases:
+        errors.append("Classic HD OS window lifecycle must record the captured windowed case")
+
+    try:
+        fullscreen_artifact = json.loads(
+            CLASSIC_HD_OWNER_OS_WINDOW_FULLSCREEN_ARTIFACT.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as error:
+        errors.append(f"Classic HD fullscreen-window lifecycle artifact read failed: {error}")
     else:
-        for event in events:
-            if not isinstance(event, dict):
-                errors.append("Classic HD OS window lifecycle contains a non-object event")
-                continue
-            if event.get("synthetic_qualification") is True:
-                errors.append("Classic HD OS window lifecycle must reject synthetic events")
-            if event.get("actual_os_callback") is True and not str(event.get("observation", "")).startswith(
-                "unity-on-application-"
-            ):
-                errors.append("actual OS callbacks must be named Unity application callbacks")
+        errors.extend(
+            _validate_classic_hd_owner_os_window_receipt(
+                fullscreen_artifact,
+                "Classic HD fullscreen-window lifecycle artifact",
+                "fullscreen-window",
+            )
+        )
     return errors
 
 

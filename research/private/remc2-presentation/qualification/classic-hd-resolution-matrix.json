@@ -175,7 +175,7 @@
     "high_speed_flight": "pending-owner-lab-capture",
     "death_restart": "owner-hd-640x480-scenario-pass",
     "completion_postgame": "pending-owner-lab-capture",
-    "fullscreen_window_alt_tab": "pending-owner-lab-capture",
+    "fullscreen_window_alt_tab": "owner-hd-640x480-windowed-and-fullscreen-window-capture-pass-open-human-review",
     "asset_tier_fallback": "owner-hd-960x720-optional-tier-fallback-pass",
     "reflection_lighting_blur": "owner-hd-640x480-effects-settings-matrix-pass",
     "invalid_config": "covered-by-launcher-and-settings-tests"
