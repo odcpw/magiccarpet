@@ -1591,5 +1591,123 @@ class OwnerCacheTests(unittest.TestCase):
             cache.validate_output_path(cache.UNITY / "Builds/OwnerCache")
 
 
+class Level2DayMaterialTests(unittest.TestCase):
+    """Focused acceptance coverage for the additive Level 2 Day profile seam."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.temp_root = Path(
+            tempfile.mkdtemp(prefix="level2-day-material-test.", dir=cache.GENERATED)
+        )
+        cls.first = cls.temp_root / "first"
+        cls.second = cls.temp_root / "second"
+        cache.build_day_material_cache(
+            cache.DEFAULT_OWNER,
+            cache.DEFAULT_LEVEL2_PACKAGE,
+            cache.DEFAULT_LEVEL2_CLOSURE,
+            cache.DEFAULT_CATALOG,
+            cls.first,
+        )
+        cache.build_day_material_cache(
+            cache.DEFAULT_OWNER,
+            cache.DEFAULT_LEVEL2_PACKAGE,
+            cache.DEFAULT_LEVEL2_CLOSURE,
+            cache.DEFAULT_CATALOG,
+            cls.second,
+        )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.temp_root)
+
+    def test_byte_identical_profile_bound_rebuild_and_gpu_bounds(self) -> None:
+        self.assertEqual(tree_identity(self.first), tree_identity(self.second))
+        manifest = cache.validate_day_material_cache(
+            self.first,
+            "4b8c245c268d9644d5911285c4b4da5dacb78d02034fec7d2f05366a4cc48c6a",
+            "a4a7a3d4086c09404294fb90d53e7f34e05d58a406fb025e15f032cca18793f1",
+        )
+        self.assertEqual(manifest["profile"]["external_level"], 2)
+        self.assertEqual(manifest["profile"]["internal_level"], 1)
+        self.assertEqual(manifest["profile"]["map_type"], {"id": 0, "name": "Day"})
+        descriptor = json.loads(
+            (self.first / "materials/descriptor.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(descriptor["palette"]["entries"], 256)
+        self.assertEqual(descriptor["tablesd"]["bytes"], 83456)
+        self.assertEqual(descriptor["clrd"]["entries"], 4096)
+        self.assertEqual(descriptor["bl32n"]["tile_count"], 152)
+        self.assertEqual(len(descriptor["tmaps0"]["selectors"]), 129)
+        self.assertEqual(descriptor["gpu_ready"]["indexed_format"], "R8_UNORM")
+
+    def test_material_manifest_tamper_is_rejected(self) -> None:
+        path = self.first / "manifest.json"
+        original = path.read_bytes()
+        manifest = json.loads(original)
+        manifest["outputs"][0]["sha256"] = "0" * 64
+        path.write_bytes(cache.canonical_json(manifest))
+        with self.assertRaisesRegex(cache.CacheError, "metadata hash mismatch"):
+            cache.validate_day_material_cache(self.first)
+        path.write_bytes(original)
+
+    def test_cross_profile_and_closure_tamper_fail_before_materialization(self) -> None:
+        with self.assertRaisesRegex(cache.CacheError, "requires external=2"):
+            cache.build_day_material_cache(
+                cache.DEFAULT_OWNER,
+                cache.DEFAULT_PACKAGE,
+                cache.DEFAULT_CLOSURE,
+                cache.DEFAULT_CATALOG,
+                self.temp_root / "wrong-profile",
+            )
+        package_copy = self.temp_root / "package-selector-tampered"
+        shutil.copytree(cache.DEFAULT_LEVEL2_PACKAGE, package_copy)
+        package_manifest_path = package_copy / "manifest.json"
+        package_manifest = json.loads(package_manifest_path.read_text(encoding="utf-8"))
+        package_manifest["presentation_dependencies"]["resolved_files"]["block_bank"] = (
+            "owner:CD_Files/DATA/BL32F0-0.DAT"
+        )
+        package_manifest_path.write_bytes(cache.canonical_json(package_manifest))
+        with self.assertRaisesRegex(cache.CacheError, "resolved owner-file selector map"):
+            cache.build_day_material_cache(
+                cache.DEFAULT_OWNER,
+                package_copy,
+                cache.DEFAULT_LEVEL2_CLOSURE,
+                cache.DEFAULT_CATALOG,
+                self.temp_root / "tampered-package-selector",
+            )
+        closure_copy = self.temp_root / "closure.json"
+        closure = json.loads(cache.DEFAULT_LEVEL2_CLOSURE.read_text(encoding="utf-8"))
+        closure["sets"]["scene_reachable"]["assets"] = []
+        unsigned_closure = dict(closure)
+        unsigned_closure.pop("closure_sha256", None)
+        closure["closure_sha256"] = cache.sha256_bytes(
+            json.dumps(
+                unsigned_closure,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+        )
+        closure_copy.write_bytes(cache.canonical_json(closure))
+        with self.assertRaisesRegex(cache.CacheError, "wrong qualified Level 2 closure hash"):
+            cache.build_day_material_cache(
+                cache.DEFAULT_OWNER,
+                cache.DEFAULT_LEVEL2_PACKAGE,
+                closure_copy,
+                cache.DEFAULT_CATALOG,
+                self.temp_root / "tampered-closure",
+            )
+
+    def test_material_symlink_is_rejected(self) -> None:
+        path = self.first / "palette/pald.rgb6"
+        original = path.read_bytes()
+        path.unlink()
+        path.symlink_to(self.second / "palette/pald.rgb6")
+        with self.assertRaisesRegex(cache.CacheError, "contains symlink"):
+            cache.validate_day_material_cache(self.first)
+        path.unlink()
+        path.write_bytes(original)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -29,6 +29,9 @@ DEFAULT_PACKAGE = GENERATED / "level1-export-m"
 DEFAULT_CLOSURE = GENERATED / "level1-asset-closure.json"
 DEFAULT_CATALOG = PRIVATE / "remc2-atlas/semantics/generated/owner-asset-catalog.json"
 DEFAULT_OUTPUT = GENERATED / "level1-unity-asset-cache-plan29-final"
+DEFAULT_LEVEL2_PACKAGE = GENERATED / "l2-debug3.fJ3PaM/level2"
+DEFAULT_LEVEL2_CLOSURE = GENERATED / "level2-asset-closure.json"
+DEFAULT_LEVEL2_OUTPUT = GENERATED / "level2-day-material-cache"
 DEFAULT_CONFORMANCE_CONTRACT = (
     PRIVATE / "remc2-sim-rs/level1-conformance/plan29-closure-contract.json"
 )
@@ -74,9 +77,12 @@ GOAT_TMAP_GOLDEN = (
 )
 
 SCHEMA = "mc2-owner-unity-asset-cache/v1"
+LEVEL2_MATERIAL_SCHEMA = "mc2-level2-day-material-cache/v1"
 CONFORMANCE_SEAL_SCHEMA = "mc2-plan29-cache-conformance-identity/v1"
 GENERATOR_VERSION = "1.15.0"
 PINNED_REMC2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
+EXPECTED_LEVEL2_PACKAGE = "4b8c245c268d9644d5911285c4b4da5dacb78d02034fec7d2f05366a4cc48c6a"
+EXPECTED_LEVEL2_CLOSURE = "a4a7a3d4086c09404294fb90d53e7f34e05d58a406fb025e15f032cca18793f1"
 PINNED_REMC2_SOURCE_SPANS = (
     (
         "remc2/engine/GameRenderOriginal.cpp",
@@ -4288,6 +4294,510 @@ def commit_stage(output: Path, stage: Path, failpoint: str | None = None) -> Non
         fsync_parent(output)
 
 
+LEVEL2_DAY_SOURCE_PATHS = (
+    "DATA/PALD-0.DAT",
+    "DATA/TABLESD.DAT",
+    "DATA/CLRD-0.DAT",
+    "DATA/BL32N0-0.DAT",
+    "DATA/SKYD0-0.DAT",
+    "DATA/TMAPS0-0.DAT",
+    "DATA/TMAPS0-0.TAB",
+    "DATA/MSPRD0-0.DAT",
+    "DATA/MSPRD0-0.TAB",
+    "DATA/MWEBD0-0.DAT",
+    "DATA/MWEBD0-0.TAB",
+)
+
+
+def _level2_catalog_identity(catalog_path: Path) -> tuple[dict[str, Any], str]:
+    """Load the owner catalogue and verify its signed, canonical identity."""
+    catalog = load_json(catalog_path)
+    if not isinstance(catalog, dict) or not catalog.get("schema_version"):
+        raise CacheError("Level 2 owner catalogue has no schema_version")
+    claim = catalog.get("catalog_sha256")
+    payload = dict(catalog)
+    payload.pop("catalog_sha256", None)
+    actual = sha256_bytes(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+            "utf-8"
+        )
+    )
+    if claim != actual:
+        raise CacheError("Level 2 owner catalogue canonical self-hash mismatch")
+    return catalog, sha256_file(catalog_path)
+
+
+def _level2_profile(
+    package_dir: Path, closure_path: Path, catalog_path: Path
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Resolve the immutable external/internal Day material-cache profile.
+
+    The package, closure, catalogue, and every selected owner file are checked
+    before any output is staged.  This is deliberately separate from the
+    legacy Level 1 builder so its exact manifest/output identity cannot move.
+    """
+    package_dir = package_dir.expanduser().resolve()
+    closure_path = closure_path.expanduser().resolve()
+    catalog_path = catalog_path.expanduser().resolve()
+    package = load_json(package_dir / "manifest.json")
+    try:
+        load_proven_export_verifier()(package_dir, package)
+    except ValueError as error:
+        raise CacheError(f"Level 2 package identity verification failed: {error}") from error
+    level = package.get("level", {})
+    map_type = level.get("map_type", {})
+    if (
+        package.get("schema") != "mc2-owner-level-export/v3"
+        or level.get("external") != 2
+        or level.get("internal") != 1
+        or map_type != {"id": 0, "name": "Day"}
+    ):
+        raise CacheError("Level 2 material profile requires external=2/internal=1/Day")
+    if package.get("source", {}).get("upstream_commit") != PINNED_REMC2_COMMIT:
+        raise CacheError("Level 2 package remc2 specification pin mismatch")
+    selectors = package.get("presentation_dependencies")
+    expected = {
+        "map_type": "Day",
+        "vga_resolution_selector": 1,
+        "texture_size": 32,
+        "terrain_graphics_flags": 0,
+        "terrain_graphics_flag_2": False,
+        "terrain_bank": "TMAPS0-0",
+        "sprite_bank": "MSPRD0-0",
+        "web_bank": "MWEBD0-0",
+        "block_bank": "BL32N0-0",
+        "palette": "PALD-0",
+        "sky_bank": "SKYD0-0",
+        "sound_bank": 1,
+        "cursor": 9,
+    }
+    if not isinstance(selectors, dict) or any(
+        selectors.get(key) != value for key, value in expected.items()
+    ):
+        raise CacheError("Level 2 material profile selector tuple changed")
+    expected_resolved_files = {
+        "level_records": "owner:GAME/NETHERW/CLEVELS/LEVELS.DAT",
+        "terrain_bank": "owner:GAME/NETHERW/CDATA/TMAPS0-0.DAT",
+        "sprite_bank": "owner:CD_Files/DATA/MSPRD0-0.DAT",
+        "web_bank": "owner:CD_Files/DATA/MWEBD0-0.DAT",
+        "block_bank": "owner:CD_Files/DATA/BL32N0-0.DAT",
+        "palette": "owner:CD_Files/DATA/PALD-0.DAT",
+        "sky_bank": "owner:CD_Files/DATA/SKYD0-0.DAT",
+        "building_bank": "owner:CD_Files/DATA/BUILD0-0.DAT",
+        "spell_table": "owner:CD_Files/DATA/SPELLS.DAT",
+        "font_bank": "owner:CD_Files/DATA/FONT1.DAT",
+        "language": "owner:CD_Files/LANGUAGE/L1.TXT",
+    }
+    if selectors.get("resolved_files") != expected_resolved_files:
+        raise CacheError("Level 2 resolved owner-file selector map changed")
+    closure = load_json(closure_path)
+    closure_claim = closure.get("closure_sha256")
+    closure_payload = dict(closure)
+    closure_payload.pop("closure_sha256", None)
+    closure_actual = sha256_bytes(
+        json.dumps(closure_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+            "utf-8"
+        )
+    )
+    if closure_claim != closure_actual:
+        raise CacheError("Level 2 closure canonical self-hash mismatch")
+    closure_profile = closure.get("profile", {})
+    if (
+        closure_profile.get("name") != "level2-day"
+        or closure_profile.get("external_level") != 2
+        or closure_profile.get("internal_level") != 1
+        or closure_profile.get("map_type") != {"id": 0, "name": "day"}
+        or closure_profile.get("spec_commit") != PINNED_REMC2_COMMIT
+    ):
+        raise CacheError("Level 2 closure profile selector tuple changed")
+    package_hash = package.get("package_sha256")
+    if package_hash != EXPECTED_LEVEL2_PACKAGE:
+        raise CacheError("wrong qualified Level 2 package hash")
+    if closure.get("source", {}).get("level_export", {}).get("package_sha256") != package_hash:
+        raise CacheError("Level 2 closure is bound to a different package")
+    catalog, catalog_file_sha256 = _level2_catalog_identity(catalog_path)
+    closure_catalog = closure.get("source", {}).get("owner_catalog", {})
+    if (
+        closure_catalog.get("catalog_sha256") != catalog.get("catalog_sha256")
+        or closure_catalog.get("file_sha256") != catalog_file_sha256
+    ):
+        raise CacheError("Level 2 catalogue does not match closure binding")
+    if closure_claim != EXPECTED_LEVEL2_CLOSURE:
+        raise CacheError("wrong qualified Level 2 closure hash")
+    files = {row.get("path"): row for row in catalog.get("files", [])}
+    entries = {row.get("asset_id"): row for row in catalog.get("entries", [])}
+    for relative in LEVEL2_DAY_SOURCE_PATHS:
+        row = files.get(relative)
+        if row is None:
+            raise CacheError(f"Level 2 owner catalogue has no file: {relative}")
+    profile = {
+        "name": "level2-day",
+        "external_level": 2,
+        "internal_level": 1,
+        "map_type": {"id": 0, "name": "Day"},
+        "selectors": {
+            key: selectors[key]
+            for key in (
+                "vga_resolution_selector",
+                "texture_size",
+                "terrain_graphics_flags",
+                "terrain_graphics_flag_2",
+                "terrain_bank",
+                "sprite_bank",
+                "web_bank",
+                "block_bank",
+                "palette",
+                "sky_bank",
+            )
+        },
+        "package_sha256": package_hash,
+        "closure_sha256": closure_claim,
+        "catalog_sha256": catalog.get("catalog_sha256"),
+        "catalog_file_sha256": catalog_file_sha256,
+        "spec_commit": PINNED_REMC2_COMMIT,
+    }
+    return profile, package, closure, {**files, **entries}
+
+
+def _level2_owner_sources(
+    owner_root: Path, catalog_rows: dict[str, Any]
+) -> dict[str, bytes]:
+    """Verify and read all base Day banks against the catalogue hashes."""
+    owner_root = owner_root.expanduser().resolve()
+    source_bytes: dict[str, bytes] = {}
+    for relative in LEVEL2_DAY_SOURCE_PATHS:
+        path = confined_source(owner_root, relative)
+        data = path.read_bytes()
+        row = catalog_rows.get(relative)
+        if not isinstance(row, dict) or row.get("sha256") != sha256_bytes(data):
+            raise CacheError(f"Level 2 owner source hash differs from catalogue: {relative}")
+        source_bytes[relative] = data
+    return source_bytes
+
+
+def _level2_tmap_selectors(closure: dict[str, Any]) -> list[int]:
+    selectors: set[int] = set()
+    for set_name in ("scene_reachable", "dynamic_dependencies"):
+        rows = closure.get("sets", {}).get(set_name, {}).get("assets", [])
+        for row in rows:
+            asset_id = row.get("asset_id", "")
+            prefix = "owner_data:DATA/TMAPS0-0.DAT#"
+            if asset_id.startswith(prefix):
+                try:
+                    selectors.add(int(asset_id[len(prefix):]))
+                except ValueError as error:
+                    raise CacheError(f"invalid Level 2 TMAP selector: {asset_id}") from error
+    if not selectors or min(selectors) < 0 or max(selectors) >= 504:
+        raise CacheError("Level 2 closure has no bounded TMAPS0 selector set")
+    return sorted(selectors)
+
+
+def _level2_cache_identity(outputs: list[dict[str, Any]]) -> str:
+    return sha256_bytes(
+        b"".join(
+            f"{row['path']}\0{row['sha256']}\0{row['bytes']}\n".encode("ascii")
+            for row in outputs
+        )
+    )
+
+
+def validate_day_material_cache(
+    cache_dir: Path,
+    expected_package: str | None = None,
+    expected_closure: str | None = None,
+) -> dict[str, Any]:
+    """Validate a profile-bound Level 2 base-material cache and its tree."""
+    cache_dir = cache_dir.expanduser().resolve()
+    manifest = load_json(cache_dir / "manifest.json")
+    claim = manifest.get("manifest_payload_sha256")
+    unsigned = dict(manifest)
+    unsigned.pop("manifest_payload_sha256", None)
+    if sha256_bytes(canonical_json(unsigned)) != claim:
+        raise CacheError("Level 2 material manifest metadata hash mismatch")
+    if manifest.get("schema") != LEVEL2_MATERIAL_SCHEMA:
+        raise CacheError("unsupported Level 2 material cache schema")
+    profile = manifest.get("profile", {})
+    if (
+        profile.get("name") != "level2-day"
+        or profile.get("external_level") != 2
+        or profile.get("internal_level") != 1
+        or profile.get("map_type") != {"id": 0, "name": "Day"}
+        or profile.get("spec_commit") != PINNED_REMC2_COMMIT
+    ):
+        raise CacheError("Level 2 material profile identity mismatch")
+    if profile.get("selectors") != {
+        "vga_resolution_selector": 1,
+        "texture_size": 32,
+        "terrain_graphics_flags": 0,
+        "terrain_graphics_flag_2": False,
+        "terrain_bank": "TMAPS0-0",
+        "sprite_bank": "MSPRD0-0",
+        "web_bank": "MWEBD0-0",
+        "block_bank": "BL32N0-0",
+        "palette": "PALD-0",
+        "sky_bank": "SKYD0-0",
+    }:
+        raise CacheError("Level 2 material profile selector identity mismatch")
+    bindings = manifest.get("bindings", {})
+    if (
+        bindings.get("level_export_package_sha256") != profile.get("package_sha256")
+        or bindings.get("level_asset_closure_sha256") != profile.get("closure_sha256")
+        or bindings.get("owner_catalog_sha256") != profile.get("catalog_sha256")
+        or bindings.get("owner_catalog_file_sha256") != profile.get("catalog_file_sha256")
+        or bindings.get("remc2_commit") != PINNED_REMC2_COMMIT
+    ):
+        raise CacheError("Level 2 material binding identity mismatch")
+    if expected_package is not None and profile.get("package_sha256") != expected_package:
+        raise CacheError("Level 2 material package binding mismatch")
+    if expected_closure is not None and profile.get("closure_sha256") != expected_closure:
+        raise CacheError("Level 2 material closure binding mismatch")
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, list) or not outputs:
+        raise CacheError("Level 2 material cache has no outputs")
+    seen: set[str] = set()
+    for row in outputs:
+        relative = row.get("path")
+        if (
+            not isinstance(relative, str)
+            or relative in seen
+            or relative.startswith("/")
+            or ".." in Path(relative).parts
+        ):
+            raise CacheError("invalid or duplicate Level 2 material output path")
+        seen.add(relative)
+        path = cache_dir / relative
+        if path.is_symlink():
+            raise CacheError(f"Level 2 material cache contains symlink: {relative}")
+        if not path.is_file() or path.stat().st_size != row.get("bytes"):
+            raise CacheError(f"Level 2 material output missing or truncated: {relative}")
+        if sha256_file(path) != row.get("sha256"):
+            raise CacheError(f"Level 2 material output hash mismatch: {relative}")
+    if _level2_cache_identity(outputs) != manifest.get("cache_content_sha256"):
+        raise CacheError("Level 2 material cache content identity mismatch")
+    descriptor_path = cache_dir / "materials/descriptor.json"
+    if not descriptor_path.is_file():
+        raise CacheError("Level 2 material descriptor is missing")
+    descriptor = load_json(descriptor_path)
+    if descriptor.get("schema") != "mc2-level2-day-materials/v1":
+        raise CacheError("Level 2 material descriptor schema mismatch")
+    if descriptor.get("profile") != profile:
+        raise CacheError("Level 2 material descriptor profile mismatch")
+    for key, expected in {
+        "palette": ("entries", 256),
+        "tablesd": ("bytes", 83456),
+        "clrd": ("entries", 4096),
+        "bl32n": ("tile_count", 152),
+        "skyd": ("width", 256),
+    }.items():
+        value = descriptor.get(key)
+        if not isinstance(value, dict) or value.get(expected[0]) != expected[1]:
+            raise CacheError(f"Level 2 material descriptor bounds changed: {key}")
+    if (
+        descriptor["skyd"].get("height") != 256
+        or descriptor["bl32n"].get("tile_width") != 32
+        or descriptor["bl32n"].get("tile_height") != 32
+        or descriptor["bl32n"].get("atlas_width") != 256
+        or descriptor["bl32n"].get("atlas_height") != 608
+    ):
+        raise CacheError("Level 2 indexed material dimensions changed")
+    tmap_descriptor = descriptor.get("tmaps0")
+    tmap_selectors = tmap_descriptor.get("selectors") if isinstance(tmap_descriptor, dict) else None
+    tmap_rows = tmap_descriptor.get("textures") if isinstance(tmap_descriptor, dict) else None
+    if (
+        not isinstance(tmap_selectors, list)
+        or not tmap_selectors
+        or any(not isinstance(index, int) or not 0 <= index < 504 for index in tmap_selectors)
+        or tmap_selectors != sorted(set(tmap_selectors))
+        or not isinstance(tmap_rows, list)
+        or any(not isinstance(row, dict) for row in tmap_rows)
+        or any(not isinstance(row.get("index"), int) for row in tmap_rows)
+        or sorted(row.get("index") for row in tmap_rows) != tmap_selectors
+    ):
+        raise CacheError("Level 2 TMAP selector bounds or rows changed")
+    gpu = descriptor.get("gpu_ready")
+    if not isinstance(gpu, dict) or gpu.get("indexed_format") != "R8_UNORM":
+        raise CacheError("Level 2 GPU-ready indexed descriptor is missing")
+    expected_tree = {"manifest.json", *seen}
+    actual_tree: set[str] = set()
+    for path in cache_dir.rglob("*"):
+        if path.is_symlink():
+            raise CacheError("Level 2 material cache tree contains symlink")
+        if path.is_file():
+            actual_tree.add(path.relative_to(cache_dir).as_posix())
+    if actual_tree != expected_tree:
+        raise CacheError("Level 2 material cache tree has missing or extra files")
+    return manifest
+
+
+def build_day_material_cache(
+    owner_root: Path,
+    package_dir: Path,
+    closure_path: Path,
+    catalog_path: Path,
+    output: Path,
+) -> dict[str, Any]:
+    """Materialize the qualified Level 2 Day base material profile.
+
+    This intentionally stops at indexed palette/table/tile/sky/TMAP material
+    descriptors.  Sprites and web banks are bound as roots for the later
+    presentation slice; gameplay, HUD, audio, and Unity scene files remain out
+    of this bead.
+    """
+    output = validate_output_path(output)
+    profile, _, closure, catalog_rows = _level2_profile(
+        package_dir, closure_path, catalog_path
+    )
+    file_rows = {
+        path: row for path, row in catalog_rows.items() if isinstance(row, dict) and "sha256" in row
+    }
+    source_bytes = _level2_owner_sources(owner_root, file_rows)
+    package_hash = profile["package_sha256"]
+    closure_hash = profile["closure_sha256"]
+    selectors = _level2_tmap_selectors(closure)
+    stage = Path(tempfile.mkdtemp(prefix=".level2-day-material-", dir=output.parent))
+    try:
+        outputs: list[dict[str, Any]] = []
+        palette = source_bytes["DATA/PALD-0.DAT"]
+        if len(palette) != 768 or max(palette) > 63:
+            raise CacheError("PALD is not 256 RGB6 triplets")
+        palette_rgb8 = bytes(value * 4 for value in palette)
+        palette_output = write_output(
+            stage, outputs, "palette/pald.rgb6", palette,
+            kind="ordered_rgb6_palette", source_asset_ids=["owner_data:DATA/PALD-0.DAT"],
+            extra={"entries": 256, "channel_bits": 6},
+        )
+        rgb8_output = write_output(
+            stage, outputs, "palette/pald.rgb8", palette_rgb8,
+            kind="ordered_rgb8_palette_exact_vga_scale",
+            source_asset_ids=["owner_data:DATA/PALD-0.DAT"],
+            extra={"entries": 256, "conversion": "channel_u8 = channel_rgb6 * 4"},
+        )
+        tablesd = source_bytes["DATA/TABLESD.DAT"]
+        if len(tablesd) != 83456 or max(tablesd) > 255:
+            raise CacheError("TABLESD bounds changed")
+        tables_output = write_output(
+            stage, outputs, "palette/tablesd.u8", tablesd,
+            kind="remc2_day_renderer_tables_u8", source_asset_ids=["owner_data:DATA/TABLESD.DAT"],
+            extra={"bytes": len(tablesd), "shade_lut_offset": 0, "shade_lut_bytes": 65536},
+        )
+        shade_output = write_output(
+            stage, outputs, "palette/tablesd.shade-lut.indices.u8", tablesd[:65536],
+            kind="indexed_palette_shade_lut_256x256_u8",
+            source_asset_ids=["owner_data:DATA/TABLESD.DAT"],
+            extra={"width": 256, "height": 256, "x": "source_palette_index_u8", "y": "brightness_u8"},
+        )
+        clrd = source_bytes["DATA/CLRD-0.DAT"]
+        if len(clrd) != 4096 or max(clrd) > 255:
+            raise CacheError("CLRD bounds changed")
+        clrd_output = write_output(
+            stage, outputs, "palette/clrd.indices.u8", clrd,
+            kind="day_rgb444_to_palette_index_lut_u8", source_asset_ids=["owner_data:DATA/CLRD-0.DAT"],
+            extra={"entries": 4096, "index_semantics": "remc2 Day 12-bit colour lookup"},
+        )
+        sky = source_bytes["DATA/SKYD0-0.DAT"]
+        if len(sky) != 256 * 256 or max(sky) > 255:
+            raise CacheError("SKYD bounds changed")
+        sky_output = write_output(
+            stage, outputs, "sky/skyd.indices.u8", sky,
+            kind="indexed_image_u8", source_asset_ids=["owner_data:DATA/SKYD0-0.DAT"],
+            extra={"width": 256, "height": 256, "palette_asset_id": "owner_data:DATA/PALD-0.DAT"},
+        )
+        bl32 = source_bytes["DATA/BL32N0-0.DAT"]
+        if len(bl32) != 152 * BL32_TILE_BYTES:
+            raise CacheError("Level 2 BL32N bank must contain exactly 152 32x32 tiles")
+        tiles = bytearray()
+        for tile in range(152):
+            x = (tile % BL32_ATLAS_COLUMNS) * BL32_TILE_SIDE
+            y = (tile // BL32_ATLAS_COLUMNS) * BL32_TILE_SIDE
+            for row in range(BL32_TILE_SIDE):
+                start = (y + row) * BL32_ATLAS_WIDTH + x
+                tiles.extend(bl32[start:start + BL32_TILE_SIDE])
+        atlas_output = write_output(
+            stage, outputs, "terrain/bl32n.atlas.indices.u8", bl32,
+            kind="indexed_atlas_u8", source_asset_ids=["owner_data:DATA/BL32N0-0.DAT"],
+            extra={"width": 256, "height": 608, "tile_width": 32, "tile_height": 32, "tile_columns": 8, "tile_count": 152, "palette_asset_id": "owner_data:DATA/PALD-0.DAT"},
+        )
+        tiles_output = write_output(
+            stage, outputs, "terrain/bl32n.indices.u8", bytes(tiles),
+            kind="indexed_tile_bank_u8", source_asset_ids=["owner_data:DATA/BL32N0-0.DAT"],
+            extra={"tile_width": 32, "tile_height": 32, "tile_count": 152, "palette_asset_id": "owner_data:DATA/PALD-0.DAT"},
+        )
+        tmap_dat = source_bytes["DATA/TMAPS0-0.DAT"]
+        tmap_tab = tmap_records(source_bytes["DATA/TMAPS0-0.TAB"])
+        if len(tmap_tab) != 505:
+            raise CacheError("TMAPS0 TAB must contain 504 rows plus sentinel")
+        tmap_rows: list[dict[str, Any]] = []
+        decoder_dir = stage / ".rnc-work"
+        decoder_dir.mkdir()
+        decoder, decoder_identity = compile_rnc_decoder(decoder_dir)
+        entry_rows = {key: row for key, row in catalog_rows.items() if isinstance(row, dict) and key.startswith("owner_data:")}
+        for index in selectors:
+            metadata, offset, group = tmap_tab[index]
+            _, end_offset, _ = tmap_tab[index + 1]
+            if offset < 0 or end_offset < offset or end_offset > len(tmap_dat):
+                raise CacheError(f"TMAPS0 packed span is invalid at index {index}")
+            packed = tmap_dat[offset:end_offset]
+            asset_id = f"owner_data:DATA/TMAPS0-0.DAT#{index}"
+            catalog_entry = entry_rows.get(asset_id)
+            if not isinstance(catalog_entry, dict) or catalog_entry.get("offset") != offset or catalog_entry.get("end_offset") != end_offset or catalog_entry.get("metadata_dword_0") != metadata or catalog_entry.get("animation_or_allocation_group") != group or catalog_entry.get("packed_span_sha256") != sha256_bytes(packed):
+                raise CacheError(f"TMAPS0 TAB/catalog disagreement at index {index}")
+            decoded = decode_tmap_rnc(decoder, packed, decoder_dir, index)
+            if len(decoded) < TMAP_HEADER.size:
+                raise CacheError(f"TMAPS0 decoded header is truncated at index {index}")
+            header_word, width, height = TMAP_HEADER.unpack_from(decoded)
+            first_frame_end = TMAP_HEADER.size + width * height
+            if not width or not height or metadata != len(decoded) or len(decoded) < first_frame_end:
+                raise CacheError(f"TMAPS0 dimensions disagree at index {index}")
+            if header_word & 1:
+                if len(decoded) < first_frame_end + 2:
+                    raise CacheError(f"TMAPS0 animated row has no frame stream at index {index}")
+                frame_count = struct.unpack_from("<H", decoded, first_frame_end)[0]
+                if frame_count == 0:
+                    raise CacheError(f"TMAPS0 animated row has zero frames at index {index}")
+            elif len(decoded) != first_frame_end:
+                raise CacheError(f"TMAPS0 static row has trailing bytes at index {index}")
+            decoded_output = write_output(
+                stage, outputs, f"terrain/tmaps0/{index:03d}.decoded.bin", decoded,
+                kind="remc2_tmap_decoded_payload", source_asset_ids=[asset_id],
+                extra={"index": index, "header_word": header_word, "width": width, "height": height, "animated": bool(header_word & 1), "frame_count": frame_count if header_word & 1 else 1},
+            )
+            indices_output = write_output(
+                stage, outputs, f"terrain/tmaps0/{index:03d}.indices.u8", decoded[TMAP_HEADER.size:first_frame_end],
+                kind="indexed_image_u8", source_asset_ids=[asset_id],
+                extra={"index": index, "width": width, "height": height, "palette_asset_id": "owner_data:DATA/PALD-0.DAT"},
+            )
+            tmap_rows.append({"index": index, "group": group, "width": width, "height": height, "animated": bool(header_word & 1), "frame_count": frame_count if header_word & 1 else 1, "decoded_payload_path": decoded_output["path"], "indices_path": indices_output["path"], "source_asset_id": asset_id, "row_order": "top_to_bottom", "origin": "top_left", "palette_asset_id": "owner_data:DATA/PALD-0.DAT"})
+        # Compiler/source scratch is provenance only; it must never become an
+        # unlisted cache output or alter the content-addressed tree.
+        shutil.rmtree(decoder_dir)
+        descriptor = {
+            "schema": "mc2-level2-day-materials/v1",
+            "profile": profile,
+            "palette": {"path": palette_output["path"], "rgb8_path": rgb8_output["path"], "entries": 256, "channel_bits": 6, "conversion": "channel_u8 = channel_rgb6 * 4"},
+            "tablesd": {"path": tables_output["path"], "shade_lut_path": shade_output["path"], "bytes": len(tablesd), "entries": 65536, "shade_lut_entries": 65536},
+            "clrd": {"path": clrd_output["path"], "entries": 4096},
+            "bl32n": {"path": tiles_output["path"], "atlas_path": atlas_output["path"], "tile_count": 152, "tile_width": 32, "tile_height": 32, "atlas_width": 256, "atlas_height": 608, "palette_asset_id": "owner_data:DATA/PALD-0.DAT"},
+            "skyd": {"path": sky_output["path"], "width": 256, "height": 256, "palette_asset_id": "owner_data:DATA/PALD-0.DAT"},
+            "tmaps0": {"selectors": selectors, "textures": tmap_rows, "bank": "TMAPS0-0", "palette_asset_id": "owner_data:DATA/PALD-0.DAT", "decoder": decoder_identity},
+            "world_sprite_root": {"asset_id": "owner_data:DATA/MSPRD0-0.DAT", "path": "DATA/MSPRD0-0.DAT", "status": "bound_root_not_materialized"},
+            "world_web_root": {"asset_id": "owner_data:DATA/MWEBD0-0.DAT", "path": "DATA/MWEBD0-0.DAT", "status": "bound_root_not_materialized"},
+            "gpu_ready": {"indexed_format": "R8_UNORM", "filter": "nearest", "row_order": "top_to_bottom", "origin": "top_left", "palette_lookup": "PALD"},
+        }
+        descriptor_bytes = canonical_json(descriptor)
+        write_output(stage, outputs, "materials/descriptor.json", descriptor_bytes, kind="canonical_json_day_material_descriptor", source_asset_ids=["owner_data:DATA/PALD-0.DAT", "owner_data:DATA/TABLESD.DAT", "owner_data:DATA/CLRD-0.DAT", "owner_data:DATA/BL32N0-0.DAT", "owner_data:DATA/SKYD0-0.DAT"])
+        manifest = {"schema": LEVEL2_MATERIAL_SCHEMA, "generator": {"name": "build_cache.py", "version": GENERATOR_VERSION}, "profile": profile, "bindings": {"level_export_package_sha256": package_hash, "level_asset_closure_sha256": closure_hash, "owner_catalog_sha256": profile["catalog_sha256"], "owner_catalog_file_sha256": profile["catalog_file_sha256"], "remc2_commit": PINNED_REMC2_COMMIT}, "outputs": outputs, "cache_content_sha256": _level2_cache_identity(outputs)}
+        manifest["manifest_payload_sha256"] = sha256_bytes(canonical_json(manifest))
+        (stage / "manifest.json").write_bytes(canonical_json(manifest))
+        validate_day_material_cache(stage, package_hash, closure_hash)
+        fsync_tree(stage)
+        commit_stage(output, stage)
+        return manifest
+    except Exception:
+        if stage.exists():
+            shutil.rmtree(stage)
+        raise
+
+
 def build_cache(
     owner_root: Path,
     package_dir: Path,
@@ -7058,6 +7568,12 @@ def parse_args() -> argparse.Namespace:
         "--expected-contract-sha256",
         default=EXPECTED_CONFORMANCE_CONTRACT_SHA256,
     )
+    build_day = subparsers.add_parser("build-day")
+    build_day.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
+    build_day.add_argument("--package", type=Path, default=DEFAULT_LEVEL2_PACKAGE)
+    build_day.add_argument("--closure", type=Path, default=DEFAULT_LEVEL2_CLOSURE)
+    build_day.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
+    build_day.add_argument("--output", type=Path, default=DEFAULT_LEVEL2_OUTPUT)
     validate = subparsers.add_parser("validate")
     validate.add_argument("--cache", type=Path, default=DEFAULT_OUTPUT)
     validate.add_argument("--package-sha256", default=EXPECTED_PACKAGE)
@@ -7067,6 +7583,10 @@ def parse_args() -> argparse.Namespace:
         "--expected-contract-sha256",
         default=EXPECTED_CONFORMANCE_CONTRACT_SHA256,
     )
+    validate_day = subparsers.add_parser("validate-day")
+    validate_day.add_argument("--cache", type=Path, default=DEFAULT_LEVEL2_OUTPUT)
+    validate_day.add_argument("--package-sha256")
+    validate_day.add_argument("--closure-sha256")
     return parser.parse_args()
 
 
@@ -7085,6 +7605,28 @@ def main() -> int:
             )
             print(
                 f"cache={args.output} outputs={len(manifest['outputs'])} "
+                f"content_sha256={manifest['cache_content_sha256']}"
+            )
+        elif args.command == "build-day":
+            manifest = build_day_material_cache(
+                args.owner_root,
+                args.package,
+                args.closure,
+                args.catalog,
+                args.output,
+            )
+            print(
+                f"cache={args.output} outputs={len(manifest['outputs'])} "
+                f"content_sha256={manifest['cache_content_sha256']}"
+            )
+        elif args.command == "validate-day":
+            manifest = validate_day_material_cache(
+                args.cache,
+                args.package_sha256,
+                args.closure_sha256,
+            )
+            print(
+                f"valid schema={manifest['schema']} "
                 f"content_sha256={manifest['cache_content_sha256']}"
             )
         else:
