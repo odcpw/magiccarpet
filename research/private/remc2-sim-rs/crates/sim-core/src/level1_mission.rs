@@ -4149,6 +4149,24 @@ impl SourceOccupant {
             Self::Reserved | Self::ImportedLive | Self::Authored(_) => None,
         }
     }
+
+    fn dynamic_shape_matches(self, record: Level1ResetSourceSlot) -> bool {
+        let Some((class, model, action)) = self.dynamic_shape() else {
+            return true;
+        };
+        if matches!(self, Self::MultipartSegment(_)) {
+            // A multipart segment keeps its typed source-pool occupant while
+            // its source row briefly uses action 29 during kill/removal. The
+            // row remains map-linked until the source cleanup phase, so this
+            // is a known lifecycle transition rather than an unknown tuple.
+            return (record.class, record.model) == (class, model)
+                && matches!(
+                    record.action,
+                    MULTIPART_SEGMENT_ACTION | MULTIPART_KILL_ACTION
+                );
+        }
+        (record.class, record.model, record.action) == (class, model, action)
+    }
 }
 
 fn bind_dynamic_source_record(
@@ -8759,9 +8777,7 @@ impl Level1MissionState {
                 continue;
             }
             let record = self.source_slots[usize::from(source_entity_index)];
-            if let Some((class, model, action)) = occupant.dynamic_shape()
-                && (record.class, record.model, record.action) != (class, model, action)
-            {
+            if !occupant.dynamic_shape_matches(record) {
                 return Err(unknown_source_sprite_tuple(
                     source_entity_index,
                     record.class,
@@ -23363,6 +23379,7 @@ impl Level1Fnv1a64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source_sprite_tmap::SourceSpriteLegacyFamily;
 
     #[test]
     fn objective_presentation_gate_and_textbox_clock_match_unpaused_outer_turn_order() {
@@ -28893,6 +28910,39 @@ mod tests {
                 .collect::<Vec<_>>(),
             [50, 17, 81, 22, 90],
             "raw oldMapEntity traversal must retain excluded middle nodes before filtering"
+        );
+    }
+
+    #[test]
+    fn multipart_segment_disposition_accepts_transient_kill_row_but_rejects_unknown_action() {
+        let template = Level1MissionTemplate::decode(&authored_bytes(), &FlatWorld).unwrap();
+        let mut mission = template.session(10_000, 1_000);
+        mission.activate_group(4);
+        let segment_slot = mission.multipart_segments()[0].source_entity_index;
+
+        mission.source_slots[usize::from(segment_slot)].action = MULTIPART_KILL_ACTION;
+        let dispositions = mission
+            .source_sprite_legacy_dispositions(&BTreeSet::new())
+            .expect("a known multipart kill transition remains typed");
+        assert!(dispositions.iter().any(|disposition| {
+            matches!(
+                disposition,
+                SourceSpriteDisposition::Legacy {
+                    source_entity_index,
+                    family: SourceSpriteLegacyFamily::Multipart,
+                } if *source_entity_index == segment_slot
+            )
+        }));
+
+        mission.source_slots[usize::from(segment_slot)].action = MULTIPART_UNSUPPORTED_ACTION;
+        let error = mission
+            .source_sprite_legacy_dispositions(&BTreeSet::new())
+            .expect_err("an unknown multipart action must remain fail-closed");
+        assert!(
+            error.starts_with(&format!(
+                "unknown Level 1 source sprite tuple: slot={segment_slot} class={MISSION_ACTOR_CLASS} model={MULTIPART_MODEL} action={MULTIPART_UNSUPPORTED_ACTION}"
+            )),
+            "unknown multipart action must retain the typed tuple diagnostic: {error}"
         );
     }
 
