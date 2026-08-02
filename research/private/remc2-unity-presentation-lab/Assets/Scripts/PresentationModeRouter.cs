@@ -96,7 +96,12 @@ namespace MagicCarpet.PresentationLab
                 ApplyClassicHdOutputSettings(ClassicHdSettings);
                 classicHdPresentation = gameObject.AddComponent<ClassicHdPresentation>();
                 string presentationError;
-                if (!classicHdPresentation.Configure(ClassicHdSettings, out presentationError))
+                if (!classicHdPresentation.ConfigureOwnerSession(
+                        ClassicHdSettings,
+                        packagePath,
+                        closurePath,
+                        cachePath,
+                        out presentationError))
                 {
                     classicHdPresentation = null;
                     sessionLease.Dispose();
@@ -230,7 +235,8 @@ namespace MagicCarpet.PresentationLab
             }
 
             return ClassicHdSettings.profile + " / " + ClassicHdSettings.assetTier +
-                   " / persistent R8 surface / " + (classicHdSettingsResult.UsedDefaults ? "defaults" : "settings file");
+                   " / persistent R8 surface / owner-bound Rust FINAL MAIN adapter / " +
+                   (classicHdSettingsResult.UsedDefaults ? "defaults" : "settings file");
         }
 
         private static void ApplyClassicHdOutputSettings(ClassicHdPresentationSettings settings)

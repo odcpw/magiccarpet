@@ -1,11 +1,20 @@
 {
   "schema_version": 1,
-  "measurement": "Rust ClassicHdRenderGraph synthetic owner-free release workload",
+  "measurement": "Rust ClassicHdRenderGraph synthetic owner-free release workload plus a separate owner-bound Unity route smoke",
   "machine": "T14",
   "presentation_budget_ns": 33333333,
   "sample_count": 32,
   "owner_payload_embedded": false,
-  "unity_gpu_and_owner_route": "pending-owner-lab-capture",
+  "unity_gpu_and_owner_route": "640x480 owner-route smoke captured; sustained matrix qualification remains pending",
+  "owner_route_smoke": {
+    "artifact": "qualification/classic-hd-owner-route-smoke.json",
+    "profile": "classic-hd-640x480",
+    "frame_count": 1,
+    "graphics_api": "OpenGLCore",
+    "graphics_device": "Mesa Intel(R) Graphics (LNL)",
+    "status": "pass-smoke-only",
+    "owner_payload_embedded": false
+  },
   "window_resolution_is_separate_from_internal_render_resolution": true,
   "profiles": [
     {
@@ -17,7 +26,7 @@
       "p95_cpu_ns": 10949142,
       "deterministic_reset": true,
       "status": "supported-cpu-and-deterministic",
-      "unity_gpu_copy_status": "pending-owner-lab-capture"
+      "unity_gpu_copy_status": "owner-route-smoke-pass; sustained capture pending"
     },
     {
       "profile": "classic-hd-960x720",

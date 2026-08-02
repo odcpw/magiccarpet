@@ -40,6 +40,8 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     classic_abi_path = project_root / "Assets" / "Scripts" / "ClassicHdAbiContract.cs"
     classic_surface_path = project_root / "Assets" / "Scripts" / "ClassicHdR8Surface.cs"
     classic_presentation_path = project_root / "Assets" / "Scripts" / "ClassicHdPresentation.cs"
+    classic_native_path = project_root / "Assets" / "Scripts" / "ClassicHdNativeFixtureSource.cs"
+    classic_owner_path = project_root / "Assets" / "Scripts" / "ClassicHdOwnerSessionSource.cs"
     classic_display_path = project_root / "Assets" / "Scripts" / "ClassicHdDisplayComposition.cs"
     classic_shader_path = project_root / "Assets" / "Resources" / "ClassicHdIndexedUnlit.shader"
     launcher_path = project_root / "launcher" / "presentation_launcher.py"
@@ -72,6 +74,8 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         classic_abi_path,
         classic_surface_path,
         classic_presentation_path,
+        classic_native_path,
+        classic_owner_path,
         classic_display_path,
         classic_shader_path,
         launcher_path,
@@ -90,7 +94,7 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     lease_text = lease_path.read_text(encoding="utf-8") if lease_path.is_file() else ""
     classic_text = "\n".join(
         path.read_text(encoding="utf-8")
-        for path in (classic_settings_path, classic_abi_path, classic_surface_path, classic_presentation_path, classic_display_path)
+        for path in (classic_settings_path, classic_abi_path, classic_surface_path, classic_presentation_path, classic_native_path, classic_owner_path, classic_display_path)
         if path.is_file()
     )
     launcher_text = launcher_path.read_text(encoding="utf-8") if launcher_path.is_file() else ""
@@ -100,6 +104,8 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     _check(checks, "owner inputs stay external", "IsInside(projectRoot" in validator_text and "must remain outside" in validator_text, str(validator_path))
     _check(checks, "session lease is presentation-only", "does not load owner data" in lease_text and "IsOpen" in lease_text, str(lease_path))
     _check(checks, "Classic HD binds the additive C ABI", "mc_classic_hd_frame_copy_fixture" in classic_text and "NativeLibrary = \"sim_capi\"" in classic_text, str(classic_abi_path))
+    _check(checks, "Classic HD owner route is explicit", "ConfigureOwnerSession" in router_text and "ClassicHdOwnerSessionSource" in classic_text, str(classic_owner_path))
+    _check(checks, "Classic HD owner route fails closed", "owner native plugin is unavailable" in classic_text and "ConfigureOwnerSession" in router_text, str(classic_owner_path))
     _check(checks, "Classic HD uses a persistent R8 surface", "TextureFormat.R8" in classic_text and "UploadTopRowFirst" in classic_text and "new Texture2D" in classic_text, str(classic_surface_path))
     _check(checks, "launcher defaults to Exact", '"default_mode": "exact"' in launcher_config_text and '"default_mode"' in launcher_text, str(launcher_config_path))
     _check(checks, "launcher exposes all three modes", all(token in launcher_config_text for token in ('"exact"', '"classic-hd"', '"unity-enhanced"')), str(launcher_config_path))

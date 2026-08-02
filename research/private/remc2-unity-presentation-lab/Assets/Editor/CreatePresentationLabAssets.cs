@@ -1,4 +1,6 @@
 #if UNITY_EDITOR
+using System;
+using System.Reflection;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -61,6 +63,89 @@ namespace MagicCarpet.PresentationLab.Editor
             {
                 EditorApplication.Exit(0);
             }
+        }
+
+        [MenuItem("Magic Carpet/Presentation Lab/Run Owner Classic HD Smoke")]
+        public static void RunOwnerClassicHdSmoke()
+        {
+            string packagePath = CommandLineValue("-mc-package");
+            string closurePath = CommandLineValue("-mc-closure");
+            string assetCachePath = CommandLineValue("-mc-asset-cache");
+            if (string.IsNullOrWhiteSpace(packagePath) ||
+                string.IsNullOrWhiteSpace(closurePath) ||
+                string.IsNullOrWhiteSpace(assetCachePath))
+            {
+                throw new InvalidOperationException(
+                    "owner Classic HD smoke requires -mc-package, -mc-closure, and -mc-asset-cache");
+            }
+
+            var root = new GameObject("Owner Classic HD Smoke Router");
+            var router = root.AddComponent<PresentationModeRouter>();
+            MethodInfo awake = typeof(PresentationModeRouter).GetMethod(
+                "Awake",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (awake == null)
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                throw new InvalidOperationException("presentation router Awake method is missing");
+            }
+
+            try
+            {
+                awake.Invoke(router, null);
+                if (!router.SessionIsOpen ||
+                    router.ClassicHdRenderer == null ||
+                    !router.ClassicHdRenderer.UsesNativeOwnerSession)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD SMOKE FAIL: router did not open the owner-bound Classic HD route");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                string reason;
+                if (!router.ClassicHdRenderer.CaptureFrame(0f, 0f, out reason) ||
+                    router.ClassicHdRenderer.UploadCount == 0 ||
+                    router.ClassicHdRenderer.LastNativeIndexHash == 0 ||
+                    router.ClassicHdRenderer.LastNativeProvenanceHash == 0)
+                {
+                    Debug.LogError("OWNER CLASSIC HD SMOKE FAIL: " + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                Debug.Log(
+                    "OWNER CLASSIC HD SMOKE PASS: receipt=" +
+                    router.ClassicHdRenderer.LastNativeReceiptHash.ToString("x16") +
+                    " index=" + router.ClassicHdRenderer.LastNativeIndexHash.ToString("x16") +
+                    " provenance=" + router.ClassicHdRenderer.LastNativeProvenanceHash.ToString("x16") +
+                    " uploads=" + router.ClassicHdRenderer.UploadCount);
+                EditorApplication.Exit(0);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static string CommandLineValue(string name)
+        {
+            string[] arguments = Environment.GetCommandLineArgs();
+            for (int index = 0; index < arguments.Length; index++)
+            {
+                if (string.Equals(arguments[index], name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return index + 1 < arguments.Length ? arguments[index + 1] : string.Empty;
+                }
+
+                string prefix = name + "=";
+                if (arguments[index].StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    return arguments[index].Substring(prefix.Length);
+                }
+            }
+
+            return string.Empty;
         }
 
         private static void EnsureFolder(string path)

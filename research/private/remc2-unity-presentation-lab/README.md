@@ -16,9 +16,14 @@ route for renderer work:
 - A source-style Classic HD route with a persistent dimensioned R8 index
   surface, one top-row-to-Unity-row upload per frame, resolved night palette,
   point/bilinear output filtering, and a centered 4:3 display rectangle.
-- A size-queried `sim-capi` binding contract whose native calls remain
-  optional; the lab fallback is a clearly synthetic, owner-free Level 1 Night
-  frame source until the private native plugin is supplied.
+- A size-queried `sim-capi` binding contract. The player-facing Classic HD
+  route opens the external owner package, closure, and cache through the Rust
+  native session, consumes the compositor-complete 320x200 FINAL MAIN frame,
+  and performs a deterministic nearest-neighbour upscale into the persistent
+  HD R8 surface; it fails closed if the private native plugin is absent. The
+  additive Classic HD ABI fixture remains available for contract tests, while
+  the direct component `Configure` overload remains a clearly synthetic,
+  owner-free Level 1 Night source for EditMode tests.
 - JSON settings outside owner data with fail-closed schema/profile validation.
 - A procedural Unity Enhanced stack over the same snapshot boundary:
   authoritative height/type/shade/angle terrain planes with generated normals

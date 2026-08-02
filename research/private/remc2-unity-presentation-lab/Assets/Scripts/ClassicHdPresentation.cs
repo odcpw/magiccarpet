@@ -16,6 +16,8 @@ namespace MagicCarpet.PresentationLab
         private Image letterbox;
         private RawImage display;
         private ClassicHdPresentationSettings settings;
+        private ClassicHdNativeFixtureSource nativeFixture;
+        private ClassicHdOwnerSessionSource ownerSession;
         private Rect lastViewport;
         private int lastScreenWidth;
         private int lastScreenHeight;
@@ -29,8 +31,87 @@ namespace MagicCarpet.PresentationLab
         public int UploadCount { get { return surface == null ? 0 : surface.UploadCount; } }
         public ulong ResetEpoch { get { return resetEpoch; } }
         public ClassicHdPresentationSettings Settings { get { return settings; } }
+        public bool UsesNativeFixture { get { return nativeFixture != null && nativeFixture.IsConfigured; } }
+        public bool UsesNativeOwnerSession { get { return ownerSession != null && ownerSession.IsConfigured; } }
+        public ulong LastNativeIndexHash
+        {
+            get
+            {
+                return ownerSession != null && ownerSession.IsConfigured
+                    ? ownerSession.LastIndexHash
+                    : (nativeFixture == null ? 0 : nativeFixture.LastIndexHash);
+            }
+        }
+        public ulong LastNativeProvenanceHash
+        {
+            get
+            {
+                return ownerSession != null && ownerSession.IsConfigured
+                    ? ownerSession.LastProvenanceHash
+                    : (nativeFixture == null ? 0 : nativeFixture.LastProvenanceHash);
+            }
+        }
+        public ulong LastNativeReceiptHash
+        {
+            get
+            {
+                return ownerSession != null && ownerSession.IsConfigured
+                    ? ownerSession.LastReceiptHash
+                    : (nativeFixture == null ? 0 : nativeFixture.LastReceiptHash);
+            }
+        }
+        public uint LastNativeFlags
+        {
+            get
+            {
+                return ownerSession != null && ownerSession.IsConfigured
+                    ? ownerSession.LastFlags
+                    : (nativeFixture == null ? 0 : nativeFixture.LastFlags);
+            }
+        }
 
         public bool Configure(ClassicHdPresentationSettings requestedSettings, out string reason)
+        {
+            return ConfigureInternal(
+                requestedSettings,
+                false,
+                false,
+                string.Empty,
+                string.Empty,
+                string.Empty,
+                out reason);
+        }
+
+        public bool ConfigureNativeFixture(ClassicHdPresentationSettings requestedSettings, out string reason)
+        {
+            return ConfigureInternal(requestedSettings, true, false, string.Empty, string.Empty, string.Empty, out reason);
+        }
+
+        public bool ConfigureOwnerSession(
+            ClassicHdPresentationSettings requestedSettings,
+            string packagePath,
+            string closurePath,
+            string assetCachePath,
+            out string reason)
+        {
+            return ConfigureInternal(
+                requestedSettings,
+                false,
+                true,
+                packagePath,
+                closurePath,
+                assetCachePath,
+                out reason);
+        }
+
+        private bool ConfigureInternal(
+            ClassicHdPresentationSettings requestedSettings,
+            bool requireNativeFixture,
+            bool requireOwnerSession,
+            string packagePath,
+            string closurePath,
+            string assetCachePath,
+            out string reason)
         {
             reason = string.Empty;
             if (requestedSettings == null)
@@ -64,9 +145,51 @@ namespace MagicCarpet.PresentationLab
                 frameBytes = new byte[profileInfo.Stride * profileInfo.Height];
             }
 
+            if (nativeFixture != null)
+            {
+                nativeFixture.Dispose();
+                nativeFixture = null;
+            }
+
+            if (ownerSession != null)
+            {
+                ownerSession.Dispose();
+                ownerSession = null;
+            }
+
+            if (requireNativeFixture)
+            {
+                nativeFixture = new ClassicHdNativeFixtureSource();
+                if (!nativeFixture.Configure(profileInfo, out reason))
+                {
+                    nativeFixture.Dispose();
+                    nativeFixture = null;
+                    return false;
+                }
+            }
+
+            if (requireOwnerSession)
+            {
+                ownerSession = new ClassicHdOwnerSessionSource();
+                if (!ownerSession.Configure(
+                        profileInfo,
+                        packagePath,
+                        closurePath,
+                        assetCachePath,
+                        out reason))
+                {
+                    ownerSession.Dispose();
+                    ownerSession = null;
+                    return false;
+                }
+            }
+
             CreateDisplayObjects();
             IsConfigured = true;
-            StatusLine = "Classic HD " + settings.profile + " / indexed R8 / shared Rust timing seam";
+            StatusLine = "Classic HD " + settings.profile + " / indexed R8 / " +
+                         (UsesNativeOwnerSession
+                             ? "owner-bound Rust FINAL MAIN adapter"
+                             : (UsesNativeFixture ? "native additive ABI fixture" : "synthetic lab source"));
             UpdateDisplayViewport(true);
             ResetPresentationHistory();
             return true;
@@ -83,6 +206,58 @@ namespace MagicCarpet.PresentationLab
             }
         }
 
+        public bool CaptureFrame(float horizontalInput, float verticalInput, out string reason)
+        {
+            reason = string.Empty;
+            if (!IsConfigured || surface == null || frameBytes == null)
+            {
+                reason = "Classic HD presentation is not configured";
+                return false;
+            }
+
+            tick++;
+            if (UsesNativeOwnerSession)
+            {
+                if (!ownerSession.Fill(frameBytes, horizontalInput, verticalInput, out reason))
+                {
+                    return false;
+                }
+            }
+            else if (UsesNativeFixture)
+            {
+                if (!nativeFixture.Fill(
+                        frameBytes,
+                        1,
+                        tick,
+                        resetEpoch,
+                        InputHash(horizontalInput, verticalInput),
+                        out reason))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                SyntheticClassicHdFrameSource.Fill(
+                    frameBytes,
+                    surface.Width,
+                    surface.Height,
+                    tick,
+                    horizontalInput,
+                    verticalInput);
+            }
+
+            string uploadError;
+            if (!surface.UploadTopRowFirst(frameBytes, surface.Stride, out uploadError))
+            {
+                reason = uploadError;
+                return false;
+            }
+
+            UpdateDisplayViewport(false);
+            return true;
+        }
+
         private void Update()
         {
             if (!IsConfigured || surface == null || frameBytes == null)
@@ -94,22 +269,12 @@ namespace MagicCarpet.PresentationLab
             // supplies the same sampled input to Rust and this renderer.
             simulatedFlightInput.x = Input.GetAxisRaw("Horizontal");
             simulatedFlightInput.y = Input.GetAxisRaw("Vertical");
-            tick++;
-            SyntheticClassicHdFrameSource.Fill(
-                frameBytes,
-                surface.Width,
-                surface.Height,
-                tick,
-                simulatedFlightInput.x,
-                simulatedFlightInput.y);
-            string uploadError;
-            if (!surface.UploadTopRowFirst(frameBytes, surface.Stride, out uploadError))
+            string captureError;
+            if (!CaptureFrame(simulatedFlightInput.x, simulatedFlightInput.y, out captureError))
             {
-                StatusLine = "Classic HD upload stopped: " + uploadError;
+                StatusLine = "Classic HD capture stopped: " + captureError;
                 return;
             }
-
-            UpdateDisplayViewport(false);
         }
 
         private void OnDestroy()
@@ -118,6 +283,33 @@ namespace MagicCarpet.PresentationLab
             {
                 surface.Dispose();
                 surface = null;
+            }
+
+            if (nativeFixture != null)
+            {
+                nativeFixture.Dispose();
+                nativeFixture = null;
+            }
+
+            if (ownerSession != null)
+            {
+                ownerSession.Dispose();
+                ownerSession = null;
+            }
+        }
+
+        private static ulong InputHash(float horizontal, float vertical)
+        {
+            unchecked
+            {
+                int x = Mathf.RoundToInt(horizontal * 1000f);
+                int y = Mathf.RoundToInt(vertical * 1000f);
+                ulong hash = 0xcbf29ce484222325UL;
+                hash ^= (uint)x;
+                hash *= 0x100000001b3UL;
+                hash ^= (uint)y;
+                hash *= 0x100000001b3UL;
+                return hash;
             }
         }
 
