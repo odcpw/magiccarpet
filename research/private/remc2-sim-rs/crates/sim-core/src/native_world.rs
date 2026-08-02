@@ -7434,6 +7434,7 @@ fn validate_content_address(value: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_camera::TerrainSlopeCamera;
     use crate::{regression_state::RegressionStateSequence, source_projection_hash};
     use std::path::PathBuf;
 
@@ -7719,6 +7720,124 @@ mod tests {
             expected.tick = session.state.tick;
             assert_eq!(session.state, expected, "Level 2 frame {target_frame}");
         }
+    }
+
+    #[test]
+    fn level_two_day_terrain_outdoor_flight_and_camera_use_shared_production_planes() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 reset session");
+        let regression_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../../../upstream/magic-carpet-2-hd/remc2-regression-test/memimages/regressions",
+        );
+        let terrain_sequence =
+            fs::read(regression_root.join("level2/sequence-002285FF-002DC4E0.bin"))
+                .expect("preserved Level 2 terrain sequence");
+        let frame_bytes = 0x70000;
+        assert!(terrain_sequence.len() >= frame_bytes);
+        let oracle_frame = &terrain_sequence[..frame_bytes];
+        let oracle = LegacyTerrain::from_regression_sequence(&terrain_sequence, 0, false)
+            .expect("Level 2 Day terrain oracle");
+        let plane =
+            |index: usize| &oracle_frame[index * LEGACY_MAP_CELLS..(index + 1) * LEGACY_MAP_CELLS];
+        assert_eq!(session.terrain.planes().terrain_types.as_ref(), plane(0));
+        assert_eq!(session.terrain.planes().ground_heights.as_ref(), plane(1));
+        assert_eq!(session.terrain.planes().shading.as_ref(), plane(2));
+        assert_eq!(session.terrain.planes().angles.as_ref(), plane(3));
+        // Day does not query the cave ceiling. The authored six-plane reset
+        // preserves its secondary-height plane, but that plane is not part of
+        // the Day frame-0 comparison (the preserved sequence's plane 4 is not
+        // the authored package's secondary-height encoding).
+        let expected_entity_indices: Vec<i16> = oracle_frame[5 * LEGACY_MAP_CELLS..]
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        assert_eq!(
+            session.terrain.planes().entity_indices.as_ref(),
+            expected_entity_indices.as_slice()
+        );
+        assert_eq!(inspection.metadata().map_type, MapType::Day);
+        assert_eq!(session.profile(), FlightProfile::OUTDOOR);
+        assert_eq!(session.terrain.planes().terrain_types.len(), 256 * 256);
+        assert_eq!(session.terrain.planes().ground_heights.len(), 256 * 256);
+        assert_eq!(session.terrain.planes().shading.len(), 256 * 256);
+        assert_eq!(session.terrain.planes().angles.len(), 256 * 256);
+        assert_eq!(session.terrain.planes().secondary_heights.len(), 256 * 256);
+        assert_eq!(session.terrain.planes().entity_indices.len(), 256 * 256);
+        assert_eq!(session.terrain.ceiling_height(session.state.position), None);
+
+        // Day uses the same shared terrain queries as Level 1; compare the
+        // immutable package terrain against the mutable session projection at
+        // non-trivial wrapped map points.
+        for position in [
+            Position {
+                x: 128,
+                y: 32_896,
+                z: 0,
+            },
+            Position {
+                x: 38_912,
+                y: 26_880,
+                z: 0,
+            },
+            Position {
+                x: 65_408,
+                y: 26_880,
+                z: 0,
+            },
+        ] {
+            assert_eq!(
+                session.terrain.ground_height(position),
+                oracle.ground_height(position)
+            );
+            assert_eq!(
+                session.terrain.terrain_type(position),
+                oracle.terrain_type(position)
+            );
+            assert_eq!(
+                session.terrain.material_mask(position),
+                oracle.material_mask(position)
+            );
+        }
+        assert_eq!(
+            session.terrain.terrain_type(Position {
+                x: 128,
+                y: 32_896,
+                z: 0
+            }),
+            69
+        );
+        assert_eq!(session.terrain.planes().ground_heights[0 + 128 * 256], 2);
+
+        let mut camera = TerrainSlopeCamera::default();
+        let mut oracle_camera = TerrainSlopeCamera::default();
+        assert_eq!(
+            camera.update(session.terrain.ground_heights(), 0x0080, 0x8080),
+            oracle_camera.update(oracle.ground_heights(), 0x0080, 0x8080)
+        );
+        assert_eq!(
+            camera.update(session.terrain.ground_heights(), 0x0080, 0x8080),
+            oracle_camera.update(oracle.ground_heights(), 0x0080, 0x8080)
+        );
+
+        // The Level 2 local wizard uses the same outdoor input/flight pass;
+        // non-zero forward input is observable in the authoritative state.
+        let before = session.state;
+        let evidence = session.step_outer_turn(
+            PlayerCommand {
+                flags: 1,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(session.state.target_speed, 16);
+        assert_eq!(session.state.speed_changed_flag, 1);
+        assert_eq!(session.state.tick, before.tick + 1);
+        session.reset();
+        assert_eq!(session.state, before);
     }
 
     #[test]
