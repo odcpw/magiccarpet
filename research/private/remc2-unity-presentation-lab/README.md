@@ -62,6 +62,13 @@ qualification:
   The same smoke pins the action-51 terrain qualification vector (house 11,
   parent 152, selector 17): every observed production mutation causes one
   terrain rebuild, and a settled unchanged step causes none.
+- The owner-bound Unity Enhanced scenario smoke extends that bridge through
+  eight idle frames, a moving town route, a Fireball combat route with one
+  projectile and impact row, high-speed flight, lethal player state, and a
+  fresh tick-0 reset generation. Its receipt is
+  `research/private/remc2-presentation/qualification/unity-enhanced-owner-route-scenarios.json`;
+  completion/postgame, window/alt-tab, owner/GPU, and visual-corpus gates stay
+  separate until their player-facing evidence exists.
 - No copied owner assets, native libraries, Exact scripts, or Exact corpus.
 
 Run the editor setup once after opening the project:
@@ -142,6 +149,24 @@ Unity -batchmode -force-glcore \
 
 This proves the live Rust-to-Unity presentation bridge and reset replay, not
 the broader owner/GPU scenario matrix or human visual acceptance.
+
+The owner-bound Unity Enhanced scenario smoke is explicit and covers the
+currently qualified gameplay-facing presentation routes:
+
+```text
+Unity -batchmode -force-glcore \
+  -projectPath research/private/remc2-unity-presentation-lab \
+  -executeMethod MagicCarpet.PresentationLab.Editor.CreatePresentationLabAssets.RunOwnerUnityEnhancedScenarioSmoke \
+  -mc-presentation-mode unity-enhanced \
+  -mc-package /absolute/path/to/level1-export-m \
+  -mc-closure /absolute/path/to/level1-asset-closure.json \
+  -mc-asset-cache /absolute/path/to/level1-unity-asset-cache
+```
+
+The route is still a private owner smoke, not a visual-corpus or GPU-support
+claim. The first run must be discarded if the lethal-damage boundary does not
+reach the authoritative player-dead state; the receipt records only a run that
+also proves projectile/impact rows and a fresh tick-0 restart.
 
 The owner smoke requires a temporary owner-local native plugin. Build and copy
 it only for the probe, then remove the library and Unity-generated metadata

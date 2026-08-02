@@ -53,6 +53,10 @@ same owner qualification pins the action-51 house/parent vector (11, 152, 17)
 and proves that each of the 20 production terrain mutations advances the
 native mutation sequence and causes exactly one Unity rebuild before an
 unchanged settled step produces no terrain publication.
+The owner-bound scenario smoke then proves the presentation route across idle,
+town movement, Fireball combat, high-speed flight, lethal player state, and
+fresh tick-0 restart; it records one projectile row and one impact row without
+moving gameplay authority into Unity.
 
 Focused gates:
 
