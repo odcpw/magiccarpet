@@ -3197,6 +3197,7 @@ pub struct Level2DeathBurst {
     pub source_entity_index: u16,
     pub entity_rng: u16,
     pub parent_entity_index: u16,
+    pub id_entity_index: u16,
     pub position: Position,
     pub max_life: i32,
     pub life_ticks: i16,
@@ -3239,6 +3240,7 @@ pub enum Level2EconomyEvent {
     DeathBurstSpawned {
         source_entity_index: u16,
         parent_entity_index: u16,
+        id_entity_index: u16,
     },
     DeathBurstExpired {
         source_entity_index: u16,
@@ -3843,12 +3845,25 @@ impl Level2EconomyState {
         parent_entity_index: u16,
         position: Position,
     ) -> Option<u16> {
+        let id_entity_index = self.source_owner(parent_entity_index);
+        self.spawn_death_burst_from_death_with_id(parent_entity_index, id_entity_index, position)
+    }
+
+    /// Variant used by typed creature families that retain the source
+    /// `id_0x1A` independently from their owner/player relation.
+    pub fn spawn_death_burst_from_death_with_id(
+        &mut self,
+        parent_entity_index: u16,
+        id_entity_index: u16,
+        position: Position,
+    ) -> Option<u16> {
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
         let burst = Level2DeathBurst {
             source_entity_index,
             entity_rng,
             parent_entity_index,
+            id_entity_index,
             position,
             max_life: PLAYER_DEATH_BURST_MAX_LIFE,
             life_ticks: 1,
@@ -3868,6 +3883,7 @@ impl Level2EconomyState {
         self.events.push(Level2EconomyEvent::DeathBurstSpawned {
             source_entity_index,
             parent_entity_index,
+            id_entity_index,
         });
         debug_assert_eq!(
             (DEATH_BURST_CLASS, DEATH_BURST_MODEL, DEATH_BURST_ACTION),
@@ -3876,9 +3892,10 @@ impl Level2EconomyState {
         Some(source_entity_index)
     }
 
-    /// Advance the source class-10/model-1/action-1 burst.  Its qualified
-    /// reset projection has one life tick, so the first dispatch consumes the
-    /// lifetime and marks the row for the normal reclaim pass.
+    /// Advance the source class-10/model-1/action-1 burst.  The constructor
+    /// sets `life=1`, while `AddQuickfair0A01` disables only when the
+    /// pre-decrement value is negative; therefore the row remains active for
+    /// the `life` values 1, 0, and -1 before the third dispatch reclaims it.
     pub fn step_death_burst_slot(&mut self, source_slot: u16) -> bool {
         let Some(burst) = self
             .death_bursts
@@ -3887,8 +3904,11 @@ impl Level2EconomyState {
         else {
             return false;
         };
-        burst.life_ticks = burst.life_ticks.saturating_sub(1);
-        if burst.life_ticks <= 0 {
+        let should_disable = burst.life_ticks < 0;
+        if !should_disable {
+            burst.life_ticks = burst.life_ticks.wrapping_sub(1);
+        }
+        if should_disable {
             burst.active = false;
             self.map_chains
                 .sync_entity(RenderableMapSeed {
@@ -5119,6 +5139,30 @@ impl Level2EconomyState {
                 continue;
             }
 
+            // `sub_5FF50` drops an invalid tail relation before its root slot
+            // is cleared. The source dispatcher has already disabled the
+            // child row, so mirror that order here: unlink the renderable
+            // source state, mark the typed child inactive, and return its
+            // arena slot before clearing `array_0x5C_92[index]`.
+            if let Some(inactive) = self
+                .castle_children
+                .iter()
+                .find(|child| child.source_entity_index == slot)
+                .copied()
+            {
+                if let Some(child) = self
+                    .castle_children
+                    .iter_mut()
+                    .find(|child| child.source_entity_index == slot)
+                {
+                    child.active = false;
+                }
+                self.sync_castle_child_map(Level2CastleChild {
+                    active: false,
+                    ..inactive
+                });
+                self.release_slot(slot, Some(inactive.entity_rng));
+            }
             auxiliary_slots[index] = 0;
             auxiliary_positions[index] = Position::default();
             auxiliary_yaws[index] = 0;
@@ -6020,6 +6064,7 @@ impl Level2EconomyState {
             hasher.update(burst.source_entity_index.to_le_bytes());
             hasher.update(burst.entity_rng.to_le_bytes());
             hasher.update(burst.parent_entity_index.to_le_bytes());
+            hasher.update(burst.id_entity_index.to_le_bytes());
             hasher.update(burst.position.x.to_le_bytes());
             hasher.update(burst.position.y.to_le_bytes());
             hasher.update(burst.position.z.to_le_bytes());
@@ -8160,26 +8205,7 @@ impl Level2ResetSession {
                         .copied()
                         .expect("dynamic source route has a live kind");
                     dispatched_dynamic_slots.insert(source_slot);
-                    let live = match kind {
-                        Level2DynamicArenaKind::ManaSphere => {
-                            self.economy.step_mana_sphere_slot(source_slot)
-                        }
-                        Level2DynamicArenaKind::ManaCarrier => {
-                            self.economy.step_mana_carrier_slot(source_slot)
-                        }
-                        Level2DynamicArenaKind::DeathBurst => {
-                            self.economy.step_death_burst_slot(source_slot)
-                        }
-                        _ => true,
-                    };
-                    if live {
-                        self.dispatch_events
-                            .push(Level2DispatchEvent::DynamicArena {
-                                pass,
-                                source_slot,
-                                kind,
-                            });
-                    }
+                    self.step_level2_dynamic_arena(pass, source_slot, kind);
                 }
                 7 => {
                     let mut events = goat_begin_events.remove(&source_slot).unwrap_or_default();
@@ -8217,26 +8243,7 @@ impl Level2ResetSession {
             }
             for (source_slot, kind) in unseen {
                 dispatched_dynamic_slots.insert(source_slot);
-                let live = match kind {
-                    Level2DynamicArenaKind::ManaSphere => {
-                        self.economy.step_mana_sphere_slot(source_slot)
-                    }
-                    Level2DynamicArenaKind::ManaCarrier => {
-                        self.economy.step_mana_carrier_slot(source_slot)
-                    }
-                    Level2DynamicArenaKind::DeathBurst => {
-                        self.economy.step_death_burst_slot(source_slot)
-                    }
-                    _ => true,
-                };
-                if live {
-                    self.dispatch_events
-                        .push(Level2DispatchEvent::DynamicArena {
-                            pass,
-                            source_slot,
-                            kind,
-                        });
-                }
+                self.step_level2_dynamic_arena(pass, source_slot, kind);
             }
             self.economy.reclaim_inactive_slots();
         }
@@ -8257,6 +8264,50 @@ impl Level2ResetSession {
             });
         }
         self.goats.finish_source_turn();
+    }
+
+    /// Dispatch one live dynamic row.  The source class-10/model-1 burst
+    /// handler sets `runagain` on every active pass, so the bounded projection
+    /// repeats that one family until its pre-decrement lifetime disables it;
+    /// spheres/carriers/typed Castle rows remain one invocation per cursor
+    /// visit until their own handlers are closed.
+    fn step_level2_dynamic_arena(
+        &mut self,
+        pass: u8,
+        source_slot: u16,
+        kind: Level2DynamicArenaKind,
+    ) {
+        for _ in 0..4 {
+            let live = match kind {
+                Level2DynamicArenaKind::ManaSphere => {
+                    self.economy.step_mana_sphere_slot(source_slot)
+                }
+                Level2DynamicArenaKind::ManaCarrier => {
+                    self.economy.step_mana_carrier_slot(source_slot)
+                }
+                Level2DynamicArenaKind::DeathBurst => {
+                    self.economy.step_death_burst_slot(source_slot)
+                }
+                _ => true,
+            };
+            if live {
+                self.dispatch_events
+                    .push(Level2DispatchEvent::DynamicArena {
+                        pass,
+                        source_slot,
+                        kind,
+                    });
+            }
+            if kind != Level2DynamicArenaKind::DeathBurst
+                || !self
+                    .economy
+                    .death_bursts
+                    .iter()
+                    .any(|burst| burst.active && burst.source_entity_index == source_slot)
+            {
+                break;
+            }
+        }
     }
 
     /// Apply the source `KillEntity_1C930` side effects emitted by the typed
@@ -8287,16 +8338,23 @@ impl Level2ResetSession {
                     }
                 }
                 GoatStepEvent::ExtraManaSphereRequested { entity_index } => {
-                    if let Some(position) = self
+                    if let Some((position, source_id, _control_flags)) = self
                         .goats
                         .goats()
                         .iter()
                         .find(|goat| goat.entity_index == entity_index)
-                        .map(|goat| goat.position)
+                        .map(|goat| (goat.position, goat.source_id, goat.control_flags))
+                        // `KillEntity_1C930` suppresses the class-10/model-1
+                        // burst when struct byte[2] bit 0x10 is set.  Goat
+                        // control flags preserve that raw little-endian
+                        // dword, so the gate is 0x0010_0000 here.
+                        .filter(|(_, _, control_flags)| control_flags & 0x0010_0000 == 0)
                     {
-                        let _ = self
-                            .economy
-                            .spawn_death_burst_from_death(entity_index, position);
+                        let _ = self.economy.spawn_death_burst_from_death_with_id(
+                            entity_index,
+                            source_id,
+                            position,
+                        );
                     }
                 }
                 _ => {}
@@ -15806,6 +15864,7 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("auxiliary invalidation session");
+        let baseline_hash = session.economy().reset_hash();
         let castle_slot = session
             .economy_mut()
             .build_castle(Position::default(), 111)
@@ -15841,15 +15900,33 @@ mod tests {
         assert_eq!(castle.auxiliary_slots[0], 0);
         assert_eq!(castle.auxiliary_count, 4);
         assert_eq!(castle.auxiliary_cooldown, 16);
+        assert!(session.economy().free_slots.contains(&invalid_slot));
+        assert!(
+            !session
+                .economy()
+                .map_chains()
+                .linked_entity_indices()
+                .contains(&invalid_slot)
+        );
         assert!(
             session
                 .economy()
                 .castle_children()
                 .iter()
                 .find(|child| child.source_entity_index == invalid_slot)
-                .expect("invalidated auxiliary child")
-                .active
+                .is_some_and(|child| !child.active)
         );
+        assert_ne!(session.economy().reset_hash(), baseline_hash);
+        session.economy_mut().reclaim_inactive_slots();
+        assert!(
+            !session
+                .economy()
+                .castle_children()
+                .iter()
+                .any(|child| child.source_entity_index == invalid_slot)
+        );
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
     }
 
     #[test]
@@ -17175,6 +17252,13 @@ mod tests {
             .expect("Level 2 Goat economy session");
         let baseline_economy_hash = session.economy().reset_hash();
         let goat_slot = LEVEL_TWO_GOAT_INDICES[0];
+        let goat_source_id = session
+            .goats
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == goat_slot)
+            .expect("Goat source row")
+            .source_id;
         session
             .goats
             .inject_damage(
@@ -17210,6 +17294,31 @@ mod tests {
             observed_death,
             "lethal Level 2 Goat reached KillEntity tail"
         );
+        let goat_events = session
+            .dispatch_events()
+            .iter()
+            .find_map(|event| match event {
+                Level2DispatchEvent::Goat {
+                    source_slot,
+                    events,
+                    ..
+                } if *source_slot == goat_slot => Some(events),
+                _ => None,
+            })
+            .expect("Goat dispatch row");
+        let mana_index = goat_events
+            .iter()
+            .position(|event| matches!(event, GoatStepEvent::ManaConverted { .. }))
+            .expect("Goat mana conversion event");
+        let extra_index = goat_events
+            .iter()
+            .position(|event| matches!(event, GoatStepEvent::ExtraManaSphereRequested { .. }))
+            .expect("Goat burst request event");
+        let removal_index = goat_events
+            .iter()
+            .position(|event| matches!(event, GoatStepEvent::RemovalQueued { .. }))
+            .expect("Goat removal event");
+        assert!(mana_index < extra_index && extra_index < removal_index);
         assert!(session.economy().events().iter().any(|event| {
             matches!(event, Level2EconomyEvent::ManaSphereSpawned {
                 source_entity_index,
@@ -17224,10 +17333,50 @@ mod tests {
                 Level2EconomyEvent::DeathBurstSpawned {
                     source_entity_index,
                     parent_entity_index,
-                } if *parent_entity_index == goat_slot => Some(*source_entity_index),
+                    id_entity_index,
+                } if *parent_entity_index == goat_slot => {
+                    assert_ne!(*id_entity_index, 0);
+                    assert_eq!(*id_entity_index, goat_source_id);
+                    Some(*source_entity_index)
+                }
                 _ => None,
             })
             .expect("Goat KillEntity allocated death burst");
+        let sphere_slot = session
+            .economy()
+            .events()
+            .iter()
+            .find_map(|event| match event {
+                Level2EconomyEvent::ManaSphereSpawned {
+                    sphere_id,
+                    source_entity_index,
+                    ..
+                } if *source_entity_index == goat_slot => Some(*sphere_id as u16),
+                _ => None,
+            })
+            .expect("Goat mana sphere slot");
+        assert!(sphere_slot < burst_slot, "source allocations retain order");
+        let dynamic_slots = session
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::ManaSphere,
+                    ..
+                }
+                | Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::DeathBurst,
+                    ..
+                } if *source_slot == sphere_slot || *source_slot == burst_slot => {
+                    Some(*source_slot)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(dynamic_slots.first().copied(), Some(sphere_slot));
+        assert_eq!(dynamic_slots.last().copied(), Some(burst_slot));
         assert!(session.dispatch_events().iter().any(|event| {
             matches!(
                 event,
@@ -17742,7 +17891,6 @@ mod tests {
         );
 
         session.step_outer_turn(PlayerCommand::default(), 0);
-
         assert!(session.economy().death_bursts().is_empty());
         assert!(
             !session
