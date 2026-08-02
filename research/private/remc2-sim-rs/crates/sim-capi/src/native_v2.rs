@@ -15831,7 +15831,9 @@ mod tests {
         );
         assert_eq!(level2_info.active_entity_count, 114);
         assert_eq!(level2_info.player_count, 8);
-        assert_eq!(level2_info.reset_state_hash, 0xe716_9c09_4e93_6240);
+        // GOLDEN-CHANGE: authored Level 2 group-8/22/27 source construction
+        // is now part of the reset-state projection (aa07b82).
+        assert_eq!(level2_info.reset_state_hash, 0x722c_e919_153b_78d8);
         let mut level2_players = [McCampaignPlayerSnapshotV2::default(); 8];
         assert_eq!(
             mc_native_campaign_players_copy(
@@ -16305,6 +16307,223 @@ mod tests {
         assert_eq!(snapshot.event_count, acquired_snapshot.event_count);
         assert_eq!(snapshot.event_kind_mask, acquired_snapshot.event_kind_mask);
         assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn level2_campaign_step_projects_persistent_replacement_success_and_no_free_slot_failure() {
+        let open_level2 = || {
+            let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/l2-debug3.fJ3PaM/level2");
+            let package = level2_package.to_string_lossy();
+            let selection = McCampaignSelectionV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McCampaignSelectionV2>(),
+                external_level: 2,
+                internal_level: 1,
+                map_type: 0,
+                ..McCampaignSelectionV2::default()
+            };
+            let mut handle = 0;
+            assert_eq!(
+                mc_native_campaign_session_open(
+                    package.as_ptr(),
+                    package.len() as u32,
+                    std::ptr::null(),
+                    0,
+                    &raw const selection,
+                    &raw mut handle,
+                ),
+                MC_STATUS_OK
+            );
+            handle
+        };
+        let command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            flags: 1,
+            requested_spell: MC_REQUESTED_SPELL_NONE,
+            ..McCommandV2::default()
+        };
+
+        let success_handle = open_level2();
+        let (success_source_slot, success_position, success_player_slot) =
+            with_campaign_session_mut(success_handle, |session| {
+                let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+                    unreachable!("campaign fixture opened as Level 2")
+                };
+                let player_entity_index = reset.state.entity_index;
+                let position = reset
+                    .entities()
+                    .get(usize::from(player_entity_index))
+                    .expect("qualified Level 2 player entity")
+                    .position;
+                let replacement = reset
+                    .allocate_level2_spell_replacement(11, player_entity_index, position)
+                    .expect("qualified persistent replacement allocation");
+                Ok((
+                    replacement.source_entity_index,
+                    replacement.position,
+                    reset.runtime().local_player_slot,
+                ))
+            })
+            .expect("install success-vector replacement");
+        let success_count_before = with_campaign_session(success_handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(reset.economy().spell_replacements().len())
+        })
+        .expect("read success-vector baseline");
+        let mut success_input = McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation: 0,
+            command,
+            player_slot: success_player_slot,
+            player_x: success_position.x,
+            player_y: success_position.y,
+            player_z: success_position.z,
+            ..McCampaignStepInputV2::default()
+        };
+        let mut success_snapshot = McCampaignStepSnapshotV2::default();
+        let mut success_events = [McCampaignEventV2::default(); 4096];
+        let mut success_acquired = false;
+        for _ in 0..4 {
+            let mut success_event_count = 0;
+            assert_eq!(
+                mc_native_campaign_session_step(
+                    success_handle,
+                    &raw const success_input,
+                    &raw mut success_snapshot,
+                    struct_size::<McCampaignStepSnapshotV2>(),
+                    success_events.as_mut_ptr(),
+                    success_events.len() as u32,
+                    struct_size::<McCampaignEventV2>(),
+                    &raw mut success_event_count,
+                ),
+                MC_STATUS_OK
+            );
+            success_acquired |=
+                success_events[..success_event_count as usize]
+                    .iter()
+                    .any(|event| {
+                        event.kind == MC_CAMPAIGN_EVENT_SPELL_ACQUISITION
+                            && event.family == 11
+                            && event.source_slot == success_source_slot
+                            && event.flags == 1
+                    });
+            if success_acquired {
+                break;
+            }
+        }
+        assert!(success_acquired);
+        let success_count_after = with_campaign_session(success_handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(reset.economy().spell_replacements().len())
+        })
+        .expect("read success-vector result");
+        assert_eq!(success_count_after, success_count_before + 1);
+        assert_eq!(
+            mc_native_campaign_session_destroy(success_handle),
+            MC_STATUS_OK
+        );
+
+        let failure_handle = open_level2();
+        let (failure_source_slot, failure_position, failure_player_slot, allocated_count) =
+            with_campaign_session_mut(failure_handle, |session| {
+                let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+                    unreachable!("campaign fixture opened as Level 2")
+                };
+                let player_entity_index = reset.state.entity_index;
+                let position = reset
+                    .entities()
+                    .get(usize::from(player_entity_index))
+                    .expect("qualified Level 2 player entity")
+                    .position;
+                let first = reset
+                    .allocate_level2_spell_replacement(11, player_entity_index, position)
+                    .expect("qualified failure-vector seed replacement");
+                let mut allocated = 1_usize;
+                while reset.economy().free_slot_count() != 0 {
+                    reset
+                        .allocate_level2_spell_replacement(
+                            11,
+                            player_entity_index,
+                            Position::default(),
+                        )
+                        .expect("shared arena should materialize every qualified slot");
+                    allocated += 1;
+                }
+                Ok((
+                    first.source_entity_index,
+                    first.position,
+                    reset.runtime().local_player_slot,
+                    allocated,
+                ))
+            })
+            .expect("exhaust shared arena for failure vector");
+        success_input.generation = 0;
+        success_input.player_slot = failure_player_slot;
+        success_input.player_x = failure_position.x;
+        success_input.player_y = failure_position.y;
+        success_input.player_z = failure_position.z;
+        let mut failure_snapshot = McCampaignStepSnapshotV2::default();
+        let mut failure_events = [McCampaignEventV2::default(); 4096];
+        let mut failure_acquired = false;
+        for _ in 0..4 {
+            let mut failure_event_count = 0;
+            assert_eq!(
+                mc_native_campaign_session_step(
+                    failure_handle,
+                    &raw const success_input,
+                    &raw mut failure_snapshot,
+                    struct_size::<McCampaignStepSnapshotV2>(),
+                    failure_events.as_mut_ptr(),
+                    failure_events.len() as u32,
+                    struct_size::<McCampaignEventV2>(),
+                    &raw mut failure_event_count,
+                ),
+                MC_STATUS_OK
+            );
+            failure_acquired |=
+                failure_events[..failure_event_count as usize]
+                    .iter()
+                    .any(|event| {
+                        event.kind == MC_CAMPAIGN_EVENT_SPELL_ACQUISITION
+                            && event.family == 11
+                            && event.source_slot == failure_source_slot
+                            && event.flags == 1
+                    });
+            if failure_acquired {
+                break;
+            }
+        }
+        assert!(failure_acquired);
+        with_campaign_session(failure_handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            assert_eq!(reset.economy().free_slot_count(), 0);
+            assert_eq!(reset.economy().spell_replacements().len(), allocated_count);
+            assert_eq!(
+                reset
+                    .economy()
+                    .spell_replacements()
+                    .iter()
+                    .find(|replacement| replacement.source_entity_index == failure_source_slot)
+                    .expect("failure-vector source remains live")
+                    .action,
+                33
+            );
+            Ok(())
+        })
+        .expect("read no-free replacement result");
+        assert_eq!(
+            mc_native_campaign_session_destroy(failure_handle),
+            MC_STATUS_OK
+        );
     }
 
     #[test]
