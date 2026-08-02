@@ -404,9 +404,11 @@ def validate_classic_hd_owner_focus_pause_artifact(
             errors.append(f"Classic HD owner focus/pause field {field} must be {value}")
     if artifact.get("native_pause_contract") is not True or artifact.get("status") != "lifecycle-pass":
         errors.append("Classic HD owner focus/pause must prove the native pause lifecycle")
+    if artifact.get("suspended_capture_contract") != "capture-refused-while-suspended; authoritative-generation-and-tick-unchanged":
+        errors.append("Classic HD owner focus/pause must prove suspended capture is refused before stepping")
     if artifact.get("fullscreen_alt_tab_status") != "open-os-window-capture-required":
         errors.append("Classic HD owner focus/pause must keep OS window capture open")
-    for field in ("source_revision", "log_sha256", "log_path", "qualification_status"):
+    for field in ("source_revision", "native_plugin_sha256", "log_sha256", "log_path", "qualification_status"):
         if not isinstance(artifact.get(field), str) or not artifact[field]:
             errors.append(f"Classic HD owner focus/pause is missing {field}")
     if "remains open" not in str(artifact.get("qualification_status", "")):
@@ -452,6 +454,10 @@ def validate_classic_hd_owner_exit_sidecar_artifact(
             errors.append(f"Classic HD owner exit sidecar field {field} must be {value}")
     if artifact.get("status") != "sidecar-pass":
         errors.append("Classic HD owner exit sidecar status must be sidecar-pass")
+    if artifact.get("full_completion_route_exercised") is not False:
+        errors.append("Classic HD owner exit sidecar must not claim a full completion route")
+    if not isinstance(artifact.get("native_plugin_sha256"), str) or not artifact["native_plugin_sha256"]:
+        errors.append("Classic HD owner exit sidecar is missing native_plugin_sha256")
     if "open" not in str(artifact.get("authoritative_completion_status", "")):
         errors.append("Classic HD owner exit sidecar must keep full completion open")
     for field in ("source_revision", "log_sha256", "log_path", "qualification_status"):

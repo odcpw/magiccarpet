@@ -24,10 +24,12 @@
   "exit_active": 0,
   "exit_complete": 0,
   "exit_result": 0,
-  "status": "sidecar-pass",
   "authoritative_completion_status": "open-full-authored-route-not-driven",
+  "full_completion_route_exercised": false,
+  "status": "sidecar-pass",
+  "native_plugin_sha256": "804163dd1a0a5a50da3ec7ad5c191126ea7209714ff3f041851540c47d9342a7",
   "log_sha256": "ed62f6272fe46f050d0ebc921afbd5b834dd9415cc6caa040ca6beef320e38c7",
   "log_path": "/tmp/magiccarpet-gfx-spec-owner-classic-hd-exit-sidecar-640-v2.log",
-  "qualification_status": "owner exit presentation sidecar is ABI-readable, clear at session start, and reset-safe at the tick-0 boundary; full authored completion/postgame route remains open",
+  "qualification_status": "owner-bound exit presentation sidecar ABI is clear on initial and reset-safe tick-0 state; the full authored completion/postgame route remains open",
   "reproduce_command_template": "Unity -batchmode -force-glcore -projectPath research/private/remc2-unity-presentation-lab -executeMethod MagicCarpet.PresentationLab.Editor.CreatePresentationLabAssets.RunOwnerClassicHdExitSidecarProbe -mc-presentation-mode classic-hd -mc-classic-profile hd-640x480 -mc-classic-asset-tier optional-high-resolution -mc-package <external-owner-package> -mc-closure <external-owner-closure> -mc-asset-cache <external-owner-cache>"
 }
