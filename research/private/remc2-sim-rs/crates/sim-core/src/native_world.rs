@@ -807,6 +807,20 @@ fn level2_wrapping_xy_distance(left: Position, right: Position) -> u32 {
         .cast_unsigned()
 }
 
+/// Pinned `sub_58440`: Castle defender sphere arbitration compares the
+/// signed-16 X/Y/Z deltas as a squared 3-D distance, not the XY-only arrival
+/// metric used by `AddBallon_60AB0`.
+fn level2_wrapping_source_distance_3d(left: Position, right: Position) -> u32 {
+    let dx = i64::from(i32::from(right.x.wrapping_sub(left.x).cast_signed()));
+    let dy = i64::from(i32::from(right.y.wrapping_sub(left.y).cast_signed()));
+    let dz = i64::from(i32::from(right.z.wrapping_sub(left.z)));
+    u32::try_from(dx * dx + dy * dy + dz * dz).unwrap_or(u32::MAX)
+}
+
+/// `sub_5F810` tests byte 1 bit `0x20` of the source control dword. The
+/// little-endian entity export places that bit at dword mask `0x2000`.
+const LEVEL2_MANA_SPHERE_TARGET_SUPPRESSION_BIT: u32 = 0x0000_2000;
+
 /// Pinned signed-16 XY distance used by `Maths::EuclideanDistXYZ_58490` in
 /// `AddBallon_60AB0` before its class-3 target gate.  The helper's recovered
 /// cutoff path ignores Z; the holder's Z participates only in the later
@@ -3282,6 +3296,62 @@ pub struct Level2CastleChild {
     pub active: bool,
 }
 
+/// One row consumed by remc2's `sub_60F00` owner-mana rebuild.  The source
+/// scans the active entity arena and applies an explicit class/model filter;
+/// retaining that projection keeps the aggregate independent from the
+/// Castle's local defender vector.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Level2OwnerManaRow {
+    source_entity_index: u16,
+    source_class: u8,
+    source_model: u8,
+    player_entity_index: u16,
+    mana: i32,
+    active: bool,
+}
+
+fn level2_owner_mana_row_qualifies(source_class: u8, source_model: u8) -> bool {
+    (source_class == 3 && matches!(source_model, 2 | 3))
+        || source_class == 5
+        || (source_class == 10 && matches!(source_model, 39 | 45 | 58))
+}
+
+fn level2_owner_mana_rows_from_entities(entities: &[EntitySnapshot]) -> Vec<Level2OwnerManaRow> {
+    entities
+        .iter()
+        .filter(|entity| {
+            entity.active && level2_owner_mana_row_qualifies(entity.class, entity.model)
+        })
+        .map(|entity| Level2OwnerManaRow {
+            source_entity_index: entity.index,
+            source_class: entity.class,
+            source_model: entity.model,
+            player_entity_index: entity.source_player_entity_index(),
+            mana: entity.mana,
+            active: true,
+        })
+        .collect()
+}
+
+fn level2_owner_mana_projection(rows: &[Level2OwnerManaRow]) -> (BTreeMap<u16, i32>, i32) {
+    // `sub_60F00` seeds the global accumulator with one before the scan.
+    let mut global = 1_i32;
+    let mut aggregate = BTreeMap::new();
+    for row in rows.iter().filter(|row| {
+        row.active && level2_owner_mana_row_qualifies(row.source_class, row.source_model)
+    }) {
+        global = global.saturating_add(row.mana);
+        // Only class-10/model-45 rows feed the owner's dword_0x13C.  The
+        // other accepted rows feed the source max-mana/global counters via
+        // `sub_61000`, but must not be substituted into this gate.
+        if row.source_class == 10 && row.source_model == 45 && row.player_entity_index != 0 {
+            let entry = aggregate.entry(row.player_entity_index).or_insert(0_i32);
+            *entry = (*entry).saturating_add(row.mana);
+        }
+    }
+    (aggregate, global)
+}
+
 /// The short-lived class-10/model-1/action-1 row created by the source
 /// `KillEntity_1C930` tail after a creature's mana conversion.  It is kept in
 /// the same dynamic arena as spheres and carriers so allocation order,
@@ -3398,6 +3468,12 @@ pub struct Level2EconomyState {
     owner_class: BTreeMap<u16, u8>,
     baseline_owner_max_mana: BTreeMap<u16, i32>,
     owner_max_mana: BTreeMap<u16, i32>,
+    baseline_owner_mana_rows: Vec<Level2OwnerManaRow>,
+    owner_mana_rows: Vec<Level2OwnerManaRow>,
+    baseline_owner_mana_aggregate: BTreeMap<u16, i32>,
+    owner_mana_aggregate: BTreeMap<u16, i32>,
+    baseline_owner_mana_global: i32,
+    owner_mana_global: i32,
     baseline_spheres: Vec<ManaSphere>,
     spheres: Vec<ManaSphere>,
     baseline_death_bursts: Vec<Level2DeathBurst>,
@@ -3486,6 +3562,9 @@ impl Level2EconomyState {
             .filter(|entity| entity.active)
             .map(|entity| (entity.index, entity.max_mana))
             .collect::<BTreeMap<_, _>>();
+        let owner_mana_rows = level2_owner_mana_rows_from_entities(entities);
+        let (owner_mana_aggregate, owner_mana_global) =
+            level2_owner_mana_projection(&owner_mana_rows);
         let raw_map_entries =
             raw_source_map_chain_entries(&terrain.planes().entity_indices, |source_entity_index| {
                 entities
@@ -3547,6 +3626,12 @@ impl Level2EconomyState {
             owner_class,
             baseline_owner_max_mana: owner_max_mana.clone(),
             owner_max_mana,
+            baseline_owner_mana_rows: owner_mana_rows.clone(),
+            owner_mana_rows,
+            baseline_owner_mana_aggregate: owner_mana_aggregate.clone(),
+            owner_mana_aggregate,
+            baseline_owner_mana_global: owner_mana_global,
+            owner_mana_global,
             baseline_spheres: Vec::new(),
             spheres: Vec::new(),
             baseline_death_bursts: Vec::new(),
@@ -3785,6 +3870,85 @@ impl Level2EconomyState {
         self.owner_max_mana.insert(owner_entity_index, max_mana);
     }
 
+    /// Rebuild the exact `sub_60F00` class/model-filtered owner aggregate
+    /// immediately before Castle defender arbitration.  The source resets
+    /// this value every pass; it is not the local sum of model-3 holders.
+    fn rebuild_owner_mana_projection(&mut self) {
+        self.owner_mana_rows = self.baseline_owner_mana_rows.clone();
+        if let Some(castle) = self.castle.filter(|castle| castle.active) {
+            self.install_owner_mana_row(
+                castle.source_entity_index,
+                castle.source_class,
+                castle.source_model,
+                castle.source_id_entity_index,
+                castle.mana,
+            );
+        }
+        let children = self
+            .castle_children
+            .iter()
+            .filter(|child| child.active)
+            .copied()
+            .collect::<Vec<_>>();
+        for child in children {
+            self.install_owner_mana_row(
+                child.source_entity_index,
+                child.source_class,
+                child.model,
+                child.player_entity_index,
+                child.mana,
+            );
+        }
+        let spheres = self
+            .spheres
+            .iter()
+            .filter(|sphere| sphere.active)
+            .copied()
+            .collect::<Vec<_>>();
+        for sphere in spheres {
+            self.install_owner_mana_row(
+                sphere.source_entity_index,
+                10,
+                39,
+                sphere.owner_entity_index,
+                sphere.mana,
+            );
+        }
+        let carriers = self
+            .carriers
+            .iter()
+            .filter(|carrier| carrier.active)
+            .copied()
+            .collect::<Vec<_>>();
+        for carrier in carriers {
+            self.install_owner_mana_row(
+                carrier.source_entity_index,
+                3,
+                3,
+                carrier.owner_entity_index,
+                carrier.carried_mana,
+            );
+        }
+        self.owner_mana_rows
+            .sort_unstable_by_key(|row| row.source_entity_index);
+        let (aggregate, global) = level2_owner_mana_projection(&self.owner_mana_rows);
+        self.owner_mana_aggregate = aggregate;
+        self.owner_mana_global = global;
+    }
+
+    #[must_use]
+    pub fn owner_mana_aggregate(&self, owner_entity_index: u16) -> i32 {
+        self.owner_mana_aggregate
+            .get(&owner_entity_index)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    #[must_use]
+    pub const fn owner_mana_global(&self) -> i32 {
+        self.owner_mana_global
+    }
+
     /// Bind one imported `sub_60810` life coefficient. `256` is the source
     /// identity coefficient; callers with the preserved nested player-state
     /// bytes can provide the exact value for each stage.
@@ -3920,15 +4084,18 @@ impl Level2EconomyState {
                 yaw,
                 mana: sphere_mana,
                 owner_entity_index,
+                player_entity_index: owner_entity_index,
                 incoming_owner_entity_index: 0,
                 incoming_possession_payload: 0,
                 assigned_carrier_id: 0,
+                control_flags: 0,
                 phase: sphere_slot as u8,
                 active: true,
                 pending_delete: false,
             };
             sphere_ids.push(sphere.id);
             self.spheres.push(sphere);
+            self.rebuild_owner_mana_projection();
             self.events.push(Level2EconomyEvent::ManaSphereSpawned {
                 sphere_id: sphere.id,
                 source_entity_index,
@@ -4066,6 +4233,7 @@ impl Level2EconomyState {
             sphere_id: sphere.id,
             owner_entity_index,
         });
+        self.rebuild_owner_mana_projection();
         true
     }
 
@@ -4159,6 +4327,7 @@ impl Level2EconomyState {
                 self.merge_mana_spheres(sphere_slot, absorbed_slot);
             }
         }
+        self.rebuild_owner_mana_projection();
         true
     }
 
@@ -4245,6 +4414,7 @@ impl Level2EconomyState {
         }
         let child = self.castle_children[child_index];
         self.sync_castle_child_map(child);
+        self.rebuild_owner_mana_projection();
         true
     }
 
@@ -4397,6 +4567,7 @@ impl Level2EconomyState {
                 y: position.y,
             })
             .expect("Level 2 carrier source slot fits the map chain");
+        self.rebuild_owner_mana_projection();
         true
     }
 
@@ -4479,6 +4650,7 @@ impl Level2EconomyState {
         });
         self.spheres.remove(source_index);
         self.release_slot(source_slot, Some(source_entity_rng));
+        self.rebuild_owner_mana_projection();
         true
     }
 
@@ -4543,6 +4715,7 @@ impl Level2EconomyState {
             carrier_id: carrier.id,
             mana,
         });
+        self.rebuild_owner_mana_projection();
         true
     }
 
@@ -4574,6 +4747,7 @@ impl Level2EconomyState {
             active: true,
         };
         self.carriers.push(carrier);
+        self.rebuild_owner_mana_projection();
         self.events.push(Level2EconomyEvent::ManaCarrierSpawned {
             source_entity_index,
             owner_entity_index,
@@ -4907,6 +5081,66 @@ impl Level2EconomyState {
             .expect("Castle child source slot fits the map chain");
     }
 
+    fn install_owner_mana_row(
+        &mut self,
+        source_entity_index: u16,
+        source_class: u8,
+        source_model: u8,
+        player_entity_index: u16,
+        mana: i32,
+    ) {
+        if !level2_owner_mana_row_qualifies(source_class, source_model) {
+            return;
+        }
+        self.owner_mana_rows.retain(|row| {
+            row.source_entity_index != source_entity_index
+                || !level2_owner_mana_row_qualifies(row.source_class, row.source_model)
+        });
+        self.owner_mana_rows.push(Level2OwnerManaRow {
+            source_entity_index,
+            source_class,
+            source_model,
+            player_entity_index,
+            mana,
+            active: true,
+        });
+    }
+
+    fn select_castle_defender_sphere(
+        &self,
+        holder_position: Position,
+        holder_id_entity_index: u16,
+        exclude_one: u16,
+        exclude_two: u16,
+    ) -> Option<u16> {
+        // `UpdateEntities_57730` rebuilds the source model-39 chain by
+        // ascending arena slot. Sort explicitly so Vec insertion/reclaim
+        // order cannot change the strict-`<` tie winner.
+        let mut candidates = self
+            .spheres
+            .iter()
+            .filter(|sphere| {
+                sphere.active
+                    && sphere.player_entity_index == holder_id_entity_index
+                    && sphere.control_flags & LEVEL2_MANA_SPHERE_TARGET_SUPPRESSION_BIT == 0
+                    && sphere.source_entity_index != exclude_one
+                    && sphere.source_entity_index != exclude_two
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|sphere| sphere.source_entity_index);
+        let mut best = None;
+        let mut best_distance = u32::MAX;
+        for sphere in candidates {
+            let distance = level2_wrapping_source_distance_3d(holder_position, sphere.position);
+            if distance < best_distance {
+                best_distance = distance;
+                best = Some(sphere.source_entity_index);
+            }
+        }
+        best
+    }
+
     /// Bounded projection of `sub_5FD00`: release only the mana that exceeds
     /// the owner's stage capacity (or all mana for a zero-stage Castle),
     /// preserving source order and the exact final remainder. The source's
@@ -4983,14 +5217,17 @@ impl Level2EconomyState {
                 yaw: 0,
                 mana: sphere_mana,
                 owner_entity_index: castle.owner_entity_index,
+                player_entity_index: castle.owner_entity_index,
                 incoming_owner_entity_index: 0,
                 incoming_possession_payload: 0,
                 assigned_carrier_id: 0,
+                control_flags: 0,
                 phase: sphere_slot as u8,
                 active: true,
                 pending_delete: false,
             };
             self.spheres.push(sphere);
+            self.rebuild_owner_mana_projection();
             self.events.push(Level2EconomyEvent::ManaSphereSpawned {
                 sphere_id: sphere.id,
                 source_entity_index: castle_slot,
@@ -5207,12 +5444,12 @@ impl Level2EconomyState {
             castle.defender_count = defenders.len() as u8;
         }
 
+        self.rebuild_owner_mana_projection();
+
         // `sub_5FF50` resets the owner's aggregate defender mana/max counters
         // and then arbitrates each holder's `word_0x96_150` target. A full
         // Castle first claims the holder; otherwise an eligible action-9
-        // holder receives a bounded nearest model-39 sphere approximation.
-        // Exact `sub_5F810` target arbitration remains a follow-up gap.
-        let prior_targets = snapshot.defender_target_spheres;
+        // holder receives the typed `sub_5F810` model-39 chain selection.
         let mut defender_targets = snapshot.defender_target_spheres;
         let mut defender_total_mana = 0_i32;
         let mut defender_total_max_mana = 0_i32;
@@ -5233,30 +5470,31 @@ impl Level2EconomyState {
             // mana (`dword_0x13C_316`), not the aggregate max-mana display
             // counter (`dword_0x12A_298`). The source tests that value before
             // adding this holder's payload to the rebuilt totals below.
-            if defender_total_mana.saturating_add(snapshot.mana) >= snapshot.mana_capacity {
+            if self
+                .owner_mana_aggregate(snapshot.source_id_entity_index)
+                .saturating_add(snapshot.mana)
+                >= snapshot.mana_capacity
+            {
                 target_slot = castle_slot;
             } else if child.source_byte_3e % u8::try_from(defender_target_count.max(1)).unwrap_or(1)
                 == 0
                 && child.action == 9
                 && child.mana < child.max_mana
             {
-                let exclude_one = prior_targets[(index + 1) % 3];
-                let exclude_two = prior_targets[(index + 2) % 3];
-                target_slot = self
-                    .spheres
-                    .iter()
-                    .filter(|sphere| {
-                        sphere.active
-                            && sphere.owner_entity_index == snapshot.source_id_entity_index
-                            && sphere.assigned_carrier_id == 0
-                            && sphere.source_entity_index != exclude_one
-                            && sphere.source_entity_index != exclude_two
-                    })
-                    .min_by_key(|sphere| {
-                        level2_wrapping_xy_distance(child.position, sphere.position)
-                    })
-                    .map(|sphere| sphere.source_entity_index)
-                    .unwrap_or_default();
+                // Source installs the Castle relation before calling
+                // `sub_5F810`; a missing candidate therefore leaves this
+                // holder pointed at the Castle, not at a stale prior row.
+                target_slot = castle_slot;
+                let exclude_one = defender_targets[(index + 1) % 3];
+                let exclude_two = defender_targets[(index + 2) % 3];
+                if let Some(sphere_slot) = self.select_castle_defender_sphere(
+                    child.position,
+                    child.id_entity_index,
+                    exclude_one,
+                    exclude_two,
+                ) {
+                    target_slot = sphere_slot;
+                }
             }
             if let Some(installed) = self
                 .castle_children
@@ -6243,6 +6481,7 @@ impl Level2EconomyState {
             self.release_slot(castle.source_entity_index, None);
             self.castle = None;
         }
+        self.rebuild_owner_mana_projection();
     }
 
     #[must_use]
@@ -6285,6 +6524,18 @@ impl Level2EconomyState {
             hasher.update(owner.to_le_bytes());
             hasher.update(max_mana.to_le_bytes());
         }
+        for row in &self.owner_mana_rows {
+            hasher.update(row.source_entity_index.to_le_bytes());
+            hasher.update([row.source_class, row.source_model]);
+            hasher.update(row.player_entity_index.to_le_bytes());
+            hasher.update(row.mana.to_le_bytes());
+            hasher.update([u8::from(row.active)]);
+        }
+        for (owner, mana) in &self.owner_mana_aggregate {
+            hasher.update(owner.to_le_bytes());
+            hasher.update(mana.to_le_bytes());
+        }
+        hasher.update(self.owner_mana_global.to_le_bytes());
         for sphere in &self.spheres {
             hasher.update(sphere.id.to_le_bytes());
             hasher.update(sphere.source_entity_index.to_le_bytes());
@@ -6298,9 +6549,11 @@ impl Level2EconomyState {
             hasher.update(sphere.yaw.to_le_bytes());
             hasher.update(sphere.mana.to_le_bytes());
             hasher.update(sphere.owner_entity_index.to_le_bytes());
+            hasher.update(sphere.player_entity_index.to_le_bytes());
             hasher.update(sphere.incoming_owner_entity_index.to_le_bytes());
             hasher.update(sphere.incoming_possession_payload.to_le_bytes());
             hasher.update(sphere.assigned_carrier_id.to_le_bytes());
+            hasher.update(sphere.control_flags.to_le_bytes());
             hasher.update([sphere.phase]);
             hasher.update([u8::from(sphere.active), u8::from(sphere.pending_delete)]);
         }
@@ -6517,6 +6770,9 @@ impl Level2EconomyState {
         self.source_owner = self.baseline_source_owner.clone();
         self.owner_class = self.baseline_owner_class.clone();
         self.owner_max_mana = self.baseline_owner_max_mana.clone();
+        self.owner_mana_rows = self.baseline_owner_mana_rows.clone();
+        self.owner_mana_aggregate = self.baseline_owner_mana_aggregate.clone();
+        self.owner_mana_global = self.baseline_owner_mana_global;
         self.spheres = self.baseline_spheres.clone();
         self.death_bursts = self.baseline_death_bursts.clone();
         self.carriers = self.baseline_carriers.clone();
@@ -8415,6 +8671,31 @@ impl Level2ResetSession {
                 }
                 3 => {
                     let effects = self.ordinary.step_villager_action_105(source_slot);
+                    // `KillEntity_1C930` allocates the class-10/model-1
+                    // death burst before disabling the dying villager's
+                    // source row. Keep the typed villager source id for this
+                    // relation; imported ordinary villagers have no owner
+                    // entry in the Level 2 economy map.
+                    for effect in &effects {
+                        if let VillagerStepEffect::DeathBurst {
+                            source_entity_index,
+                            position,
+                        } = effect
+                        {
+                            if let Some(villager) = self
+                                .ordinary
+                                .villagers()
+                                .iter()
+                                .find(|villager| villager.entity_index == *source_entity_index)
+                            {
+                                let _ = self.economy.spawn_death_burst_from_death_with_id(
+                                    *source_entity_index,
+                                    villager.source_id,
+                                    *position,
+                                );
+                            }
+                        }
+                    }
                     self.dispatch_events.push(Level2DispatchEvent::Villager {
                         pass,
                         source_slot,
@@ -16342,6 +16623,218 @@ mod tests {
         let castle = session.economy().castle().expect("tail-bound Castle");
         assert_eq!(castle.auxiliary_cooldown, 15);
         assert_eq!(castle.auxiliary_slots[4], 0xbeef);
+    }
+
+    #[test]
+    fn level_two_owner_mana_projection_matches_source_filters_and_reset() {
+        let rows = vec![
+            Level2OwnerManaRow {
+                source_entity_index: 1,
+                source_class: 3,
+                source_model: 2,
+                player_entity_index: 111,
+                mana: 7,
+                active: true,
+            },
+            Level2OwnerManaRow {
+                source_entity_index: 2,
+                source_class: 3,
+                source_model: 3,
+                player_entity_index: 111,
+                mana: 11,
+                active: true,
+            },
+            Level2OwnerManaRow {
+                source_entity_index: 3,
+                source_class: 5,
+                source_model: 15,
+                player_entity_index: 111,
+                mana: 13,
+                active: true,
+            },
+            Level2OwnerManaRow {
+                source_entity_index: 4,
+                source_class: 10,
+                source_model: 39,
+                player_entity_index: 111,
+                mana: 17,
+                active: true,
+            },
+            Level2OwnerManaRow {
+                source_entity_index: 5,
+                source_class: 10,
+                source_model: 45,
+                player_entity_index: 111,
+                mana: 19,
+                active: true,
+            },
+            Level2OwnerManaRow {
+                source_entity_index: 6,
+                source_class: 10,
+                source_model: 58,
+                player_entity_index: 111,
+                mana: 23,
+                active: true,
+            },
+            // A zero player relation still contributes to the source global
+            // counter but cannot enter an owner's dword_0x13C bucket.
+            Level2OwnerManaRow {
+                source_entity_index: 7,
+                source_class: 10,
+                source_model: 45,
+                player_entity_index: 0,
+                mana: 29,
+                active: true,
+            },
+            // Unsupported class/model rows are skipped entirely.
+            Level2OwnerManaRow {
+                source_entity_index: 8,
+                source_class: 10,
+                source_model: 40,
+                player_entity_index: 111,
+                mana: 31,
+                active: true,
+            },
+            Level2OwnerManaRow {
+                source_entity_index: 9,
+                source_class: 3,
+                source_model: 2,
+                player_entity_index: 111,
+                mana: 37,
+                active: false,
+            },
+        ];
+        let (aggregate, global) = level2_owner_mana_projection(&rows);
+        assert_eq!(aggregate.get(&111), Some(&19));
+        assert_eq!(aggregate.get(&0), None);
+        assert_eq!(global, 1 + 7 + 11 + 13 + 17 + 19 + 23 + 29);
+
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("owner aggregate session");
+        assert_eq!(session.economy().owner_mana_global(), 12_835);
+        assert_eq!(session.economy().owner_mana_aggregate(111), 0);
+        let baseline_hash = session.economy().reset_hash();
+        {
+            let economy = session.economy_mut();
+            economy.owner_mana_rows.push(Level2OwnerManaRow {
+                source_entity_index: 900,
+                source_class: 10,
+                source_model: 45,
+                player_entity_index: 111,
+                mana: 900,
+                active: true,
+            });
+            let (aggregate, global) = level2_owner_mana_projection(&economy.owner_mana_rows);
+            economy.owner_mana_aggregate = aggregate;
+            economy.owner_mana_global = global;
+        }
+        assert_eq!(session.economy().owner_mana_aggregate(111), 900);
+        assert_eq!(session.economy().owner_mana_global(), 13_735);
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
+        assert_eq!(session.economy().owner_mana_aggregate(111), 0);
+        assert_eq!(session.economy().owner_mana_global(), 12_835);
+    }
+
+    #[test]
+    fn level_two_sub5f810_uses_xyz_suppression_relation_exclusion_and_source_order() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("sub5F810 target session");
+        let economy = session.economy_mut();
+        let holder_position = Position {
+            x: 100,
+            y: 200,
+            z: 300,
+        };
+        let spawn = |economy: &mut Level2EconomyState, position: Position, owner: u16| {
+            economy
+                .spawn_mana_sphere_from_death(901, position, 0, 0x1234, 1, owner)
+                .expect("target sphere") as u16
+        };
+        let suppressed = spawn(
+            economy,
+            Position {
+                x: 100,
+                y: 200,
+                z: 301,
+            },
+            111,
+        );
+        let tied_first = spawn(
+            economy,
+            Position {
+                x: 110,
+                y: 200,
+                z: 300,
+            },
+            111,
+        );
+        let tied_second = spawn(
+            economy,
+            Position {
+                x: 90,
+                y: 200,
+                z: 300,
+            },
+            111,
+        );
+        let wrong_player = spawn(
+            economy,
+            Position {
+                x: 101,
+                y: 200,
+                z: 300,
+            },
+            112,
+        );
+        let excluded = spawn(
+            economy,
+            Position {
+                x: 100,
+                y: 200,
+                z: 300,
+            },
+            111,
+        );
+        economy
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == suppressed)
+            .expect("suppressed sphere")
+            .control_flags = LEVEL2_MANA_SPHERE_TARGET_SUPPRESSION_BIT;
+        economy
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == wrong_player)
+            .expect("wrong-player sphere")
+            .player_entity_index = 112;
+        economy.spheres.reverse();
+        let expected_tie = tied_first.min(tied_second);
+        assert_eq!(
+            economy.select_castle_defender_sphere(holder_position, 111, excluded, 0),
+            Some(expected_tie)
+        );
+        assert_eq!(
+            economy.select_castle_defender_sphere(holder_position, 111, expected_tie, 0),
+            Some(excluded)
+        );
+        let other_tie = if expected_tie == tied_first {
+            tied_second
+        } else {
+            tied_first
+        };
+        // Excluding both the first tie winner and the exact-position row
+        // leaves the other equal-distance source-order candidate.
+        assert_eq!(
+            economy.select_castle_defender_sphere(holder_position, 111, expected_tie, excluded),
+            Some(other_tie)
+        );
     }
 
     #[test]

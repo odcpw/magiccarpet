@@ -5189,10 +5189,17 @@ pub struct ManaSphere {
     pub mana: i32,
     /// Zero is neutral; otherwise this is the owning player entity.
     pub owner_entity_index: u16,
+    /// Source `playerEntityIndex_0x94_148` used by `sub_5F810` target
+    /// arbitration.  The reset/death projection currently binds it to the
+    /// owning player relation, while imported callers may override it.
+    pub player_entity_index: u16,
     pub incoming_owner_entity_index: u16,
     /// Source dword 0x64 written alongside the pending owner by `sub_112D0`.
     pub incoming_possession_payload: u32,
     pub assigned_carrier_id: u32,
+    /// Raw source control dword; byte 1 bit 0x20 suppresses model-39 target
+    /// selection in `sub_5F810`.
+    pub control_flags: u32,
     pub phase: u8,
     pub active: bool,
     /// `DisableEntityDrawing04_57F10` marks the source row for the next
@@ -10216,9 +10223,11 @@ impl Level1MissionState {
             yaw,
             mana,
             owner_entity_index: 0,
+            player_entity_index: 0,
             incoming_owner_entity_index: 0,
             incoming_possession_payload: 0,
             assigned_carrier_id: 0,
+            control_flags: 0,
             phase,
             active: true,
             pending_delete: false,
@@ -10364,9 +10373,11 @@ impl Level1MissionState {
             yaw,
             mana,
             owner_entity_index,
+            player_entity_index: owner_entity_index,
             incoming_owner_entity_index: 0,
             incoming_possession_payload: 0,
             assigned_carrier_id: 0,
+            control_flags: 0,
             phase,
             active: true,
             pending_delete: false,
@@ -18081,9 +18092,11 @@ impl Level1MissionState {
             yaw: 0,
             mana,
             owner_entity_index: self.castle_owner_entity_index,
+            player_entity_index: self.castle_owner_entity_index,
             incoming_owner_entity_index: 0,
             incoming_possession_payload: 0,
             assigned_carrier_id: 0,
+            control_flags: 0,
             phase,
             active: true,
             pending_delete: false,
