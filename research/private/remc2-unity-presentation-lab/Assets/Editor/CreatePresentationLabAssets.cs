@@ -327,6 +327,19 @@ namespace MagicCarpet.PresentationLab.Editor
 
                 string reason;
                 ClassicHdPresentation classic = router.ClassicHdRenderer;
+                string requestedAssetTier = CommandLineValue("-mc-classic-asset-tier");
+                ClassicHdAssetTierResolution assetTierResolution = router.ClassicHdAssetTierResolution;
+                if (assetTierResolution == null ||
+                    (string.Equals(requestedAssetTier, "optional-high-resolution", StringComparison.OrdinalIgnoreCase) &&
+                     !assetTierResolution.FallbackApplied))
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD SCENARIO SMOKE FAIL: asset-tier resolution was not fail-closed" +
+                        " requested=" + requestedAssetTier +
+                        " effective=" + (assetTierResolution == null ? "missing" : assetTierResolution.EffectiveToken));
+                    EditorApplication.Exit(1);
+                    return;
+                }
                 ushort townStartX = classic.CameraX;
                 ushort townStartY = classic.CameraY;
                 ushort flightStartX = townStartX;
@@ -502,9 +515,264 @@ namespace MagicCarpet.PresentationLab.Editor
                     " death_observed=" + (deathObserved ? 1 : 0) +
                     " restart_generation=" + generationAfterRestart +
                     " restart_tick=" + restartTick +
+                    " requested_asset_tier=" + (string.IsNullOrWhiteSpace(requestedAssetTier) ? "original-indexed" : requestedAssetTier) +
+                    " resolved_asset_tier=" + assetTierResolution.EffectiveToken +
+                    " asset_tier_fallback_applied=" + (assetTierResolution.FallbackApplied ? 1 : 0) +
+                    " asset_tier_optional_pack_present=" + (assetTierResolution.OptionalPackPresent ? 1 : 0) +
+                    " asset_tier_fallback_reason=" + (string.IsNullOrWhiteSpace(assetTierResolution.Reason) ? "none" : assetTierResolution.Reason.Replace(' ', '_')) +
                     " index_route_hash=" + SequenceHash(indexRouteHashes).ToString("x16") +
                     " provenance_route_hash=" + SequenceHash(provenanceRouteHashes).ToString("x16") +
                     " last_receipt_hash=" + classic.LastNativeReceiptHash.ToString("x16") +
+                    " owner_inputs_external=true");
+                EditorApplication.Exit(0);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [MenuItem("Magic Carpet/Presentation Lab/Run Owner Classic HD Focus Pause Probe")]
+        public static void RunOwnerClassicHdFocusPauseProbe()
+        {
+            string packagePath = CommandLineValue("-mc-package");
+            string closurePath = CommandLineValue("-mc-closure");
+            string assetCachePath = CommandLineValue("-mc-asset-cache");
+            if (string.IsNullOrWhiteSpace(packagePath) ||
+                string.IsNullOrWhiteSpace(closurePath) ||
+                string.IsNullOrWhiteSpace(assetCachePath))
+            {
+                throw new InvalidOperationException(
+                    "owner Classic HD focus/pause probe requires -mc-package, -mc-closure, and -mc-asset-cache");
+            }
+
+            var root = new GameObject("Owner Classic HD Focus Pause Probe Router");
+            var router = root.AddComponent<PresentationModeRouter>();
+            MethodInfo awake = typeof(PresentationModeRouter).GetMethod(
+                "Awake",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (awake == null)
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                throw new InvalidOperationException("presentation router Awake method is missing");
+            }
+
+            try
+            {
+                awake.Invoke(router, null);
+                if (!router.SessionIsOpen ||
+                    router.ClassicHdRenderer == null ||
+                    !router.ClassicHdRenderer.UsesNativeOwnerSession)
+                {
+                    Debug.LogError("OWNER CLASSIC HD FOCUS PAUSE PROBE FAIL: owner route did not open");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                ClassicHdPresentation classic = router.ClassicHdRenderer;
+                string reason;
+                if (!classic.CaptureFrame(0f, 0f, out reason))
+                {
+                    Debug.LogError("OWNER CLASSIC HD FOCUS PAUSE PROBE FAIL: baseline frame: " + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                ulong baselineGeneration = classic.AuthoritativeGeneration;
+                ulong baselineTick = classic.AuthoritativeTick;
+                ulong baselinePresentationTick = classic.SourceTick;
+                int baselineUploads = classic.UploadCount;
+                if (!router.ApplyApplicationLifecycleForQualification(false, false, out reason) ||
+                    !router.IsApplicationSuspended ||
+                    !classic.IsApplicationSuspended)
+                {
+                    Debug.LogError("OWNER CLASSIC HD FOCUS PAUSE PROBE FAIL: focus loss did not suspend: " + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                if (classic.CaptureFrame(0f, 0f, out reason) ||
+                    !classic.IsApplicationSuspended ||
+                    classic.AuthoritativeGeneration != baselineGeneration ||
+                    classic.AuthoritativeTick != baselineTick ||
+                    !router.ClassicHdRenderer.UsesNativeOwnerSession)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD FOCUS PAUSE PROBE FAIL: paused capture advanced authoritative state" +
+                        " baseline_generation=" + baselineGeneration +
+                        " baseline_tick=" + baselineTick +
+                        " baseline_presentation_tick=" + baselinePresentationTick +
+                        " router_suspended=" + router.IsApplicationSuspended +
+                        " renderer_suspended=" + classic.IsApplicationSuspended +
+                        " generation=" + classic.AuthoritativeGeneration +
+                        " tick=" + classic.AuthoritativeTick +
+                        " presentation_tick=" + classic.SourceTick +
+                        " uploads=" + classic.UploadCount +
+                        " reason=" + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                if (!router.ApplyApplicationLifecycleForQualification(true, false, out reason) ||
+                    router.IsApplicationSuspended ||
+                    classic.IsApplicationSuspended ||
+                    !classic.CaptureFrame(0f, 0f, out reason) ||
+                    classic.AuthoritativeTick <= baselineTick)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD FOCUS PAUSE PROBE FAIL: focus restore did not resume Rust" +
+                        " tick=" + classic.AuthoritativeTick +
+                        " presentation_tick=" + classic.SourceTick +
+                        " reason=" + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                if (!router.ApplyApplicationLifecycleForQualification(true, true, out reason) ||
+                    !router.IsApplicationSuspended ||
+                    !classic.IsApplicationSuspended)
+                {
+                    Debug.LogError("OWNER CLASSIC HD FOCUS PAUSE PROBE FAIL: application pause did not suspend: " + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                if (!router.ApplyApplicationLifecycleForQualification(true, false, out reason) ||
+                    router.IsApplicationSuspended ||
+                    classic.IsApplicationSuspended)
+                {
+                    Debug.LogError("OWNER CLASSIC HD FOCUS PAUSE PROBE FAIL: application resume did not restore: " + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                Debug.Log(
+                    "OWNER CLASSIC HD FOCUS PAUSE PROBE PASS: profile=" + classic.Settings.profile +
+                    " baseline_generation=" + baselineGeneration +
+                    " baseline_tick=" + baselineTick +
+                    " baseline_presentation_tick=" + baselinePresentationTick +
+                    " resumed_tick=" + classic.SourceTick +
+                    " resumed_authoritative_tick=" + classic.AuthoritativeTick +
+                    " baseline_uploads=" + baselineUploads +
+                    " uploads=" + classic.UploadCount +
+                    " lifecycle_transitions=" + classic.ApplicationLifecycleTransitions +
+                    " output_restore_requests=" + router.OutputRestoreRequests +
+                    " native_pause_contract=pass" +
+                    " fullscreen_alt_tab_status=open-os-window-capture-required" +
+                    " owner_inputs_external=true");
+                EditorApplication.Exit(0);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [MenuItem("Magic Carpet/Presentation Lab/Run Owner Classic HD Exit Sidecar Probe")]
+        public static void RunOwnerClassicHdExitSidecarProbe()
+        {
+            string packagePath = CommandLineValue("-mc-package");
+            string closurePath = CommandLineValue("-mc-closure");
+            string assetCachePath = CommandLineValue("-mc-asset-cache");
+            if (string.IsNullOrWhiteSpace(packagePath) ||
+                string.IsNullOrWhiteSpace(closurePath) ||
+                string.IsNullOrWhiteSpace(assetCachePath))
+            {
+                throw new InvalidOperationException(
+                    "owner Classic HD exit sidecar probe requires -mc-package, -mc-closure, and -mc-asset-cache");
+            }
+
+            var root = new GameObject("Owner Classic HD Exit Sidecar Probe Router");
+            var router = root.AddComponent<PresentationModeRouter>();
+            MethodInfo awake = typeof(PresentationModeRouter).GetMethod(
+                "Awake",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (awake == null)
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                throw new InvalidOperationException("presentation router Awake method is missing");
+            }
+
+            try
+            {
+                awake.Invoke(router, null);
+                if (!router.SessionIsOpen ||
+                    router.ClassicHdRenderer == null ||
+                    !router.ClassicHdRenderer.UsesNativeOwnerSession)
+                {
+                    Debug.LogError("OWNER CLASSIC HD EXIT SIDECAR PROBE FAIL: owner route did not open");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                ClassicHdPresentation classic = router.ClassicHdRenderer;
+                string reason;
+                if (!classic.CaptureFrame(0f, 0f, out reason))
+                {
+                    Debug.LogError("OWNER CLASSIC HD EXIT SIDECAR PROBE FAIL: initial frame: " + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                bool initialSidecarClear = !classic.ExitSequenceActive &&
+                                            !classic.ExitSequenceComplete &&
+                                            classic.ExitResultCode == 0 &&
+                                            !classic.ExitDisplayBlank &&
+                                            classic.ExitPlayerAction == 0 &&
+                                            classic.ExitActionPhase == 0;
+                ulong initialGeneration = classic.SourceGeneration;
+                ulong initialTick = classic.SourceTick;
+                if (!initialSidecarClear)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD EXIT SIDECAR PROBE FAIL: reset sidecar was not clear" +
+                        " active=" + (classic.ExitSequenceActive ? 1 : 0) +
+                        " complete=" + (classic.ExitSequenceComplete ? 1 : 0) +
+                        " result=" + classic.ExitResultCode);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                if (!classic.ResetOwnerSession(out reason) ||
+                    !classic.CaptureFrame(0f, 0f, out reason))
+                {
+                    Debug.LogError("OWNER CLASSIC HD EXIT SIDECAR PROBE FAIL: reset replay: " + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                bool resetSidecarClear = !classic.ExitSequenceActive &&
+                                          !classic.ExitSequenceComplete &&
+                                          classic.ExitResultCode == 0 &&
+                                          !classic.ExitDisplayBlank &&
+                                          classic.ExitPlayerAction == 0 &&
+                                          classic.ExitActionPhase == 0;
+                if (!resetSidecarClear ||
+                    classic.AuthoritativeGeneration <= initialGeneration ||
+                    classic.AuthoritativeTick != 1)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD EXIT SIDECAR PROBE FAIL: reset sidecar replay diverged" +
+                        " generation=" + classic.AuthoritativeGeneration +
+                        " tick=" + classic.AuthoritativeTick +
+                        " presentation_tick=" + classic.SourceTick);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                Debug.Log(
+                    "OWNER CLASSIC HD EXIT SIDECAR PROBE PASS: profile=" + classic.Settings.profile +
+                    " initial_generation=" + initialGeneration +
+                    " initial_tick=" + initialTick +
+                    " reset_generation=" + classic.SourceGeneration +
+                    " reset_tick=" + classic.SourceTick +
+                    " reset_authoritative_generation=" + classic.AuthoritativeGeneration +
+                    " reset_authoritative_tick=" + classic.AuthoritativeTick +
+                    " tasks_completed=" + classic.TasksCompleted +
+                    " exit_active=" + (classic.ExitSequenceActive ? 1 : 0) +
+                    " exit_complete=" + (classic.ExitSequenceComplete ? 1 : 0) +
+                    " exit_result=" + classic.ExitResultCode +
+                    " authoritative_completion_status=open-full-authored-route-not-driven" +
                     " owner_inputs_external=true");
                 EditorApplication.Exit(0);
             }

@@ -22,6 +22,7 @@ namespace MagicCarpet.PresentationLab
         private const uint SnapshotSize = 120;
         private const uint RenderCameraStateSize = 72;
         private const uint MissionSnapshotSize = 96;
+        private const uint ExitPresentationSize = 64;
         private const uint QuerySize = 64;
         private const uint InfoSize = 128;
         private const string AssetCacheEnvironment = "MC_ASSET_CACHE_PATH";
@@ -61,12 +62,17 @@ namespace MagicCarpet.PresentationLab
         private McCameraInputV2 cameraInput;
         private McSessionSnapshotV2 snapshot;
         private McLevel1MissionSnapshotV2 mission;
+        private McLevel1ExitPresentationV2 exitPresentation;
+        private ClassicHdAssetTierResolution assetTierResolution;
+        private bool authoritativePaused;
 
         public bool IsConfigured { get; private set; }
         public ulong Generation { get { return generation; } }
         public ulong Tick { get { return tick; } }
         public ulong SourceGeneration { get { return generation; } }
         public ulong SourceTick { get { return tick; } }
+        public ulong AuthoritativeGeneration { get { return snapshot.Generation; } }
+        public ulong AuthoritativeTick { get { return snapshot.Tick; } }
         public ulong LastIndexHash { get; private set; }
         public ulong LastProvenanceHash { get; private set; }
         public ulong LastImmutableInputHash { get; private set; }
@@ -75,10 +81,39 @@ namespace MagicCarpet.PresentationLab
         public byte LastHistoryState { get; private set; }
         public byte EffectivePostprocessMode { get; private set; }
         public long LastNativeFrameNanoseconds { get; private set; }
+        public string RequestedAssetTier
+        {
+            get { return assetTierResolution == null ? string.Empty : assetTierResolution.RequestedToken; }
+        }
+        public string EffectiveAssetTier
+        {
+            get { return assetTierResolution == null ? string.Empty : assetTierResolution.EffectiveToken; }
+        }
+        public bool AssetTierFallbackApplied
+        {
+            get { return assetTierResolution != null && assetTierResolution.FallbackApplied; }
+        }
+        public bool OptionalAssetPackPresent
+        {
+            get { return assetTierResolution != null && assetTierResolution.OptionalPackPresent; }
+        }
+        public string AssetTierResolutionReason
+        {
+            get { return assetTierResolution == null ? string.Empty : assetTierResolution.Reason; }
+        }
+        public bool IsPaused { get { return authoritativePaused; } }
         public int PlayerLife { get { return mission.PlayerLife; } }
         public int PlayerMaxLife { get { return mission.PlayerMaxLife; } }
         public bool PlayerDead { get { return mission.PlayerDead != 0; } }
         public bool HasSpeedSpell { get { return mission.HasSpeedSpell != 0; } }
+        public byte TasksCompleted { get { return mission.TasksCompleted; } }
+        public bool ExitSequenceActive { get { return exitPresentation.Active != 0; } }
+        public bool ExitSequenceComplete { get { return exitPresentation.Complete != 0; } }
+        public byte ExitResultCode { get { return exitPresentation.ResultCode; } }
+        public byte ExitPlayerAction { get { return exitPresentation.PlayerAction; } }
+        public byte ExitActionPhase { get { return exitPresentation.ActionPhase; } }
+        public bool ExitDisplayBlank { get { return exitPresentation.DisplayBlank != 0; } }
+        public int ExitActionTimer { get { return exitPresentation.ActionTimer; } }
         public int MissionProjectileCount { get { return checked((int)mission.ProjectileCount); } }
         public int MissionImpactCount { get { return checked((int)mission.ImpactCount); } }
         public short TargetSpeed { get { return snapshot.TargetSpeed; } }
@@ -132,6 +167,10 @@ namespace MagicCarpet.PresentationLab
                 outputWidth = profile.Width;
                 outputHeight = profile.Height;
                 profileId = (uint)profile.Id;
+                assetTierResolution = ClassicHdAssetTierResolver.Resolve(
+                    profile,
+                    requestedSettings.assetTier,
+                    assetCachePath);
                 indexBytes = new byte[checked(profile.Stride * profile.Height)];
                 provenanceBytes = new byte[checked(profile.Stride * profile.Height)];
                 snapshotBytes = new byte[SnapshotSize];
@@ -177,7 +216,8 @@ namespace MagicCarpet.PresentationLab
 
                 if (!ReadSessionSnapshot(out reason) ||
                     !ReadMissionSnapshot(out reason) ||
-                    !ReadRenderCameraClock(out reason))
+                    !ReadRenderCameraClock(out reason) ||
+                    !ReadExitPresentation(out reason))
                 {
                     Dispose();
                     return false;
@@ -211,8 +251,11 @@ namespace MagicCarpet.PresentationLab
                     SpatialSmoothing = (byte)(string.Equals(requestedSettings.blur, "spatial-2x2", StringComparison.OrdinalIgnoreCase) ? 1 : 0),
                     MinimapEnabled = 1,
                     TopBarEnabled = 1,
-                    ObjectiveSelector = byte.MaxValue
+                    GamePaused = 0,
+                    LevelEnd = (byte)(exitPresentation.Active != 0 || exitPresentation.Complete != 0 ? 1 : 0),
+                    ObjectiveSelector = mission.TextSelector
                 };
+                authoritativePaused = false;
                 IsConfigured = true;
                 return true;
             }
@@ -256,9 +299,26 @@ namespace MagicCarpet.PresentationLab
                 return false;
             }
 
-            return ReadSessionSnapshot(out reason) &&
-                   ReadMissionSnapshot(out reason) &&
-                   ReadRenderCameraClock(out reason);
+            bool wasPaused = authoritativePaused;
+            bool valid = ReadSessionSnapshot(out reason) &&
+                         ReadMissionSnapshot(out reason) &&
+                         ReadRenderCameraClock(out reason) &&
+                         ReadExitPresentation(out reason);
+            if (!valid)
+            {
+                return false;
+            }
+
+            frameQuery.GamePaused = 0;
+            frameQuery.LevelEnd = (byte)(exitPresentation.Active != 0 || exitPresentation.Complete != 0 ? 1 : 0);
+            frameQuery.ObjectiveSelector = mission.TextSelector;
+            authoritativePaused = false;
+            if (wasPaused)
+            {
+                return SetPaused(true, out reason);
+            }
+
+            return true;
         }
 
         public bool Fill(
@@ -322,10 +382,14 @@ namespace MagicCarpet.PresentationLab
 
             if (!ReadSessionSnapshot(out reason) ||
                 !ReadMissionSnapshot(out reason) ||
-                !ReadRenderCameraClock(out reason))
+                !ReadRenderCameraClock(out reason) ||
+                !ReadExitPresentation(out reason))
             {
                 return false;
             }
+            frameQuery.GamePaused = (byte)(authoritativePaused ? 1 : 0);
+            frameQuery.LevelEnd = (byte)(exitPresentation.Active != 0 || exitPresentation.Complete != 0 ? 1 : 0);
+            frameQuery.ObjectiveSelector = mission.TextSelector;
             frameQuery.Generation = generation;
             frameQuery.Tick = tick;
             status = mc_native_session_classic_hd_frame_copy(
@@ -371,6 +435,40 @@ namespace MagicCarpet.PresentationLab
             EffectivePostprocessMode = info.EffectivePostprocessMode;
             LastNativeFrameNanoseconds = ElapsedNanoseconds(nativeFrameStart);
             return true;
+        }
+
+        /// <summary>
+        /// Propagates Unity focus/pause state to Rust.  A presentation-only
+        /// freeze is not sufficient: the native query must agree with the
+        /// authoritative session pause bit before a frame can be copied.
+        /// </summary>
+        public bool SetPaused(bool paused, out string reason)
+        {
+            reason = string.Empty;
+            if (!IsConfigured || handle == 0)
+            {
+                reason = "Classic HD owner source is not configured";
+                return false;
+            }
+
+            try
+            {
+                int status = mc_native_level1_game_paused(handle, (byte)(paused ? 1 : 0));
+                if (status != 0)
+                {
+                    reason = StatusReason("Classic HD owner pause state", status);
+                    return false;
+                }
+
+                authoritativePaused = paused;
+                frameQuery.GamePaused = (byte)(paused ? 1 : 0);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                reason = "Classic HD owner pause state failed: " + exception.Message;
+                return false;
+            }
         }
 
         /// <summary>
@@ -484,6 +582,9 @@ namespace MagicCarpet.PresentationLab
             LastHistoryState = 0;
             EffectivePostprocessMode = 0;
             LastNativeFrameNanoseconds = 0;
+            exitPresentation = default(McLevel1ExitPresentationV2);
+            assetTierResolution = null;
+            authoritativePaused = false;
         }
 
         private static long ElapsedNanoseconds(long start)
@@ -530,6 +631,31 @@ namespace MagicCarpet.PresentationLab
                 mission.Tick != snapshot.Tick)
             {
                 reason = "Classic HD owner mission snapshot failed its generation/layout contract";
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool ReadExitPresentation(out string reason)
+        {
+            reason = string.Empty;
+            int status = mc_native_level1_exit_presentation(
+                handle,
+                out exitPresentation,
+                ExitPresentationSize);
+            if (status != 0)
+            {
+                reason = StatusReason("Classic HD owner Level 1 exit presentation", status);
+                return false;
+            }
+
+            if (exitPresentation.AbiVersion != AbiVersion ||
+                exitPresentation.StructSize != ExitPresentationSize ||
+                exitPresentation.Generation != snapshot.Generation ||
+                exitPresentation.Tick != snapshot.Tick)
+            {
+                reason = "Classic HD owner exit presentation failed its generation/layout contract";
                 return false;
             }
 
@@ -760,6 +886,38 @@ namespace MagicCarpet.PresentationLab
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        private struct McLevel1ExitPresentationV2
+        {
+            public uint AbiVersion;
+            public uint StructSize;
+            public ulong Generation;
+            public ulong Tick;
+            public byte Authority;
+            public byte PlayerAction;
+            public byte ActionPhase;
+            public byte PaletteSubmode;
+            public byte PaletteEffect;
+            public byte PaletteWeight;
+            public byte PaletteDenominator;
+            public byte MovementResolution;
+            public ushort TargetSourceEntityIndex;
+            public byte TargetValid;
+            public byte InputSuppressed;
+            public short CameraFov;
+            public short ActionTimer;
+            public byte PlayerStatusFlags;
+            public byte BlurMode;
+            public byte DisplayBlank;
+            public byte ResultCode;
+            public byte Active;
+            public byte Complete;
+            public byte Flags;
+            public byte Reserved0;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public uint[] Reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         private struct McPresentationFrameQueryV2
         {
             public uint AbiVersion;
@@ -874,6 +1032,15 @@ namespace MagicCarpet.PresentationLab
             ulong handle,
             out McLevel1MissionSnapshotV2 snapshot,
             uint snapshotSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_level1_game_paused(ulong handle, byte paused);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_level1_exit_presentation(
+            ulong handle,
+            out McLevel1ExitPresentationV2 state,
+            uint stateSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         private static extern int mc_native_level1_player_inject_damage_for_qualification(

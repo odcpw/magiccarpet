@@ -29,10 +29,14 @@ namespace MagicCarpet.PresentationLab
         private ClassicHdSettingsLoadResult classicHdSettingsResult;
         private ClassicHdPresentation classicHdPresentation;
         private UnityEnhancedOwnerSessionSource enhancedOwnerSession;
+        private ClassicHdAssetTierResolution classicHdAssetTierResolution;
         private ulong inputSequence;
         private string statusLine;
         private GUIStyle badgeStyle;
         private GUIStyle detailStyle;
+        private bool applicationFocused = true;
+        private bool applicationPaused;
+        private int outputRestoreRequests;
 
         public PresentationModeId SelectedMode { get; private set; }
         public bool SessionIsOpen { get { return sessionLease != null && sessionLease.IsOpen; } }
@@ -49,6 +53,12 @@ namespace MagicCarpet.PresentationLab
         }
         public UnityEnhancedWorldRoot EnhancedRoot { get { return enhancedRoot; } }
         public UnityEnhancedOwnerSessionSource EnhancedOwnerSession { get { return enhancedOwnerSession; } }
+        public bool IsApplicationSuspended { get { return !applicationFocused || applicationPaused; } }
+        public int OutputRestoreRequests { get { return outputRestoreRequests; } }
+        public ClassicHdAssetTierResolution ClassicHdAssetTierResolution
+        {
+            get { return classicHdAssetTierResolution; }
+        }
 
         private void Awake()
         {
@@ -86,6 +96,20 @@ namespace MagicCarpet.PresentationLab
             string packagePath = CommandLineValue(arguments, PackageArgument);
             string closurePath = CommandLineValue(arguments, ClosureArgument);
             string cachePath = CommandLineValue(arguments, CacheArgument);
+            if (SelectedMode == PresentationModeId.ClassicHd)
+            {
+                ClassicHdProfileInfo profileInfo;
+                if (!ClassicHdPresentationSettings.TryGetProfile(ClassicHdSettings.profile, out profileInfo))
+                {
+                    statusLine = "INVALID CLASSIC HD PROFILE: " + ClassicHdSettings.profile;
+                    return;
+                }
+
+                classicHdAssetTierResolution = ClassicHdAssetTierResolver.Resolve(
+                    profileInfo,
+                    ClassicHdSettings.assetTier,
+                    cachePath);
+            }
             ownerValidation = OwnerInputValidator.Validate(SelectedMode, packagePath, closurePath, cachePath, projectRoot);
             if (!ownerValidation.IsValid)
             {
@@ -157,6 +181,60 @@ namespace MagicCarpet.PresentationLab
             statusLine = "PRESENTATION SESSION OPEN: " + ModeName(SelectedMode) +
                          " / " + PresentationDetail() +
                          " / gameplay authority remains Rust / visual history is presentation-only";
+        }
+
+        private void OnApplicationFocus(bool hasFocus)
+        {
+            applicationFocused = hasFocus;
+            string reason;
+            ApplyApplicationLifecycleState(out reason);
+        }
+
+        private void OnApplicationPause(bool paused)
+        {
+            applicationPaused = paused;
+            string reason;
+            ApplyApplicationLifecycleState(out reason);
+        }
+
+        /// <summary>
+        /// Bounded qualification entry point for the same lifecycle state that
+        /// Unity supplies through OnApplicationFocus/OnApplicationPause.
+        /// </summary>
+        public bool ApplyApplicationLifecycleForQualification(
+            bool hasFocus,
+            bool paused,
+            out string reason)
+        {
+            applicationFocused = hasFocus;
+            applicationPaused = paused;
+            return ApplyApplicationLifecycleState(out reason);
+        }
+
+        private bool ApplyApplicationLifecycleState(out string reason)
+        {
+            reason = string.Empty;
+            if (SelectedMode != PresentationModeId.ClassicHd || classicHdPresentation == null)
+            {
+                return true;
+            }
+
+            if (!classicHdPresentation.SetApplicationLifecycleState(
+                    applicationFocused,
+                    applicationPaused,
+                    out reason))
+            {
+                statusLine = "CLASSIC HD LIFECYCLE FAILED: " + reason;
+                return false;
+            }
+
+            if (applicationFocused && !applicationPaused)
+            {
+                outputRestoreRequests++;
+                ApplyClassicHdOutputSettings(ClassicHdSettings);
+            }
+
+            return true;
         }
 
         private void OnDestroy()
@@ -442,7 +520,20 @@ namespace MagicCarpet.PresentationLab
                 return "presentation lab diagnostic shell";
             }
 
-            return ClassicHdSettings.profile + " / " + ClassicHdSettings.assetTier +
+            string assetTierDetail = ClassicHdSettings.assetTier;
+            if (classicHdAssetTierResolution != null)
+            {
+                assetTierDetail += " / " +
+                                   (classicHdAssetTierResolution.FallbackApplied
+                                       ? "fallback-original"
+                                       : "baseline");
+                if (classicHdAssetTierResolution.FallbackApplied)
+                {
+                    assetTierDetail += " (" + classicHdAssetTierResolution.Reason + ")";
+                }
+            }
+
+            return ClassicHdSettings.profile + " / " + assetTierDetail +
                    " / persistent R8 surface / owner-bound Rust profile-sized rerender / " +
                    (classicHdSettingsResult.UsedDefaults ? "defaults" : "settings file");
         }

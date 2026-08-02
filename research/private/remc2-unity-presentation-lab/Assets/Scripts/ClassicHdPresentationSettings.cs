@@ -32,6 +32,124 @@ namespace MagicCarpet.PresentationLab
         Bilinear = 1
     }
 
+    /// <summary>
+    /// Describes the asset tier that the owner-bound Classic HD route actually
+    /// selected.  The requested setting and the effective renderer binding are
+    /// kept separate so an unavailable optional pack cannot silently become a
+    /// release claim.
+    /// </summary>
+    public sealed class ClassicHdAssetTierResolution
+    {
+        public ClassicHdAssetTierResolution(
+            string requestedToken,
+            string effectiveToken,
+            bool fallbackApplied,
+            bool optionalPackPresent,
+            string reason)
+        {
+            RequestedToken = requestedToken ?? string.Empty;
+            EffectiveToken = effectiveToken ?? string.Empty;
+            FallbackApplied = fallbackApplied;
+            OptionalPackPresent = optionalPackPresent;
+            Reason = reason ?? string.Empty;
+        }
+
+        public string RequestedToken { get; private set; }
+        public string EffectiveToken { get; private set; }
+        public bool FallbackApplied { get; private set; }
+        public bool OptionalPackPresent { get; private set; }
+        public string Reason { get; private set; }
+    }
+
+    /// <summary>
+    /// Resolves the owner-local Classic HD asset contract without opening any
+    /// source DAT/TAB path.  The current owner renderer is deliberately bound
+    /// to the qualified original-indexed cache.  A future optional pack gets a
+    /// named boundary, but it is not treated as active until the native graph
+    /// consumes and qualifies it.
+    /// </summary>
+    public static class ClassicHdAssetTierResolver
+    {
+        public const string OriginalIndexedToken = "original-indexed";
+        public const string OptionalHighResolutionToken = "optional-high-resolution";
+        public const string OptionalPackDirectory = "optional-high-resolution";
+        public const string OptionalPackManifest = "manifest.json";
+
+        public static ClassicHdAssetTierResolution Resolve(
+            ClassicHdProfileInfo profile,
+            string requestedToken,
+            string assetCachePath)
+        {
+            string requested = CanonicalToken(requestedToken);
+            if (string.Equals(requested, OriginalIndexedToken, StringComparison.Ordinal))
+            {
+                return new ClassicHdAssetTierResolution(
+                    requested,
+                    OriginalIndexedToken,
+                    false,
+                    false,
+                    "qualified owner renderer uses the original indexed cache");
+            }
+
+            bool optionalPackPresent = HasOptionalPack(assetCachePath);
+            if (!profile.OptionalHighResolutionAssets)
+            {
+                return Fallback(
+                    requested,
+                    optionalPackPresent,
+                    "the selected Classic HD profile has no qualified optional high-resolution asset tier");
+            }
+
+            if (!optionalPackPresent)
+            {
+                return Fallback(
+                    requested,
+                    false,
+                    "optional high-resolution asset pack is absent; using the original indexed cache");
+            }
+
+            return Fallback(
+                requested,
+                true,
+                "optional high-resolution asset pack is present but the owner native graph is not yet qualified to consume it");
+        }
+
+        public static bool HasOptionalPack(string assetCachePath)
+        {
+            if (string.IsNullOrWhiteSpace(assetCachePath))
+            {
+                return false;
+            }
+
+            string directory = Path.Combine(assetCachePath, OptionalPackDirectory);
+            return Directory.Exists(directory) &&
+                   File.Exists(Path.Combine(directory, OptionalPackManifest));
+        }
+
+        private static ClassicHdAssetTierResolution Fallback(
+            string requested,
+            bool optionalPackPresent,
+            string reason)
+        {
+            return new ClassicHdAssetTierResolution(
+                requested,
+                OriginalIndexedToken,
+                true,
+                optionalPackPresent,
+                reason);
+        }
+
+        private static string CanonicalToken(string token)
+        {
+            if (string.Equals(token, OptionalHighResolutionToken, StringComparison.OrdinalIgnoreCase))
+            {
+                return OptionalHighResolutionToken;
+            }
+
+            return OriginalIndexedToken;
+        }
+    }
+
     [Serializable]
     public struct ClassicHdProfileInfo
     {

@@ -70,6 +70,75 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void ClassicHdOptionalAssetTierFallsBackExplicitly()
+        {
+            ClassicHdProfileInfo profile;
+            Assert.IsTrue(ClassicHdPresentationSettings.TryGetProfile("hd-960x720", out profile));
+
+            ClassicHdAssetTierResolution resolution = ClassicHdAssetTierResolver.Resolve(
+                profile,
+                ClassicHdAssetTierResolver.OptionalHighResolutionToken,
+                Path.Combine(Path.GetTempPath(), "magiccarpet-missing-owner-cache"));
+
+            Assert.IsTrue(resolution.FallbackApplied);
+            Assert.AreEqual(ClassicHdAssetTierResolver.OptionalHighResolutionToken, resolution.RequestedToken);
+            Assert.AreEqual(ClassicHdAssetTierResolver.OriginalIndexedToken, resolution.EffectiveToken);
+            StringAssert.Contains("absent", resolution.Reason);
+        }
+
+        [Test]
+        public void ClassicHdOptionalAssetPackStillNeedsNativeQualification()
+        {
+            string cacheRoot = Path.Combine(Path.GetTempPath(), "magiccarpet-classic-hd-optional-pack-test");
+            string optionalRoot = Path.Combine(cacheRoot, ClassicHdAssetTierResolver.OptionalPackDirectory);
+            try
+            {
+                Directory.CreateDirectory(optionalRoot);
+                File.WriteAllText(
+                    Path.Combine(optionalRoot, ClassicHdAssetTierResolver.OptionalPackManifest),
+                    "{\"schema_version\":1}");
+
+                ClassicHdProfileInfo profile;
+                Assert.IsTrue(ClassicHdPresentationSettings.TryGetProfile("hd-960x720", out profile));
+                ClassicHdAssetTierResolution resolution = ClassicHdAssetTierResolver.Resolve(
+                    profile,
+                    ClassicHdAssetTierResolver.OptionalHighResolutionToken,
+                    cacheRoot);
+
+                Assert.IsTrue(resolution.OptionalPackPresent);
+                Assert.IsTrue(resolution.FallbackApplied);
+                StringAssert.Contains("not yet qualified", resolution.Reason);
+            }
+            finally
+            {
+                if (Directory.Exists(cacheRoot))
+                {
+                    Directory.Delete(cacheRoot, true);
+                }
+            }
+        }
+
+        [Test]
+        public void ClassicHdPresentationLifecycleTracksFocusAndPause()
+        {
+            GameObject gameObject = new GameObject("classic-hd-lifecycle-test");
+            ClassicHdPresentation presentation = gameObject.AddComponent<ClassicHdPresentation>();
+            string reason;
+            Assert.IsTrue(presentation.Configure(ClassicHdPresentationSettings.Default(), out reason), reason);
+            Assert.IsFalse(presentation.IsApplicationSuspended);
+
+            Assert.IsTrue(presentation.SetApplicationLifecycleState(false, false, out reason), reason);
+            Assert.IsTrue(presentation.IsApplicationSuspended);
+            Assert.IsTrue(presentation.SetApplicationLifecycleState(true, true, out reason), reason);
+            Assert.IsTrue(presentation.IsApplicationSuspended);
+            Assert.IsTrue(presentation.SetApplicationLifecycleState(true, false, out reason), reason);
+            Assert.IsFalse(presentation.IsApplicationSuspended);
+            Assert.AreEqual(3, presentation.ApplicationLifecycleTransitions);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void ClassicHdSettingsRoundTripOutsideOwnerData()
         {
             string path = Path.Combine(Path.GetTempPath(), "magiccarpet-classic-hd-settings-test.json");
@@ -155,6 +224,7 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual(1u, ClassicHdAbiContract.AbiVersion);
             Assert.AreEqual(4u, ClassicHdAbiContract.ProfileCount);
         }
+
     }
 }
 #endif

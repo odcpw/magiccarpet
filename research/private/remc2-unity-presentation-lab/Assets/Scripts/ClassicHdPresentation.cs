@@ -24,6 +24,9 @@ namespace MagicCarpet.PresentationLab
         private ulong tick;
         private ulong resetEpoch;
         private Vector2 simulatedFlightInput;
+        private bool applicationFocused = true;
+        private bool applicationPaused;
+        private int applicationLifecycleTransitions;
 
         public bool IsConfigured { get; private set; }
         public string StatusLine { get; private set; }
@@ -38,6 +41,28 @@ namespace MagicCarpet.PresentationLab
             get { return ownerSession == null ? 0 : ownerSession.LastNativeFrameNanoseconds; }
         }
         public long LastUploadNanoseconds { get; private set; }
+        public string RequestedAssetTier
+        {
+            get { return ownerSession == null ? string.Empty : ownerSession.RequestedAssetTier; }
+        }
+        public string EffectiveAssetTier
+        {
+            get { return ownerSession == null ? string.Empty : ownerSession.EffectiveAssetTier; }
+        }
+        public bool AssetTierFallbackApplied
+        {
+            get { return ownerSession != null && ownerSession.AssetTierFallbackApplied; }
+        }
+        public bool OptionalAssetPackPresent
+        {
+            get { return ownerSession != null && ownerSession.OptionalAssetPackPresent; }
+        }
+        public string AssetTierResolutionReason
+        {
+            get { return ownerSession == null ? string.Empty : ownerSession.AssetTierResolutionReason; }
+        }
+        public bool IsApplicationSuspended { get { return !applicationFocused || applicationPaused; } }
+        public int ApplicationLifecycleTransitions { get { return applicationLifecycleTransitions; } }
         public bool UsesNativeFixture { get { return nativeFixture != null && nativeFixture.IsConfigured; } }
         public bool UsesNativeOwnerSession { get { return ownerSession != null && ownerSession.IsConfigured; } }
         public ulong SourceGeneration
@@ -47,6 +72,14 @@ namespace MagicCarpet.PresentationLab
         public ulong SourceTick
         {
             get { return ownerSession == null ? 0 : ownerSession.SourceTick; }
+        }
+        public ulong AuthoritativeGeneration
+        {
+            get { return ownerSession == null ? 0 : ownerSession.AuthoritativeGeneration; }
+        }
+        public ulong AuthoritativeTick
+        {
+            get { return ownerSession == null ? 0 : ownerSession.AuthoritativeTick; }
         }
         public ulong LastNativeIndexHash
         {
@@ -119,6 +152,34 @@ namespace MagicCarpet.PresentationLab
         public byte EffectivePostprocessMode
         {
             get { return ownerSession == null ? (byte)0 : ownerSession.EffectivePostprocessMode; }
+        }
+        public byte TasksCompleted
+        {
+            get { return ownerSession == null ? (byte)0 : ownerSession.TasksCompleted; }
+        }
+        public bool ExitSequenceActive
+        {
+            get { return ownerSession != null && ownerSession.ExitSequenceActive; }
+        }
+        public bool ExitSequenceComplete
+        {
+            get { return ownerSession != null && ownerSession.ExitSequenceComplete; }
+        }
+        public byte ExitResultCode
+        {
+            get { return ownerSession == null ? (byte)0 : ownerSession.ExitResultCode; }
+        }
+        public byte ExitPlayerAction
+        {
+            get { return ownerSession == null ? (byte)0 : ownerSession.ExitPlayerAction; }
+        }
+        public byte ExitActionPhase
+        {
+            get { return ownerSession == null ? (byte)0 : ownerSession.ExitActionPhase; }
+        }
+        public bool ExitDisplayBlank
+        {
+            get { return ownerSession != null && ownerSession.ExitDisplayBlank; }
         }
         public ushort CameraX
         {
@@ -199,6 +260,9 @@ namespace MagicCarpet.PresentationLab
             }
 
             settings = requestedSettings.Clone();
+            applicationFocused = true;
+            applicationPaused = false;
+            applicationLifecycleTransitions = 0;
             if (frameBytes == null || frameBytes.Length != profileInfo.Stride * profileInfo.Height)
             {
                 frameBytes = new byte[profileInfo.Stride * profileInfo.Height];
@@ -246,10 +310,15 @@ namespace MagicCarpet.PresentationLab
 
             CreateDisplayObjects();
             IsConfigured = true;
-            StatusLine = "Classic HD " + settings.profile + " / indexed R8 / " +
+            StatusLine = "Classic HD " + settings.profile + " / indexed R8 / asset=" +
+                        (UsesNativeOwnerSession ? EffectiveAssetTier : settings.assetTier) + " / " +
                         (UsesNativeOwnerSession
                              ? "owner-bound Rust profile-sized Classic HD rerender"
                              : (UsesNativeFixture ? "native additive ABI fixture" : "synthetic lab source"));
+            if (UsesNativeOwnerSession && AssetTierFallbackApplied)
+            {
+                StatusLine += " / asset-tier fallback: " + AssetTierResolutionReason;
+            }
             UpdateDisplayViewport(true);
             ResetPresentationHistory();
             return true;
@@ -283,6 +352,29 @@ namespace MagicCarpet.PresentationLab
 
             ResetPresentationHistory();
             return true;
+        }
+
+        /// <summary>
+        /// Applies Unity's focus and pause lifecycle to the owner-bound Rust
+        /// session.  This is also used by the bounded editor qualification
+        /// probe; it mirrors the callbacks used by the runtime router.
+        /// </summary>
+        public bool SetApplicationLifecycleState(
+            bool focused,
+            bool paused,
+            out string reason)
+        {
+            reason = string.Empty;
+            applicationFocused = focused;
+            applicationPaused = paused;
+            applicationLifecycleTransitions++;
+
+            if (ownerSession == null || !ownerSession.IsConfigured)
+            {
+                return true;
+            }
+
+            return ownerSession.SetPaused(IsApplicationSuspended, out reason);
         }
 
         public bool InjectPlayerDamageForQualification(
@@ -319,6 +411,12 @@ namespace MagicCarpet.PresentationLab
             if (!IsConfigured || surface == null || frameBytes == null)
             {
                 reason = "Classic HD presentation is not configured";
+                return false;
+            }
+
+            if (IsApplicationSuspended)
+            {
+                reason = "Classic HD presentation is suspended";
                 return false;
             }
 
@@ -382,7 +480,7 @@ namespace MagicCarpet.PresentationLab
 
         private void Update()
         {
-            if (!IsConfigured || surface == null || frameBytes == null)
+            if (!IsConfigured || surface == null || frameBytes == null || IsApplicationSuspended)
             {
                 return;
             }
