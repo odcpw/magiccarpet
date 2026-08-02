@@ -84,6 +84,7 @@ use crate::{
         unknown_source_sprite_tuple,
     },
     spell_activation::{
+        INVISIBLE_ACTIVE_ACTION, INVISIBLE_STATUS_BIT, InvisibleState, InvisibleStep,
         PhysicalSpellActionRole, SHIELD_ACTIVE_ACTION, ShieldState, ShieldStep,
         SpellActivationHolder, SpellCasterState, SpellHolderAcquisitionOutcome,
         SpellHolderAcquisitionResult, SpellHolderAcquisitionState,
@@ -3171,6 +3172,10 @@ pub struct Level2SharedSpellResetSession {
     /// explicitly outside this bounded slice.
     baseline_shield: Option<ShieldState>,
     shield: Option<ShieldState>,
+    /// Reachable family-11 active lifecycle. AI visibility consumption remains
+    /// explicitly outside this bounded slice.
+    baseline_invisible: Option<InvisibleState>,
+    invisible: Option<InvisibleState>,
     /// Generic source acquisition states for authored Level 2 families 6,
     /// 11, and 12.  Family-specific active lifecycles remain separate.
     baseline_acquisitions: Box<[SpellHolderAcquisitionState]>,
@@ -8051,6 +8056,8 @@ impl Level2SharedSpellResetSession {
             speed,
             baseline_shield: None,
             shield: None,
+            baseline_invisible: None,
+            invisible: None,
             baseline_acquisitions: acquisitions.clone(),
             acquisitions,
             baseline_persistent_acquisitions: BTreeMap::new(),
@@ -8212,6 +8219,143 @@ impl Level2SharedSpellResetSession {
         if self.shield.is_some_and(|shield| shield.cleanup_requested) {
             self.apply_shield_cleanup();
             self.sync_shield_projection();
+        }
+    }
+
+    #[must_use]
+    pub fn invisible_state(&self) -> Option<InvisibleState> {
+        self.invisible
+    }
+
+    pub fn activate_invisible(&mut self, direction_mask: u16, help_enabled: bool) -> bool {
+        self.events.clear();
+        let Some(invisible) = self.invisible.as_mut() else {
+            return false;
+        };
+        let activated = invisible.activate(direction_mask, help_enabled, &mut self.events);
+        self.sync_invisible_projection();
+        activated
+    }
+
+    fn sync_invisible_projection(&mut self) {
+        let Some(invisible) = self.invisible else {
+            return;
+        };
+
+        if let Some(holder) = self.pickup_mut(invisible.holder_entity_index) {
+            holder.action = invisible.action;
+            holder.active_value = invisible.active_value;
+            holder.activation_value = invisible.activation_value.cast_unsigned();
+            holder.control_flags = (holder.control_flags & !INVISIBLE_STATUS_BIT)
+                | (invisible.spell_status_flags & INVISIBLE_STATUS_BIT);
+            holder.record[50..52].copy_from_slice(&invisible.active_value.to_le_bytes());
+            holder.record[52..54].copy_from_slice(&invisible.activation_value.to_le_bytes());
+            holder.record[58..60].copy_from_slice(&invisible.countdown.to_le_bytes());
+            holder.record[16..20].copy_from_slice(&holder.control_flags.to_le_bytes());
+            holder.record[73] = invisible.action;
+        }
+
+        let sync_parent = |entity: &mut EntitySnapshot| {
+            if entity.index != invisible.parent_entity_index {
+                return;
+            }
+            entity.life = invisible.parent_life;
+            entity.mana = invisible.parent_mana;
+            entity.mana_regen = invisible.parent_mana_regen;
+            entity.control_flags = invisible.parent_status_flags;
+            entity.record[12..16].copy_from_slice(&invisible.parent_life.to_le_bytes());
+            entity.record[16..20].copy_from_slice(&invisible.parent_status_flags.to_le_bytes());
+            entity.record[140..144].copy_from_slice(&invisible.parent_mana_regen.to_le_bytes());
+            entity.record[148..152].copy_from_slice(&invisible.parent_mana.to_le_bytes());
+        };
+        sync_parent(&mut self.player_entity);
+        for entity in &mut self.player_entities {
+            sync_parent(entity);
+        }
+        let mut local_player_projection = None;
+        for player in &mut self.players {
+            if player.entity_index == invisible.parent_entity_index {
+                player.record[447] = invisible.parent_visibility_mode;
+                if player.slot == 0 {
+                    local_player_projection = Some(player.clone());
+                }
+            }
+        }
+        if let Some(player) = local_player_projection {
+            self.local_player = player;
+        }
+        if invisible.parent_entity_index == self.player_entity.index {
+            self.player_mana = invisible.parent_mana;
+        }
+    }
+
+    fn apply_invisible_cleanup(&mut self) {
+        let Some(invisible) = self.invisible else {
+            return;
+        };
+        let queued_spell = self
+            .pickup(invisible.holder_entity_index)
+            .map(|holder| {
+                u16::from_le_bytes(
+                    holder.record[48..50]
+                        .try_into()
+                        .expect("queued Invisible SetSpell word extent"),
+                )
+            })
+            .unwrap_or_default();
+        if queued_spell != 0 {
+            let tier = queued_spell.saturating_sub(1).min(2) as u8;
+            if let Some(profile) = level2_set_spell_profile(11, tier) {
+                if let Some(holder) = self.pickup_mut(invisible.holder_entity_index) {
+                    holder.level_gate = tier.cast_signed();
+                    holder.subspell_index = profile.subspell_index;
+                    holder.activation_value = profile.word_0x30;
+                    holder.byte_3b = profile.byte_0x3b;
+                    holder.mana_regen = profile.mana_regen;
+                    holder.max_mana = profile.max_mana;
+                    holder.mana_cost = profile.max_mana;
+                    holder.mana = profile.mana;
+                    holder.record[46..48].copy_from_slice(&profile.subspell_index.to_le_bytes());
+                    holder.record[48..50].fill(0);
+                    holder.record[52..54].copy_from_slice(&profile.word_0x30.to_le_bytes());
+                    holder.record[63] = profile.byte_0x3b;
+                    holder.record[74] = tier.cast_signed().cast_unsigned();
+                    holder.record[140..144].copy_from_slice(&profile.mana_regen.to_le_bytes());
+                    holder.record[144..148].copy_from_slice(&profile.max_mana.to_le_bytes());
+                    holder.record[148..152].copy_from_slice(&profile.mana.to_le_bytes());
+                }
+                if let Some(invisible) = self.invisible.as_mut() {
+                    invisible.tier = tier;
+                    invisible.activation_value = profile.word_0x30.cast_signed();
+                    invisible.mana_cost = profile.max_mana;
+                    invisible.mana_regen_requirement = profile.mana_regen;
+                }
+            } else if let Some(holder) = self.pickup_mut(invisible.holder_entity_index) {
+                holder.record[48..50].fill(0);
+            }
+        }
+        if let Some(invisible) = self.invisible.as_mut() {
+            invisible.cleanup_requested = false;
+        }
+    }
+
+    fn step_invisible_source_slot(&mut self, source_slot: u16, parent_castle_mana: Option<i32>) {
+        if self
+            .invisible
+            .is_none_or(|invisible| invisible.holder_entity_index != source_slot)
+        {
+            return;
+        }
+        if let Some(invisible) = self.invisible.as_mut() {
+            let _step: InvisibleStep = invisible.step(parent_castle_mana);
+        }
+        self.sync_invisible_projection();
+        if self
+            .invisible
+            .is_some_and(|invisible| invisible.cleanup_requested)
+        {
+            self.apply_invisible_cleanup();
+            self.sync_invisible_projection();
         }
     }
 
@@ -8729,6 +8873,24 @@ impl Level2SharedSpellResetSession {
             shield.parent_status_flags = parent.control_flags;
             self.shield = Some(shield);
             self.sync_shield_projection();
+        } else if family == 11 {
+            let parent = self
+                .player_entities
+                .get(owner_index)
+                .cloned()
+                .unwrap_or_else(|| self.player_entity.clone());
+            let mut invisible = InvisibleState::new(
+                state.selected_tier.cast_unsigned(),
+                outcome.source_slot,
+                outcome.parent_entity_index,
+                parent.mana,
+                parent.life,
+            )
+            .expect("validated Level 2 Invisible tier");
+            invisible.parent_mana_regen = parent.mana_regen;
+            invisible.parent_status_flags = parent.control_flags;
+            self.invisible = Some(invisible);
+            self.sync_invisible_projection();
         }
         self.pickup_events
             .push(Level2SharedSpellEvent::SpellAcquired {
@@ -8759,6 +8921,21 @@ impl Level2SharedSpellResetSession {
         family: u8,
         player_entity_index: u16,
         player_position: Position,
+    ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
+        self.step_level2_spell_acquisition_with_castle_mana(
+            family,
+            player_entity_index,
+            player_position,
+            None,
+        )
+    }
+
+    fn step_level2_spell_acquisition_with_castle_mana(
+        &mut self,
+        family: u8,
+        player_entity_index: u16,
+        player_position: Position,
+        parent_castle_mana: Option<i32>,
     ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
         if player_entity_index != self.player_entity.index {
             return Err(NativeWorldError::new(format!(
@@ -8807,11 +8984,14 @@ impl Level2SharedSpellResetSession {
         {
             if family == 6 && source_action == SHIELD_ACTIVE_ACTION {
                 self.step_shield_source_slot(source_slot);
+            } else if family == 11 && source_action == INVISIBLE_ACTIVE_ACTION {
+                self.step_invisible_source_slot(source_slot, parent_castle_mana);
             }
             // The source cursor still reaches the live holder row, but its
-            // pickup transition has already completed. Family-6 Shield now
-            // advances its active lifecycle above; the other active families
-            // remain deliberately bounded to their acquisition seam.
+            // pickup transition has already completed. Family-6 Shield and
+            // family-11 Invisible advance their active lifecycles above;
+            // other active families remain deliberately bounded to their
+            // acquisition seam.
             return Ok(None);
         } else {
             return Err(NativeWorldError::new(format!(
@@ -8930,8 +9110,27 @@ impl Level2SharedSpellResetSession {
         player_entity_index: u16,
         player_position: Position,
     ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
-        let result =
-            self.step_level2_spell_acquisition(family, player_entity_index, player_position)?;
+        let invisible_parent = self.invisible.and_then(|invisible| {
+            (invisible.holder_entity_index
+                == self
+                    .acquisitions
+                    .iter()
+                    .find(|state| state.family == family)
+                    .map_or(0, |state| state.source_slot))
+            .then_some(invisible.parent_entity_index)
+        });
+        let parent_castle_mana = economy
+            .castle()
+            .filter(|castle| {
+                castle.active && family == 11 && invisible_parent == Some(castle.owner_entity_index)
+            })
+            .map(|castle| castle.mana);
+        let result = self.step_level2_spell_acquisition_with_castle_mana(
+            family,
+            player_entity_index,
+            player_position,
+            parent_castle_mana,
+        )?;
         let Some(outcome) = result else {
             return Ok(None);
         };
@@ -9255,6 +9454,27 @@ impl Level2SharedSpellResetSession {
         } else {
             hasher.update([0]);
         }
+        if let Some(invisible) = self.invisible {
+            hasher.update([1]);
+            hasher.update(invisible.holder_entity_index.to_le_bytes());
+            hasher.update(invisible.parent_entity_index.to_le_bytes());
+            hasher.update([invisible.tier, invisible.action]);
+            hasher.update(invisible.active_value.to_le_bytes());
+            hasher.update(invisible.activation_value.to_le_bytes());
+            hasher.update(invisible.mana_cost.to_le_bytes());
+            hasher.update(invisible.mana_regen_requirement.to_le_bytes());
+            hasher.update(invisible.parent_mana.to_le_bytes());
+            hasher.update(invisible.parent_life.to_le_bytes());
+            hasher.update(invisible.parent_mana_regen.to_le_bytes());
+            hasher.update(invisible.parent_status_flags.to_le_bytes());
+            hasher.update(invisible.spell_status_flags.to_le_bytes());
+            hasher.update([invisible.parent_visibility_mode]);
+            hasher.update(invisible.countdown.to_le_bytes());
+            hasher.update(invisible.experience_awarded.to_le_bytes());
+            hasher.update([u8::from(invisible.cleanup_requested)]);
+        } else {
+            hasher.update([0]);
+        }
         for state in &self.acquisitions {
             hasher.update([state.family]);
             hasher.update(state.source_slot.to_le_bytes());
@@ -9322,6 +9542,7 @@ impl Level2SharedSpellResetSession {
         self.possession = self.baseline_possession;
         self.speed = self.baseline_speed;
         self.shield = self.baseline_shield;
+        self.invisible = self.baseline_invisible;
         self.acquisitions.clone_from(&self.baseline_acquisitions);
         self.persistent_acquisitions
             .clone_from(&self.baseline_persistent_acquisitions);
@@ -21713,6 +21934,245 @@ mod tests {
                 .active_value,
             0
         );
+    }
+
+    #[test]
+    fn level_two_invisible_active_holder_ticks_through_outer_turn_and_reset() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Invisible production session");
+        let baseline_hash = session.shared_spells().reset_hash();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|source| source.authored_index == 156)
+            .copied()
+            .expect("authored family-11 source");
+        session.state.position = source.position;
+        let acquired = (0..4).find_map(|_| {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            session
+                .dispatch_events()
+                .iter()
+                .find_map(|event| match event {
+                    Level2DispatchEvent::SpellAcquisition {
+                        family: 11,
+                        result: Some(outcome),
+                        ..
+                    } => Some(*outcome),
+                    _ => None,
+                })
+        });
+        let outcome = acquired.expect("authored family-11 acquisition");
+        assert_eq!(outcome.source_slot, source.source_entity_index);
+        let cold = session
+            .shared_spells()
+            .invisible_state()
+            .expect("family-11 acquisition seeds Invisible state");
+        assert_eq!(cold.holder_entity_index, outcome.source_slot);
+        assert_eq!(cold.action, INVISIBLE_ACTIVE_ACTION);
+        assert_eq!(cold.active_value, 0);
+
+        // Give the source predicate a live castle with sufficient mana. This
+        // exercises the production economy-fed branch rather than the
+        // fail-closed `None` castle case.
+        let parent_entity_index = cold.parent_entity_index;
+        let castle_slot = session
+            .economy_mut()
+            .build_castle_at(
+                Position::default(),
+                Position::default(),
+                parent_entity_index,
+                false,
+            )
+            .expect("Level 2 test castle allocation");
+        session
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("allocated Level 2 test castle")
+            .mana = 5_000;
+
+        {
+            let shared = session.shared_spells_mut();
+            shared.player_mana = 5_000;
+            shared.player_entity.mana = 5_000;
+            shared.player_entity.record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
+            shared.player_entities[0].mana = 5_000;
+            shared.player_entities[0].record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
+            shared
+                .invisible
+                .as_mut()
+                .expect("cold Invisible state")
+                .parent_mana = 5_000;
+        }
+        assert!(session.shared_spells_mut().activate_invisible(256, false));
+        let active = session
+            .shared_spells()
+            .invisible_state()
+            .expect("activated family-11 Invisible state");
+        assert_eq!(active.active_value, active.activation_value);
+        assert_ne!(session.shared_spells().reset_hash(), baseline_hash);
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let stepped = session
+            .shared_spells()
+            .invisible_state()
+            .expect("Invisible state after outer source turn");
+        assert_eq!(stepped.active_value, active.active_value - 1);
+        assert_eq!(stepped.parent_visibility_mode, 1);
+        assert_eq!(stepped.experience_awarded, 1);
+        assert_ne!(stepped.spell_status_flags & INVISIBLE_STATUS_BIT, 0);
+        assert_eq!(stepped.countdown, active.countdown - 1);
+        assert!(
+            session
+                .economy()
+                .castle()
+                .is_some_and(|castle| castle.source_entity_index == castle_slot)
+        );
+
+        session.reset();
+        assert!(session.shared_spells().invisible_state().is_none());
+        assert_eq!(session.shared_spells().reset_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_remote_invisible_owner_does_not_overwrite_local_projection() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 remote Invisible session");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|source| source.authored_index == 156)
+            .copied()
+            .expect("authored family-11 source");
+        let source_position = source.position;
+        let local_mana = session.shared_spells().player_mana();
+        let local_visibility = session.shared_spells().local_player.record[447];
+        let remote_mana = local_mana.wrapping_add(7_777);
+        {
+            let shared = session.shared_spells_mut();
+            let remote = &mut shared.player_entities[1];
+            remote.active = true;
+            remote.model = 0;
+            remote.mana = remote_mana;
+            remote.record[2] = 1;
+            remote.record[68] = 0;
+            remote.position = source_position;
+            remote.record[80..82].copy_from_slice(&source_position.x.to_le_bytes());
+            remote.record[82..84].copy_from_slice(&source_position.y.to_le_bytes());
+            remote.record[84..86].copy_from_slice(&source_position.z.to_le_bytes());
+            let source = shared
+                .dynamic_pickups
+                .iter_mut()
+                .find(|entity| entity.index == source.source_entity_index)
+                .expect("authored family-11 source row");
+            source.phase = 0;
+            source.record[66] = 0;
+        }
+        let far_position = Position {
+            x: source_position.x.wrapping_add(0x2000),
+            y: source_position.y,
+            z: source_position.z,
+        };
+        let outcome = (0..4).find_map(|_| {
+            session
+                .shared_spells_mut()
+                .step_level2_spell_acquisition(11, 111, far_position)
+                .expect("remote family-11 source pass")
+        });
+        let outcome = outcome.expect("remote model-0 player acquires Invisible");
+        assert_eq!(outcome.parent_entity_index, 112);
+        let invisible = session
+            .shared_spells()
+            .invisible_state()
+            .expect("remote acquisition seeds Invisible state");
+        assert_eq!(invisible.parent_entity_index, 112);
+        assert_eq!(invisible.parent_mana, remote_mana);
+        assert_eq!(session.shared_spells().player_mana(), local_mana);
+        assert_eq!(
+            session.shared_spells().local_player.record[447],
+            local_visibility
+        );
+    }
+
+    #[test]
+    fn level_two_invisible_expiry_replays_queued_setspell_word() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Invisible cleanup session");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|source| source.authored_index == 156)
+            .copied()
+            .expect("authored family-11 source");
+        session.state.position = source.position;
+        let acquired = (0..4).find_map(|_| {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            session
+                .dispatch_events()
+                .iter()
+                .find_map(|event| match event {
+                    Level2DispatchEvent::SpellAcquisition {
+                        family: 11,
+                        result: Some(outcome),
+                        ..
+                    } => Some(*outcome),
+                    _ => None,
+                })
+        });
+        let outcome = acquired.expect("authored family-11 acquisition");
+        session
+            .shared_spells_mut()
+            .invisible
+            .as_mut()
+            .expect("cold Invisible state")
+            .parent_mana = 5_000;
+        assert!(session.shared_spells_mut().activate_invisible(256, false));
+        {
+            let shared = session.shared_spells_mut();
+            shared
+                .invisible
+                .as_mut()
+                .expect("active Invisible state")
+                .active_value = 1;
+            shared
+                .pickup_mut(outcome.source_slot)
+                .expect("active Invisible holder row")
+                .record[48..50]
+                .copy_from_slice(&2_u16.to_le_bytes());
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let holder = session
+            .shared_spells()
+            .dynamic_pickups()
+            .iter()
+            .find(|entity| entity.index == outcome.source_slot)
+            .expect("active Invisible holder remains projected");
+        assert_eq!(holder.record_bytes()[48..50], [0, 0]);
+        assert_eq!(holder.activation_value, 183);
+        assert_eq!(holder.record_bytes()[52..54], 183_u16.to_le_bytes());
+        let invisible = session
+            .shared_spells()
+            .invisible_state()
+            .expect("Invisible state retained after expiry");
+        assert_eq!(invisible.active_value, 0);
+        assert_eq!(invisible.tier, 1);
+        assert_eq!(invisible.parent_visibility_mode, 0);
     }
 
     #[test]
