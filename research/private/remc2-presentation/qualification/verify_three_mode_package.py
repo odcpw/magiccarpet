@@ -20,6 +20,9 @@ from typing import Any, Callable
 PRESENTATION_ROOT = Path(__file__).resolve().parents[1]
 LAB_ROOT = PRESENTATION_ROOT.parent / "remc2-unity-presentation-lab"
 SEQUENCE_ARTIFACT = Path(__file__).with_name("classic-hd-owner-route-sequence-smoke.json")
+PROFILE_960_SEQUENCE_FAILURE_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-route-960x720-sequence-failure.json"
+)
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -117,6 +120,44 @@ def validate_profile_smoke_artifact(
     return errors
 
 
+def validate_profile_sequence_failure_artifact(
+    path: Path = PROFILE_960_SEQUENCE_FAILURE_ARTIFACT,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"profile sequence failure artifact read failed: {error}"]
+
+    if artifact.get("schema_version") != 1:
+        errors.append("profile sequence failure artifact schema_version must be 1")
+    if artifact.get("kind") != "classic-hd-owner-route-profile-sequence-failure/v1":
+        errors.append("profile sequence failure artifact kind is wrong")
+    if artifact.get("profile") != "classic-hd-960x720":
+        errors.append("profile sequence failure artifact must target 960x720")
+    if artifact.get("internal_width") != 960 or artifact.get("internal_height") != 720:
+        errors.append("profile sequence failure artifact extent must be 960x720")
+    if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
+        errors.append("profile sequence failure artifact must keep owner inputs external")
+    if artifact.get("target_frame_count") != 64:
+        errors.append("profile sequence failure artifact must describe the 64-frame two-pass probe")
+    if artifact.get("observed_frame_receipts") != 0:
+        errors.append("profile sequence failure artifact must not claim a completed frame receipt")
+    if artifact.get("process_exit_status") != 137:
+        errors.append("profile sequence failure artifact must retain the bounded-run termination status")
+    if artifact.get("termination") != "explicitly-stopped-after-bounded-run":
+        errors.append("profile sequence failure artifact termination is not explicit")
+    if not isinstance(artifact.get("failure_reason"), str) or not artifact["failure_reason"]:
+        errors.append("profile sequence failure artifact is missing its failure reason")
+    for field in ("source_commit", "native_plugin_sha256", "log_sha256"):
+        if not isinstance(artifact.get(field), str) or not artifact[field]:
+            errors.append(f"profile sequence failure artifact is missing {field}")
+    status = str(artifact.get("qualification_status", ""))
+    if "not-promoted" not in status or "open" not in status:
+        errors.append("profile sequence failure artifact must remain explicitly unpromoted/open")
+    return errors
+
+
 def _validator_result(name: str, callback: Callable[[], Any], checks: list[dict[str, Any]]) -> None:
     try:
         result = callback()
@@ -186,6 +227,11 @@ def verify() -> dict[str, Any]:
             960,
             720,
         ),
+        checks,
+    )
+    _validator_result(
+        "owner-bound Classic HD 960x720 sequence probe record",
+        validate_profile_sequence_failure_artifact,
         checks,
     )
 

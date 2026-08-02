@@ -41,6 +41,13 @@ or visual-corpus claim. The 960x720 candidate has a separate one-frame owner
 profile smoke in `qualification/classic-hd-owner-route-960x720-smoke.json`; it
 is not promoted because the CPU/GPU sustained budget is still open.
 
+The 960x720 sustained owner probe is also recorded explicitly in
+`qualification/classic-hd-owner-route-960x720-sequence-failure.json`. Its
+64-frame two-pass Unity/OpenGLCore run produced no frame receipt within the
+four-minute bound while one Unity thread stayed CPU-bound and resident memory
+reached about 1.3 GiB. It is a not-promoted performance finding, not a visual
+or production qualification claim.
+
 Remaining GFX-O evidence is intentionally explicit in the JSON matrix:
 idle/town/combat/flight/restart/completion/fullscreen/alt-tab/asset-fallback,
 960x720 owner/GPU measurements, 20-minute allocation growth, and owner-bound

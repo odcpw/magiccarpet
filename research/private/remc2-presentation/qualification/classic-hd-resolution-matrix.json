@@ -34,6 +34,14 @@
     "status": "profile-rerender-frame-and-upload-pass",
     "owner_payload_embedded": false
   },
+  "owner_route_960x720_sequence_probe": {
+    "artifact": "qualification/classic-hd-owner-route-960x720-sequence-failure.json",
+    "profile": "classic-hd-960x720",
+    "target_frame_count": 64,
+    "observed_frame_receipts": 0,
+    "status": "not-promoted-bounded-run-over-budget",
+    "owner_payload_embedded": false
+  },
   "window_resolution_is_separate_from_internal_render_resolution": true,
   "profiles": [
     {
