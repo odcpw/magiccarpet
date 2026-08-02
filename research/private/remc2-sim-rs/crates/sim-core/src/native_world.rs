@@ -804,18 +804,17 @@ pub fn level2_castle_root_positions<W: FlightWorld>(
     footprint: &CastleBuildFootprint,
     projectile_position: Position,
 ) -> (Position, Position) {
-    // The qualified Level 2 profile pins `x_WORD_180660_VGA_type_resolution`
-    // to 1 (the fixed 320x200 path), so the production helper uses the
-    // source's halved BUILD dimensions by default.
-    level2_castle_root_positions_with_resolution(world, footprint, projectile_position, true)
+    // `CastleBuildFootprint` is already the consumer-effective 8x8 BUILD
+    // footprint (the raw/runtime descriptor widths are normalized at load),
+    // so do not apply the source VGA half-size a second time here.
+    level2_castle_root_positions_with_resolution(world, footprint, projectile_position, false)
 }
 
 /// Derive the Castle root and `axis_0x9A_154x` anchor exactly as
-/// `sub_4AA40` does, including the source's VGA-size split.  The pinned
-/// 320x200 path passes `low_resolution = true`, which halves the BUILD table
-/// dimensions before the perimeter minimum (`sub_48E60`) is sampled.  Keeping
-/// the selector explicit makes the alternate-resolution exclusion visible at
-/// this seam instead of silently inferring it from host display state.
+/// `sub_4AA40` does, including the source's VGA-size split. The explicit
+/// selector is retained for callers that still provide raw BUILD dimensions;
+/// production Level 2 calls pass `false` because the validated footprint is
+/// already normalized to consumer-effective dimensions.
 #[must_use]
 pub fn level2_castle_root_positions_with_resolution<W: FlightWorld>(
     world: &W,
@@ -4325,7 +4324,11 @@ impl Level2EconomyState {
                 let recovered_life = if next_level == 0 {
                     0
                 } else {
-                    let deficit = snapshot.life.saturating_neg().min(stage_life / 2);
+                    let deficit = if snapshot.life < 0 {
+                        snapshot.life.saturating_neg().min(stage_life / 2)
+                    } else {
+                        0
+                    };
                     stage_life.saturating_sub(deficit)
                 };
                 let remaining_mana = self.castle.map(|castle| castle.mana).unwrap_or_default();
@@ -12131,6 +12134,123 @@ mod tests {
                 timer_transition.timer
             ),
             (5, 3, 0)
+        );
+
+        // Source sub_605E0/sub_5FCA0 lowers maxMana by ten percent before
+        // releasing overflow, then restores the next stage's exact table
+        // values. The stage transition itself is not blocked when the arena
+        // has no free slots for the optional overflow spheres.
+        let mut teardown = inspection
+            .level2_reset_session()
+            .expect("Castle teardown session");
+        let teardown_slot = teardown
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("teardown Castle");
+        assert!(
+            teardown
+                .economy_mut()
+                .start_castle_construction(teardown_slot)
+        );
+        assert!(teardown.economy_mut().step_castle_action(teardown_slot));
+        {
+            let economy = teardown.economy_mut();
+            economy.set_player_spell_cleanup_context(1, 4, 777);
+            economy.free_slots.clear();
+            let castle = economy.castle.as_mut().expect("teardown Castle");
+            castle.action = 6;
+            castle.level = 2;
+            castle.life = -10_000;
+            castle.max_life = 40_000;
+            castle.mana = 20_000;
+            castle.mana_capacity = 18_000;
+        }
+        assert!(teardown.economy_mut().step_castle_action(teardown_slot));
+        let downgraded = teardown.economy().castle().expect("downgraded Castle");
+        assert!(downgraded.active);
+        assert_eq!(
+            (
+                downgraded.action,
+                downgraded.build_state,
+                downgraded.level,
+                downgraded.life,
+                downgraded.max_life,
+                downgraded.mana,
+                downgraded.mana_capacity,
+                downgraded.timer
+            ),
+            (4, 0, 1, 10_000, 20_000, 20_000, 8_500, 5)
+        );
+        assert_eq!(
+            teardown.economy().player_castle_entity_index(),
+            teardown_slot
+        );
+        assert_eq!(teardown.economy().player_castle_stage(), 1);
+        assert_eq!(teardown.economy().player_spell_slot_2(), 777);
+        assert!(teardown.economy().events().contains(
+            &Level2EconomyEvent::CastleDestructionSound {
+                source_entity_index: teardown_slot,
+                sound_id: 30,
+            }
+        ));
+        assert!(
+            teardown
+                .economy()
+                .events()
+                .contains(&Level2EconomyEvent::CastleStageDestroyed {
+                    source_entity_index: teardown_slot,
+                    previous_level: 2,
+                    next_level: 1,
+                })
+        );
+        assert!(
+            teardown
+                .economy()
+                .castle_children()
+                .iter()
+                .all(|child| !child.active)
+        );
+
+        // A final-stage teardown also completes with an exhausted arena and
+        // clears the player Castle link plus the model-1 spell holder.
+        let mut final_teardown = inspection
+            .level2_reset_session()
+            .expect("final Castle teardown session");
+        let final_baseline_hash = final_teardown.economy().reset_hash();
+        let final_slot = final_teardown
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("final Castle");
+        {
+            let economy = final_teardown.economy_mut();
+            economy.set_player_spell_cleanup_context(1, 4, 888);
+            economy.free_slots.clear();
+            let castle = economy.castle.as_mut().expect("final Castle");
+            castle.action = 6;
+            castle.level = 1;
+            castle.life = -1;
+            castle.max_life = 20_000;
+        }
+        assert!(final_teardown.economy_mut().step_castle_action(final_slot));
+        let destroyed = final_teardown.economy().castle().expect("destroyed Castle");
+        assert!(!destroyed.active);
+        assert_eq!(final_teardown.economy().player_castle_entity_index(), 0);
+        assert_eq!(final_teardown.economy().player_castle_stage(), 0);
+        assert_eq!(final_teardown.economy().player_spell_slot_2(), 0);
+        assert!(
+            final_teardown
+                .economy()
+                .events()
+                .contains(&Level2EconomyEvent::CastleDestroyed {
+                    source_entity_index: final_slot,
+                    killer_entity_index: 0,
+                })
+        );
+        final_teardown.economy_mut().reset();
+        assert_eq!(final_teardown.economy().reset_hash(), final_baseline_hash);
+        assert_eq!(
+            final_teardown.economy().player_spell_slot_2(),
+            inspection.players()[0].enabled_spell_holders[2]
         );
     }
 
