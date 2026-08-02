@@ -14270,13 +14270,11 @@ mod tests {
         assert_eq!(merged.owner_entity_index, 111);
         assert_eq!(merged.mana, 150);
         assert!(
-            !merge_session
+            merge_session
                 .economy()
                 .spheres()
                 .iter()
-                .find(|sphere| sphere.id == owned_id)
-                .expect("merged source")
-                .active
+                .all(|sphere| sphere.id != owned_id)
         );
         assert_eq!(
             merge_session.economy().events(),
