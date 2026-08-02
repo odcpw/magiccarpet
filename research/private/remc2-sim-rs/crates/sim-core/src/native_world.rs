@@ -2823,8 +2823,8 @@ impl NativeWorldInspection {
         let goat_config = GoatBehaviorConfig::from_level_two_parameter_record(
             self.presentation
                 .entity_parameters
-                .get(99)
-                .ok_or_else(|| NativeWorldError::new("Level 2 Goat parameter row 99 is absent"))?,
+                .get(98)
+                .ok_or_else(|| NativeWorldError::new("Level 2 Goat parameter row 98 is absent"))?,
         )
         .map_err(NativeWorldError::new)?;
         let goats =
@@ -16128,8 +16128,8 @@ mod tests {
         tampered.presentation.entity_parameters[99][2] ^= 1;
         let error = tampered
             .level2_reset_session()
-            .expect_err("row 99 tamper must fail closed");
-        assert!(error.to_string().contains("row 99 mismatch"));
+            .expect_err("row 98 tamper must fail closed");
+        assert!(error.to_string().contains("row 98 mismatch"));
     }
 
     #[test]
