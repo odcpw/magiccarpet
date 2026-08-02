@@ -237,7 +237,9 @@ namespace MagicCarpet.PresentationLab
 
             if (terrainMaterial == null)
             {
-                Shader shader = Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
+                Shader customTerrainShader = Shader.Find("MagicCarpet/Enhanced/Terrain");
+                Shader shader = customTerrainShader ??
+                                Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
                                 Shader.Find("Universal Render Pipeline/Lit") ??
                                 Shader.Find("Standard");
                 if (shader != null)
@@ -249,14 +251,26 @@ namespace MagicCarpet.PresentationLab
                         color = Color.white
                     };
                     terrainMaterial.enableInstancing = true;
-                    terrainMaterial.SetFloat("_AmbientBoost", 0.65f);
-                    terrainMaterial.SetFloat("_DetailScale", 0.075f);
-                    terrainMaterial.SetFloat("_DetailStrength", 0.24f);
-                    terrainMaterial.SetFloat("_SpecularStrength", 0.08f);
-                    terrainMaterial.SetColor("_RimColor", new Color(0.08f, 0.16f, 0.52f, 1f));
-                    terrainMaterial.SetFloat("_RimStrength", 0.18f);
-                    terrainMaterial.SetColor("_EmissionColor", new Color(0.02f, 0.04f, 0.12f, 1f));
-                    terrainMaterial.SetFloat("_EmissionStrength", 0.25f);
+                    if (shader == customTerrainShader)
+                    {
+                        terrainMaterial.SetFloat("_AmbientBoost", 0.65f);
+                        terrainMaterial.SetFloat("_DetailScale", 0.075f);
+                        terrainMaterial.SetFloat("_DetailStrength", 0.52f);
+                        terrainMaterial.SetColor("_SlopeTint", new Color(0.72f, 0.84f, 1.08f, 1f));
+                        terrainMaterial.SetFloat("_SlopeStrength", 0.48f);
+                        terrainMaterial.SetFloat("_SpecularStrength", 0.10f);
+                    }
+                    else
+                    {
+                        terrainMaterial.SetFloat("_AmbientBoost", 0.65f);
+                        terrainMaterial.SetFloat("_DetailScale", 0.075f);
+                        terrainMaterial.SetFloat("_DetailStrength", 0.42f);
+                        terrainMaterial.SetFloat("_SpecularStrength", 0.08f);
+                        terrainMaterial.SetColor("_RimColor", new Color(0.08f, 0.16f, 0.52f, 1f));
+                        terrainMaterial.SetFloat("_RimStrength", 0.18f);
+                        terrainMaterial.SetColor("_EmissionColor", new Color(0.02f, 0.04f, 0.12f, 1f));
+                        terrainMaterial.SetFloat("_EmissionStrength", 0.25f);
+                    }
                     meshRenderer.sharedMaterial = terrainMaterial;
                 }
             }

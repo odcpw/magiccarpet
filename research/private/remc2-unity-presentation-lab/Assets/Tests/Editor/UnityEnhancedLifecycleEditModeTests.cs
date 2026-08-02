@@ -553,6 +553,7 @@ namespace MagicCarpet.PresentationLab.Tests
         public void EnhancedVertexColorShaderIsAvailableForGeneratedPresentation()
         {
             Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/VertexColorLit"));
+            Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/Terrain"));
             Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/NightSky"));
         }
 

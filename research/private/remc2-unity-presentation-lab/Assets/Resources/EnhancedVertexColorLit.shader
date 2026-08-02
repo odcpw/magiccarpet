@@ -109,9 +109,23 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
                 half3 normalWS = NormalizeNormalPerPixel(input.normalWS);
                 half3 viewDirectionWS = GetWorldSpaceNormalizeViewDir(input.positionWS);
                 half3 baseColor = saturate(input.color.rgb * _BaseColor.rgb);
-                float detail = ValueNoise(input.positionWS.xz * _DetailScale);
-                half detailFactor = lerp(0.88h, 1.12h, detail);
+                float macroDetail = ValueNoise(input.positionWS.xz * _DetailScale);
+                float fineDetail = ValueNoise(input.positionWS.xz * (_DetailScale * 3.5));
+                float detail = lerp(macroDetail, fineDetail, 0.32);
+                // The material is deliberately texture-free, but it should
+                // still break up the generated terrain at game distance.
+                // Keep the modulation bounded so this remains a presentation
+                // treatment rather than a second terrain authority.
+                half detailFactor = lerp(0.72h, 1.28h, detail);
                 baseColor *= lerp(1.0h, detailFactor, _DetailStrength);
+                // Steep generated faces receive a restrained blue moonlit
+                // tint. This adds readable relief to the low-poly terrain
+                // without baking a normal or albedo texture.
+                half slope = saturate(1.0h - normalWS.y);
+                baseColor *= lerp(
+                    1.0h,
+                    half3(0.72h, 0.84h, 1.08h),
+                    slope * 0.22h);
                 // Keep shadowed surfaces readable without flattening the night
                 // palette into neutral gray. Warm emissive families and local
                 // spell lights remain distinct against this cool fill.
