@@ -21,9 +21,12 @@ namespace MagicCarpet.PresentationLab
         private const uint CommandSize = 32;
         private const uint SnapshotSize = 120;
         private const uint RenderCameraStateSize = 72;
+        private const uint MissionSnapshotSize = 96;
         private const uint QuerySize = 64;
         private const uint InfoSize = 128;
         private const string AssetCacheEnvironment = "MC_ASSET_CACHE_PATH";
+        private const int SelectedSpellFlag = 0x40;
+        private const sbyte SpellSelectionOpcode = 40;
         private const uint RequiredClassicHdFlags =
             0x4000u | // provenance present
             0x10000u | // postprocess complete
@@ -56,6 +59,8 @@ namespace MagicCarpet.PresentationLab
         private McPresentationFrameQueryV2 frameQuery;
         private McCommandV2 command;
         private McCameraInputV2 cameraInput;
+        private McSessionSnapshotV2 snapshot;
+        private McLevel1MissionSnapshotV2 mission;
 
         public bool IsConfigured { get; private set; }
         public ulong Generation { get { return generation; } }
@@ -68,6 +73,14 @@ namespace MagicCarpet.PresentationLab
         public ulong LastReceiptHash { get; private set; }
         public uint LastFlags { get; private set; }
         public byte LastHistoryState { get; private set; }
+        public int PlayerLife { get { return mission.PlayerLife; } }
+        public int PlayerMaxLife { get { return mission.PlayerMaxLife; } }
+        public bool PlayerDead { get { return mission.PlayerDead != 0; } }
+        public int MissionProjectileCount { get { return checked((int)mission.ProjectileCount); } }
+        public int MissionImpactCount { get { return checked((int)mission.ImpactCount); } }
+        public short ActualSpeed { get { return snapshot.ActualSpeed; } }
+        public ushort CameraX { get { return ReadRenderCameraUInt16(28); } }
+        public ushort CameraY { get { return ReadRenderCameraUInt16(30); } }
 
         public bool Configure(
             ClassicHdProfileInfo profile,
@@ -158,7 +171,9 @@ namespace MagicCarpet.PresentationLab
                     return false;
                 }
 
-                if (!ReadRenderCameraClock(out reason))
+                if (!ReadSessionSnapshot(out reason) ||
+                    !ReadMissionSnapshot(out reason) ||
+                    !ReadRenderCameraClock(out reason))
                 {
                     Dispose();
                     return false;
@@ -237,13 +252,26 @@ namespace MagicCarpet.PresentationLab
                 return false;
             }
 
-            return ReadRenderCameraClock(out reason);
+            return ReadSessionSnapshot(out reason) &&
+                   ReadMissionSnapshot(out reason) &&
+                   ReadRenderCameraClock(out reason);
         }
 
         public bool Fill(
             byte[] destination,
             float horizontalInput,
             float verticalInput,
+            out string reason)
+        {
+            return Fill(destination, horizontalInput, verticalInput, false, -1, out reason);
+        }
+
+        public bool Fill(
+            byte[] destination,
+            float horizontalInput,
+            float verticalInput,
+            bool cast,
+            int spellSelection,
             out string reason)
         {
             reason = string.Empty;
@@ -259,8 +287,21 @@ namespace MagicCarpet.PresentationLab
                 return false;
             }
 
+            command.Opcode = 0;
+            command.Argument1 = 0;
             command.Roll = ClampInt8(horizontalInput * 127f);
             command.Pitch = ClampInt8(verticalInput * 127f);
+            command.Flags = 1;
+            command.RequestedSpell = -1;
+            if (spellSelection >= 0)
+            {
+                command.Opcode = SpellSelectionOpcode;
+                command.Argument1 = ClampInt8(spellSelection);
+            }
+            if (cast)
+            {
+                command.Flags = unchecked((sbyte)(command.Flags | SelectedSpellFlag));
+            }
             int status = mc_native_session_step_with_camera(
                 handle,
                 ref command,
@@ -273,7 +314,9 @@ namespace MagicCarpet.PresentationLab
                 return false;
             }
 
-            if (!ReadRenderCameraClock(out reason))
+            if (!ReadSessionSnapshot(out reason) ||
+                !ReadMissionSnapshot(out reason) ||
+                !ReadRenderCameraClock(out reason))
             {
                 return false;
             }
@@ -320,6 +363,50 @@ namespace MagicCarpet.PresentationLab
             LastHistoryState = info.HistoryState;
             LastReceiptHash = ReceiptHash(info);
             return true;
+        }
+
+        /// <summary>
+        /// Injects the existing private owner qualification damage boundary.
+        /// Rust consumes the damage on the next step; Classic HD only observes
+        /// the resulting mission state and never decides whether the player died.
+        /// </summary>
+        public bool InjectPlayerDamageForQualification(
+            int damage,
+            ushort attackerEntityIndex,
+            out string reason)
+        {
+            reason = string.Empty;
+            if (!IsConfigured || handle == 0)
+            {
+                reason = "Classic HD owner source is not configured";
+                return false;
+            }
+
+            if (damage <= 0 || attackerEntityIndex == 0)
+            {
+                reason = "Classic HD qualification damage requires a positive amount and nonzero attacker";
+                return false;
+            }
+
+            try
+            {
+                int status = mc_native_level1_player_inject_damage_for_qualification(
+                    handle,
+                    damage,
+                    attackerEntityIndex);
+                if (status != 0)
+                {
+                    reason = StatusReason("Classic HD player damage qualification", status);
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception exception)
+            {
+                reason = "Classic HD player damage qualification failed: " + exception.Message;
+                return false;
+            }
         }
 
         public void Dispose()
@@ -389,6 +476,50 @@ namespace MagicCarpet.PresentationLab
             LastHistoryState = 0;
         }
 
+        private bool ReadSessionSnapshot(out string reason)
+        {
+            reason = string.Empty;
+            if (!snapshotHandle.IsAllocated)
+            {
+                reason = "Classic HD owner session snapshot buffer is not pinned";
+                return false;
+            }
+
+            snapshot = Marshal.PtrToStructure<McSessionSnapshotV2>(snapshotHandle.AddrOfPinnedObject());
+            if (snapshot.AbiVersion != AbiVersion || snapshot.StructSize != SnapshotSize)
+            {
+                reason = "Classic HD owner session snapshot failed its ABI/layout contract";
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool ReadMissionSnapshot(out string reason)
+        {
+            reason = string.Empty;
+            int status = mc_native_level1_mission_snapshot(
+                handle,
+                out mission,
+                MissionSnapshotSize);
+            if (status != 0)
+            {
+                reason = StatusReason("Classic HD owner Level 1 mission snapshot", status);
+                return false;
+            }
+
+            if (mission.AbiVersion != AbiVersion ||
+                mission.StructSize != MissionSnapshotSize ||
+                mission.Generation != snapshot.Generation ||
+                mission.Tick != snapshot.Tick)
+            {
+                reason = "Classic HD owner mission snapshot failed its generation/layout contract";
+                return false;
+            }
+
+            return true;
+        }
+
         private bool ReadRenderCameraClock(out string reason)
         {
             reason = string.Empty;
@@ -406,6 +537,11 @@ namespace MagicCarpet.PresentationLab
             generation = unchecked((ulong)Marshal.ReadInt64(address, 8));
             tick = unchecked((ulong)Marshal.ReadInt64(address, 16));
             return true;
+        }
+
+        private ushort ReadRenderCameraUInt16(int offset)
+        {
+            return unchecked((ushort)Marshal.ReadInt16(renderCameraHandle.AddrOfPinnedObject(), offset));
         }
 
         private static byte BlurMode(string value)
@@ -522,6 +658,92 @@ namespace MagicCarpet.PresentationLab
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        private struct McSessionSnapshotV2
+        {
+            public uint AbiVersion;
+            public uint StructSize;
+            public ulong Generation;
+            public ulong Tick;
+            public ulong EventHead;
+            public ulong StateHash;
+            public ulong ConformanceHash;
+            public ushort EntityIndex;
+            public ushort X;
+            public ushort Y;
+            public short Z;
+            public short Yaw;
+            public short DisplayPitch;
+            public short EffectivePitch;
+            public short RollAccumulator;
+            public short TargetSpeed;
+            public short ActualSpeed;
+            public short StrafeSpeed;
+            public byte Phase;
+            public byte LastResolution;
+            public byte Profile;
+            public byte LocalPlayerSlot;
+            public byte LeftSpellSlot;
+            public byte RightSpellSlot;
+            public byte SelectedSpellUiIndex;
+            public byte ObjectiveTextboxTicks;
+            public byte ObjectiveCount;
+            public byte ObjectivesAuthority;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
+            public byte[] Reserved1;
+            public ushort LeftSpellHolder;
+            public ushort RightSpellHolder;
+            public ushort SelectedSpellHolder;
+            public ushort Reserved0;
+            public int CasterMana;
+            public int MaptypeMusic;
+            public uint FireSequence;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public uint[] Reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct McLevel1MissionSnapshotV2
+        {
+            public uint AbiVersion;
+            public uint StructSize;
+            public ulong Generation;
+            public ulong Tick;
+            public byte Authority;
+            public byte CurrentStage;
+            public byte TextSelector;
+            public byte ObjectiveTextboxTicks;
+            public byte TasksCompleted;
+            public byte PlayerDead;
+            public byte HasFireball;
+            public byte HasPossession;
+            public byte HasCastleSpell;
+            public byte HasSpeedSpell;
+            public byte CastleExists;
+            public byte CastleLevel;
+            public byte FidelityGapFlags;
+            public byte ExitSequenceActive;
+            public byte ExitSequenceComplete;
+            public byte ExitResultCode;
+            public int PlayerLife;
+            public int PlayerMaxLife;
+            public int PlayerMana;
+            public int PlayerMaxMana;
+            public int CastleMana;
+            public int SecuredManaPercent;
+            public uint ActorCount;
+            public uint ProjectileCount;
+            public uint ImpactCount;
+            public uint ExitSequencePhase;
+            public int ExitSequenceTimer;
+            public int PossessionExperience;
+            public ushort LastPossessedBuildingEntity;
+            public ushort LastPossessedBuildingOwner;
+            public ushort PossessedBuildingCount;
+            public byte PossessionTier;
+            public byte SpeedTrailCount;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         private struct McPresentationFrameQueryV2
         {
             public uint AbiVersion;
@@ -630,6 +852,18 @@ namespace MagicCarpet.PresentationLab
             uint provenanceCapacity,
             out McPresentationFrameInfoV2 info,
             uint infoSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_level1_mission_snapshot(
+            ulong handle,
+            out McLevel1MissionSnapshotV2 snapshot,
+            uint snapshotSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_level1_player_inject_damage_for_qualification(
+            ulong handle,
+            int damage,
+            ushort attackerEntityIndex);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         private static extern int mc_native_last_error_length(out uint length);

@@ -77,6 +77,38 @@ namespace MagicCarpet.PresentationLab
                     : (nativeFixture == null ? 0 : nativeFixture.LastFlags);
             }
         }
+        public int PlayerLife
+        {
+            get { return ownerSession == null ? 0 : ownerSession.PlayerLife; }
+        }
+        public int PlayerMaxLife
+        {
+            get { return ownerSession == null ? 0 : ownerSession.PlayerMaxLife; }
+        }
+        public bool PlayerDead
+        {
+            get { return ownerSession != null && ownerSession.PlayerDead; }
+        }
+        public int MissionProjectileCount
+        {
+            get { return ownerSession == null ? 0 : ownerSession.MissionProjectileCount; }
+        }
+        public int MissionImpactCount
+        {
+            get { return ownerSession == null ? 0 : ownerSession.MissionImpactCount; }
+        }
+        public short ActualSpeed
+        {
+            get { return ownerSession == null ? (short)0 : ownerSession.ActualSpeed; }
+        }
+        public ushort CameraX
+        {
+            get { return ownerSession == null ? (ushort)0 : ownerSession.CameraX; }
+        }
+        public ushort CameraY
+        {
+            get { return ownerSession == null ? (ushort)0 : ownerSession.CameraY; }
+        }
 
         public bool Configure(ClassicHdPresentationSettings requestedSettings, out string reason)
         {
@@ -233,7 +265,35 @@ namespace MagicCarpet.PresentationLab
             return true;
         }
 
+        public bool InjectPlayerDamageForQualification(
+            int damage,
+            ushort attackerEntityIndex,
+            out string reason)
+        {
+            reason = string.Empty;
+            if (ownerSession == null || !ownerSession.IsConfigured)
+            {
+                reason = "Classic HD owner session is not configured";
+                return false;
+            }
+
+            return ownerSession.InjectPlayerDamageForQualification(
+                damage,
+                attackerEntityIndex,
+                out reason);
+        }
+
         public bool CaptureFrame(float horizontalInput, float verticalInput, out string reason)
+        {
+            return CaptureFrame(horizontalInput, verticalInput, false, -1, out reason);
+        }
+
+        public bool CaptureFrame(
+            float horizontalInput,
+            float verticalInput,
+            bool cast,
+            int spellSelection,
+            out string reason)
         {
             reason = string.Empty;
             if (!IsConfigured || surface == null || frameBytes == null)
@@ -245,7 +305,13 @@ namespace MagicCarpet.PresentationLab
             tick++;
             if (UsesNativeOwnerSession)
             {
-                if (!ownerSession.Fill(frameBytes, horizontalInput, verticalInput, out reason))
+                if (!ownerSession.Fill(
+                        frameBytes,
+                        horizontalInput,
+                        verticalInput,
+                        cast,
+                        spellSelection,
+                        out reason))
                 {
                     return false;
                 }

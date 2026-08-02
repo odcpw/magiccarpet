@@ -271,6 +271,236 @@ namespace MagicCarpet.PresentationLab.Editor
             }
         }
 
+        [MenuItem("Magic Carpet/Presentation Lab/Run Owner Classic HD Scenario Smoke")]
+        public static void RunOwnerClassicHdScenarioSmoke()
+        {
+            string packagePath = CommandLineValue("-mc-package");
+            string closurePath = CommandLineValue("-mc-closure");
+            string assetCachePath = CommandLineValue("-mc-asset-cache");
+            if (string.IsNullOrWhiteSpace(packagePath) ||
+                string.IsNullOrWhiteSpace(closurePath) ||
+                string.IsNullOrWhiteSpace(assetCachePath))
+            {
+                throw new InvalidOperationException(
+                    "owner Classic HD scenario smoke requires -mc-package, -mc-closure, and -mc-asset-cache");
+            }
+
+            var root = new GameObject("Owner Classic HD Scenario Smoke Router");
+            var router = root.AddComponent<PresentationModeRouter>();
+            MethodInfo awake = typeof(PresentationModeRouter).GetMethod(
+                "Awake",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (awake == null)
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                throw new InvalidOperationException("presentation router Awake method is missing");
+            }
+
+            const int IdleFrames = 8;
+            const int TownFrames = 12;
+            const int CombatFrames = 12;
+            const int FlightFrames = 16;
+            var indexRouteHashes = new List<ulong>();
+            var provenanceRouteHashes = new List<ulong>();
+            int combatProjectiles = 0;
+            int combatImpacts = 0;
+            short maxFlightSpeed = short.MinValue;
+            bool deathObserved = false;
+            ulong generationBeforeRestart = 0;
+            ulong generationAfterRestart = 0;
+            ulong restartTick = ulong.MaxValue;
+            long townCameraDistance = 0;
+            long flightCameraDistance = 0;
+
+            try
+            {
+                awake.Invoke(router, null);
+                if (!router.SessionIsOpen ||
+                    router.ClassicHdRenderer == null ||
+                    !router.ClassicHdRenderer.UsesNativeOwnerSession)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD SCENARIO SMOKE FAIL: owner route did not open");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                string reason;
+                ClassicHdPresentation classic = router.ClassicHdRenderer;
+                ushort townStartX = classic.CameraX;
+                ushort townStartY = classic.CameraY;
+                ushort flightStartX = townStartX;
+                ushort flightStartY = townStartY;
+
+                for (int frame = 0; frame < IdleFrames; frame++)
+                {
+                    if (!classic.CaptureFrame(0f, 0f, false, -1, out reason))
+                    {
+                        Debug.LogError("OWNER CLASSIC HD SCENARIO SMOKE FAIL: idle frame " + frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    if (classic.LastNativeIndexHash == 0 || classic.LastNativeProvenanceHash == 0)
+                    {
+                        Debug.LogError("OWNER CLASSIC HD SCENARIO SMOKE FAIL: idle frame has an empty indexed receipt");
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    indexRouteHashes.Add(classic.LastNativeIndexHash);
+                    provenanceRouteHashes.Add(classic.LastNativeProvenanceHash);
+                }
+
+                townStartX = classic.CameraX;
+                townStartY = classic.CameraY;
+                for (int frame = 0; frame < TownFrames; frame++)
+                {
+                    Vector2 input = ScenarioFlightInput("town", frame);
+                    if (!classic.CaptureFrame(input.x, input.y, false, -1, out reason))
+                    {
+                        Debug.LogError("OWNER CLASSIC HD SCENARIO SMOKE FAIL: town frame " + frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    indexRouteHashes.Add(classic.LastNativeIndexHash);
+                    provenanceRouteHashes.Add(classic.LastNativeProvenanceHash);
+                }
+
+                townCameraDistance = CameraDistance(classic.CameraX, classic.CameraY, townStartX, townStartY);
+                if (townCameraDistance <= 0)
+                {
+                    Debug.LogError("OWNER CLASSIC HD SCENARIO SMOKE FAIL: town route did not move the authoritative camera");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                for (int frame = 0; frame < CombatFrames; frame++)
+                {
+                    bool cast = frame == 4;
+                    int spellSelection = frame == 3 ? 0 : -1;
+                    if (!classic.CaptureFrame(0f, 0f, cast, spellSelection, out reason))
+                    {
+                        Debug.LogError("OWNER CLASSIC HD SCENARIO SMOKE FAIL: combat frame " + frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    combatProjectiles = Math.Max(combatProjectiles, classic.MissionProjectileCount);
+                    combatImpacts = Math.Max(combatImpacts, classic.MissionImpactCount);
+                    indexRouteHashes.Add(classic.LastNativeIndexHash);
+                    provenanceRouteHashes.Add(classic.LastNativeProvenanceHash);
+                }
+
+                if (combatProjectiles <= 0 || combatImpacts <= 0)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD SCENARIO SMOKE FAIL: combat route did not publish projectile/impact rows" +
+                        " projectiles=" + combatProjectiles +
+                        " impacts=" + combatImpacts);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                flightStartX = classic.CameraX;
+                flightStartY = classic.CameraY;
+                for (int frame = 0; frame < FlightFrames; frame++)
+                {
+                    Vector2 input = ScenarioFlightInput("flight", frame);
+                    if (!classic.CaptureFrame(input.x, input.y, false, -1, out reason))
+                    {
+                        Debug.LogError("OWNER CLASSIC HD SCENARIO SMOKE FAIL: flight frame " + frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    maxFlightSpeed = Math.Max(maxFlightSpeed, classic.ActualSpeed);
+                    indexRouteHashes.Add(classic.LastNativeIndexHash);
+                    provenanceRouteHashes.Add(classic.LastNativeProvenanceHash);
+                }
+
+                flightCameraDistance = CameraDistance(classic.CameraX, classic.CameraY, flightStartX, flightStartY);
+                if (maxFlightSpeed <= 0 || flightCameraDistance <= 0)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD SCENARIO SMOKE FAIL: high-speed flight route did not move the authoritative camera" +
+                        " speed=" + maxFlightSpeed +
+                        " distance=" + flightCameraDistance);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                if (!classic.InjectPlayerDamageForQualification(100000, 10, out reason))
+                {
+                    Debug.LogError("OWNER CLASSIC HD SCENARIO SMOKE FAIL: death setup: " + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                if (!classic.CaptureFrame(0f, 0f, false, -1, out reason))
+                {
+                    Debug.LogError("OWNER CLASSIC HD SCENARIO SMOKE FAIL: death frame: " + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                deathObserved = classic.PlayerDead || classic.PlayerLife <= 0;
+                generationBeforeRestart = classic.SourceGeneration;
+                if (!deathObserved)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD SCENARIO SMOKE FAIL: lethal owner qualification did not reach player-dead state" +
+                        " life=" + classic.PlayerLife +
+                        " dead=" + classic.PlayerDead);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                if (!classic.ResetOwnerSession(out reason))
+                {
+                    Debug.LogError("OWNER CLASSIC HD SCENARIO SMOKE FAIL: restart reset: " + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                generationAfterRestart = classic.SourceGeneration;
+                restartTick = classic.SourceTick;
+                if (generationAfterRestart <= generationBeforeRestart || restartTick != 0)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD SCENARIO SMOKE FAIL: restart did not produce a fresh tick-0 generation" +
+                        " before=" + generationBeforeRestart +
+                        " after=" + generationAfterRestart +
+                        " tick=" + restartTick);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                Debug.Log(
+                    "OWNER CLASSIC HD SCENARIO SMOKE PASS: profile=" + classic.Settings.profile +
+                    " idle_frames=" + IdleFrames +
+                    " town_frames=" + TownFrames +
+                    " combat_frames=" + CombatFrames +
+                    " flight_frames=" + FlightFrames +
+                    " town_camera_distance=" + townCameraDistance +
+                    " combat_projectiles=" + combatProjectiles +
+                    " combat_impacts=" + combatImpacts +
+                    " max_flight_speed=" + maxFlightSpeed +
+                    " flight_camera_distance=" + flightCameraDistance +
+                    " death_observed=" + (deathObserved ? 1 : 0) +
+                    " restart_generation=" + generationAfterRestart +
+                    " restart_tick=" + restartTick +
+                    " index_route_hash=" + SequenceHash(indexRouteHashes).ToString("x16") +
+                    " provenance_route_hash=" + SequenceHash(provenanceRouteHashes).ToString("x16"));
+                EditorApplication.Exit(0);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
         [MenuItem("Magic Carpet/Presentation Lab/Run Owner Unity Enhanced Sequence Smoke")]
         public static void RunOwnerUnityEnhancedSequenceSmoke()
         {
@@ -912,6 +1142,13 @@ namespace MagicCarpet.PresentationLab.Editor
             }
 
             return Vector2.zero;
+        }
+
+        private static long CameraDistance(ushort x, ushort y, ushort startX, ushort startY)
+        {
+            long dx = (long)x - startX;
+            long dy = (long)y - startY;
+            return dx * dx + dy * dy;
         }
 
         private static ulong SequenceHash(IReadOnlyList<ulong> values)
