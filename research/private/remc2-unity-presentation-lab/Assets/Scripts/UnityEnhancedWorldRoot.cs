@@ -42,6 +42,38 @@ namespace MagicCarpet.PresentationLab
     }
 
     [Serializable]
+    public sealed class UnityEnhancedHudSnapshot
+    {
+        public ulong Generation;
+        public ulong Tick;
+        public int PlayerLife;
+        public int PlayerMaxLife;
+        public int PlayerMana;
+        public int PlayerMaxMana;
+        public int CastleMana;
+        public int SecuredManaPercent;
+        public int TargetSpeed;
+        public int ActualSpeed;
+        public byte CurrentStage;
+        public byte TasksCompleted;
+        public byte ObjectiveSelector;
+        public byte ObjectiveTextboxTicks;
+        public byte ObjectiveCount;
+        public byte LeftSpellSlot;
+        public byte RightSpellSlot;
+        public byte SelectedSpellUiIndex;
+        public byte SpeedTrailCount;
+        public bool HasFireball;
+        public bool HasPossession;
+        public bool HasCastleSpell;
+        public bool HasSpeedSpell;
+        public bool PlayerDead;
+        public bool ExitSequenceActive;
+        public bool ExitSequenceComplete;
+        public byte ExitResultCode;
+    }
+
+    [Serializable]
     public sealed class UnityEnhancedWorldSnapshot
     {
         public ulong Generation;
@@ -49,6 +81,7 @@ namespace MagicCarpet.PresentationLab
         public bool Reset;
         public UnityEnhancedCameraPose CameraPose;
         public UnityEnhancedEntitySnapshot[] Entities = Array.Empty<UnityEnhancedEntitySnapshot>();
+        public UnityEnhancedHudSnapshot Hud;
         public UnityEnhancedTerrainSnapshot Terrain;
         public UnityEnhancedWaterSnapshot Water;
         public UnityEnhancedNightLightingDescriptor? NightLighting;
@@ -91,6 +124,7 @@ namespace MagicCarpet.PresentationLab
         private UnityEnhancedWaterPresentation waterPresentation;
         private UnityEnhancedVfxPresentation vfxPresentation;
         private UnityEnhancedQualityAndPost qualityAndPost;
+        private UnityEnhancedHudPresentation hudPresentation;
         private UnityEnhancedDiagnostics diagnostics;
         private ulong generation;
         private ulong lastTick;
@@ -111,6 +145,7 @@ namespace MagicCarpet.PresentationLab
         public UnityEnhancedWaterPresentation WaterPresentation { get { return waterPresentation; } }
         public UnityEnhancedVfxPresentation VfxPresentation { get { return vfxPresentation; } }
         public UnityEnhancedQualityAndPost QualityAndPost { get { return qualityAndPost; } }
+        public UnityEnhancedHudPresentation HudPresentation { get { return hudPresentation; } }
         public UnityEnhancedDiagnostics Diagnostics { get { return diagnostics; } }
 
         private void Awake()
@@ -187,6 +222,7 @@ namespace MagicCarpet.PresentationLab
             if (vfxPresentation != null) vfxPresentation.ResetForGeneration(0);
             if (actorPresentation != null) actorPresentation.ResetForSession();
             if (qualityAndPost != null) qualityAndPost.ResetForSession();
+            if (hudPresentation != null) hudPresentation.ResetForSession();
             if (diagnostics != null) diagnostics.ResetForSession();
 
             hasSnapshot = false;
@@ -275,6 +311,20 @@ namespace MagicCarpet.PresentationLab
                 vfxPresentation.SetReducedMotion(snapshot.Quality.ReducedMotion);
                 vfxPresentation.SetCameraComfort(snapshot.Quality.CameraShake);
                 diagnostics.SetAccessibility(snapshot.Quality.ReducedMotion, false);
+            }
+
+            if (snapshot.Hud != null && !hudPresentation.ApplySnapshot(
+                    snapshot.Hud,
+                    cameraRig.PresentationCamera))
+            {
+                LastRejectReason = "HUD presentation rejected snapshot";
+                if (diagnostics != null) diagnostics.RecordRejectedSnapshot();
+                State = UnityEnhancedLifecycleState.Faulted;
+                return false;
+            }
+            if (snapshot.Hud == null)
+            {
+                hudPresentation.HideForSnapshot();
             }
 
             seenIdentities.Clear();
@@ -402,6 +452,7 @@ namespace MagicCarpet.PresentationLab
             nightLighting.ResetForGeneration(nextGeneration);
             vfxPresentation.ResetForGeneration(nextGeneration);
             actorPresentation.ResetForSession();
+            hudPresentation.ResetForGeneration(nextGeneration);
         }
 
         /// <summary>
@@ -594,6 +645,14 @@ namespace MagicCarpet.PresentationLab
                 if (vfxPresentation == null) vfxPresentation = gameObject.AddComponent<UnityEnhancedVfxPresentation>();
             }
 
+            if (hudPresentation == null)
+            {
+                GameObject hud = new GameObject("EnhancedHud");
+                hud.transform.SetParent(transform, false);
+                hud.hideFlags = HideFlags.DontSave;
+                hudPresentation = hud.AddComponent<UnityEnhancedHudPresentation>();
+            }
+
             if (qualityAndPost == null)
             {
                 qualityAndPost = GetComponent<UnityEnhancedQualityAndPost>();
@@ -641,6 +700,19 @@ namespace MagicCarpet.PresentationLab
                 {
                     return false;
                 }
+            }
+
+            if (snapshot.Hud != null &&
+                (snapshot.Hud.Generation != snapshot.Generation ||
+                 snapshot.Hud.Tick != snapshot.Tick ||
+                 snapshot.Hud.PlayerLife < 0 ||
+                 snapshot.Hud.PlayerMaxLife < 0 ||
+                 snapshot.Hud.PlayerMana < 0 ||
+                 snapshot.Hud.PlayerMaxMana < 0 ||
+                 snapshot.Hud.SecuredManaPercent < 0 ||
+                 snapshot.Hud.SecuredManaPercent > 100))
+            {
+                return false;
             }
 
             if (snapshot.Terrain != null)

@@ -34,6 +34,7 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual(1, gameObject.GetComponents<UnityEnhancedInputAdapter>().Length);
             Assert.AreEqual(1, gameObject.GetComponents<UnityEnhancedPresentationAdapters>().Length);
             Assert.AreEqual(1, gameObject.GetComponentsInChildren<UnityEnhancedCameraRig>().Length);
+            Assert.AreEqual(1, gameObject.GetComponentsInChildren<UnityEnhancedHudPresentation>().Length);
             Assert.IsNotNull(gameObject.transform.Find("EnhancedWorldObjects"));
 
             Object.DestroyImmediate(gameObject);
@@ -85,6 +86,53 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual(0UL, root.LastTick);
             Assert.GreaterOrEqual(root.PooledEntityCount, 1);
 
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void HudConsumesMissionStateAndRendersGenerationBoundBars()
+        {
+            GameObject gameObject = new GameObject("enhanced-hud-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+
+            UnityEnhancedWorldSnapshot snapshot = new UnityEnhancedWorldSnapshot
+            {
+                Generation = 3,
+                Tick = 4,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 58f),
+                Entities = new UnityEnhancedEntitySnapshot[0],
+                Hud = new UnityEnhancedHudSnapshot
+                {
+                    Generation = 3,
+                    Tick = 4,
+                    PlayerLife = 80,
+                    PlayerMaxLife = 100,
+                    PlayerMana = 20,
+                    PlayerMaxMana = 50,
+                    SecuredManaPercent = 35,
+                    TargetSpeed = 80,
+                    ActualSpeed = 40,
+                    CurrentStage = 2,
+                    TasksCompleted = 1,
+                    HasFireball = true,
+                    HasSpeedSpell = true
+                }
+            };
+
+            Assert.IsTrue(root.ApplySnapshot(snapshot));
+            Assert.IsNotNull(root.HudPresentation);
+            Assert.IsTrue(root.HudPresentation.IsVisible);
+            Assert.AreEqual(3UL, root.HudPresentation.Generation);
+            Assert.AreEqual(4UL, root.HudPresentation.LastTick);
+            Assert.AreEqual(0.8f, root.HudPresentation.LifeFillAmount, 0.001f);
+            Assert.AreEqual(0.4f, root.HudPresentation.ManaFillAmount, 0.001f);
+            StringAssert.Contains("FIRE", root.HudPresentation.SpellText);
+            StringAssert.Contains("SPEED", root.HudPresentation.SpellText);
+            StringAssert.Contains("CASTER READY", root.HudPresentation.StatusText);
+
+            root.Close();
+            Assert.IsFalse(root.HudPresentation.IsVisible);
             Object.DestroyImmediate(gameObject);
         }
 

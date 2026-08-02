@@ -1123,6 +1123,7 @@ namespace MagicCarpet.PresentationLab
                 Reset = reset,
                 CameraPose = BuildCameraPose(),
                 Entities = BuildEntities(),
+                Hud = BuildHudSnapshot(),
                 Terrain = publishTerrain
                     ? BuildTerrainSnapshot(reset, terrainOrigin, terrainChangedSinceLastObservation || originChanged)
                     : null,
@@ -1139,6 +1140,40 @@ namespace MagicCarpet.PresentationLab
             }
             terrainChangedSinceLastObservation = false;
             return result;
+        }
+
+        private UnityEnhancedHudSnapshot BuildHudSnapshot()
+        {
+            return new UnityEnhancedHudSnapshot
+            {
+                Generation = mission.generation,
+                Tick = mission.tick,
+                PlayerLife = mission.playerLife,
+                PlayerMaxLife = mission.playerMaxLife,
+                PlayerMana = mission.playerMana,
+                PlayerMaxMana = mission.playerMaxMana,
+                CastleMana = mission.castleMana,
+                SecuredManaPercent = mission.securedManaPercent,
+                TargetSpeed = snapshot.targetSpeed,
+                ActualSpeed = snapshot.actualSpeed,
+                CurrentStage = mission.currentStage,
+                TasksCompleted = mission.tasksCompleted,
+                ObjectiveSelector = mission.textSelector,
+                ObjectiveTextboxTicks = mission.objectiveTextboxTicks,
+                ObjectiveCount = snapshot.objectiveCount,
+                LeftSpellSlot = snapshot.leftSpellSlot,
+                RightSpellSlot = snapshot.rightSpellSlot,
+                SelectedSpellUiIndex = snapshot.selectedSpellUiIndex,
+                SpeedTrailCount = mission.speedTrailCount,
+                HasFireball = mission.hasFireball != 0,
+                HasPossession = mission.hasPossession != 0,
+                HasCastleSpell = mission.hasCastleSpell != 0,
+                HasSpeedSpell = mission.hasSpeedSpell != 0,
+                PlayerDead = mission.playerDead != 0,
+                ExitSequenceActive = mission.exitSequenceActive != 0,
+                ExitSequenceComplete = mission.exitSequenceComplete != 0,
+                ExitResultCode = mission.exitResultCode
+            };
         }
 
         private Vector3 TerrainEpochOrigin()

@@ -34,6 +34,7 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         script_root / "UnityEnhancedWaterPresentation.cs",
         script_root / "UnityEnhancedVfxPresentation.cs",
         script_root / "UnityEnhancedQualityAndPost.cs",
+        script_root / "UnityEnhancedHudPresentation.cs",
         script_root / "UnityEnhancedDiagnostics.cs",
         script_root / "UnityEnhancedOwnerSessionSource.cs",
     ]
@@ -60,6 +61,7 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     _check(checks, "Level 1 Night lighting is descriptor-driven and capped", all(token in source_text for token in ("Level1Night", "LocalLightCap", "DroppedLocalLightCount", "CompareRequests", "LightType.Directional")), str(script_root / "UnityEnhancedNightLighting.cs"))
     _check(checks, "water and shoreline reflection path is explicit", all(token in source_text for token in ("UnityEnhancedWaterReflectionMode", "ReflectionEnabled", "BuildShoreline", "ShorelineMask")), str(script_root / "UnityEnhancedWaterPresentation.cs"))
     _check(checks, "VFX events are ordered, replayable, pooled, and reduced-motion aware", all(token in source_text for token in ("UnityEnhancedVfxEvent", "ApplyReplay", "MaxActiveEffects", "DuplicateEffectCount", "ReducedMotion", "CameraComfortEnabled")), str(script_root / "UnityEnhancedVfxPresentation.cs"))
+    _check(checks, "HUD consumes generation-bound mission state through the Enhanced camera", all(token in source_text for token in ("ApplySnapshot", "ScreenSpaceCamera", "PlayerLife", "PlayerMana", "never sends input or state back")), str(script_root / "UnityEnhancedHudPresentation.cs"))
     _check(checks, "URP quality/post and spatial upscaling are gated", all(token in source_text for token in ("UniversalAdditionalCameraData", "Volume", "renderScale", "UpscalingFilterSelection", "TemporalMode", "TemporalUpscalingEnabled")), str(script_root / "UnityEnhancedQualityAndPost.cs"))
     _check(checks, "support diagnostics are path-free and measurable", all(token in source_text for token in ("UnityEnhancedPresentationMetrics", "BuildSupportReport", "LastFrameMilliseconds", "DroppedEffects", "DroppedLights", "MeetsFrameBudget")), str(script_root / "UnityEnhancedDiagnostics.cs"))
     _check(checks, "Boot router opens and closes Enhanced root", all(token in router_text for token in ("FindFirstObjectByType<UnityEnhancedWorldRoot>", "enhancedRoot.Open(SelectedMode, sessionLease)", "enhancedRoot.Close()")), str(router_path))
