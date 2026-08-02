@@ -5785,6 +5785,16 @@ impl Level2EconomyState {
         for (slot, entity_rng) in reclaimed {
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_children = self
+            .castle_children
+            .iter()
+            .filter(|child| !child.active)
+            .map(|child| (child.source_entity_index, child.entity_rng))
+            .collect::<Vec<_>>();
+        self.castle_children.retain(|child| child.active);
+        for (slot, entity_rng) in reclaimed_children {
+            self.release_slot(slot, Some(entity_rng));
+        }
         if let Some(castle) = self.castle
             && !castle.active
         {
@@ -17346,6 +17356,23 @@ mod tests {
         assert!(
             root_event < child_event,
             "child must be visible on the runagain scan"
+        );
+        let free_before = session.economy().free_slots.len();
+        session
+            .economy_mut()
+            .castle_children
+            .iter_mut()
+            .find(|candidate| candidate.source_entity_index == child.source_entity_index)
+            .expect("same-pass child remains installed")
+            .active = false;
+        session.economy_mut().reclaim_inactive_slots();
+        assert_eq!(session.economy().free_slots.len(), free_before + 1);
+        assert!(
+            session
+                .economy()
+                .castle_children()
+                .iter()
+                .all(|candidate| candidate.source_entity_index != child.source_entity_index)
         );
     }
 
