@@ -20,6 +20,9 @@ from typing import Any, Callable
 PRESENTATION_ROOT = Path(__file__).resolve().parents[1]
 LAB_ROOT = PRESENTATION_ROOT.parent / "remc2-unity-presentation-lab"
 SEQUENCE_ARTIFACT = Path(__file__).with_name("classic-hd-owner-route-sequence-smoke.json")
+PROFILE_960_SEQUENCE_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-route-960x720-sequence-smoke.json"
+)
 PROFILE_960_SEQUENCE_FAILURE_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-route-960x720-sequence-failure.json"
 )
@@ -38,7 +41,12 @@ def _check(checks: list[dict[str, Any]], name: str, passed: bool, detail: str) -
     checks.append({"name": name, "passed": passed, "detail": detail})
 
 
-def validate_sequence_artifact(path: Path = SEQUENCE_ARTIFACT) -> list[str]:
+def validate_sequence_artifact(
+    path: Path = SEQUENCE_ARTIFACT,
+    profile: str = "classic-hd-640x480",
+    width: int = 640,
+    height: int = 480,
+) -> list[str]:
     errors: list[str] = []
     try:
         artifact = json.loads(path.read_text(encoding="utf-8"))
@@ -49,10 +57,10 @@ def validate_sequence_artifact(path: Path = SEQUENCE_ARTIFACT) -> list[str]:
         errors.append("sequence artifact schema_version must be 1")
     if artifact.get("kind") != "classic-hd-owner-route-sequence-smoke/v1":
         errors.append("sequence artifact kind is wrong")
-    if artifact.get("profile") != "classic-hd-640x480":
-        errors.append("sequence artifact must be the qualified 640x480 profile")
-    if artifact.get("internal_width") != 640 or artifact.get("internal_height") != 480:
-        errors.append("sequence artifact extent must be 640x480")
+    if artifact.get("profile") != profile:
+        errors.append(f"sequence artifact must target {profile}")
+    if artifact.get("internal_width") != width or artifact.get("internal_height") != height:
+        errors.append(f"sequence artifact extent must be {width}x{height}")
     if artifact.get("owner_payload_embedded") is not False:
         errors.append("sequence artifact must not embed owner payload")
     if artifact.get("owner_inputs_external") is not True:
@@ -80,6 +88,8 @@ def validate_sequence_artifact(path: Path = SEQUENCE_ARTIFACT) -> list[str]:
         errors.append("sequence artifact must retain all four bounded input phases")
     if "GFX-O" not in str(artifact.get("qualification_status", "")):
         errors.append("sequence artifact must keep the broader GFX-O gate explicit")
+    if artifact.get("failure_reason") is not None:
+        errors.append("sequence artifact contains a failure reason")
     return errors
 
 
@@ -153,7 +163,10 @@ def validate_profile_sequence_failure_artifact(
         if not isinstance(artifact.get(field), str) or not artifact[field]:
             errors.append(f"profile sequence failure artifact is missing {field}")
     status = str(artifact.get("qualification_status", ""))
-    if "not-promoted" not in status or "open" not in status:
+    if "superseded" in status:
+        if not isinstance(artifact.get("superseded_by"), str) or not artifact["superseded_by"]:
+            errors.append("superseded profile sequence failure artifact must name its replacement")
+    elif "not-promoted" not in status or "open" not in status:
         errors.append("profile sequence failure artifact must remain explicitly unpromoted/open")
     return errors
 
@@ -219,6 +232,11 @@ def verify() -> dict[str, Any]:
     _validator_result("isolated Unity presentation lab", lambda: lab.verify(LAB_ROOT), checks)
     _validator_result("Unity Enhanced lifecycle shell", lambda: enhanced.verify(LAB_ROOT), checks)
     _validator_result("owner-bound Classic HD sequence artifact", validate_sequence_artifact, checks)
+    _validator_result(
+        "owner-bound Classic HD 960x720 sequence artifact",
+        lambda: validate_sequence_artifact(PROFILE_960_SEQUENCE_ARTIFACT, "classic-hd-960x720", 960, 720),
+        checks,
+    )
     _validator_result(
         "owner-bound Classic HD 960x720 smoke artifact",
         lambda: validate_profile_smoke_artifact(

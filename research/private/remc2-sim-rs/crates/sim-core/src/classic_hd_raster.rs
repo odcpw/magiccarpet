@@ -15,7 +15,9 @@ use crate::{
         PRIOR_MAIN_PROVENANCE, SOURCE_WORLD_PROVENANCE, TABLESN_BLEND_OFFSET,
         TABLESN_REQUIRED_BYTES,
     },
-    mode5_raster::{Mode5Vertex, rasterize_mode5_triangle_from_atlas},
+    mode5_raster::{
+        Mode5Vertex, rasterize_mode5_triangle_from_atlas, visit_mode5_triangle_from_atlas,
+    },
     mode26_raster::{NIGHT_TABLES_BYTES, rasterize_mode26_triangle_from_atlas_into_framebuffer},
     terrain_reflection::TerrainPass,
 };
@@ -159,6 +161,70 @@ pub fn rasterize_classic_hd_mode5_triangle(
     })
 }
 
+/// Profile-sized mode-5 terrain path that writes samples directly into the
+/// frame writer. The public single-triangle wrapper above intentionally keeps
+/// its existing sample-vector receipt contract; the complete Classic HD
+/// terrain pass does not need to retain every sampled pixel just to replay it
+/// immediately, which is prohibitively expensive at 960x720.
+fn rasterize_classic_hd_mode5_triangle_streaming(
+    writer: &mut ClassicHdFrameWriter<'_>,
+    vertices: [Mode5Vertex; 3],
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    provenance: u8,
+) -> Result<ClassicHdRasterReceipt, ClassicHdRasterError> {
+    validate_writer(writer)?;
+    validate_texture(texture_atlas, texture_base)?;
+    if tablesn.len() != CLASSIC_HD_TABLESN_BYTES {
+        return Err(ClassicHdRasterError(format!(
+            "Classic HD mode-5 TABLESN requires {CLASSIC_HD_TABLESN_BYTES} bytes, got {}",
+            tablesn.len()
+        )));
+    }
+    let width = i32::try_from(writer.width())
+        .map_err(|_| ClassicHdRasterError("Classic HD mode-5 width does not fit i32".to_owned()))?;
+    let height = i32::try_from(writer.height()).map_err(|_| {
+        ClassicHdRasterError("Classic HD mode-5 height does not fit i32".to_owned())
+    })?;
+    let mut source_pixels = 0_u64;
+    let mut written_pixels = 0_u64;
+    let mut clipped_pixels = 0_u64;
+    visit_mode5_triangle_from_atlas(
+        vertices,
+        width,
+        height,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        |pixel| {
+            source_pixels = source_pixels.wrapping_add(1);
+            if writer.set_pixel(
+                pixel.sample.x,
+                pixel.y,
+                pixel.sample.output_index,
+                provenance,
+            ) {
+                written_pixels = written_pixels.wrapping_add(1);
+            } else {
+                clipped_pixels = clipped_pixels.wrapping_add(1);
+            }
+        },
+    );
+    Ok(ClassicHdRasterReceipt {
+        mode5_triangles: 1,
+        mode26_triangles: 0,
+        source_pixels,
+        written_pixels,
+        clipped_pixels,
+        // The complete terrain pass computes its receipt from the final
+        // profile plane. This streaming stage deliberately avoids allocating
+        // a second per-pixel hash buffer.
+        output_hash: 0,
+        provenance_hash: writer_provenance_hash(writer),
+    })
+}
+
 pub fn rasterize_classic_hd_mode26_triangle(
     writer: &mut ClassicHdFrameWriter<'_>,
     vertices: [Mode5Vertex; 3],
@@ -241,6 +307,7 @@ pub fn rasterize_classic_hd_terrain(
     }
     validate_submission_plan(&terrain.submissions, terrain)?;
     let mut receipt = ClassicHdRasterReceipt::empty();
+    let stream_mode5 = writer.width() > 320 || writer.height() > 200;
     for triangle in terrain
         .submissions
         .reflected
@@ -250,6 +317,14 @@ pub fn rasterize_classic_hd_terrain(
         let vertices = triangle_vertices(triangle, terrain)?;
         let texture_base = terrain_texture_base(triangle.texture_index)?;
         let stage = match triangle.raster_selector {
+            5 if stream_mode5 => rasterize_classic_hd_mode5_triangle_streaming(
+                writer,
+                vertices,
+                terrain_atlas,
+                texture_base,
+                &tablesn[..CLASSIC_HD_TABLESN_BYTES],
+                provenance_for(triangle.pass, provenance),
+            )?,
             5 => rasterize_classic_hd_mode5_triangle(
                 writer,
                 vertices,
@@ -797,6 +872,56 @@ mod tests {
         assert_ne!(
             identity.provenance_hash,
             byte_hash(&vec![0; profile.extent()])
+        );
+    }
+
+    #[test]
+    fn profile_mode5_streaming_matches_vector_kernel() {
+        let profile = ClassicHdRenderProfile::hd_640x480();
+        let (texture, tablesn) = tables();
+        let mut vector_buffers = ClassicHdFrameBuffers::new(profile.clone(), 4).unwrap();
+        let mut vector_frame = vector_buffers
+            .begin_frame(4, 0, profile.profile_revision, 9)
+            .unwrap();
+        let vector_receipt = rasterize_classic_hd_mode5_triangle(
+            &mut vector_frame,
+            vertices(),
+            &texture,
+            0,
+            &tablesn[..CLASSIC_HD_TABLESN_BYTES],
+            0x20,
+        )
+        .unwrap();
+        let vector_indices = vector_frame.indices().to_vec();
+        let vector_provenance = vector_frame.provenance().to_vec();
+
+        let mut streaming_buffers = ClassicHdFrameBuffers::new(profile.clone(), 4).unwrap();
+        let mut streaming_frame = streaming_buffers
+            .begin_frame(4, 0, profile.profile_revision, 9)
+            .unwrap();
+        let streaming_receipt = rasterize_classic_hd_mode5_triangle_streaming(
+            &mut streaming_frame,
+            vertices(),
+            &texture,
+            0,
+            &tablesn[..CLASSIC_HD_TABLESN_BYTES],
+            0x20,
+        )
+        .unwrap();
+
+        assert_eq!(streaming_frame.indices(), vector_indices);
+        assert_eq!(streaming_frame.provenance(), vector_provenance);
+        assert_eq!(
+            streaming_receipt.source_pixels,
+            vector_receipt.source_pixels
+        );
+        assert_eq!(
+            streaming_receipt.written_pixels,
+            vector_receipt.written_pixels
+        );
+        assert_eq!(
+            streaming_receipt.clipped_pixels,
+            vector_receipt.clipped_pixels
         );
     }
 

@@ -194,6 +194,35 @@ pub fn rasterize_mode5_triangle_from_atlas(
     texture_base: usize,
     tablesn: &[u8],
 ) -> Vec<Mode5FramePixel> {
+    let mut frame_pixels = Vec::new();
+    visit_mode5_triangle_from_atlas(
+        vertices,
+        viewport_width,
+        viewport_height,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        |pixel| frame_pixels.push(pixel),
+    );
+    frame_pixels
+}
+
+/// Visit complete mode-5 triangle samples without allocating a frame-sized
+/// sample vector. The source traversal and sample order are identical to
+/// [`rasterize_mode5_triangle_from_atlas`]; Classic HD uses this presentation
+/// seam to write directly into its profile-sized frame while retaining the
+/// sealed Exact path's existing vector-returning API.
+pub(crate) fn visit_mode5_triangle_from_atlas<F>(
+    vertices: [Mode5Vertex; 3],
+    viewport_width: i32,
+    viewport_height: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    mut visitor: F,
+) where
+    F: FnMut(Mode5FramePixel),
+{
     assert!(
         viewport_width >= 0,
         "mode-5 viewport width must be non-negative"
@@ -204,28 +233,22 @@ pub fn rasterize_mode5_triangle_from_atlas(
     );
     let Some(setup) = setup_mode5_triangle(vertices[0], vertices[1], vertices[2], viewport_height)
     else {
-        return Vec::new();
+        return;
     };
-    let mut frame_pixels = Vec::new();
     for row in setup.scanlines {
         let Some(span) = span_from_scanline(row, setup.du, setup.dv, setup.dpnt5, viewport_width)
         else {
             continue;
         };
-        let pixels = rasterize_mode5_span_from_atlas(
+        visit_mode5_span_from_atlas(
             span,
             viewport_width,
             texture_atlas,
             texture_base,
             tablesn,
-        );
-        frame_pixels.extend(
-            pixels
-                .into_iter()
-                .map(|sample| Mode5FramePixel { y: row.y, sample }),
+            |sample| visitor(Mode5FramePixel { y: row.y, sample }),
         );
     }
-    frame_pixels
 }
 
 pub(crate) fn span_from_scanline(
@@ -656,6 +679,28 @@ pub fn rasterize_mode5_span_from_atlas(
     texture_base: usize,
     tablesn: &[u8],
 ) -> Vec<Mode5Pixel> {
+    let mut pixels = Vec::new();
+    visit_mode5_span_from_atlas(
+        span,
+        viewport_width,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        |pixel| pixels.push(pixel),
+    );
+    pixels
+}
+
+fn visit_mode5_span_from_atlas<F>(
+    span: Mode5Span,
+    viewport_width: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    mut visitor: F,
+) where
+    F: FnMut(Mode5Pixel),
+{
     assert!(
         texture_base < texture_atlas.len(),
         "mode-5 texture base must point inside its atlas"
@@ -666,7 +711,7 @@ pub fn rasterize_mode5_span_from_atlas(
     let start = span.left_x.max(0);
     let end = span.right_x.min(viewport_width);
     if end <= start {
-        return Vec::new();
+        return;
     }
     let clipped = start.wrapping_sub(span.left_x);
     let mut u = span.left_u.wrapping_add(span.du.wrapping_mul(clipped));
@@ -674,9 +719,6 @@ pub fn rasterize_mode5_span_from_atlas(
     let mut pnt5 = span
         .left_pnt5
         .wrapping_add(span.dpnt5.wrapping_mul(clipped));
-    let mut pixels =
-        Vec::with_capacity(usize::try_from(end - start).expect("positive span width fits usize"));
-
     for x in start..end {
         let texture_address = (u16::from(fixed_byte(v)) << 8) | u16::from(fixed_byte(u));
         let atlas_address = texture_base
@@ -687,7 +729,7 @@ pub fn rasterize_mode5_span_from_atlas(
             .expect("mode-5 stepped texture address remains inside its source atlas");
         let tablesn_address = (u16::from(fixed_byte(pnt5)) << 8) | u16::from(source_index);
         let output_index = tablesn[usize::from(tablesn_address)];
-        pixels.push(Mode5Pixel {
+        visitor(Mode5Pixel {
             x,
             u,
             v,
@@ -701,7 +743,6 @@ pub fn rasterize_mode5_span_from_atlas(
         v = v.wrapping_add(span.dv);
         pnt5 = pnt5.wrapping_add(span.dpnt5);
     }
-    pixels
 }
 
 const fn fixed_byte(value: i32) -> u8 {

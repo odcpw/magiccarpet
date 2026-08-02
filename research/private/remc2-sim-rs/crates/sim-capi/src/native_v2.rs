@@ -3329,6 +3329,8 @@ impl SessionRecord {
         input_hash: u64,
         history_hash: u64,
     ) -> Result<ClassicHdWorldReceipt, ClassicHdGraphError> {
+        let profile_trace = std::env::var_os("MC_CLASSIC_HD_PROFILE_TRACE").is_some();
+        let render_started = std::time::Instant::now();
         let assets = Arc::clone(self.terrain_frame_assets.as_ref().ok_or_else(|| {
             ClassicHdGraphError(
                 "Classic HD owner render requires MC_ASSET_CACHE_PATH assets".to_owned(),
@@ -3338,6 +3340,7 @@ impl SessionRecord {
             .source_render_inputs(false)
             .map_err(|error| ClassicHdGraphError(error.message))?;
 
+        let terrain_build_started = std::time::Instant::now();
         let terrain = {
             let planes = self.terrain.planes();
             build_classic_hd_terrain(
@@ -3354,6 +3357,16 @@ impl SessionRecord {
             )
             .map_err(|error| ClassicHdGraphError(error.to_string()))?
         };
+        if profile_trace {
+            eprintln!(
+                "[CLASSIC HD TRACE] profile={} terrain_build_ms={} lattice_vertices={} submissions_reflected={} submissions_primary={}",
+                profile.id.as_str(),
+                terrain_build_started.elapsed().as_millis(),
+                terrain.lattice.vertex_count(),
+                terrain.submissions.reflected.len(),
+                terrain.submissions.primary.len(),
+            );
+        }
         let mut writer = ClassicHdFrameWriter::from_planes(
             profile,
             indices,
@@ -3366,7 +3379,8 @@ impl SessionRecord {
         .map_err(ClassicHdGraphError::from)?;
         writer.indices_mut().copy_from_slice(&terrain.sky);
         writer.provenance_mut().fill(0x01);
-        rasterize_classic_hd_terrain(
+        let terrain_raster_started = std::time::Instant::now();
+        let terrain_receipt = rasterize_classic_hd_terrain(
             &mut writer,
             &terrain,
             &assets.terrain_atlas,
@@ -3374,7 +3388,25 @@ impl SessionRecord {
             0x10,
         )
         .map_err(|error| ClassicHdGraphError(error.to_string()))?;
+        if profile_trace {
+            eprintln!(
+                "[CLASSIC HD TRACE] profile={} terrain_raster_ms={} index_hash={:016x}",
+                profile.id.as_str(),
+                terrain_raster_started.elapsed().as_millis(),
+                byte_hash(writer.indices()),
+            );
+            eprintln!(
+                "[CLASSIC HD TRACE] profile={} mode5_triangles={} mode26_triangles={} terrain_source_pixels={} terrain_written_pixels={} terrain_clipped_pixels={}",
+                profile.id.as_str(),
+                terrain_receipt.mode5_triangles,
+                terrain_receipt.mode26_triangles,
+                terrain_receipt.source_pixels,
+                terrain_receipt.written_pixels,
+                terrain_receipt.clipped_pixels,
+            );
+        }
 
+        let disposition_started = std::time::Instant::now();
         let dispositions = self
             .source_sprite_dispositions()
             .map_err(|error| ClassicHdGraphError(error.message))?;
@@ -3400,6 +3432,16 @@ impl SessionRecord {
         if let Err(error) = plan_result {
             self.classic_hd_sprite_plan = Some(plan);
             return Err(ClassicHdGraphError(error.to_string()));
+        }
+        if profile_trace {
+            eprintln!(
+                "[CLASSIC HD TRACE] profile={} dispositions={} sprite_plan_primary={} sprite_plan_legacy={} disposition_plan_ms={}",
+                profile.id.as_str(),
+                dispositions.len(),
+                plan.primary.len(),
+                plan.legacy.len(),
+                disposition_started.elapsed().as_millis(),
+            );
         }
 
         let tmap_clocks = self.selector_frames.as_ref().ok_or_else(|| {
@@ -3434,6 +3476,7 @@ impl SessionRecord {
             viewport_width: terrain_projection.viewport_width,
             viewport_height: terrain_projection.viewport_height,
         };
+        let sprite_raster_started = std::time::Instant::now();
         let sprite_receipt = match raster_level1_source_world_sprites(
             inputs.camera,
             projection,
@@ -3490,6 +3533,18 @@ impl SessionRecord {
                 return Err(ClassicHdGraphError(error.to_string()));
             }
         };
+        if profile_trace {
+            eprintln!(
+                "[CLASSIC HD TRACE] profile={} sprite_raster_ms={} primary_candidates={} primary_writes={} reflected_candidates={} shadow_candidates={} total_ms={}",
+                profile.id.as_str(),
+                sprite_raster_started.elapsed().as_millis(),
+                sprite_receipt.primary.candidate_pixels,
+                sprite_receipt.primary.framebuffer_writes,
+                sprite_receipt.reflected.candidate_pixels,
+                sprite_receipt.shadows.candidate_pixels,
+                render_started.elapsed().as_millis(),
+            );
+        }
 
         let receipt = ClassicHdWorldReceipt {
             world_hash: byte_hash(writer.indices()),
