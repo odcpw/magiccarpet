@@ -63,5 +63,25 @@ namespace MagicCarpet.Native.Tests
             var reset = session.WorldInfo();
             Assert.That(reset.resetStateHash, Is.EqualTo(initial.resetStateHash));
         }
+
+        [Test]
+        public void Level2CampaignGoatDispatchIsReachableFromManagedSession()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+
+            var stepped = session.Step(123, 456, 7);
+            var goatEvents = stepped.events
+                .Where(eventRow => eventRow.kind == NativeSim.CampaignEventGoat)
+                .ToArray();
+
+            Assert.That(goatEvents, Is.Not.Empty);
+            Assert.That(goatEvents.Select(eventRow => eventRow.sourceSlot), Does.Contain(39));
+            Assert.That(goatEvents.Select(eventRow => eventRow.sourceSlot), Does.Contain(71));
+            Assert.That(
+                goatEvents.All(eventRow =>
+                    eventRow.abiVersion == NativeSim.AbiVersion &&
+                    eventRow.generation == stepped.snapshot.generation),
+                Is.True);
+        }
     }
 }
