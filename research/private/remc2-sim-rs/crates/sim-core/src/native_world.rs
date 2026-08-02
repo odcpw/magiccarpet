@@ -33,7 +33,9 @@ use crate::{
         GOAT_TMAP_SELECTORS, GOAT_TMAP_STATE_COUNT, GoatTmapBank, GoatTmapClocks, GoatTmapFrame,
         GoatTmapSelectorBank,
     },
-    house::{HOUSE_CLASS, HOUSE_MODEL, HouseResidentEntry, HouseState, HouseStepEvent},
+    house::{
+        HOUSE_CLASS, HOUSE_MODEL, HouseFamily, HouseResidentEntry, HouseState, HouseStepEvent,
+    },
     latch_command_with_context,
     legacy_terrain::{
         LEGACY_MAP_CELLS, LegacyTerrain, interpolate_cave, interpolate_ground, material_mask,
@@ -79,8 +81,8 @@ use crate::{
         TerrainFrameError, render_level1_source_world_frame,
     },
     villager::{
-        LEVEL_ONE_VILLAGER_INDICES, VILLAGER_CLASS, VILLAGER_MODEL, VillagerBehaviorConfig,
-        VillagerState,
+        LEVEL_ONE_VILLAGER_INDICES, LEVEL_TWO_VILLAGER_INDICES, VILLAGER_CLASS, VILLAGER_MODEL,
+        VillagerBehaviorConfig, VillagerFamily, VillagerState, VillagerStepEffect,
     },
 };
 
@@ -161,6 +163,69 @@ const LEVEL2_BAD_STONE_RECORD_SHA256: [&str; 4] = [
     "147ee088b9bc5a93ad82e4a9f6436f027091d818e2a2485edb4e244453fecc83",
     "172814a4c5b93c5fb8540f91b8b7f40ab7cb02fc91c21ef5b6e97e8e92035e5f",
     "21c50f0a7f1e9156c3ae57fd0e214e6320006ca7bb6eae34f481e344a9319061",
+];
+
+const LEVEL2_ORDINARY_HOUSE_RECORD_SHA256: [&str; 22] = [
+    "c18a15cda8a0d674648dc7eb0df7f921f61d5d2e1c07ec4ea60f0cff69922b92",
+    "0de741297215d8de3046d6cb63fcbba39ccf4e9da14d9d1a0e81dbaa644f457f",
+    "8aac3cd14373a44912391d9f20f867dd4851849173d9530f7ed187718b3747a6",
+    "f28b58ec7dae4ef1499dbb5f924d68b6d881a870bf674229f93b12aad6f73b49",
+    "76bf6b491295f8815ab164e39af98cf75850f8bfac52d9bc2933e86da79c2a79",
+    "91b1871e5e31d372a56328cfa2ecbf7114ba4f1e931535dd145194e03130f234",
+    "2272f0ad71524772987a58544931dcf037c26e1e17cc7f1beb8834c1e4c632f1",
+    "e526ba68df84cf0a27a11e8bdecf41f25c63169aad63b3cc36053c1a987e931f",
+    "506567c3bfb1936694f0e37c8ad3a83e31c8647566fa11decfbdc082a9e7ab7c",
+    "d633a7660c7340481cd9af843990a8a7e97714c9687301043023140baeee6721",
+    "0c904b9383f3e409c0594470709d0373ab1606127582a70360fc175da752668a",
+    "2218af53c8806f059a0fab1168ceb0ffe7f9360661110613e7ff7f40a91f62c2",
+    "ca4b9ee15eb6a6f1554d35dc96bb838c03a6ea9e2d4e0dfa3d25b898c61c0776",
+    "fd5e90df8902404479bdae6354216135678e863474b4cf73430ee5f8f967c5e2",
+    "f4f0f614ad6178f487854c1d89fe3c29d55af40651d430161a5ab8dc8eea2594",
+    "406a79107fc302225b693953e42dc853f49673034cb089a777dcba2718e81d11",
+    "3c97eb8c19ed1b7b10dcd85cbf988db063a652cb3f3ab60459ad3c2b923d5157",
+    "c5577525a9345ed2fc507e93d49ef2d5360d8df5909c159556a6015440581d20",
+    "4a26529ae45598edc8aea39fed684c2f685d0217e0cf895c9cf31cf79e63e2c1",
+    "6e04bf521a6ced114befb2073c8e62cfa4897e3bbf7d4106ab59331a4ba2efde",
+    "e9a9a5db3696c71747531793a5549b8cb4d2a32dd7e85493de26687fdc988c87",
+    "69664a826be13739182b48d6d5f2ca3f5439bf35d51646745523448edad6d898",
+];
+
+const LEVEL2_ORDINARY_VILLAGER_RECORD_SHA256: [&str; 29] = [
+    "5eaf19bb26cc786fad37414c043f49e5baeb3c42c1de4422ce43e5847aaff366",
+    "7b3a3af48d529ac7541f2961efc92d6adb93b5b50e116e0d2683d1f787ff1247",
+    "abc36c18ca3e419dbf8ac380494ee1e093a951830b65a2008338adc408097625",
+    "2962d9152c9ff3b5a93d0cc9cdb112ea6846e447a8cf953065a618efb4dd6818",
+    "b1dda94eec7184f7484e976f2997d3825483e67f99e5549d25ed90d3a60ddbb6",
+    "922570b0abf464c6d94a8fe3e8d2335893ba0df8dd5362f51a195781b28ac5ca",
+    "6801a632eef06a308feee48394575ff974cd5094555d5a9356b2dc8a68b40234",
+    "3db6ad7168f323bb5553af914e2501e0cf137c5a241e8ebbc76d2f4455cee0ce",
+    "45da323dc731bae8b8588f0dbdaf28645d3ae2b3b5be75c1feb15bc04e4c9a80",
+    "1f68249aa347bb743c45b6e2b53cb866a2d573e32e22955f982612e94ee26947",
+    "0a6bbe8dab70230bbd6b3ae023f45a85cce5b9b7dee4b45eff66c25768ac11ba",
+    "b6133f1ff436d642cec62e364d9aeb87f81a5794052917e0d9f4e84a563d64b2",
+    "c6349b6aa8f337fc66a7715af0181f38e693e285bb2fb3925b6286ccfa0bdf7c",
+    "4391697e3193dc69edd2208b254d8e33ee58f5314a28bd0420e6429f7d28b0e0",
+    "58eb04566387afe262bd8e8867e0a96c9035366653d49fe54f0ef05189929451",
+    "f1026ec007f6679695a9a363fa4b2c0cfb1dc72acd10e23210462f2626dafa4f",
+    "ee22af7dcb28748ef63d232be16cd54d8bb319a981000300ce0cd5442680e0dc",
+    "ba03bea4caac070c9c0a72d11dbb0a612ef16367f5273350bb17fd70ed50d3bf",
+    "6fb2d85d5d2f0a714aa50570e7ead27e452c319e80f6a4437d6cbd59b081f512",
+    "7bd726325fb6988cbbdd627f40e450f3ad8a4c2d4346eb17b56ddf3424109fe8",
+    "5a51e57d93609a924a9a79a12f5603e760f5471b5532d704d8f25dc08e06d9b2",
+    "3afef4044a9e00ecdef3af98587d1186e42546393d490a7226f2d028e5b037cb",
+    "72be5a854c180229be7c6aae00da8de1a0e9326fc7e55b4a8619926037dac26f",
+    "730cf4692a67708ece6d1259a6e27fe51e2eb1b742237bf456c3c083e594c975",
+    "022802548c2956a12a42ea129acdc28835bd27cc55e61572efeeada84f82be18",
+    "383cfb2204a5e06ff84678c68affe46623698dae9b6b05a68126ea3704f4fed7",
+    "30f6e38715e5b31c5fa1e8cfb9f65077a6a4fa555409571e3890da085f88e864",
+    "e6e2b04784e7849b7ac96285dea904d22b42e89507db49596e77719f53606727",
+    "1f2a1b75e71cbee293924b8507555cbb16aa7efb8d9fed6d0277d3d03ff22a9a",
+];
+
+const LEVEL2_DOLMEN_RECORD_SHA256: [&str; 3] = [
+    "bb1e5fdfa35988c38152a238e0e1b75eb42a1ac975900351049909bfea3aabc1",
+    "ce0ebe5e166f69eb59a0f391709e6c55fabc9ffbb0212a392dafafffb9f9f2f3",
+    "f15617fce90097aab627b8149ec1b5f71b1ab4ea3d03ce690ae74762ffbd4e98",
 ];
 
 const PACKAGE_MEMBERS: [(&str, usize); 6] = [
@@ -586,6 +651,133 @@ impl Level2BadStone {
         self.entity.phase = self.entity.phase.wrapping_add(1);
         self.entity.record[66] = self.entity.phase;
         Level2BadStoneStep {
+            source_slot: self.entity.index,
+            previous_position,
+            position: self.entity.position,
+            previous_control_flags,
+            control_flags: self.entity.control_flags,
+            previous_phase,
+            phase: self.entity.phase,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.entity = self.baseline.clone();
+    }
+}
+
+/// One Level 2 class-2/model-2/action-6 dolmen.  `sub_4ADF0` installs the
+/// same map-linked constructor state as the bad-stone family, while
+/// `AddDolmen02_02_65080` marks player proximity and snaps the entity to the
+/// shared terrain altitude.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Level2Dolmen {
+    baseline: EntitySnapshot,
+    entity: EntitySnapshot,
+    map_cell: (u8, u8),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2DolmenStep {
+    pub source_slot: u16,
+    pub previous_position: Position,
+    pub position: Position,
+    pub previous_control_flags: u32,
+    pub control_flags: u32,
+    pub previous_phase: u8,
+    pub phase: u8,
+}
+
+fn level2_source_intersects(left: &EntitySnapshot, right: &EntitySnapshot) -> bool {
+    let i16_at = |entity: &EntitySnapshot, offset: usize| {
+        i16::from_le_bytes([entity.record[offset], entity.record[offset + 1]])
+    };
+    let dx = i32::from(right.position.x.wrapping_sub(left.position.x).cast_signed());
+    let dy = i32::from(right.position.y.wrapping_sub(left.position.y).cast_signed());
+    let dz = i32::from(left.position.z) + i32::from(i16_at(left, 90))
+        - i32::from(right.position.z)
+        - i32::from(i16_at(right, 90));
+    dx.abs() < i32::from(i16_at(left, 86)) + i32::from(i16_at(right, 86))
+        && dy.abs() < i32::from(i16_at(left, 88)) + i32::from(i16_at(right, 88))
+        && dz.abs() < i32::from(i16_at(left, 92)) + i32::from(i16_at(right, 92))
+}
+
+impl Level2Dolmen {
+    fn from_entity(entity: &EntitySnapshot, planes: &TerrainPlanes) -> Result<Self> {
+        let Some(ordinal) = [108_u16, 109, 110]
+            .iter()
+            .position(|slot| *slot == entity.index)
+        else {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 dolmen source slot {} is not one of 108..=110",
+                entity.index
+            )));
+        };
+        if !entity.active
+            || entity.class != 2
+            || entity.model != 2
+            || entity.action != 6
+            || entity.max_life != 300
+            || entity.life != 300
+            || entity.actual_speed != 16
+            || entity.source_word_10() != entity.index % 11
+            || entity.control_flags & 4 == 0
+            || entity.particle_parameter_index != Some(39)
+            || entity.parameter_relation != Some(59)
+            || entity.special_relation != EntitySpecialRelation::GlobalSpecialState
+            || entity.old_map_entity() != 0
+            || entity.next_entity() != 0
+        {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 dolmen {} constructor fields do not match pinned sub_4ADF0",
+                entity.index
+            )));
+        }
+        let map_cell = (
+            (entity.position.x >> 8) as u8,
+            (entity.position.y >> 8) as u8,
+        );
+        if planes.entity_indices[terrain_index(map_cell.0, map_cell.1)] != entity.index as i16 {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 dolmen {} is not the head of its authored terrain map cell",
+                entity.index
+            )));
+        }
+        let record_hash = sha256_hex(entity.record_bytes());
+        if record_hash != LEVEL2_DOLMEN_RECORD_SHA256[ordinal] {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 dolmen {} record hash changed: {record_hash}",
+                entity.index
+            )));
+        }
+        Ok(Self {
+            baseline: entity.clone(),
+            entity: entity.clone(),
+            map_cell,
+        })
+    }
+
+    #[must_use]
+    pub fn entity(&self) -> &EntitySnapshot {
+        &self.entity
+    }
+
+    #[must_use]
+    pub const fn map_cell(&self) -> (u8, u8) {
+        self.map_cell
+    }
+
+    /// Apply `AddDolmen02_02_65080`: the source mutates a nearby player
+    /// entity's byte-1 interaction flag, then only snaps the dolmen Z to the
+    /// shared terrain altitude.  It does not advance the dolmen phase or set
+    /// any dolmen control bit.
+    pub fn step_action_6(&mut self, terrain: &SessionTerrain) -> Level2DolmenStep {
+        let previous_position = self.entity.position;
+        let previous_control_flags = self.entity.control_flags;
+        let previous_phase = self.entity.phase;
+        self.entity.position.z = FlightWorld::ground_height(terrain, self.entity.position);
+        self.entity.record[84..86].copy_from_slice(&self.entity.position.z.to_le_bytes());
+        Level2DolmenStep {
             source_slot: self.entity.index,
             previous_position,
             position: self.entity.position,
@@ -2324,6 +2516,12 @@ impl NativeWorldInspection {
             .ok_or_else(|| NativeWorldError::new("validated Level 2 package has no reset state"))?;
         let mission = self.mission_content_template()?.session();
         let bad_stones = level2_bad_stones(&self.entities, &self.terrain_planes)?;
+        let ordinary = Level2OrdinaryResetSession::from_parts(
+            SessionTerrain::from_inspection(self),
+            self.entities.clone(),
+            self.players.clone(),
+            self.presentation.clone(),
+        )?;
         Ok(Level2ResetSession::new(
             self.metadata.map_type.profile(),
             state,
@@ -2333,6 +2531,7 @@ impl NativeWorldInspection {
             self.runtime.clone(),
             self.presentation.clone(),
             bad_stones,
+            ordinary,
             mission,
         ))
     }
@@ -2345,6 +2544,379 @@ impl NativeWorldInspection {
             self.profile
         )))
     }
+}
+
+/// Production Level 2 reset projection for the ordinary resident/static
+/// families.  It owns the shared `HouseFamily`/`VillagerFamily` behavior and
+/// the three typed dolmens; no Level 1 slot assumptions are consulted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Level2OrdinaryResetSession {
+    baseline_terrain: SessionTerrain,
+    pub terrain: SessionTerrain,
+    baseline_houses: HouseFamily,
+    houses: HouseFamily,
+    baseline_villagers: VillagerFamily,
+    villagers: VillagerFamily,
+    baseline_dolmens: Box<[Level2Dolmen]>,
+    dolmens: Box<[Level2Dolmen]>,
+    baseline_players: Box<[EntitySnapshot]>,
+    players: Box<[EntitySnapshot]>,
+}
+
+impl Level2OrdinaryResetSession {
+    fn from_parts(
+        terrain: SessionTerrain,
+        entities: Box<[EntitySnapshot]>,
+        players: Box<[PlayerSnapshot]>,
+        presentation: PresentationSelectors,
+    ) -> Result<Self> {
+        let houses =
+            HouseFamily::from_level_two_entities(&entities).map_err(NativeWorldError::new)?;
+        let villager_config = VillagerBehaviorConfig::from_parameter_record(
+            presentation.entity_parameters.get(100).ok_or_else(|| {
+                NativeWorldError::new("missing Level 2 villager parameter row 101")
+            })?,
+        )
+        .map_err(NativeWorldError::new)?;
+        if villager_config != VillagerBehaviorConfig::LEVEL_TWO {
+            return Err(NativeWorldError::new(
+                "Level 2 villager parameter row 101 does not match the shared movement config",
+            ));
+        }
+        let villagers = VillagerFamily::from_level_two_entities(&entities, villager_config)
+            .map_err(NativeWorldError::new)?;
+        let dolmens = [108_u16, 109, 110]
+            .iter()
+            .map(|slot| {
+                Level2Dolmen::from_entity(
+                    entities.get(usize::from(*slot)).ok_or_else(|| {
+                        NativeWorldError::new(format!("missing Level 2 dolmen {slot}"))
+                    })?,
+                    terrain.planes(),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_boxed_slice();
+        validate_level2_ordinary_census(&entities, &presentation)?;
+        let player_entities = players
+            .iter()
+            .filter_map(|player| entities.get(usize::from(player.entity_index)))
+            .filter(|entity| entity.active)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        Ok(Self {
+            baseline_terrain: terrain.clone(),
+            terrain,
+            baseline_houses: houses.clone(),
+            houses,
+            baseline_villagers: villagers.clone(),
+            villagers,
+            baseline_dolmens: dolmens.clone(),
+            dolmens,
+            baseline_players: player_entities.clone(),
+            players: player_entities,
+        })
+    }
+
+    #[must_use]
+    pub fn houses(&self) -> &[HouseState] {
+        self.houses.houses()
+    }
+
+    #[must_use]
+    pub fn villagers(&self) -> &[VillagerState] {
+        self.villagers.villagers()
+    }
+
+    #[must_use]
+    pub fn dolmens(&self) -> &[Level2Dolmen] {
+        &self.dolmens
+    }
+
+    #[must_use]
+    pub fn player_interaction_flags(&self) -> Vec<(u16, u32)> {
+        self.players
+            .iter()
+            .map(|entity| (entity.index, entity.control_flags))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn reset_hash(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(REMC2_SPEC_COMMIT.as_bytes());
+        hasher
+            .update(format!("{:?}{:?}{:?}", self.houses, self.villagers, self.dolmens).as_bytes());
+        for entity in &self.players {
+            hasher.update(entity.record_bytes());
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
+    pub fn step_house_action_52(&mut self, source_slot: u16) -> Vec<HouseStepEvent> {
+        self.houses.step_source_slot(source_slot, &self.terrain)
+    }
+
+    pub fn step_villager_action_105(&mut self, source_slot: u16) -> Vec<VillagerStepEffect> {
+        let mut source_views = self
+            .houses
+            .houses()
+            .iter()
+            .map(house_source_entity_view)
+            .chain(
+                self.villagers
+                    .villagers()
+                    .iter()
+                    .map(villager_source_entity_view),
+            )
+            .collect::<Vec<_>>();
+        source_views.sort_unstable_by_key(|view| view.source_entity_index);
+        self.villagers
+            .step_source_slot(source_slot, &self.terrain, &source_views, &mut self.houses)
+    }
+
+    pub fn inject_house_damage(
+        &mut self,
+        source_slot: u16,
+        damage: i32,
+        attacker: i16,
+    ) -> Result<()> {
+        self.houses
+            .inject_damage(source_slot, damage, attacker)
+            .map_err(NativeWorldError::new)
+    }
+
+    pub fn inject_villager_damage(
+        &mut self,
+        source_slot: u16,
+        damage: i32,
+        attacker: i16,
+    ) -> Result<()> {
+        self.villagers
+            .inject_damage(source_slot, damage, attacker)
+            .map_err(NativeWorldError::new)
+    }
+
+    pub fn step_dolmen_action_6(&mut self, source_slot: u16) -> Result<Level2DolmenStep> {
+        let index = self
+            .dolmens
+            .iter()
+            .position(|dolmen| dolmen.entity.index == source_slot)
+            .ok_or_else(|| {
+                NativeWorldError::new(format!("unknown Level 2 dolmen {source_slot}"))
+            })?;
+        let dolmen_entity = self.dolmens[index].entity.clone();
+        for player in &mut self.players {
+            if player.active && player.life >= 0 && level2_source_intersects(&dolmen_entity, player)
+            {
+                player.record[17] |= 0x10;
+                player.control_flags = u32::from_le_bytes([
+                    player.record[16],
+                    player.record[17],
+                    player.record[18],
+                    player.record[19],
+                ]);
+            }
+        }
+        Ok(self.dolmens[index].step_action_6(&self.terrain))
+    }
+
+    pub fn reset(&mut self) {
+        self.terrain = self.baseline_terrain.clone();
+        self.houses = self.baseline_houses.clone();
+        self.villagers = self.baseline_villagers.clone();
+        self.dolmens = self.baseline_dolmens.clone();
+        self.players = self.baseline_players.clone();
+    }
+}
+
+fn validate_level2_ordinary_census(
+    entities: &[EntitySnapshot],
+    presentation: &PresentationSelectors,
+) -> Result<()> {
+    const PARAMETER_59: [u8; ENTITY_PARAMETER_BYTES] = [
+        0, 0, 56, 0, 5, 0, 22, 0, 5, 0, 0, 7, 0, 0, 252, 255, 0, 1, 0, 2, 255, 255, 255, 255, 0,
+        12, 50, 0, 0, 16, 0, 2, 0, 0,
+    ];
+    const PARAMETER_100: [u8; ENTITY_PARAMETER_BYTES] = [
+        41, 0, 22, 0, 5, 0, 22, 0, 5, 0, 0, 1, 0, 0, 0, 255, 15, 0, 0, 2, 254, 254, 255, 255, 0, 9,
+        40, 0, 0, 14, 0, 2, 9, 0,
+    ];
+    if presentation.entity_parameters.get(59) != Some(&PARAMETER_59)
+        || presentation.entity_parameters.get(100) != Some(&PARAMETER_100)
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 ordinary resident/static parameter rows changed",
+        ));
+    }
+    let particle = |index: u16| presentation.particles.get(usize::from(index)).copied();
+    if particle(177)
+        != Some(ParticleParameter {
+            base_tmap: 96,
+            word_2: 8492,
+            word_4: 42,
+            speed: 389,
+            rotation_speed: 400,
+            byte_10: 0,
+            byte_11: -1,
+            render_mode: 0,
+            byte_13: 0,
+        })
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 ordinary house particle row 177 changed",
+        ));
+    }
+    if presentation.level_sprite_selectors.get(96) != Some(&255) {
+        return Err(NativeWorldError::new(
+            "Level 2 ordinary house particle selector 96 changed",
+        ));
+    }
+    let expected_particles = [
+        (
+            39_u16,
+            ParticleParameter {
+                base_tmap: 79,
+                word_2: 8492,
+                word_4: 42,
+                speed: 666,
+                rotation_speed: 400,
+                byte_10: 0,
+                byte_11: 1,
+                render_mode: 0,
+                byte_13: 0,
+            },
+            0_u8,
+        ),
+        (
+            239,
+            ParticleParameter {
+                base_tmap: 155,
+                word_2: 8492,
+                word_4: 42,
+                speed: 90,
+                rotation_speed: 200,
+                byte_10: 0,
+                byte_11: -1,
+                render_mode: 20,
+                byte_13: 0,
+            },
+            255,
+        ),
+        (
+            241,
+            ParticleParameter {
+                base_tmap: 180,
+                word_2: 8492,
+                word_4: 42,
+                speed: 116,
+                rotation_speed: 250,
+                byte_10: 0,
+                byte_11: -1,
+                render_mode: 20,
+                byte_13: 0,
+            },
+            255,
+        ),
+        (
+            242,
+            ParticleParameter {
+                base_tmap: 183,
+                word_2: 8492,
+                word_4: 42,
+                speed: 116,
+                rotation_speed: 250,
+                byte_10: 0,
+                byte_11: -1,
+                render_mode: 20,
+                byte_13: 0,
+            },
+            255,
+        ),
+        (
+            271,
+            ParticleParameter {
+                base_tmap: 199,
+                word_2: 8492,
+                word_4: 42,
+                speed: 96,
+                rotation_speed: 300,
+                byte_10: 0,
+                byte_11: -1,
+                render_mode: 20,
+                byte_13: 0,
+            },
+            255,
+        ),
+    ];
+    for (index, expected, selector) in expected_particles {
+        if particle(index) != Some(expected)
+            || presentation
+                .level_sprite_selectors
+                .get(usize::from(expected.base_tmap))
+                != Some(&selector)
+        {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 ordinary presentation particle {index} changed"
+            )));
+        }
+    }
+    for (ordinal, index) in (1_u16..=22).enumerate() {
+        let entity = entities
+            .get(usize::from(index))
+            .ok_or_else(|| NativeWorldError::new(format!("missing Level 2 house {index}")))?;
+        if !entity.active
+            || entity.class != 10
+            || entity.model != 45
+            || entity.action != 52
+            || entity.source_word_10() != 2
+            || entity.control_flags != 0x0000_000d
+            || entity.particle_parameter_index != Some(177)
+            || entity.parameter_relation != Some(59)
+            || entity.special_relation != EntitySpecialRelation::GlobalSpecialState
+            || entity.old_map_entity() != 0
+            || entity.next_entity() != 0
+            || sha256_hex(entity.record_bytes()) != LEVEL2_ORDINARY_HOUSE_RECORD_SHA256[ordinal]
+        {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 ordinary house census row {index} changed"
+            )));
+        }
+    }
+    for (ordinal, index) in LEVEL_TWO_VILLAGER_INDICES.iter().copied().enumerate() {
+        let entity = entities
+            .get(usize::from(index))
+            .ok_or_else(|| NativeWorldError::new(format!("missing Level 2 villager {index}")))?;
+        let expected_links = match index {
+            77 => (0, 105),
+            105 => (77, 0),
+            97 => (0, 106),
+            106 => (97, 0),
+            _ => (0, 0),
+        };
+        let census_mismatch = !entity.active
+            || entity.class != 5
+            || entity.model != 13
+            || entity.action != 105
+            || entity.source_word_10() != 2
+            || entity.control_flags != 0x0000_000c
+            || entity.max_life != 1_000
+            || entity.life != 1_000
+            || entity.actual_speed != if index == 77 { 30 } else { 18 }
+            || entity.parameter_relation != Some(100)
+            || entity.special_relation != EntitySpecialRelation::GlobalSpecialState
+            || entity.old_map_entity() != expected_links.0
+            || entity.next_entity() != expected_links.1
+            || !matches!(entity.particle_parameter_index, Some(239 | 241 | 242 | 271))
+            || sha256_hex(entity.record_bytes()) != LEVEL2_ORDINARY_VILLAGER_RECORD_SHA256[ordinal];
+        if census_mismatch {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 ordinary villager census row {index} changed"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Mutable Level 2 frame-zero state used by the generic flight machinery.
@@ -2364,6 +2936,7 @@ pub struct Level2ResetSession {
     presentation: PresentationSelectors,
     baseline_bad_stones: Box<[Level2BadStone]>,
     bad_stones: Box<[Level2BadStone]>,
+    ordinary: Level2OrdinaryResetSession,
     mission: MissionContentSession,
 }
 
@@ -2377,6 +2950,7 @@ impl Level2ResetSession {
         runtime: RuntimeSnapshot,
         presentation: PresentationSelectors,
         bad_stones: Box<[Level2BadStone]>,
+        ordinary: Level2OrdinaryResetSession,
         mission: MissionContentSession,
     ) -> Self {
         // Pinned `sub_56D60` reset order (6806c7204d17):
@@ -2408,6 +2982,7 @@ impl Level2ResetSession {
             presentation,
             baseline_bad_stones: bad_stones.clone(),
             bad_stones,
+            ordinary,
             mission,
         }
     }
@@ -2435,6 +3010,16 @@ impl Level2ResetSession {
     #[must_use]
     pub fn bad_stones(&self) -> &[Level2BadStone] {
         &self.bad_stones
+    }
+
+    #[must_use]
+    pub fn ordinary(&self) -> &Level2OrdinaryResetSession {
+        &self.ordinary
+    }
+
+    #[must_use]
+    pub fn ordinary_mut(&mut self) -> &mut Level2OrdinaryResetSession {
+        &mut self.ordinary
     }
 
     #[must_use]
@@ -2548,6 +3133,7 @@ impl Level2ResetSession {
         self.terrain = self.baseline_terrain.clone();
         self.context = self.baseline_context.clone();
         self.bad_stones.clone_from(&self.baseline_bad_stones);
+        self.ordinary.reset();
         self.mission.reset();
     }
 }
@@ -8234,6 +8820,169 @@ mod tests {
         assert!(Level2BadStone::from_entity(&wrong_parameter, planes).is_err());
         let dolmen = inspection.entities()[108].clone();
         assert!(Level2BadStone::from_entity(&dolmen, planes).is_err());
+    }
+
+    #[test]
+    fn level_two_ordinary_reset_binds_census_shared_lifecycle_and_isolation() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut first = inspection
+            .level2_reset_session()
+            .expect("Level 2 ordinary reset session");
+        let second = inspection
+            .level2_reset_session()
+            .expect("independent Level 2 ordinary reset session");
+        assert_eq!(first.ordinary().houses().len(), 22);
+        assert_eq!(first.ordinary().villagers().len(), 29);
+        assert_eq!(first.ordinary().dolmens().len(), 3);
+        assert_eq!(
+            first
+                .ordinary()
+                .villagers()
+                .iter()
+                .map(|villager| villager.entity_index)
+                .collect::<Vec<_>>(),
+            LEVEL_TWO_VILLAGER_INDICES
+        );
+        let baseline_hash = first.ordinary().reset_hash();
+        assert_eq!(baseline_hash, second.ordinary().reset_hash());
+
+        let house_phase = first.ordinary().houses()[0].phase;
+        assert!(first.ordinary_mut().step_house_action_52(1).is_empty());
+        assert_eq!(
+            first.ordinary().houses()[0].phase,
+            house_phase.wrapping_add(1)
+        );
+        first
+            .ordinary_mut()
+            .inject_house_damage(1, 1, 111)
+            .expect("house damage mailbox");
+        assert!(
+            first
+                .ordinary_mut()
+                .step_house_action_52(1)
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    HouseStepEvent::Damaged {
+                        entity_index: 1,
+                        ..
+                    }
+                ))
+        );
+
+        let villager_phase = first.ordinary().villagers()[0].phase;
+        assert!(first.ordinary_mut().step_villager_action_105(77).is_empty());
+        assert_eq!(
+            first.ordinary().villagers()[0].phase,
+            villager_phase.wrapping_add(1)
+        );
+        first
+            .ordinary_mut()
+            .inject_villager_damage(77, 2_000, 111)
+            .expect("villager damage mailbox");
+        first.ordinary_mut().step_villager_action_105(77);
+        assert_eq!(first.ordinary().villagers()[0].action, 108);
+        first.ordinary_mut().step_villager_action_105(77);
+        assert!(!first.ordinary().villagers()[0].active);
+        assert_ne!(
+            first.ordinary().villagers()[0].control_flags & 0x0000_0400,
+            0
+        );
+
+        let dolmen_before = first.ordinary().dolmens()[0].entity().clone();
+        let baseline_flags = first.ordinary().player_interaction_flags();
+        first.ordinary_mut().players[0].position = dolmen_before.position;
+        let step = first
+            .ordinary_mut()
+            .step_dolmen_action_6(108)
+            .expect("dolmen action 6");
+        assert_eq!(step.previous_position, dolmen_before.position);
+        assert_eq!(step.previous_control_flags, step.control_flags);
+        assert_eq!(step.previous_phase, step.phase);
+        assert_eq!(
+            first.ordinary().dolmens()[0].entity().control_flags,
+            dolmen_before.control_flags
+        );
+        assert_ne!(first.ordinary().player_interaction_flags(), baseline_flags);
+        first.ordinary_mut().reset();
+        assert_eq!(first.ordinary().reset_hash(), baseline_hash);
+        assert_eq!(first.ordinary().player_interaction_flags(), baseline_flags);
+        let dolmen_position = first.ordinary().dolmens()[0].entity().position;
+        first.ordinary_mut().players[0].position = Position {
+            x: dolmen_position.x.wrapping_add(0x4000),
+            y: dolmen_position.y,
+            z: dolmen_position.z,
+        };
+        let far_flags = first.ordinary().player_interaction_flags();
+        first
+            .ordinary_mut()
+            .step_dolmen_action_6(108)
+            .expect("far dolmen action 6");
+        assert_eq!(first.ordinary().player_interaction_flags(), far_flags);
+        first.ordinary_mut().reset();
+        first.ordinary_mut().players[0].position = dolmen_position;
+        first.ordinary_mut().players[0].life = -1;
+        let dead_player_flags = first.ordinary().player_interaction_flags();
+        first
+            .ordinary_mut()
+            .step_dolmen_action_6(108)
+            .expect("dead-player dolmen action 6");
+        assert_eq!(
+            first.ordinary().player_interaction_flags(),
+            dead_player_flags
+        );
+        assert_eq!(second.ordinary().reset_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_ordinary_census_rejects_wrong_rows_hashes_and_presentation() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut entities = inspection.entities().to_vec();
+        let presentation = inspection.presentation().clone();
+        entities[77].action = 106;
+        assert!(validate_level2_ordinary_census(&entities, &presentation).is_err());
+        entities = inspection.entities().to_vec();
+        entities[1].record[74] ^= 1;
+        assert!(validate_level2_ordinary_census(&entities, &presentation).is_err());
+        entities = inspection.entities().to_vec();
+        entities[108].parameter_relation = Some(60);
+        assert!(Level2Dolmen::from_entity(&entities[108], inspection.terrain_planes()).is_err());
+        entities = inspection.entities().to_vec();
+        entities[1].model = 44;
+        assert!(HouseState::from_level_two_snapshot(&entities[1]).is_err());
+        entities = inspection.entities().to_vec();
+        entities[88] = entities[77].clone();
+        assert!(
+            VillagerFamily::from_level_two_entities(&entities, VillagerBehaviorConfig::LEVEL_TWO)
+                .is_err()
+        );
+        let mut wrong_presentation = presentation;
+        wrong_presentation.level_sprite_selectors[79] = 1;
+        assert!(
+            validate_level2_ordinary_census(&inspection.entities, &wrong_presentation).is_err()
+        );
+        let mut wrong_house_presentation = inspection.presentation().clone();
+        wrong_house_presentation.level_sprite_selectors[96] = 0;
+        assert!(
+            validate_level2_ordinary_census(&inspection.entities, &wrong_house_presentation)
+                .is_err()
+        );
+        let mut left = inspection.entities()[108].clone();
+        let mut right = inspection.entities()[111].clone();
+        left.position.x = u16::MAX - 5;
+        right.position.y = left.position.y;
+        right.position.z = left.position.z;
+        right.position.x = 2;
+        for entity in [&mut left, &mut right] {
+            for (offset, value) in [(86, 16_i16), (88, 16), (90, 0), (92, 16)] {
+                entity.record[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        assert!(level2_source_intersects(&left, &right));
+        right.position.x = 32;
+        assert!(!level2_source_intersects(&left, &right));
     }
 
     #[test]

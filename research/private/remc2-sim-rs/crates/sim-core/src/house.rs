@@ -67,6 +67,31 @@ impl HouseParameter {
         self.flags & 1 != 0
     }
 
+    /// The Level 2 Day package uses the live BLDGPRM rows selected by its
+    /// authored houses.  Keep this table separate from the sealed Level 1
+    /// mapping: the Level 2 rows are all construction/possession blocked and
+    /// carry their own scalar/successor values.
+    #[must_use]
+    pub const fn level_two(building_index: u8) -> Option<Self> {
+        let (life_mana_scalar, flags, destruction_successor) = match building_index {
+            26 => (20, 0x03, 0),
+            29 => (28, 0x03, 0),
+            30 => (25, 0x03, 0),
+            44 => (195, 0x08, 45),
+            50 => (24, 0x03, 0),
+            55 => (60, 0x08, 55),
+            59 => (53, 0x08, 59),
+            60 => (41, 0x08, 60),
+            64 => (410, 0x08, 64),
+            _ => return None,
+        };
+        Some(Self {
+            life_mana_scalar,
+            flags,
+            destruction_successor,
+        })
+    }
+
     #[must_use]
     pub const fn possession_blocked(self) -> bool {
         self.flags & 8 != 0
@@ -141,6 +166,69 @@ impl HouseState {
                 snapshot.index, snapshot.action
             ));
         }
+        Ok(Self {
+            entity_index: snapshot.index,
+            source_id: snapshot.source_id,
+            active: snapshot.active,
+            control_flags: snapshot.control_flags,
+            max_life: snapshot.max_life,
+            life: snapshot.life,
+            occupants: read_i32(bytes, 20),
+            rng: snapshot.entity_rng,
+            position: snapshot.position,
+            collision_vertical_offset: read_i16(bytes, 86),
+            collision_half_width: read_i16(bytes, 88),
+            collision_half_depth: read_i16(bytes, 90),
+            collision_half_height: read_i16(bytes, 92),
+            action: snapshot.action,
+            phase: snapshot.phase,
+            xtype: bytes[69],
+            build_tail: bytes[59],
+            building_index,
+            capacity: read_i16(bytes, 136),
+            owner_entity_index: read_u16(bytes, 152),
+            pending_damage: read_i32(bytes, 98),
+            pending_attacker: read_i16(bytes, 102),
+            pending_possession_payload: read_u32(bytes, 104),
+            pending_possession_owner: read_u16(bytes, 108),
+            parameter,
+        })
+    }
+
+    /// Decode one of Level 2's ordinary class-10/model-45 reset houses using
+    /// the package-selected BLDGPRM row.  The common state layout and all
+    /// action-51/52/53 behavior remain the shared source implementation.
+    pub fn from_level_two_snapshot(snapshot: &EntitySnapshot) -> Result<Self, String> {
+        if !(1..=22).contains(&snapshot.index)
+            || snapshot.class != HOUSE_CLASS
+            || snapshot.model != HOUSE_MODEL
+        {
+            return Err(format!(
+                "entity {} is {}/{}, not a Level 2 ordinary house",
+                snapshot.index, snapshot.class, snapshot.model
+            ));
+        }
+        if snapshot.action != HOUSE_LIVE_ACTION {
+            return Err(format!(
+                "Level 2 house entity {} reset action is {}, expected {HOUSE_LIVE_ACTION}",
+                snapshot.index, snapshot.action
+            ));
+        }
+        let bytes = snapshot.record_bytes();
+        if bytes.len() != 176 {
+            return Err(format!(
+                "Level 2 house entity {} must contain 176 bytes, got {}",
+                snapshot.index,
+                bytes.len()
+            ));
+        }
+        let building_index = bytes[74];
+        let parameter = HouseParameter::level_two(building_index).ok_or_else(|| {
+            format!(
+                "Level 2 house entity {} uses unqualified BLDGPRM row {building_index}",
+                snapshot.index
+            )
+        })?;
         Ok(Self {
             entity_index: snapshot.index,
             source_id: snapshot.source_id,
@@ -343,6 +431,26 @@ impl HouseFamily {
                 ));
             }
             houses.push(HouseState::from_snapshot(snapshot)?);
+        }
+        Ok(Self {
+            houses: houses.into_boxed_slice(),
+        })
+    }
+
+    /// Decode the twenty-two ordinary Level 2 Day houses in source-slot order.
+    pub fn from_level_two_entities(entities: &[EntitySnapshot]) -> Result<Self, String> {
+        let mut houses = Vec::with_capacity(22);
+        for expected_index in 1..=22 {
+            let snapshot = entities
+                .get(usize::from(expected_index))
+                .ok_or_else(|| format!("missing Level 2 house entity {expected_index}"))?;
+            if snapshot.index != expected_index {
+                return Err(format!(
+                    "Level 2 house pool order mismatch: expected {expected_index}, got {}",
+                    snapshot.index
+                ));
+            }
+            houses.push(HouseState::from_level_two_snapshot(snapshot)?);
         }
         Ok(Self {
             houses: houses.into_boxed_slice(),

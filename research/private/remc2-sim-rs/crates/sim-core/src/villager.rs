@@ -17,6 +17,13 @@ pub const LEVEL_ONE_VILLAGER_INDICES: [u16; 28] = [
     51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74,
     75, 76, 77, 78,
 ];
+/// The Level 2 Day reset contains ten early ordinary villagers, one
+/// feature-owned slot at 87, then nineteen more villagers.  The gap is a
+/// deliberate source-order hole occupied by a dormant class-11 row.
+pub const LEVEL_TWO_VILLAGER_INDICES: [u16; 29] = [
+    77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100,
+    101, 102, 103, 104, 105, 106,
+];
 pub const VILLAGER_CLASS: u8 = 5;
 pub const VILLAGER_MODEL: u8 = 13;
 pub const VILLAGER_INITIAL_ACTION: u8 = 104;
@@ -56,6 +63,11 @@ impl VillagerBehaviorConfig {
         separation_radius: 512,
         behavior_flags: 9,
     };
+
+    /// Level 2 row 101 is byte-for-byte the ordinary Level 1 movement
+    /// parameter.  Naming it explicitly keeps profile validation honest while
+    /// allowing the movement/death implementation to remain shared.
+    pub const LEVEL_TWO: Self = Self::LEVEL_ONE;
 
     pub fn from_parameter_record(bytes: &[u8; 34]) -> Result<Self, String> {
         let config = Self {
@@ -228,6 +240,58 @@ impl VillagerFamily {
             villagers.push(state);
         }
 
+        Ok(Self {
+            villagers: villagers.into_boxed_slice(),
+            config,
+        })
+    }
+
+    /// Decode the Level 2 Day ordinary-villager pool.  Behavior is shared with
+    /// Level 1, but the reset action/stage values and source-slot census are
+    /// profile data rather than Level 1 assumptions.
+    pub fn from_level_two_entities(
+        entities: &[EntitySnapshot],
+        config: VillagerBehaviorConfig,
+    ) -> Result<Self, String> {
+        let mut villagers = Vec::with_capacity(LEVEL_TWO_VILLAGER_INDICES.len());
+        for expected_index in LEVEL_TWO_VILLAGER_INDICES {
+            let snapshot = entities
+                .get(usize::from(expected_index))
+                .ok_or_else(|| format!("missing Level 2 Villager entity {expected_index}"))?;
+            if snapshot.index != expected_index {
+                return Err(format!(
+                    "Level 2 Villager pool order mismatch: expected {expected_index}, got {}",
+                    snapshot.index
+                ));
+            }
+            let state = VillagerState::from_snapshot(snapshot)?;
+            let expected_actual_speed = (expected_index == 77).then_some(30).unwrap_or(18);
+            if state.action != VILLAGER_FREE_ACTION
+                || state.stage_var_1 != 0
+                || state.stage_var_2 != 0
+                || state.max_life != 1_000
+                || state.life != 1_000
+                // The qualified frame-zero capture retains a one-row
+                // post-reset action-105 actual-speed write (30); all other
+                // ordinary rows retain the constructor max speed (18).
+                || state.actual_speed != expected_actual_speed
+                || state.minimum_speed != 54
+                || state.maximum_speed != 18
+            {
+                return Err(format!(
+                    "Level 2 Villager entity {expected_index} reset state changed: action={} stage={}/{} life={}/{} speed={}/{}/{}",
+                    state.action,
+                    state.stage_var_1,
+                    state.stage_var_2,
+                    state.life,
+                    state.max_life,
+                    state.actual_speed,
+                    state.minimum_speed,
+                    state.maximum_speed,
+                ));
+            }
+            villagers.push(state);
+        }
         Ok(Self {
             villagers: villagers.into_boxed_slice(),
             config,
