@@ -3937,37 +3937,39 @@ impl Level2EconomyState {
                     .expect("Level 2 carrier Castle heading fits");
                 let arrival = u32::from(original.speed.unsigned_abs())
                     .saturating_mul(u32::from(castle.level));
+                // AddBallon_60AB0 moves only while outside the Castle arrival
+                // radius.  When the carrier is within that radius but fails
+                // the altitude/stage gate, the source leaves its position
+                // unchanged and lets the common terrain relaxation run.
                 if level2_wrapping_xy_distance(position, castle.position)
                     <= arrival.saturating_mul(arrival)
-                    && position.z
-                        <= self
-                            .terrain
-                            .ground_height(position)
-                            .wrapping_add(MANA_CARRIER_GROUND_CLEARANCE)
-                    && castle.level > 0
                 {
-                    position.x = castle.position.x;
-                    position.y = castle.position.y;
-                    let deposited = carried_mana;
-                    self.castle.as_mut().expect("Castle remains installed").mana =
-                        castle.mana.wrapping_add(deposited);
-                    carried_mana = 0;
-                    owner_entity_index = castle.owner_entity_index;
-                    life = original.max_life;
-                    self.events.push(Level2EconomyEvent::ManaCarrierArrived {
-                        carrier_id: original.id,
-                        castle_id: castle.source_entity_index,
-                        mana: deposited,
-                    });
+                    let ground = self.terrain.ground_height(position);
+                    if position.z <= ground.wrapping_add(MANA_CARRIER_GROUND_CLEARANCE)
+                        && castle.level > 0
+                    {
+                        position.x = castle.position.x;
+                        position.y = castle.position.y;
+                        let deposited = carried_mana;
+                        self.castle.as_mut().expect("Castle remains installed").mana =
+                            castle.mana.wrapping_add(deposited);
+                        carried_mana = 0;
+                        owner_entity_index = castle.owner_entity_index;
+                        life = original.max_life;
+                        self.events.push(Level2EconomyEvent::ManaCarrierArrived {
+                            carrier_id: original.id,
+                            castle_id: castle.source_entity_index,
+                            mana: deposited,
+                        });
+                    }
                 } else {
                     crate::move_entity(&mut position, yaw, original.pitch, original.speed);
                 }
             }
         } else if target_sphere_id != 0 {
-            let sphere_index = self
-                .spheres
-                .iter()
-                .position(|sphere| sphere.active && sphere.id == target_sphere_id);
+            let sphere_index = self.spheres.iter().position(|sphere| {
+                sphere.active && u32::from(sphere.source_entity_index) == target_sphere_id
+            });
             if let Some(sphere_index) = sphere_index {
                 valid_target = true;
                 let sphere = self.spheres[sphere_index];
@@ -3979,6 +3981,7 @@ impl Level2EconomyState {
                         > u32::from(MANA_CARRIER_ATTRACTION_RADIUS)
                             .saturating_mul(u32::from(MANA_CARRIER_ATTRACTION_RADIUS))
                     {
+                        self.spheres[sphere_index].assigned_carrier_id = 0;
                         target_sphere_id = 0;
                     } else {
                         self.spheres[sphere_index].assigned_carrier_id = u32::from(carrier_slot);
@@ -17273,6 +17276,7 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 carrier handler session");
+        let baseline_hash = session.economy().reset_hash();
         let carrier_slot = session
             .economy_mut()
             .spawn_mana_carrier(Position::default(), 111, 0)
@@ -17310,6 +17314,9 @@ mod tests {
                     if *carrier_id == u32::from(carrier_slot) && *mana == 10
             )
         }));
+        assert_ne!(session.economy().reset_hash(), baseline_hash);
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
     }
 
     #[test]
