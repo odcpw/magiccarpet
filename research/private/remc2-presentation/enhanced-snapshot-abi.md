@@ -41,6 +41,14 @@ mesh is rebased as one complete region in the latter case. Nested generation,
 tick, identity, finite-pose, array-extent, and quality checks run before the
 presentation hierarchy is mutated.
 
+The owner-bound adapter also consumes the existing Rust `sim-capi` v2 event
+journal through `mc_native_events_copy_since`. Level 1 projectile and impact
+rows are copied at the same generation/tick cursor and are used only to place
+presentation VFX; the event journal remains Rust-owned and gameplay events are
+never synthesized by Unity. The owner sequence qualification currently proves
+one projectile row, one impact row, up to two ordered VFX rows per step, and
+reset-replay equality for those observations.
+
 Focused gates:
 
 ```text

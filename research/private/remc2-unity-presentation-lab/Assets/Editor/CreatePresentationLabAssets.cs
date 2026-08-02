@@ -300,10 +300,20 @@ namespace MagicCarpet.PresentationLab.Editor
             ulong[] firstStateHashes = new ulong[FramesPerPass];
             ulong[] firstTerrainHashes = new ulong[FramesPerPass];
             ulong[] firstWorldHashes = new ulong[FramesPerPass];
+            int[] firstEventCounts = new int[FramesPerPass];
+            int[] firstVfxCounts = new int[FramesPerPass];
             ulong firstGeneration;
             ulong firstTick;
             ulong secondGeneration;
             ulong secondTick;
+            bool sawOwnerEvent = false;
+            bool sawOwnerVfx = false;
+            bool sawDynamicEffectRows = false;
+            int maxMissionProjectiles = 0;
+            int maxMissionImpacts = 0;
+            int maxEventRows = 0;
+            int maxVfxRows = 0;
+            int maxActiveVfx = 0;
 
             try
             {
@@ -380,6 +390,18 @@ namespace MagicCarpet.PresentationLab.Editor
                     firstStateHashes[frame] = source.LastStateHash;
                     firstTerrainHashes[frame] = source.LastTerrainHash;
                     firstWorldHashes[frame] = source.LastWorldHash;
+                    firstEventCounts[frame] = source.LastEventCount;
+                    firstVfxCounts[frame] = source.LastVfxEventCount;
+                    sawOwnerEvent |= source.LastEventCount > 0;
+                    sawOwnerVfx |= source.LastVfxEventCount > 0 &&
+                                   enhanced.VfxPresentation.ActiveEffectCount > 0;
+                    sawDynamicEffectRows |= source.MissionProjectileCount > 0 ||
+                                            source.MissionImpactCount > 0;
+                    maxMissionProjectiles = Math.Max(maxMissionProjectiles, source.MissionProjectileCount);
+                    maxMissionImpacts = Math.Max(maxMissionImpacts, source.MissionImpactCount);
+                    maxEventRows = Math.Max(maxEventRows, source.LastEventCount);
+                    maxVfxRows = Math.Max(maxVfxRows, source.LastVfxEventCount);
+                    maxActiveVfx = Math.Max(maxActiveVfx, enhanced.VfxPresentation.ActiveEffectCount);
                     if (firstStateHashes[frame] == 0 ||
                         firstTerrainHashes[frame] == 0 ||
                         firstWorldHashes[frame] == 0)
@@ -389,6 +411,21 @@ namespace MagicCarpet.PresentationLab.Editor
                         EditorApplication.Exit(1);
                         return;
                     }
+                }
+
+                UnityEnhancedOwnerSessionSource firstSource = router.EnhancedOwnerSession;
+                if (!sawOwnerEvent || !sawOwnerVfx || !sawDynamicEffectRows ||
+                    firstSource.EventHead == 0 || firstSource.EventCursor != firstSource.EventHead)
+                {
+                    Debug.LogError(
+                        "OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: owner event/effect seam was not observable " +
+                        "saw_event=" + sawOwnerEvent +
+                        " saw_vfx=" + sawOwnerVfx +
+                        " saw_dynamic_rows=" + sawDynamicEffectRows +
+                        " event_cursor=" + firstSource.EventCursor +
+                        " event_head=" + firstSource.EventHead);
+                    EditorApplication.Exit(1);
+                    return;
                 }
 
                 firstGeneration = router.EnhancedOwnerSession.Generation;
@@ -426,7 +463,9 @@ namespace MagicCarpet.PresentationLab.Editor
                     UnityEnhancedOwnerSessionSource source = router.EnhancedOwnerSession;
                     if (source.LastStateHash != firstStateHashes[frame] ||
                         source.LastTerrainHash != firstTerrainHashes[frame] ||
-                        source.LastWorldHash != firstWorldHashes[frame])
+                        source.LastWorldHash != firstWorldHashes[frame] ||
+                        source.LastEventCount != firstEventCounts[frame] ||
+                        source.LastVfxEventCount != firstVfxCounts[frame])
                     {
                         Debug.LogError(
                             "OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: reset replay diverged at frame " +
@@ -435,7 +474,9 @@ namespace MagicCarpet.PresentationLab.Editor
                             firstWorldHashes[frame].ToString("x16") + " second=" +
                             source.LastStateHash.ToString("x16") + "/" +
                             source.LastTerrainHash.ToString("x16") + "/" +
-                            source.LastWorldHash.ToString("x16"));
+                            source.LastWorldHash.ToString("x16") + " events=" +
+                            source.LastEventCount + "/" + firstEventCounts[frame] +
+                            " vfx=" + source.LastVfxEventCount + "/" + firstVfxCounts[frame]);
                         EditorApplication.Exit(1);
                         return;
                     }
@@ -452,6 +493,14 @@ namespace MagicCarpet.PresentationLab.Editor
                     " second_tick=" + secondTick +
                     " active_entities=" + router.EnhancedOwnerSession.ActiveEntityCount +
                     " active_visuals=" + router.EnhancedRoot.ActorPresentation.ActiveVisualCount +
+                    " event_head=" + router.EnhancedOwnerSession.EventHead +
+                    " max_event_rows=" + maxEventRows +
+                    " max_vfx_rows=" + maxVfxRows +
+                    " max_active_vfx=" + maxActiveVfx +
+                    " max_projectiles=" + maxMissionProjectiles +
+                    " max_impacts=" + maxMissionImpacts +
+                    " dynamic_projectiles=" + router.EnhancedOwnerSession.MissionProjectileCount +
+                    " dynamic_impacts=" + router.EnhancedOwnerSession.MissionImpactCount +
                     " terrain_vertices=" + router.EnhancedRoot.TerrainPresentation.VertexCount +
                     " shoreline_cells=" + router.EnhancedRoot.WaterPresentation.ShorelineCellCount +
                     " state_sequence=" + firstStateSequenceHash.ToString("x16") +

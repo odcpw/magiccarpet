@@ -52,8 +52,11 @@ qualification:
   advances one owner step per fixed simulation tick; unchanged terrain is not
   rebuilt, while map-wrap epoch changes force a complete rebase. The
   deterministic owner sequence smoke covers flight input, spell
-  selection/cast, 32-frame reset replay, terrain/water/night lighting, and
-  native hash correspondence without embedding owner payloads.
+  selection/cast, 32-frame reset replay, terrain/water/night lighting, native
+  hash correspondence, and the Rust-owned event/mission-effect seam: the
+  existing event journal and Level 1 projectile/impact rows are validated at
+  their generation/tick boundary and drive pooled Enhanced VFX without
+  embedding owner payloads.
 - No copied owner assets, native libraries, Exact scripts, or Exact corpus.
 
 Run the editor setup once after opening the project:

@@ -26,6 +26,14 @@ namespace MagicCarpet.PresentationLab
         private const uint RenderCameraStateSize = 72;
         private const uint TerrainStateSize = 64;
         private const uint EntityElementSize = 52;
+        private const uint MissionSnapshotSize = 96;
+        private const uint ProjectileElementSize = 56;
+        private const uint ImpactElementSize = 52;
+        private const uint EventQuerySize = 40;
+        private const uint EventBatchSize = 56;
+        private const uint EventElementSize = 72;
+        private const byte Level1MissionLive = 6;
+        private const int EventBatchCapacity = 128;
         private const int TerrainWidth = 256;
         private const int TerrainHeight = 256;
         private const int TerrainCellCount = TerrainWidth * TerrainHeight;
@@ -44,6 +52,16 @@ namespace MagicCarpet.PresentationLab
         private const byte TerrainHashSchema = 1;
         private const int SelectedSpellFlag = 0x40;
         private const sbyte SpellSelectionOpcode = 40;
+        private const uint EventRequestSpellActivation = 4;
+        private const uint EventLevel1FireballSpawned = 15;
+        private const uint EventLevel1FireballImpacted = 16;
+        private const uint EventLevel1ActorKilled = 18;
+        private const uint EventLevel1ArcherArrowSpawned = 24;
+        private const uint EventLevel1FireflyFireballSpawned = 26;
+        private const uint EventLevel1CastleProjectileSpawned = 28;
+        private const uint EventLevel1PossessionSpawned = 31;
+        private const uint EventLevel1ManaSphereSpawned = 32;
+        private const uint EventLevel1WaterSplashed = 37;
 
         private byte[] packageBytes;
         private byte[] closureBytes;
@@ -57,6 +75,14 @@ namespace MagicCarpet.PresentationLab
         private EntitySnapshot[] entities = Array.Empty<EntitySnapshot>();
         private ulong terrainMutationSequence;
         private bool terrainChangedSinceLastObservation;
+        private MissionSnapshot mission;
+        private ProjectileSnapshot[] projectiles = Array.Empty<ProjectileSnapshot>();
+        private ImpactSnapshot[] impacts = Array.Empty<ImpactSnapshot>();
+        private EventSnapshot[] pendingEvents = Array.Empty<EventSnapshot>();
+        private ulong eventCursor;
+        private ulong eventHead;
+        private int lastEventCount;
+        private int lastVfxEventCount;
         private ushort previousCameraX;
         private ushort previousCameraY;
         private long unwrappedCameraX;
@@ -67,7 +93,6 @@ namespace MagicCarpet.PresentationLab
         private bool hasPublishedTerrainOrigin;
         private UnityEnhancedWorldSnapshot pendingResetSnapshot;
         private ulong nextVfxSequence;
-        private uint previousFireSequence;
         private SessionSnapshot snapshot;
         private PresentationState presentation;
         private RenderCameraState renderCamera;
@@ -80,6 +105,39 @@ namespace MagicCarpet.PresentationLab
         public ulong PresentationTick { get { return presentation.tick; } }
         public ulong LastTerrainHash { get; private set; }
         public ulong LastWorldHash { get; private set; }
+        public ulong TerrainMutationSequence { get { return terrainMutationSequence; } }
+        public ulong EventCursor { get { return eventCursor; } }
+        public ulong EventHead { get { return eventHead; } }
+        public int LastEventCount { get { return lastEventCount; } }
+        public int LastVfxEventCount { get { return lastVfxEventCount; } }
+        public int MissionProjectileCount { get { return checked((int)mission.projectileCount); } }
+        public int MissionImpactCount { get { return checked((int)mission.impactCount); } }
+        public int ActiveProjectileCount
+        {
+            get
+            {
+                int count = 0;
+                for (int index = 0; index < projectiles.Length; index++)
+                {
+                    if (projectiles[index].active != 0) count++;
+                }
+
+                return count;
+            }
+        }
+        public int ActiveImpactCount
+        {
+            get
+            {
+                int count = 0;
+                for (int index = 0; index < impacts.Length; index++)
+                {
+                    if (impacts[index].active != 0) count++;
+                }
+
+                return count;
+            }
+        }
         public int EntityCount { get { return entities == null ? 0 : entities.Length; } }
         public bool HasPendingResetSnapshot { get { return pendingResetSnapshot != null; } }
         public int ActiveEntityCount
@@ -202,13 +260,20 @@ namespace MagicCarpet.PresentationLab
             entities = Array.Empty<EntitySnapshot>();
             terrainMutationSequence = ulong.MaxValue;
             terrainChangedSinceLastObservation = true;
+            mission = default(MissionSnapshot);
+            projectiles = Array.Empty<ProjectileSnapshot>();
+            impacts = Array.Empty<ImpactSnapshot>();
+            pendingEvents = Array.Empty<EventSnapshot>();
+            eventCursor = snapshot.eventHead;
+            eventHead = snapshot.eventHead;
+            lastEventCount = 0;
+            lastVfxEventCount = 0;
             cameraGeneration = 0;
             hasCameraHistory = false;
             lastPublishedTerrainOrigin = Vector3.zero;
             hasPublishedTerrainOrigin = false;
             pendingResetSnapshot = null;
             nextVfxSequence = 0;
-            previousFireSequence = snapshot.fireSequence;
             if (!ReadObservations(true, out reason))
             {
                 return false;
@@ -370,11 +435,19 @@ namespace MagicCarpet.PresentationLab
             terrainShade = null;
             terrainAngles = null;
             entities = Array.Empty<EntitySnapshot>();
+            mission = default(MissionSnapshot);
+            projectiles = Array.Empty<ProjectileSnapshot>();
+            impacts = Array.Empty<ImpactSnapshot>();
+            pendingEvents = Array.Empty<EventSnapshot>();
             snapshot = default(SessionSnapshot);
             presentation = default(PresentationState);
             renderCamera = default(RenderCameraState);
             terrainMutationSequence = 0;
             terrainChangedSinceLastObservation = false;
+            eventCursor = 0;
+            eventHead = 0;
+            lastEventCount = 0;
+            lastVfxEventCount = 0;
             previousCameraX = 0;
             previousCameraY = 0;
             unwrappedCameraX = 0;
@@ -385,7 +458,6 @@ namespace MagicCarpet.PresentationLab
             hasPublishedTerrainOrigin = false;
             pendingResetSnapshot = null;
             nextVfxSequence = 0;
-            previousFireSequence = 0;
         }
 
         private bool ReadObservations(bool forceTerrain, out string reason)
@@ -458,7 +530,8 @@ namespace MagicCarpet.PresentationLab
             }
 
             LastTerrainHash = terrainState.terrainHash;
-            bool terrainChanged = forceTerrain || terrainTypes == null || terrainState.mutationSequence != terrainMutationSequence;
+            bool terrainChanged = forceTerrain || terrainTypes == null ||
+                                  terrainState.mutationSequence != terrainMutationSequence;
             terrainChangedSinceLastObservation = terrainChanged;
             if (terrainChanged)
             {
@@ -535,8 +608,231 @@ namespace MagicCarpet.PresentationLab
                 return false;
             }
 
+            if (!ReadMissionObservations(out reason))
+            {
+                return false;
+            }
+
+            if (!ReadEvents(out reason))
+            {
+                return false;
+            }
+
             LastWorldHash = HashEntities(entities);
             return UpdateCameraHistory();
+        }
+
+        private bool ReadMissionObservations(out string reason)
+        {
+            reason = string.Empty;
+            int status = mc_native_level1_mission_snapshot(
+                handle,
+                out mission,
+                MissionSnapshotSize);
+            if (status != 0)
+            {
+                reason = StatusReason("Unity Enhanced owner Level 1 mission snapshot", status);
+                return false;
+            }
+
+            if (mission.abiVersion != AbiVersion ||
+                mission.structSize != MissionSnapshotSize ||
+                mission.generation != snapshot.generation ||
+                mission.tick != snapshot.tick ||
+                mission.authority != Level1MissionLive)
+            {
+                reason = "Unity Enhanced owner Level 1 mission snapshot failed its authority/layout contract";
+                return false;
+            }
+
+            const uint MaxMissionRows = 4096;
+            if (mission.projectileCount > MaxMissionRows || mission.impactCount > MaxMissionRows)
+            {
+                reason = "Unity Enhanced owner Level 1 mission snapshot exceeds the bounded effect-row budget";
+                return false;
+            }
+
+            projectiles = ReadProjectiles(mission.projectileCount, out reason);
+            if (projectiles == null)
+            {
+                return false;
+            }
+
+            impacts = ReadImpacts(mission.impactCount, out reason);
+            return impacts != null;
+        }
+
+        private ProjectileSnapshot[] ReadProjectiles(uint count, out string reason)
+        {
+            reason = string.Empty;
+            ProjectileSnapshot[] values = new ProjectileSnapshot[checked((int)count)];
+            int status = mc_native_fireball_projectiles_copy(
+                handle,
+                mission.generation,
+                mission.tick,
+                0,
+                values,
+                count,
+                ProjectileElementSize,
+                out uint written);
+            if (status != 0)
+            {
+                reason = StatusReason("Unity Enhanced owner Level 1 projectile snapshot", status);
+                return null;
+            }
+
+            if (written != count)
+            {
+                reason = "Unity Enhanced owner Level 1 projectile snapshot is incomplete";
+                return null;
+            }
+
+            for (int index = 0; index < values.Length; index++)
+            {
+                ProjectileSnapshot value = values[index];
+                if (value.abiVersion != AbiVersion ||
+                    value.structSize != ProjectileElementSize ||
+                    value.authority != Level1MissionLive ||
+                    value.active > 1 ||
+                    value.reserved == null ||
+                    value.reserved.Length != 2 ||
+                    value.reserved[1] != 0)
+                {
+                    reason = "Unity Enhanced owner Level 1 projectile snapshot failed its ABI/layout contract";
+                    return null;
+                }
+            }
+
+            return values;
+        }
+
+        private ImpactSnapshot[] ReadImpacts(uint count, out string reason)
+        {
+            reason = string.Empty;
+            ImpactSnapshot[] values = new ImpactSnapshot[checked((int)count)];
+            int status = mc_native_fireball_impacts_copy(
+                handle,
+                mission.generation,
+                mission.tick,
+                0,
+                values,
+                count,
+                ImpactElementSize,
+                out uint written);
+            if (status != 0)
+            {
+                reason = StatusReason("Unity Enhanced owner Level 1 impact snapshot", status);
+                return null;
+            }
+
+            if (written != count)
+            {
+                reason = "Unity Enhanced owner Level 1 impact snapshot is incomplete";
+                return null;
+            }
+
+            for (int index = 0; index < values.Length; index++)
+            {
+                ImpactSnapshot value = values[index];
+                if (value.abiVersion != AbiVersion ||
+                    value.structSize != ImpactElementSize ||
+                    value.authority != Level1MissionLive ||
+                    value.active > 1 ||
+                    value.damageSubmitted > 1 ||
+                    value.reserved0 != 0 ||
+                    value.reserved1 != 0 ||
+                    value.reserved == null ||
+                    value.reserved.Length != 2 ||
+                    value.reserved[1] != 0)
+                {
+                    reason = "Unity Enhanced owner Level 1 impact snapshot failed its ABI/layout contract";
+                    return null;
+                }
+            }
+
+            return values;
+        }
+
+        private bool ReadEvents(out string reason)
+        {
+            reason = string.Empty;
+            var observed = new List<EventSnapshot>();
+            ulong cursor = eventCursor;
+            while (true)
+            {
+                EventQuery query = new EventQuery
+                {
+                    abiVersion = AbiVersion,
+                    structSize = EventQuerySize,
+                    generation = snapshot.generation,
+                    cursor = cursor,
+                    reserved = new uint[4]
+                };
+                EventSnapshot[] batchValues = new EventSnapshot[EventBatchCapacity];
+                int status = mc_native_events_copy_since(
+                    handle,
+                    ref query,
+                    batchValues,
+                    EventBatchCapacity,
+                    EventElementSize,
+                    out EventBatch batch,
+                    EventBatchSize);
+                if (status != 0)
+                {
+                    reason = StatusReason("Unity Enhanced owner event journal", status);
+                    return false;
+                }
+
+                if (batch.abiVersion != AbiVersion ||
+                    batch.structSize != EventBatchSize ||
+                    batch.generation != snapshot.generation ||
+                    batch.written > (uint)EventBatchCapacity ||
+                    batch.hasMore > 1 ||
+                    batch.nextCursor < cursor ||
+                    batch.eventHead < batch.nextCursor ||
+                    !AllZero(batch.reserved0) ||
+                    !AllZero(batch.reserved))
+                {
+                    reason = "Unity Enhanced owner event journal failed its ABI/layout contract";
+                    return false;
+                }
+
+                ulong previousSequence = cursor;
+                for (uint index = 0; index < batch.written; index++)
+                {
+                    EventSnapshot value = batchValues[checked((int)index)];
+                    if (value.abiVersion != AbiVersion ||
+                        value.structSize != EventElementSize ||
+                        value.generation != snapshot.generation ||
+                        value.sequence <= previousSequence ||
+                        !AllZero(value.reserved))
+                    {
+                        reason = "Unity Enhanced owner event row failed its ABI/layout contract";
+                        return false;
+                    }
+
+                    observed.Add(value);
+                    previousSequence = value.sequence;
+                }
+
+                cursor = batch.nextCursor;
+                eventHead = batch.eventHead;
+                if (batch.hasMore == 0)
+                {
+                    break;
+                }
+
+                if (batch.written == 0)
+                {
+                    reason = "Unity Enhanced owner event journal made no progress while more rows were available";
+                    return false;
+                }
+            }
+
+            eventCursor = cursor;
+            pendingEvents = observed.ToArray();
+            lastEventCount = pendingEvents.Length;
+            return true;
         }
 
         private byte[] ReadPlane(uint kind, out string reason)
@@ -785,25 +1081,168 @@ namespace MagicCarpet.PresentationLab
 
         private UnityEnhancedVfxEvent[] BuildVfxEvents()
         {
-            if (snapshot.fireSequence == previousFireSequence)
+            if (pendingEvents.Length == 0)
             {
+                lastVfxEventCount = 0;
                 return Array.Empty<UnityEnhancedVfxEvent>();
             }
 
-            previousFireSequence = snapshot.fireSequence;
-            nextVfxSequence++;
-            return new[]
+            var result = new List<UnityEnhancedVfxEvent>(pendingEvents.Length);
+            for (int index = 0; index < pendingEvents.Length; index++)
             {
-                new UnityEnhancedVfxEvent(
+                EventSnapshot source = pendingEvents[index];
+                UnityEnhancedVfxKind kind;
+                Vector3 position;
+                float intensity;
+                uint duration;
+                ulong stableIdentity;
+                if (source.kind == EventRequestSpellActivation)
+                {
+                    kind = UnityEnhancedVfxKind.SpellCast;
+                    position = EntityPosition(FindEntity(snapshot.entityIndex));
+                    intensity = 1.2f;
+                    duration = 12;
+                    stableIdentity = SourceStableIdentity(snapshot.entityIndex);
+                }
+                else if (IsProjectileSpawnEvent(source.kind))
+                {
+                    uint projectileId = source.kind == EventLevel1CastleProjectileSpawned
+                        ? unchecked((uint)source.value0)
+                        : source.code;
+                    ProjectileSnapshot projectile = FindProjectile(projectileId);
+                    if (projectile.projectileId == 0)
+                    {
+                        continue;
+                    }
+
+                    kind = UnityEnhancedVfxKind.SpellCast;
+                    position = ProjectedPosition(projectile.x, projectile.y, projectile.z);
+                    intensity = projectile.projectileKind == 2 ? 0.8f : 1f;
+                    duration = 8;
+                    stableIdentity = ((ulong)snapshot.generation << 32) |
+                                      (0x20000000UL | projectile.projectileId);
+                }
+                else if (source.kind == EventLevel1FireballImpacted ||
+                         source.kind == EventLevel1WaterSplashed)
+                {
+                    uint impactId = source.kind == EventLevel1WaterSplashed
+                        ? source.entityIndex
+                        : source.code;
+                    ImpactSnapshot impact = FindImpact(impactId);
+                    if (impact.impactId == 0)
+                    {
+                        continue;
+                    }
+
+                    kind = source.kind == EventLevel1WaterSplashed
+                        ? UnityEnhancedVfxKind.Weather
+                        : ImpactKind(impact.model);
+                    position = ProjectedPosition(impact.x, impact.y, impact.z);
+                    intensity = kind == UnityEnhancedVfxKind.Fire ? 1.3f : 1f;
+                    duration = kind == UnityEnhancedVfxKind.Smoke ? 24u : 10u;
+                    stableIdentity = ((ulong)snapshot.generation << 32) |
+                                      (0x40000000UL | impact.impactId);
+                }
+                else if (source.kind == EventLevel1ActorKilled)
+                {
+                    kind = UnityEnhancedVfxKind.Destruction;
+                    position = EntityPosition(FindEntity(source.entityIndex));
+                    intensity = 1.1f;
+                    duration = 14;
+                    stableIdentity = SourceStableIdentity(source.entityIndex);
+                }
+                else if (source.kind == EventLevel1ManaSphereSpawned)
+                {
+                    kind = UnityEnhancedVfxKind.ManaPickup;
+                    position = EntityPosition(FindEntity(source.entityIndex));
+                    intensity = 0.9f;
+                    duration = 18;
+                    stableIdentity = SourceStableIdentity(source.entityIndex);
+                }
+                else
+                {
+                    continue;
+                }
+
+                nextVfxSequence++;
+                result.Add(new UnityEnhancedVfxEvent(
                     nextVfxSequence,
                     snapshot.generation,
                     snapshot.tick,
-                    ((ulong)snapshot.generation << 32) | (uint)(snapshot.entityIndex + 1),
-                    UnityEnhancedVfxKind.SpellCast,
-                    EntityPosition(FindEntity(snapshot.entityIndex)),
-                    1.2f,
-                    12)
-            };
+                    stableIdentity,
+                    kind,
+                    position,
+                    intensity,
+                    duration));
+            }
+
+            lastVfxEventCount = result.Count;
+            return result.ToArray();
+        }
+
+        private static bool IsProjectileSpawnEvent(uint kind)
+        {
+            return kind == EventLevel1FireballSpawned ||
+                   kind == EventLevel1ArcherArrowSpawned ||
+                   kind == EventLevel1FireflyFireballSpawned ||
+                   kind == EventLevel1CastleProjectileSpawned ||
+                   kind == EventLevel1PossessionSpawned;
+        }
+
+        private static UnityEnhancedVfxKind ImpactKind(byte model)
+        {
+            if (model == 6)
+            {
+                return UnityEnhancedVfxKind.Fire;
+            }
+
+            if (model == 13)
+            {
+                return UnityEnhancedVfxKind.Smoke;
+            }
+
+            return UnityEnhancedVfxKind.Impact;
+        }
+
+        private ulong SourceStableIdentity(ushort entityIndex)
+        {
+            return ((ulong)snapshot.generation << 32) | (uint)(entityIndex + 1);
+        }
+
+        private Vector3 ProjectedPosition(ushort x, ushort y, short sourceZ)
+        {
+            float projectedX = (float)(unwrappedCameraX + ModularDelta(x, presentation.cameraX)) /
+                               SourceUnitsPerUnityUnit;
+            float projectedY = sourceZ / SourceUnitsPerUnityUnit;
+            float projectedZ = (float)(unwrappedCameraY + ModularDelta(y, presentation.cameraY)) /
+                               SourceUnitsPerUnityUnit;
+            return new Vector3(projectedX, projectedY, projectedZ);
+        }
+
+        private ProjectileSnapshot FindProjectile(uint projectileId)
+        {
+            for (int index = 0; index < projectiles.Length; index++)
+            {
+                if (projectiles[index].projectileId == projectileId)
+                {
+                    return projectiles[index];
+                }
+            }
+
+            return default(ProjectileSnapshot);
+        }
+
+        private ImpactSnapshot FindImpact(uint impactId)
+        {
+            for (int index = 0; index < impacts.Length; index++)
+            {
+                if (impacts[index].impactId == impactId)
+                {
+                    return impacts[index];
+                }
+            }
+
+            return default(ImpactSnapshot);
         }
 
         private Vector3 EntityPosition(EntitySnapshot source)
@@ -1176,6 +1615,151 @@ namespace MagicCarpet.PresentationLab
             public uint[] reserved;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MissionSnapshot
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public ulong generation;
+            public ulong tick;
+            public byte authority;
+            public byte currentStage;
+            public byte textSelector;
+            public byte objectiveTextboxTicks;
+            public byte tasksCompleted;
+            public byte playerDead;
+            public byte hasFireball;
+            public byte hasPossession;
+            public byte hasCastleSpell;
+            public byte hasSpeedSpell;
+            public byte castleExists;
+            public byte castleLevel;
+            public byte fidelityGapFlags;
+            public byte exitSequenceActive;
+            public byte exitSequenceComplete;
+            public byte exitResultCode;
+            public int playerLife;
+            public int playerMaxLife;
+            public int playerMana;
+            public int playerMaxMana;
+            public int castleMana;
+            public int securedManaPercent;
+            public uint actorCount;
+            public uint projectileCount;
+            public uint impactCount;
+            public uint exitSequencePhase;
+            public int exitSequenceTimer;
+            public int possessionExperience;
+            public ushort lastPossessedBuildingEntity;
+            public ushort lastPossessedBuildingOwner;
+            public ushort possessedBuildingCount;
+            public byte possessionTier;
+            public byte speedTrailCount;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ProjectileSnapshot
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public uint projectileId;
+            public ushort ownerEntityIndex;
+            public ushort renderIndex;
+            public byte authority;
+            public byte active;
+            public byte classId;
+            public byte model;
+            public ushort x;
+            public ushort y;
+            public short z;
+            public short yaw;
+            public short pitch;
+            public short speed;
+            public short lifeTicks;
+            public ushort baseTmap;
+            public int payload;
+            public ushort logicalHeight;
+            public byte renderMode;
+            public sbyte animationFrame;
+            public uint projectileKind;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
+            public uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ImpactSnapshot
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public uint impactId;
+            public uint sourceProjectileId;
+            public byte authority;
+            public byte active;
+            public byte damageSubmitted;
+            public byte classId;
+            public byte model;
+            public byte renderMode;
+            public sbyte animationFrame;
+            public byte reserved0;
+            public ushort x;
+            public ushort y;
+            public short z;
+            public short lifeTicks;
+            public int payload;
+            public ushort baseTmap;
+            public ushort renderParameterIndex;
+            public ushort logicalHeight;
+            public ushort reserved1;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
+            public uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct EventQuery
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public ulong generation;
+            public ulong cursor;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct EventBatch
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public ulong generation;
+            public ulong nextCursor;
+            public ulong eventHead;
+            public uint written;
+            public byte hasMore;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
+            public byte[] reserved0;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct EventSnapshot
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public ulong generation;
+            public ulong sequence;
+            public ulong stateHash;
+            public uint kind;
+            public uint code;
+            public ushort entityIndex;
+            public short playerIndex;
+            public int value0;
+            public int value1;
+            public uint assetRefIndex;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public uint[] reserved;
+        }
+
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         private static extern int mc_native_session_open(
             byte[] packageDir,
@@ -1246,6 +1830,44 @@ namespace MagicCarpet.PresentationLab
             uint capacity,
             uint elementSize,
             out uint written);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_level1_mission_snapshot(
+            ulong handle,
+            out MissionSnapshot snapshot,
+            uint snapshotSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_fireball_projectiles_copy(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            uint startOrdinal,
+            [Out] ProjectileSnapshot[] buffer,
+            uint capacity,
+            uint elementSize,
+            out uint written);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_fireball_impacts_copy(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            uint startOrdinal,
+            [Out] ImpactSnapshot[] buffer,
+            uint capacity,
+            uint elementSize,
+            out uint written);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_events_copy_since(
+            ulong handle,
+            ref EventQuery query,
+            [Out] EventSnapshot[] buffer,
+            uint capacity,
+            uint elementSize,
+            out EventBatch batch,
+            uint batchSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         private static extern int mc_native_last_error_length(out uint length);
