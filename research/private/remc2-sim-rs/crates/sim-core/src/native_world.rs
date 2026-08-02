@@ -2808,6 +2808,7 @@ impl NativeWorldInspection {
             self.entities[usize::from(self.players[0].entity_index)].model,
             0,
             self.players[0].enabled_spell_holders[2],
+            self.runtime.random_state,
         )?;
         Ok(Level2ResetSession::new(
             self.metadata.map_type.profile(),
@@ -3141,6 +3142,8 @@ pub struct Level2EconomyState {
     free_slots: Vec<u16>,
     baseline_slot_rng: BTreeMap<u16, u16>,
     slot_rng: BTreeMap<u16, u16>,
+    baseline_global_rng: u16,
+    global_rng: u16,
     baseline_source_rng: BTreeMap<u16, u16>,
     source_rng: BTreeMap<u16, u16>,
     baseline_source_owner: BTreeMap<u16, u16>,
@@ -3208,6 +3211,7 @@ impl Level2EconomyState {
         player_model: u8,
         player_terrain_flags: u8,
         player_spell_slot_2: u16,
+        global_rng: u32,
     ) -> Result<Self> {
         let mut free_slots = entities
             .iter()
@@ -3290,6 +3294,8 @@ impl Level2EconomyState {
             free_slots,
             baseline_slot_rng: slot_rng.clone(),
             slot_rng,
+            baseline_global_rng: global_rng as u16,
+            global_rng: global_rng as u16,
             baseline_source_rng: BTreeMap::new(),
             source_rng: BTreeMap::new(),
             baseline_source_owner: source_owner.clone(),
@@ -3340,6 +3346,13 @@ impl Level2EconomyState {
 
     fn allocate_slot(&mut self) -> Option<u16> {
         self.free_slots.pop()
+    }
+
+    #[must_use]
+    fn new_event_rng(&self, source_slot: u16) -> u16 {
+        // Pinned remc2 NewEvent_4A050: rand_0x14 is the source slot plus the
+        // global D41A0.rand_0x8 stream, not the inactive row's stale RNG.
+        source_slot.wrapping_add(self.global_rng)
     }
 
     fn release_slot(&mut self, slot: u16, entity_rng: Option<u16>) {
@@ -3605,7 +3618,7 @@ impl Level2EconomyState {
             let Some(sphere_slot) = self.allocate_slot() else {
                 break;
             };
-            let sphere_seed = self.slot_rng.get(&sphere_slot).copied().unwrap_or(0);
+            let sphere_seed = self.new_event_rng(sphere_slot);
             let sphere_rng = level2_next_rng16(sphere_seed);
             let yaw =
                 i16::try_from((i32::from(sphere_rng % 0x71) + i32::from(source_yaw) - 56) & 0x07ff)
@@ -3801,11 +3814,7 @@ impl Level2EconomyState {
         target_sphere_id: u32,
     ) -> Option<u16> {
         let source_entity_index = self.allocate_slot()?;
-        let entity_rng = self
-            .slot_rng
-            .get(&source_entity_index)
-            .copied()
-            .unwrap_or(0);
+        let entity_rng = self.new_event_rng(source_entity_index);
         let carrier = ManaCarrier {
             id: u32::from(source_entity_index),
             source_entity_index,
@@ -3904,8 +3913,7 @@ impl Level2EconomyState {
             .source_rng
             .get(&source_entity_index)
             .copied()
-            .or_else(|| self.slot_rng.get(&source_entity_index).copied())
-            .unwrap_or_default();
+            .unwrap_or_else(|| self.new_event_rng(source_entity_index));
         self.source_rng.insert(source_entity_index, root_source_rng);
         self.castle = Some(Level2CastleState {
             source_entity_index,
@@ -4197,14 +4205,13 @@ impl Level2EconomyState {
             .source_rng
             .get(&castle_slot)
             .copied()
-            .or_else(|| self.slot_rng.get(&castle_slot).copied())
-            .unwrap_or_default();
+            .unwrap_or_else(|| self.new_event_rng(castle_slot));
         let mut released: i32 = 0;
         for sphere_index in 0..sphere_count {
             let Some(sphere_slot) = self.allocate_slot() else {
                 break;
             };
-            let sphere_seed = self.slot_rng.get(&sphere_slot).copied().unwrap_or_default();
+            let sphere_seed = self.new_event_rng(sphere_slot);
             let sphere_rng = level2_next_rng16(sphere_seed);
             let speed_rng = level2_next_rng16(sphere_rng);
             source_rng = level2_next_rng16(source_rng);
@@ -5048,8 +5055,7 @@ impl Level2EconomyState {
                             .source_rng
                             .get(&snapshot.source_entity_index)
                             .copied()
-                            .or_else(|| self.slot_rng.get(&snapshot.source_entity_index).copied())
-                            .unwrap_or_default();
+                            .unwrap_or_else(|| self.new_event_rng(snapshot.source_entity_index));
                         let final_source_rng = remove_castle_stage(
                             &mut self.terrain.planes,
                             start_x,
@@ -5426,6 +5432,7 @@ impl Level2EconomyState {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
         hasher.update(self.terrain.deterministic_hash().to_le_bytes());
+        hasher.update(self.global_rng.to_le_bytes());
         hasher.update(self.player_mana.to_le_bytes());
         hasher.update(self.player_castle_entity_index.to_le_bytes());
         hasher.update([self.player_castle_stage, self.player_castle_aux_flags]);
@@ -5668,6 +5675,7 @@ impl Level2EconomyState {
         self.terrain = self.baseline_terrain.clone();
         self.free_slots = self.baseline_free_slots.to_vec();
         self.slot_rng = self.baseline_slot_rng.clone();
+        self.global_rng = self.baseline_global_rng;
         self.source_rng = self.baseline_source_rng.clone();
         self.source_owner = self.baseline_source_owner.clone();
         self.owner_class = self.baseline_owner_class.clone();
@@ -12430,7 +12438,7 @@ mod tests {
         }
 
         let sphere_slot = *first.economy().free_slots.last().expect("free sphere slot");
-        let seed = first.economy().slot_rng[&sphere_slot];
+        let seed = sphere_slot.wrapping_add(inspection.runtime().random_state as u16);
         let sphere_rng = level2_next_rng16(seed);
         let expected_yaw =
             i16::try_from((i32::from(sphere_rng % 0x71) + i32::from(0x120_i16) - 56) & 0x07ff)
@@ -13453,7 +13461,7 @@ mod tests {
         assert_eq!(split.economy().free_slots, expected_free_stack);
         let expected_slots = (115_u16..=130).collect::<Vec<_>>();
         let first_slot = expected_slots[0];
-        let first_seed = split.economy().slot_rng[&first_slot];
+        let first_seed = first_slot.wrapping_add(split.runtime().random_state as u16);
         let first_rng = level2_next_rng16(first_seed);
         let second_rng = level2_next_rng16(first_rng);
         let baseline_hash = split.economy().reset_hash();
