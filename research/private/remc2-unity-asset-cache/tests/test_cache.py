@@ -1709,5 +1709,106 @@ class Level2DayMaterialTests(unittest.TestCase):
         path.write_bytes(original)
 
 
+class Level2DayGameplayTests(unittest.TestCase):
+    """Production-path coverage for closure-rooted gameplay/HUD/text spans."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.temp_root = Path(
+            tempfile.mkdtemp(prefix="level2-day-gameplay-test.", dir=cache.GENERATED)
+        )
+        cls.first = cls.temp_root / "first"
+        cls.second = cls.temp_root / "second"
+        for output in (cls.first, cls.second):
+            cache.build_day_gameplay_cache(
+                cache.DEFAULT_OWNER,
+                cache.DEFAULT_LEVEL2_PACKAGE,
+                cache.DEFAULT_LEVEL2_CLOSURE,
+                cache.DEFAULT_CATALOG,
+                output,
+            )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.temp_root)
+
+    def test_deterministic_content_and_selector_metadata(self) -> None:
+        self.assertEqual(tree_identity(self.first), tree_identity(self.second))
+        manifest = cache.validate_day_gameplay_cache(self.first)
+        self.assertGreaterEqual(len(manifest["outputs"]), 160)
+        descriptor = json.loads(
+            (self.first / "gameplay/descriptor.json").read_text(encoding="utf-8")
+        )
+        assets = {row["asset_id"]: row for row in descriptor["assets"]}
+        self.assertIn("owner_data:DATA/BUILD0-0.DAT#footprint-26", assets)
+        self.assertIn("owner_data:DATA/FONT1.DAT#100", assets)
+        self.assertIn("owner_data:LANGUAGE/L1.TXT#string-54", assets)
+        self.assertIn("owner_data:DATA/POINTERS.DAT#9", assets)
+        self.assertEqual(descriptor["source_sets"]["materialized"], len(assets))
+        self.assertTrue(descriptor["semantics"]["selector_metadata_required"])
+        for row in assets.values():
+            self.assertTrue(row["selector_kind"])
+            self.assertTrue(row["extent"]["status"])
+            self.assertTrue(row["mode_status"])
+            self.assertTrue(row["hotspot_status"])
+
+    def test_cross_level_and_unknown_closure_inputs_fail_closed(self) -> None:
+        with self.assertRaisesRegex(cache.CacheError, "requires external=2"):
+            cache.build_day_gameplay_cache(
+                cache.DEFAULT_OWNER,
+                cache.DEFAULT_PACKAGE,
+                cache.DEFAULT_CLOSURE,
+                cache.DEFAULT_CATALOG,
+                self.temp_root / "wrong-profile",
+            )
+        closure_copy = self.temp_root / "closure.json"
+        closure = json.loads(cache.DEFAULT_LEVEL2_CLOSURE.read_text(encoding="utf-8"))
+        closure["sets"]["scene_reachable"]["assets"].append(
+            {
+                "asset_id": "owner_data:DATA/NOPE.DAT#1",
+                "content_address": "sha256:" + "0" * 64,
+                "kind": "catalog_entry",
+            }
+        )
+        closure_copy.write_bytes(cache.canonical_json(closure))
+        with self.assertRaisesRegex(cache.CacheError, "canonical self-hash mismatch"):
+            cache.build_day_gameplay_cache(
+                cache.DEFAULT_OWNER,
+                cache.DEFAULT_LEVEL2_PACKAGE,
+                closure_copy,
+                cache.DEFAULT_CATALOG,
+                self.temp_root / "unknown-selector",
+            )
+
+    def test_output_tamper_and_symlink_are_rejected(self) -> None:
+        path = self.first / "gameplay/descriptor.json"
+        original = path.read_bytes()
+        path.write_bytes(original + b"tamper")
+        with self.assertRaisesRegex(cache.CacheError, "hash mismatch"):
+            cache.validate_day_gameplay_cache(self.first)
+        path.write_bytes(original)
+        link = self.first / "gameplay/symlink.bin"
+        link.symlink_to(self.second / "gameplay/descriptor.json")
+        with self.assertRaisesRegex(cache.CacheError, "symlink"):
+            cache.validate_day_gameplay_cache(self.first)
+        link.unlink()
+
+    def test_default_validator_rejects_self_consistent_wrong_profile_binding(self) -> None:
+        tampered = self.temp_root / "tampered-binding"
+        shutil.copytree(self.first, tampered)
+        path = tampered / "manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["profile"]["package_sha256"] = "0" * 64
+        manifest["bindings"]["level_export_package_sha256"] = "0" * 64
+        unsigned = dict(manifest)
+        unsigned.pop("manifest_payload_sha256", None)
+        manifest["manifest_payload_sha256"] = cache.sha256_bytes(
+            cache.canonical_json(unsigned)
+        )
+        path.write_bytes(cache.canonical_json(manifest))
+        with self.assertRaisesRegex(cache.CacheError, "package binding mismatch"):
+            cache.validate_day_gameplay_cache(tampered)
+
+
 if __name__ == "__main__":
     unittest.main()

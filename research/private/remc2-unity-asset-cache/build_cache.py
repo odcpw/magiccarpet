@@ -32,6 +32,7 @@ DEFAULT_OUTPUT = GENERATED / "level1-unity-asset-cache-plan29-final"
 DEFAULT_LEVEL2_PACKAGE = GENERATED / "l2-debug3.fJ3PaM/level2"
 DEFAULT_LEVEL2_CLOSURE = GENERATED / "level2-asset-closure.json"
 DEFAULT_LEVEL2_OUTPUT = GENERATED / "level2-day-material-cache"
+DEFAULT_LEVEL2_GAMEPLAY_OUTPUT = GENERATED / "level2-day-gameplay-cache"
 DEFAULT_CONFORMANCE_CONTRACT = (
     PRIVATE / "remc2-sim-rs/level1-conformance/plan29-closure-contract.json"
 )
@@ -78,6 +79,7 @@ GOAT_TMAP_GOLDEN = (
 
 SCHEMA = "mc2-owner-unity-asset-cache/v1"
 LEVEL2_MATERIAL_SCHEMA = "mc2-level2-day-material-cache/v1"
+LEVEL2_GAMEPLAY_SCHEMA = "mc2-level2-day-gameplay-cache/v1"
 CONFORMANCE_SEAL_SCHEMA = "mc2-plan29-cache-conformance-identity/v1"
 GENERATOR_VERSION = "1.15.0"
 PINNED_REMC2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
@@ -4307,6 +4309,23 @@ LEVEL2_DAY_SOURCE_PATHS = (
     "DATA/MWEBD0-0.DAT",
     "DATA/MWEBD0-0.TAB",
 )
+LEVEL2_GAMEPLAY_SOURCE_PATHS = (
+    "DATA/BUILD0-0.DAT",
+    "DATA/BUILD0-0.TAB",
+    "DATA/BLDGPRM.DAT",
+    "DATA/FONT1.DAT",
+    "DATA/FONT1.TAB",
+    "DATA/MSPRD0-0.DAT",
+    "DATA/MSPRD0-0.TAB",
+    "DATA/MWEBD0-0.DAT",
+    "DATA/MWEBD0-0.TAB",
+    "DATA/POINTERS.DAT",
+    "DATA/POINTERS.TAB",
+    "DATA/SPELLS.DAT",
+    "LEVELS/LEVELS.DAT",
+    "LEVELS/LEVELS.TAB",
+    "LANGUAGE/L1.TXT",
+)
 
 
 def _level2_catalog_identity(catalog_path: Path) -> tuple[dict[str, Any], str]:
@@ -4475,6 +4494,24 @@ def _level2_owner_sources(
     return source_bytes
 
 
+def _level2_gameplay_sources(
+    owner_root: Path, catalog_rows: dict[str, Any]
+) -> dict[str, bytes]:
+    """Verify the additional closure-rooted gameplay/interface banks."""
+    owner_root = owner_root.expanduser().resolve()
+    source_bytes: dict[str, bytes] = {}
+    for relative in LEVEL2_GAMEPLAY_SOURCE_PATHS:
+        path = confined_source(owner_root, relative)
+        data = path.read_bytes()
+        row = catalog_rows.get(relative)
+        if not isinstance(row, dict) or row.get("sha256") != sha256_bytes(data):
+            raise CacheError(
+                f"Level 2 gameplay source hash differs from catalogue: {relative}"
+            )
+        source_bytes[relative] = data
+    return source_bytes
+
+
 def _level2_tmap_selectors(closure: dict[str, Any]) -> list[int]:
     selectors: set[int] = set()
     for set_name in ("scene_reachable", "dynamic_dependencies"):
@@ -4492,6 +4529,35 @@ def _level2_tmap_selectors(closure: dict[str, Any]) -> list[int]:
     return sorted(selectors)
 
 
+def _level2_closure_asset_rows(
+    closure: dict[str, Any], catalog_rows: dict[str, Any]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Join the qualified scene/dynamic sets to catalog entries fail-closed."""
+    scene = closure.get("sets", {}).get("scene_reachable", {}).get("assets", [])
+    dynamic = closure.get("sets", {}).get("dynamic_dependencies", {}).get("assets", [])
+    if not isinstance(scene, list) or not isinstance(dynamic, list):
+        raise CacheError("Level 2 closure asset sets are malformed")
+    for row in [*scene, *dynamic]:
+        asset_id = row.get("asset_id") if isinstance(row, dict) else None
+        catalog_entry = catalog_rows.get(asset_id)
+        if not isinstance(asset_id, str) or not asset_id.startswith("owner_data:"):
+            raise CacheError(f"Level 2 closure asset is not catalog-rooted: {asset_id}")
+        if isinstance(catalog_entry, dict):
+            if row.get("content_address") != catalog_entry.get("content_address"):
+                raise CacheError(f"Level 2 closure/catalog content mismatch: {asset_id}")
+            continue
+        if row.get("kind") in {"terrain_modification_footprint", "localization_record"}:
+            continue
+        relative = asset_id.removeprefix("owner_data:").split("#", 1)[0]
+        file_entry = catalog_rows.get(relative)
+        if isinstance(file_entry, dict) and "sha256" in file_entry:
+            if row.get("content_address") != f"sha256:{file_entry['sha256']}":
+                raise CacheError(f"Level 2 closure/catalog file mismatch: {asset_id}")
+            continue
+        raise CacheError(f"Level 2 closure asset is not catalog-rooted: {asset_id}")
+    return scene, dynamic
+
+
 def _level2_cache_identity(outputs: list[dict[str, Any]]) -> str:
     return sha256_bytes(
         b"".join(
@@ -4501,10 +4567,301 @@ def _level2_cache_identity(outputs: list[dict[str, Any]]) -> str:
     )
 
 
+def _level2_gameplay_asset_bytes(
+    row: dict[str, Any],
+    source_bytes: dict[str, bytes],
+    catalog_rows: dict[str, Any],
+) -> tuple[bytes, dict[str, Any]]:
+    """Resolve one closure asset to an owned byte span plus selector metadata."""
+    asset_id = row["asset_id"]
+    relative = asset_id.removeprefix("owner_data:").split("#", 1)[0]
+    source = source_bytes.get(relative)
+    if source is None:
+        raise CacheError(f"Level 2 gameplay asset source is not selected: {asset_id}")
+    kind = row.get("kind")
+    if kind == "catalog_file":
+        data = source
+        metadata = {
+            "selector_kind": "file_root",
+            "source_path": relative,
+            "extent": {"bytes": len(data), "status": "qualified_file_extent"},
+            "mode": None,
+            "mode_status": "not_applicable_file_root",
+            "hotspot": None,
+            "hotspot_status": "not_applicable_file_root",
+        }
+    elif kind == "localization_record":
+        selector = row.get("selector")
+        records = language_records(source)
+        if not isinstance(selector, int) or selector < 0 or selector >= len(records):
+            raise CacheError(f"Level 2 localization selector is out of bounds: {asset_id}")
+        data = records[selector]
+        metadata = {
+            "selector_kind": "language_record",
+            "selector": selector,
+            "byte_length": len(data),
+            "encoding": row.get("encoding"),
+            "glyph_indices": row.get("glyph_indices", []),
+            "extent": {"bytes": len(data), "status": "qualified_record_extent"},
+            "mode": None,
+            "mode_status": "not_applicable_localization",
+            "hotspot": None,
+            "hotspot_status": "not_applicable_localization",
+        }
+    elif kind == "terrain_modification_footprint":
+        span = row.get("span", {})
+        offset, length = span.get("offset"), span.get("length")
+        if not isinstance(offset, int) or not isinstance(length, int) or offset < 0 or length <= 0:
+            raise CacheError(f"Level 2 BUILD footprint span is malformed: {asset_id}")
+        if offset + length > len(source):
+            raise CacheError(f"Level 2 BUILD footprint span exceeds source: {asset_id}")
+        data = source[offset : offset + length]
+        metadata = {
+            "selector_kind": "build_footprint",
+            "index": row.get("index"),
+            "offset": offset,
+            "length": length,
+            "width": row.get("width"),
+            "height": row.get("height"),
+            "cell_stride_bytes": row.get("cell_stride_bytes"),
+            "extent": {
+                "bytes": length,
+                "width": row.get("width"),
+                "height": row.get("height"),
+                "status": "qualified_footprint_extent",
+            },
+            "mode": None,
+            "mode_status": "not_applicable_build_footprint",
+            "hotspot": None,
+            "hotspot_status": "not_applicable_build_footprint",
+        }
+    else:
+        entry = catalog_rows.get(asset_id)
+        if not isinstance(entry, dict):
+            raise CacheError(f"Level 2 gameplay catalog entry is missing: {asset_id}")
+        offset = entry.get("offset")
+        length = entry.get("encoded_length")
+        if entry.get("end_offset") is not None:
+            end_offset = entry["end_offset"]
+            if not isinstance(offset, int) or not isinstance(end_offset, int):
+                raise CacheError(f"Level 2 packed span is malformed: {asset_id}")
+            length = end_offset - offset
+        if not isinstance(offset, int) or not isinstance(length, int) or offset < 0 or length <= 0:
+            raise CacheError(f"Level 2 indexed span is malformed: {asset_id}")
+        if offset + length > len(source):
+            raise CacheError(f"Level 2 indexed span exceeds source: {asset_id}")
+        data = source[offset : offset + length]
+        metadata = {
+            "selector_kind": "indexed_entry",
+            "index": entry.get("index"),
+            "offset": offset,
+            "length": length,
+            "dimensions": entry.get("dimensions"),
+            "mode": row.get("mode"),
+            "mode_status": "qualified" if row.get("mode") is not None else "not_supplied_in_qualified_catalog",
+            "hotspot": row.get("hotspot"),
+            "hotspot_status": "qualified" if row.get("hotspot") is not None else "not_supplied_in_qualified_catalog",
+            "extent": {
+                "bytes": length,
+                "dimensions": entry.get("dimensions"),
+                "status": "qualified_dimensions" if all(
+                    isinstance(entry.get("dimensions", {}).get(key), int)
+                    and entry["dimensions"][key] > 0
+                    for key in ("width", "height")
+                ) else "not_decoded_requires_rnc_or_catalog_extent_only",
+            },
+        }
+    expected = row.get("content_address")
+    if expected != f"sha256:{sha256_bytes(data)}":
+        raise CacheError(f"Level 2 gameplay asset bytes disagree with closure: {asset_id}")
+    return data, metadata
+
+
+def build_day_gameplay_cache(
+    owner_root: Path,
+    package_dir: Path,
+    closure_path: Path,
+    catalog_path: Path,
+    output: Path,
+) -> dict[str, Any]:
+    """Materialize closure-rooted Level 2 gameplay, HUD, and text spans."""
+    output = validate_output_path(output)
+    profile, package, closure, catalog_rows = _level2_profile(
+        package_dir, closure_path, catalog_path
+    )
+    scene, dynamic = _level2_closure_asset_rows(closure, catalog_rows)
+    source_bytes = _level2_owner_sources(owner_root, catalog_rows)
+    source_bytes.update(_level2_gameplay_sources(owner_root, catalog_rows))
+    rows_by_id = {row["asset_id"]: row for row in [*scene, *dynamic]}
+    for row in closure.get("sets", {}).get("realm_load_roots", {}).get("assets", []):
+        relative = row.get("asset_id", "").removeprefix("owner_data:").split("#", 1)[0]
+        if relative in set(LEVEL2_GAMEPLAY_SOURCE_PATHS):
+            rows_by_id.setdefault(row["asset_id"], row)
+    excluded = []
+    selected = []
+    for row in rows_by_id.values():
+        asset_id = row["asset_id"]
+        relative = asset_id.removeprefix("owner_data:").split("#", 1)[0]
+        if relative in {"SOUND/SOUND.DAT", "SOUND/MUSIC.DAT"}:
+            excluded.append({"asset_id": asset_id, "reason": "owned by L2-13C audio cache"})
+            continue
+        if relative not in set(LEVEL2_DAY_SOURCE_PATHS + LEVEL2_GAMEPLAY_SOURCE_PATHS):
+            raise CacheError(f"Level 2 gameplay closure contains an unowned root: {asset_id}")
+        selected.append(row)
+    selected.sort(key=lambda row: row["asset_id"])
+    stage = Path(tempfile.mkdtemp(prefix=".level2-day-gameplay-", dir=output.parent))
+    try:
+        outputs: list[dict[str, Any]] = []
+        descriptors = []
+        for row in selected:
+            data, metadata = _level2_gameplay_asset_bytes(row, source_bytes, catalog_rows)
+            safe = row["asset_id"].removeprefix("owner_data:").replace("/", "_").replace("#", "_")
+            target = f"gameplay/{safe}.bin"
+            output_row = write_output(
+                stage,
+                outputs,
+                target,
+                data,
+                kind=f"level2_{row.get('kind', 'asset')}",
+                source_asset_ids=[row["asset_id"]],
+                extra=metadata,
+            )
+            descriptors.append({
+                "asset_id": row["asset_id"],
+                "kind": row.get("kind"),
+                "output": output_row["path"],
+                "content_address": row.get("content_address"),
+                **metadata,
+            })
+        descriptor = {
+            "schema": "mc2-level2-day-gameplay/v1",
+            "profile": profile,
+            "assets": descriptors,
+            "excluded": excluded,
+            "source_sets": {
+                "scene_reachable": len(scene),
+                "dynamic_dependencies": len(dynamic),
+                "materialized": len(descriptors),
+            },
+            "semantics": {
+                "owner_bytes_only": True,
+                "selector_metadata_required": True,
+                "unknown_selectors": "fail_closed",
+                "hud_localization_roots": ["DATA/POINTERS.DAT", "DATA/MSPRD0-0.DAT", "DATA/MWEBD0-0.DAT", "DATA/FONT1.DAT", "LANGUAGE/L1.TXT"],
+            },
+        }
+        descriptor_bytes = canonical_json(descriptor)
+        write_output(
+            stage,
+            outputs,
+            "gameplay/descriptor.json",
+            descriptor_bytes,
+            kind="canonical_json_level2_gameplay_descriptor",
+            source_asset_ids=sorted({item["asset_id"] for item in descriptors}),
+        )
+        manifest = {
+            "schema": LEVEL2_GAMEPLAY_SCHEMA,
+            "generator": {"name": "build_cache.py", "version": GENERATOR_VERSION},
+            "profile": profile,
+            "bindings": {
+                "level_export_package_sha256": profile["package_sha256"],
+                "level_asset_closure_sha256": profile["closure_sha256"],
+                "owner_catalog_sha256": profile["catalog_sha256"],
+                "owner_catalog_file_sha256": profile["catalog_file_sha256"],
+                "remc2_commit": PINNED_REMC2_COMMIT,
+            },
+            "outputs": outputs,
+            "cache_content_sha256": _level2_cache_identity(outputs),
+        }
+        manifest["manifest_payload_sha256"] = sha256_bytes(canonical_json(manifest))
+        (stage / "manifest.json").write_bytes(canonical_json(manifest))
+        validate_day_gameplay_cache(stage, profile["package_sha256"], profile["closure_sha256"])
+        fsync_tree(stage)
+        commit_stage(output, stage)
+        return manifest
+    except Exception:
+        if stage.exists():
+            shutil.rmtree(stage)
+        raise
+
+
+def validate_day_gameplay_cache(
+    cache_dir: Path,
+    expected_package: str | None = EXPECTED_LEVEL2_PACKAGE,
+    expected_closure: str | None = EXPECTED_LEVEL2_CLOSURE,
+) -> dict[str, Any]:
+    """Validate the profile, content identity, and descriptor of the L2 slice."""
+    cache_dir = cache_dir.expanduser().resolve()
+    manifest_path = cache_dir / "manifest.json"
+    if manifest_path.is_symlink():
+        raise CacheError("Level 2 gameplay cache contains symlink")
+    manifest = load_json(manifest_path)
+    claim = manifest.get("manifest_payload_sha256")
+    unsigned = dict(manifest)
+    unsigned.pop("manifest_payload_sha256", None)
+    if sha256_bytes(canonical_json(unsigned)) != claim:
+        raise CacheError("Level 2 gameplay manifest metadata hash mismatch")
+    if manifest.get("schema") != LEVEL2_GAMEPLAY_SCHEMA:
+        raise CacheError("unsupported Level 2 gameplay cache schema")
+    profile = manifest.get("profile", {})
+    if profile.get("name") != "level2-day" or profile.get("external_level") != 2 or profile.get("internal_level") != 1 or profile.get("map_type") != {"id": 0, "name": "Day"} or profile.get("spec_commit") != PINNED_REMC2_COMMIT:
+        raise CacheError("Level 2 gameplay profile identity mismatch")
+    if expected_package is not None and profile.get("package_sha256") != expected_package:
+        raise CacheError("Level 2 gameplay package binding mismatch")
+    if expected_closure is not None and profile.get("closure_sha256") != expected_closure:
+        raise CacheError("Level 2 gameplay closure binding mismatch")
+    bindings = manifest.get("bindings", {})
+    if (
+        bindings.get("level_export_package_sha256") != profile.get("package_sha256")
+        or bindings.get("level_asset_closure_sha256") != profile.get("closure_sha256")
+        or bindings.get("owner_catalog_sha256") != profile.get("catalog_sha256")
+        or bindings.get("owner_catalog_file_sha256") != profile.get("catalog_file_sha256")
+        or bindings.get("remc2_commit") != PINNED_REMC2_COMMIT
+    ):
+        raise CacheError("Level 2 gameplay manifest bindings mismatch")
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, list) or not outputs:
+        raise CacheError("Level 2 gameplay cache has no outputs")
+    seen: set[str] = set()
+    for row in outputs:
+        relative = row.get("path")
+        if not isinstance(relative, str) or relative in seen or relative.startswith("/") or ".." in Path(relative).parts:
+            raise CacheError("invalid or duplicate Level 2 gameplay output path")
+        seen.add(relative)
+        path = cache_dir / relative
+        if path.is_symlink():
+            raise CacheError(f"Level 2 gameplay cache contains symlink: {relative}")
+        if not path.is_file() or path.stat().st_size != row.get("bytes") or sha256_file(path) != row.get("sha256"):
+            raise CacheError(f"Level 2 gameplay output hash mismatch: {relative}")
+    if _level2_cache_identity(outputs) != manifest.get("cache_content_sha256"):
+        raise CacheError("Level 2 gameplay cache content identity mismatch")
+    descriptor_path = cache_dir / "gameplay/descriptor.json"
+    if descriptor_path.is_symlink() or not descriptor_path.is_file():
+        raise CacheError("Level 2 gameplay descriptor is missing or symlinked")
+    descriptor = load_json(descriptor_path)
+    if descriptor.get("schema") != "mc2-level2-day-gameplay/v1" or descriptor.get("profile") != profile:
+        raise CacheError("Level 2 gameplay descriptor identity mismatch")
+    if descriptor.get("source_sets", {}).get("materialized", 0) != len(descriptor.get("assets", [])):
+        raise CacheError("Level 2 gameplay descriptor materialization count mismatch")
+    descriptor_outputs = {row.get("output") for row in descriptor.get("assets", [])}
+    if descriptor_outputs != seen - {"gameplay/descriptor.json"}:
+        raise CacheError("Level 2 gameplay descriptor/output set mismatch")
+    actual_tree = {
+        path.relative_to(cache_dir).as_posix()
+        for path in cache_dir.rglob("*")
+        if path.is_file()
+    }
+    if any(path.is_symlink() for path in cache_dir.rglob("*")):
+        raise CacheError("Level 2 gameplay cache tree contains symlink")
+    if actual_tree != {"manifest.json", *seen}:
+        raise CacheError("Level 2 gameplay cache tree has missing or extra files")
+    return manifest
+
+
 def validate_day_material_cache(
     cache_dir: Path,
-    expected_package: str | None = None,
-    expected_closure: str | None = None,
+    expected_package: str | None = EXPECTED_LEVEL2_PACKAGE,
+    expected_closure: str | None = EXPECTED_LEVEL2_CLOSURE,
 ) -> dict[str, Any]:
     """Validate a profile-bound Level 2 base-material cache and its tree."""
     cache_dir = cache_dir.expanduser().resolve()
@@ -7574,6 +7931,12 @@ def parse_args() -> argparse.Namespace:
     build_day.add_argument("--closure", type=Path, default=DEFAULT_LEVEL2_CLOSURE)
     build_day.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
     build_day.add_argument("--output", type=Path, default=DEFAULT_LEVEL2_OUTPUT)
+    build_gameplay = subparsers.add_parser("build-day-gameplay")
+    build_gameplay.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
+    build_gameplay.add_argument("--package", type=Path, default=DEFAULT_LEVEL2_PACKAGE)
+    build_gameplay.add_argument("--closure", type=Path, default=DEFAULT_LEVEL2_CLOSURE)
+    build_gameplay.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
+    build_gameplay.add_argument("--output", type=Path, default=DEFAULT_LEVEL2_GAMEPLAY_OUTPUT)
     validate = subparsers.add_parser("validate")
     validate.add_argument("--cache", type=Path, default=DEFAULT_OUTPUT)
     validate.add_argument("--package-sha256", default=EXPECTED_PACKAGE)
@@ -7585,8 +7948,12 @@ def parse_args() -> argparse.Namespace:
     )
     validate_day = subparsers.add_parser("validate-day")
     validate_day.add_argument("--cache", type=Path, default=DEFAULT_LEVEL2_OUTPUT)
-    validate_day.add_argument("--package-sha256")
-    validate_day.add_argument("--closure-sha256")
+    validate_day.add_argument("--package-sha256", default=EXPECTED_LEVEL2_PACKAGE)
+    validate_day.add_argument("--closure-sha256", default=EXPECTED_LEVEL2_CLOSURE)
+    validate_gameplay = subparsers.add_parser("validate-day-gameplay")
+    validate_gameplay.add_argument("--cache", type=Path, default=DEFAULT_LEVEL2_GAMEPLAY_OUTPUT)
+    validate_gameplay.add_argument("--package-sha256", default=EXPECTED_LEVEL2_PACKAGE)
+    validate_gameplay.add_argument("--closure-sha256", default=EXPECTED_LEVEL2_CLOSURE)
     return parser.parse_args()
 
 
@@ -7619,8 +7986,30 @@ def main() -> int:
                 f"cache={args.output} outputs={len(manifest['outputs'])} "
                 f"content_sha256={manifest['cache_content_sha256']}"
             )
+        elif args.command == "build-day-gameplay":
+            manifest = build_day_gameplay_cache(
+                args.owner_root,
+                args.package,
+                args.closure,
+                args.catalog,
+                args.output,
+            )
+            print(
+                f"cache={args.output} outputs={len(manifest['outputs'])} "
+                f"content_sha256={manifest['cache_content_sha256']}"
+            )
         elif args.command == "validate-day":
             manifest = validate_day_material_cache(
+                args.cache,
+                args.package_sha256,
+                args.closure_sha256,
+            )
+            print(
+                f"valid schema={manifest['schema']} "
+                f"content_sha256={manifest['cache_content_sha256']}"
+            )
+        elif args.command == "validate-day-gameplay":
+            manifest = validate_day_gameplay_cache(
                 args.cache,
                 args.package_sha256,
                 args.closure_sha256,
