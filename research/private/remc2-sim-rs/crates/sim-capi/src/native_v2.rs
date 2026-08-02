@@ -13015,6 +13015,7 @@ mod tests {
                 incoming_owner_entity_index: 0,
                 incoming_possession_payload: 0,
                 assigned_carrier_id: 0,
+                assigned_defender_slot: 0,
                 control_flags: 0,
                 phase: 6,
                 active: true,
