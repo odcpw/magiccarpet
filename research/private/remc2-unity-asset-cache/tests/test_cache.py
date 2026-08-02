@@ -1953,5 +1953,197 @@ class Level2DayAudioTests(unittest.TestCase):
             )
 
 
+class Level2DayAggregateTests(unittest.TestCase):
+    """Acceptance coverage for the combined private Level 2 owner cache."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.temp_root = Path(
+            tempfile.mkdtemp(prefix="level2-day-aggregate-test.", dir=cache.GENERATED)
+        )
+        cls.first = cls.temp_root / "first"
+        cls.second = cls.temp_root / "second"
+        for output in (cls.first, cls.second):
+            cache.build_day_aggregate_cache(
+                cache.DEFAULT_OWNER,
+                cache.DEFAULT_LEVEL2_PACKAGE,
+                cache.DEFAULT_LEVEL2_CLOSURE,
+                cache.DEFAULT_CATALOG,
+                output,
+            )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.temp_root)
+
+    def test_deterministic_composition_and_level1_seal(self) -> None:
+        self.assertEqual(tree_identity(self.first), tree_identity(self.second))
+        manifest = cache.validate_day_aggregate_cache(self.first)
+        self.assertEqual(set(manifest["components"]), {"material", "gameplay", "audio"})
+        self.assertEqual(manifest["profile"]["external_level"], 2)
+        self.assertEqual(manifest["profile"]["internal_level"], 1)
+        self.assertEqual(manifest["profile"]["map_type"], {"id": 0, "name": "Day"})
+        self.assertEqual(
+            len(manifest["outputs"]),
+            sum(row["output_count"] + 1 for row in manifest["components"].values()),
+        )
+        for row in manifest["outputs"]:
+            if row["kind"] != "level2_child_manifest":
+                self.assertTrue(
+                    all(source.startswith("owner_data:") for source in row["source_asset_ids"])
+                )
+        level1 = cache.validate_cache(cache.DEFAULT_OUTPUT)
+        self.assertEqual(
+            level1["cache_content_sha256"],
+            "b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf",
+        )
+
+    def test_missing_output_and_source_ledger_tamper_fail_closed(self) -> None:
+        missing = self.temp_root / "missing"
+        shutil.copytree(self.first, missing)
+        victim = next(
+            path
+            for path in (missing / "components").rglob("*")
+            if path.is_file() and path.name != "manifest.json"
+        )
+        victim.unlink()
+        with self.assertRaisesRegex(cache.CacheError, "output missing"):
+            cache.validate_day_aggregate_cache(missing)
+
+        tampered = self.temp_root / "source-ledger-tamper"
+        shutil.copytree(self.first, tampered)
+        child_path = tampered / "components/material/manifest.json"
+        child = json.loads(child_path.read_text(encoding="utf-8"))
+        child["outputs"][0]["source_asset_ids"] = ["owner_data:FAKE.DAT"]
+        unsigned_child = dict(child)
+        unsigned_child.pop("manifest_payload_sha256", None)
+        child["manifest_payload_sha256"] = cache.sha256_bytes(cache.canonical_json(unsigned_child))
+        child_path.write_bytes(cache.canonical_json(child))
+        aggregate_path = tampered / "manifest.json"
+        aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
+        aggregate["components"]["material"]["manifest_sha256"] = cache.sha256_file(child_path)
+        for row in aggregate["outputs"]:
+            if row["path"] == "components/material/manifest.json":
+                row["bytes"] = child_path.stat().st_size
+                row["sha256"] = cache.sha256_file(child_path)
+            if row["path"] == "components/material/" + child["outputs"][0]["path"]:
+                row["source_asset_ids"] = ["owner_data:FAKE.DAT"]
+        aggregate["cache_content_sha256"] = cache._level2_cache_identity(aggregate["outputs"])
+        unsigned_aggregate = dict(aggregate)
+        unsigned_aggregate.pop("manifest_payload_sha256", None)
+        aggregate["manifest_payload_sha256"] = cache.sha256_bytes(
+            cache.canonical_json(unsigned_aggregate)
+        )
+        aggregate_path.write_bytes(cache.canonical_json(aggregate))
+        with self.assertRaisesRegex(cache.CacheError, "outside closure"):
+            cache.validate_day_aggregate_cache(tampered)
+
+        extra = self.temp_root / "extra-output"
+        shutil.copytree(self.first, extra)
+        extra_file = extra / "components/extra.bin"
+        extra_file.write_bytes(b"unexpected")
+        aggregate_path = extra / "manifest.json"
+        aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
+        aggregate["outputs"].append(
+            {
+                "path": "components/extra.bin",
+                "kind": "unexpected",
+                "bytes": extra_file.stat().st_size,
+                "sha256": cache.sha256_file(extra_file),
+                "source_asset_ids": ["owner_data:DATA/PALD-0.DAT"],
+                "component": "aggregate",
+            }
+        )
+        aggregate["outputs"].sort(key=lambda row: row["path"])
+        aggregate["cache_content_sha256"] = cache._level2_cache_identity(aggregate["outputs"])
+        unsigned_aggregate = dict(aggregate)
+        unsigned_aggregate.pop("manifest_payload_sha256", None)
+        aggregate["manifest_payload_sha256"] = cache.sha256_bytes(
+            cache.canonical_json(unsigned_aggregate)
+        )
+        aggregate_path.write_bytes(cache.canonical_json(aggregate))
+        with self.assertRaisesRegex(cache.CacheError, "output set changed"):
+            cache.validate_day_aggregate_cache(extra)
+
+    def test_component_profile_tamper_cross_level_missing_and_privacy_fail_closed(self) -> None:
+        tampered = self.temp_root / "component-profile-tamper"
+        shutil.copytree(self.first, tampered)
+        child_path = tampered / "components/gameplay/manifest.json"
+        child = json.loads(child_path.read_text(encoding="utf-8"))
+        child["profile"]["catalog_sha256"] = "0" * 64
+        child["bindings"]["owner_catalog_sha256"] = "0" * 64
+        unsigned_child = dict(child)
+        unsigned_child.pop("manifest_payload_sha256", None)
+        child["manifest_payload_sha256"] = cache.sha256_bytes(cache.canonical_json(unsigned_child))
+        child_path.write_bytes(cache.canonical_json(child))
+        aggregate_path = tampered / "manifest.json"
+        aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
+        aggregate["components"]["gameplay"]["manifest_sha256"] = cache.sha256_file(child_path)
+        for row in aggregate["outputs"]:
+            if row["path"] == "components/gameplay/manifest.json":
+                row["bytes"] = child_path.stat().st_size
+                row["sha256"] = cache.sha256_file(child_path)
+        aggregate["cache_content_sha256"] = cache._level2_cache_identity(aggregate["outputs"])
+        unsigned_aggregate = dict(aggregate)
+        unsigned_aggregate.pop("manifest_payload_sha256", None)
+        aggregate["manifest_payload_sha256"] = cache.sha256_bytes(
+            cache.canonical_json(unsigned_aggregate)
+        )
+        aggregate_path.write_bytes(cache.canonical_json(aggregate))
+        with self.assertRaisesRegex(cache.CacheError, "descriptor identity mismatch"):
+            cache.validate_day_aggregate_cache(tampered)
+
+        binding_tampered = self.temp_root / "component-binding-key-tamper"
+        shutil.copytree(self.first, binding_tampered)
+        child_path = binding_tampered / "components/material/manifest.json"
+        child = json.loads(child_path.read_text(encoding="utf-8"))
+        child["bindings"]["unexpected"] = "tampered"
+        unsigned_child = dict(child)
+        unsigned_child.pop("manifest_payload_sha256", None)
+        child["manifest_payload_sha256"] = cache.sha256_bytes(cache.canonical_json(unsigned_child))
+        child_path.write_bytes(cache.canonical_json(child))
+        aggregate_path = binding_tampered / "manifest.json"
+        aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
+        aggregate["components"]["material"]["manifest_sha256"] = cache.sha256_file(child_path)
+        for row in aggregate["outputs"]:
+            if row["path"] == "components/material/manifest.json":
+                row["bytes"] = child_path.stat().st_size
+                row["sha256"] = cache.sha256_file(child_path)
+        aggregate["cache_content_sha256"] = cache._level2_cache_identity(aggregate["outputs"])
+        unsigned_aggregate = dict(aggregate)
+        unsigned_aggregate.pop("manifest_payload_sha256", None)
+        aggregate["manifest_payload_sha256"] = cache.sha256_bytes(
+            cache.canonical_json(unsigned_aggregate)
+        )
+        aggregate_path.write_bytes(cache.canonical_json(aggregate))
+        with self.assertRaisesRegex(cache.CacheError, "binding keys changed"):
+            cache.validate_day_aggregate_cache(binding_tampered)
+
+        with self.assertRaisesRegex(cache.CacheError, "requires external=2"):
+            cache.build_day_aggregate_cache(
+                cache.DEFAULT_OWNER,
+                cache.DEFAULT_PACKAGE,
+                cache.DEFAULT_CLOSURE,
+                cache.DEFAULT_CATALOG,
+                self.temp_root / "wrong-profile",
+            )
+        with self.assertRaisesRegex(cache.CacheError, "cannot read canonical JSON"):
+            cache.build_day_aggregate_cache(
+                cache.DEFAULT_OWNER,
+                cache.DEFAULT_LEVEL2_PACKAGE,
+                self.temp_root / "missing-closure.json",
+                cache.DEFAULT_CATALOG,
+                self.temp_root / "missing-input",
+            )
+        with self.assertRaisesRegex(cache.CacheError, "distributable path"):
+            cache.build_day_aggregate_cache(
+                cache.DEFAULT_OWNER,
+                cache.DEFAULT_LEVEL2_PACKAGE,
+                cache.DEFAULT_LEVEL2_CLOSURE,
+                cache.DEFAULT_CATALOG,
+                cache.UNITY / "Assets/Level2OwnerCache",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

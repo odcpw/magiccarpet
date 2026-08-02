@@ -81,6 +81,7 @@ SCHEMA = "mc2-owner-unity-asset-cache/v1"
 LEVEL2_MATERIAL_SCHEMA = "mc2-level2-day-material-cache/v1"
 LEVEL2_GAMEPLAY_SCHEMA = "mc2-level2-day-gameplay-cache/v1"
 LEVEL2_AUDIO_SCHEMA = "mc2-level2-day-audio-cache/v1"
+LEVEL2_AGGREGATE_SCHEMA = "mc2-level2-day-owner-cache/v1"
 EXPECTED_LEVEL2_SOUND_RECORDS_SHA256 = "23c6a8fbb3ff907e72ce127bbe3163ee6a4955e0319371268a7e8d65b1422555"
 EXPECTED_LEVEL2_MUSIC_RECORDS_SHA256 = "1cb48c36ee4f3d8ec12ca8f3572ad9ec2b171026aa09a2039dfbd80309c0dcb5"
 LEVEL2_AUDIO_DENOMINATOR = (
@@ -88,11 +89,14 @@ LEVEL2_AUDIO_DENOMINATOR = (
     / "remc2-sim-rs/level2-conformance/denominator/level2-dispatch-rng-audio-presentation.json"
 )
 DEFAULT_LEVEL2_AUDIO_OUTPUT = GENERATED / "level2-day-audio-cache"
+DEFAULT_LEVEL2_AGGREGATE_OUTPUT = GENERATED / "level2-day-owner-cache"
 CONFORMANCE_SEAL_SCHEMA = "mc2-plan29-cache-conformance-identity/v1"
 GENERATOR_VERSION = "1.15.0"
 PINNED_REMC2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 EXPECTED_LEVEL2_PACKAGE = "4b8c245c268d9644d5911285c4b4da5dacb78d02034fec7d2f05366a4cc48c6a"
 EXPECTED_LEVEL2_CLOSURE = "a4a7a3d4086c09404294fb90d53e7f34e05d58a406fb025e15f032cca18793f1"
+EXPECTED_LEVEL2_CATALOG = "ea9a735c598f2cbed81541366e1fdf8a5fcbc8cef7aecd086bb8a6a9e7c2429e"
+EXPECTED_LEVEL2_CATALOG_FILE = "a25488be0933e5b4499665d37440a9860c8614649d9f695080da511c11d75b44"
 PINNED_REMC2_SOURCE_SPANS = (
     (
         "remc2/engine/GameRenderOriginal.cpp",
@@ -5275,6 +5279,337 @@ def validate_day_audio_cache(
     return manifest
 
 
+def _level2_aggregate_components() -> tuple[tuple[str, str, Any], ...]:
+    """Return the three production cache seams composed by the aggregate.
+
+    Keeping this table next to the aggregate validator makes the composition
+    explicit without introducing a second cache builder or duplicating any of
+    the child materialization logic.
+    """
+    return (
+        ("material", LEVEL2_MATERIAL_SCHEMA, validate_day_material_cache),
+        ("gameplay", LEVEL2_GAMEPLAY_SCHEMA, validate_day_gameplay_cache),
+        ("audio", LEVEL2_AUDIO_SCHEMA, validate_day_audio_cache),
+    )
+
+
+def _level2_aggregate_allowed_source_ids() -> set[str]:
+    """Return the sealed owner-data IDs reachable by the Level 2 closure."""
+    _profile, _package, closure, catalog_rows = _level2_profile(
+        DEFAULT_LEVEL2_PACKAGE, DEFAULT_LEVEL2_CLOSURE, DEFAULT_CATALOG
+    )
+    scene, dynamic = _level2_closure_asset_rows(closure, catalog_rows)
+    allowed = {
+        row["asset_id"]
+        for row in [*scene, *dynamic]
+        if isinstance(row, dict) and isinstance(row.get("asset_id"), str)
+    }
+    for relative in (
+        *LEVEL2_DAY_SOURCE_PATHS,
+        *LEVEL2_GAMEPLAY_SOURCE_PATHS,
+        *LEVEL2_AUDIO_SOURCE_PATHS,
+    ):
+        allowed.add(f"owner_data:{relative}")
+    return allowed
+
+
+def _level2_aggregate_output_rows(
+    stage: Path,
+    child_manifests: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Namespace child manifests and return one deterministic output ledger."""
+    outputs: list[dict[str, Any]] = []
+    components: dict[str, dict[str, Any]] = {}
+    for name, schema, _validator in _level2_aggregate_components():
+        root = stage / "components" / name
+        manifest_path = root / "manifest.json"
+        if manifest_path.is_symlink() or not manifest_path.is_file():
+            raise CacheError(f"Level 2 aggregate child manifest is missing: {name}")
+        child = child_manifests[name]
+        if child.get("schema") != schema:
+            raise CacheError(f"Level 2 aggregate child schema changed: {name}")
+        child_manifest_rel = f"components/{name}/manifest.json"
+        outputs.append(
+            {
+                "path": child_manifest_rel,
+                "kind": "level2_child_manifest",
+                "bytes": manifest_path.stat().st_size,
+                "sha256": sha256_file(manifest_path),
+                "source_asset_ids": [f"level2_component:{name}"],
+                "component": name,
+            }
+        )
+        child_rows = child.get("outputs")
+        if not isinstance(child_rows, list) or not child_rows:
+            raise CacheError(f"Level 2 aggregate child has no outputs: {name}")
+        for child_row in child_rows:
+            relative = child_row.get("path")
+            if (
+                not isinstance(relative, str)
+                or relative.startswith("/")
+                or ".." in Path(relative).parts
+            ):
+                raise CacheError(f"invalid {name} child output path")
+            source_ids = child_row.get("source_asset_ids")
+            if (
+                not isinstance(source_ids, list)
+                or not source_ids
+                or any(
+                    not isinstance(source, str) or not source.startswith("owner_data:")
+                    for source in source_ids
+                )
+            ):
+                raise CacheError(f"{name} child output is not closure-backed: {relative}")
+            child_path = root / relative
+            if child_path.is_symlink() or not child_path.is_file():
+                raise CacheError(f"{name} child output is missing: {relative}")
+            aggregate_row = dict(child_row)
+            aggregate_row["path"] = f"components/{name}/{relative}"
+            aggregate_row["component"] = name
+            outputs.append(aggregate_row)
+        components[name] = {
+            "schema": schema,
+            "manifest_path": child_manifest_rel,
+            "manifest_sha256": sha256_file(manifest_path),
+            "cache_content_sha256": child.get("cache_content_sha256"),
+            "output_count": len(child_rows),
+        }
+    outputs.sort(key=lambda row: row["path"])
+    return outputs, components
+
+
+def build_day_aggregate_cache(
+    owner_root: Path,
+    package_dir: Path,
+    closure_path: Path,
+    catalog_path: Path,
+    output: Path,
+) -> dict[str, Any]:
+    """Compose the qualified Level 2 Day material/gameplay/audio caches.
+
+    Each child is still built and validated by its existing production path.
+    The aggregate only namespaces those outputs and seals their identities in
+    one private, content-addressed manifest.
+    """
+    output = validate_output_path(output)
+    profile, _package, _closure, _catalog_rows = _level2_profile(
+        package_dir, closure_path, catalog_path
+    )
+    stage = Path(tempfile.mkdtemp(prefix=".level2-day-aggregate-", dir=output.parent))
+    try:
+        component_root = stage / "components"
+        component_root.mkdir(parents=True, exist_ok=True)
+        builders = {
+            "material": build_day_material_cache,
+            "gameplay": build_day_gameplay_cache,
+            "audio": build_day_audio_cache,
+        }
+        child_manifests: dict[str, dict[str, Any]] = {}
+        for name, _schema, validator in _level2_aggregate_components():
+            child_output = component_root / name
+            child_manifests[name] = builders[name](
+                owner_root,
+                package_dir,
+                closure_path,
+                catalog_path,
+                child_output,
+            )
+            validator(child_output, profile["package_sha256"], profile["closure_sha256"])
+        outputs, components = _level2_aggregate_output_rows(stage, child_manifests)
+        manifest: dict[str, Any] = {
+            "schema": LEVEL2_AGGREGATE_SCHEMA,
+            "generator": {"name": "build_cache.py", "version": GENERATOR_VERSION},
+            "profile": profile,
+            "bindings": {
+                "level_export_package_sha256": profile["package_sha256"],
+                "level_asset_closure_sha256": profile["closure_sha256"],
+                "owner_catalog_sha256": profile["catalog_sha256"],
+                "owner_catalog_file_sha256": profile["catalog_file_sha256"],
+                "remc2_commit": PINNED_REMC2_COMMIT,
+            },
+            "components": components,
+            "outputs": outputs,
+            "cache_content_sha256": _level2_cache_identity(outputs),
+        }
+        manifest["manifest_payload_sha256"] = sha256_bytes(canonical_json(manifest))
+        (stage / "manifest.json").write_bytes(canonical_json(manifest))
+        validate_day_aggregate_cache(
+            stage, profile["package_sha256"], profile["closure_sha256"]
+        )
+        fsync_tree(stage)
+        commit_stage(output, stage)
+        return manifest
+    except Exception:
+        if stage.exists():
+            shutil.rmtree(stage)
+        raise
+
+
+def validate_day_aggregate_cache(
+    cache_dir: Path,
+    expected_package: str | None = EXPECTED_LEVEL2_PACKAGE,
+    expected_closure: str | None = EXPECTED_LEVEL2_CLOSURE,
+) -> dict[str, Any]:
+    """Validate the sealed, namespaced Level 2 Day owner-cache composition."""
+    cache_dir = cache_dir.expanduser().resolve()
+    validate_output_path(cache_dir)
+    manifest_path = cache_dir / "manifest.json"
+    if manifest_path.is_symlink():
+        raise CacheError("Level 2 aggregate manifest is symlinked")
+    manifest = load_json(manifest_path)
+    unsigned = dict(manifest)
+    claim = unsigned.pop("manifest_payload_sha256", None)
+    if sha256_bytes(canonical_json(unsigned)) != claim:
+        raise CacheError("Level 2 aggregate manifest metadata hash mismatch")
+    if manifest.get("schema") != LEVEL2_AGGREGATE_SCHEMA:
+        raise CacheError("unsupported Level 2 aggregate cache schema")
+    expected_profile = {
+        "name": "level2-day",
+        "external_level": 2,
+        "internal_level": 1,
+        "map_type": {"id": 0, "name": "Day"},
+        "selectors": {
+            "vga_resolution_selector": 1,
+            "texture_size": 32,
+            "terrain_graphics_flags": 0,
+            "terrain_graphics_flag_2": False,
+            "terrain_bank": "TMAPS0-0",
+            "sprite_bank": "MSPRD0-0",
+            "web_bank": "MWEBD0-0",
+            "block_bank": "BL32N0-0",
+            "palette": "PALD-0",
+            "sky_bank": "SKYD0-0",
+        },
+        "package_sha256": expected_package,
+        "closure_sha256": expected_closure,
+        "catalog_sha256": EXPECTED_LEVEL2_CATALOG,
+        "catalog_file_sha256": EXPECTED_LEVEL2_CATALOG_FILE,
+        "spec_commit": PINNED_REMC2_COMMIT,
+    }
+    if manifest.get("profile") != expected_profile:
+        raise CacheError("Level 2 aggregate profile identity mismatch")
+    bindings = manifest.get("bindings", {})
+    if bindings != {
+        "level_export_package_sha256": expected_package,
+        "level_asset_closure_sha256": expected_closure,
+        "owner_catalog_sha256": EXPECTED_LEVEL2_CATALOG,
+        "owner_catalog_file_sha256": EXPECTED_LEVEL2_CATALOG_FILE,
+        "remc2_commit": PINNED_REMC2_COMMIT,
+    }:
+        raise CacheError("Level 2 aggregate binding identity mismatch")
+    components = manifest.get("components")
+    expected_components = {name for name, _schema, _validator in _level2_aggregate_components()}
+    if not isinstance(components, dict) or set(components) != expected_components:
+        raise CacheError("Level 2 aggregate component set changed")
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, list) or not outputs:
+        raise CacheError("Level 2 aggregate cache has no outputs")
+    paths = [row.get("path") for row in outputs]
+    if paths != sorted(paths) or any(
+        not isinstance(path, str)
+        or path.startswith("/")
+        or ".." in Path(path).parts
+        for path in paths
+    ) or len(paths) != len(set(paths)):
+        raise CacheError("invalid or unordered Level 2 aggregate output path")
+    for row in outputs:
+        relative = row["path"]
+        path = cache_dir / relative
+        if path.is_symlink() or not path.is_file():
+            raise CacheError(f"Level 2 aggregate output missing or symlinked: {relative}")
+        if path.stat().st_size != row.get("bytes") or sha256_file(path) != row.get("sha256"):
+            raise CacheError(f"Level 2 aggregate output hash mismatch: {relative}")
+    if _level2_cache_identity(outputs) != manifest.get("cache_content_sha256"):
+        raise CacheError("Level 2 aggregate cache content identity mismatch")
+    output_by_path = {row["path"]: row for row in outputs}
+    allowed_source_ids = _level2_aggregate_allowed_source_ids()
+    expected_output_paths: set[str] = set()
+    for name, schema, validator in _level2_aggregate_components():
+        metadata = components.get(name)
+        expected_manifest_rel = f"components/{name}/manifest.json"
+        if (
+            not isinstance(metadata, dict)
+            or metadata.get("schema") != schema
+            or metadata.get("manifest_path") != expected_manifest_rel
+        ):
+            raise CacheError(f"Level 2 aggregate {name} component binding changed")
+        child_root = cache_dir / "components" / name
+        child_manifest_path = child_root / "manifest.json"
+        child = validator(child_root, expected_package, expected_closure)
+        if child.get("profile") != manifest.get("profile"):
+            raise CacheError(f"Level 2 aggregate {name} profile binding mismatch")
+        child_bindings = child.get("bindings", {})
+        expected_child_binding_keys = set(bindings)
+        if name == "audio":
+            expected_child_binding_keys.add("audio_denominator_sha256")
+        if set(child_bindings) != expected_child_binding_keys:
+            raise CacheError(f"Level 2 aggregate {name} binding keys changed")
+        for binding_key, binding_value in bindings.items():
+            if child_bindings.get(binding_key) != binding_value:
+                raise CacheError(f"Level 2 aggregate {name} binding mismatch: {binding_key}")
+        if name == "audio" and child_bindings.get("audio_denominator_sha256") != sha256_file(LEVEL2_AUDIO_DENOMINATOR):
+            raise CacheError("Level 2 aggregate audio denominator binding mismatch")
+        child_sha = sha256_file(child_manifest_path)
+        if (
+            metadata.get("manifest_sha256") != child_sha
+            or metadata.get("cache_content_sha256") != child.get("cache_content_sha256")
+            or metadata.get("output_count") != len(child.get("outputs", []))
+        ):
+            raise CacheError(f"Level 2 aggregate {name} child identity mismatch")
+        child_manifest_row = output_by_path.get(expected_manifest_rel)
+        if (
+            child_manifest_row is None
+            or child_manifest_row.get("sha256") != child_sha
+            or child_manifest_row.get("bytes") != child_manifest_path.stat().st_size
+            or child_manifest_row.get("kind") != "level2_child_manifest"
+            or child_manifest_row.get("component") != name
+            or child_manifest_row.get("source_asset_ids") != [f"level2_component:{name}"]
+        ):
+            raise CacheError(f"Level 2 aggregate {name} manifest binding mismatch")
+        expected_output_paths.add(expected_manifest_rel)
+        child_rows = child.get("outputs", [])
+        for child_row in child_rows:
+            relative = child_row["path"]
+            source_ids = child_row.get("source_asset_ids")
+            if (
+                not isinstance(source_ids, list)
+                or not source_ids
+                or any(
+                    not isinstance(source, str) or not source.startswith("owner_data:")
+                    for source in source_ids
+                )
+            ):
+                raise CacheError(f"Level 2 aggregate {name} child output is not closure-backed: {relative}")
+            if any(source not in allowed_source_ids for source in source_ids):
+                raise CacheError(f"Level 2 aggregate {name} child output is outside closure: {relative}")
+            aggregate_path = f"components/{name}/{relative}"
+            aggregate_row = output_by_path.get(aggregate_path)
+            if aggregate_row is None:
+                raise CacheError(f"Level 2 aggregate child output missing: {aggregate_path}")
+            for key, value in child_row.items():
+                if key == "path":
+                    continue
+                if aggregate_row.get(key) != value:
+                    raise CacheError(f"Level 2 aggregate child output binding changed: {aggregate_path}")
+            if aggregate_row.get("path") != aggregate_path:
+                raise CacheError(f"Level 2 aggregate child output path changed: {aggregate_path}")
+            if aggregate_row.get("component") != name:
+                raise CacheError(f"Level 2 aggregate child component tag changed: {aggregate_path}")
+            expected_output_paths.add(aggregate_path)
+    if set(paths) != expected_output_paths:
+        raise CacheError("Level 2 aggregate output set changed")
+    expected_tree = {"manifest.json", *paths}
+    actual_tree: set[str] = set()
+    for path in cache_dir.rglob("*"):
+        if path.is_symlink():
+            raise CacheError("Level 2 aggregate cache tree contains symlink")
+        if path.is_file():
+            actual_tree.add(path.relative_to(cache_dir).as_posix())
+    if actual_tree != expected_tree:
+        raise CacheError("Level 2 aggregate cache tree has missing or extra files")
+    return manifest
+
+
 def validate_day_material_cache(
     cache_dir: Path,
     expected_package: str | None = EXPECTED_LEVEL2_PACKAGE,
@@ -8381,6 +8716,16 @@ def parse_args() -> argparse.Namespace:
     validate_audio.add_argument("--cache", type=Path, default=DEFAULT_LEVEL2_AUDIO_OUTPUT)
     validate_audio.add_argument("--package-sha256", default=EXPECTED_LEVEL2_PACKAGE)
     validate_audio.add_argument("--closure-sha256", default=EXPECTED_LEVEL2_CLOSURE)
+    build_aggregate = subparsers.add_parser("build-day-aggregate")
+    build_aggregate.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
+    build_aggregate.add_argument("--package", type=Path, default=DEFAULT_LEVEL2_PACKAGE)
+    build_aggregate.add_argument("--closure", type=Path, default=DEFAULT_LEVEL2_CLOSURE)
+    build_aggregate.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
+    build_aggregate.add_argument("--output", type=Path, default=DEFAULT_LEVEL2_AGGREGATE_OUTPUT)
+    validate_aggregate = subparsers.add_parser("validate-day-aggregate")
+    validate_aggregate.add_argument("--cache", type=Path, default=DEFAULT_LEVEL2_AGGREGATE_OUTPUT)
+    validate_aggregate.add_argument("--package-sha256", default=EXPECTED_LEVEL2_PACKAGE)
+    validate_aggregate.add_argument("--closure-sha256", default=EXPECTED_LEVEL2_CLOSURE)
     return parser.parse_args()
 
 
@@ -8437,6 +8782,18 @@ def main() -> int:
                 f"cache={args.output} outputs={len(manifest['outputs'])} "
                 f"content_sha256={manifest['cache_content_sha256']}"
             )
+        elif args.command == "build-day-aggregate":
+            manifest = build_day_aggregate_cache(
+                args.owner_root,
+                args.package,
+                args.closure,
+                args.catalog,
+                args.output,
+            )
+            print(
+                f"cache={args.output} outputs={len(manifest['outputs'])} "
+                f"content_sha256={manifest['cache_content_sha256']}"
+            )
         elif args.command == "validate-day":
             manifest = validate_day_material_cache(
                 args.cache,
@@ -8459,6 +8816,16 @@ def main() -> int:
             )
         elif args.command == "validate-day-audio":
             manifest = validate_day_audio_cache(
+                args.cache,
+                args.package_sha256,
+                args.closure_sha256,
+            )
+            print(
+                f"valid schema={manifest['schema']} "
+                f"content_sha256={manifest['cache_content_sha256']}"
+            )
+        elif args.command == "validate-day-aggregate":
+            manifest = validate_day_aggregate_cache(
                 args.cache,
                 args.package_sha256,
                 args.closure_sha256,
