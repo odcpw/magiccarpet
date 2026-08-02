@@ -6716,6 +6716,16 @@ impl Level2ResetSession {
         Ok(stone.step_action_9(&self.terrain))
     }
 
+    /// Keep typed Level 2 projections on the single production terrain
+    /// authority. Child projections retain fields for direct unit tests, but
+    /// the outer dispatcher refreshes them before each handler and adopts
+    /// economy topology writes back into this session.
+    fn synchronize_level2_terrain(&mut self) {
+        self.shared_spells.terrain = self.terrain.clone();
+        self.ordinary.terrain = self.terrain.clone();
+        self.economy.terrain = self.terrain.clone();
+    }
+
     /// Dispatch the authored Level 2 rows in source-slot order alongside the
     /// generic player-flight pass. Each typed family remains authoritative for
     /// its own mutable state; unknown mission rows are not coerced into a
@@ -6723,6 +6733,7 @@ impl Level2ResetSession {
     fn step_level2_source_pass(&mut self, pass: u8) {
         let player_entity_index = self.shared_spells.player_entity.index;
         let player_position = self.state.position;
+        self.synchronize_level2_terrain();
         let mut routes = LEVEL2_SHARED_SPELL_PICKUP_SLOTS
             .into_iter()
             .map(|slot| (slot, 0_u8))
@@ -6816,6 +6827,8 @@ impl Level2ResetSession {
                 },
                 5 => {
                     let advanced = self.economy.step_castle_action(source_slot);
+                    self.terrain = self.economy.terrain.clone();
+                    self.synchronize_level2_terrain();
                     self.dispatch_events.push(Level2DispatchEvent::Castle {
                         pass,
                         source_slot,
@@ -13466,6 +13479,15 @@ mod tests {
                 source_class: 10,
                 target_max_mana: 900,
                 source_max_mana: 100,
+                expected_owner: 200,
+            },
+            MergeVector {
+                target_owner: 200,
+                source_owner: 201,
+                target_class: 10,
+                source_class: 10,
+                target_max_mana: 100,
+                source_max_mana: 900,
                 expected_owner: 200,
             },
             MergeVector {
