@@ -8,6 +8,47 @@ controller placeholders, reports loader/display/input-device counts, and
 tears the loader down deterministically. The lab pins XR Core Utils 2.6.0
 explicitly because it owns the `XROrigin` component.
 
+## Reproducibility, licensing, cleanup, and rollback
+
+The reproducibility tuple is versioned in the lab rather than inferred from a
+machine cache:
+
+- Unity `6000.3.20f1`, revision `c9ba695d4f07`, from
+  `ProjectSettings/ProjectVersion.txt`.
+- Resolved packages are pinned by `Packages/packages-lock.json`: Input System
+  `1.14.2`, XR Core Utils `2.6.0`, XR Interaction Toolkit `3.0.9`, XR Plug-in
+  Management `4.7.0`, and OpenXR `1.17.1`.
+- The Windows gate uses Unity's `windowsstandalonesupport` Win64 Mono player
+  variation; the Linux gate uses the matching `StandaloneLinux64` target.
+
+Unity Editor activation is a host prerequisite, not a repository artifact.
+Never commit, copy into the lab, or put in a qualification result an `.alf`,
+`.ulf`, serial, password, Hub token, or Unity licensing cache. A missing
+Windows license is a harness/build failure (the Editor returns 198 and the
+PowerShell wrapper returns 1); it must not be misreported as an XR runtime
+failure. The lab itself remains private and owner-free.
+
+Generated state is disposable and must stay outside source review. After
+preserving the requested logs and `qualification-result.json`, verify that the
+paths point into the temporary staging project/output directory, then remove
+only those explicit paths, for example:
+
+```powershell
+Remove-Item -LiteralPath $OutputRoot -Recurse -Force
+Remove-Item -LiteralPath "$ProjectPath\Library", "$ProjectPath\Temp", "$ProjectPath\Logs" -Recurse -Force -ErrorAction SilentlyContinue
+```
+
+Do not run those cleanup commands against the canonical checkout or another
+agent's worktree. To uninstall the host toolchain, remove the Editor from the
+Unity Hub Installs view, then remove the unique temporary staging directory;
+the private source worktree and its package lock remain intact.
+
+Rollback is deliberately local: discard or delete only the isolated
+`codex/vr-b` worktree/branch, remove the named temporary staging/output paths,
+and restore the pre-VR presentation-lab commit if a review rejects the slice.
+The Exact project, Rust authority, owner data, and active Level 2/GFX
+worktrees are never rollback targets for this bead.
+
 Run the static profile/action-map guard from the repository root:
 
 ```text

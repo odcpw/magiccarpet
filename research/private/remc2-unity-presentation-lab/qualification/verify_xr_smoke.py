@@ -31,6 +31,7 @@ def validate() -> dict[str, object]:
     script_path = PROJECT / "Assets" / "Scripts" / "XrSmokeBootstrap.cs"
     editor_script_path = PROJECT / "Assets" / "Editor" / "CreatePresentationLabAssets.cs"
     windows_runner_path = PROJECT / "qualification" / "run_xr_smoke.ps1"
+    smoke_doc_path = PROJECT / "qualification" / "xr-smoke.md"
     general_settings_path = PROJECT / "Assets" / "XR" / "XRGeneralSettingsPerBuildTarget.asset"
     loader_path = PROJECT / "Assets" / "XR" / "Loaders" / "OpenXRLoader.asset"
     openxr_settings_path = PROJECT / "Assets" / "XR" / "Settings" / "OpenXR Package Settings.asset"
@@ -42,6 +43,7 @@ def validate() -> dict[str, object]:
         script_path,
         editor_script_path,
         windows_runner_path,
+        smoke_doc_path,
         general_settings_path,
         loader_path,
         openxr_settings_path,
@@ -125,6 +127,19 @@ def validate() -> dict[str, object]:
     ):
         if marker not in windows_runner:
             fail(f"Windows XR smoke runner lacks marker: {marker}")
+    smoke_doc = smoke_doc_path.read_text(encoding="utf-8")
+    for marker in (
+        "Reproducibility, licensing, cleanup, and rollback",
+        "ProjectSettings/ProjectVersion.txt",
+        "Packages/packages-lock.json",
+        "license is a harness/build failure",
+        "Remove-Item -LiteralPath $OutputRoot",
+        "Unity Hub Installs view",
+        "codex/vr-b",
+        "Exact project, Rust authority, owner data",
+    ):
+        if marker not in smoke_doc:
+            fail(f"XR smoke documentation lacks acceptance record: {marker}")
     for forbidden in ("NativeSession", "OwnerInputValidator", "PresentationSessionLease"):
         if forbidden in script:
             fail(f"XR smoke bootstrap has forbidden gameplay/owner coupling: {forbidden}")
