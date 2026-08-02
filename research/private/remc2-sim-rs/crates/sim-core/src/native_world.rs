@@ -58,7 +58,8 @@ use crate::{
         MANA_CARRIER_COLLISION_HALF_WIDTH, MANA_CARRIER_COLLISION_VERTICAL_OFFSET,
         MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_MAX_LIFE, MANA_CARRIER_MAX_MANA,
         MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_RENDER_MODE, MANA_CARRIER_SPEED,
-        MANA_SPHERE_COLLISION_DIMENSIONS, ManaCarrier, ManaSphere, POSSESSION_ATTRACTION_BASE_TMAP,
+        MANA_SPHERE_COLLISION_DIMENSIONS, MANA_SPHERE_GRAVITY, MANA_SPHERE_MAX_XY_VELOCITY,
+        MANA_SPHERE_TERMINAL_VELOCITY, ManaCarrier, ManaSphere, POSSESSION_ATTRACTION_BASE_TMAP,
         POSSESSION_ATTRACTION_LOGICAL_HEIGHT, POSSESSION_ATTRACTION_RENDER_INDEX,
         POSSESSION_ATTRACTION_RENDER_MODE, POSSESSION_IMPACT_BASE_TMAP,
         POSSESSION_IMPACT_LOGICAL_HEIGHT, POSSESSION_IMPACT_RENDER_INDEX,
@@ -3794,6 +3795,117 @@ impl Level2EconomyState {
             sphere_id: sphere.id,
             owner_entity_index,
         });
+        true
+    }
+
+    /// Advance one live Level 2 mana-sphere source row through the same
+    /// gravity, ground-bounce, slope impulse, map-chain, and merge order as
+    /// the authored Level 1 source action.  This is intentionally a small
+    /// production handler: carrier attraction and possession mailbox input
+    /// remain separate source actions, while this method makes the dynamic
+    /// arena row itself stateful and reclaimable by the outer dispatcher.
+    pub fn step_mana_sphere_slot(&mut self, sphere_slot: u16) -> bool {
+        let Some(sphere_index) = self
+            .spheres
+            .iter()
+            .position(|sphere| sphere.active && sphere.source_entity_index == sphere_slot)
+        else {
+            return false;
+        };
+        let grounded;
+        {
+            let sphere = &mut self.spheres[sphere_index];
+            sphere.velocity_x = sphere
+                .velocity_x
+                .clamp(-MANA_SPHERE_MAX_XY_VELOCITY, MANA_SPHERE_MAX_XY_VELOCITY);
+            sphere.velocity_y = sphere
+                .velocity_y
+                .clamp(-MANA_SPHERE_MAX_XY_VELOCITY, MANA_SPHERE_MAX_XY_VELOCITY);
+            sphere.position.x = sphere.position.x.wrapping_add_signed(sphere.velocity_x);
+            sphere.position.y = sphere.position.y.wrapping_add_signed(sphere.velocity_y);
+            sphere.position.z = sphere.position.z.wrapping_add(sphere.vertical_velocity);
+            sphere.vertical_velocity = sphere.vertical_velocity.wrapping_sub(MANA_SPHERE_GRAVITY);
+            if sphere.vertical_velocity < MANA_SPHERE_TERMINAL_VELOCITY {
+                sphere.vertical_velocity = MANA_SPHERE_TERMINAL_VELOCITY;
+            }
+            let ground = self.terrain.ground_height(sphere.position);
+            if sphere.position.z < ground {
+                sphere.position.z = ground;
+                sphere.vertical_velocity = -(sphere.vertical_velocity / 4);
+                if sphere.vertical_velocity <= 16 {
+                    sphere.vertical_velocity = 0;
+                }
+            }
+            grounded = sphere.position.z == ground;
+            if grounded {
+                let [_, tile_x] = sphere.position.x.to_le_bytes();
+                let [_, tile_y] = sphere.position.y.to_le_bytes();
+                let sample = |x: u8, y: u8| {
+                    i32::from(self.terrain.ground_height(Position {
+                        x: u16::from(x) << 8,
+                        y: u16::from(y) << 8,
+                        z: 0,
+                    })) / 32
+                };
+                let height_00 = sample(tile_x, tile_y);
+                let height_10 = sample(tile_x.wrapping_add(1), tile_y);
+                let height_11 = sample(tile_x.wrapping_add(1), tile_y.wrapping_add(1));
+                let height_01 = sample(tile_x, tile_y.wrapping_add(1));
+                let slope_x = height_00 - height_10 - height_11 + height_01;
+                let slope_y = height_00 + height_10 - height_11 - height_01;
+                sphere.velocity_x = sphere
+                    .velocity_x
+                    .wrapping_add(i16::try_from(slope_x).expect("Level 2 slope impulse fits"));
+                sphere.velocity_y = sphere
+                    .velocity_y
+                    .wrapping_add(i16::try_from(slope_y).expect("Level 2 slope impulse fits"));
+                sphere.velocity_x = i16::try_from(i32::from(sphere.velocity_x) * 250 / 256)
+                    .expect("Level 2 sphere velocity fits");
+                sphere.velocity_y = i16::try_from(i32::from(sphere.velocity_y) * 250 / 256)
+                    .expect("Level 2 sphere velocity fits");
+            }
+            sphere.phase = sphere.phase.wrapping_add(1);
+        }
+        let position = self.spheres[sphere_index].position;
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: sphere_slot,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .expect("Level 2 sphere source slot fits the map chain");
+
+        if grounded {
+            let dimension = |mana: i32| {
+                MANA_SPHERE_COLLISION_DIMENSIONS[usize::from(mana_sphere_size_ordinal(mana))]
+            };
+            let sphere = self.spheres[sphere_index];
+            let absorbed_slot = self
+                .spheres
+                .iter()
+                .filter(|candidate| {
+                    candidate.active && candidate.source_entity_index != sphere_slot
+                })
+                .find(|candidate| {
+                    let left = dimension(sphere.mana);
+                    let right = dimension(candidate.mana);
+                    crate::level1_mission::source_entities_overlap(
+                        sphere.position,
+                        left,
+                        left,
+                        left,
+                        candidate.position,
+                        right,
+                        right,
+                        right,
+                    )
+                })
+                .map(|candidate| candidate.source_entity_index);
+            if let Some(absorbed_slot) = absorbed_slot {
+                self.merge_mana_spheres(sphere_slot, absorbed_slot);
+            }
+        }
         true
     }
 
@@ -7603,6 +7715,12 @@ impl Level2ResetSession {
             .collect::<BTreeMap<_, _>>();
         routes.extend(dynamic_kinds.keys().copied().map(|slot| (slot, 6_u8)));
         routes.sort_unstable_by_key(|(slot, _)| *slot);
+        // `ApplyEvents_498A0` keeps a source cursor and repeats the arena
+        // walk when a handler allocates or retires a row.  The typed routes
+        // above are the first walk; remember which dynamic rows it exposed
+        // so a bounded follow-up walk can surface same-turn allocations
+        // without replaying an already observed row indefinitely.
+        let mut dispatched_dynamic_slots = BTreeSet::new();
         for (source_slot, kind) in routes {
             match kind {
                 0 => {
@@ -7728,6 +7846,10 @@ impl Level2ResetSession {
                         .get(&source_slot)
                         .copied()
                         .expect("dynamic source route has a live kind");
+                    dispatched_dynamic_slots.insert(source_slot);
+                    if matches!(kind, Level2DynamicArenaKind::ManaSphere) {
+                        let _ = self.economy.step_mana_sphere_slot(source_slot);
+                    }
                     self.dispatch_events
                         .push(Level2DispatchEvent::DynamicArena {
                             pass,
@@ -7750,6 +7872,37 @@ impl Level2ResetSession {
                 }
                 _ => unreachable!("bounded Level 2 source route"),
             }
+        }
+        // A root/typed handler may have allocated a Castle child, carrier, or
+        // sphere after the initial cursor reached its slot.  Re-scan live
+        // projections until no previously unseen slot remains, just as the
+        // source `runagain` loop does.  The underlying per-object handlers
+        // remain explicit follow-on work; this seam only guarantees cursor
+        // reachability and deterministic reclaim ordering.
+        self.economy.reclaim_inactive_slots();
+        for _ in 0..1_000 {
+            let unseen = self
+                .economy
+                .live_arena_slots()
+                .into_iter()
+                .filter(|(slot, _)| !dispatched_dynamic_slots.contains(slot))
+                .collect::<Vec<_>>();
+            if unseen.is_empty() {
+                break;
+            }
+            for (source_slot, kind) in unseen {
+                dispatched_dynamic_slots.insert(source_slot);
+                if matches!(kind, Level2DynamicArenaKind::ManaSphere) {
+                    let _ = self.economy.step_mana_sphere_slot(source_slot);
+                }
+                self.dispatch_events
+                    .push(Level2DispatchEvent::DynamicArena {
+                        pass,
+                        source_slot,
+                        kind,
+                    });
+            }
+            self.economy.reclaim_inactive_slots();
         }
         self.goats.finish_source_turn();
     }
@@ -16847,10 +17000,13 @@ mod tests {
             .economy_mut()
             .spawn_mana_carrier(Position::default(), 111, 0)
             .expect("carrier allocation");
-        let sphere_slot = session
-            .economy_mut()
-            .spawn_mana_sphere_from_death(901, Position::default(), 0, 0x3456, 10, 111)
-            .expect("sphere allocation");
+        let sphere_slot = u16::try_from(
+            session
+                .economy_mut()
+                .spawn_mana_sphere_from_death(901, Position::default(), 0, 0x3456, 10, 111)
+                .expect("sphere allocation"),
+        )
+        .expect("sphere source slot fits u16");
         session.step_outer_turn(PlayerCommand::default(), 0);
         let dynamic = session
             .dispatch_events()
@@ -16897,6 +17053,108 @@ mod tests {
                 } if *source_slot == carrier_slot
             )
         }));
+    }
+
+    #[test]
+    fn level_two_mana_sphere_dynamic_handler_moves_and_updates_source_chain() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 sphere handler session");
+        let sphere_slot = u16::try_from(
+            session
+                .economy_mut()
+                .spawn_mana_sphere_from_death(901, Position::default(), 0, 0x3456, 10, 111)
+                .expect("sphere allocation"),
+        )
+        .expect("sphere source slot fits u16");
+        let before = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == sphere_slot)
+            .copied()
+            .expect("live sphere");
+        {
+            let sphere = session
+                .economy_mut()
+                .spheres
+                .iter_mut()
+                .find(|sphere| sphere.source_entity_index == sphere_slot)
+                .expect("mutable live sphere");
+            sphere.velocity_x = 32;
+            sphere.velocity_y = 0;
+            sphere.vertical_velocity = 0;
+        }
+        assert!(session.economy_mut().step_mana_sphere_slot(sphere_slot));
+        let after = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == sphere_slot)
+            .copied()
+            .expect("stepped sphere");
+        assert_eq!(after.phase, before.phase.wrapping_add(1));
+        assert_eq!(after.position.x, before.position.x.wrapping_add(32));
+        assert_eq!(
+            session
+                .economy()
+                .map_chains()
+                .entity_chain(
+                    ((after.position.x.wrapping_add(128)) >> 8) as u8,
+                    ((after.position.y.wrapping_add(128)) >> 8) as u8
+                )
+                .first(),
+            Some(&sphere_slot)
+        );
+    }
+
+    #[test]
+    fn level_two_outer_turn_rescans_same_pass_castle_children() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let footprint = CastleBuildFootprint::from_owner_cells(1, 8, 8, &[0xff; 128])
+            .expect("source BUILD vector");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 dynamic cursor session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle_with_footprint(Position::default(), 111, &footprint)
+            .expect("source constructor Castle allocation");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let child = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.active && child.model == 42)
+            .copied()
+            .expect("same-pass construction child");
+        let events = session.dispatch_events();
+        let root_event = events.iter().position(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Castle {
+                    source_slot,
+                    ..
+                } if *source_slot == castle_slot
+            )
+        });
+        let child_event = events.iter().position(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::CastleChild,
+                    ..
+                } if *source_slot == child.source_entity_index
+            )
+        });
+        assert!(
+            root_event < child_event,
+            "child must be visible on the runagain scan"
+        );
     }
 
     #[test]
