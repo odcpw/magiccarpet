@@ -3896,10 +3896,9 @@ impl Level2EconomyState {
         Some(source_entity_index)
     }
 
-    /// Advance the source class-10/model-1/action-1 burst.  The constructor
-    /// sets `life=1`, while `AddQuickfair0A01` disables only when the
-    /// pre-decrement value is negative; therefore the row remains active for
-    /// the `life` values 1, 0, and -1 before the third dispatch reclaims it.
+    /// Advance the source class-10/model-1/action-1 burst.  ApplyEvents'
+    /// model-1 fallthrough unconditionally disables the row after its action
+    /// callback, so one live handler visit is the complete source lifetime.
     pub fn step_death_burst_slot(&mut self, source_slot: u16) -> bool {
         let Some(burst) = self
             .death_bursts
@@ -3908,25 +3907,20 @@ impl Level2EconomyState {
         else {
             return false;
         };
-        let should_disable = burst.life_ticks < 0;
-        if !should_disable {
-            burst.life_ticks = burst.life_ticks.wrapping_sub(1);
-        }
-        if should_disable {
-            burst.active = false;
-            self.map_chains
-                .sync_entity(RenderableMapSeed {
-                    entity_index: source_slot,
-                    active: false,
-                    x: burst.position.x,
-                    y: burst.position.y,
-                })
-                .expect("Level 2 death-burst source slot fits the map chain");
-            self.events.push(Level2EconomyEvent::DeathBurstExpired {
-                source_entity_index: source_slot,
-                parent_entity_index: burst.parent_entity_index,
-            });
-        }
+        burst.life_ticks = burst.life_ticks.wrapping_sub(1);
+        burst.active = false;
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: false,
+                x: burst.position.x,
+                y: burst.position.y,
+            })
+            .expect("Level 2 death-burst source slot fits the map chain");
+        self.events.push(Level2EconomyEvent::DeathBurstExpired {
+            source_entity_index: source_slot,
+            parent_entity_index: burst.parent_entity_index,
+        });
         true
     }
 
@@ -8270,47 +8264,28 @@ impl Level2ResetSession {
         self.goats.finish_source_turn();
     }
 
-    /// Dispatch one live dynamic row.  The source class-10/model-1 burst
-    /// handler sets `runagain` on every active pass, so the bounded projection
-    /// repeats that one family until its pre-decrement lifetime disables it;
-    /// spheres/carriers/typed Castle rows remain one invocation per cursor
-    /// visit until their own handlers are closed.
+    /// Dispatch one live dynamic row. The source class-10/model-1 burst
+    /// handler falls through to unconditional drawing disable after one
+    /// callback; all dynamic families therefore receive one cursor visit.
     fn step_level2_dynamic_arena(
         &mut self,
         pass: u8,
         source_slot: u16,
         kind: Level2DynamicArenaKind,
     ) {
-        for _ in 0..4 {
-            let live = match kind {
-                Level2DynamicArenaKind::ManaSphere => {
-                    self.economy.step_mana_sphere_slot(source_slot)
-                }
-                Level2DynamicArenaKind::ManaCarrier => {
-                    self.economy.step_mana_carrier_slot(source_slot)
-                }
-                Level2DynamicArenaKind::DeathBurst => {
-                    self.economy.step_death_burst_slot(source_slot)
-                }
-                _ => true,
-            };
-            if live {
-                self.dispatch_events
-                    .push(Level2DispatchEvent::DynamicArena {
-                        pass,
-                        source_slot,
-                        kind,
-                    });
-            }
-            if kind != Level2DynamicArenaKind::DeathBurst
-                || !self
-                    .economy
-                    .death_bursts
-                    .iter()
-                    .any(|burst| burst.active && burst.source_entity_index == source_slot)
-            {
-                break;
-            }
+        let live = match kind {
+            Level2DynamicArenaKind::ManaSphere => self.economy.step_mana_sphere_slot(source_slot),
+            Level2DynamicArenaKind::ManaCarrier => self.economy.step_mana_carrier_slot(source_slot),
+            Level2DynamicArenaKind::DeathBurst => self.economy.step_death_burst_slot(source_slot),
+            _ => true,
+        };
+        if live {
+            self.dispatch_events
+                .push(Level2DispatchEvent::DynamicArena {
+                    pass,
+                    source_slot,
+                    kind,
+                });
         }
     }
 
@@ -17949,6 +17924,22 @@ mod tests {
                 .map_chains()
                 .linked_entity_indices()
                 .contains(&burst_slot)
+        );
+        assert_eq!(
+            session
+                .dispatch_events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Level2DispatchEvent::DynamicArena {
+                        source_slot,
+                        kind: Level2DynamicArenaKind::DeathBurst,
+                        ..
+                    } if *source_slot == burst_slot
+                ))
+                .count(),
+            1,
+            "source model-1 burst is visited once before disable/reclaim"
         );
         assert!(session.dispatch_events().iter().any(|event| {
             matches!(
