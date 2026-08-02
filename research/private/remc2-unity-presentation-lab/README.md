@@ -117,6 +117,23 @@ The lab does not accept `exact`; Exact stays in the protected project. Mode
 selection happens before a presentation session opens, and there is no
 mid-session pipeline swap.
 
+Build the isolated presentation lab as a standalone Linux player with the
+same Boot scene and no owner payload embedded in the build. Use a fresh output
+path; owner package, closure, and asset-cache paths remain runtime arguments:
+
+```text
+Unity -batchmode -nographics -quit \
+  -projectPath research/private/remc2-unity-presentation-lab \
+  -executeMethod MagicCarpet.PresentationLab.Editor.CreatePresentationLabAssets.BuildStandaloneLinuxPlayer \
+  -mc-build-output /tmp/magiccarpet-presentation-lab-player/MagicCarpetPresentationLab.x86_64
+```
+
+The build method uses enabled scenes from `EditorBuildSettings`, targets
+`StandaloneLinux64`, refuses to overwrite an existing output, and exits
+non-zero on a failed Unity build. Launch the resulting player with the owner
+arguments above plus `-mc-lifecycle-receipt` when collecting real OS-window
+focus/fullscreen evidence.
+
 The owner-bound Classic HD sequence smoke is an explicit qualification command
 rather than an automatic boot action:
 

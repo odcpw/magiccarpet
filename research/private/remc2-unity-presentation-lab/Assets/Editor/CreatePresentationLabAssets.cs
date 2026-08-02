@@ -5,6 +5,7 @@ using System.IO;
 using System.Reflection;
 using System.Security.Cryptography;
 using UnityEditor;
+using UnityEditor.Build.Reporting;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -62,6 +63,71 @@ namespace MagicCarpet.PresentationLab.Editor
             }
 
             Debug.Log("Presentation Lab Boot scene validated: " + scene.path);
+            if (Application.isBatchMode)
+            {
+                EditorApplication.Exit(0);
+            }
+        }
+
+        [MenuItem("Magic Carpet/Presentation Lab/Build Standalone Linux Player")]
+        public static void BuildStandaloneLinuxPlayer()
+        {
+            string outputPath = CommandLineValue("-mc-build-output");
+            if (string.IsNullOrWhiteSpace(outputPath))
+            {
+                throw new InvalidOperationException(
+                    "standalone presentation player build requires -mc-build-output");
+            }
+
+            string absoluteOutputPath = Path.GetFullPath(outputPath);
+            if (File.Exists(absoluteOutputPath) || Directory.Exists(absoluteOutputPath))
+            {
+                throw new InvalidOperationException(
+                    "refusing to overwrite an existing standalone player output: " + absoluteOutputPath);
+            }
+
+            List<string> scenePaths = new List<string>();
+            foreach (EditorBuildSettingsScene scene in EditorBuildSettings.scenes)
+            {
+                if (scene.enabled && !string.IsNullOrWhiteSpace(scene.path))
+                {
+                    scenePaths.Add(scene.path);
+                }
+            }
+
+            if (scenePaths.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    "standalone presentation player build requires at least one enabled scene");
+            }
+
+            string outputDirectory = Path.GetDirectoryName(absoluteOutputPath);
+            if (!string.IsNullOrEmpty(outputDirectory))
+            {
+                Directory.CreateDirectory(outputDirectory);
+            }
+
+            BuildReport report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+            {
+                scenes = scenePaths.ToArray(),
+                locationPathName = absoluteOutputPath,
+                target = BuildTarget.StandaloneLinux64,
+                options = BuildOptions.StrictMode
+            });
+            if (report == null || report.summary.result != BuildResult.Succeeded)
+            {
+                string result = report == null ? "no build report" : report.summary.result.ToString();
+                int errors = report == null ? -1 : report.summary.totalErrors;
+                throw new InvalidOperationException(
+                    "standalone presentation player build failed: result=" + result +
+                    " errors=" + errors);
+            }
+
+            Debug.Log(
+                "Standalone presentation player build PASS: target=StandaloneLinux64" +
+                " scenes=" + scenePaths.Count +
+                " output=" + absoluteOutputPath +
+                " size_bytes=" + new FileInfo(absoluteOutputPath).Length);
             if (Application.isBatchMode)
             {
                 EditorApplication.Exit(0);

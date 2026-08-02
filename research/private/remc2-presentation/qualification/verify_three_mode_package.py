@@ -1063,6 +1063,37 @@ def validate_classic_hd_os_window_lifecycle_tooling() -> list[str]:
     return errors
 
 
+def validate_standalone_player_build_tooling() -> list[str]:
+    """Ensure the optional presentation lab has a reproducible player build path."""
+    errors: list[str] = []
+    editor_path = LAB_ROOT / "Assets" / "Editor" / "CreatePresentationLabAssets.cs"
+    readme_path = LAB_ROOT / "README.md"
+    required_snippets = {
+        editor_path: (
+            "BuildStandaloneLinuxPlayer",
+            "BuildPipeline.BuildPlayer",
+            "BuildTarget.StandaloneLinux64",
+            "BuildOptions.StrictMode",
+            "refusing to overwrite an existing standalone player output",
+        ),
+        readme_path: (
+            "BuildStandaloneLinuxPlayer",
+            "StandaloneLinux64",
+            "owner package, closure, and asset-cache paths remain runtime arguments",
+        ),
+    }
+    for path, snippets in required_snippets.items():
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as error:
+            errors.append(f"standalone player build tooling file read failed: {error}")
+            continue
+        for snippet in snippets:
+            if snippet not in content:
+                errors.append(f"standalone player build tooling is missing {snippet!r} in {path.name}")
+    return errors
+
+
 def validate_profile_sequence_failure_artifact(
     path: Path = PROFILE_960_SEQUENCE_FAILURE_ARTIFACT,
 ) -> list[str]:
@@ -1223,6 +1254,11 @@ def verify() -> dict[str, Any]:
     _validator_result(
         "Classic HD OS window lifecycle tooling",
         validate_classic_hd_os_window_lifecycle_tooling,
+        checks,
+    )
+    _validator_result(
+        "standalone presentation player build tooling",
+        validate_standalone_player_build_tooling,
         checks,
     )
     _validator_result(

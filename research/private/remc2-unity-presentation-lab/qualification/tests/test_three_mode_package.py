@@ -69,6 +69,9 @@ class ThreeModePackageTests(unittest.TestCase):
         self.assertEqual([], PACKAGE.validate_classic_hd_owner_os_window_lifecycle_artifact())
         self.assertEqual([], PACKAGE.validate_classic_hd_os_window_lifecycle_tooling())
 
+    def test_standalone_player_build_path_is_documented(self):
+        self.assertEqual([], PACKAGE.validate_standalone_player_build_tooling())
+
 
 if __name__ == "__main__":
     unittest.main()
