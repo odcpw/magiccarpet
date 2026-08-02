@@ -806,6 +806,67 @@ fn level2_mana_sphere_dimension(mana: i32) -> i16 {
     MANA_SPHERE_COLLISION_DIMENSIONS[usize::from(mana_sphere_size_ordinal(mana))]
 }
 
+/// Pinned remc2 `sub_10A50` SEARCH.DAT walk for model-39 mana spheres. The
+/// four class-0 cells precede the twelve class-1 cells; candidates are read
+/// from the live map chain rather than the allocation vector.
+const LEVEL2_MANA_SPHERE_SEARCH_OFFSETS: [(i8, i8); 16] = [
+    (0, 0),
+    (1, 0),
+    (0, 1),
+    (1, 1),
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (2, -1),
+    (-1, 0),
+    (2, 0),
+    (-1, 1),
+    (2, 1),
+    (-1, 2),
+    (0, 2),
+    (1, 2),
+    (2, 2),
+];
+
+fn level2_first_colliding_mana_sphere_slot(
+    map_chains: &RenderableMapChains,
+    spheres: &[ManaSphere],
+    source_slot: u16,
+    sphere: ManaSphere,
+) -> Option<u16> {
+    let tile_x = ((u32::from(sphere.position.x) + 128) >> 8) as u8;
+    let tile_y = ((u32::from(sphere.position.y) + 128) >> 8) as u8;
+    for (delta_x, delta_y) in LEVEL2_MANA_SPHERE_SEARCH_OFFSETS {
+        let search_x = tile_x.wrapping_add_signed(delta_x);
+        let search_y = tile_y.wrapping_add_signed(delta_y);
+        for candidate_slot in map_chains.entity_chain(search_x, search_y) {
+            if candidate_slot == source_slot {
+                continue;
+            }
+            let Some(candidate) = spheres.iter().find(|candidate| {
+                candidate.active && candidate.source_entity_index == candidate_slot
+            }) else {
+                continue;
+            };
+            let left = level2_mana_sphere_dimension(sphere.mana);
+            let right = level2_mana_sphere_dimension(candidate.mana);
+            if crate::level1_mission::source_entities_overlap(
+                sphere.position,
+                left,
+                left,
+                left,
+                candidate.position,
+                right,
+                right,
+                right,
+            ) {
+                return Some(candidate_slot);
+            }
+        }
+    }
+    None
+}
+
 fn level2_carrier_sphere_overlap(carrier: Position, sphere: &ManaSphere) -> bool {
     let extent = level2_mana_sphere_dimension(sphere.mana);
     let dx = i32::from(sphere.position.x.wrapping_sub(carrier.x).cast_signed());
@@ -4031,31 +4092,13 @@ impl Level2EconomyState {
             .expect("Level 2 sphere source slot fits the map chain");
 
         if grounded {
-            let dimension = |mana: i32| {
-                MANA_SPHERE_COLLISION_DIMENSIONS[usize::from(mana_sphere_size_ordinal(mana))]
-            };
             let sphere = self.spheres[sphere_index];
-            let absorbed_slot = self
-                .spheres
-                .iter()
-                .filter(|candidate| {
-                    candidate.active && candidate.source_entity_index != sphere_slot
-                })
-                .find(|candidate| {
-                    let left = dimension(sphere.mana);
-                    let right = dimension(candidate.mana);
-                    crate::level1_mission::source_entities_overlap(
-                        sphere.position,
-                        left,
-                        left,
-                        left,
-                        candidate.position,
-                        right,
-                        right,
-                        right,
-                    )
-                })
-                .map(|candidate| candidate.source_entity_index);
+            let absorbed_slot = level2_first_colliding_mana_sphere_slot(
+                &self.map_chains,
+                &self.spheres,
+                sphere_slot,
+                sphere,
+            );
             if let Some(absorbed_slot) = absorbed_slot {
                 self.merge_mana_spheres(sphere_slot, absorbed_slot);
             }
@@ -4273,17 +4316,27 @@ impl Level2EconomyState {
         let source_mana = self.spheres[source_index].mana;
         let target_id = self.spheres[target_index].id;
         let source_id = self.spheres[source_index].id;
+        let source_entity_rng = self.spheres[source_index].entity_rng;
+        let source_position = self.spheres[source_index].position;
         self.spheres[target_index].mana = self.spheres[target_index].mana.wrapping_add(source_mana);
         self.spheres[target_index].owner_entity_index = owner;
         self.spheres[source_index].assigned_carrier_id = 0;
-        self.spheres[source_index].pending_delete = true;
-        self.spheres[source_index].active = false;
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: false,
+                x: source_position.x,
+                y: source_position.y,
+            })
+            .expect("Level 2 merged sphere source slot fits the map chain");
         self.events.push(Level2EconomyEvent::ManaSpheresMerged {
             target_sphere_id: target_id,
             source_sphere_id: source_id,
             owner_entity_index: owner,
             mana: source_mana,
         });
+        self.spheres.remove(source_index);
+        self.release_slot(source_slot, Some(source_entity_rng));
         true
     }
 
@@ -15143,13 +15196,11 @@ mod tests {
                 (vector.expected_owner, 150)
             );
             assert!(
-                !session
+                session
                     .economy()
                     .spheres()
                     .iter()
-                    .find(|sphere| sphere.id == source_id)
-                    .expect("merged source")
-                    .active
+                    .all(|sphere| sphere.id != source_id)
             );
             assert_eq!(
                 session.economy().events(),
@@ -15161,6 +15212,48 @@ mod tests {
                 }]
             );
         }
+    }
+
+    #[test]
+    fn level_two_mana_sphere_merge_reclaims_source_slot_immediately() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 merge reclaim session");
+        let baseline_free_slots = session.economy().free_slot_count();
+        let target_slot = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(903, Position::default(), 0, 0x5678, 100, 111)
+            .expect("target sphere allocation");
+        let source_slot = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(904, Position::default(), 0, 0x6789, 50, 112)
+            .expect("source sphere allocation");
+        assert_eq!(session.economy().free_slot_count(), baseline_free_slots - 2);
+        session.economy_mut().begin_turn();
+        assert!(session.economy_mut().merge_mana_spheres(
+            u16::try_from(target_slot).expect("target slot fits"),
+            u16::try_from(source_slot).expect("source slot fits"),
+        ));
+        assert_eq!(
+            session.economy().free_slot_count(),
+            baseline_free_slots - 1,
+            "sub_57F20 makes the absorbed source slot available immediately"
+        );
+        assert!(
+            !session
+                .economy()
+                .map_chains()
+                .linked_entity_indices()
+                .contains(&u16::try_from(source_slot).expect("source slot fits"))
+        );
+        session.economy_mut().reclaim_inactive_slots();
+        assert_eq!(
+            session.economy().free_slot_count(),
+            baseline_free_slots - 1,
+            "reclaim pass must not double-release an already absorbed slot"
+        );
     }
 
     #[test]
