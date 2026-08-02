@@ -28,6 +28,7 @@ SCHEMA = "mc2-level-asset-closure/v2"
 BASELINE_STATIC_CLOSURE_SHA256 = (
     "04e8b237b166161b57d4b86fc5c50a5f96ea32e4ec9b20404ac1d57e4615e751"
 )
+REMC2_SPEC_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 FINAL_TRACE_EVENT_COUNT = 76
 REALMS = {
     0: {"name": "day", "letter": "D", "tmaps": 0, "tables": "TABLESD"},
@@ -836,15 +837,357 @@ def frame_event_observations(
     return observations, frame_edges
 
 
+def _level2_common_paths() -> list[str]:
+    """Return the common process roots shared by every realm profile."""
+    return [
+        "LEVELS/LEVELS.DAT",
+        "LEVELS/LEVELS.TAB",
+        "DATA/BUILD0-0.DAT",
+        "DATA/BUILD0-0.TAB",
+        "DATA/BLDGPRM.DAT",
+        "DATA/POINTERS.DAT",
+        "DATA/POINTERS.TAB",
+        "DATA/SPELLS.DAT",
+        "DATA/FONT1.DAT",
+        "DATA/FONT1.TAB",
+        "LANGUAGE/L1.TXT",
+        "SOUND/SOUND.DAT",
+        "SOUND/MUSIC.DAT",
+        "DATA/TMAPS0-0.DAT",
+        "DATA/TMAPS1-0.DAT",
+        "DATA/TMAPS2-0.DAT",
+    ]
+
+
+def _level2_expected_selectors(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Validate and return the Day selector tuple from the export identity."""
+    if manifest.get("schema") != "mc2-owner-level-export/v3":
+        raise ClosureError("Level 2 closure requires owner-level-export/v3")
+    level = manifest.get("level", {})
+    map_type = level.get("map_type", {})
+    if (level.get("external"), level.get("internal"), map_type.get("id"), map_type.get("name")) != (
+        2,
+        1,
+        0,
+        "Day",
+    ):
+        raise ClosureError("Level 2 closure requires external=2/internal=1/Day identity")
+    if manifest.get("source", {}).get("upstream_commit") != REMC2_SPEC_COMMIT:
+        raise ClosureError("Level 2 export is bound to an unknown remc2 specification")
+    selectors = manifest.get("presentation_dependencies")
+    expected = {
+        "map_type": "Day",
+        "vga_resolution_selector": 1,
+        "texture_size": 32,
+        "terrain_graphics_flags": 0,
+        "terrain_graphics_flag_2": False,
+        "terrain_bank": "TMAPS0-0",
+        "sprite_bank": "MSPRD0-0",
+        "web_bank": "MWEBD0-0",
+        "block_bank": "BL32N0-0",
+        "palette": "PALD-0",
+        "sky_bank": "SKYD0-0",
+        "sound_bank": 1,
+        "cursor": 9,
+    }
+    if not isinstance(selectors, dict) or any(
+        selectors.get(field) != value for field, value in expected.items()
+    ):
+        raise ClosureError("Level 2 presentation selector identity is not the qualified Day tuple")
+    expected_paths = {
+        "level_records": "owner:GAME/NETHERW/CLEVELS/LEVELS.DAT",
+        "terrain_bank": "owner:GAME/NETHERW/CDATA/TMAPS0-0.DAT",
+        "sprite_bank": "owner:CD_Files/DATA/MSPRD0-0.DAT",
+        "web_bank": "owner:CD_Files/DATA/MWEBD0-0.DAT",
+        "block_bank": "owner:CD_Files/DATA/BL32N0-0.DAT",
+        "palette": "owner:CD_Files/DATA/PALD-0.DAT",
+        "sky_bank": "owner:CD_Files/DATA/SKYD0-0.DAT",
+        "building_bank": "owner:CD_Files/DATA/BUILD0-0.DAT",
+        "spell_table": "owner:CD_Files/DATA/SPELLS.DAT",
+        "font_bank": "owner:CD_Files/DATA/FONT1.DAT",
+        "language": "owner:CD_Files/LANGUAGE/L1.TXT",
+    }
+    if selectors.get("resolved_files") != expected_paths:
+        raise ClosureError("Level 2 resolved owner-file selector map is not qualified")
+    return selectors
+
+
+def build_level2_closure(
+    export_dir: Path, catalog_path: Path, owner_root: Path
+) -> dict[str, Any]:
+    """Build the common Day closure without inventing an unobserved frame trace.
+
+    The Level 2 export is a validated package and its owner-file selector tuple
+    is qualified, but no final-entry frame pair exists yet.  The resulting
+    ``frame_used`` partition therefore stays explicitly unqualified instead of
+    claiming zero unresolved observations.
+    """
+    export_manifest = read_json(export_dir / "manifest.json")
+    catalog_data = read_json(catalog_path)
+    selectors = _level2_expected_selectors(export_manifest)
+    verify_export_identity(export_dir, export_manifest)
+    if catalog_data.get("schema_version") is None:
+        raise ClosureError("owner catalog has no schema_version")
+    catalog = Catalog(catalog_data)
+    map_type = export_manifest["level"]["map_type"]["id"]
+    resolution = selectors["vga_resolution_selector"]
+    texture_size = selectors["texture_size"]
+    terrain_flags = selectors["terrain_graphics_flags"]
+    realm_paths = select_realm_assets(map_type, resolution, texture_size, terrain_flags)
+    global_paths = _level2_common_paths()
+    for path in sorted(set(realm_paths + global_paths)):
+        catalog.verify_owner_file(owner_root, path)
+    root_assets = [catalog.file_asset(path) for path in sorted(set(realm_paths + global_paths))]
+    edges: list[dict[str, str]] = []
+    for path in realm_paths:
+        asset = catalog.file_asset(path)
+        edges.append(
+            edge(
+                "level2.selected_realm",
+                asset["asset_id"],
+                "qualified Day realm/texture/resolution selector",
+                "manifest.presentation_dependencies",
+                "proven",
+                "Level.cpp:878-1074; ReadAndDecompress.cpp:20-168",
+            )
+        )
+    for path in global_paths:
+        edges.append(
+            edge(
+                "process.global_open",
+                catalog.file_asset(path)["asset_id"],
+                "common startup file-array or bank open",
+                "Level 2 manifest resolved_files + global loader root",
+                "proven",
+                "Basic.cpp:253-273; EventsFunctions.cpp:42837-43265; Sound.cpp:2299-2356",
+            )
+        )
+
+    presentation = parse_presentation(export_dir / "presentation.bin")
+    entities = parse_entities(export_dir / "entities.bin")
+    tmaps_path = f"DATA/TMAPS{map_type}-0.DAT"
+    catalog.index_tmaps(tmaps_path)
+    scene_assets: list[dict[str, Any]] = []
+    dynamic_assets: list[dict[str, Any]] = []
+    for group_id, selected in enumerate(presentation["level_sprite_selectors"]):
+        if not selected:
+            continue
+        for member in catalog.tmap_group(group_id):
+            asset = catalog.tmap_asset(member)
+            scene_assets.append(asset)
+            edges.append(
+                edge(
+                    f"presentation.level_sprite_selectors[{group_id}]",
+                    asset["asset_id"],
+                    "TMAP allocation group expansion",
+                    f"presentation.bin.level_sprite_selectors[{group_id}]",
+                    "proven",
+                    "TextureMaps.cpp:227-265; owner catalog animation_or_allocation_group",
+                )
+            )
+    for parameter_index in entities["active_particle_parameters"]:
+        if parameter_index >= len(presentation["particles"]):
+            raise ClosureError(f"particle parameter index out of bounds: {parameter_index}")
+        parameter = presentation["particles"][parameter_index]
+        base = parameter["base_tmap"]
+        mode = parameter["render_mode"]
+        strategy = tmap_render_strategy(mode)
+        members = catalog.tmap_group(base)
+        group_indices = [member["index"] for member in members]
+        for member in members:
+            asset = catalog.tmap_asset(member)
+            scene_assets.append(asset)
+            edges.append(
+                edge(
+                    f"active_particle_parameter[{parameter_index}]",
+                    asset["asset_id"],
+                    "TMAP allocation group expansion",
+                    f"presentation.bin.particles[{parameter_index}].word_0",
+                    "proven",
+                    "TextureMaps.cpp:227-265; Level 2 entity/presentation relation",
+                )
+            )
+        if strategy not in {"base", "base_transparent"}:
+            for choice in render_choice_candidates(base, mode, group_indices):
+                dynamic_assets.append(catalog.tmap_asset(catalog.tmaps[choice]))
+    footprints = parse_build_footprints(owner_root, entities["active_build_indices"])
+    scene_assets.extend(footprints)
+    for asset in footprints:
+        edges.append(
+            edge(
+                f"active_build_entity[index={asset['index']}]",
+                asset["asset_id"],
+                "class=10/model=45 BUILD footprint relation",
+                "entities.bin.class/model/build_index",
+                "proven",
+                "EventsFunctions.cpp:27077-27105; BUILD TAB/DAT spans",
+            )
+        )
+    runtime = (export_dir / "runtime.bin").read_bytes()
+    runtime_layout = export_manifest["record_layouts"]["runtime"]["objectives"]
+    objective_selector = objective_language_selector(runtime, runtime_layout, 2)
+    objective = parse_language_record(owner_root, objective_selector)
+    language_root = catalog.file_asset("LANGUAGE/L1.TXT")
+    scene_assets.append(objective)
+    edges.append(
+        edge(
+            "runtime.objectives[0]",
+            objective["asset_id"],
+            "level external index + ObjectiveText",
+            f"runtime.bin[{runtime_layout['offset'] + 1}]",
+            "proven",
+            "GameUI.cpp:20-28,532-580; LANGUAGE loader",
+        )
+    )
+    edges.append(
+        edge(
+            objective["asset_id"],
+            language_root["asset_id"],
+            "record belongs to localization file",
+            "language selector",
+            "proven",
+            "EventsFunctions.cpp:42837-42854",
+        )
+    )
+    for glyph in resolve_glyph_assets(catalog, objective):
+        scene_assets.append(glyph)
+        edges.append(
+            edge(
+                objective["asset_id"],
+                glyph["asset_id"],
+                "owner 8-bit text byte + 1 to FONT1 glyph index",
+                f"LANGUAGE/L1.TXT string {objective_selector}",
+                "proven",
+                "GameUI.cpp:579-614; FONT1 owner catalog indexed entries",
+            )
+        )
+    cursor = catalog.indexed_asset("DATA/POINTERS.DAT", selectors["cursor"])
+    scene_assets.append(cursor)
+    edges.append(
+        edge(
+            "presentation.cursor",
+            cursor["asset_id"],
+            "POINTERS bank plus cursor index",
+            "manifest.presentation_dependencies.cursor",
+            "proven",
+            "GameUI.cpp:660-671; EventsFunctions.cpp:8594-8658",
+        )
+    )
+    dynamic_assets.append(
+        catalog.indexed_asset(f"DATA/{selectors['sprite_bank']}.DAT", selectors["cursor"])
+    )
+    for path, reason in (
+        (f"DATA/{selectors['sprite_bank']}.DAT", "Day HUD/spell/world sprite bank"),
+        (f"DATA/{selectors['web_bank']}.DAT", "Day minimap web bank"),
+        ("SOUND/SOUND.DAT", "sound bank 1 dynamic sample selection"),
+        ("SOUND/MUSIC.DAT", "Day music track dynamic selection"),
+    ):
+        dynamic_assets.append(catalog.file_asset(path))
+        edges.append(
+            edge(
+                "level2.runtime",
+                catalog.file_asset(path)["asset_id"],
+                reason,
+                "runtime state and selected Day profile",
+                "dynamic",
+                "Level 2 closure does not claim an exact frame/audio observation",
+            )
+        )
+    scene_assets = unique_assets(scene_assets)
+    dynamic_assets = unique_assets(dynamic_assets)
+    edges.sort(key=lambda item: (item["from"], item["to"], item["join"], item["source_field"], item["status"]))
+    source_files = {
+        name: {"sha256": sha256_file(export_dir / name), "size": (export_dir / name).stat().st_size}
+        for name in ("manifest.json", "presentation.bin", "entities.bin", "runtime.bin")
+    }
+    document: dict[str, Any] = {
+        "schema": SCHEMA,
+        "scope": "PRIVATE_TRACK_P_OWNER_DATA",
+        "profile": {
+            "name": "level2-day",
+            "external_level": 2,
+            "internal_level": 1,
+            "map_type": {"id": 0, "name": "day"},
+            "spec_commit": export_manifest["source"]["upstream_commit"],
+            "identity_status": "qualified",
+        },
+        "source": {
+            "level_export": {
+                "path": str(export_dir),
+                "package_sha256": export_manifest["package_sha256"],
+                "files": source_files,
+            },
+            "owner_catalog": {
+                "path": str(catalog_path),
+                "catalog_sha256": catalog_data.get("catalog_sha256"),
+                "file_sha256": sha256_file(catalog_path),
+            },
+            "owner_root_identity": {
+                path: sha256_file(owner_root / path)
+                for path in sorted(set(realm_paths + global_paths))
+            },
+        },
+        "selectors": {
+            "level_external": 2,
+            "level_internal": 1,
+            "map_type": {"id": 0, "name": "day"},
+            "vga_resolution_selector": resolution,
+            "texture_size": texture_size,
+            "terrain_graphics_flags": terrain_flags,
+            "objective_language_selector": objective_selector,
+            "active_particle_parameters": entities["active_particle_parameters"],
+            "active_build_indices": entities["active_build_indices"],
+            "audio": {"sound_bank": selectors["sound_bank"], "music_observation": "not_supplied"},
+        },
+        "sets": {
+            "realm_load_roots": {
+                "status": "qualified",
+                "assets": unique_assets(root_assets),
+                "selected_realm": sorted(catalog.file_asset(path)["asset_id"] for path in realm_paths),
+                "global_open": sorted(catalog.file_asset(path)["asset_id"] for path in global_paths),
+                "unresolved": [],
+            },
+            "scene_reachable": {"status": "qualified", "assets": scene_assets, "unresolved": []},
+            "frame_used": {
+                "status": "not_qualified_no_level2_frame_pair",
+                "assets": [],
+                "unresolved": ["Level 2 final-entry frame trace has not been supplied"],
+                "armed_empty_evidence": {"cursor": "not_observed", "sound": "not_observed", "music": "not_observed"},
+            },
+            "dynamic_dependencies": {
+                "status": "qualified_as_dynamic_not_exact",
+                "assets": dynamic_assets,
+                "unresolved": ["exact frame/audio selector use requires a qualified Level 2 trace"],
+            },
+        },
+        "edges": edges,
+        "qualification": {
+            "realm_load_roots": "PASS",
+            "scene_reachable": "PASS",
+            "dynamic_dependencies": "PASS_AS_EXPLICIT_DYNAMIC_SET",
+            "frame_used": "NOT_YET_QUALIFIED",
+            "zero_unresolved_frame_used_claimed": False,
+            "policy": "Common structure is qualified; exact frame-used claims remain fail-closed until a Level 2 trace pair exists.",
+        },
+    }
+    document["closure_sha256"] = sha256_bytes(canonical_json(document).encode("utf-8"))
+    return document
+
+
 def build_closure(
     export_dir: Path,
     catalog_path: Path,
     owner_root: Path,
     trace_a_dir: Path,
     trace_b_dir: Path,
+    profile: str = "level1",
 ) -> dict[str, Any]:
     export_manifest = read_json(export_dir / "manifest.json")
     catalog_data = read_json(catalog_path)
+    if profile == "level2":
+        return build_level2_closure(export_dir, catalog_path, owner_root)
+    if profile != "level1":
+        raise ClosureError(f"unsupported closure profile: {profile}")
     if export_manifest.get("schema") != "mc2-owner-level-export/v2":
         raise ClosureError("unsupported level-export schema")
     if catalog_data.get("schema_version") is None:
@@ -1333,6 +1676,12 @@ def build_closure(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--profile",
+        choices=("level1", "level2"),
+        default="level1",
+        help="validated realm/profile closure to derive",
+    )
+    parser.add_argument(
         "--export-dir",
         type=Path,
         default=Path("research/private/generated/level1-export-m"),
@@ -1366,22 +1715,33 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("research/private/generated/level1-asset-closure.json"),
+        default=None,
     )
     args = parser.parse_args()
+    export_dir = args.export_dir
+    if args.profile == "level2" and export_dir == Path(
+        "research/private/generated/level1-export-m"
+    ):
+        export_dir = Path("research/private/generated/l2-debug3.fJ3PaM/level2")
+    output = args.output or Path(
+        "research/private/generated/level2-asset-closure.json"
+        if args.profile == "level2"
+        else "research/private/generated/level1-asset-closure.json"
+    )
     document = build_closure(
-        args.export_dir,
+        export_dir,
         args.catalog,
         args.owner_root,
         args.trace_a,
         args.trace_b,
+        args.profile,
     )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(
         json.dumps(
             {
-                "output": str(args.output),
+                "output": str(output),
                 "closure_sha256": document["closure_sha256"],
                 "counts": {
                     name: len(value["assets"])

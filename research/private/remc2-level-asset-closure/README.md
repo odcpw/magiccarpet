@@ -1,6 +1,6 @@
-# Level 1 asset closure
+# Realm-aware asset closure
 
-This private-track tool joins the deterministic initialized Level 1 export to
+This private-track tool joins deterministic initialized level exports to
 the qualified owner-data asset catalog. It emits four deliberately distinct
 sets:
 
@@ -44,6 +44,23 @@ python3 -m unittest discover \
   -s research/private/remc2-level-asset-closure/tests \
   -p 'test_*.py' -v
 ```
+
+The default `level1` profile is sealed: its generated JSON and closure hash
+remain byte-identical to the accepted Level 1 artifact. The qualified Day
+profile can be derived from the Level 2 export with:
+
+```sh
+python3 research/private/remc2-level-asset-closure/build_closure.py \
+  --profile level2
+```
+
+Level 2 validates external level 2/internal level 1, Day map type, the pinned
+remc2 commit, owner-file/catalog hashes, and the exact `TMAPS0`/`MSPRD`/
+`MWEBD`/`BL32N`/`PALD`/`SKYD` selector tuple. It partitions common realm roots,
+scene reachability, dynamic dependencies, and frame observations. Because no
+qualified Level 2 final-entry trace pair exists yet, `frame_used` is explicitly
+`not_qualified_no_level2_frame_pair` with unresolved evidence; the artifact
+does not claim zero unresolved frame assets.
 
 The generated private manifest is
 `research/private/generated/level1-asset-closure.json`.

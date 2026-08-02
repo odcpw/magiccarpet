@@ -26,6 +26,7 @@ CATALOG = (
 OWNER = ROOT / "research/private/remc2-native-runtime/CD_Files"
 TRACE_A = ROOT / "research/private/generated/level1-frame-trace-final-v2-a"
 TRACE_B = ROOT / "research/private/generated/level1-frame-trace-final-v2-b"
+LEVEL2_EXPORT = ROOT / "research/private/generated/l2-debug3.fJ3PaM/level2"
 
 
 class RealmMatrixTests(unittest.TestCase):
@@ -401,6 +402,103 @@ class ClosureContractTests(unittest.TestCase):
                 "status": "presentation_environment_divergence",
             },
         )
+
+
+class Level2ClosureContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.document = closure.build_closure(
+            LEVEL2_EXPORT, CATALOG, OWNER, TRACE_A, TRACE_B, "level2"
+        )
+
+    def test_day_identity_and_partitions_are_explicit(self) -> None:
+        self.assertEqual(
+            self.document["profile"],
+            {
+                "name": "level2-day",
+                "external_level": 2,
+                "internal_level": 1,
+                "map_type": {"id": 0, "name": "day"},
+                "spec_commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+                "identity_status": "qualified",
+            },
+        )
+        roots = self.document["sets"]["realm_load_roots"]
+        self.assertIn("owner_data:DATA/TMAPS0-0.DAT", roots["selected_realm"])
+        self.assertIn("owner_data:DATA/MSPRD0-0.DAT", roots["selected_realm"])
+        self.assertIn("owner_data:DATA/MWEBD0-0.DAT", roots["selected_realm"])
+        self.assertNotIn("owner_data:DATA/TABLESN.DAT", roots["selected_realm"])
+        self.assertEqual(roots["unresolved"], [])
+        self.assertEqual(self.document["sets"]["scene_reachable"]["unresolved"], [])
+        frame = self.document["sets"]["frame_used"]
+        self.assertEqual(frame["status"], "not_qualified_no_level2_frame_pair")
+        self.assertFalse(self.document["qualification"]["zero_unresolved_frame_used_claimed"])
+        self.assertTrue(frame["unresolved"])
+
+    def test_day_asset_ids_and_hashes_are_catalog_qualified(self) -> None:
+        identity = self.document["source"]["owner_root_identity"]
+        self.assertEqual(
+            identity["DATA/TMAPS0-0.DAT"],
+            "84af85f568e2b909a5a881a3beb7b0d4dfdbe7d3b7a89d572a49a35ff7413074",
+        )
+        self.assertEqual(
+            identity["DATA/MSPRD0-0.DAT"],
+            "a81783458f1b81da262d60bc1f4bc28012137437f2fcedb75af441a4fc777656",
+        )
+        dynamic = {
+            item["asset_id"]
+            for item in self.document["sets"]["dynamic_dependencies"]["assets"]
+        }
+        self.assertIn("owner_data:DATA/MSPRD0-0.DAT", dynamic)
+        self.assertNotIn("owner_data:DATA/MSPRN0-0.DAT", dynamic)
+
+    def test_day_closure_is_repeatable(self) -> None:
+        again = closure.build_closure(
+            LEVEL2_EXPORT, CATALOG, OWNER, TRACE_A, TRACE_B, "level2"
+        )
+        self.assertEqual(
+            closure.canonical_json(self.document), closure.canonical_json(again)
+        )
+
+    def test_cross_level_relabel_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            export = Path(tmp) / "level2"
+            shutil.copytree(LEVEL2_EXPORT, export)
+            manifest_path = export / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["level"]["external"] = 1
+            manifest_path.write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(closure.ClosureError, "external=2"):
+                closure.build_closure(export, CATALOG, OWNER, TRACE_A, TRACE_B, "level2")
+
+    def test_stale_catalog_asset_hash_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog_path = Path(tmp) / "catalog.json"
+            catalog = json.loads(CATALOG.read_text())
+            for item in catalog["files"]:
+                if item.get("path") == "DATA/MSPRD0-0.DAT":
+                    item["sha256"] = "0" * 64
+                    break
+            else:
+                self.fail("qualified Day sprite file missing from catalog")
+            catalog_path.write_text(json.dumps(catalog))
+            with self.assertRaisesRegex(closure.ClosureError, "catalog hash mismatch"):
+                closure.build_closure(
+                    LEVEL2_EXPORT, catalog_path, OWNER, TRACE_A, TRACE_B, "level2"
+                )
+
+    def test_missing_day_asset_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog_path = Path(tmp) / "catalog.json"
+            catalog = json.loads(CATALOG.read_text())
+            catalog["files"] = [
+                item for item in catalog["files"] if item.get("path") != "DATA/SKYD0-0.DAT"
+            ]
+            catalog_path.write_text(json.dumps(catalog))
+            with self.assertRaisesRegex(closure.ClosureError, "owner catalog has no file"):
+                closure.build_closure(
+                    LEVEL2_EXPORT, catalog_path, OWNER, TRACE_A, TRACE_B, "level2"
+                )
 
 
 if __name__ == "__main__":
