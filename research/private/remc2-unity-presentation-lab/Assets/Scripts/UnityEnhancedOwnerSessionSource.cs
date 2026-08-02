@@ -1713,10 +1713,6 @@ namespace MagicCarpet.PresentationLab
                     case 13:
                     case 59: return (int)UnityEnhancedPresentationFamily.Smoke;
                     case 40: return (int)UnityEnhancedPresentationFamily.Impact;
-                    // Rust allocates live SpeedTrail rows as class-10/model-2
-                    // source entities. Keep the family binding explicit so
-                    // Enhanced does not silently render them as Generic.
-                    case 2: return (int)UnityEnhancedPresentationFamily.SpeedTrail;
                     default: return (int)UnityEnhancedPresentationFamily.Generic;
                 }
             }

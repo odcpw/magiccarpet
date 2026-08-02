@@ -29,10 +29,7 @@ namespace MagicCarpet.PresentationLab
         Exit = 16,
         Castle = 17,
         Possession = 18,
-        Generic = 19,
-        // Rust's live Level 1 class-10/model-2 speed-trail rows get a
-        // presentation-only elongated mesh instead of the generic fallback.
-        SpeedTrail = 20
+        Generic = 19
     }
 
     [DisallowMultipleComponent]
@@ -72,12 +69,12 @@ namespace MagicCarpet.PresentationLab
         public static bool HasCoverage(int family)
         {
             return family >= (int)UnityEnhancedPresentationFamily.Player &&
-                   family <= (int)UnityEnhancedPresentationFamily.SpeedTrail;
+                   family <= (int)UnityEnhancedPresentationFamily.Generic;
         }
 
         public static int CoverageCount
         {
-            get { return (int)UnityEnhancedPresentationFamily.SpeedTrail + 1; }
+            get { return (int)UnityEnhancedPresentationFamily.Generic + 1; }
         }
 
         public void Configure(GameObject view, UnityEnhancedEntitySnapshot entity)
@@ -270,8 +267,6 @@ namespace MagicCarpet.PresentationLab
                 case UnityEnhancedPresentationFamily.Possession:
                 case UnityEnhancedPresentationFamily.Generic:
                     return CreateCreatureMesh(family);
-                case UnityEnhancedPresentationFamily.SpeedTrail:
-                    return CreateSpeedTrailMesh();
                 default:
                     return CreateBoxMesh(family);
             }
@@ -439,45 +434,6 @@ namespace MagicCarpet.PresentationLab
                     new Vector3(width * 1.65f, 0.48f, 0.06f),
                     new Color(0.64f, 0.42f, 0.20f, 1f));
             }
-            return BuildMesh(vertices, triangles, colors);
-        }
-
-        private static Mesh CreateSpeedTrailMesh()
-        {
-            // A tapered, asset-free streak aligned with the source row's yaw.
-            // The source row is authoritative for position/lifetime; this
-            // mesh only improves its Unity presentation.
-            var vertices = new List<Vector3>
-            {
-                new Vector3(-0.06f, -0.06f, -1.55f),
-                new Vector3(0.06f, -0.06f, -1.55f),
-                new Vector3(0.06f, 0.06f, -1.55f),
-                new Vector3(-0.06f, 0.06f, -1.55f),
-                new Vector3(-0.28f, -0.14f, 0.22f),
-                new Vector3(0.28f, -0.14f, 0.22f),
-                new Vector3(0.28f, 0.14f, 0.22f),
-                new Vector3(-0.28f, 0.14f, 0.22f)
-            };
-            var triangles = new List<int>
-            {
-                0, 1, 2, 0, 2, 3,
-                4, 6, 5, 4, 7, 6,
-                0, 4, 5, 0, 5, 1,
-                1, 5, 6, 1, 6, 2,
-                2, 6, 7, 2, 7, 3,
-                3, 7, 4, 3, 4, 0
-            };
-            var colors = new List<Color>
-            {
-                new Color(0.16f, 0.62f, 1f, 1f),
-                new Color(0.16f, 0.62f, 1f, 1f),
-                new Color(0.24f, 0.84f, 1f, 1f),
-                new Color(0.24f, 0.84f, 1f, 1f),
-                new Color(0.38f, 0.95f, 1f, 1f),
-                new Color(0.38f, 0.95f, 1f, 1f),
-                new Color(0.62f, 1f, 1f, 1f),
-                new Color(0.62f, 1f, 1f, 1f)
-            };
             return BuildMesh(vertices, triangles, colors);
         }
 
@@ -680,7 +636,6 @@ namespace MagicCarpet.PresentationLab
                 case UnityEnhancedPresentationFamily.Exit: return new Color(0.78f, 0.2f, 0.7f);
                 case UnityEnhancedPresentationFamily.Castle: return new Color(0.68f, 0.52f, 0.38f);
                 case UnityEnhancedPresentationFamily.Possession: return new Color(0.84f, 0.2f, 0.36f);
-                case UnityEnhancedPresentationFamily.SpeedTrail: return new Color(0.18f, 0.82f, 1f);
                 default: return Color.white;
             }
         }
@@ -703,7 +658,6 @@ namespace MagicCarpet.PresentationLab
                 case UnityEnhancedPresentationFamily.Projectile:
                 case UnityEnhancedPresentationFamily.Impact:
                 case UnityEnhancedPresentationFamily.Fire:
-                case UnityEnhancedPresentationFamily.SpeedTrail:
                     return 0.30f;
                 default:
                     return 0f;

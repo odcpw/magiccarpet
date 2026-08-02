@@ -432,36 +432,13 @@ namespace MagicCarpet.PresentationLab.Tests
             entity.RenderLayer = 7;
 
             actors.Configure(view, entity);
-            Assert.AreEqual(UnityEnhancedActorPresentation.CoverageCount, 21);
+            Assert.AreEqual(UnityEnhancedActorPresentation.CoverageCount, 20);
             Assert.AreEqual(1, actors.ActiveVisualCount);
             Assert.IsNotNull(view.transform.Find("EnhancedActorVisual"));
             Assert.AreEqual(7, actors.LastSortingOrder);
             actors.Release(view);
             Assert.AreEqual(0, actors.ActiveVisualCount);
             Assert.AreEqual(1, actors.PooledVisualCount);
-
-            Object.DestroyImmediate(gameObject);
-        }
-
-        [Test]
-        public void SpeedTrailFamilyUsesAnElongatedGeneratedMesh()
-        {
-            GameObject gameObject = new GameObject("enhanced-speed-trail-test");
-            UnityEnhancedActorPresentation actors = gameObject.AddComponent<UnityEnhancedActorPresentation>();
-            GameObject view = new GameObject("speed-trail-view");
-            view.transform.SetParent(gameObject.transform, false);
-            UnityEnhancedEntitySnapshot entity = Entity(1, 77, Vector3.zero);
-            entity.PresentationFamily = (int)UnityEnhancedPresentationFamily.SpeedTrail;
-            entity.FacingDegrees = 45f;
-
-            actors.Configure(view, entity);
-
-            MeshFilter filter = view.transform.Find("EnhancedActorVisual").GetComponent<MeshFilter>();
-            MeshRenderer renderer = view.transform.Find("EnhancedActorVisual").GetComponent<MeshRenderer>();
-            Assert.IsNotNull(filter.sharedMesh);
-            Assert.Greater(filter.sharedMesh.bounds.size.z, filter.sharedMesh.bounds.size.x * 3f);
-            Assert.IsNotNull(renderer.sharedMaterial);
-            Assert.Greater(renderer.sharedMaterial.GetFloat("_EmissionStrength"), 0f);
 
             Object.DestroyImmediate(gameObject);
         }
