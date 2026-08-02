@@ -17,7 +17,7 @@ python3 -m unittest discover \
   -p 'test_xr_smoke.py' -v
 ```
 
-The Unity editor smoke commands are:
+The Unity editor asset and flat player smoke commands are:
 
 ```text
 Unity -batchmode -nographics -quit \
@@ -30,8 +30,25 @@ Unity -batchmode -nographics -quit \
   -mc-xr-profile=off
 ```
 
-The `pc-openxr` profile is run from the editor/player after the same project
-has been built with that profile. Missing SteamVR/OpenXR or missing controllers
-must be a clear `XR UNAVAILABLE`/identity diagnostic, never a silent flat-mode
-fallback that looks like a pass. XR initialization does not open a Rust session,
-load owner data, or write gameplay state.
+The owner-free smoke scene has a dedicated build method so a player actually
+starts in `OpenXrSmoke.unity` rather than merely packaging it as a secondary
+scene. The active Unity standalone target must be `StandaloneLinux64` or
+`StandaloneWindows64`:
+
+```text
+Unity -batchmode -nographics -quit \
+  -projectPath research/private/remc2-unity-presentation-lab \
+  -executeMethod MagicCarpet.PresentationLab.Editor.CreatePresentationLabAssets.BuildOpenXrSmokePlayer \
+  -mc-build-path /tmp/mc2-presentation-lab-xr-smoke \
+  -mc-xr-profile=pc-openxr
+```
+
+Run the produced player with `-mc-xr-profile=off -mc-xr-smoke-once` to prove
+the flat path exits without an XR loader, then with
+`-mc-xr-profile=pc-openxr -mc-xr-smoke-once`. The PC run logs the selected
+loader, display subsystem count, headset count, left/right controller counts,
+and per-device identities, then requests shutdown so `OnDestroy` stops and
+deinitializes the loader. Missing SteamVR/OpenXR or missing left/right
+controllers is a non-silent `XR UNAVAILABLE`/`XR CONTROLLERS UNAVAILABLE`
+diagnostic with a non-zero smoke exit. XR initialization does not open a Rust
+session, load owner data, or write gameplay state.

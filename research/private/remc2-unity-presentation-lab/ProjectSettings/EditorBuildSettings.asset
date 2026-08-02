@@ -12,5 +12,6 @@ EditorBuildSettings:
     path: Assets/Scenes/OpenXrSmoke.unity
     guid: 2c41547e8e2b4f5d9b4b37f8f2d3e9a1
   m_configObjects:
+    com.unity.xr.management.loader_settings: {fileID: 11400000, guid: 6a853cf4d2aaf9d1fa19df8e996f4b86, type: 2}
     com.unity.xr.openxr.settings4: {fileID: 11400000, guid: 6624b1e20ad0b769aaef3a1990ded44a, type: 2}
   m_UseUCBPForAssetBundles: 0

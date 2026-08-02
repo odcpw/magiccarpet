@@ -29,7 +29,21 @@ def validate() -> dict[str, object]:
     profile_path = PROJECT / "qualification" / "xr-smoke-profile.json"
     action_path = PROJECT / "Assets" / "InputSystem" / "XrSmoke.inputactions"
     script_path = PROJECT / "Assets" / "Scripts" / "XrSmokeBootstrap.cs"
-    for path in (manifest_path, lock_path, profile_path, action_path, script_path):
+    editor_script_path = PROJECT / "Assets" / "Editor" / "CreatePresentationLabAssets.cs"
+    general_settings_path = PROJECT / "Assets" / "XR" / "XRGeneralSettingsPerBuildTarget.asset"
+    loader_path = PROJECT / "Assets" / "XR" / "Loaders" / "OpenXRLoader.asset"
+    openxr_settings_path = PROJECT / "Assets" / "XR" / "Settings" / "OpenXR Package Settings.asset"
+    for path in (
+        manifest_path,
+        lock_path,
+        profile_path,
+        action_path,
+        script_path,
+        editor_script_path,
+        general_settings_path,
+        loader_path,
+        openxr_settings_path,
+    ):
         if not path.is_file():
             fail(f"missing VR-B file: {path.relative_to(ROOT)}")
 
@@ -70,9 +84,31 @@ def validate() -> dict[str, object]:
             fail(f"action map lacks binding token: {token}")
 
     script = script_path.read_text(encoding="utf-8")
-    for marker in ("-mc-xr-profile", "XRGeneralSettings", "XROrigin", "XR Origin", "XR UNAVAILABLE", "owner-data=none", "simulation=none"):
+    for marker in (
+        "-mc-xr-profile",
+        "-mc-xr-smoke-once",
+        "XRGeneralSettings",
+        "XROrigin",
+        "XR Origin",
+        "XR UNAVAILABLE",
+        "XR CONTROLLERS UNAVAILABLE",
+        "identities=",
+        "Application.Quit",
+        "owner-data=none",
+        "simulation=none",
+    ):
         if marker not in script:
             fail(f"XR bootstrap lacks marker: {marker}")
+    editor_script = editor_script_path.read_text(encoding="utf-8")
+    if "BuildOpenXrSmokePlayer" not in editor_script or "BuildPipeline.BuildPlayer" not in editor_script:
+        fail("XR smoke build method is missing")
+    if "scenes = new[] { XrSmokeScenePath }" not in editor_script:
+        fail("XR smoke build is not isolated to OpenXrSmoke.unity")
+    general_settings = general_settings_path.read_text(encoding="utf-8")
+    if "buildTarget: 1" not in general_settings or "m_Loaders:" not in general_settings:
+        fail("Standalone XR manager/OpenXR loader mapping is missing")
+    if "Unity.XR.OpenXR::UnityEngine.XR.OpenXR.OpenXRLoader" not in loader_path.read_text(encoding="utf-8"):
+        fail("OpenXR loader asset is incomplete")
     for forbidden in ("NativeSession", "OwnerInputValidator", "PresentationSessionLease"):
         if forbidden in script:
             fail(f"XR smoke bootstrap has forbidden gameplay/owner coupling: {forbidden}")
@@ -83,6 +119,8 @@ def validate() -> dict[str, object]:
         "actions": sorted(action_names),
         "packages": PINS,
         "runtime_verified": False,
+        "build_method": "BuildOpenXrSmokePlayer",
+        "standalone_loader_configured": True,
     }
 
 
