@@ -6,13 +6,21 @@
   "sample_count": 32,
   "owner_payload_embedded": false,
   "unity_gpu_and_owner_route": "pending-owner-lab-capture",
-  "owner_route_binding_status": "640x480 and 960x720 profile-sized source compositor rerender and Unity upload proven across 32-frame reset/replay sequences; broader owner/GPU matrix remains pending",
+  "owner_route_binding_status": "640x480 and 960x720 profile-sized source compositor rerender and Unity upload proven across 32-frame reset/replay sequences, with 49-frame owner route smokes at both profiles; broader owner/GPU matrix remains pending",
   "owner_route_scenario": {
     "artifact": "qualification/classic-hd-owner-route-scenarios.json",
     "profile": "hd-640x480",
     "frame_count": 49,
     "status": "idle-town-combat-flight-death-restart-route-pass; broader owner/GPU/window/corpus qualification remains pending",
     "owner_payload_embedded": false
+  },
+  "owner_route_960x720_scenario": {
+    "artifact": "qualification/classic-hd-owner-route-960x720-scenarios.json",
+    "profile": "hd-960x720",
+    "frame_count": 49,
+    "status": "idle-town-combat-flight-death-restart-route-pass; sustained real-time/GPU promotion remains pending",
+    "owner_payload_embedded": false,
+    "log_sha256": "3193a66b8aad19fe3bd8d45693e3157bd3ae416286e9f2b7c11a7de20f2bbb75"
   },
   "owner_route_smoke": {
     "artifact": "qualification/classic-hd-owner-route-smoke.json",
@@ -74,7 +82,7 @@
       "p95_cpu_ns": 26112476,
       "deterministic_reset": true,
       "status": "candidate-awaiting-unity-gpu-and-owner-route-capture",
-      "unity_gpu_copy_status": "single owner profile rerender and 64-frame two-pass reset replay with persistent Unity uploads passed; real-time/GPU/scenario capture remains pending"
+      "unity_gpu_copy_status": "single owner profile rerender, 64-frame two-pass reset replay, and 49-frame idle/town/combat/flight/death-restart route smoke with persistent Unity uploads passed; real-time/GPU promotion remains pending"
     },
     {
       "profile": "classic-hd-1280x960",

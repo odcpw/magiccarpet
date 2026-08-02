@@ -35,6 +35,9 @@ ENHANCED_OWNER_SCENARIO_ARTIFACT = Path(__file__).with_name(
 CLASSIC_HD_OWNER_SCENARIO_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-route-scenarios.json"
 )
+CLASSIC_HD_OWNER_SCENARIO_960_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-route-960x720-scenarios.json"
+)
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -234,6 +237,9 @@ def validate_enhanced_owner_scenario_artifact(
 
 def validate_classic_hd_owner_scenario_artifact(
     path: Path = CLASSIC_HD_OWNER_SCENARIO_ARTIFACT,
+    profile: str = "hd-640x480",
+    width: int = 640,
+    height: int = 480,
 ) -> list[str]:
     errors: list[str] = []
     try:
@@ -247,10 +253,10 @@ def validate_classic_hd_owner_scenario_artifact(
         errors.append("Classic HD owner scenario artifact kind is wrong")
     if artifact.get("mode") != "classic-hd" or artifact.get("native_abi") != "sim-capi-v2":
         errors.append("Classic HD owner scenario must identify the sim-capi-v2 route")
-    if artifact.get("profile") != "hd-640x480":
-        errors.append("Classic HD owner scenario must identify the hd-640x480 profile")
-    if artifact.get("internal_width") != 640 or artifact.get("internal_height") != 480:
-        errors.append("Classic HD owner scenario extent must be 640x480")
+    if artifact.get("profile") != profile:
+        errors.append(f"Classic HD owner scenario must identify the {profile} profile")
+    if artifact.get("internal_width") != width or artifact.get("internal_height") != height:
+        errors.append(f"Classic HD owner scenario extent must be {width}x{height}")
     if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
         errors.append("Classic HD owner scenario must keep owner inputs external")
     if artifact.get("scenario_frame_count") != 49 or artifact.get("upload_count") != 49:
@@ -399,6 +405,16 @@ def verify() -> dict[str, Any]:
     _validator_result(
         "owner-bound Classic HD scenario artifact",
         validate_classic_hd_owner_scenario_artifact,
+        checks,
+    )
+    _validator_result(
+        "owner-bound Classic HD 960x720 scenario artifact",
+        lambda: validate_classic_hd_owner_scenario_artifact(
+            CLASSIC_HD_OWNER_SCENARIO_960_ARTIFACT,
+            "hd-960x720",
+            960,
+            720,
+        ),
         checks,
     )
     _validator_result(

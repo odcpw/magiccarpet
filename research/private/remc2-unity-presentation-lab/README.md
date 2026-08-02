@@ -156,6 +156,14 @@ projectile/impact rows, high-speed flight, lethal player state, and tick-0
 restart. This is route and Rust-observation evidence only; it does not promote
 the profile to sustained GPU support or capture a visual corpus.
 
+The same route is qualified separately at the 960x720 candidate profile with
+`-mc-classic-profile hd-960x720`. Its receipt is
+`research/private/remc2-presentation/qualification/classic-hd-owner-route-960x720-scenarios.json`.
+It proves the same 49-frame route and persistent uploads at the larger internal
+render size, but remains route evidence only: the measured Classic CPU/GPU
+budget and sustained allocation gates still decide whether 960x720 is
+promoted as a supported real-time profile.
+
 The owner-bound Unity Enhanced sequence smoke is also explicit:
 
 ```text
