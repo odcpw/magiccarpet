@@ -764,7 +764,7 @@ impl GoatFamily {
         };
         match self.goats[family_index].action {
             9 => self.step_roam(family_index, world, players, &mut events),
-            10 => self.step_action_10(family_index, world, &mut events),
+            10 => self.step_action_10(family_index, world, players, &mut events),
             11 => self.step_action_11(family_index, world, &mut events),
             GOAT_PATROL_ACTION
                 if self.goats[family_index].stage_var_2 == GOAT_PATROL_STAGE_MODE =>
@@ -783,17 +783,19 @@ impl GoatFamily {
         events
     }
 
-    /// Port the source action-10 continuation (`sub_1F3C0`): apply pending
-    /// damage and movement through `sub_1BF90(a1, 8)`, then consume the
-    /// compiler-derived RNG/audio tail.  Level 2 action-11 partners can enter
-    /// this state when the authored behavior flag clears the retaliation bit.
+    /// Port the source action-10 continuation (`sub_1F3C0`): apply the shared
+    /// `sub_1BF90(a1, 8)` damage prelude, source movement, cadence-gated
+    /// player acquisition, and same-model peer fallback before the wrapper
+    /// RNG/audio tail. Level 2 action-11 partners can enter this state when
+    /// the authored behavior flag clears the retaliation bit.
     fn step_action_10<W: FlightWorld>(
         &mut self,
         family_index: usize,
         world: &W,
+        players: &[GoatPlayerTarget],
         events: &mut Vec<GoatStepEvent>,
     ) {
-        match self.apply_pending_damage(family_index) {
+        match self.apply_action11_damage(family_index) {
             DamageResult::Dead => {
                 self.goats[family_index].action = 12;
             }
@@ -812,7 +814,47 @@ impl GoatFamily {
                 );
             }
             DamageResult::None => {
-                self.move_patrol(family_index, world);
+                self.move_action11_source(family_index, world);
+                if u16::from(self.goats[family_index].phase)
+                    .is_multiple_of(self.config.perception_cadence)
+                {
+                    let first = next_rng(self.goats[family_index].rng);
+                    let second = next_rng(first);
+                    self.goats[family_index].rng = second;
+                    let sign = 2 * (i32::from(first % 157) / 79) - 1;
+                    let magnitude = i32::from(second & 0xff) + 85;
+                    self.goats[family_index].roll = wrapping_i16(
+                        i64::from(self.goats[family_index].roll) + i64::from(sign * magnitude),
+                    ) & 0x07ff;
+
+                    if self.goats[family_index].proximity_countdown != 0 {
+                        if let Some(target_entity_index) =
+                            self.nearest_player_in_cone(family_index, players)
+                        {
+                            let goat = &mut self.goats[family_index];
+                            goat.target_entity_index = Some(target_entity_index);
+                            goat.action = if self.config.behavior_flags & 8 != 0 {
+                                14
+                            } else {
+                                10
+                            };
+                        } else if self.config.behavior_flags & 4 == 0
+                            && let Some(partner_entity_index) =
+                                self.nearest_unpaired_peer_in_cone(family_index)
+                        {
+                            let goat = &mut self.goats[family_index];
+                            goat.partner_entity_index = Some(partner_entity_index);
+                            goat.action = 11;
+                        }
+                    } else if self.config.behavior_flags & 4 == 0
+                        && let Some(partner_entity_index) =
+                            self.nearest_unpaired_peer_in_cone(family_index)
+                    {
+                        let goat = &mut self.goats[family_index];
+                        goat.partner_entity_index = Some(partner_entity_index);
+                        goat.action = 11;
+                    }
+                }
             }
         }
         self.advance_action_10_tail(family_index, events);
@@ -1576,6 +1618,45 @@ impl GoatFamily {
             }
             if nearest.is_none_or(|(nearest_distance, _)| distance < nearest_distance) {
                 nearest = Some((distance, player.entity_index));
+            }
+        }
+        nearest.map(|(_, entity_index)| entity_index)
+    }
+
+    fn nearest_unpaired_peer_in_cone(&self, family_index: usize) -> Option<u16> {
+        let goat = &self.goats[family_index];
+        let mut nearest: Option<(u32, u16)> = None;
+        for candidate_entity_index in self.source_model_linked_list(GOAT_MODEL) {
+            let Some(candidate_goat) = self
+                .goats
+                .iter()
+                .find(|peer| peer.entity_index == candidate_entity_index)
+            else {
+                continue;
+            };
+            let Some(candidate) = self.source_entity_view(candidate_entity_index) else {
+                continue;
+            };
+            if candidate.entity_index == goat.entity_index
+                || candidate_goat.partner_entity_index.is_some()
+            {
+                continue;
+            }
+            let dx = i32::from(candidate.position.x) - i32::from(goat.position.x);
+            let dy = i32::from(candidate.position.y) - i32::from(goat.position.y);
+            let distance = dx
+                .wrapping_mul(dx)
+                .cast_unsigned()
+                .wrapping_add(dy.wrapping_mul(dy).cast_unsigned());
+            if distance > u32::from(self.config.perception_radius).pow(2) {
+                continue;
+            }
+            let heading = heading_for_positions(goat.position, candidate.position);
+            if angle_distance(i32::from(goat.yaw), heading) >= self.config.perception_half_angle {
+                continue;
+            }
+            if nearest.is_none_or(|(nearest_distance, _)| distance < nearest_distance) {
+                nearest = Some((distance, candidate.entity_index));
             }
         }
         nearest.map(|(_, entity_index)| entity_index)
@@ -3514,6 +3595,200 @@ mod tests {
         assert_eq!(partner.action, 14);
         assert_eq!(partner.target_entity_index, Some(152));
         assert_eq!(partner.partner_entity_index, None);
+    }
+
+    #[test]
+    fn action10_no_damage_acquires_nearest_player_on_cadence() {
+        let world = MaterialBoundaryWorld { all_water: false };
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 39)
+            .expect("primary Goat");
+        family.goats[primary_index].action = 10;
+        family.goats[primary_index].phase = 0;
+        family.goats[primary_index].position = Position {
+            x: 10_000,
+            y: 10_000,
+            z: 0,
+        };
+        family.goats[primary_index].yaw = 0;
+        family.goats[primary_index].roll = 0;
+        family.goats[primary_index].actual_speed = 0;
+        family.goats[primary_index].proximity_countdown = 1;
+        family.goats[primary_index].target_entity_index = None;
+        family.goats[primary_index].partner_entity_index = None;
+
+        family.step_source_slot(
+            39,
+            &world,
+            &[
+                GoatPlayerTarget {
+                    entity_index: 151,
+                    position: Position {
+                        x: 10_000,
+                        y: 9_400,
+                        z: 0,
+                    },
+                    control_flags: 0,
+                },
+                GoatPlayerTarget {
+                    entity_index: 152,
+                    position: Position {
+                        x: 10_000,
+                        y: 9_100,
+                        z: 0,
+                    },
+                    control_flags: 0,
+                },
+            ],
+        );
+        let primary = &family.goats[primary_index];
+        assert_eq!(primary.action, 14);
+        assert_eq!(primary.target_entity_index, Some(151));
+        assert_eq!(primary.partner_entity_index, None);
+        assert_eq!(primary.actual_speed, primary.minimum_speed);
+        assert_eq!(primary.phase, 1);
+    }
+
+    #[test]
+    fn action10_peer_fallback_uses_source_order_and_partner_relation() {
+        let world = MaterialBoundaryWorld { all_water: false };
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 39)
+            .expect("primary Goat");
+        let first_source_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 40)
+            .expect("first peer Goat");
+        let second_source_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 41)
+            .expect("second peer Goat");
+
+        family.goats[primary_index].action = 10;
+        family.goats[primary_index].phase = 0;
+        family.goats[primary_index].position = Position {
+            x: 10_000,
+            y: 10_000,
+            z: 0,
+        };
+        family.goats[primary_index].yaw = 0;
+        family.goats[primary_index].roll = 0;
+        family.goats[primary_index].actual_speed = 0;
+        family.goats[primary_index].proximity_countdown = 0;
+        family.goats[primary_index].target_entity_index = None;
+        family.goats[primary_index].partner_entity_index = None;
+
+        for peer_index in [first_source_index, second_source_index] {
+            family.goats[peer_index].position = Position {
+                x: 10_000,
+                y: 9_400,
+                z: 0,
+            };
+            family.goats[peer_index].partner_entity_index = None;
+        }
+        family.goats.swap(first_source_index, second_source_index);
+
+        family.step_source_slot(39, &world, &[]);
+        let primary = &family.goats[primary_index];
+        assert_eq!(primary.action, 11);
+        assert_eq!(primary.partner_entity_index, Some(40));
+        assert_eq!(primary.target_entity_index, None);
+        assert_eq!(primary.phase, 1);
+
+        let occupied_peer_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 40)
+            .expect("peer Goat after swap");
+        family.goats[primary_index].action = 10;
+        family.goats[primary_index].phase = 32;
+        family.goats[primary_index].partner_entity_index = None;
+        family.goats[occupied_peer_index].partner_entity_index = Some(66);
+        family.step_source_slot(39, &world, &[]);
+        let primary = &family.goats[primary_index];
+        assert_eq!(primary.partner_entity_index, Some(41));
+    }
+
+    #[test]
+    fn action10_damage_transitions_follow_row_98_retaliation_flag() {
+        let world = MaterialBoundaryWorld { all_water: false };
+        let mut family = level_two_family();
+        let primary = family
+            .goats
+            .iter_mut()
+            .find(|goat| goat.entity_index == 39)
+            .expect("primary Goat");
+        primary.action = 10;
+        primary.phase = 0;
+        primary.partner_entity_index = None;
+        primary.target_entity_index = None;
+
+        family
+            .inject_damage(39, 100, 152)
+            .expect("nonlethal action-10 hit");
+        family.step_source_slot(39, &world, &[]);
+        let primary = family
+            .goats
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .expect("primary Goat");
+        assert_eq!(primary.life, 500);
+        assert_eq!(primary.action, 14);
+        assert_eq!(primary.target_entity_index, Some(152));
+        assert_eq!(primary.partner_entity_index, None);
+        assert_eq!(primary.actual_speed, primary.minimum_speed);
+        assert_eq!(primary.pending_damage, 0);
+        assert_eq!(primary.pending_attacker, 0);
+    }
+
+    #[test]
+    fn action10_mutated_level_two_row_replays_and_reset_restores_baseline() {
+        let baseline = level_two_family();
+        let configured = |mut family: GoatFamily| {
+            let primary = family
+                .goats
+                .iter_mut()
+                .find(|goat| goat.entity_index == 39)
+                .expect("primary Goat");
+            primary.action = 10;
+            primary.phase = 0;
+            primary.position = Position {
+                x: 10_000,
+                y: 10_000,
+                z: 0,
+            };
+            primary.yaw = 0;
+            primary.roll = 0;
+            primary.actual_speed = 0;
+            primary.proximity_countdown = 1;
+            primary.target_entity_index = None;
+            primary.partner_entity_index = None;
+            family
+        };
+
+        let players = [GoatPlayerTarget {
+            entity_index: 152,
+            position: Position {
+                x: 10_000,
+                y: 9_200,
+                z: 0,
+            },
+            control_flags: 0,
+        }];
+        let mut first = configured(baseline.clone());
+        let mut replay = configured(baseline.clone());
+        first.step_source_slot(39, &MaterialBoundaryWorld { all_water: false }, &players);
+        replay.step_source_slot(39, &MaterialBoundaryWorld { all_water: false }, &players);
+        assert_eq!(first, replay);
+        assert_eq!(level_two_family(), baseline);
     }
 
     #[test]
