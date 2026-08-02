@@ -73,11 +73,14 @@ namespace MagicCarpet.PresentationLab
         public ulong LastReceiptHash { get; private set; }
         public uint LastFlags { get; private set; }
         public byte LastHistoryState { get; private set; }
+        public byte EffectivePostprocessMode { get; private set; }
         public int PlayerLife { get { return mission.PlayerLife; } }
         public int PlayerMaxLife { get { return mission.PlayerMaxLife; } }
         public bool PlayerDead { get { return mission.PlayerDead != 0; } }
+        public bool HasSpeedSpell { get { return mission.HasSpeedSpell != 0; } }
         public int MissionProjectileCount { get { return checked((int)mission.ProjectileCount); } }
         public int MissionImpactCount { get { return checked((int)mission.ImpactCount); } }
+        public short TargetSpeed { get { return snapshot.TargetSpeed; } }
         public short ActualSpeed { get { return snapshot.ActualSpeed; } }
         public ushort CameraX { get { return ReadRenderCameraUInt16(28); } }
         public ushort CameraY { get { return ReadRenderCameraUInt16(30); } }
@@ -362,6 +365,7 @@ namespace MagicCarpet.PresentationLab
             LastFlags = info.Flags;
             LastHistoryState = info.HistoryState;
             LastReceiptHash = ReceiptHash(info);
+            EffectivePostprocessMode = info.EffectivePostprocessMode;
             return true;
         }
 
@@ -474,6 +478,7 @@ namespace MagicCarpet.PresentationLab
             LastReceiptHash = 0;
             LastFlags = 0;
             LastHistoryState = 0;
+            EffectivePostprocessMode = 0;
         }
 
         private bool ReadSessionSnapshot(out string reason)

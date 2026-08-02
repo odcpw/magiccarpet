@@ -89,6 +89,10 @@ namespace MagicCarpet.PresentationLab
         {
             get { return ownerSession != null && ownerSession.PlayerDead; }
         }
+        public bool HasSpeedSpell
+        {
+            get { return ownerSession != null && ownerSession.HasSpeedSpell; }
+        }
         public int MissionProjectileCount
         {
             get { return ownerSession == null ? 0 : ownerSession.MissionProjectileCount; }
@@ -100,6 +104,14 @@ namespace MagicCarpet.PresentationLab
         public short ActualSpeed
         {
             get { return ownerSession == null ? (short)0 : ownerSession.ActualSpeed; }
+        }
+        public short TargetSpeed
+        {
+            get { return ownerSession == null ? (short)0 : ownerSession.TargetSpeed; }
+        }
+        public byte EffectivePostprocessMode
+        {
+            get { return ownerSession == null ? (byte)0 : ownerSession.EffectivePostprocessMode; }
         }
         public ushort CameraX
         {

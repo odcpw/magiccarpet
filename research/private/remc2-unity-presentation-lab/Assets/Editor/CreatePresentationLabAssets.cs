@@ -514,6 +514,189 @@ namespace MagicCarpet.PresentationLab.Editor
             }
         }
 
+        [MenuItem("Magic Carpet/Presentation Lab/Run Owner Classic HD High-Speed Probe")]
+        public static void RunOwnerClassicHdHighSpeedProbe()
+        {
+            string packagePath = CommandLineValue("-mc-package");
+            string closurePath = CommandLineValue("-mc-closure");
+            string assetCachePath = CommandLineValue("-mc-asset-cache");
+            if (string.IsNullOrWhiteSpace(packagePath) ||
+                string.IsNullOrWhiteSpace(closurePath) ||
+                string.IsNullOrWhiteSpace(assetCachePath))
+            {
+                throw new InvalidOperationException(
+                    "owner Classic HD high-speed probe requires -mc-package, -mc-closure, and -mc-asset-cache");
+            }
+
+            var root = new GameObject("Owner Classic HD High-Speed Probe Router");
+            var router = root.AddComponent<PresentationModeRouter>();
+            MethodInfo awake = typeof(PresentationModeRouter).GetMethod(
+                "Awake",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (awake == null)
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                throw new InvalidOperationException("presentation router Awake method is missing");
+            }
+
+            const int FramesPerPass = 32;
+            ulong[] firstIndexHashes = new ulong[FramesPerPass];
+            ulong[] firstProvenanceHashes = new ulong[FramesPerPass];
+            ulong[] secondIndexHashes = new ulong[FramesPerPass];
+            ulong[] secondProvenanceHashes = new ulong[FramesPerPass];
+            short maxTargetSpeed = short.MinValue;
+            short maxActualSpeed = short.MinValue;
+            byte maxEffectivePostprocessMode = 0;
+            int automaticHighSpeedFrames = 0;
+            int uploads = 0;
+            bool resetReplayMatch = false;
+            bool ownerSpeedSpellPresent = false;
+            ulong firstTick = 0;
+            ulong secondTick = 0;
+            int allocationEpoch = 0;
+
+            try
+            {
+                awake.Invoke(router, null);
+                if (!router.SessionIsOpen ||
+                    router.ClassicHdRenderer == null ||
+                    !router.ClassicHdRenderer.UsesNativeOwnerSession)
+                {
+                    Debug.LogError("OWNER CLASSIC HD HIGH SPEED PROBE FAIL: owner route did not open");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                ClassicHdPresentation classic = router.ClassicHdRenderer;
+                if (!string.Equals(classic.Settings.blur, "off", StringComparison.OrdinalIgnoreCase))
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD HIGH SPEED PROBE FAIL: automatic probe requires -mc-classic-blur off" +
+                        " actual=" + classic.Settings.blur);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                string reason;
+                ownerSpeedSpellPresent = classic.HasSpeedSpell;
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    if (pass == 1 && !classic.ResetOwnerSession(out reason))
+                    {
+                        Debug.LogError("OWNER CLASSIC HD HIGH SPEED PROBE FAIL: reset: " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    for (int frame = 0; frame < FramesPerPass; frame++)
+                    {
+                        Vector2 input = HighSpeedQualificationInput(frame);
+                        if (!classic.CaptureFrame(input.x, input.y, false, -1, out reason))
+                        {
+                            Debug.LogError(
+                                "OWNER CLASSIC HD HIGH SPEED PROBE FAIL: pass=" + pass +
+                                " frame=" + frame + ": " + reason);
+                            EditorApplication.Exit(1);
+                            return;
+                        }
+
+                        if (pass == 0 && frame == 0)
+                        {
+                            firstTick = classic.SourceTick;
+                        }
+                        if (pass == 1 && frame == 0)
+                        {
+                            secondTick = classic.SourceTick;
+                        }
+
+                        maxTargetSpeed = Math.Max(maxTargetSpeed, classic.TargetSpeed);
+                        maxActualSpeed = Math.Max(maxActualSpeed, (short)Math.Abs((int)classic.ActualSpeed));
+                        maxEffectivePostprocessMode = Math.Max(
+                            maxEffectivePostprocessMode,
+                            classic.EffectivePostprocessMode);
+                        if (Math.Abs((int)classic.ActualSpeed) > 80 &&
+                            classic.EffectivePostprocessMode == 1)
+                        {
+                            automaticHighSpeedFrames++;
+                        }
+
+                        if (pass == 0)
+                        {
+                            firstIndexHashes[frame] = classic.LastNativeIndexHash;
+                            firstProvenanceHashes[frame] = classic.LastNativeProvenanceHash;
+                        }
+                        else
+                        {
+                            secondIndexHashes[frame] = classic.LastNativeIndexHash;
+                            secondProvenanceHashes[frame] = classic.LastNativeProvenanceHash;
+                        }
+                        uploads++;
+                    }
+                }
+
+                allocationEpoch = classic.AllocationEpoch;
+                resetReplayMatch = SequenceHash(firstIndexHashes) == SequenceHash(secondIndexHashes) &&
+                    SequenceHash(firstProvenanceHashes) == SequenceHash(secondProvenanceHashes);
+                bool routeContract = resetReplayMatch &&
+                    uploads == FramesPerPass * 2 &&
+                    allocationEpoch == 1;
+                if (!routeContract)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD HIGH SPEED PROBE FAIL: reset/upload/allocation contract" +
+                        " reset_replay_match=" + (resetReplayMatch ? 1 : 0) +
+                        " uploads=" + uploads +
+                        " allocation_epoch=" + allocationEpoch);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                if (automaticHighSpeedFrames > 0)
+                {
+                    Debug.Log(
+                        "OWNER CLASSIC HD HIGH SPEED PROBE PASS: profile=" + classic.Settings.profile +
+                        " frames_per_pass=" + FramesPerPass +
+                        " pass_count=2 uploads=" + uploads +
+                        " allocation_epoch=" + allocationEpoch +
+                        " speed_spell_present=" + (ownerSpeedSpellPresent ? 1 : 0) +
+                        " first_tick=" + firstTick +
+                        " second_tick=" + secondTick +
+                        " max_target_speed=" + maxTargetSpeed +
+                        " max_actual_speed=" + maxActualSpeed +
+                        " max_effective_postprocess_mode=" + maxEffectivePostprocessMode +
+                        " automatic_high_speed_frames=" + automaticHighSpeedFrames +
+                        " reset_replay_match=1" +
+                        " index_route_hash=" + SequenceHash(firstIndexHashes).ToString("x16") +
+                        " provenance_route_hash=" + SequenceHash(firstProvenanceHashes).ToString("x16") +
+                        " gpu_readback_fence=not-captured");
+                }
+                else
+                {
+                    Debug.Log(
+                        "OWNER CLASSIC HD HIGH SPEED PROBE OPEN: profile=" + classic.Settings.profile +
+                        " frames_per_pass=" + FramesPerPass +
+                        " pass_count=2 uploads=" + uploads +
+                        " allocation_epoch=" + allocationEpoch +
+                        " speed_spell_present=" + (ownerSpeedSpellPresent ? 1 : 0) +
+                        " first_tick=" + firstTick +
+                        " second_tick=" + secondTick +
+                        " max_target_speed=" + maxTargetSpeed +
+                        " max_actual_speed=" + maxActualSpeed +
+                        " max_effective_postprocess_mode=" + maxEffectivePostprocessMode +
+                        " automatic_high_speed_frames=0" +
+                        " reset_replay_match=1" +
+                        " index_route_hash=" + SequenceHash(firstIndexHashes).ToString("x16") +
+                        " provenance_route_hash=" + SequenceHash(firstProvenanceHashes).ToString("x16") +
+                        " reason=existing owner ABI exposes no legitimate Speed-jar activation; high-speed postprocess remains unqualified");
+                }
+                EditorApplication.Exit(0);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
         [MenuItem("Magic Carpet/Presentation Lab/Run Owner Unity Enhanced Sequence Smoke")]
         public static void RunOwnerUnityEnhancedSequenceSmoke()
         {
@@ -1155,6 +1338,12 @@ namespace MagicCarpet.PresentationLab.Editor
             }
 
             return Vector2.zero;
+        }
+
+        private static Vector2 HighSpeedQualificationInput(int frame)
+        {
+            float horizontal = frame % 8 < 4 ? 0.35f : -0.35f;
+            return new Vector2(horizontal, 0.25f);
         }
 
         private static long CameraDistance(ushort x, ushort y, ushort startX, ushort startY)
