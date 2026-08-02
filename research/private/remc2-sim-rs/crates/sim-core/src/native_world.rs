@@ -16766,6 +16766,63 @@ mod tests {
     }
 
     #[test]
+    fn level_two_outer_turn_reclaims_model15_auxiliary_through_source_no_call_route() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("model-15 outer-dispatch session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("model-15 source Castle");
+        session
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("model-15 Castle")
+            .level = 3;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let auxiliary_slot = session
+            .economy()
+            .castle()
+            .expect("model-15 Castle state")
+            .auxiliary_slots[0];
+        assert_ne!(auxiliary_slot, 0);
+        let free_before = session.economy().free_slots.len();
+
+        // ApplyEvents_498A0 does not call the action table for class-5 rows:
+        // it disables drawing and reclaims the model-15 row in this visit.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(
+            session
+                .economy()
+                .castle_children()
+                .iter()
+                .all(|child| child.source_entity_index != auxiliary_slot)
+        );
+        assert!(
+            !session
+                .economy()
+                .map_chains()
+                .linked_entity_indices()
+                .contains(&auxiliary_slot)
+        );
+        assert_eq!(session.economy().free_slots.len(), free_before + 1);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::CastleAuxiliary,
+                    ..
+                } if *source_slot == auxiliary_slot
+            )
+        }));
+    }
+
+    #[test]
     fn level_two_castle_auxiliary_creation_sets_source_relation_and_cooldown() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");

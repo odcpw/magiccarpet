@@ -211,6 +211,20 @@ def add(coverage: dict[str, list[str]], family: str, ids: list[str]) -> None:
     coverage[family].extend(ids)
 
 
+def first_present(plan_defs: dict[str, dict[str, Any]], *plan_ids: str) -> str:
+    """Return the current open owner for a denominator family.
+
+    The Level 2 plan is live bead data, so an aggregate bead may be closed
+    while its denominator still belongs to a newer open route/qualification
+    bead.  Keeping the fallback explicit makes that ownership transition
+    reviewable and prevents the generator from indexing a stale closed bead.
+    """
+    for plan_id in plan_ids:
+        if plan_id in plan_defs:
+            return plan_id
+    raise RuntimeError(f"no open Level 2 owner found among {plan_ids}")
+
+
 def build() -> dict[str, Any]:
     c = load(HERE / "census" / "level2-authored-reset-census.json")
     a = load(HERE / "activation" / "level2-activation-closure.json")
@@ -231,6 +245,11 @@ def build() -> dict[str, Any]:
         family_by_plan[plan_id] = preferred.get(plan_id, family_by_plan[plan_id])
     rows = [row_for(plan_id, plan_defs[plan_id]["title"], family_by_plan[plan_id]) for plan_id in plan_ids]
     by_plan = {row["plan_item"]: row for row in rows}
+    # These older aggregate owners are intentionally closed in the bead
+    # registry.  Their still-open denominator work is now owned by the
+    # corresponding current route/qualification beads below.
+    reset_owner = first_present(plan_defs, "mc-exzm", "mc-wv4o")
+    cache_owner = first_present(plan_defs, "mc-ewsc", "mc-xm2n")
     exclusions: list[dict[str, Any]] = []
 
     authored = c["authored"]["rows"]
@@ -249,7 +268,7 @@ def build() -> dict[str, Any]:
     reset = c["reset"]["slots"]
     active = [r["id"] for r in reset if r["active"]]
     inactive = [r["id"] for r in reset if not r["active"]]
-    add(by_plan["mc-jl5p"]["coverage"], "reset", active)
+    add(by_plan[reset_owner]["coverage"], "reset", active)
     exclusions.append(exclusion("EXC-L2-RESET-INACTIVE", "886 inactive reset slots", "reset arena active partition is mechanically 114 slots; inactive records never dispatch", {"reset": inactive}, "reset"))
 
     rooted = [str(g) for g in a["root"]["rooted_groups"]]
@@ -277,7 +296,7 @@ def build() -> dict[str, Any]:
     add(by_plan["mc-yawx"]["coverage"], "audio", [r["id"] for r in audio if r["classification"] == "reachable_level2"])
     exclusions.append(exclusion("EXC-L2-AUDIO-NONROOTED", "93 non-rooted audio calls", "audio ledger classifies the occurrence outside the rooted Level 2 source closure", {"audio": [r["id"] for r in audio if r["classification"] != "reachable_level2"]}, "audio"))
     cache = d["presentation"]["cache_rows"]
-    add(by_plan["mc-cfjb"]["coverage"], "cache", [r["id"] for r in cache if r["classification"] == "reachable_level2"])
+    add(by_plan[cache_owner]["coverage"], "cache", [r["id"] for r in cache if r["classification"] == "reachable_level2"])
     exclusions.append(exclusion("EXC-L2-CACHE-NONROOTED", "967 presentation cache records", "cache rows without a Level 2 reset relation are mechanically unreachable", {"cache": [r["id"] for r in cache if r["classification"] != "reachable_level2"]}, "cache"))
     refs = d["presentation"]["source_references"]
     add(by_plan["mc-ewsc"]["coverage"], "presentation_refs", [r["id"] for r in refs if r["classification"] == "reachable_level2"])

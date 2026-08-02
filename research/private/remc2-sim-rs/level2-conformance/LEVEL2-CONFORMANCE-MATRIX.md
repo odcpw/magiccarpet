@@ -8,7 +8,7 @@ Pinned remc2: `6806c7204d17220ecc0430759f784aea8ee2ddb2`. Generated: `2026-08-02
 
 ## Status
 
-**50 rows**: Exact=0, Missing=31, Partial=0, Unproved=19, Wrong=0; **9 mechanical exclusions**; **50 owning beads**.
+**38 rows**: Exact=0, Missing=25, Partial=0, Unproved=13, Wrong=0; **9 mechanical exclusions**; **38 owning beads**.
 
 ## Denominator reconciliation
 
@@ -37,45 +37,33 @@ Pinned remc2: `6806c7204d17220ecc0430759f784aea8ee2ddb2`. Generated: `2026-08-02
 | `ROW-mc-2eby` | ai | **Unproved** | `mc-2eby` | — |
 | `ROW-mc-2sbd` | gameplay | **Missing** | `mc-2sbd` | — |
 | `ROW-mc-38gs` | gameplay | **Missing** | `mc-38gs` | — |
-| `ROW-mc-45i6` | presentation | **Missing** | `mc-45i6` | — |
 | `ROW-mc-4ipu` | ai | **Missing** | `mc-4ipu` | dispatch |
-| `ROW-mc-50i6` | ai | **Unproved** | `mc-50i6` | — |
 | `ROW-mc-5iyv` | gameplay | **Unproved** | `mc-5iyv` | — |
-| `ROW-mc-5nlh` | gameplay | **Unproved** | `mc-5nlh` | — |
 | `ROW-mc-6dqd` | ai | **Missing** | `mc-6dqd` | — |
-| `ROW-mc-8l0z` | gameplay | **Unproved** | `mc-8l0z` | — |
 | `ROW-mc-94h7` | presentation | **Missing** | `mc-94h7` | — |
 | `ROW-mc-a73w` | presentation | **Missing** | `mc-a73w` | — |
 | `ROW-mc-a86h` | gameplay | **Missing** | `mc-a86h` | — |
 | `ROW-mc-app8` | ai | **Missing** | `mc-app8` | — |
 | `ROW-mc-c2by` | ai | **Missing** | `mc-c2by` | — |
-| `ROW-mc-cfjb` | presentation | **Unproved** | `mc-cfjb` | cache |
 | `ROW-mc-clng` | gameplay | **Missing** | `mc-clng` | — |
 | `ROW-mc-e7oi` | ai | **Unproved** | `mc-e7oi` | ai_helpers |
-| `ROW-mc-ewsc` | rng-audio | **Unproved** | `mc-ewsc` | presentation_refs |
-| `ROW-mc-exzm` | presentation | **Missing** | `mc-exzm` | — |
+| `ROW-mc-ewsc` | rng-audio | **Unproved** | `mc-ewsc` | cache, presentation_refs |
+| `ROW-mc-exzm` | presentation | **Missing** | `mc-exzm` | reset |
 | `ROW-mc-fgrh` | gameplay | **Missing** | `mc-fgrh` | — |
 | `ROW-mc-fi4n` | gameplay | **Unproved** | `mc-fi4n` | — |
 | `ROW-mc-hgk9` | gameplay | **Missing** | `mc-hgk9` | — |
 | `ROW-mc-jc4w` | gameplay | **Unproved** | `mc-jc4w` | tuples |
-| `ROW-mc-jl5p` | gameplay | **Missing** | `mc-jl5p` | reset |
 | `ROW-mc-jmcp` | gameplay | **Missing** | `mc-jmcp` | — |
 | `ROW-mc-k5js` | ai | **Missing** | `mc-k5js` | — |
-| `ROW-mc-m025` | gameplay | **Missing** | `mc-m025` | — |
 | `ROW-mc-mmv3` | gameplay | **Missing** | `mc-mmv3` | — |
 | `ROW-mc-nr19` | gameplay | **Missing** | `mc-nr19` | objectives |
 | `ROW-mc-oiaa` | presentation | **Missing** | `mc-oiaa` | — |
-| `ROW-mc-ojax` | presentation | **Unproved** | `mc-ojax` | — |
 | `ROW-mc-ptqs` | gameplay | **Missing** | `mc-ptqs` | — |
-| `ROW-mc-pzuv` | gameplay | **Unproved** | `mc-pzuv` | — |
 | `ROW-mc-qkt3` | ai | **Unproved** | `mc-qkt3` | — |
-| `ROW-mc-sml0` | presentation | **Missing** | `mc-sml0` | — |
 | `ROW-mc-sq58` | ai | **Missing** | `mc-sq58` | — |
 | `ROW-mc-uk2k` | gameplay | **Missing** | `mc-uk2k` | authored, activation_groups, producer_edges |
 | `ROW-mc-uptb` | ai | **Missing** | `mc-uptb` | — |
-| `ROW-mc-vfhk` | ai | **Missing** | `mc-vfhk` | — |
 | `ROW-mc-vm2n` | gameplay | **Missing** | `mc-vm2n` | — |
-| `ROW-mc-vn8d` | presentation | **Missing** | `mc-vn8d` | — |
 | `ROW-mc-wl60` | gameplay | **Unproved** | `mc-wl60` | — |
 | `ROW-mc-wv4o` | gameplay | **Unproved** | `mc-wv4o` | — |
 | `ROW-mc-xcgi` | gameplay | **Unproved** | `mc-xcgi` | — |
