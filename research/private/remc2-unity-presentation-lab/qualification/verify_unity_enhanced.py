@@ -28,6 +28,13 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         script_root / "UnityEnhancedCameraRig.cs",
         script_root / "UnityEnhancedInputAdapter.cs",
         script_root / "UnityEnhancedPresentationAdapters.cs",
+        script_root / "UnityEnhancedTerrainPresentation.cs",
+        script_root / "UnityEnhancedActorPresentation.cs",
+        script_root / "UnityEnhancedNightLighting.cs",
+        script_root / "UnityEnhancedWaterPresentation.cs",
+        script_root / "UnityEnhancedVfxPresentation.cs",
+        script_root / "UnityEnhancedQualityAndPost.cs",
+        script_root / "UnityEnhancedDiagnostics.cs",
     ]
 
     _check(checks, "project exists", project_root.is_dir(), str(project_root))
@@ -47,6 +54,13 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     _check(checks, "camera and entity interpolation is presentation-only", all(token in source_text for token in ("ApplyPose", "Interpolate", "InterpolatePresentation", "SetTargetPose", "FieldOfView")), str(script_root))
     _check(checks, "input adapter is sequence-bound", all(token in source_text for token in ("Publish", "TryConsume", "lastPublishedSequence")), str(scripts[2]))
     _check(checks, "HUD/audio adapter is passive and event ordered", all(token in source_text for token in ("AcceptEvent", "ApplyTick", "lastEventSequence")), str(scripts[3]))
+    _check(checks, "terrain consumes authoritative planes, dirty regions, and overlays", all(token in source_text for token in ("Heights", "TerrainTypes", "Shade", "Angles", "DirtyRegions", "RecalculateNormals", "WrapIndex", "DiagnosticOverlay")), str(script_root / "UnityEnhancedTerrainPresentation.cs"))
+    _check(checks, "actor family coverage is generated and pooled", all(token in source_text for token in ("UnityEnhancedPresentationFamily", "Player", "Castle", "Possession", "GetMesh", "Release", "sortingOrder")), str(script_root / "UnityEnhancedActorPresentation.cs"))
+    _check(checks, "Level 1 Night lighting is descriptor-driven and capped", all(token in source_text for token in ("Level1Night", "LocalLightCap", "DroppedLocalLightCount", "CompareRequests", "LightType.Directional")), str(script_root / "UnityEnhancedNightLighting.cs"))
+    _check(checks, "water and shoreline reflection path is explicit", all(token in source_text for token in ("UnityEnhancedWaterReflectionMode", "ReflectionEnabled", "BuildShoreline", "ShorelineMask")), str(script_root / "UnityEnhancedWaterPresentation.cs"))
+    _check(checks, "VFX events are ordered, replayable, pooled, and reduced-motion aware", all(token in source_text for token in ("UnityEnhancedVfxEvent", "ApplyReplay", "MaxActiveEffects", "DuplicateEffectCount", "ReducedMotion", "CameraComfortEnabled")), str(script_root / "UnityEnhancedVfxPresentation.cs"))
+    _check(checks, "URP quality/post and spatial upscaling are gated", all(token in source_text for token in ("UniversalAdditionalCameraData", "Volume", "renderScale", "UpscalingFilterSelection", "TemporalMode", "TemporalUpscalingEnabled")), str(script_root / "UnityEnhancedQualityAndPost.cs"))
+    _check(checks, "support diagnostics are path-free and measurable", all(token in source_text for token in ("UnityEnhancedPresentationMetrics", "BuildSupportReport", "LastFrameMilliseconds", "DroppedEffects", "DroppedLights", "MeetsFrameBudget")), str(script_root / "UnityEnhancedDiagnostics.cs"))
     _check(checks, "Boot router opens and closes Enhanced root", all(token in router_text for token in ("FindFirstObjectByType<UnityEnhancedWorldRoot>", "enhancedRoot.Open(SelectedMode, sessionLease)", "enhancedRoot.Close()")), str(router_path))
     _check(checks, "no gameplay or renderer-boundary imports", not any(token in source_text for token in ("remc2-unity-native", "MagicCarpet.Native", "NativeSession", "VoxelMode")), str(script_root))
     _check(checks, "no physics authority is present", "Collider" not in source_text and "Rigidbody" not in source_text, str(script_root))

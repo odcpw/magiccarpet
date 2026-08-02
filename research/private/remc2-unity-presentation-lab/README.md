@@ -20,6 +20,16 @@ route for renderer work:
   optional; the lab fallback is a clearly synthetic, owner-free Level 1 Night
   frame source until the private native plugin is supplied.
 - JSON settings outside owner data with fail-closed schema/profile validation.
+- A procedural Unity Enhanced stack over the same snapshot boundary:
+  authoritative height/type/shade/angle terrain planes with generated normals
+  and dirty-region updates; pooled generated visuals for the complete Level 1
+  Night actor/family coverage; descriptor-driven moon/fog/local-light caps;
+  procedural water and shoreline/reflection fallback; ordered replayable spell,
+  mana, destruction, weather, and speed VFX; and URP HDR/volume/post controls.
+- Enhanced quality tiers `low`, `medium`, `high`, and `whole-hog`, reduced
+  motion controls, frame/pool/drop diagnostics, and explicit spatial render
+  scale choices (`1.0`, `0.85`, `0.75`). Temporal upscaling is gated off by
+  default and cannot be enabled accidentally by a quality preset.
 - No copied owner assets, native libraries, Exact scripts, or Exact corpus.
 
 Run the editor setup once after opening the project:
@@ -77,3 +87,20 @@ python3 -m unittest discover \
   -p 'test_*.py' -v
 python3 -m unittest discover -s launcher/tests -p 'test_*.py' -v
 ```
+
+The owner-free Enhanced systems have a focused Unity EditMode gate. Because
+the test folder is compiled into the editor assembly, include that assembly in
+the command:
+
+```text
+Unity -batchmode -nographics \
+  -projectPath research/private/remc2-unity-presentation-lab \
+  -runTests -testPlatform EditMode -assemblyNames Assembly-CSharp-Editor \
+  -testResults /tmp/magiccarpet-enhanced-editmode.xml \
+  -logFile /tmp/magiccarpet-enhanced-editmode.log
+```
+
+The current owner-free check covers terrain, actor pooling, Level 1 Night
+lighting caps, water/shoreline geometry, VFX replay/reduced motion, gated
+temporal upscaling, and path-free diagnostics. It is not a substitute for the
+owner-bound Unity GPU/copy and preserved Exact qualification gates.

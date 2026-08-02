@@ -211,6 +211,178 @@ namespace MagicCarpet.PresentationLab.Tests
             Object.DestroyImmediate(gameObject);
         }
 
+        [Test]
+        public void TerrainUsesAuthoritativePlanesDirtyUpdatesAndWrapping()
+        {
+            GameObject gameObject = new GameObject("enhanced-terrain-test");
+            UnityEnhancedTerrainPresentation terrain = gameObject.AddComponent<UnityEnhancedTerrainPresentation>();
+            UnityEnhancedTerrainSnapshot first = TerrainSnapshot(1, 1, false, new UnityEnhancedTerrainDirtyRegion[0]);
+
+            Assert.IsTrue(terrain.ApplySnapshot(first));
+            Assert.AreEqual(9, terrain.VertexCount);
+            Assert.AreEqual(1, terrain.DirtyRegionApplications);
+            Assert.AreEqual(2, UnityEnhancedTerrainPresentation.WrapIndex(-1, 3, UnityEnhancedTerrainWrapMode.Repeat));
+
+            UnityEnhancedTerrainSnapshot update = TerrainSnapshot(
+                1, 2, false, new[] { new UnityEnhancedTerrainDirtyRegion(1, 1, 1, 1) });
+            update.Heights[4] = 3f;
+            Assert.IsTrue(terrain.ApplySnapshot(update));
+            Assert.AreEqual(2, terrain.DirtyRegionApplications);
+            Assert.That(terrain.GeneratedMesh.vertices[4].y, Is.EqualTo(3f).Within(0.001f));
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void ActorFamiliesAreCoveredAndGeneratedViewsPool()
+        {
+            GameObject gameObject = new GameObject("enhanced-actor-test");
+            UnityEnhancedActorPresentation actors = gameObject.AddComponent<UnityEnhancedActorPresentation>();
+            GameObject view = new GameObject("actor-view");
+            view.transform.SetParent(gameObject.transform, false);
+            UnityEnhancedEntitySnapshot entity = Entity(1, 42, Vector3.zero);
+            entity.PresentationFamily = (int)UnityEnhancedPresentationFamily.Castle;
+            entity.FacingDegrees = 90f;
+            entity.RenderLayer = 7;
+
+            actors.Configure(view, entity);
+            Assert.AreEqual(UnityEnhancedActorPresentation.CoverageCount, 20);
+            Assert.AreEqual(1, actors.ActiveVisualCount);
+            Assert.IsNotNull(view.transform.Find("EnhancedActorVisual"));
+            Assert.AreEqual(7, actors.LastSortingOrder);
+            actors.Release(view);
+            Assert.AreEqual(0, actors.ActiveVisualCount);
+            Assert.AreEqual(1, actors.PooledVisualCount);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void NightLightingUsesDeterministicQualityCaps()
+        {
+            GameObject gameObject = new GameObject("enhanced-lighting-test");
+            UnityEnhancedNightLighting lighting = gameObject.AddComponent<UnityEnhancedNightLighting>();
+            lighting.SetQuality(UnityEnhancedLightingQuality.Low);
+            var requests = new[]
+            {
+                new UnityEnhancedLocalLightRequest(4, Vector3.zero, Color.red, 1f, 4f, 1),
+                new UnityEnhancedLocalLightRequest(2, Vector3.one, Color.green, 1f, 4f, 3),
+                new UnityEnhancedLocalLightRequest(9, Vector3.up, Color.blue, 1f, 4f, 2),
+                new UnityEnhancedLocalLightRequest(1, Vector3.forward, Color.white, 1f, 4f, 0)
+            };
+
+            lighting.ApplyDescriptor(5, UnityEnhancedNightLightingDescriptor.Level1Night(), requests, true);
+            Assert.AreEqual(2, lighting.ActiveLocalLightCount);
+            Assert.AreEqual(2, lighting.DroppedLocalLightCount);
+            Assert.AreEqual(5UL, lighting.Generation);
+            lighting.ResetForGeneration(6);
+            Assert.AreEqual(0, lighting.ActiveLocalLightCount);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void WaterBuildsReflectionSurfaceAndShorelineMesh()
+        {
+            GameObject gameObject = new GameObject("enhanced-water-test");
+            UnityEnhancedWaterPresentation water = gameObject.AddComponent<UnityEnhancedWaterPresentation>();
+            UnityEnhancedWaterSnapshot snapshot = new UnityEnhancedWaterSnapshot
+            {
+                Generation = 2,
+                Tick = 4,
+                Level = 1.5f,
+                Size = new Vector2(8f, 8f),
+                ShorelineWidth = 2,
+                ShorelineHeight = 2,
+                ShorelineMask = new byte[] { 1, 0, 0, 1 }
+            };
+
+            Assert.IsTrue(water.ApplySnapshot(snapshot));
+            Assert.IsTrue(water.ReflectionEnabled);
+            Assert.AreEqual(UnityEnhancedWaterReflectionMode.ScreenSpaceWhenSupported, water.ReflectionMode);
+            Assert.AreEqual(2, water.ShorelineCellCount);
+            Assert.AreEqual(8, water.ShorelineVertexCount);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void VfxEventsDeduplicateReplayAndRespectReducedMotion()
+        {
+            GameObject gameObject = new GameObject("enhanced-vfx-test");
+            UnityEnhancedVfxPresentation vfx = gameObject.AddComponent<UnityEnhancedVfxPresentation>();
+            vfx.ResetForGeneration(3);
+            UnityEnhancedVfxEvent first = new UnityEnhancedVfxEvent(
+                1, 3, 10, 17, UnityEnhancedVfxKind.SpellCast, Vector3.zero, 1f, 4);
+            Assert.IsTrue(vfx.ApplyEvent(first));
+            Assert.IsFalse(vfx.ApplyEvent(first));
+            Assert.AreEqual(1, vfx.DuplicateEffectCount);
+            vfx.SetReducedMotion(true);
+            Assert.IsTrue(vfx.ReducedMotion);
+            Assert.AreEqual(1, vfx.ApplyReplay(new[] { first }, 3));
+            Assert.AreEqual(1, vfx.ActiveEffectCount);
+            vfx.Advance(14);
+            Assert.AreEqual(0, vfx.ActiveEffectCount);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void QualityRejectsUngatedTemporalAndAppliesSpatialWholeHogDefaults()
+        {
+            GameObject gameObject = new GameObject("enhanced-quality-test");
+            Camera camera = gameObject.AddComponent<Camera>();
+            UnityEnhancedQualityAndPost quality = gameObject.AddComponent<UnityEnhancedQualityAndPost>();
+            UnityEnhancedQualitySettings invalid = UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog);
+            invalid.TemporalMode = UnityEnhancedTemporalMode.GatedExperimental;
+            string reason;
+            Assert.IsFalse(invalid.TryValidate(out reason));
+            Assert.IsTrue(quality.Apply(UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog), camera));
+            Assert.AreEqual(1f, quality.AppliedRenderScale);
+            Assert.IsFalse(quality.TemporalUpscalingEnabled);
+            Assert.IsNotNull(quality.PostVolume);
+            quality.ResetForSession();
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void DiagnosticsReportContainsMetricsWithoutMachinePaths()
+        {
+            GameObject gameObject = new GameObject("enhanced-diagnostics-test");
+            UnityEnhancedDiagnostics diagnostics = gameObject.AddComponent<UnityEnhancedDiagnostics>();
+            diagnostics.SetAccessibility(true, true);
+            string report = diagnostics.BuildSupportReport();
+            StringAssert.Contains("enhanced.schema=1", report);
+            StringAssert.Contains("enhanced.reduced_motion=true", report);
+            Assert.IsFalse(report.Contains("/"));
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        private static UnityEnhancedTerrainSnapshot TerrainSnapshot(
+            ulong generation,
+            ulong tick,
+            bool reset,
+            UnityEnhancedTerrainDirtyRegion[] dirtyRegions)
+        {
+            return new UnityEnhancedTerrainSnapshot
+            {
+                Generation = generation,
+                Tick = tick,
+                Reset = reset,
+                Width = 3,
+                Height = 3,
+                CellSize = 1f,
+                Heights = new float[9],
+                TerrainTypes = new byte[9],
+                Shade = new byte[] { 255, 220, 200, 180, 160, 140, 120, 100, 80 },
+                Angles = new byte[9],
+                DirtyRegions = dirtyRegions,
+                WrapMode = UnityEnhancedTerrainWrapMode.Repeat
+            };
+        }
+
         private static UnityEnhancedEntitySnapshot Entity(ulong generation, ulong identity, Vector3 position)
         {
             return new UnityEnhancedEntitySnapshot

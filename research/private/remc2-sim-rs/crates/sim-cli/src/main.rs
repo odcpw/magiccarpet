@@ -13,6 +13,7 @@ use sim_core::{
     latch_command, state_hash, step_entity_pass_with_context, step_turn,
 };
 use std::process::{Command, ExitCode};
+use std::time::Instant;
 
 struct FlatWorld;
 
@@ -82,16 +83,193 @@ fn main() -> ExitCode {
         Some("inspect-regression") => inspect_regression(),
         Some("inspect-forward") => inspect_forward(),
         Some("inspect-idle-diff") => inspect_idle_diff(),
+        Some("classic-hd-qualify") => classic_hd_qualify(),
         Some("find-castle-site") => find_castle_site(),
         Some("reset-from-authored") => reset_from_authored(),
         Some("trace") => trace(),
         _ => {
             eprintln!(
-                "usage: sim-cli <atlas-check|conformance-validate|find-castle-site|inspect-forward|inspect-idle-diff|inspect-recording|inspect-regression|reset-from-authored|trace> ..."
+                "usage: sim-cli <atlas-check|classic-hd-qualify|conformance-validate|find-castle-site|inspect-forward|inspect-idle-diff|inspect-recording|inspect-regression|reset-from-authored|trace> ..."
             );
             ExitCode::from(2)
         }
     }
+}
+
+fn classic_hd_qualify() -> ExitCode {
+    use sim_core::classic_hd::{ClassicHdRenderProfile, byte_hash};
+    use sim_core::classic_hd_raster::CLASSIC_HD_TABLESN_BYTES;
+    use sim_core::classic_hd_render_graph::{
+        ClassicHdBlurInput, ClassicHdGraphInput, ClassicHdRenderGraph, ClassicHdWorldReceipt,
+    };
+
+    let profiles = [
+        ("classic-hd-640x480", ClassicHdRenderProfile::hd_640x480()),
+        ("classic-hd-960x720", ClassicHdRenderProfile::hd_960x720()),
+        ("classic-hd-1280x960", ClassicHdRenderProfile::hd_1280x960()),
+    ];
+    let mut reports = Vec::with_capacity(profiles.len());
+    for (name, profile) in profiles {
+        let mut graph = match ClassicHdRenderGraph::new(profile.clone(), 7) {
+            Ok(graph) => graph,
+            Err(error) => {
+                eprintln!("Classic HD qualification could not create {name}: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        // Lighting consumes the 256x256 source table; temporal/spatial
+        // TABLESN kernels additionally address the blend-table region.
+        let tablesn = vec![
+            0_u8;
+            sim_core::indexed_postprocess::TABLESN_REQUIRED_BYTES
+                .max(CLASSIC_HD_TABLESN_BYTES)
+        ];
+        let shading = vec![0_u8; CLASSIC_HD_TABLESN_BYTES];
+        let mut samples = Vec::with_capacity(32);
+        let mut first_hash = 0_u64;
+        let mut first_provenance_hash = 0_u64;
+        let mut last_hash = 0_u64;
+        let mut render_error = None;
+
+        for tick in 0_u64..32 {
+            let input = ClassicHdGraphInput {
+                generation: 7,
+                tick,
+                profile_revision: profile.profile_revision,
+                // The graph's history contract treats this as the stable
+                // world/render-input identity across ticks.  The synthetic
+                // world closure still changes by tick below, which exercises
+                // the temporal branch without pretending that a changed
+                // world identity can reuse prior presentation history.
+                input_hash: 0x1000,
+                reflections_enabled: true,
+                dynamic_lighting_enabled: true,
+                water_enabled: true,
+                blur: ClassicHdBlurInput {
+                    configured_mode: 2,
+                    blur_capability: true,
+                    high_speed_system: true,
+                    scratch_present: true,
+                    menu_state: 0,
+                    actual_speed: 120,
+                    spatial_smoothing: false,
+                    spatial_radius: 1,
+                },
+            };
+            let started = Instant::now();
+            let result =
+                graph.render_frame(input, Some(&shading), &tablesn, |indices, provenance| {
+                    for (offset, value) in indices.iter_mut().enumerate() {
+                        *value = (offset as u64)
+                            .wrapping_add(input.tick.wrapping_mul(17))
+                            .wrapping_add(input.input_hash) as u8;
+                    }
+                    for (offset, value) in provenance.iter_mut().enumerate() {
+                        *value = ((offset / profile.stride as usize) as u64 ^ input.tick) as u8;
+                    }
+                    Ok(ClassicHdWorldReceipt::complete(
+                        byte_hash(indices),
+                        byte_hash(provenance),
+                        true,
+                        true,
+                    ))
+                });
+            samples.push(started.elapsed().as_nanos());
+            match result {
+                Ok(result) => {
+                    if tick == 0 {
+                        first_hash = result.receipt.output_hash;
+                        first_provenance_hash = result.receipt.provenance_hash;
+                    }
+                    last_hash = result.receipt.output_hash;
+                }
+                Err(error) => {
+                    render_error = Some(error.to_string());
+                    break;
+                }
+            }
+        }
+
+        if let Some(error) = render_error {
+            reports.push(format!(
+                "{{\"profile\":\"{name}\",\"status\":\"fail\",\"error\":\"{}\"}}",
+                json_escape(&error)
+            ));
+            continue;
+        }
+
+        graph.reset(8);
+        let reset_input = ClassicHdGraphInput {
+            generation: 8,
+            tick: 0,
+            profile_revision: profile.profile_revision,
+            input_hash: 0x1000,
+            reflections_enabled: true,
+            dynamic_lighting_enabled: true,
+            water_enabled: true,
+            blur: ClassicHdBlurInput {
+                configured_mode: 2,
+                blur_capability: true,
+                high_speed_system: true,
+                scratch_present: true,
+                menu_state: 0,
+                actual_speed: 120,
+                spatial_smoothing: false,
+                spatial_radius: 1,
+            },
+        };
+        let reset_result = graph.render_frame(
+            reset_input,
+            Some(&shading),
+            &tablesn,
+            |indices, provenance| {
+                for (offset, value) in indices.iter_mut().enumerate() {
+                    *value = (offset as u64).wrapping_add(reset_input.input_hash) as u8;
+                }
+                for (offset, value) in provenance.iter_mut().enumerate() {
+                    *value = (offset / profile.stride as usize) as u8;
+                }
+                Ok(ClassicHdWorldReceipt::complete(
+                    byte_hash(indices),
+                    byte_hash(provenance),
+                    true,
+                    true,
+                ))
+            },
+        );
+        let reset_hash = reset_result.map_or(0, |result| result.receipt.output_hash);
+        samples.sort_unstable();
+        let p95_index = ((samples.len() * 95).saturating_add(99) / 100).saturating_sub(1);
+        let p95_ns = samples.get(p95_index).copied().unwrap_or(0);
+        let deterministic = reset_hash == first_hash && first_hash != 0 && last_hash != 0;
+        let cpu_budget_ns = 33_333_333_u128;
+        let cpu_budget_pass = p95_ns <= cpu_budget_ns;
+        let mandatory = name == "classic-hd-640x480";
+        let status = if mandatory && cpu_budget_pass && deterministic {
+            "supported-cpu-and-deterministic"
+        } else if !mandatory && cpu_budget_pass && deterministic {
+            "candidate-awaiting-unity-gpu-and-owner-route-capture"
+        } else {
+            "rejected-by-measured-cpu-or-determinism"
+        };
+        reports.push(format!(
+            "{{\"profile\":\"{name}\",\"status\":\"{status}\",\"width\":{},\"height\":{},\"frame_bytes\":{},\"memory_bytes\":{},\"samples\":{},\"p95_cpu_ns\":{},\"cpu_budget_ns\":{},\"deterministic_reset\":{},\"first_hash\":\"{first_hash:016x}\",\"first_provenance_hash\":\"{first_provenance_hash:016x}\",\"reset_hash\":\"{reset_hash:016x}\"}}",
+            profile.width,
+            profile.height,
+            profile.extent(),
+            profile.memory_bytes,
+            samples.len(),
+            p95_ns,
+            cpu_budget_ns,
+            deterministic,
+        ));
+    }
+
+    println!(
+        "{{\"schema_version\":1,\"measurement\":\"Rust ClassicHdRenderGraph synthetic world closure on owner-free lab profile\",\"presentation_budget\":\"30Hz p95 CPU frame generation <= 33333333ns; Unity GPU/copy route is separately required\",\"owner_payload_embedded\":false,\"profiles\":[{}]}}",
+        reports.join(",")
+    );
+    ExitCode::SUCCESS
 }
 
 fn conformance_validate() -> ExitCode {

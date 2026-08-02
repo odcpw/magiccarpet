@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "measurement": "Rust ClassicHdRenderGraph synthetic owner-free release workload",
+  "machine": "T14",
+  "presentation_budget_ns": 33333333,
+  "sample_count": 32,
+  "owner_payload_embedded": false,
+  "unity_gpu_and_owner_route": "pending-owner-lab-capture",
+  "window_resolution_is_separate_from_internal_render_resolution": true,
+  "profiles": [
+    {
+      "profile": "classic-hd-640x480",
+      "internal_width": 640,
+      "internal_height": 480,
+      "frame_bytes": 307200,
+      "graph_memory_bytes": 1232896,
+      "p95_cpu_ns": 10949142,
+      "deterministic_reset": true,
+      "status": "supported-cpu-and-deterministic",
+      "unity_gpu_copy_status": "pending-owner-lab-capture"
+    },
+    {
+      "profile": "classic-hd-960x720",
+      "internal_width": 960,
+      "internal_height": 720,
+      "frame_bytes": 691200,
+      "graph_memory_bytes": 2768896,
+      "p95_cpu_ns": 26112476,
+      "deterministic_reset": true,
+      "status": "candidate-awaiting-unity-gpu-and-owner-route-capture",
+      "unity_gpu_copy_status": "pending-owner-lab-capture"
+    },
+    {
+      "profile": "classic-hd-1280x960",
+      "internal_width": 1280,
+      "internal_height": 960,
+      "frame_bytes": 1228800,
+      "graph_memory_bytes": 4919296,
+      "p95_cpu_ns": 45642670,
+      "deterministic_reset": true,
+      "status": "rejected-by-measured-cpu-or-determinism",
+      "unity_gpu_copy_status": "not-promoted"
+    }
+  ],
+  "window_profiles": [
+    { "window_width": 1280, "window_height": 960, "internal_profile": "classic-hd-640x480" },
+    { "window_width": 1920, "window_height": 1080, "internal_profile": "classic-hd-640x480" },
+    { "window_width": 2560, "window_height": 1440, "internal_profile": "classic-hd-960x720" }
+  ],
+  "route_cases": {
+    "idle": "pending-owner-lab-capture",
+    "town": "pending-owner-lab-capture",
+    "combat": "pending-owner-lab-capture",
+    "high_speed_flight": "pending-owner-lab-capture",
+    "death_restart": "pending-owner-lab-capture",
+    "completion_postgame": "pending-owner-lab-capture",
+    "fullscreen_window_alt_tab": "pending-owner-lab-capture",
+    "asset_tier_fallback": "pending-owner-lab-capture",
+    "reflection_lighting_blur": "pending-owner-lab-capture",
+    "invalid_config": "covered-by-launcher-and-settings-tests"
+  },
+  "reproduce": {
+    "command": "cargo run --release -p sim-cli -- classic-hd-qualify",
+    "fixture_note": "The private atlas generated semantics fixture is supplied by the owner lab at run time; it is not committed or embedded."
+  }
+}
