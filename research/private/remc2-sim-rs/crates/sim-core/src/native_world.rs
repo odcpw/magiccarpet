@@ -116,6 +116,19 @@ const LEVEL2_CASTLE_DEFENDER_MAX_MANA: i32 = 10_000;
 /// the 300/16 defaults used by model-15/41/42/79 auxiliary children.
 const LEVEL2_CASTLE_DEFENDER_MAX_LIFE: i32 = 10_000;
 const LEVEL2_CASTLE_DEFENDER_SPEED: i16 = 48;
+/// `sub_60D50` receives the model-3 holder profile installed by the source
+/// class-3/subtype-3 constructor: particle row 169 has rotSpeed `0x320`, so
+/// `SetEntityIndexAndRot_49CD0` binds fov to 400.
+const LEVEL2_CASTLE_DEFENDER_CAVE_FOV: i16 = 400;
+// `str_D7BD6[68].word_0xc` is the third argument to `sub_580E0`; the
+// fourth (`word_0xa`, 1536) is unused by that helper.  The resulting floor
+// clearance is therefore 512 source units.
+const LEVEL2_CASTLE_DEFENDER_CAVE_FLOOR_CLEARANCE: i16 = 512;
+const LEVEL2_CASTLE_DEFENDER_CAVE_STEP: i16 = -16;
+const LEVEL2_CASTLE_DEFENDER_CAVE_BLOCKED_SPEED: i16 = 48;
+const LEVEL2_CASTLE_DEFENDER_CAVE_OPEN_SPEED: i16 = 96;
+const LEVEL2_CASTLE_DEFENDER_CAVE_SOUND: u16 = 22;
+const LEVEL2_CASTLE_DEFENDER_CAVE_SOUND_COOLDOWN: u8 = 32;
 const AUDIO_CACHE_MANIFEST_SHA256: &str =
     "e3aaf1cf03e390850c5da44ed4b3880352b425bd063657e3cdbbcb8086a4d7ee";
 const AUDIO_CACHE_CONTENT_SHA256: &str =
@@ -3332,6 +3345,9 @@ pub struct Level2CastleChild {
     /// Source `byte_0x3E_62`, used by `sub_5FF50`'s modulo cadence gate.
     /// This is explicitly injectable because it is not the Castle phase.
     pub source_byte_3e: u8,
+    /// Source `byte_0x46_70`, the Cave defender's sound debounce timer in
+    /// `sub_60D50` (distinct from source `byte_0x3E_62`).
+    pub cave_collision_cooldown: u8,
     pub yaw: u16,
     pub roll: u16,
     pub control_flags: u32,
@@ -3561,6 +3577,10 @@ pub enum Level2EconomyEvent {
         source_entity_index: u16,
         sound_id: u16,
     },
+    /// Source Cave defender transition sound 22 from `sub_60D50`.
+    /// The C ABI presents this through the existing Castle sound code until a
+    /// versioned economy-event code is allocated.
+    CastleDefenderCaveSound { defender_slot: u16, sound_id: u16 },
     CastleStageDestroyed {
         source_entity_index: u16,
         previous_level: u8,
@@ -4623,14 +4643,72 @@ impl Level2EconomyState {
             }
         }
 
-        // `AddBallon_60AB0` always runs the shared non-cave sub_580E0 settle
-        // with the default str_160 words (c=0, a=0, e=-4) after targeting.
+        let mut cave_control_flags = child_snapshot.control_flags;
+        let mut cave_speed = child_snapshot.speed;
+        let mut cave_collision_cooldown = child_snapshot.cave_collision_cooldown;
+        let mut cave_sound = false;
         let ground = self.terrain.ground_height(predicted);
-        if predicted.z > ground {
-            predicted.z = predicted.z.wrapping_sub(4);
-        }
-        if predicted.z <= ground {
-            predicted.z = ground;
+        if self.terrain.map_type == MapType::Cave {
+            // Pinned remc2 `sub_60D50` (EventsFunctions.cpp:61920-61976):
+            // a Cave holder is blocked by the map angle bit 8 or by the
+            // strict `sub_11E70` ceiling test.  The latter is
+            // `fov + ground + str_D7BD6[68].word_0xc (512) > ceiling`.
+            let tile = crate::Tile {
+                x: predicted.x.to_be_bytes()[0],
+                y: predicted.y.to_be_bytes()[0],
+            };
+            let angle_blocked = self.terrain.angle_flags(tile) & 8 != 0;
+            let ceiling_blocked = self
+                .terrain
+                .ceiling_height(predicted)
+                .is_some_and(|ceiling| {
+                    i32::from(LEVEL2_CASTLE_DEFENDER_CAVE_FOV) + i32::from(ground) + 512
+                        > i32::from(ceiling)
+                });
+            let blocked = angle_blocked || ceiling_blocked;
+            let was_blocked = cave_control_flags & 1 != 0;
+            cave_collision_cooldown = cave_collision_cooldown.saturating_sub(1);
+            if blocked {
+                cave_control_flags |= 1;
+                cave_speed = LEVEL2_CASTLE_DEFENDER_CAVE_BLOCKED_SPEED;
+            } else {
+                cave_control_flags &= !1;
+                cave_speed = LEVEL2_CASTLE_DEFENDER_CAVE_OPEN_SPEED;
+            }
+            if blocked != was_blocked && cave_collision_cooldown == 0 {
+                cave_sound = true;
+                cave_collision_cooldown = LEVEL2_CASTLE_DEFENDER_CAVE_SOUND_COOLDOWN;
+            }
+
+            // Exact `sub_580E0(a1, ground, word_c=512, word_a=1536,
+            // word_e=-16)` order.  The source helper ignores its fourth
+            // argument and uses a signed 16-bit comparison for the settle
+            // branch, so the resulting floor is ground + 512.
+            if predicted.z > ground {
+                predicted.z = predicted.z.wrapping_add(LEVEL2_CASTLE_DEFENDER_CAVE_STEP);
+            }
+            if i32::from(predicted.z)
+                <= i32::from(ground) + i32::from(LEVEL2_CASTLE_DEFENDER_CAVE_FLOOR_CLEARANCE)
+            {
+                predicted.z = ground.saturating_add(LEVEL2_CASTLE_DEFENDER_CAVE_FLOOR_CLEARANCE);
+            }
+            if !blocked {
+                if let Some(ceiling) = self.terrain.ceiling_height(predicted) {
+                    let cap = ceiling.saturating_sub(LEVEL2_CASTLE_DEFENDER_CAVE_FOV);
+                    if predicted.z > cap {
+                        predicted.z = cap;
+                    }
+                }
+            }
+        } else {
+            // `AddBallon_60AB0` uses the common non-Cave profile with the
+            // default str_160 words (c=0, a=0, e=-4) after targeting.
+            if predicted.z > ground {
+                predicted.z = predicted.z.wrapping_sub(4);
+            }
+            if predicted.z <= ground {
+                predicted.z = ground;
+            }
         }
         if let Some(mana) = transfer_mana {
             let child = &mut self.castle_children[child_index];
@@ -4675,6 +4753,17 @@ impl Level2EconomyState {
             let child = &mut self.castle_children[child_index];
             child.position = predicted;
             child.yaw = yaw as u16;
+        }
+        let child = &mut self.castle_children[child_index];
+        child.control_flags = cave_control_flags;
+        child.speed = cave_speed;
+        child.cave_collision_cooldown = cave_collision_cooldown;
+        if cave_sound {
+            self.events
+                .push(Level2EconomyEvent::CastleDefenderCaveSound {
+                    defender_slot: source_slot,
+                    sound_id: LEVEL2_CASTLE_DEFENDER_CAVE_SOUND,
+                });
         }
         let child = self.castle_children[child_index];
         self.sync_castle_child_map(child);
@@ -5595,6 +5684,7 @@ impl Level2EconomyState {
                 speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                 target_sphere_slot: 0,
                 source_byte_3e: stage_slot as u8,
+                cave_collision_cooldown: 0,
                 yaw: 0,
                 roll: 0,
                 control_flags: 0,
@@ -5688,6 +5778,7 @@ impl Level2EconomyState {
                 speed: LEVEL2_CASTLE_DEFENDER_SPEED,
                 target_sphere_slot: 0,
                 source_byte_3e: snapshot.phase,
+                cave_collision_cooldown: 0,
                 yaw: 0,
                 roll: 0,
                 control_flags: 0,
@@ -5847,6 +5938,7 @@ impl Level2EconomyState {
                             speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                             target_sphere_slot: 0,
                             source_byte_3e: slot as u8,
+                            cave_collision_cooldown: 0,
                             yaw: 512,
                             roll: 512,
                             control_flags: 0,
@@ -6001,6 +6093,7 @@ impl Level2EconomyState {
                     speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                     target_sphere_slot: 0,
                     source_byte_3e: child_slot as u8,
+                    cave_collision_cooldown: 0,
                     yaw: 0,
                     roll: 0,
                     control_flags: 1,
@@ -6069,6 +6162,7 @@ impl Level2EconomyState {
                             speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                             target_sphere_slot: 0,
                             source_byte_3e: stage_slot as u8,
+                            cave_collision_cooldown: 0,
                             yaw: 0,
                             roll: 0,
                             control_flags: 0,
@@ -6188,6 +6282,7 @@ impl Level2EconomyState {
                     speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                     target_sphere_slot: 0,
                     source_byte_3e: child_slot as u8,
+                    cave_collision_cooldown: 0,
                     yaw: 0,
                     roll: 0,
                     control_flags: 0,
@@ -6993,6 +7088,7 @@ impl Level2EconomyState {
             hasher.update(child.max_life.to_le_bytes());
             hasher.update(child.speed.to_le_bytes());
             hasher.update(child.target_sphere_slot.to_le_bytes());
+            hasher.update([child.source_byte_3e, child.cave_collision_cooldown]);
             hasher.update(child.yaw.to_le_bytes());
             hasher.update(child.roll.to_le_bytes());
             hasher.update(child.control_flags.to_le_bytes());
@@ -8588,6 +8684,7 @@ pub const fn level2_economy_event_family(event: Level2EconomyEvent) -> u8 {
         | Level2EconomyEvent::CastleDestroyed { .. }
         | Level2EconomyEvent::CastleConstructionSound { .. }
         | Level2EconomyEvent::CastleDestructionSound { .. }
+        | Level2EconomyEvent::CastleDefenderCaveSound { .. }
         | Level2EconomyEvent::CastleStageDestroyed { .. } => 3,
         Level2EconomyEvent::DeathBurstSpawned { .. }
         | Level2EconomyEvent::DeathBurstExpired { .. } => 4,
@@ -8634,6 +8731,9 @@ fn level2_economy_event_source_slot(event: Level2EconomyEvent, fallback: u16) ->
             source_entity_index,
             ..
         } => u32::from(source_entity_index),
+        Level2EconomyEvent::CastleDefenderCaveSound { defender_slot, .. } => {
+            u32::from(defender_slot)
+        }
         Level2EconomyEvent::ManaSphereClaimed { sphere_id, .. }
         | Level2EconomyEvent::ManaSpheresMerged {
             target_sphere_id: sphere_id,
@@ -15367,6 +15467,7 @@ mod tests {
                 speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                 target_sphere_slot: 0,
                 source_byte_3e: construction.construction_slot as u8,
+                cave_collision_cooldown: 0,
                 yaw: 0,
                 roll: 0,
                 control_flags: 1,
@@ -16842,6 +16943,7 @@ mod tests {
                     speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                     target_sphere_slot: 0,
                     source_byte_3e: source_entity_index as u8,
+                    cave_collision_cooldown: 0,
                     yaw: 0,
                     roll: 0,
                     control_flags: 0,
@@ -18146,6 +18248,179 @@ mod tests {
             defender_position,
             sphere
         ));
+    }
+
+    #[test]
+    fn level_two_castle_defender_cave_collision_matches_source_control_tail() {
+        // The qualified Level 2 package is Day data; this deliberately
+        // synthetic Cave-route test exercises the production defender method
+        // after swapping only the terrain mode/planes. It is route coverage,
+        // not owner-data Cave qualification.
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Castle defender Cave session");
+        let baseline_hash = session.economy().reset_hash();
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("Cave defender Castle");
+        session
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("Cave defender Castle")
+            .level = 1;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let defender_slot = session
+            .economy()
+            .castle()
+            .expect("Cave defender Castle")
+            .defender_slots[0];
+        let (holder_position, ground) = {
+            let child = session
+                .economy()
+                .castle_children()
+                .iter()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("Cave defender holder");
+            (
+                child.position,
+                session.economy().terrain.ground_height(child.position),
+            )
+        };
+        let tile = crate::Tile {
+            x: holder_position.x.to_be_bytes()[0],
+            y: holder_position.y.to_be_bytes()[0],
+        };
+        let terrain_index = terrain_index(tile.x, tile.y);
+
+        // Angle bit 8 blocks the holder. The source toggles bit 0, selects
+        // speed 48, emits sound 22 on the uncooldown transition, and applies
+        // sub_580E0's ground+512 floor after the -16 step.
+        {
+            let economy = session.economy_mut();
+            economy.terrain.map_type = MapType::Cave;
+            economy.terrain.planes.angles.fill(0);
+            economy.terrain.planes.secondary_heights.fill(255);
+            economy.terrain.planes.angles[terrain_index] = 8;
+            let child = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("Cave defender holder");
+            child.target_sphere_slot = 0;
+            child.position = Position {
+                z: ground.saturating_add(520),
+                ..holder_position
+            };
+            child.control_flags = 0;
+            child.cave_collision_cooldown = 0;
+        }
+        assert!(
+            session
+                .economy_mut()
+                .step_castle_defender_slot(defender_slot)
+        );
+        let child = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == defender_slot)
+            .expect("blocked Cave defender holder");
+        assert_ne!(child.control_flags & 1, 0);
+        assert_eq!(child.speed, LEVEL2_CASTLE_DEFENDER_CAVE_BLOCKED_SPEED);
+        assert_eq!(
+            child.position.z,
+            ground + LEVEL2_CASTLE_DEFENDER_CAVE_FLOOR_CLEARANCE
+        );
+        assert_eq!(
+            child.cave_collision_cooldown,
+            LEVEL2_CASTLE_DEFENDER_CAVE_SOUND_COOLDOWN
+        );
+        assert!(session.economy().events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::CastleDefenderCaveSound {
+                defender_slot: event_slot,
+                sound_id: LEVEL2_CASTLE_DEFENDER_CAVE_SOUND,
+            } if *event_slot == defender_slot
+        )));
+
+        // Clearing the angle and using a high ceiling opens the route. A
+        // cooldown of one decrements to zero before the transition, so the
+        // source emits the same sound and reloads 32 exactly once.
+        session.economy_mut().events.clear();
+        {
+            let economy = session.economy_mut();
+            economy.terrain.planes.angles[terrain_index] = 0;
+            let child = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("open Cave defender holder");
+            child.position.z = ground.saturating_add(700);
+            child.control_flags = 1;
+            child.cave_collision_cooldown = 1;
+        }
+        assert!(
+            session
+                .economy_mut()
+                .step_castle_defender_slot(defender_slot)
+        );
+        let child = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == defender_slot)
+            .expect("open Cave defender holder");
+        assert_eq!(child.control_flags & 1, 0);
+        assert_eq!(child.speed, LEVEL2_CASTLE_DEFENDER_CAVE_OPEN_SPEED);
+        assert_eq!(child.position.z, ground + 700 - 16);
+        assert_eq!(
+            child.cave_collision_cooldown,
+            LEVEL2_CASTLE_DEFENDER_CAVE_SOUND_COOLDOWN
+        );
+        assert!(session.economy().events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::CastleDefenderCaveSound {
+                defender_slot: event_slot,
+                sound_id: LEVEL2_CASTLE_DEFENDER_CAVE_SOUND,
+            } if *event_slot == defender_slot
+        )));
+
+        // The ceiling half of sub_11E70 independently blocks the route when
+        // the angle flag is clear.
+        session.economy_mut().events.clear();
+        {
+            let economy = session.economy_mut();
+            economy.terrain.planes.secondary_heights.fill(20);
+            let child = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("ceiling-blocked Cave defender holder");
+            child.position.z = ground.saturating_add(520);
+            child.control_flags = 0;
+            child.cave_collision_cooldown = 0;
+        }
+        assert!(
+            session
+                .economy_mut()
+                .step_castle_defender_slot(defender_slot)
+        );
+        let child = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == defender_slot)
+            .expect("ceiling-blocked Cave defender holder");
+        assert_ne!(child.control_flags & 1, 0);
+        assert_eq!(child.speed, LEVEL2_CASTLE_DEFENDER_CAVE_BLOCKED_SPEED);
+
+        assert_ne!(session.economy().reset_hash(), baseline_hash);
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
     }
 
     #[test]

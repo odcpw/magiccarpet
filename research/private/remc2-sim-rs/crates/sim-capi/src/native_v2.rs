@@ -292,6 +292,7 @@ pub const MC_CAMPAIGN_ECONOMY_CASTLE_CONSTRUCTION_SOUND: u8 = 12;
 pub const MC_CAMPAIGN_ECONOMY_CASTLE_DESTRUCTION_SOUND: u8 = 13;
 pub const MC_CAMPAIGN_ECONOMY_CASTLE_STAGE_DESTROYED: u8 = 14;
 pub const MC_CAMPAIGN_ECONOMY_DAMAGE_APPLIED: u8 = 15;
+pub const MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_CAVE_SOUND: u8 = 17;
 
 pub const MC_AUDIO_ACTION_PREPARED_PENDING: u8 = 0;
 pub const MC_AUDIO_ACTION_START: u8 = 1;
@@ -9923,6 +9924,19 @@ fn campaign_economy_event_snapshot(
             0,
             0,
         ),
+        Level2EconomyEvent::CastleDefenderCaveSound {
+            defender_slot,
+            sound_id,
+        } => (
+            MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_CAVE_SOUND,
+            u32::from(defender_slot),
+            0,
+            sound_id,
+            0,
+            0,
+            0,
+            0,
+        ),
         Level2EconomyEvent::CastleStageDestroyed {
             source_entity_index,
             previous_level,
@@ -15604,6 +15618,30 @@ mod tests {
         assert_eq!(snapshot.entity_0, 157);
         assert_eq!(snapshot.entity_1, 0);
         assert_eq!(snapshot.value_0, 321);
+        assert_eq!(snapshot.value_1, 0);
+        assert_eq!(snapshot.flags, 0);
+        assert_eq!(snapshot.reserved, [0; 4]);
+    }
+
+    #[test]
+    fn campaign_economy_snapshot_binds_castle_defender_cave_sound() {
+        let snapshot = campaign_economy_event_snapshot(
+            11,
+            20,
+            3,
+            157,
+            Level2EconomyEvent::CastleDefenderCaveSound {
+                defender_slot: 157,
+                sound_id: 22,
+            },
+        );
+        assert_eq!(snapshot.code, MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_CAVE_SOUND);
+        assert_eq!(snapshot.family, 3);
+        assert_eq!(snapshot.source_slot, 157);
+        assert_eq!(snapshot.primary_id, 157);
+        assert_eq!(snapshot.secondary_id, 0);
+        assert_eq!(snapshot.entity_0, 22);
+        assert_eq!(snapshot.value_0, 0);
         assert_eq!(snapshot.value_1, 0);
         assert_eq!(snapshot.flags, 0);
         assert_eq!(snapshot.reserved, [0; 4]);
