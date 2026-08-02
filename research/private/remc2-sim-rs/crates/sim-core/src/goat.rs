@@ -351,6 +351,10 @@ impl GoatState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GoatFamily {
     goats: Box<[GoatState]>,
+    /// Source `word_0x34_52` child-chain links.  These are kept separately
+    /// from `GoatState`: a link may target a non-Goat source row, in which
+    /// case the bounded family treats it as an explicit unsupported tail.
+    child_links: Box<[Option<u16>]>,
     stage_point: Position,
     config: GoatBehaviorConfig,
     outer_tick: u32,
@@ -369,6 +373,7 @@ impl GoatFamily {
         config: GoatBehaviorConfig,
     ) -> Result<Self, String> {
         let mut goats = Vec::with_capacity(LEVEL_ONE_GOAT_INDICES.len());
+        let mut child_links = Vec::with_capacity(LEVEL_ONE_GOAT_INDICES.len());
         for expected_index in LEVEL_ONE_GOAT_INDICES {
             let snapshot = entities
                 .get(usize::from(expected_index))
@@ -380,9 +385,11 @@ impl GoatFamily {
                 ));
             }
             goats.push(GoatState::from_snapshot(snapshot)?);
+            child_links.push(snapshot_child_relation(snapshot));
         }
         Ok(Self {
             goats: goats.into_boxed_slice(),
+            child_links: child_links.into_boxed_slice(),
             stage_point,
             config,
             outer_tick: 0,
@@ -398,6 +405,7 @@ impl GoatFamily {
         config: GoatBehaviorConfig,
     ) -> Result<Self, String> {
         let mut goats = Vec::with_capacity(LEVEL_TWO_GOAT_INDICES.len());
+        let mut child_links = Vec::with_capacity(LEVEL_TWO_GOAT_INDICES.len());
         for expected_index in LEVEL_TWO_GOAT_INDICES {
             let snapshot = entities
                 .get(usize::from(expected_index))
@@ -408,10 +416,36 @@ impl GoatFamily {
                     snapshot.index
                 ));
             }
-            goats.push(GoatState::from_snapshot(snapshot)?);
+            let goat = GoatState::from_snapshot(snapshot)?;
+            if !goat.active {
+                return Err(format!(
+                    "Level 2 Goat entity {expected_index} must be active at reset"
+                ));
+            }
+            let expected_action = if matches!(expected_index, 39 | 71) {
+                11
+            } else {
+                9
+            };
+            if goat.action != expected_action {
+                return Err(format!(
+                    "Level 2 Goat entity {expected_index} action mismatch: expected {expected_action}, got {}",
+                    goat.action
+                ));
+            }
+            let expected_partner = (expected_action == 11).then_some(66);
+            if goat.partner_entity_index != expected_partner {
+                return Err(format!(
+                    "Level 2 Goat entity {expected_index} partner mismatch: expected {expected_partner:?}, got {:?}",
+                    goat.partner_entity_index,
+                ));
+            }
+            goats.push(goat);
+            child_links.push(snapshot_child_relation(snapshot));
         }
         Ok(Self {
             goats: goats.into_boxed_slice(),
+            child_links: child_links.into_boxed_slice(),
             stage_point,
             config,
             outer_tick: 0,
@@ -454,6 +488,7 @@ impl GoatFamily {
         }
         Ok(Self {
             goats: goats.into_boxed_slice(),
+            child_links: vec![None; LEVEL_ONE_GOAT_INDICES.len()].into_boxed_slice(),
             stage_point: GOAT_STAGE_POINT,
             config: GoatBehaviorConfig::LEVEL_ONE,
             outer_tick: 0,
@@ -463,6 +498,32 @@ impl GoatFamily {
     #[must_use]
     pub fn goats(&self) -> &[GoatState] {
         &self.goats
+    }
+
+    #[must_use]
+    pub fn child_links(&self) -> &[Option<u16>] {
+        &self.child_links
+    }
+
+    #[must_use]
+    pub fn child_link_for(&self, entity_index: u16) -> Option<u16> {
+        self.goats
+            .iter()
+            .position(|goat| goat.entity_index == entity_index)
+            .and_then(|index| self.child_links.get(index).copied().flatten())
+    }
+
+    /// Test/source-vector seam for mutating the imported child-chain field.
+    pub fn set_child_link_for(&mut self, entity_index: u16, child: Option<u16>) -> bool {
+        let Some(index) = self
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == entity_index)
+        else {
+            return false;
+        };
+        self.child_links[index] = child;
+        true
     }
 
     fn apply_house_construction_kill(&mut self, source_entity_index: u16, source_id: u16) {
@@ -589,6 +650,7 @@ impl GoatFamily {
         };
         match self.goats[family_index].action {
             9 => self.step_roam(family_index, world, players, &mut events),
+            10 => self.step_action_10(family_index, world, &mut events),
             11 => self.step_action_11(family_index, world, &mut events),
             GOAT_PATROL_ACTION
                 if self.goats[family_index].stage_var_2 == GOAT_PATROL_STAGE_MODE =>
@@ -605,6 +667,41 @@ impl GoatFamily {
         }
         self.goats[family_index].phase = self.goats[family_index].phase.wrapping_add(1);
         events
+    }
+
+    /// Port the source action-10 continuation (`sub_1F3C0`): apply pending
+    /// damage and movement through `sub_1BF90(a1, 8)`, then consume the
+    /// compiler-derived RNG/audio tail.  Level 2 action-11 partners can enter
+    /// this state when the authored behavior flag clears the retaliation bit.
+    fn step_action_10<W: FlightWorld>(
+        &mut self,
+        family_index: usize,
+        world: &W,
+        events: &mut Vec<GoatStepEvent>,
+    ) {
+        match self.apply_pending_damage(family_index) {
+            DamageResult::Dead => {
+                self.goats[family_index].action = 12;
+            }
+            DamageResult::Hit(attacker) => {
+                self.goats[family_index].target_entity_index =
+                    relation_index(attacker.cast_unsigned());
+                let goat = &mut self.goats[family_index];
+                if self.config.behavior_flags & 8 != 0 {
+                    goat.action = 14;
+                }
+                relax_to_terrain(
+                    &mut goat.position,
+                    world,
+                    self.config.ground_clearance,
+                    self.config.vertical_relaxation,
+                );
+            }
+            DamageResult::None => {
+                self.move_patrol(family_index, world);
+            }
+        }
+        self.advance_action_10_tail(family_index, events);
     }
 
     pub(crate) fn finish_source_turn(&mut self) {
@@ -720,7 +817,7 @@ impl GoatFamily {
             partner.active && partner.life >= 0 && partner.control_flags & 0x0000_0400 == 0
         });
 
-        match self.apply_pending_damage(family_index) {
+        match self.apply_action11_damage(family_index) {
             DamageResult::Dead => {
                 let attacker = self.goats[family_index].current_attacker;
                 if partner_valid {
@@ -764,7 +861,7 @@ impl GoatFamily {
                 );
             }
             DamageResult::None => {
-                self.move_patrol(family_index, world);
+                self.move_action11_source(family_index, world);
                 if !partner_valid {
                     let goat = &mut self.goats[family_index];
                     goat.partner_entity_index = None;
@@ -791,7 +888,7 @@ impl GoatFamily {
                                 .expect("11-bit action-11 partner heading fits i16");
                             goat.actual_speed =
                                 partner_maximum_speed.wrapping_add(partner_actual_speed);
-                            self.apply_peer_separation(family_index);
+                            self.apply_partner_linked_scan(family_index);
                         }
                         // Partner action 10/11: inherit its target; action 11
                         // also follows the partner's relation chain.
@@ -825,7 +922,7 @@ impl GoatFamily {
                                     .expect("11-bit action-11 chain heading fits i16");
                             goat.actual_speed =
                                 partner_maximum_speed.wrapping_add(partner_actual_speed);
-                            self.apply_peer_separation(family_index);
+                            self.apply_partner_linked_scan(family_index);
                         }
                         // Partner action 14: inherit its target and enter our
                         // own action-14 branch.
@@ -987,6 +1084,59 @@ impl GoatFamily {
         }
     }
 
+    /// Apply the action-11 mailbox and its source `word_0x34_52` child chain.
+    /// The original walks the global entity table in authored link order and
+    /// adopts the first lower-life child, including that child's attacker
+    /// mailbox.  A relation outside this typed family is an explicit bounded
+    /// tail: it cannot be dereferenced safely here and terminates the walk.
+    fn apply_action11_damage(&mut self, family_index: usize) -> DamageResult {
+        let goat = &mut self.goats[family_index];
+        if goat.pending_attacker != 0 {
+            goat.life = goat.life.wrapping_sub(goat.pending_damage);
+            goat.current_attacker = goat.pending_attacker;
+            goat.pending_damage = 0;
+            goat.pending_attacker = 0;
+        } else {
+            goat.current_attacker = 0;
+        }
+
+        let mut child_entity_index = self.child_links[family_index];
+        let mut visited = 0_usize;
+        while let Some(child_entity) = child_entity_index {
+            if visited >= self.goats.len() {
+                break;
+            }
+            let Some(child_index) = self
+                .goats
+                .iter()
+                .position(|candidate| candidate.entity_index == child_entity)
+            else {
+                break;
+            };
+            if child_index == family_index {
+                break;
+            }
+            let child_life = self.goats[child_index].life;
+            if child_life < self.goats[family_index].life {
+                self.goats[family_index].life = child_life;
+                self.goats[family_index].current_attacker =
+                    self.goats[child_index].current_attacker;
+                break;
+            }
+            child_entity_index = self.child_links[child_index];
+            visited += 1;
+        }
+
+        if self.goats[family_index].life < 0 {
+            self.goats[family_index].kill_credit_entity = self.goats[family_index].current_attacker;
+            DamageResult::Dead
+        } else if self.goats[family_index].current_attacker != 0 {
+            DamageResult::Hit(self.goats[family_index].current_attacker)
+        } else {
+            DamageResult::None
+        }
+    }
+
     fn move_patrol<W: FlightWorld>(&mut self, family_index: usize, world: &W) {
         let original = self.goats[family_index].position;
         let original_yaw = self.goats[family_index].yaw;
@@ -1029,12 +1179,69 @@ impl GoatFamily {
 
             let goat = &mut self.goats[family_index];
             goat.position = candidate;
-            goat.yaw =
-                heading.wrapping_add(turn_toward(heading, goat.roll, self.config.turn_clamp))
-                    & 0x07ff;
+            goat.yaw = heading
+                .wrapping_add(turn_toward(heading, goat.roll, self.config.turn_clamp))
+                & 0x07ff;
             if attempt == 0 {
                 goat.control_flags &= !0x0004_0000;
             }
+            return;
+        }
+
+        let goat = &mut self.goats[family_index];
+        if self.config.behavior_flags & 1 != 0 || world.material_mask(goat.position) == 1 {
+            goat.life = -1;
+        }
+    }
+
+    /// Source `sub_1B8C0` movement used by action 11.  This is deliberately
+    /// separate from the older generic mover: the source only probes
+    /// collision/slope after a tile crossing and uses three byte-preserving
+    /// retry headings rather than symmetric +/-341 turns.
+    fn move_action11_source<W: FlightWorld>(&mut self, family_index: usize, world: &W) {
+        let control_flags = self.goats[family_index].control_flags;
+        if control_flags & 0x0000_0800 != 0 {
+            self.goats[family_index].control_flags &= !0x0000_0800;
+            return;
+        }
+
+        let original = self.goats[family_index].position;
+        let original_yaw = self.goats[family_index].yaw;
+        let headings = source_retry_headings(original_yaw);
+        for heading in headings {
+            let mut candidate = original;
+            relax_to_terrain(
+                &mut candidate,
+                world,
+                self.config.ground_clearance,
+                self.config.vertical_relaxation,
+            );
+            move_entity(
+                &mut candidate,
+                heading,
+                0,
+                self.goats[family_index].actual_speed,
+            );
+            let crossed_tile = source_tile(candidate) != source_tile(original);
+            let blocked = crossed_tile
+                && (material_probe_blocked(
+                    candidate,
+                    heading,
+                    self.goats[family_index].collision_half_width,
+                    self.config.allowed_material_mask,
+                    world,
+                ) || terrain_slope_measure(candidate, world)
+                    >= i32::from(self.config.terrain_threshold));
+            if blocked {
+                self.goats[family_index].control_flags |= 0x0004_0000;
+                continue;
+            }
+
+            let goat = &mut self.goats[family_index];
+            goat.position = candidate;
+            goat.yaw =
+                heading.wrapping_add(turn_toward(heading, goat.roll, self.config.turn_clamp))
+                    & 0x07ff;
             return;
         }
 
@@ -1064,6 +1271,30 @@ impl GoatFamily {
                         .expect("11-bit peer heading fits i16");
                 return;
             }
+        }
+    }
+
+    /// Source action-11 partner scan: start at the model's linked-list head,
+    /// skip rows with a live partner relation, reject equal source IDs, and
+    /// use strict wrapped signed x/y bounds of 256.  The typed family is
+    /// stored in that authored source order, so the first matching row is the
+    /// same deterministic tie-break as the source list walk.
+    fn apply_partner_linked_scan(&mut self, family_index: usize) {
+        let position = self.goats[family_index].position;
+        let source_id = self.goats[family_index].source_id;
+        for candidate in self.goats.iter() {
+            if candidate.entity_index == self.goats[family_index].entity_index
+                || candidate.partner_entity_index.is_some()
+                || candidate.source_id == source_id
+                || signed_axis_distance(position.x, candidate.position.x) >= 256
+                || signed_axis_distance(position.y, candidate.position.y) >= 256
+            {
+                continue;
+            }
+            self.goats[family_index].roll =
+                i16::try_from(heading_for_positions(candidate.position, position))
+                    .expect("11-bit linked-partner heading fits i16");
+            break;
         }
     }
 
@@ -1116,6 +1347,28 @@ impl GoatFamily {
         goat.rng = next_rng(goat.rng);
         if goat.rng.is_multiple_of(77) {
             mark_source_audio_call(goat_bleat_source_call(11));
+            events.push(GoatStepEvent::Bleat {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::GoatBleat,
+                entity_index: goat.entity_index,
+                sound_id: 46,
+                position: goat.position,
+                action: goat.action,
+            });
+        }
+        if goat.action == 14 {
+            goat.actual_speed = goat.minimum_speed;
+        }
+    }
+
+    fn advance_action_10_tail(&mut self, family_index: usize, events: &mut Vec<GoatStepEvent>) {
+        let goat = &mut self.goats[family_index];
+        goat.rng = next_rng(goat.rng);
+        if goat.rng.is_multiple_of(77) {
+            // The source wrapper is the `a2 = 8` family tail.  Keep the
+            // existing action-08 call identity while exposing the actual
+            // action in the event payload for the downstream audio mapper.
+            mark_source_audio_call(goat_bleat_source_call(8));
             events.push(GoatStepEvent::Bleat {
                 #[cfg(test)]
                 audio_site: crate::MissionAudioSite::GoatBleat,
@@ -1754,6 +2007,11 @@ const fn relation_index(value: u16) -> Option<u16> {
     if value == 0 { None } else { Some(value) }
 }
 
+fn snapshot_child_relation(snapshot: &EntitySnapshot) -> Option<u16> {
+    let bytes = snapshot.record_bytes();
+    relation_index(read_u16(bytes, 0x0038))
+}
+
 fn signed_axis_distance(left: u16, right: u16) -> i32 {
     i32::from(left.wrapping_sub(right).cast_signed()).abs()
 }
@@ -1768,6 +2026,24 @@ fn squared_wrapping_xy_distance(left: Position, right: Position) -> u32 {
 
 fn source_tile(position: Position) -> (u8, u8) {
     (position.x.to_be_bytes()[0], position.y.to_be_bytes()[0])
+}
+
+fn source_retry_headings(yaw: i16) -> [i16; 4] {
+    let yaw = i32::from(yaw);
+    let first = yaw & 0x07ff;
+    let second = (yaw + 341) & 0x07ff;
+    // The decompiled source writes the low byte from yaw-85 and only the
+    // three high angle bits from yaw-341.  Do not simplify this to yaw-341.
+    let third = ((yaw.wrapping_sub(85) as u16 & 0x00ff)
+        | ((((yaw.wrapping_sub(341) as u16) >> 8) & 7) << 8))
+        & 0x07ff;
+    let fourth = ((((yaw + 0x400) as u16) & 0x0700) | (yaw as u8 as u16)) & 0x07ff;
+    [
+        i16::try_from(first).expect("source retry heading fits i16"),
+        i16::try_from(second).expect("source retry heading fits i16"),
+        i16::try_from(third).expect("source retry heading fits i16"),
+        i16::try_from(fourth).expect("source retry heading fits i16"),
+    ]
 }
 
 fn material_probe_blocked<W: FlightWorld>(
@@ -2986,6 +3262,17 @@ mod tests {
         assert_eq!(primary.partner_entity_index, None);
         assert_eq!(primary.phase, 1);
         assert!(events.is_empty(), "no sound chosen by this seed");
+
+        let rng_after_transition = primary.rng;
+        family.step_source_slot(39, &MaterialBoundaryWorld { all_water: false }, &[]);
+        let primary = family
+            .goats
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .expect("primary action-10 Goat");
+        assert_eq!(primary.action, 10);
+        assert_eq!(primary.phase, 2);
+        assert_eq!(primary.rng, next_rng(rng_after_transition));
     }
 
     #[test]
