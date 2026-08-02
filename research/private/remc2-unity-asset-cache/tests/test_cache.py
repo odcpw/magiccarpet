@@ -1924,6 +1924,23 @@ class Level2DayAudioTests(unittest.TestCase):
             cache.validate_day_audio_cache(self.first)
         wav_path.write_bytes(wav_original)
         manifest_path.write_bytes(manifest_original)
+        descriptor = json.loads(descriptor_original)
+        descriptor["music"]["lifecycle"] = ["StartMusic"]
+        descriptor_path.write_bytes(cache.canonical_json(descriptor))
+        manifest = json.loads(manifest_original)
+        for row in manifest["outputs"]:
+            if row["path"] == "audio/descriptor.json":
+                row["bytes"] = descriptor_path.stat().st_size
+                row["sha256"] = cache.sha256_file(descriptor_path)
+        manifest["cache_content_sha256"] = cache._level2_cache_identity(manifest["outputs"])
+        unsigned = dict(manifest)
+        unsigned.pop("manifest_payload_sha256", None)
+        manifest["manifest_payload_sha256"] = cache.sha256_bytes(cache.canonical_json(unsigned))
+        manifest_path.write_bytes(cache.canonical_json(manifest))
+        with self.assertRaisesRegex(cache.CacheError, "music lifecycle changed"):
+            cache.validate_day_audio_cache(self.first)
+        descriptor_path.write_bytes(descriptor_original)
+        manifest_path.write_bytes(manifest_original)
 
     def test_audio_cross_level_input_fails_before_materialization(self) -> None:
         with self.assertRaisesRegex(cache.CacheError, "requires external=2"):

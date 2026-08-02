@@ -5206,6 +5206,13 @@ def validate_day_audio_cache(
         raise CacheError("Level 2 music record descriptor changed")
     if descriptor.get("music", {}).get("maptype_music") != 2 or descriptor.get("music", {}).get("channel") != 0:
         raise CacheError("Level 2 Day music selector changed")
+    if descriptor.get("music", {}).get("lifecycle") != [
+        "StartMusic",
+        "FadeWarMusic",
+        "UpdateMusic",
+        "StopMusic",
+    ]:
+        raise CacheError("Level 2 Day music lifecycle changed")
     expected_output_paths = {
         "audio/SOUND.DAT",
         "audio/MUSIC.DAT",
