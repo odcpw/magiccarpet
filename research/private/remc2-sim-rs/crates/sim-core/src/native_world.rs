@@ -3333,6 +3333,50 @@ fn level2_owner_mana_rows_from_entities(entities: &[EntitySnapshot]) -> Vec<Leve
         .collect()
 }
 
+/// Project the active authored class-10/model-39 rows into the economy's
+/// typed sphere arena.  These rows already exist in the source entity arena
+/// at reset; they are not allocations and must retain their source slot,
+/// entity RNG, transform, mana, control dword, and raw player relation.
+///
+/// `source_owner` is the lossless `playerEntityIndex_0x94` relation map built
+/// by `Level2EconomyState::from_parts`.  Reusing it for both owner and player
+/// relations keeps the carrier gate and `sub_5F810` selector on source-backed
+/// links instead of inventing a relation from the arena slot.
+fn level2_static_mana_spheres_from_entities(
+    entities: &[EntitySnapshot],
+    source_owner: &BTreeMap<u16, u16>,
+) -> Vec<ManaSphere> {
+    entities
+        .iter()
+        .filter_map(|entity| {
+            if !entity.active || entity.class != 10 || entity.model != 39 {
+                return None;
+            }
+            let player_entity_index = *source_owner.get(&entity.index)?;
+            Some(ManaSphere {
+                id: u32::from(entity.index),
+                source_entity_index: entity.index,
+                entity_rng: entity.entity_rng,
+                position: entity.position,
+                velocity_x: 0,
+                velocity_y: 0,
+                vertical_velocity: 0,
+                yaw: entity.yaw,
+                mana: entity.mana,
+                owner_entity_index: player_entity_index,
+                player_entity_index,
+                incoming_owner_entity_index: 0,
+                incoming_possession_payload: 0,
+                assigned_carrier_id: 0,
+                control_flags: entity.control_flags,
+                phase: entity.phase,
+                active: true,
+                pending_delete: false,
+            })
+        })
+        .collect()
+}
+
 fn level2_owner_mana_projection(rows: &[Level2OwnerManaRow]) -> (BTreeMap<u16, i32>, i32) {
     // `sub_60F00` seeds the global accumulator with one before the scan.
     let mut global = 1_i32;
@@ -3562,6 +3606,7 @@ impl Level2EconomyState {
             .filter(|entity| entity.active)
             .map(|entity| (entity.index, entity.max_mana))
             .collect::<BTreeMap<_, _>>();
+        let static_spheres = level2_static_mana_spheres_from_entities(entities, &source_owner);
         let owner_mana_rows = level2_owner_mana_rows_from_entities(entities);
         let (owner_mana_aggregate, owner_mana_global) =
             level2_owner_mana_projection(&owner_mana_rows);
@@ -3609,7 +3654,7 @@ impl Level2EconomyState {
             } else {
                 (0, 0)
             };
-        Ok(Self {
+        let mut state = Self {
             baseline_terrain: terrain.clone(),
             terrain,
             baseline_free_slots: free_slots.clone().into_boxed_slice(),
@@ -3632,8 +3677,8 @@ impl Level2EconomyState {
             owner_mana_aggregate,
             baseline_owner_mana_global: owner_mana_global,
             owner_mana_global,
-            baseline_spheres: Vec::new(),
-            spheres: Vec::new(),
+            baseline_spheres: static_spheres.clone(),
+            spheres: static_spheres,
             baseline_death_bursts: Vec::new(),
             death_bursts: Vec::new(),
             baseline_carriers: Vec::new(),
@@ -3671,7 +3716,13 @@ impl Level2EconomyState {
             baseline_castle_controller_coefficients: [1; 8],
             castle_controller_coefficients: [1; 8],
             events: Vec::new(),
-        })
+        };
+        // The imported owner rows and the typed static sphere projection use
+        // the same source slot. Rebuild once after construction so the
+        // install/replacement semantics remain explicit if a future profile
+        // includes a source-linked model-39 row outside the baseline filter.
+        state.rebuild_owner_mana_projection();
+        Ok(state)
     }
 
     fn allocate_slot(&mut self) -> Option<u16> {
@@ -16935,6 +16986,83 @@ mod tests {
             economy.select_castle_defender_sphere(holder_position, 111, expected_tie, excluded),
             Some(other_tie)
         );
+    }
+
+    #[test]
+    fn level_two_reset_projects_static_model39_rows_into_sub5f810_selector() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut entities = inspection.entities().to_vec();
+        let source_relation = 111_u16;
+        let static_position = entities[1].position;
+
+        // The qualified fixture has no authored model-39 row yet. Reuse
+        // active source slots so this test exercises the same from-parts
+        // projection against lossless entity records, rather than inserting
+        // a sphere directly into the typed economy vector.
+        let mut static_entity = entities[1].clone();
+        static_entity.class = 10;
+        static_entity.model = 39;
+        static_entity.entity_rng = 0x1357;
+        static_entity.position = static_position;
+        static_entity.yaw = -321;
+        static_entity.mana = 321;
+        static_entity.control_flags = 0;
+        static_entity = static_entity
+            .with_record_byte(152, source_relation as u8)
+            .with_record_byte(153, (source_relation >> 8) as u8);
+        entities[1] = static_entity;
+
+        let player_entity = &entities[usize::from(inspection.players()[0].entity_index)];
+        let mut economy = Level2EconomyState::from_parts(
+            SessionTerrain::from_inspection(&inspection),
+            &entities,
+            player_entity.mana,
+            player_entity.model,
+            0,
+            inspection.players()[0].enabled_spell_holders[2],
+            inspection.runtime().random_state,
+        )
+        .expect("static model-39 economy projection");
+
+        assert_eq!(economy.spheres().len(), 1);
+        let sphere = economy.spheres()[0];
+        assert_eq!(
+            (
+                sphere.id,
+                sphere.source_entity_index,
+                sphere.entity_rng,
+                sphere.position,
+                sphere.yaw,
+                sphere.mana,
+                sphere.control_flags,
+                sphere.owner_entity_index,
+                sphere.player_entity_index,
+            ),
+            (
+                1,
+                1,
+                0x1357,
+                static_position,
+                -321,
+                321,
+                0,
+                source_relation,
+                source_relation,
+            )
+        );
+        assert_eq!(
+            economy.select_castle_defender_sphere(static_position, source_relation, 0, 0),
+            Some(1)
+        );
+
+        let baseline_hash = economy.reset_hash();
+        economy.spheres[0].mana = 999;
+        assert_ne!(economy.reset_hash(), baseline_hash);
+        economy.reset();
+        assert_eq!(economy.spheres().len(), 1);
+        assert_eq!(economy.spheres()[0].mana, 321);
+        assert_eq!(economy.reset_hash(), baseline_hash);
     }
 
     #[test]
