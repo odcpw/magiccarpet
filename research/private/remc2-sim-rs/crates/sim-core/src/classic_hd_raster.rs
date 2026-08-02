@@ -428,8 +428,11 @@ pub fn smooth_classic_hd_indexed_with_tablesn(
     Ok(byte_hash(output))
 }
 
-/// Blend a frame against a prior presentation history only when the full
-/// generation/profile/tick/input key proves that the history is compatible.
+/// Blend a frame against prior presentation history only when the
+/// generation/profile/tick key proves that the history is compatible. The
+/// source input hash is carried for receipts and diagnostics, but changes as
+/// the authoritative world advances and therefore does not invalidate adjacent
+/// temporal frames.
 pub fn blend_classic_hd_history(
     profile: &ClassicHdRenderProfile,
     current: &mut [u8],
@@ -534,11 +537,12 @@ fn validate_history_keys(
             "Classic HD history tick is stale or out of order".to_owned(),
         ));
     }
-    if current.input_hash != history.input_hash {
-        return Err(ClassicHdRasterError(
-            "Classic HD history input hash mismatch".to_owned(),
-        ));
-    }
+    // The source-render hash describes the current authoritative world and is
+    // expected to change as flight advances.  It remains in the receipt and
+    // history key for diagnostics, but it is not a compatibility gate: a
+    // temporal presentation pass exists precisely to blend adjacent frames
+    // whose world state is different.  Generation/profile/tick ordering above
+    // still prevents cross-session, cross-profile, stale, or replayed history.
     Ok(())
 }
 
@@ -878,7 +882,7 @@ mod tests {
             generation: 1,
             profile_revision: profile.profile_revision,
             tick: 3,
-            input_hash: 99,
+            input_hash: 98,
         };
         assert!(
             blend_classic_hd_history(&profile, &mut smoothed, &indices, current, history, 128)

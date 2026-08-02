@@ -33,6 +33,14 @@ namespace MagicCarpet.PresentationLab
         public ClassicHdPresentationSettings Settings { get { return settings; } }
         public bool UsesNativeFixture { get { return nativeFixture != null && nativeFixture.IsConfigured; } }
         public bool UsesNativeOwnerSession { get { return ownerSession != null && ownerSession.IsConfigured; } }
+        public ulong SourceGeneration
+        {
+            get { return ownerSession == null ? 0 : ownerSession.SourceGeneration; }
+        }
+        public ulong SourceTick
+        {
+            get { return ownerSession == null ? 0 : ownerSession.SourceTick; }
+        }
         public ulong LastNativeIndexHash
         {
             get
@@ -205,6 +213,24 @@ namespace MagicCarpet.PresentationLab
             {
                 surface.Clear();
             }
+        }
+
+        public bool ResetOwnerSession(out string reason)
+        {
+            reason = string.Empty;
+            if (!UsesNativeOwnerSession)
+            {
+                reason = "Classic HD owner session is not configured";
+                return false;
+            }
+
+            if (!ownerSession.Reset(out reason))
+            {
+                return false;
+            }
+
+            ResetPresentationHistory();
+            return true;
         }
 
         public bool CaptureFrame(float horizontalInput, float verticalInput, out string reason)

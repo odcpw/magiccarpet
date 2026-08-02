@@ -19,7 +19,7 @@ T14 run produced:
 
 | Internal profile | Frame bytes | Graph memory | p95 CPU | Reset deterministic | Current status |
 | --- | ---: | ---: | ---: | --- | --- |
-| 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; profile-rerender binding reached and failed closed on legacy sprite families; sustained Unity qualification pending |
+| 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; owner profile rerender and persistent Unity upload proven on an idle frame; sustained Unity qualification pending |
 | 960x720 | 691,200 | 2,768,896 | 26.11 ms | yes | candidate; Unity/owner route pending |
 | 1280x960 | 1,228,800 | 4,919,296 | 45.64 ms | yes | rejected by current CPU budget |
 

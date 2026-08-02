@@ -60,6 +60,8 @@ namespace MagicCarpet.PresentationLab
         public bool IsConfigured { get; private set; }
         public ulong Generation { get { return generation; } }
         public ulong Tick { get { return tick; } }
+        public ulong SourceGeneration { get { return generation; } }
+        public ulong SourceTick { get { return tick; } }
         public ulong LastIndexHash { get; private set; }
         public ulong LastProvenanceHash { get; private set; }
         public ulong LastImmutableInputHash { get; private set; }
@@ -214,6 +216,28 @@ namespace MagicCarpet.PresentationLab
 
             Dispose();
             return false;
+        }
+
+        public bool Reset(out string reason)
+        {
+            reason = string.Empty;
+            if (!IsConfigured || handle == 0 || snapshotHandle.IsAllocated == false)
+            {
+                reason = "Classic HD owner source is not configured";
+                return false;
+            }
+
+            int status = mc_native_session_reset(
+                handle,
+                snapshotHandle.AddrOfPinnedObject(),
+                SnapshotSize);
+            if (status != 0)
+            {
+                reason = StatusReason("owner session reset", status);
+                return false;
+            }
+
+            return ReadRenderCameraClock(out reason);
         }
 
         public bool Fill(

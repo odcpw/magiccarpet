@@ -1,5 +1,6 @@
 #if UNITY_EDITOR
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -125,6 +126,183 @@ namespace MagicCarpet.PresentationLab.Editor
             finally
             {
                 UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [MenuItem("Magic Carpet/Presentation Lab/Run Owner Classic HD Sequence Smoke")]
+        public static void RunOwnerClassicHdSequenceSmoke()
+        {
+            string packagePath = CommandLineValue("-mc-package");
+            string closurePath = CommandLineValue("-mc-closure");
+            string assetCachePath = CommandLineValue("-mc-asset-cache");
+            if (string.IsNullOrWhiteSpace(packagePath) ||
+                string.IsNullOrWhiteSpace(closurePath) ||
+                string.IsNullOrWhiteSpace(assetCachePath))
+            {
+                throw new InvalidOperationException(
+                    "owner Classic HD sequence smoke requires -mc-package, -mc-closure, and -mc-asset-cache");
+            }
+
+            var root = new GameObject("Owner Classic HD Sequence Smoke Router");
+            var router = root.AddComponent<PresentationModeRouter>();
+            MethodInfo awake = typeof(PresentationModeRouter).GetMethod(
+                "Awake",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (awake == null)
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                throw new InvalidOperationException("presentation router Awake method is missing");
+            }
+
+            const int FramesPerPass = 32;
+            ulong[] firstIndexHashes = new ulong[FramesPerPass];
+            ulong[] firstProvenanceHashes = new ulong[FramesPerPass];
+            ulong firstGeneration;
+            ulong firstTick;
+            ulong secondGeneration;
+            ulong secondTick;
+
+            try
+            {
+                awake.Invoke(router, null);
+                if (!router.SessionIsOpen ||
+                    router.ClassicHdRenderer == null ||
+                    !router.ClassicHdRenderer.UsesNativeOwnerSession)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD SEQUENCE SMOKE FAIL: router did not open the owner-bound Classic HD route");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                string reason;
+                for (int frame = 0; frame < FramesPerPass; frame++)
+                {
+                    Vector2 input = SequenceInput(frame);
+                    if (!router.ClassicHdRenderer.CaptureFrame(input.x, input.y, out reason))
+                    {
+                        Debug.LogError("OWNER CLASSIC HD SEQUENCE SMOKE FAIL: first pass frame " + frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    firstIndexHashes[frame] = router.ClassicHdRenderer.LastNativeIndexHash;
+                    firstProvenanceHashes[frame] = router.ClassicHdRenderer.LastNativeProvenanceHash;
+                    if (firstIndexHashes[frame] == 0 || firstProvenanceHashes[frame] == 0)
+                    {
+                        Debug.LogError(
+                            "OWNER CLASSIC HD SEQUENCE SMOKE FAIL: first pass frame " + frame +
+                            " returned an empty native hash");
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+                }
+
+                firstGeneration = router.ClassicHdRenderer.SourceGeneration;
+                firstTick = router.ClassicHdRenderer.SourceTick;
+                ulong firstIndexSequenceHash = SequenceHash(firstIndexHashes);
+                ulong firstProvenanceSequenceHash = SequenceHash(firstProvenanceHashes);
+
+                if (!router.ClassicHdRenderer.ResetOwnerSession(out reason))
+                {
+                    Debug.LogError("OWNER CLASSIC HD SEQUENCE SMOKE FAIL: reset: " + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                ulong[] secondIndexHashes = new ulong[FramesPerPass];
+                ulong[] secondProvenanceHashes = new ulong[FramesPerPass];
+                for (int frame = 0; frame < FramesPerPass; frame++)
+                {
+                    Vector2 input = SequenceInput(frame);
+                    if (!router.ClassicHdRenderer.CaptureFrame(input.x, input.y, out reason))
+                    {
+                        Debug.LogError("OWNER CLASSIC HD SEQUENCE SMOKE FAIL: reset pass frame " + frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    secondIndexHashes[frame] = router.ClassicHdRenderer.LastNativeIndexHash;
+                    secondProvenanceHashes[frame] = router.ClassicHdRenderer.LastNativeProvenanceHash;
+                    if (secondIndexHashes[frame] != firstIndexHashes[frame] ||
+                        secondProvenanceHashes[frame] != firstProvenanceHashes[frame])
+                    {
+                        Debug.LogError(
+                            "OWNER CLASSIC HD SEQUENCE SMOKE FAIL: reset replay diverged at frame " + frame +
+                            " first=" + firstIndexHashes[frame].ToString("x16") +
+                            "/" + firstProvenanceHashes[frame].ToString("x16") +
+                            " second=" + secondIndexHashes[frame].ToString("x16") +
+                            "/" + secondProvenanceHashes[frame].ToString("x16"));
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+                }
+
+                secondGeneration = router.ClassicHdRenderer.SourceGeneration;
+                secondTick = router.ClassicHdRenderer.SourceTick;
+                if (router.ClassicHdRenderer.UploadCount != FramesPerPass * 2 ||
+                    router.ClassicHdRenderer.AllocationEpoch != 1)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD SEQUENCE SMOKE FAIL: uploads=" + router.ClassicHdRenderer.UploadCount +
+                        " allocation_epoch=" + router.ClassicHdRenderer.AllocationEpoch);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                Debug.Log(
+                    "OWNER CLASSIC HD SEQUENCE SMOKE PASS: profile=" + router.ClassicHdRenderer.Settings.profile +
+                    " frames_per_pass=" + FramesPerPass +
+                    " uploads=" + router.ClassicHdRenderer.UploadCount +
+                    " allocation_epoch=" + router.ClassicHdRenderer.AllocationEpoch +
+                    " first_generation=" + firstGeneration +
+                    " first_tick=" + firstTick +
+                    " second_generation=" + secondGeneration +
+                    " second_tick=" + secondTick +
+                    " index_sequence=" + firstIndexSequenceHash.ToString("x16") +
+                    " provenance_sequence=" + firstProvenanceSequenceHash.ToString("x16") +
+                    " first_index=" + firstIndexHashes[0].ToString("x16") +
+                    " last_index=" + firstIndexHashes[FramesPerPass - 1].ToString("x16"));
+                EditorApplication.Exit(0);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        private static Vector2 SequenceInput(int frame)
+        {
+            if (frame < 8)
+            {
+                return Vector2.zero;
+            }
+
+            if (frame < 16)
+            {
+                return new Vector2(0.25f, 0f);
+            }
+
+            if (frame < 24)
+            {
+                return new Vector2(-0.25f, -0.15f);
+            }
+
+            return new Vector2(0f, 0.2f);
+        }
+
+        private static ulong SequenceHash(IReadOnlyList<ulong> values)
+        {
+            unchecked
+            {
+                ulong hash = 0xcbf29ce484222325UL;
+                for (int index = 0; index < values.Count; index++)
+                {
+                    hash ^= values[index];
+                    hash *= 0x100000001b3UL;
+                }
+
+                return hash;
             }
         }
 

@@ -34,6 +34,9 @@ provenance, the history key, and the last receipt are changed only after all
 enabled stages validate and the receipt is complete. A failed world closure,
 missing shading plane, malformed TABLESN history request, stale tick, or
 profile/generation mismatch therefore cannot advance history or leak pixels.
+The source-render input hash is retained for receipt diagnostics but is not a
+history compatibility gate: authoritative world state normally changes every
+flight tick, and temporal presentation must be able to blend adjacent frames.
 
 `reset` clears all planes and history for a new generation. `reconfigure`
 replaces the graph with a fresh profile-sized storage set, so a resolution or
