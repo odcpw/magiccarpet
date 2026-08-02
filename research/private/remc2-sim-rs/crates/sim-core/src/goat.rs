@@ -323,6 +323,63 @@ impl GoatState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SourceEntityState {
+    entity_index: u16,
+    source_id: u16,
+    class: u8,
+    model: u8,
+    active: bool,
+    control_flags: u32,
+    life: i32,
+    current_attacker: i16,
+    action: u8,
+    position: Position,
+    child_relation: Option<u16>,
+}
+
+impl SourceEntityState {
+    fn from_snapshot(snapshot: &EntitySnapshot) -> Self {
+        let bytes = snapshot.record_bytes();
+        Self {
+            entity_index: snapshot.index,
+            source_id: snapshot.source_id,
+            class: snapshot.class,
+            model: snapshot.model,
+            active: snapshot.active,
+            control_flags: snapshot.control_flags,
+            life: snapshot.life,
+            current_attacker: read_i16(bytes, 0x002a),
+            action: snapshot.action,
+            position: snapshot.position,
+            child_relation: snapshot_child_relation(snapshot),
+        }
+    }
+}
+
+fn source_entity_states(entities: &[EntitySnapshot]) -> Box<[SourceEntityState]> {
+    entities
+        .iter()
+        .map(SourceEntityState::from_snapshot)
+        .collect::<Vec<_>>()
+        .into_boxed_slice()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SourceEntityView {
+    entity_index: u16,
+    source_id: u16,
+    class: u8,
+    model: u8,
+    active: bool,
+    control_flags: u32,
+    life: i32,
+    current_attacker: i16,
+    action: u8,
+    position: Position,
+    child_relation: Option<u16>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GoatFamily {
     goats: Box<[GoatState]>,
@@ -330,6 +387,11 @@ pub struct GoatFamily {
     /// from `GoatState`: a link may target a non-Goat source row, in which
     /// case the bounded family treats it as an explicit unsupported tail.
     child_links: Box<[Option<u16>]>,
+    /// Immutable metadata for the complete source pool. The native loop
+    /// rebuilds the class-5/model linked lists from this pool before dispatch;
+    /// retaining it lets action 11 follow source order and inspect a child
+    /// relation that is not itself a typed Goat.
+    source_entities: Box<[SourceEntityState]>,
     stage_point: Position,
     config: GoatBehaviorConfig,
     outer_tick: u32,
@@ -365,6 +427,7 @@ impl GoatFamily {
         Ok(Self {
             goats: goats.into_boxed_slice(),
             child_links: child_links.into_boxed_slice(),
+            source_entities: source_entity_states(entities),
             stage_point,
             config,
             outer_tick: 0,
@@ -421,6 +484,7 @@ impl GoatFamily {
         Ok(Self {
             goats: goats.into_boxed_slice(),
             child_links: child_links.into_boxed_slice(),
+            source_entities: source_entity_states(entities),
             stage_point,
             config,
             outer_tick: 0,
@@ -464,6 +528,7 @@ impl GoatFamily {
         Ok(Self {
             goats: goats.into_boxed_slice(),
             child_links: vec![None; LEVEL_ONE_GOAT_INDICES.len()].into_boxed_slice(),
+            source_entities: Box::new([]),
             stage_point: GOAT_STAGE_POINT,
             config: GoatBehaviorConfig::LEVEL_ONE,
             outer_tick: 0,
@@ -499,6 +564,80 @@ impl GoatFamily {
         };
         self.child_links[index] = child;
         true
+    }
+
+    fn source_entity_view(&self, entity_index: u16) -> Option<SourceEntityView> {
+        if let Some((goat_index, goat)) = self
+            .goats
+            .iter()
+            .enumerate()
+            .find(|(_, goat)| goat.entity_index == entity_index)
+        {
+            return Some(SourceEntityView {
+                entity_index: goat.entity_index,
+                source_id: goat.source_id,
+                class: GOAT_CLASS,
+                model: GOAT_MODEL,
+                active: goat.active,
+                control_flags: goat.control_flags,
+                life: goat.life,
+                current_attacker: goat.current_attacker,
+                action: goat.action,
+                position: goat.position,
+                child_relation: self.child_links[goat_index],
+            });
+        }
+        self.source_entities
+            .iter()
+            .find(|entity| entity.entity_index == entity_index)
+            .map(|entity| SourceEntityView {
+                entity_index: entity.entity_index,
+                source_id: entity.source_id,
+                class: entity.class,
+                model: entity.model,
+                active: entity.active,
+                control_flags: entity.control_flags,
+                life: entity.life,
+                current_attacker: entity.current_attacker,
+                action: entity.action,
+                position: entity.position,
+                child_relation: entity.child_relation,
+            })
+    }
+
+    /// Return the class-5/model linked-list order rebuilt by the native outer
+    /// loop. The source walks entity-pool order, excludes dead rows and its
+    /// three terminal/draw actions (0xb4, 0xe8, and 0xea), and links each
+    /// surviving row through `next_0`.
+    fn source_model_linked_list(&self, model: u8) -> Vec<u16> {
+        if self.source_entities.is_empty() {
+            return self
+                .goats
+                .iter()
+                .filter(|goat| {
+                    goat.active
+                        && goat.life >= 0
+                        && goat.action != 0xb4
+                        && goat.action != 0xe8
+                        && goat.action != 0xea
+                })
+                .map(|goat| goat.entity_index)
+                .collect();
+        }
+        self.source_entities
+            .iter()
+            .filter_map(|entity| {
+                let current = self.source_entity_view(entity.entity_index)?;
+                (current.class == GOAT_CLASS
+                    && current.model == model
+                    && current.active
+                    && current.life >= 0
+                    && current.action != 0xb4
+                    && current.action != 0xe8
+                    && current.action != 0xea)
+                    .then_some(current.entity_index)
+            })
+            .collect()
     }
 
     fn apply_house_construction_kill(&mut self, source_entity_index: u16, source_id: u16) {
@@ -787,10 +926,16 @@ impl GoatFamily {
             .goats
             .iter()
             .position(|goat| goat.entity_index == partner_entity_index);
-        let partner_valid = partner_index.is_some_and(|index| {
-            let partner = &self.goats[index];
-            partner.active && partner.life >= 0 && partner.control_flags & 0x0000_0400 == 0
-        });
+        let partner_valid = self
+            .source_entity_view(partner_entity_index)
+            .is_some_and(|partner| {
+                partner.class == GOAT_CLASS
+                    && partner.model == GOAT_MODEL
+                    && partner.active
+                    && partner.life >= 0
+                    && partner.control_flags & 0x0000_0400 == 0
+                    && partner_index.is_some()
+            });
 
         match self.apply_action11_damage(family_index) {
             DamageResult::Dead => {
@@ -885,9 +1030,7 @@ impl GoatFamily {
                             // that same zero position, never the old partner.
                             let next_position = partner_partner
                                 .and_then(|next_partner_entity_index| {
-                                    self.goats.iter().find(|candidate| {
-                                        candidate.entity_index == next_partner_entity_index
-                                    })
+                                    self.source_entity_view(next_partner_entity_index)
                                 })
                                 .map_or(Position::default(), |partner| partner.position);
                             let goat = &mut self.goats[family_index];
@@ -1078,27 +1221,21 @@ impl GoatFamily {
         let mut child_entity_index = self.child_links[family_index];
         let mut visited = 0_usize;
         while let Some(child_entity) = child_entity_index {
-            if visited >= self.goats.len() {
+            if visited >= self.source_entities.len().max(self.goats.len()) {
                 break;
             }
-            let Some(child_index) = self
-                .goats
-                .iter()
-                .position(|candidate| candidate.entity_index == child_entity)
-            else {
+            let Some(child) = self.source_entity_view(child_entity) else {
                 break;
             };
-            if child_index == family_index {
+            if child.entity_index == self.goats[family_index].entity_index {
                 break;
             }
-            let child_life = self.goats[child_index].life;
-            if child_life < self.goats[family_index].life {
-                self.goats[family_index].life = child_life;
-                self.goats[family_index].current_attacker =
-                    self.goats[child_index].current_attacker;
+            if child.life < self.goats[family_index].life {
+                self.goats[family_index].life = child.life;
+                self.goats[family_index].current_attacker = child.current_attacker;
                 break;
             }
-            child_entity_index = self.child_links[child_index];
+            child_entity_index = child.child_relation;
             visited += 1;
         }
 
@@ -1252,14 +1389,16 @@ impl GoatFamily {
     }
 
     /// Source action-11 partner scan: start at the model's linked-list head,
-    /// skip rows with a live partner relation, reject equal source IDs, and
-    /// use strict wrapped signed x/y bounds of 256.  The typed family is
-    /// stored in that authored source order, so the first matching row is the
-    /// same deterministic tie-break as the source list walk.
+    /// reject equal source IDs, and use strict wrapped signed x/y bounds of
+    /// 256. The list is rebuilt from the complete class-5 source pool in the
+    /// same ascending slot order as `sub_68BF0`, not from the typed Goat slice.
     fn apply_partner_linked_scan(&mut self, family_index: usize) {
         let position = self.goats[family_index].position;
         let source_id = self.goats[family_index].source_id;
-        for candidate in self.goats.iter() {
+        for candidate_entity_index in self.source_model_linked_list(GOAT_MODEL) {
+            let Some(candidate) = self.source_entity_view(candidate_entity_index) else {
+                continue;
+            };
             if candidate.entity_index == self.goats[family_index].entity_index
                 || candidate.source_id == source_id
                 || signed_axis_distance(position.x, candidate.position.x) >= 256
@@ -3406,5 +3545,94 @@ mod tests {
         )
         .expect("reset Level 2 Goat family");
         assert_eq!(reset, baseline);
+    }
+
+    #[test]
+    fn action11_child_chain_reads_global_non_goat_row() {
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        family.goats[primary_index].life = 400;
+        family.goats[primary_index].pending_damage = 0;
+        family.goats[primary_index].pending_attacker = 0;
+        family.goats[primary_index].current_attacker = 0;
+        assert!(family.set_child_link_for(39, Some(80)));
+
+        let child = family
+            .source_entities
+            .iter_mut()
+            .find(|entity| entity.entity_index == 80)
+            .expect("non-Goat source child row");
+        child.class = GOAT_CLASS.wrapping_add(1);
+        child.model = 0;
+        child.life = 399;
+        child.current_attacker = 321;
+        child.active = true;
+
+        assert_eq!(
+            family.apply_action11_damage(primary_index),
+            DamageResult::Hit(321),
+            "action 11 adopts the first lower-life child from the global source chain"
+        );
+        assert_eq!(family.goats[primary_index].life, 399);
+        assert_eq!(family.goats[primary_index].current_attacker, 321);
+    }
+
+    #[test]
+    fn action11_partner_scan_uses_source_model_order_after_typed_slice_reorder() {
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        let first_source_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 40)
+            .expect("first model-list candidate");
+        let second_source_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 41)
+            .expect("second model-list candidate");
+        family.goats[primary_index].position = Position {
+            x: 1_000,
+            y: 1_000,
+            z: 0,
+        };
+        family.goats[first_source_index].position = Position {
+            x: 1_100,
+            y: 1_000,
+            z: 0,
+        };
+        family.goats[second_source_index].position = Position {
+            x: 1_010,
+            y: 1_000,
+            z: 0,
+        };
+        family.goats.swap(first_source_index, second_source_index);
+
+        family.apply_partner_linked_scan(primary_index);
+        assert_eq!(
+            family.goats[primary_index].roll,
+            i16::try_from(heading_for_positions(
+                Position {
+                    x: 1_100,
+                    y: 1_000,
+                    z: 0,
+                },
+                Position {
+                    x: 1_000,
+                    y: 1_000,
+                    z: 0,
+                },
+            ))
+            .expect("source model-list heading fits i16"),
+            "source-pool order wins over typed-family storage order"
+        );
     }
 }
