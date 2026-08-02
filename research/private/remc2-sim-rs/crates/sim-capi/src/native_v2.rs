@@ -281,6 +281,7 @@ pub const MC_CAMPAIGN_ECONOMY_MANA_SPHERES_MERGED: u8 = 4;
 pub const MC_CAMPAIGN_ECONOMY_MANA_CARRIER_SPAWNED: u8 = 5;
 pub const MC_CAMPAIGN_ECONOMY_MANA_CARRIER_ARRIVED: u8 = 6;
 pub const MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_ARRIVED: u8 = 7;
+pub const MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_COLLECTED_SPHERE: u8 = 16;
 pub const MC_CAMPAIGN_ECONOMY_DEATH_BURST_SPAWNED: u8 = 8;
 pub const MC_CAMPAIGN_ECONOMY_DEATH_BURST_EXPIRED: u8 = 9;
 pub const MC_CAMPAIGN_ECONOMY_CASTLE_BUILT: u8 = 10;
@@ -9827,6 +9828,20 @@ fn campaign_economy_event_snapshot(
             0,
             0,
         ),
+        Level2EconomyEvent::CastleDefenderCollectedSphere {
+            defender_slot,
+            sphere_id,
+            mana,
+        } => (
+            MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_COLLECTED_SPHERE,
+            u32::from(defender_slot),
+            sphere_id,
+            defender_slot,
+            0,
+            mana,
+            0,
+            0,
+        ),
         Level2EconomyEvent::DeathBurstSpawned {
             source_entity_index,
             parent_entity_index,
@@ -15562,6 +15577,36 @@ mod tests {
     }
 
     #[test]
+    fn campaign_economy_snapshot_binds_castle_defender_sphere_collection() {
+        let snapshot = campaign_economy_event_snapshot(
+            11,
+            19,
+            3,
+            157,
+            Level2EconomyEvent::CastleDefenderCollectedSphere {
+                defender_slot: 157,
+                sphere_id: 39,
+                mana: 321,
+            },
+        );
+
+        assert_eq!(
+            snapshot.code,
+            MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_COLLECTED_SPHERE
+        );
+        assert_eq!(snapshot.family, 3);
+        assert_eq!(snapshot.source_slot, 157);
+        assert_eq!(snapshot.primary_id, 157);
+        assert_eq!(snapshot.secondary_id, 39);
+        assert_eq!(snapshot.entity_0, 157);
+        assert_eq!(snapshot.entity_1, 0);
+        assert_eq!(snapshot.value_0, 321);
+        assert_eq!(snapshot.value_1, 0);
+        assert_eq!(snapshot.flags, 0);
+        assert_eq!(snapshot.reserved, [0; 4]);
+    }
+
+    #[test]
     fn campaign_api_selects_level_profiles_and_preserves_old_level1_values() {
         let (level1_package, level1_closure) = fixture_paths();
         let package = level1_package.to_string_lossy();
@@ -15987,7 +16032,7 @@ mod tests {
             assert_eq!(generic.pass, row.pass);
             assert_eq!(generic.family, row.family);
             assert_eq!(generic.source_slot, row.source_slot);
-            assert!((1..=15).contains(&row.code));
+            assert!((1..=16).contains(&row.code));
         }
         let mut canonical_events = Sha256::new();
         canonical_events.update(sim_core::mission_content::REMC2_SPEC_COMMIT.as_bytes());

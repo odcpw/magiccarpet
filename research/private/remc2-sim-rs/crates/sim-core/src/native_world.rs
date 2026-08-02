@@ -110,6 +110,12 @@ const AUDIO_CACHE_SCHEMA: &str = "mc2-owner-unity-asset-cache/v1";
 /// `dword_0x10_16` stage scalar when deciding whether to transfer mana.
 const LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE: i32 = 300;
 const LEVEL2_CASTLE_CHILD_DEFAULT_SPEED: i16 = 16;
+/// `sub_4ABA0` writes maxMana=10000 for a Castle class-3/model-3 defender.
+const LEVEL2_CASTLE_DEFENDER_MAX_MANA: i32 = 10_000;
+/// The same constructor writes maxLife=10000 and actSpeed=48; these are not
+/// the 300/16 defaults used by model-15/41/42/79 auxiliary children.
+const LEVEL2_CASTLE_DEFENDER_MAX_LIFE: i32 = 10_000;
+const LEVEL2_CASTLE_DEFENDER_SPEED: i16 = 48;
 const AUDIO_CACHE_MANIFEST_SHA256: &str =
     "e3aaf1cf03e390850c5da44ed4b3880352b425bd063657e3cdbbcb8086a4d7ee";
 const AUDIO_CACHE_CONTENT_SHA256: &str =
@@ -807,13 +813,20 @@ fn level2_wrapping_xy_distance(left: Position, right: Position) -> u32 {
         .cast_unsigned()
 }
 
+/// Explicit signed-16 subtraction used by remc2's `sub_58440` and
+/// `sub_10630`. Position Z is already stored as `i16`, but spelling out the
+/// source truncation keeps the high-bit boundary contract visible.
+fn level2_signed16_difference(left: i16, right: i16) -> i32 {
+    i32::from(i16::from_le_bytes(right.wrapping_sub(left).to_le_bytes()))
+}
+
 /// Pinned `sub_58440`: Castle defender sphere arbitration compares the
 /// signed-16 X/Y/Z deltas as a squared 3-D distance, not the XY-only arrival
 /// metric used by `AddBallon_60AB0`.
 fn level2_wrapping_source_distance_3d(left: Position, right: Position) -> u32 {
     let dx = i64::from(i32::from(right.x.wrapping_sub(left.x).cast_signed()));
     let dy = i64::from(i32::from(right.y.wrapping_sub(left.y).cast_signed()));
-    let dz = i64::from(i32::from(right.z.wrapping_sub(left.z)));
+    let dz = i64::from(level2_signed16_difference(left.z, right.z));
     u32::try_from(dx * dx + dy * dy + dz * dz).unwrap_or(u32::MAX)
 }
 
@@ -837,6 +850,42 @@ fn level2_wrapping_target_distance(left: Position, right: Position) -> u32 {
 
 fn level2_mana_sphere_dimension(mana: i32) -> i16 {
     MANA_SPHERE_COLLISION_DIMENSIONS[usize::from(mana_sphere_size_ordinal(mana))]
+}
+
+/// `sub_4ABA0` installs the defender's source collision axes through
+/// `SetEntityIndexAndRot_49CD0(169)`.  The qualified particle row 169 is
+/// speed 545 / rotation 800, so the source stores 272 for X/Y and 400 for
+/// the vertical offset/extent.  Keep these separate from the holder's
+/// movement speed: `sub_106C0` consumes the collision axes, not `actSpeed`.
+const LEVEL2_CASTLE_DEFENDER_COLLISION_HALF_WIDTH: i16 = 272;
+const LEVEL2_CASTLE_DEFENDER_COLLISION_VERTICAL_OFFSET: i16 = 400;
+
+/// Pinned `sub_106C0(sphere, defender)` strict AABB.  All source axis fields
+/// are signed 16-bit values, while the additions are performed in the
+/// promoted integer domain before the strict `<` comparison.
+fn level2_castle_defender_sphere_overlap(defender_position: Position, sphere: &ManaSphere) -> bool {
+    let sphere_extent = i32::from(level2_mana_sphere_dimension(sphere.mana));
+    let defender_width = i32::from(LEVEL2_CASTLE_DEFENDER_COLLISION_HALF_WIDTH);
+    let dx = i32::from(
+        sphere
+            .position
+            .x
+            .wrapping_sub(defender_position.x)
+            .cast_signed(),
+    );
+    let dy = i32::from(
+        sphere
+            .position
+            .y
+            .wrapping_sub(defender_position.y)
+            .cast_signed(),
+    );
+    let dz = i32::from(sphere.position.z) + sphere_extent
+        - i32::from(defender_position.z)
+        - i32::from(LEVEL2_CASTLE_DEFENDER_COLLISION_VERTICAL_OFFSET);
+    dx.abs() < sphere_extent + defender_width
+        && dy.abs() < sphere_extent + defender_width
+        && dz.abs() < sphere_extent + i32::from(LEVEL2_CASTLE_DEFENDER_COLLISION_VERTICAL_OFFSET)
 }
 
 /// Pinned remc2 `sub_10A50` SEARCH.DAT walk for model-39 mana spheres. The
@@ -904,8 +953,13 @@ fn level2_carrier_sphere_overlap(carrier: Position, sphere: &ManaSphere) -> bool
     let extent = level2_mana_sphere_dimension(sphere.mana);
     let dx = i32::from(sphere.position.x.wrapping_sub(carrier.x).cast_signed());
     let dy = i32::from(sphere.position.y.wrapping_sub(carrier.y).cast_signed());
-    let dz = i32::from(carrier.z) + i32::from(MANA_CARRIER_COLLISION_VERTICAL_OFFSET)
-        - i32::from(sphere.position.z);
+    // `sub_106C0(sphere, carrier)` compares the source sphere axis (including
+    // its mana-sized yaw/fov extent) against the carrier's 272/400/400
+    // collision axes.  Keep the strict signed source expression rather than
+    // treating the sphere as a point at its centre.
+    let dz = i32::from(sphere.position.z) + i32::from(extent)
+        - i32::from(carrier.z)
+        - i32::from(MANA_CARRIER_COLLISION_VERTICAL_OFFSET);
     dx.abs() < i32::from(MANA_CARRIER_COLLISION_HALF_WIDTH + extent)
         && dy.abs() < i32::from(MANA_CARRIER_COLLISION_HALF_WIDTH + extent)
         && dz.abs() < i32::from(MANA_CARRIER_COLLISION_HALF_HEIGHT + extent)
@@ -3473,6 +3527,14 @@ pub enum Level2EconomyEvent {
         castle_id: u16,
         mana: i32,
     },
+    /// Source `AddBallon_60AB0` class-10 transfer into a defender holder.
+    /// This is distinct from `CastleDefenderArrived`, whose class-3 branch
+    /// deposits holder mana into the Castle root.
+    CastleDefenderCollectedSphere {
+        defender_slot: u16,
+        sphere_id: u32,
+        mana: i32,
+    },
     DeathBurstSpawned {
         source_entity_index: u16,
         parent_entity_index: u16,
@@ -4460,6 +4522,7 @@ impl Level2EconomyState {
         let mut predicted = child_snapshot.position;
         let mut yaw = child_snapshot.yaw as i16;
         let mut transfer_mana = None;
+        let mut collected_sphere = None;
         let castle_snapshot = self.castle.filter(|castle| {
             castle.active && child_snapshot.target_sphere_slot == castle.source_entity_index
         });
@@ -4475,7 +4538,11 @@ impl Level2EconomyState {
                 // for the default event profile.  This is the exact source
                 // altitude gate before the class-3 mana transfer.
                 let ground = self.terrain.ground_height(predicted);
-                if predicted.z <= ground && castle.level > 0 {
+                // `sub_4ABA0` binds `str_D7BD6[68].word_160_0xc_12` to 512;
+                // the source compares the holder's predicted Z against that
+                // terrain-relative upper bound, not against the ground
+                // plane itself.
+                if predicted.z <= ground.saturating_add(512) && castle.level > 0 {
                     transfer_mana = Some(child_snapshot.mana);
                     // The source snaps the holder's predicted axis to the
                     // class-3 target position; the target Castle itself does
@@ -4492,6 +4559,44 @@ impl Level2EconomyState {
                 }
             } else {
                 crate::move_entity(&mut predicted, yaw, 0, child_snapshot.speed);
+            }
+        } else if let Some(sphere_index) = self.spheres.iter().position(|sphere| {
+            sphere.active && sphere.source_entity_index == child_snapshot.target_sphere_slot
+        }) {
+            // Source `AddBallon_60AB0` uses the defender's raw id relation for
+            // the owner gate.  This is `source_id_entity_index`, not the
+            // Castle's presentation/owner field.
+            let sphere = self.spheres[sphere_index];
+            yaw = i16::try_from(heading_for_positions(predicted, sphere.position))
+                .expect("mana-sphere defender heading fits");
+            let distance = level2_wrapping_target_distance(predicted, sphere.position);
+            let attraction_limit = if self.terrain.map_type == MapType::Cave {
+                2_048
+            } else {
+                1_024
+            };
+            if sphere.player_entity_index == child_snapshot.id_entity_index {
+                if distance > attraction_limit {
+                    // The source clears byte-0 bit 0x40 when the target is
+                    // outside the Day/Cave attraction range, then continues
+                    // through the normal movement/settle tail.
+                    if let Some(target) = self.spheres.get_mut(sphere_index) {
+                        target.control_flags &= !0x40;
+                    }
+                } else {
+                    if let Some(target) = self.spheres.get_mut(sphere_index) {
+                        target.control_flags |= 0x40;
+                    }
+                    if level2_castle_defender_sphere_overlap(predicted, &sphere) {
+                        collected_sphere = Some((sphere_index, sphere));
+                    }
+                }
+                if distance <= u32::from(child_snapshot.speed.unsigned_abs()) {
+                    predicted.x = sphere.position.x;
+                    predicted.y = sphere.position.y;
+                } else {
+                    crate::move_entity(&mut predicted, yaw, 0, child_snapshot.speed);
+                }
             }
         }
 
@@ -4516,6 +4621,32 @@ impl Level2EconomyState {
                 castle_id: child_snapshot.target_sphere_slot,
                 mana,
             });
+        } else if let Some((sphere_index, sphere)) = collected_sphere {
+            let child = &mut self.castle_children[child_index];
+            child.position = predicted;
+            child.yaw = yaw as u16;
+            child.mana = child.mana.wrapping_add(sphere.mana);
+            child.player_entity_index = sphere.player_entity_index;
+            child.life = child.max_life;
+            child.target_sphere_slot = 0;
+            let sphere_state = &mut self.spheres[sphere_index];
+            sphere_state.assigned_carrier_id = 0;
+            sphere_state.pending_delete = true;
+            sphere_state.active = false;
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: sphere.source_entity_index,
+                    active: false,
+                    x: sphere.position.x,
+                    y: sphere.position.y,
+                })
+                .expect("Level 2 defender sphere source slot fits the map chain");
+            self.events
+                .push(Level2EconomyEvent::CastleDefenderCollectedSphere {
+                    defender_slot: source_slot,
+                    sphere_id: sphere.id,
+                    mana: sphere.mana,
+                });
         } else {
             let child = &mut self.castle_children[child_index];
             child.position = predicted;
@@ -5326,7 +5457,10 @@ impl Level2EconomyState {
                 yaw: 0,
                 mana: sphere_mana,
                 owner_entity_index: castle.owner_entity_index,
-                player_entity_index: castle.owner_entity_index,
+                // `sub_5FD00` writes the Castle root's raw id relation, not
+                // the separate presentation owner field.  The defender's
+                // `sub_5F810` gate compares against this same id.
+                player_entity_index: castle.source_id_entity_index,
                 incoming_owner_entity_index: 0,
                 incoming_possession_payload: 0,
                 assigned_carrier_id: 0,
@@ -5521,10 +5655,10 @@ impl Level2EconomyState {
                 model: 3,
                 action: 9,
                 mana: 0,
-                max_mana: 0,
-                life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
-                max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
-                speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
+                max_mana: LEVEL2_CASTLE_DEFENDER_MAX_MANA,
+                life: LEVEL2_CASTLE_DEFENDER_MAX_LIFE,
+                max_life: LEVEL2_CASTLE_DEFENDER_MAX_LIFE,
+                speed: LEVEL2_CASTLE_DEFENDER_SPEED,
                 target_sphere_slot: 0,
                 source_byte_3e: snapshot.phase,
                 yaw: 0,
@@ -8422,6 +8556,7 @@ pub const fn level2_economy_event_family(event: Level2EconomyEvent) -> u8 {
         Level2EconomyEvent::ManaCarrierSpawned { .. }
         | Level2EconomyEvent::ManaCarrierArrived { .. } => 2,
         Level2EconomyEvent::CastleDefenderArrived { .. }
+        | Level2EconomyEvent::CastleDefenderCollectedSphere { .. }
         | Level2EconomyEvent::CastleBuilt { .. }
         | Level2EconomyEvent::CastleDestroyed { .. }
         | Level2EconomyEvent::CastleConstructionSound { .. }
@@ -8487,6 +8622,9 @@ fn level2_economy_event_source_slot(event: Level2EconomyEvent, fallback: u16) ->
         // cursor rather than the consumed object.
         Level2EconomyEvent::ManaSphereCollected { carrier_id, .. } => carrier_id,
         Level2EconomyEvent::CastleDefenderArrived { defender_slot, .. } => u32::from(defender_slot),
+        Level2EconomyEvent::CastleDefenderCollectedSphere { defender_slot, .. } => {
+            u32::from(defender_slot)
+        }
         Level2EconomyEvent::DamageApplied {
             target_entity_index,
             ..
@@ -17581,8 +17719,8 @@ mod tests {
         session.reset();
         assert_eq!(session.economy().reset_hash(), baseline_hash);
 
-        // One unit beyond the pinned range moves the holder by its source
-        // speed and leaves mana/life untouched.
+        // One unit beyond the pinned source speed range moves the holder and
+        // leaves mana/life untouched.
         let (
             mut session,
             _baseline_hash,
@@ -17592,7 +17730,7 @@ mod tests {
             mut holder_position,
             holder_ground,
         ) = setup();
-        holder_position.x = holder_position.x.wrapping_add(1);
+        holder_position.x = holder_position.x.wrapping_add(49);
         holder_position.z = holder_ground;
         {
             let economy = session.economy_mut();
@@ -17625,8 +17763,8 @@ mod tests {
             castle_position
         );
 
-        // At the same XY threshold, an above-ground holder fails the exact
-        // source altitude gate and does not transfer or snap.
+        // At the same XY threshold, a holder above the source's +512 terrain
+        // allowance fails the exact altitude gate and does not transfer.
         let (
             mut session,
             _baseline_hash,
@@ -17636,7 +17774,7 @@ mod tests {
             mut holder_position,
             holder_ground,
         ) = setup();
-        holder_position.z = holder_ground.saturating_add(10);
+        holder_position.z = holder_ground.saturating_add(513);
         {
             let economy = session.economy_mut();
             let child = economy
@@ -17663,7 +17801,322 @@ mod tests {
         assert_eq!(child.mana, 7);
         assert_eq!(child.life, 1);
         assert_eq!(child.position.x, holder_position.x);
-        assert_eq!(child.position.z, holder_ground.saturating_add(6));
+        assert_eq!(child.position.z, holder_ground.saturating_add(509));
+    }
+
+    #[test]
+    fn level_two_castle_defender_sphere_target_consumes_through_outer_dispatch() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let setup = || {
+            let mut session = inspection
+                .level2_reset_session()
+                .expect("Castle defender sphere session");
+            let baseline_hash = session.economy().reset_hash();
+            let castle_slot = session
+                .economy_mut()
+                .build_castle(Position::default(), 111)
+                .expect("Castle defender sphere Castle");
+            session
+                .economy_mut()
+                .castle
+                .as_mut()
+                .expect("Castle defender sphere Castle")
+                .level = 1;
+            session.economy_mut().maintain_castle_defenders(castle_slot);
+            let defender_slot = session
+                .economy()
+                .castle()
+                .expect("Castle defender sphere Castle")
+                .defender_slots[0];
+            let holder_position = session
+                .economy()
+                .castle_children()
+                .iter()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("Castle defender sphere holder")
+                .position;
+            let holder = session
+                .economy()
+                .castle_children()
+                .iter()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("Castle defender sphere holder");
+            assert_eq!(
+                (holder.max_life, holder.max_mana, holder.speed),
+                (
+                    LEVEL2_CASTLE_DEFENDER_MAX_LIFE,
+                    LEVEL2_CASTLE_DEFENDER_MAX_MANA,
+                    LEVEL2_CASTLE_DEFENDER_SPEED
+                )
+            );
+            (
+                session,
+                baseline_hash,
+                castle_slot,
+                defender_slot,
+                holder_position,
+            )
+        };
+
+        // Positive production route: source arbitration installs the sphere
+        // target, then one outer turn visits the sphere and holder in source
+        // order.  The holder receives the sphere payload and the sphere is
+        // disabled/unlinked before the retained arena is reclaimed.
+        let (mut session, baseline_hash, castle_slot, defender_slot, holder_position) = setup();
+        let target_position = Position {
+            x: holder_position.x.wrapping_add(100),
+            ..holder_position
+        };
+        let sphere_id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(77, target_position, 0, 0x1234, 321, 111)
+            .expect("defender target sphere");
+        let sphere_slot = u16::try_from(sphere_id).expect("sphere slot fits");
+        session
+            .economy_mut()
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == sphere_slot)
+            .expect("defender target sphere")
+            .velocity_x = 0;
+        session
+            .economy_mut()
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == sphere_slot)
+            .expect("defender target sphere")
+            .velocity_y = 0;
+        session
+            .economy_mut()
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == sphere_slot)
+            .expect("defender target sphere")
+            .vertical_velocity = 0;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        assert_eq!(
+            session
+                .economy()
+                .castle_children()
+                .iter()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("defender holder")
+                .target_sphere_slot,
+            sphere_slot
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let child = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == defender_slot)
+            .expect("live defender holder");
+        assert_eq!(child.mana, 321);
+        assert_eq!(child.player_entity_index, child.id_entity_index);
+        assert_eq!(child.target_sphere_slot, 0);
+        assert_ne!(child.position.x, target_position.x);
+        assert!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .all(|sphere| sphere.source_entity_index != sphere_slot)
+        );
+        assert!(
+            !session
+                .economy()
+                .map_chains()
+                .linked_entity_indices()
+                .contains(&sphere_slot)
+        );
+        let economy_index = session
+            .dispatch_events()
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::Economy {
+                        event: Level2EconomyEvent::CastleDefenderCollectedSphere {
+                            defender_slot: event_defender,
+                            sphere_id: event_sphere,
+                            mana,
+                        },
+                        ..
+                    } if *event_defender == defender_slot
+                        && *event_sphere == sphere_id
+                        && *mana == 321
+                )
+            })
+            .expect("defender sphere economy dispatch");
+        let defender_index = session
+            .dispatch_events()
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::DynamicArena {
+                        source_slot: event_slot,
+                        kind: Level2DynamicArenaKind::CastleDefender,
+                        ..
+                    } if *event_slot == defender_slot
+                )
+            })
+            .expect("defender dynamic dispatch");
+        assert!(economy_index < defender_index);
+        assert_ne!(session.economy().reset_hash(), baseline_hash);
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
+
+        // Wrong player relation is rejected even when the target slot is
+        // installed manually, matching AddBallon's class-10 owner gate.
+        let (mut session, _, _, defender_slot, holder_position) = setup();
+        let wrong_owner_position = Position {
+            x: holder_position.x.wrapping_add(64),
+            ..holder_position
+        };
+        let sphere_id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(77, wrong_owner_position, 0, 0x1234, 321, 222)
+            .expect("wrong-owner sphere");
+        let sphere_slot = u16::try_from(sphere_id).expect("sphere slot fits");
+        session
+            .economy_mut()
+            .castle_children
+            .iter_mut()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("wrong-owner holder")
+                .target_sphere_slot = sphere_slot;
+        let wrong_owner_before = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == defender_slot)
+            .expect("wrong-owner holder")
+            .position;
+        assert!(
+            session
+                .economy_mut()
+                .step_castle_defender_slot(defender_slot)
+        );
+        let wrong_owner_after = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == defender_slot)
+            .expect("wrong-owner holder");
+        assert_eq!(wrong_owner_after.mana, 0);
+        assert_eq!(wrong_owner_after.position.x, wrong_owner_before.x);
+        assert_eq!(wrong_owner_after.position.y, wrong_owner_before.y);
+        assert!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .any(|sphere| sphere.source_entity_index == sphere_slot && sphere.active)
+        );
+
+        // The Day attraction threshold is strict on the positive side: a
+        // sphere at 1025 source units is not consumed and clears byte-0 bit
+        // 0x40 before the holder moves toward it.
+        let (mut session, _, _, defender_slot, holder_position) = setup();
+        let far_position = Position {
+            x: holder_position.x.wrapping_add(1_025),
+            ..holder_position
+        };
+        let sphere_id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(77, far_position, 0, 0x1234, 321, 111)
+            .expect("far sphere");
+        let sphere_slot = u16::try_from(sphere_id).expect("sphere slot fits");
+        session
+            .economy_mut()
+            .castle_children
+            .iter_mut()
+            .find(|child| child.source_entity_index == defender_slot)
+            .expect("far holder")
+            .target_sphere_slot = sphere_slot;
+        assert!(
+            session
+                .economy_mut()
+                .step_castle_defender_slot(defender_slot)
+        );
+        let sphere = session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.source_entity_index == sphere_slot)
+            .expect("far sphere remains");
+        assert!(sphere.active);
+        assert_eq!(sphere.control_flags & 0x40, 0);
+
+        // `sub_106C0` is strict.  Place a size-0 sphere exactly at the
+        // defender's X boundary (13 + 272); equality must not consume it.
+        let (mut session, _, _, defender_slot, holder_position) = setup();
+        let boundary_position = Position {
+            x: holder_position.x.wrapping_add(13 + 272),
+            ..holder_position
+        };
+        let sphere_id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(77, boundary_position, 0, 0x1234, 1, 111)
+            .expect("boundary sphere");
+        let sphere_slot = u16::try_from(sphere_id).expect("sphere slot fits");
+        session
+            .economy_mut()
+            .castle_children
+            .iter_mut()
+            .find(|child| child.source_entity_index == defender_slot)
+            .expect("boundary holder")
+            .target_sphere_slot = sphere_slot;
+        assert!(
+            session
+                .economy_mut()
+                .step_castle_defender_slot(defender_slot)
+        );
+        assert!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .any(|sphere| sphere.source_entity_index == sphere_slot && sphere.active)
+        );
+        assert_eq!(
+            session
+                .economy()
+                .castle_children()
+                .iter()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("boundary holder")
+                .mana,
+            0
+        );
+
+        // The source stores Z as signed 16-bit coordinates before the AABB
+        // arithmetic.  Equal high-bit coordinates must therefore retain the
+        // same overlap result as zero-based coordinates (a raw-u16 compare
+        // would incorrectly see a ~65k-unit separation).
+        let (mut session, _, _, _defender_slot, holder_position) = setup();
+        let sphere_id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(77, holder_position, 0, 0x1234, 1, 111)
+            .expect("signed-Z sphere");
+        let sphere_slot = u16::try_from(sphere_id).expect("sphere slot fits");
+        let sphere = session
+            .economy_mut()
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == sphere_slot)
+            .expect("signed-Z sphere");
+        sphere.position.z = i16::MIN;
+        let defender_position = Position {
+            z: i16::MIN,
+            ..holder_position
+        };
+        assert!(level2_castle_defender_sphere_overlap(
+            defender_position,
+            sphere
+        ));
     }
 
     #[test]
