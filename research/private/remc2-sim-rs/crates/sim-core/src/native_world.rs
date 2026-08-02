@@ -3034,8 +3034,7 @@ pub struct Level2CastleChild {
     pub source_entity_index: u16,
     pub id_entity_index: u16,
     /// Source allocation class.  The model-15 auxiliary tail is class 5;
-    /// older construction/defense projections leave this at zero because
-    /// their class words were not previously part of the typed seam.
+    /// construction, controller, and defense children use source class 10.
     pub source_class: u8,
     pub parent_entity_index: u16,
     pub owner_entity_index: u16,
