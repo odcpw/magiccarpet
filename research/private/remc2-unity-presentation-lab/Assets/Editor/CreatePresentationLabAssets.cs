@@ -297,7 +297,7 @@ namespace MagicCarpet.PresentationLab.Editor
             }
 
             const int FramesPerPass = 32;
-            const int TerrainMutationFrame = 0;
+            const int TerrainMutationFrame = 12;
             const ushort TerrainQualificationHouse = 11;
             const ushort TerrainQualificationParent = 152;
             const byte TerrainQualificationSelector = 17;
