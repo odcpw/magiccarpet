@@ -57,28 +57,30 @@ python3 research/private/remc2-presentation/qualification/validate_classic_hd_ma
 python3 research/private/remc2-presentation/qualification/verify_three_mode_package.py
 ```
 
-This matrix promotes 640x480 as the mandatory real-time-oriented Rust
-CPU/determinism row, leaves 960x720 as a measured candidate, and records
-1280x960 as over the current CPU budget. The 960x720 owner route now has a
-passing 64-frame reset-replay/upload artifact, but its traced owner terrain
-stage is approximately 1.52 seconds per frame on T14, so it is not a real-time
-or player-facing production claim. The owner flight route at both profiles
-reaches the observed speed limit of 80; it does not by itself prove remc2's
-automatic high-speed postprocess. The explicit two-profile probe records that
-the effective mode remains 0 because no legitimate Speed-jar activation is
-exposed by the current owner ABI:
+This matrix promotes 640x480 as the mandatory real-time-oriented Rust and
+owner-route row, records 960x720 as an explicit owner-budget rejection, and
+records 1280x960 as over the current CPU budget. After streaming the large
+mode-26 terrain pass and reusing the generation-bound owner asset digest, the
+8+64 owner route measures 31.65 ms p95 total at 640x480 and 56.52 ms at
+960x720, with zero measured steady allocation and deterministic reset hashes.
+The 960x720 owner route still has a passing 64-frame reset-replay/upload
+artifact, but its measured full-route cost is not a real-time or player-facing
+production claim. The owner flight route at both profiles reaches the observed
+speed limit of 80; it does not by itself prove remc2's automatic high-speed
+postprocess. The explicit two-profile probe records that the effective mode
+remains 0 because no legitimate Speed-jar activation is exposed by the current owner ABI:
 `qualification/classic-hd-owner-high-speed-probe.json`. Unity GPU, scenario,
 high-speed-postprocess, and preserved corpus evidence remain required for any
 broader promotion.
 
 The owner-lab performance and GPU receipts are separate from the owner-free
 Rust matrix. `qualification/classic-hd-owner-performance-smoke.json` proves
-steady allocations and deterministic 8+64-frame routes, but its p95 owner
-generation is about 487.7 ms at 640x480 and 4.62 s at 960x720, so neither is a
-real-time owner/GPU promotion. `qualification/classic-hd-owner-gpu-fence.json`
-proves changing raw indexed and palette-resolved readbacks with no readback
-errors; this T14 OpenGLCore platform cannot report the async graphics fence and
-GPU timing is not captured.
+steady allocations and deterministic 8+64-frame routes; 640x480 clears the
+30 Hz owner budget, while 960x720 is rejected at the current profile. The
+GPU receipt `qualification/classic-hd-owner-gpu-fence.json` proves changing
+raw indexed and palette-resolved readbacks with no readback errors; this T14
+OpenGLCore platform cannot report the async graphics fence and GPU timing is
+not captured.
 
 `qualification/verify_three_mode_package.py` is the final package-integrity
 gate. A PASS means the Exact, Classic HD, and Unity Enhanced contracts and
