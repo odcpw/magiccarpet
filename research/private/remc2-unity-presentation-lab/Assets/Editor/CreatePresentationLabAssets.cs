@@ -697,6 +697,329 @@ namespace MagicCarpet.PresentationLab.Editor
             }
         }
 
+        [MenuItem("Magic Carpet/Presentation Lab/Run Owner Classic HD Performance Smoke")]
+        public static void RunOwnerClassicHdPerformanceSmoke()
+        {
+            string packagePath = CommandLineValue("-mc-package");
+            string closurePath = CommandLineValue("-mc-closure");
+            string assetCachePath = CommandLineValue("-mc-asset-cache");
+            if (string.IsNullOrWhiteSpace(packagePath) ||
+                string.IsNullOrWhiteSpace(closurePath) ||
+                string.IsNullOrWhiteSpace(assetCachePath))
+            {
+                throw new InvalidOperationException(
+                    "owner Classic HD performance smoke requires -mc-package, -mc-closure, and -mc-asset-cache");
+            }
+
+            var root = new GameObject("Owner Classic HD Performance Smoke Router");
+            var router = root.AddComponent<PresentationModeRouter>();
+            MethodInfo awake = typeof(PresentationModeRouter).GetMethod(
+                "Awake",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (awake == null)
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                throw new InvalidOperationException("presentation router Awake method is missing");
+            }
+
+            const int WarmupFrames = 8;
+            const int MeasurementFrames = 64;
+            const long PresentationBudgetNanoseconds = 33333333L;
+            var nativeNanoseconds = new List<long>(MeasurementFrames);
+            var uploadNanoseconds = new List<long>(MeasurementFrames);
+            var totalNanoseconds = new List<long>(MeasurementFrames);
+            var allocationBytes = new List<long>(MeasurementFrames);
+            var indexHashes = new List<ulong>(MeasurementFrames);
+            var provenanceHashes = new List<ulong>(MeasurementFrames);
+            ulong startGeneration = 0;
+            ulong endGeneration = 0;
+            ulong startTick = 0;
+            ulong endTick = 0;
+            ulong previousTick = 0;
+            int uploads = 0;
+            bool monotonic = true;
+            bool hashesPresent = true;
+            bool warmupComplete = false;
+
+            try
+            {
+                awake.Invoke(router, null);
+                if (!router.SessionIsOpen ||
+                    router.ClassicHdRenderer == null ||
+                    !router.ClassicHdRenderer.UsesNativeOwnerSession)
+                {
+                    Debug.LogError("OWNER CLASSIC HD PERFORMANCE SMOKE FAIL: owner route did not open");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                ClassicHdPresentation classic = router.ClassicHdRenderer;
+                string reason;
+                int startUploads = classic.UploadCount;
+                for (int frame = 0; frame < WarmupFrames; frame++)
+                {
+                    Vector2 input = PerformanceQualificationInput(frame);
+                    if (!classic.CaptureFrame(input.x, input.y, false, -1, out reason))
+                    {
+                        Debug.LogError(
+                            "OWNER CLASSIC HD PERFORMANCE SMOKE FAIL: warmup frame=" + frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+                }
+                warmupComplete = true;
+
+                for (int frame = 0; frame < MeasurementFrames; frame++)
+                {
+                    Vector2 input = PerformanceQualificationInput(WarmupFrames + frame);
+                    long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+                    long totalStart = System.Diagnostics.Stopwatch.GetTimestamp();
+                    if (!classic.CaptureFrame(input.x, input.y, false, -1, out reason))
+                    {
+                        Debug.LogError(
+                            "OWNER CLASSIC HD PERFORMANCE SMOKE FAIL: measurement frame=" + frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+                    long totalElapsed = ElapsedNanoseconds(totalStart);
+                    long allocatedAfter = GC.GetAllocatedBytesForCurrentThread();
+
+                    if (frame == 0)
+                    {
+                        startGeneration = classic.SourceGeneration;
+                        startTick = classic.SourceTick;
+                        previousTick = classic.SourceTick;
+                    }
+                    else if (classic.SourceGeneration != startGeneration ||
+                             classic.SourceTick != previousTick + 1)
+                    {
+                        monotonic = false;
+                    }
+                    previousTick = classic.SourceTick;
+                    endGeneration = classic.SourceGeneration;
+                    endTick = classic.SourceTick;
+
+                    nativeNanoseconds.Add(classic.LastNativeFrameNanoseconds);
+                    uploadNanoseconds.Add(classic.LastUploadNanoseconds);
+                    totalNanoseconds.Add(totalElapsed);
+                    allocationBytes.Add(allocatedAfter - allocatedBefore);
+                    indexHashes.Add(classic.LastNativeIndexHash);
+                    provenanceHashes.Add(classic.LastNativeProvenanceHash);
+                    hashesPresent = hashesPresent &&
+                        classic.LastNativeIndexHash != 0 &&
+                        classic.LastNativeProvenanceHash != 0;
+                }
+
+                uploads = classic.UploadCount - startUploads;
+                long p95Native = PercentileNanoseconds(nativeNanoseconds, 0.95);
+                long p95Upload = PercentileNanoseconds(uploadNanoseconds, 0.95);
+                long p95Total = PercentileNanoseconds(totalNanoseconds, 0.95);
+                long maxNative = MaxValue(nativeNanoseconds);
+                long maxUpload = MaxValue(uploadNanoseconds);
+                long maxTotal = MaxValue(totalNanoseconds);
+                long p95Allocation = PercentileNanoseconds(allocationBytes, 0.95);
+                long maxAllocation = MaxValue(allocationBytes);
+                bool steadyAllocations = p95Allocation == 0 && maxAllocation == 0;
+                bool routeContract = warmupComplete &&
+                    monotonic &&
+                    hashesPresent &&
+                    uploads == WarmupFrames + MeasurementFrames &&
+                    classic.AllocationEpoch == 1 &&
+                    endGeneration == startGeneration &&
+                    endTick == startTick + MeasurementFrames - 1;
+                bool budgetPass = p95Total <= PresentationBudgetNanoseconds;
+                bool pass = routeContract && steadyAllocations && budgetPass;
+                string status = pass ? "PASS" : "OPEN";
+                Debug.Log(
+                    "OWNER CLASSIC HD PERFORMANCE SMOKE " + status + ":" +
+                    " profile=" + classic.Settings.profile +
+                    " warmup_frames=" + WarmupFrames +
+                    " measurement_frames=" + MeasurementFrames +
+                    " uploads=" + uploads +
+                    " allocation_epoch=" + classic.AllocationEpoch +
+                    " start_generation=" + startGeneration +
+                    " end_generation=" + endGeneration +
+                    " start_tick=" + startTick +
+                    " end_tick=" + endTick +
+                    " monotonic=" + (monotonic ? 1 : 0) +
+                    " hashes_present=" + (hashesPresent ? 1 : 0) +
+                    " p95_native_ns=" + p95Native +
+                    " max_native_ns=" + maxNative +
+                    " p95_upload_ns=" + p95Upload +
+                    " max_upload_ns=" + maxUpload +
+                    " p95_total_ns=" + p95Total +
+                    " max_total_ns=" + maxTotal +
+                    " presentation_budget_ns=" + PresentationBudgetNanoseconds +
+                    " p95_allocation_bytes=" + p95Allocation +
+                    " max_allocation_bytes=" + maxAllocation +
+                    " steady_allocations=" + (steadyAllocations ? 1 : 0) +
+                    " route_contract=" + (routeContract ? 1 : 0) +
+                    " budget_pass=" + (budgetPass ? 1 : 0) +
+                    " index_route_hash=" + SequenceHash(indexHashes).ToString("x16") +
+                    " provenance_route_hash=" + SequenceHash(provenanceHashes).ToString("x16") +
+                    " graphics_api=" + SystemInfo.graphicsDeviceType +
+                    " graphics_device=" + SystemInfo.graphicsDeviceName +
+                    " execution_context=UnityEditor-batchmode" +
+                    " gpu_timing=not-captured" +
+                    " owner_inputs_external=true");
+                EditorApplication.Exit(0);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [MenuItem("Magic Carpet/Presentation Lab/Run Owner Classic HD GPU Fence Probe")]
+        public static void RunOwnerClassicHdGpuFenceProbe()
+        {
+            string packagePath = CommandLineValue("-mc-package");
+            string closurePath = CommandLineValue("-mc-closure");
+            string assetCachePath = CommandLineValue("-mc-asset-cache");
+            if (string.IsNullOrWhiteSpace(packagePath) ||
+                string.IsNullOrWhiteSpace(closurePath) ||
+                string.IsNullOrWhiteSpace(assetCachePath))
+            {
+                throw new InvalidOperationException(
+                    "owner Classic HD GPU fence probe requires -mc-package, -mc-closure, and -mc-asset-cache");
+            }
+
+            var root = new GameObject("Owner Classic HD GPU Fence Probe Router");
+            var router = root.AddComponent<PresentationModeRouter>();
+            MethodInfo awake = typeof(PresentationModeRouter).GetMethod(
+                "Awake",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (awake == null)
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                throw new InvalidOperationException("presentation router Awake method is missing");
+            }
+
+            try
+            {
+                awake.Invoke(router, null);
+                if (!router.SessionIsOpen ||
+                    router.ClassicHdRenderer == null ||
+                    !router.ClassicHdRenderer.UsesNativeOwnerSession)
+                {
+                    Debug.LogError("OWNER CLASSIC HD GPU FENCE PROBE FAIL: owner route did not open");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                ClassicHdPresentation classic = router.ClassicHdRenderer;
+                if (classic.IndexTexture == null || classic.IndexedMaterial == null)
+                {
+                    Debug.LogError("OWNER CLASSIC HD GPU FENCE PROBE FAIL: indexed surface/material is missing");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                string reason;
+                int startUploads = classic.UploadCount;
+                ulong rawHashA;
+                ulong resolvedHashA;
+                bool fenceValidA;
+                bool fencePassedA;
+                bool rawErrorA;
+                bool resolvedErrorA;
+                string readbackReasonA = string.Empty;
+                if (!classic.CaptureFrame(0.0f, 0.0f, false, -1, out reason) ||
+                    !ReadGpuHashes(
+                        classic,
+                        out rawHashA,
+                        out resolvedHashA,
+                        out fenceValidA,
+                        out fencePassedA,
+                        out rawErrorA,
+                        out resolvedErrorA,
+                        out readbackReasonA))
+                {
+                    Debug.Log(
+                        "OWNER CLASSIC HD GPU FENCE PROBE OPEN: profile=" + classic.Settings.profile +
+                        " reason=" + (string.IsNullOrWhiteSpace(readbackReasonA) ? reason : readbackReasonA) +
+                        " execution_context=UnityEditor-batchmode gpu_timing=not-captured");
+                    EditorApplication.Exit(0);
+                    return;
+                }
+                long nativeFrameNanosecondsA = classic.LastNativeFrameNanoseconds;
+                long uploadSubmissionNanosecondsA = classic.LastUploadNanoseconds;
+
+                ulong rawHashB;
+                ulong resolvedHashB;
+                bool fenceValidB;
+                bool fencePassedB;
+                bool rawErrorB;
+                bool resolvedErrorB;
+                string readbackReasonB = string.Empty;
+                if (!classic.CaptureFrame(0.30f, 0.20f, false, -1, out reason) ||
+                    !ReadGpuHashes(
+                        classic,
+                        out rawHashB,
+                        out resolvedHashB,
+                        out fenceValidB,
+                        out fencePassedB,
+                        out rawErrorB,
+                        out resolvedErrorB,
+                        out readbackReasonB))
+                {
+                    Debug.Log(
+                        "OWNER CLASSIC HD GPU FENCE PROBE OPEN: profile=" + classic.Settings.profile +
+                        " reason=" + (string.IsNullOrWhiteSpace(readbackReasonB) ? reason : readbackReasonB) +
+                        " execution_context=UnityEditor-batchmode gpu_timing=not-captured");
+                    EditorApplication.Exit(0);
+                    return;
+                }
+                long nativeFrameNanosecondsB = classic.LastNativeFrameNanoseconds;
+                long uploadSubmissionNanosecondsB = classic.LastUploadNanoseconds;
+
+                int uploads = classic.UploadCount - startUploads;
+                bool hashesDiffer = rawHashA != rawHashB && resolvedHashA != resolvedHashB;
+                bool readbackOk = !rawErrorA && !resolvedErrorA && !rawErrorB && !resolvedErrorB;
+                bool fenceOk = fenceValidA && fencePassedA && fenceValidB && fencePassedB;
+                bool contract = hashesDiffer && readbackOk && fenceOk && uploads == 2 && classic.AllocationEpoch == 1;
+                string common =
+                    " profile=" + classic.Settings.profile +
+                    " frames=2 uploads=" + uploads +
+                    " allocation_epoch=" + classic.AllocationEpoch +
+                    " raw_hash_a=" + rawHashA.ToString("x16") +
+                    " raw_hash_b=" + rawHashB.ToString("x16") +
+                    " resolved_hash_a=" + resolvedHashA.ToString("x16") +
+                    " resolved_hash_b=" + resolvedHashB.ToString("x16") +
+                    " native_frame_ns_a=" + nativeFrameNanosecondsA +
+                    " native_frame_ns_b=" + nativeFrameNanosecondsB +
+                    " upload_submission_ns_a=" + uploadSubmissionNanosecondsA +
+                    " upload_submission_ns_b=" + uploadSubmissionNanosecondsB +
+                    " fence_valid_a=" + (fenceValidA ? 1 : 0) +
+                    " fence_passed_a=" + (fencePassedA ? 1 : 0) +
+                    " fence_valid_b=" + (fenceValidB ? 1 : 0) +
+                    " fence_passed_b=" + (fencePassedB ? 1 : 0) +
+                    " readback_error_a=" + ((rawErrorA || resolvedErrorA) ? 1 : 0) +
+                    " readback_error_b=" + ((rawErrorB || resolvedErrorB) ? 1 : 0) +
+                    " hashes_differ=" + (hashesDiffer ? 1 : 0) +
+                    " execution_context=UnityEditor-batchmode" +
+                    " graphics_api=" + SystemInfo.graphicsDeviceType +
+                    " graphics_device=" + SystemInfo.graphicsDeviceName +
+                    " gpu_timing=not-captured";
+                if (contract)
+                {
+                    Debug.Log("OWNER CLASSIC HD GPU FENCE PROBE PASS:" + common + " status=readback-fence-pass");
+                }
+                else
+                {
+                    Debug.Log(
+                        "OWNER CLASSIC HD GPU FENCE PROBE OPEN:" + common +
+                        " status=readback-or-fence-incomplete reason=" +
+                        (string.IsNullOrWhiteSpace(readbackReasonB) ? readbackReasonA : readbackReasonB));
+                }
+                EditorApplication.Exit(0);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
         [MenuItem("Magic Carpet/Presentation Lab/Run Owner Unity Enhanced Sequence Smoke")]
         public static void RunOwnerUnityEnhancedSequenceSmoke()
         {
@@ -1344,6 +1667,190 @@ namespace MagicCarpet.PresentationLab.Editor
         {
             float horizontal = frame % 8 < 4 ? 0.35f : -0.35f;
             return new Vector2(horizontal, 0.25f);
+        }
+
+        private static Vector2 PerformanceQualificationInput(int frame)
+        {
+            int phase = frame % 32;
+            if (phase < 8)
+            {
+                return Vector2.zero;
+            }
+
+            if (phase < 16)
+            {
+                return new Vector2(0.18f, 0.06f);
+            }
+
+            if (phase < 24)
+            {
+                return new Vector2(0.35f, 0.25f);
+            }
+
+            return new Vector2(-0.35f, 0.25f);
+        }
+
+        private static long PercentileNanoseconds(IReadOnlyList<long> values, double percentile)
+        {
+            if (values == null || values.Count == 0)
+            {
+                return 0;
+            }
+
+            var sorted = new List<long>(values);
+            sorted.Sort();
+            int index = (int)Math.Ceiling(percentile * sorted.Count) - 1;
+            index = Math.Max(0, Math.Min(index, sorted.Count - 1));
+            return sorted[index];
+        }
+
+        private static long ElapsedNanoseconds(long start)
+        {
+            long elapsedTicks = System.Diagnostics.Stopwatch.GetTimestamp() - start;
+            return (long)(elapsedTicks * (1000000000.0 / System.Diagnostics.Stopwatch.Frequency));
+        }
+
+        private static long MaxValue(IReadOnlyList<long> values)
+        {
+            long maximum = 0;
+            if (values == null)
+            {
+                return maximum;
+            }
+
+            for (int index = 0; index < values.Count; index++)
+            {
+                maximum = Math.Max(maximum, values[index]);
+            }
+
+            return maximum;
+        }
+
+        private static bool ReadGpuHashes(
+            ClassicHdPresentation classic,
+            out ulong rawHash,
+            out ulong resolvedHash,
+            out bool fenceValid,
+            out bool fencePassed,
+            out bool rawError,
+            out bool resolvedError,
+            out string reason)
+        {
+            rawHash = 0;
+            resolvedHash = 0;
+            fenceValid = false;
+            fencePassed = false;
+            rawError = false;
+            resolvedError = false;
+            reason = string.Empty;
+            if (!SystemInfo.supportsAsyncGPUReadback)
+            {
+                reason = "Unity reports AsyncGPUReadback unsupported";
+                return false;
+            }
+            if (!SystemInfo.supportsGraphicsFence)
+            {
+                reason = "Unity reports GraphicsFence unsupported";
+                return false;
+            }
+
+            RenderTexture resolved = new RenderTexture(
+                classic.IndexTexture.width,
+                classic.IndexTexture.height,
+                0,
+                RenderTextureFormat.ARGB32,
+                RenderTextureReadWrite.Linear);
+            resolved.name = "ClassicHd_GPUFenceProbe_Resolved";
+            try
+            {
+                resolved.Create();
+                CommandBuffer command = new CommandBuffer
+                {
+                    name = "ClassicHd_GPUFenceProbe_Blit"
+                };
+                GraphicsFence fence;
+                try
+                {
+                    command.SetRenderTarget(resolved);
+                    command.ClearRenderTarget(true, true, Color.clear);
+                    command.Blit(classic.IndexTexture, resolved, classic.IndexedMaterial);
+                    fence = command.CreateGraphicsFence(
+                        GraphicsFenceType.AsyncQueueSynchronisation,
+                        SynchronisationStageFlags.PixelProcessing);
+                    Graphics.ExecuteCommandBuffer(command);
+                }
+                finally
+                {
+                    command.Release();
+                }
+
+                AsyncGPUReadbackRequest rawRequest = AsyncGPUReadback.Request(
+                    classic.IndexTexture,
+                    0,
+                    TextureFormat.R8);
+                AsyncGPUReadbackRequest resolvedRequest = AsyncGPUReadback.Request(
+                    resolved,
+                    0,
+                    TextureFormat.RGBA32);
+                rawRequest.WaitForCompletion();
+                resolvedRequest.WaitForCompletion();
+                rawError = rawRequest.hasError;
+                resolvedError = resolvedRequest.hasError;
+                if (rawError || resolvedError)
+                {
+                    reason = "AsyncGPUReadback reported an error";
+                    return false;
+                }
+
+                rawHash = HashReadback(rawRequest);
+                resolvedHash = HashReadback(resolvedRequest);
+                try
+                {
+                    fenceValid = true;
+                    fencePassed = fence.passed;
+                    if (!fencePassed)
+                    {
+                        reason = "graphics fence did not report passed";
+                    }
+                }
+                catch (Exception exception)
+                {
+                    fenceValid = false;
+                    fencePassed = false;
+                    reason = "graphics fence status unavailable: " + exception.Message;
+                }
+
+                return true;
+            }
+            catch (Exception exception)
+            {
+                reason = "GPU fence/readback exception: " + exception.Message;
+                return false;
+            }
+            finally
+            {
+                if (resolved != null)
+                {
+                    resolved.Release();
+                    UnityEngine.Object.DestroyImmediate(resolved);
+                }
+            }
+        }
+
+        private static ulong HashReadback(AsyncGPUReadbackRequest request)
+        {
+            unchecked
+            {
+                ulong hash = 0xcbf29ce484222325UL;
+                var data = request.GetData<byte>();
+                for (int index = 0; index < data.Length; index++)
+                {
+                    hash ^= data[index];
+                    hash *= 0x100000001b3UL;
+                }
+
+                return hash;
+            }
         }
 
         private static long CameraDistance(ushort x, ushort y, ushort startX, ushort startY)

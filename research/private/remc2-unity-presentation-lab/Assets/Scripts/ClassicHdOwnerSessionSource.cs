@@ -74,6 +74,7 @@ namespace MagicCarpet.PresentationLab
         public uint LastFlags { get; private set; }
         public byte LastHistoryState { get; private set; }
         public byte EffectivePostprocessMode { get; private set; }
+        public long LastNativeFrameNanoseconds { get; private set; }
         public int PlayerLife { get { return mission.PlayerLife; } }
         public int PlayerMaxLife { get { return mission.PlayerMaxLife; } }
         public bool PlayerDead { get { return mission.PlayerDead != 0; } }
@@ -290,6 +291,8 @@ namespace MagicCarpet.PresentationLab
                 return false;
             }
 
+            LastNativeFrameNanoseconds = 0;
+            long nativeFrameStart = System.Diagnostics.Stopwatch.GetTimestamp();
             command.Opcode = 0;
             command.Argument1 = 0;
             command.Roll = ClampInt8(horizontalInput * 127f);
@@ -366,6 +369,7 @@ namespace MagicCarpet.PresentationLab
             LastHistoryState = info.HistoryState;
             LastReceiptHash = ReceiptHash(info);
             EffectivePostprocessMode = info.EffectivePostprocessMode;
+            LastNativeFrameNanoseconds = ElapsedNanoseconds(nativeFrameStart);
             return true;
         }
 
@@ -479,6 +483,13 @@ namespace MagicCarpet.PresentationLab
             LastFlags = 0;
             LastHistoryState = 0;
             EffectivePostprocessMode = 0;
+            LastNativeFrameNanoseconds = 0;
+        }
+
+        private static long ElapsedNanoseconds(long start)
+        {
+            long elapsedTicks = System.Diagnostics.Stopwatch.GetTimestamp() - start;
+            return (long)(elapsedTicks * (1000000000.0 / System.Diagnostics.Stopwatch.Frequency));
         }
 
         private bool ReadSessionSnapshot(out string reason)

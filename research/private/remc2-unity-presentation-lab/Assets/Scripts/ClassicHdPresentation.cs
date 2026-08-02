@@ -31,6 +31,13 @@ namespace MagicCarpet.PresentationLab
         public int UploadCount { get { return surface == null ? 0 : surface.UploadCount; } }
         public ulong ResetEpoch { get { return resetEpoch; } }
         public ClassicHdPresentationSettings Settings { get { return settings; } }
+        public Texture2D IndexTexture { get { return surface == null ? null : surface.IndexTexture; } }
+        public Material IndexedMaterial { get { return surface == null ? null : surface.Material; } }
+        public long LastNativeFrameNanoseconds
+        {
+            get { return ownerSession == null ? 0 : ownerSession.LastNativeFrameNanoseconds; }
+        }
+        public long LastUploadNanoseconds { get; private set; }
         public bool UsesNativeFixture { get { return nativeFixture != null && nativeFixture.IsConfigured; } }
         public bool UsesNativeOwnerSession { get { return ownerSession != null && ownerSession.IsConfigured; } }
         public ulong SourceGeneration
@@ -253,6 +260,7 @@ namespace MagicCarpet.PresentationLab
             tick = 0;
             resetEpoch++;
             simulatedFlightInput = Vector2.zero;
+            LastUploadNanoseconds = 0;
             if (surface != null)
             {
                 surface.Clear();
@@ -353,7 +361,10 @@ namespace MagicCarpet.PresentationLab
             }
 
             string uploadError;
-            if (!surface.UploadTopRowFirst(frameBytes, surface.Stride, out uploadError))
+            long uploadStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            bool uploaded = surface.UploadTopRowFirst(frameBytes, surface.Stride, out uploadError);
+            LastUploadNanoseconds = ElapsedNanoseconds(uploadStart);
+            if (!uploaded)
             {
                 reason = uploadError;
                 return false;
@@ -361,6 +372,12 @@ namespace MagicCarpet.PresentationLab
 
             UpdateDisplayViewport(false);
             return true;
+        }
+
+        private static long ElapsedNanoseconds(long start)
+        {
+            long elapsedTicks = System.Diagnostics.Stopwatch.GetTimestamp() - start;
+            return (long)(elapsedTicks * (1000000000.0 / System.Diagnostics.Stopwatch.Frequency));
         }
 
         private void Update()
