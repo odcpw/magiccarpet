@@ -59,6 +59,9 @@ qualification:
   capped local lights, and drive pooled Enhanced VFX without embedding owner
   payloads. Inactive dynamic rows recycle through the same Unity presentation
   pool, while Rust remains the source of identity, position, kind, and lifetime.
+  The same smoke pins the action-51 terrain qualification vector (house 11,
+  parent 152, selector 17): every observed production mutation causes one
+  terrain rebuild, and a settled unchanged step causes none.
 - No copied owner assets, native libraries, Exact scripts, or Exact corpus.
 
 Run the editor setup once after opening the project:

@@ -48,7 +48,11 @@ presentation VFX; the event journal remains Rust-owned and gameplay events are
 never synthesized by Unity. The owner sequence qualification currently proves
 one projectile row, one impact row, up to two ordered VFX rows per step, and
 generation-bound projectile/impact presentation identities with pooled actor
-views and local lights, plus reset-replay equality for those observations.
+views and local lights, plus reset-replay equality for those observations. The
+same owner qualification pins the action-51 house/parent vector (11, 152, 17)
+and proves that each of the 20 production terrain mutations advances the
+native mutation sequence and causes exactly one Unity rebuild before an
+unchanged settled step produces no terrain publication.
 
 Focused gates:
 

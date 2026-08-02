@@ -106,6 +106,10 @@ namespace MagicCarpet.PresentationLab
         public ulong LastTerrainHash { get; private set; }
         public ulong LastWorldHash { get; private set; }
         public ulong TerrainMutationSequence { get { return terrainMutationSequence; } }
+        public bool LastTerrainSnapshotPublished { get; private set; }
+        public bool LastTerrainMutationPublished { get; private set; }
+        public bool LastTerrainOriginChanged { get; private set; }
+        public bool LastTerrainFullUpdate { get; private set; }
         public ulong EventCursor { get { return eventCursor; } }
         public ulong EventHead { get { return eventHead; } }
         public int LastEventCount { get { return lastEventCount; } }
@@ -284,6 +288,10 @@ namespace MagicCarpet.PresentationLab
             hasPublishedTerrainOrigin = false;
             pendingResetSnapshot = null;
             nextVfxSequence = 0;
+            LastTerrainSnapshotPublished = false;
+            LastTerrainMutationPublished = false;
+            LastTerrainOriginChanged = false;
+            LastTerrainFullUpdate = false;
             if (!ReadObservations(true, out reason))
             {
                 return false;
@@ -468,6 +476,52 @@ namespace MagicCarpet.PresentationLab
             hasPublishedTerrainOrigin = false;
             pendingResetSnapshot = null;
             nextVfxSequence = 0;
+            LastTerrainSnapshotPublished = false;
+            LastTerrainMutationPublished = false;
+            LastTerrainOriginChanged = false;
+            LastTerrainFullUpdate = false;
+        }
+
+        /// <summary>
+        /// Arms the owner session's existing action-51 production path with a
+        /// pinned house/parent vector for terrain-mutation qualification. The
+        /// next owner step performs the production update; this method only
+        /// configures the external owner session and never changes Unity state.
+        /// </summary>
+        public bool PrepareTerrainMutationQualification(
+            ushort houseEntityIndex,
+            ushort parentEntityIndex,
+            byte constructionSelector,
+            out string reason)
+        {
+            reason = string.Empty;
+            if (!IsConfigured || handle == 0)
+            {
+                reason = "Unity Enhanced owner source is not configured";
+                return false;
+            }
+
+            try
+            {
+                int status = mc_native_level1_action_51_completion_setup_for_qualification(
+                    handle,
+                    houseEntityIndex,
+                    parentEntityIndex,
+                    constructionSelector);
+                if (status != 0)
+                {
+                    reason = StatusReason("Unity Enhanced terrain mutation qualification setup", status);
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception exception)
+            {
+                reason = "Unity Enhanced terrain mutation qualification setup failed: " +
+                         exception.Message;
+                return false;
+            }
         }
 
         private bool ReadObservations(bool forceTerrain, out string reason)
@@ -904,6 +958,10 @@ namespace MagicCarpet.PresentationLab
             bool originChanged = !hasPublishedTerrainOrigin ||
                                  !Approximately(lastPublishedTerrainOrigin, terrainOrigin);
             bool publishTerrain = reset || terrainChangedSinceLastObservation || originChanged;
+            LastTerrainSnapshotPublished = publishTerrain;
+            LastTerrainMutationPublished = terrainChangedSinceLastObservation;
+            LastTerrainOriginChanged = originChanged;
+            LastTerrainFullUpdate = reset || terrainChangedSinceLastObservation || originChanged;
             var result = new UnityEnhancedWorldSnapshot
             {
                 Generation = snapshot.generation,
@@ -1931,6 +1989,13 @@ namespace MagicCarpet.PresentationLab
             ref CameraInput cameraInput,
             out SessionSnapshot snapshot,
             uint snapshotSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_level1_action_51_completion_setup_for_qualification(
+            ulong handle,
+            ushort houseEntityIndex,
+            ushort parentEntityIndex,
+            byte constructionSelector);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         private static extern int mc_native_presentation_state(

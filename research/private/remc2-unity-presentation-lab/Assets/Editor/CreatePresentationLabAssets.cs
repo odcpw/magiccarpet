@@ -297,13 +297,21 @@ namespace MagicCarpet.PresentationLab.Editor
             }
 
             const int FramesPerPass = 32;
+            const int TerrainMutationFrame = 0;
+            const ushort TerrainQualificationHouse = 11;
+            const ushort TerrainQualificationParent = 152;
+            const byte TerrainQualificationSelector = 17;
             ulong[] firstStateHashes = new ulong[FramesPerPass];
             ulong[] firstTerrainHashes = new ulong[FramesPerPass];
+            ulong[] firstTerrainMutationSequences = new ulong[FramesPerPass];
             ulong[] firstWorldHashes = new ulong[FramesPerPass];
             int[] firstEventCounts = new int[FramesPerPass];
             int[] firstVfxCounts = new int[FramesPerPass];
             int[] firstActiveEntityCounts = new int[FramesPerPass];
             int[] firstActiveVisualCounts = new int[FramesPerPass];
+            int[] firstTerrainApplications = new int[FramesPerPass];
+            bool[] firstTerrainPublished = new bool[FramesPerPass];
+            bool[] firstTerrainMutationPublished = new bool[FramesPerPass];
             ulong firstGeneration;
             ulong firstTick;
             ulong secondGeneration;
@@ -312,6 +320,9 @@ namespace MagicCarpet.PresentationLab.Editor
             bool sawOwnerVfx = false;
             bool sawDynamicEffectRows = false;
             bool sawDynamicActorVisual = false;
+            bool sawTerrainMutationRebuild = false;
+            bool sawTerrainNoopStep = false;
+            int terrainMutationRebuilds = 0;
             int maxMissionProjectiles = 0;
             int maxMissionImpacts = 0;
             int maxEventRows = 0;
@@ -354,8 +365,26 @@ namespace MagicCarpet.PresentationLab.Editor
 
                 string reason;
                 int resetActiveVisuals = resetRoot.ActorPresentation.ActiveVisualCount;
+                ulong previousTerrainMutationSequence = resetSource.TerrainMutationSequence;
+                ulong previousTerrainHash = resetSource.LastTerrainHash;
+                int previousTerrainApplications =
+                    resetRoot.TerrainPresentation.DirtyRegionApplications;
                 for (int frame = 0; frame < FramesPerPass; frame++)
                 {
+                    if (frame == TerrainMutationFrame &&
+                        !router.EnhancedOwnerSession.PrepareTerrainMutationQualification(
+                            TerrainQualificationHouse,
+                            TerrainQualificationParent,
+                            TerrainQualificationSelector,
+                            out reason))
+                    {
+                        Debug.LogError(
+                            "OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: terrain mutation setup at frame " +
+                            frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
                     Vector2 input = SequenceInput(frame);
                     bool cast = frame == 4;
                     int spellSelection = frame == 3 ? 0 : -1;
@@ -395,11 +424,15 @@ namespace MagicCarpet.PresentationLab.Editor
 
                     firstStateHashes[frame] = source.LastStateHash;
                     firstTerrainHashes[frame] = source.LastTerrainHash;
+                    firstTerrainMutationSequences[frame] = source.TerrainMutationSequence;
                     firstWorldHashes[frame] = source.LastWorldHash;
                     firstEventCounts[frame] = source.LastEventCount;
                     firstVfxCounts[frame] = source.LastVfxEventCount;
                     firstActiveEntityCounts[frame] = source.ActiveEntityCount;
                     firstActiveVisualCounts[frame] = enhanced.ActorPresentation.ActiveVisualCount;
+                    firstTerrainApplications[frame] = enhanced.TerrainPresentation.DirtyRegionApplications;
+                    firstTerrainPublished[frame] = source.LastTerrainSnapshotPublished;
+                    firstTerrainMutationPublished[frame] = source.LastTerrainMutationPublished;
                     sawOwnerEvent |= source.LastEventCount > 0;
                     sawOwnerVfx |= source.LastVfxEventCount > 0 &&
                                    enhanced.VfxPresentation.ActiveEffectCount > 0;
@@ -426,10 +459,64 @@ namespace MagicCarpet.PresentationLab.Editor
                         EditorApplication.Exit(1);
                         return;
                     }
+
+                    bool terrainMutationChanged =
+                        source.TerrainMutationSequence != previousTerrainMutationSequence;
+                    if (source.LastTerrainMutationPublished != terrainMutationChanged)
+                    {
+                        Debug.LogError(
+                            "OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: terrain mutation publication " +
+                            "did not match the native mutation sequence at frame " + frame +
+                            " published=" + source.LastTerrainMutationPublished +
+                            " changed=" + terrainMutationChanged);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    if (terrainMutationChanged)
+                    {
+                        if (!source.LastTerrainSnapshotPublished || !source.LastTerrainFullUpdate ||
+                            source.LastTerrainHash == previousTerrainHash ||
+                            enhanced.TerrainPresentation.DirtyRegionApplications !=
+                                previousTerrainApplications + 1)
+                        {
+                            Debug.LogError(
+                                "OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: terrain mutation was not " +
+                                "published as one rebuild at frame " + frame +
+                                " published=" + source.LastTerrainSnapshotPublished +
+                                " full_update=" + source.LastTerrainFullUpdate +
+                                " mutation=" + source.TerrainMutationSequence + "/" +
+                                previousTerrainMutationSequence +
+                                " hash=" + source.LastTerrainHash.ToString("x16") + "/" +
+                                previousTerrainHash.ToString("x16") +
+                                " applications=" + enhanced.TerrainPresentation.DirtyRegionApplications +
+                                "/" + (previousTerrainApplications + 1));
+                            EditorApplication.Exit(1);
+                            return;
+                        }
+
+                        terrainMutationRebuilds++;
+                        if (frame == TerrainMutationFrame)
+                        {
+                            sawTerrainMutationRebuild = true;
+                        }
+                    }
+
+                    if (frame > TerrainMutationFrame && !terrainMutationChanged &&
+                        !source.LastTerrainSnapshotPublished && !source.LastTerrainOriginChanged &&
+                        enhanced.TerrainPresentation.DirtyRegionApplications == previousTerrainApplications)
+                    {
+                        sawTerrainNoopStep = true;
+                    }
+
+                    previousTerrainMutationSequence = source.TerrainMutationSequence;
+                    previousTerrainHash = source.LastTerrainHash;
+                    previousTerrainApplications = enhanced.TerrainPresentation.DirtyRegionApplications;
                 }
 
                 UnityEnhancedOwnerSessionSource firstSource = router.EnhancedOwnerSession;
                 if (!sawOwnerEvent || !sawOwnerVfx || !sawDynamicEffectRows || !sawDynamicActorVisual ||
+                    !sawTerrainMutationRebuild || !sawTerrainNoopStep ||
                     firstSource.EventHead == 0 || firstSource.EventCursor != firstSource.EventHead)
                 {
                     Debug.LogError(
@@ -438,6 +525,8 @@ namespace MagicCarpet.PresentationLab.Editor
                         " saw_vfx=" + sawOwnerVfx +
                         " saw_dynamic_rows=" + sawDynamicEffectRows +
                         " saw_dynamic_actor=" + sawDynamicActorVisual +
+                        " saw_terrain_rebuild=" + sawTerrainMutationRebuild +
+                        " saw_terrain_noop=" + sawTerrainNoopStep +
                         " event_cursor=" + firstSource.EventCursor +
                         " event_head=" + firstSource.EventHead);
                     EditorApplication.Exit(1);
@@ -459,6 +548,20 @@ namespace MagicCarpet.PresentationLab.Editor
 
                 for (int frame = 0; frame < FramesPerPass; frame++)
                 {
+                    if (frame == TerrainMutationFrame &&
+                        !router.EnhancedOwnerSession.PrepareTerrainMutationQualification(
+                            TerrainQualificationHouse,
+                            TerrainQualificationParent,
+                            TerrainQualificationSelector,
+                            out reason))
+                    {
+                        Debug.LogError(
+                            "OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: reset terrain mutation setup at frame " +
+                            frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
                     Vector2 input = SequenceInput(frame);
                     bool cast = frame == 4;
                     int spellSelection = frame == 3 ? 0 : -1;
@@ -479,11 +582,16 @@ namespace MagicCarpet.PresentationLab.Editor
                     UnityEnhancedOwnerSessionSource source = router.EnhancedOwnerSession;
                     if (source.LastStateHash != firstStateHashes[frame] ||
                         source.LastTerrainHash != firstTerrainHashes[frame] ||
+                        source.TerrainMutationSequence != firstTerrainMutationSequences[frame] ||
                         source.LastWorldHash != firstWorldHashes[frame] ||
                         source.LastEventCount != firstEventCounts[frame] ||
                         source.LastVfxEventCount != firstVfxCounts[frame] ||
                         source.ActiveEntityCount != firstActiveEntityCounts[frame] ||
-                        router.EnhancedRoot.ActorPresentation.ActiveVisualCount != firstActiveVisualCounts[frame])
+                        router.EnhancedRoot.ActorPresentation.ActiveVisualCount != firstActiveVisualCounts[frame] ||
+                        router.EnhancedRoot.TerrainPresentation.DirtyRegionApplications !=
+                            firstTerrainApplications[frame] ||
+                        source.LastTerrainSnapshotPublished != firstTerrainPublished[frame] ||
+                        source.LastTerrainMutationPublished != firstTerrainMutationPublished[frame])
                     {
                         Debug.LogError(
                             "OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: reset replay diverged at frame " +
@@ -517,6 +625,10 @@ namespace MagicCarpet.PresentationLab.Editor
                     " max_active_vfx=" + maxActiveVfx +
                     " max_presentation_visuals=" + maxPresentationVisuals +
                     " max_pooled_visuals=" + maxPooledVisuals +
+                    " terrain_mutation_frame=" + TerrainMutationFrame +
+                    " terrain_mutation_sequence=" + router.EnhancedOwnerSession.TerrainMutationSequence +
+                    " terrain_mutation_rebuilds=" + terrainMutationRebuilds +
+                    " terrain_noop_steps_after_mutation=" + (sawTerrainNoopStep ? 1 : 0) +
                     " max_projectiles=" + maxMissionProjectiles +
                     " max_impacts=" + maxMissionImpacts +
                     " dynamic_projectiles=" + router.EnhancedOwnerSession.MissionProjectileCount +

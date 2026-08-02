@@ -22,6 +22,10 @@
   "max_active_vfx": 2,
   "max_presentation_visuals": 183,
   "max_pooled_visuals": 48,
+  "terrain_mutation_frame": 12,
+  "terrain_mutation_sequence": 22,
+  "terrain_mutation_rebuilds": 20,
+  "terrain_noop_steps_after_mutation": 1,
   "max_projectile_rows": 1,
   "max_impact_rows": 1,
   "terrain_vertex_count": 65536,
@@ -29,8 +33,8 @@
   "night_lighting": true,
   "reflection": true,
   "state_sequence_hash": "4d4613c4a0d7f89c",
-  "terrain_sequence_hash": "154e4911e2b96a85",
-  "world_sequence_hash": "c3d4a038b9641362",
-  "log_sha256": "01f608fc662fbe13118de75dd291dec1c2334da70eef77ea83175b402a5067ae",
-  "qualification_status": "live owner snapshot application, explicit tick-0 reset, fixed-tick 32-frame replay, native event-journal consumption, one projectile and one impact row, dynamic pooled actor identities and local lights, pooled VFX, and deterministic reset replay proven; broader GFX-O scenario/GPU and visual-corpus gates remain open"
+  "terrain_sequence_hash": "9cd1ec78a8107882",
+  "world_sequence_hash": "1b854fb2e8fe2708",
+  "log_sha256": "8d214eab75b18b393aa1b34d9fd766ac5646308464ff88ff6ea2d4d0352d782d",
+  "qualification_status": "live owner snapshot application, explicit tick-0 reset, fixed-tick 32-frame replay, native event-journal consumption, one projectile and one impact row, dynamic pooled actor identities and local lights, pooled VFX, 20 production terrain mutation rebuilds including the pinned action-51 vector at frame 12, one settled no-op step, and deterministic reset replay proven; broader GFX-O scenario/GPU and visual-corpus gates remain open"
 }
