@@ -781,8 +781,9 @@ fn level2_castle_controller_points(level: u8) -> &'static [(i8, i8)] {
 }
 
 /// BUILD00DATTAB dimensions implied by the source controller point table.
-/// The table is symmetric for level pairs (2/3, 4/5, 6/7); these dimensions
-/// are used only by `sub_613D0` to centre model-79 children around the root.
+/// The validated Level 2 footprint already supplies the effective dimensions
+/// used by the fixed-resolution source path; controller offsets are applied
+/// relative to those dimensions without another VGA-halving pass.
 fn level2_castle_controller_dimensions(level: u8) -> (u8, u8) {
     match level {
         1 => (8, 8),
@@ -2705,6 +2706,9 @@ impl NativeWorldInspection {
             SessionTerrain::from_inspection(self),
             &self.entities,
             self.entities[usize::from(self.players[0].entity_index)].mana,
+            self.entities[usize::from(self.players[0].entity_index)].model,
+            0,
+            self.players[0].enabled_spell_holders[2],
         )?;
         Ok(Level2ResetSession::new(
             self.metadata.map_type.profile(),
@@ -2837,6 +2841,10 @@ pub struct Level2CastleState {
     /// Source `id_0x1A_26` copied into Castle child records. This is kept
     /// separate from the player/owner relation used by economy arbitration.
     pub source_id_entity_index: u16,
+    pub source_class: u8,
+    pub source_model: u8,
+    pub source_byte_38: u8,
+    pub source_particle_parameter: u16,
     pub owner_entity_index: u16,
     pub position: Position,
     /// Source `axis_0x9A_154x`: the construction/child anchor is distinct
@@ -2952,6 +2960,15 @@ pub enum Level2EconomyEvent {
         source_entity_index: u16,
         sound_id: u16,
     },
+    CastleDestructionSound {
+        source_entity_index: u16,
+        sound_id: u16,
+    },
+    CastleStageDestroyed {
+        source_entity_index: u16,
+        previous_level: u8,
+        next_level: u8,
+    },
     DamageApplied {
         target_entity_index: u16,
         attacker_entity_index: u16,
@@ -2999,6 +3016,12 @@ pub struct Level2EconomyState {
     player_castle_stage: u8,
     baseline_player_castle_aux_flags: u8,
     player_castle_aux_flags: u8,
+    baseline_player_model: u8,
+    player_model: u8,
+    baseline_player_terrain_flags: u8,
+    player_terrain_flags: u8,
+    baseline_player_spell_slot_2: u16,
+    player_spell_slot_2: u16,
     /// Imported `sub_60810` life coefficient per Castle stage. The owner
     /// export does not expose the nested player-state array, so fixed-profile
     /// sessions default to the source identity coefficient (256); callers
@@ -3013,6 +3036,9 @@ impl Level2EconomyState {
         terrain: SessionTerrain,
         entities: &[EntitySnapshot],
         player_mana: i32,
+        player_model: u8,
+        player_terrain_flags: u8,
+        player_spell_slot_2: u16,
     ) -> Result<Self> {
         let mut free_slots = entities
             .iter()
@@ -3505,7 +3531,7 @@ impl Level2EconomyState {
     pub fn build_castle(&mut self, position: Position, owner_entity_index: u16) -> Option<u16> {
         let mut root_position = position;
         root_position.z = self.terrain.ground_height(root_position);
-        self.build_castle_at(root_position, root_position, owner_entity_index)
+        self.build_castle_at(root_position, root_position, owner_entity_index, false)
     }
 
     /// Build a Castle from the source projectile placement path, retaining
@@ -3523,7 +3549,7 @@ impl Level2EconomyState {
         }
         let (root_position, construction_anchor) =
             level2_castle_root_positions(&self.terrain, footprint, projectile_position);
-        self.build_castle_at(root_position, construction_anchor, owner_entity_index)
+        self.build_castle_at(root_position, construction_anchor, owner_entity_index, true)
     }
 
     fn build_castle_at(
@@ -3531,6 +3557,7 @@ impl Level2EconomyState {
         position: Position,
         anchor_position: Position,
         owner_entity_index: u16,
+        source_constructor: bool,
     ) -> Option<u16> {
         if self.castle.is_some_and(|castle| castle.active) {
             return None;
@@ -3539,22 +3566,38 @@ impl Level2EconomyState {
         self.castle = Some(Level2CastleState {
             source_entity_index,
             source_id_entity_index: source_entity_index,
+            source_class: 3,
+            source_model: 2,
+            source_byte_38: 33,
+            source_particle_parameter: 177,
             owner_entity_index,
             position,
             anchor_position,
-            life: CASTLE_STAGE_ONE_LIFE,
-            max_life: CASTLE_STAGE_ONE_LIFE,
+            life: if source_constructor {
+                40_000
+            } else {
+                CASTLE_STAGE_ONE_LIFE
+            },
+            max_life: if source_constructor {
+                40_000
+            } else {
+                CASTLE_STAGE_ONE_LIFE
+            },
             mana: 0,
-            mana_capacity: CASTLE_STAGE_ONE_MANA_CAPACITY,
+            mana_capacity: if source_constructor {
+                0
+            } else {
+                CASTLE_STAGE_ONE_MANA_CAPACITY
+            },
             pending_damage: 0,
             pending_attacker_entity_index: 0,
             killer_entity_index: 0,
             control_flags: 0,
             timer: 0,
             phase: source_entity_index as u8,
-            action: 4,
-            build_state: 4,
-            level: 1,
+            action: if source_constructor { 5 } else { 4 },
+            build_state: if source_constructor { 0 } else { 4 },
+            level: if source_constructor { 0 } else { 1 },
             construction_slot: 0,
             defense_slot: 0,
             construction_model: 0,
@@ -3582,8 +3625,12 @@ impl Level2EconomyState {
             defense_child_active: false,
             active: true,
         });
-        self.player_castle_entity_index = source_entity_index;
-        self.player_castle_stage = 0;
+        self.player_castle_entity_index = if source_constructor {
+            0
+        } else {
+            source_entity_index
+        };
+        self.player_castle_stage = if source_constructor { 0 } else { 1 };
         self.player_castle_aux_flags = 0;
         self.map_chains
             .sync_entity(RenderableMapSeed {
@@ -3882,6 +3929,9 @@ impl Level2EconomyState {
                         active: false,
                         ..stale_child
                     });
+                    // `sub_57F20` returns the disabled controller to the
+                    // source free arena after unlinking it from the map.
+                    self.release_slot(stale_child.source_entity_index, None);
                 }
                 let construction_child = Level2CastleChild {
                     source_entity_index: child_slot,
@@ -3960,7 +4010,7 @@ impl Level2EconomyState {
                 castle.construction_control_flags = 1;
                 castle.construction_parent_slot = castle.source_entity_index;
                 castle.construction_owner_entity_index = castle.owner_entity_index;
-                castle.construction_id = castle.owner_entity_index;
+                castle.construction_id = castle.source_id_entity_index;
                 castle.construction_position = castle.anchor_position;
                 castle.child_chain_slots[0] = child_slot;
                 castle.child_chain_models[0] = 42;
@@ -4051,7 +4101,7 @@ impl Level2EconomyState {
                 castle.defense_control_flags = 0;
                 castle.defense_parent_slot = castle.source_entity_index;
                 castle.defense_owner_entity_index = castle.owner_entity_index;
-                castle.defense_id = castle.owner_entity_index;
+                castle.defense_id = castle.source_id_entity_index;
                 castle.defense_position = castle.anchor_position;
                 castle.child_chain_slots[1] = child_slot;
                 castle.child_chain_models[1] = 41;
@@ -4538,6 +4588,12 @@ impl Level2EconomyState {
             hasher.update([1]);
             hasher.update(castle.source_entity_index.to_le_bytes());
             hasher.update(castle.source_id_entity_index.to_le_bytes());
+            hasher.update([
+                castle.source_class,
+                castle.source_model,
+                castle.source_byte_38,
+            ]);
+            hasher.update(castle.source_particle_parameter.to_le_bytes());
             hasher.update(castle.owner_entity_index.to_le_bytes());
             hasher.update(castle.position.x.to_le_bytes());
             hasher.update(castle.position.y.to_le_bytes());
@@ -11642,6 +11698,27 @@ mod tests {
                 .ground_height(construction.position)
                 .saturating_add(384)
         );
+        let lifecycle_castle = castle_lifecycle.economy().castle().expect("Castle");
+        assert_eq!(lifecycle_castle.controller_chain_count, 1);
+        assert_eq!(
+            lifecycle_castle.controller_chain_head,
+            lifecycle_castle.controller_chain_slots[0]
+        );
+        assert_eq!(
+            lifecycle_castle.controller_chain_tail,
+            lifecycle_castle.controller_chain_slots[0]
+        );
+        assert_eq!(stage_child.chain_previous_slot, lifecycle_slot);
+        assert_eq!(stage_child.chain_next_slot, 0);
+        assert_eq!(lifecycle_castle.source_class, 3);
+        assert_eq!(lifecycle_castle.source_model, 2);
+        assert_eq!(lifecycle_castle.source_byte_38, 33);
+        assert_eq!(lifecycle_castle.source_particle_parameter, 177);
+        assert_eq!(
+            castle_lifecycle.economy().player_castle_entity_index(),
+            lifecycle_slot
+        );
+        assert_eq!(castle_lifecycle.economy().player_castle_stage(), 1);
         assert!(
             castle_lifecycle
                 .economy_mut()
@@ -11700,6 +11777,35 @@ mod tests {
             .find(|child| child.active && child.model == 79)
             .expect("stage-two controller");
         assert_eq!(stage_two_child.position.z, 224);
+        let stage_two_castle = stage_two.economy().castle().expect("stage-two Castle");
+        assert_eq!(stage_two_castle.controller_chain_count, 4);
+        assert_eq!(
+            stage_two_castle.controller_chain_head,
+            stage_two_castle.controller_chain_slots[0]
+        );
+        assert_eq!(
+            stage_two_castle.controller_chain_tail,
+            stage_two_castle.controller_chain_slots[3]
+        );
+        let stage_two_chain = stage_two
+            .economy()
+            .castle_children()
+            .iter()
+            .filter(|child| child.active && child.model == 79)
+            .collect::<Vec<_>>();
+        assert_eq!(stage_two_chain.len(), 4);
+        for (index, child) in stage_two_chain.iter().enumerate() {
+            let expected_previous = if index == 0 {
+                stage_two_slot
+            } else {
+                stage_two_chain[index - 1].source_entity_index
+            };
+            let expected_next = stage_two_chain
+                .get(index + 1)
+                .map_or(0, |next| next.source_entity_index);
+            assert_eq!(child.chain_previous_slot, expected_previous);
+            assert_eq!(child.chain_next_slot, expected_next);
+        }
 
         let mut defense_lifecycle = inspection
             .level2_reset_session()
@@ -11708,6 +11814,11 @@ mod tests {
             .economy_mut()
             .build_castle(Position::default(), 111)
             .expect("defense Castle");
+        assert!(
+            defense_lifecycle
+                .economy_mut()
+                .set_castle_stage_coefficient(1, 128)
+        );
         assert!(
             defense_lifecycle
                 .economy_mut()
@@ -11737,6 +11848,7 @@ mod tests {
             ),
             (41, 43, 0)
         );
+        assert_eq!((defense.life, defense.max_life), (10_000, 10_000));
         assert_eq!(defense_lifecycle.economy().castle_children().len(), 3);
         assert_eq!(
             defense_lifecycle
@@ -11997,6 +12109,18 @@ mod tests {
         assert_eq!(castle.source_entity_index, castle_slot);
         assert_eq!(castle.position, root);
         assert_eq!(castle.anchor_position, anchor);
+        assert_eq!(
+            (
+                castle.action,
+                castle.build_state,
+                castle.level,
+                castle.life,
+                castle.max_life,
+                castle.mana_capacity
+            ),
+            (5, 0, 0, 40_000, 40_000, 0)
+        );
+        assert_eq!(session.economy().player_castle_entity_index(), 0);
         assert!(session.economy().map_chains().is_linked(castle_slot));
     }
 
