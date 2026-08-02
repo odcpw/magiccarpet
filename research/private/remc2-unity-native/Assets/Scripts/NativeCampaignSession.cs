@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -143,6 +144,116 @@ namespace MagicCarpet.Native
                 throw new InvalidOperationException("Level 2 Goat batch metadata is inconsistent");
             }
             return goats;
+        }
+
+        internal NativeSim.ManaSphereSnapshot[] ManaSpheres()
+        {
+            var rows = new List<NativeSim.ManaSphereSnapshot>();
+            uint start = 0;
+            uint? total = null;
+            ulong? tick = null;
+            ulong? liveWorldHash = null;
+            while (true)
+            {
+                var page = new NativeSim.ManaSphereSnapshot[64];
+                var status = NativeSim.mc_native_campaign_mana_spheres_copy(
+                    Handle,
+                    generation,
+                    start,
+                    page,
+                    checked((uint)page.Length),
+                    64,
+                    out var batch,
+                    64);
+                NativeSession.Check(status, "read Level 2 mana spheres");
+                if (
+                    batch.abiVersion != NativeSim.AbiVersion ||
+                    batch.structSize != 64 ||
+                    batch.generation != generation ||
+                    batch.startOrdinal != start ||
+                    batch.written > (uint)page.Length ||
+                    (total.HasValue && batch.totalCount != total.Value) ||
+                    (tick.HasValue && batch.tick != tick.Value) ||
+                    (liveWorldHash.HasValue && batch.liveWorldHash != liveWorldHash.Value))
+                {
+                    throw new InvalidOperationException(
+                        "Level 2 mana-sphere batch metadata is inconsistent");
+                }
+                total ??= batch.totalCount;
+                tick ??= batch.tick;
+                liveWorldHash ??= batch.liveWorldHash;
+                rows.AddRange(page.Take(checked((int)batch.written)));
+                if (batch.hasMore == 0)
+                {
+                    if ((uint)rows.Count != batch.totalCount)
+                    {
+                        throw new InvalidOperationException(
+                            "Level 2 mana-sphere batch ended before total count");
+                    }
+                    return rows.ToArray();
+                }
+                if (batch.written == 0)
+                {
+                    throw new InvalidOperationException(
+                        "Level 2 mana-sphere batch made no progress");
+                }
+                start = checked(start + batch.written);
+            }
+        }
+
+        internal NativeSim.ManaCarrierSnapshot[] ManaCarriers()
+        {
+            var rows = new List<NativeSim.ManaCarrierSnapshot>();
+            uint start = 0;
+            uint? total = null;
+            ulong? tick = null;
+            ulong? liveWorldHash = null;
+            while (true)
+            {
+                var page = new NativeSim.ManaCarrierSnapshot[64];
+                var status = NativeSim.mc_native_campaign_mana_carriers_copy(
+                    Handle,
+                    generation,
+                    start,
+                    page,
+                    checked((uint)page.Length),
+                    80,
+                    out var batch,
+                    64);
+                NativeSession.Check(status, "read Level 2 mana carriers");
+                if (
+                    batch.abiVersion != NativeSim.AbiVersion ||
+                    batch.structSize != 64 ||
+                    batch.generation != generation ||
+                    batch.startOrdinal != start ||
+                    batch.written > (uint)page.Length ||
+                    (total.HasValue && batch.totalCount != total.Value) ||
+                    (tick.HasValue && batch.tick != tick.Value) ||
+                    (liveWorldHash.HasValue && batch.liveWorldHash != liveWorldHash.Value))
+                {
+                    throw new InvalidOperationException(
+                        "Level 2 mana-carrier batch metadata is inconsistent");
+                }
+                total ??= batch.totalCount;
+                tick ??= batch.tick;
+                liveWorldHash ??= batch.liveWorldHash;
+                rows.AddRange(page.Take(checked((int)batch.written)));
+                if (batch.hasMore == 0)
+                {
+                    if ((uint)rows.Count != batch.totalCount)
+                    {
+                        throw new InvalidOperationException(
+                            "Level 2 mana-carrier batch ended before total count");
+                    }
+                    return rows.ToArray();
+                }
+                if (batch.written == 0)
+                {
+                    throw new InvalidOperationException(
+                        "Level 2 mana-carrier batch made no progress");
+                }
+                start = checked(start + batch.written);
+            }
         }
 
         internal (NativeSim.CampaignStepSnapshot snapshot, NativeSim.CampaignEvent[] events)

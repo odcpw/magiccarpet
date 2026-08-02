@@ -753,6 +753,12 @@ pub struct McGoatBatchV2 {
     pub reserved: [u32; 4],
 }
 
+/// Additive Level 2 campaign batch metadata for paged mana-sphere and carrier
+/// copies.  The layout intentionally matches `McGoatBatchV2` so clients can
+/// reuse the same generation/tick/hash coherence checks without changing the
+/// sealed Level 1 snapshot records.
+pub type McCampaignManaBatchV2 = McGoatBatchV2;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct McLevel1MissionSnapshotV2 {
@@ -7476,6 +7482,180 @@ pub extern "C" fn mc_native_campaign_goats_copy(
     })
 }
 
+/// Copy the live Level 2 mana-sphere arena.  This is deliberately separate
+/// from the legacy Level 1 mission endpoint: the rows come from the mutable
+/// `Level2EconomyState` arena after the source `sub_5FD00`/`TransformEntityToManaSphere`
+/// paths, including retained inactive rows awaiting the reclaim pass.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_mana_spheres_copy(
+    handle: u64,
+    generation: u64,
+    start_ordinal: u32,
+    buffer: *mut McManaSphereSnapshotV2,
+    capacity: u32,
+    element_size: u32,
+    out_batch: *mut McCampaignManaBatchV2,
+    out_batch_size: u32,
+) -> i32 {
+    boundary_value(out_batch, out_batch_size, || {
+        require_element_size::<McManaSphereSnapshotV2>(
+            element_size,
+            "campaign mana sphere element",
+        )?;
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign mana spheres require a Level 2 campaign session",
+                ));
+            };
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign mana sphere generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            let spheres = reset.economy().spheres();
+            let start = usize::try_from(start_ordinal).map_err(|_| {
+                AbiError::new(MC_STATUS_BOUNDS, "campaign mana sphere start exceeds usize")
+            })?;
+            if start > spheres.len() {
+                return Err(AbiError::new(
+                    MC_STATUS_BOUNDS,
+                    "campaign mana sphere start is beyond arena count",
+                ));
+            }
+            let capacity = usize::try_from(capacity).map_err(|_| {
+                AbiError::new(
+                    MC_STATUS_BOUNDS,
+                    "campaign mana sphere capacity exceeds usize",
+                )
+            })?;
+            let count = (spheres.len() - start).min(capacity);
+            if count > 0 && buffer.is_null() {
+                return Err(AbiError::new(
+                    MC_STATUS_NULL_POINTER,
+                    "campaign mana sphere output buffer is null",
+                ));
+            }
+            for (offset, sphere) in spheres.iter().skip(start).take(count).enumerate() {
+                unsafe {
+                    buffer
+                        .add(offset)
+                        .write_unaligned(mana_sphere_snapshot(sphere));
+                }
+            }
+            Ok(McCampaignManaBatchV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McCampaignManaBatchV2>(),
+                generation: session.generation,
+                tick: reset.state.tick,
+                live_world_hash: reset.campaign_state_hash(),
+                start_ordinal,
+                written: u32::try_from(count).expect("Level 2 mana sphere count fits u32"),
+                total_count: u32::try_from(spheres.len())
+                    .expect("Level 2 mana sphere count fits u32"),
+                has_more: u8::from(start + count < spheres.len()),
+                reserved_0: [0; 3],
+                reserved: [0; 4],
+            })
+        })
+    })
+}
+
+/// Copy every retained Level 2 mana-carrier row in source allocation order.
+/// Do not collapse this to `economy().carrier()`: remc2 can retain multiple
+/// active/inactive carriers in the shared arena until the reclaim pass.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_mana_carriers_copy(
+    handle: u64,
+    generation: u64,
+    start_ordinal: u32,
+    buffer: *mut McManaCarrierSnapshotV2,
+    capacity: u32,
+    element_size: u32,
+    out_batch: *mut McCampaignManaBatchV2,
+    out_batch_size: u32,
+) -> i32 {
+    boundary_value(out_batch, out_batch_size, || {
+        require_element_size::<McManaCarrierSnapshotV2>(
+            element_size,
+            "campaign mana carrier element",
+        )?;
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign mana carriers require a Level 2 campaign session",
+                ));
+            };
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign mana carrier generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            let carriers = reset.economy().carriers();
+            let start = usize::try_from(start_ordinal).map_err(|_| {
+                AbiError::new(
+                    MC_STATUS_BOUNDS,
+                    "campaign mana carrier start exceeds usize",
+                )
+            })?;
+            if start > carriers.len() {
+                return Err(AbiError::new(
+                    MC_STATUS_BOUNDS,
+                    "campaign mana carrier start is beyond arena count",
+                ));
+            }
+            let capacity = usize::try_from(capacity).map_err(|_| {
+                AbiError::new(
+                    MC_STATUS_BOUNDS,
+                    "campaign mana carrier capacity exceeds usize",
+                )
+            })?;
+            let count = (carriers.len() - start).min(capacity);
+            if count > 0 && buffer.is_null() {
+                return Err(AbiError::new(
+                    MC_STATUS_NULL_POINTER,
+                    "campaign mana carrier output buffer is null",
+                ));
+            }
+            for (offset, carrier) in carriers.iter().skip(start).take(count).enumerate() {
+                unsafe {
+                    buffer
+                        .add(offset)
+                        .write_unaligned(mana_carrier_snapshot_value(
+                            carrier,
+                            session.generation,
+                            reset.state.tick,
+                        ));
+                }
+            }
+            Ok(McCampaignManaBatchV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McCampaignManaBatchV2>(),
+                generation: session.generation,
+                tick: reset.state.tick,
+                live_world_hash: reset.campaign_state_hash(),
+                start_ordinal,
+                written: u32::try_from(count).expect("Level 2 mana carrier count fits u32"),
+                total_count: u32::try_from(carriers.len())
+                    .expect("Level 2 mana carrier count fits u32"),
+                has_more: u8::from(start + count < carriers.len()),
+                reserved_0: [0; 3],
+                reserved: [0; 4],
+            })
+        })
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_native_session_destroy(handle: u64) -> i32 {
     boundary(|| {
@@ -11284,11 +11464,19 @@ fn mana_carrier_snapshot(session: &SessionRecord) -> McManaCarrierSnapshotV2 {
             pending_attacker_entity_index: 0,
             active: false,
         });
+    mana_carrier_snapshot_value(&carrier, session.generation, session.state.tick)
+}
+
+fn mana_carrier_snapshot_value(
+    carrier: &ManaCarrier,
+    generation: u64,
+    tick: u64,
+) -> McManaCarrierSnapshotV2 {
     McManaCarrierSnapshotV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
         struct_size: struct_size::<McManaCarrierSnapshotV2>(),
-        generation: session.generation,
-        tick: session.state.tick,
+        generation,
+        tick,
         carrier_id: carrier.id,
         target_sphere_id: carrier.target_sphere_id,
         owner_entity_index: carrier.owner_entity_index,
@@ -15177,6 +15365,7 @@ mod tests {
         assert_eq!(size_of::<McCampaignEntitySnapshotV2>(), 52);
         assert_eq!(size_of::<McGoatSnapshotV2>(), 84);
         assert_eq!(size_of::<McGoatBatchV2>(), 64);
+        assert_eq!(size_of::<McCampaignManaBatchV2>(), 64);
         assert_eq!(size_of::<McLevel1MissionSnapshotV2>(), 96);
         assert_eq!(size_of::<McLevel1PlayerLifecycleSnapshotV2>(), 144);
         assert_eq!(size_of::<McLevel1HudSpellSlotV2>(), 36);
@@ -15859,6 +16048,21 @@ mod tests {
             assert_eq!(old.phase, generic.phase);
             assert_eq!((old.x, old.y, old.z), (generic.x, generic.y, generic.z));
         }
+        let mut level1_mana_batch = McCampaignManaBatchV2::default();
+        let mut level1_mana_rows = [McManaSphereSnapshotV2::default(); 1];
+        assert_eq!(
+            mc_native_campaign_mana_spheres_copy(
+                level1_handle,
+                0,
+                0,
+                level1_mana_rows.as_mut_ptr(),
+                1,
+                struct_size::<McManaSphereSnapshotV2>(),
+                &raw mut level1_mana_batch,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_INVALID_ARGUMENT
+        );
         assert_eq!(mc_native_session_destroy(old_handle), MC_STATUS_OK);
         assert_eq!(
             mc_native_campaign_session_destroy(level1_handle),
@@ -16082,6 +16286,156 @@ mod tests {
             .map(|goat| goat.entity_index)
             .collect::<BTreeSet<_>>();
         assert_eq!(initial_action11_slots, BTreeSet::from([39, 71]));
+        let mut initial_spheres = [McManaSphereSnapshotV2::default(); 64];
+        let mut initial_sphere_batch = McCampaignManaBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_mana_spheres_copy(
+                handle,
+                0,
+                0,
+                initial_spheres.as_mut_ptr(),
+                initial_spheres.len() as u32,
+                struct_size::<McManaSphereSnapshotV2>(),
+                &raw mut initial_sphere_batch,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        // The qualified reset fixture has no authored model-39 sphere row;
+        // the positive route below allocates one through the production
+        // `TransformEntityToManaSphere` projection before copying again.
+        assert_eq!(initial_sphere_batch.written, 0);
+        assert_eq!(initial_sphere_batch.total_count, 0);
+        assert_eq!(initial_sphere_batch.generation, 0);
+        assert_eq!(initial_sphere_batch.tick, 0);
+        let (sphere_id, carrier_slots) = with_campaign_session_mut(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            let sphere_id = reset
+                .economy_mut()
+                .spawn_mana_sphere_from_death(
+                    42,
+                    Position {
+                        x: 384,
+                        y: 62_080,
+                        z: 1_024,
+                    },
+                    0x120,
+                    0x4321,
+                    321,
+                    111,
+                )
+                .expect("Level 2 mana sphere allocation");
+            let first = reset
+                .economy_mut()
+                .spawn_mana_carrier(Position::default(), 111, 0)
+                .expect("first Level 2 carrier allocation");
+            let second = reset
+                .economy_mut()
+                .spawn_mana_carrier(Position::default(), 112, 0)
+                .expect("second Level 2 carrier allocation");
+            Ok((sphere_id, [first, second]))
+        })
+        .expect("install Level 2 sphere and carrier rows");
+        assert_eq!(
+            mc_native_campaign_mana_spheres_copy(
+                handle,
+                0,
+                0,
+                initial_spheres.as_mut_ptr(),
+                initial_spheres.len() as u32,
+                struct_size::<McManaSphereSnapshotV2>(),
+                &raw mut initial_sphere_batch,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(initial_sphere_batch.written, 1);
+        assert_eq!(initial_sphere_batch.total_count, 1);
+        assert_eq!(initial_spheres[0].sphere_id, sphere_id as u32);
+        assert_eq!(
+            (
+                initial_spheres[0].class_id,
+                initial_spheres[0].model,
+                initial_spheres[0].action,
+                initial_spheres[0].mana,
+                initial_spheres[0].active,
+            ),
+            (10, 39, 41, 321, 1)
+        );
+        let mut carriers = [McManaCarrierSnapshotV2::default(); 4];
+        let mut carrier_batch = McCampaignManaBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_mana_carriers_copy(
+                handle,
+                0,
+                0,
+                carriers.as_mut_ptr(),
+                carriers.len() as u32,
+                struct_size::<McManaCarrierSnapshotV2>(),
+                &raw mut carrier_batch,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(carrier_batch.written, 2);
+        assert_eq!(carrier_batch.total_count, 2);
+        assert_eq!(
+            carriers[..2]
+                .iter()
+                .map(|carrier| carrier.reserved[0] as u16)
+                .collect::<Vec<_>>(),
+            carrier_slots.to_vec()
+        );
+        assert!(carriers[..2].iter().all(|carrier| carrier.active != 0));
+        let mut carrier_page = [McManaCarrierSnapshotV2::default(); 1];
+        let mut first_carrier_page = McCampaignManaBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_mana_carriers_copy(
+                handle,
+                0,
+                0,
+                carrier_page.as_mut_ptr(),
+                1,
+                struct_size::<McManaCarrierSnapshotV2>(),
+                &raw mut first_carrier_page,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(first_carrier_page.written, 1);
+        assert_eq!(first_carrier_page.total_count, 2);
+        assert_eq!(first_carrier_page.has_more, 1);
+        let first_carrier_tick = first_carrier_page.tick;
+        let first_carrier_hash = first_carrier_page.live_world_hash;
+        let mut second_carrier_page = McCampaignManaBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_mana_carriers_copy(
+                handle,
+                0,
+                1,
+                carrier_page.as_mut_ptr(),
+                1,
+                struct_size::<McManaCarrierSnapshotV2>(),
+                &raw mut second_carrier_page,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(second_carrier_page.written, 1);
+        assert_eq!(second_carrier_page.has_more, 0);
+        assert_eq!(second_carrier_page.tick, first_carrier_tick);
+        assert_eq!(second_carrier_page.live_world_hash, first_carrier_hash);
+        let mut pre_step_info = McCampaignWorldInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_world_info(
+                handle,
+                &raw mut pre_step_info,
+                struct_size::<McCampaignWorldInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
         let input_command = McCommandV2 {
             abi_version: MC_NATIVE_ABI_VERSION,
             struct_size: struct_size::<McCommandV2>(),
@@ -16130,7 +16484,7 @@ mod tests {
             MC_STATUS_OK
         );
         assert_eq!(
-            after_rejected_info.reset_state_hash, initial_info.reset_state_hash,
+            after_rejected_info.reset_state_hash, pre_step_info.reset_state_hash,
             "short event output must not commit the candidate turn"
         );
         assert_eq!(
@@ -16236,6 +16590,49 @@ mod tests {
             ),
             MC_STATUS_GENERATION_MISMATCH
         );
+        let mut reset_carrier_batch = McCampaignManaBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_mana_carriers_copy(
+                handle,
+                1,
+                0,
+                carriers.as_mut_ptr(),
+                carriers.len() as u32,
+                struct_size::<McManaCarrierSnapshotV2>(),
+                &raw mut reset_carrier_batch,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(reset_carrier_batch.total_count, 0);
+        let mut stale_sphere_batch = McCampaignManaBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_mana_spheres_copy(
+                handle,
+                0,
+                0,
+                initial_spheres.as_mut_ptr(),
+                initial_spheres.len() as u32,
+                struct_size::<McManaSphereSnapshotV2>(),
+                &raw mut stale_sphere_batch,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        let mut stale_carrier_batch = McCampaignManaBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_mana_carriers_copy(
+                handle,
+                0,
+                0,
+                carriers.as_mut_ptr(),
+                carriers.len() as u32,
+                struct_size::<McManaCarrierSnapshotV2>(),
+                &raw mut stale_carrier_batch,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
         input.generation = 0;
         event_count = 0;
         assert_eq!(
@@ -16266,7 +16663,11 @@ mod tests {
             MC_STATUS_OK
         );
         assert_ne!(snapshot.state_hash, 0);
-        assert_eq!(snapshot.state_hash, stepped_hash);
+        // The first step ran after installing a sphere and two carriers; the
+        // post-reset generation starts from the qualified empty arena, so its
+        // deterministic state hash must differ while the reset baseline above
+        // remains unchanged.
+        assert_ne!(snapshot.state_hash, stepped_hash);
         assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
 
         let (level1_package, level1_closure) = fixture_paths();
@@ -17225,6 +17626,7 @@ _Static_assert(sizeof(McCampaignPlayerSnapshotV2) == 48, "McCampaignPlayerSnapsh
 _Static_assert(sizeof(McCampaignEntitySnapshotV2) == 52, "McCampaignEntitySnapshotV2 size");
 _Static_assert(sizeof(McGoatSnapshotV2) == 84, "McGoatSnapshotV2 size");
 _Static_assert(sizeof(McGoatBatchV2) == 64, "McGoatBatchV2 size");
+_Static_assert(sizeof(McCampaignManaBatchV2) == 64, "McCampaignManaBatchV2 size");
 _Static_assert(sizeof(McLevel1MissionSnapshotV2) == 96, "McLevel1MissionSnapshotV2 size");
 _Static_assert(sizeof(McLevel1PlayerLifecycleSnapshotV2) == 144, "McLevel1PlayerLifecycleSnapshotV2 size");
 _Static_assert(sizeof(McLevel1HudSpellSlotV2) == 36, "McLevel1HudSpellSlotV2 size");

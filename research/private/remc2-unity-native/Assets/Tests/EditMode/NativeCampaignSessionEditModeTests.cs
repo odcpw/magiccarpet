@@ -104,5 +104,39 @@ namespace MagicCarpet.Native.Tests
                         goat.action == 11),
                 Is.True);
         }
+
+        [Test]
+        public void Level2CampaignManaArenaSnapshotsAreReachableFromManagedSession()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+
+            var spheres = session.ManaSpheres();
+            Assert.That(spheres, Is.Not.Null);
+            Assert.That(
+                spheres.All(sphere =>
+                    sphere.abiVersion == NativeSim.AbiVersion &&
+                    sphere.structSize == 64 &&
+                    sphere.classId == 10 &&
+                    sphere.model == 39 &&
+                    sphere.action == 41),
+                Is.True);
+
+            // The reset fixture has no carrier rows, but the accessor must
+            // preserve the shared-arena contract and return a valid empty
+            // array; the native C ABI test covers the positive multi-carrier
+            // route and retained-row semantics.
+            var carriers = session.ManaCarriers();
+            Assert.That(carriers, Is.Not.Null);
+            Assert.That(
+                carriers.All(carrier =>
+                    carrier.abiVersion == NativeSim.AbiVersion &&
+                    carrier.structSize == 80 &&
+                    carrier.generation == session.Generation),
+                Is.True);
+
+            session.Reset();
+            Assert.That(session.ManaSpheres(), Has.Length.EqualTo(spheres.Length));
+            Assert.That(session.ManaCarriers(), Is.Empty);
+        }
     }
 }

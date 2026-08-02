@@ -242,6 +242,20 @@ int32_t mc_native_campaign_goats_copy(
     McGoatSnapshotV2 *buffer, uint32_t capacity, uint32_t element_size,
     McGoatBatchV2 *out_batch, uint32_t out_batch_size);
 
+/* Additive typed Level 2 mana-sphere/carrier rows.  The existing snapshot
+ * layouts remain sealed Level 1-compatible records; these batch headers bind
+ * a paged copy to one Level 2 campaign generation/tick/hash. */
+typedef McGoatBatchV2 McCampaignManaBatchV2;
+
+int32_t mc_native_campaign_mana_spheres_copy(
+    uint64_t handle, uint64_t generation, uint32_t start_ordinal,
+    McManaSphereSnapshotV2 *buffer, uint32_t capacity, uint32_t element_size,
+    McCampaignManaBatchV2 *out_batch, uint32_t out_batch_size);
+int32_t mc_native_campaign_mana_carriers_copy(
+    uint64_t handle, uint64_t generation, uint32_t start_ordinal,
+    McManaCarrierSnapshotV2 *buffer, uint32_t capacity, uint32_t element_size,
+    McCampaignManaBatchV2 *out_batch, uint32_t out_batch_size);
+
 int32_t mc_native_campaign_economy_events(
     uint64_t handle, McCampaignEconomyEventV2 *events,
     uint32_t event_capacity, uint32_t event_element_size,

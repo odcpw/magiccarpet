@@ -1744,6 +1744,28 @@ namespace MagicCarpet.Native
             uint batchSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_mana_spheres_copy(
+            ulong handle,
+            ulong generation,
+            uint startOrdinal,
+            [Out] ManaSphereSnapshot[] buffer,
+            uint capacity,
+            uint elementSize,
+            out GoatBatch batch,
+            uint batchSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_mana_carriers_copy(
+            ulong handle,
+            ulong generation,
+            uint startOrdinal,
+            [Out] ManaCarrierSnapshot[] buffer,
+            uint capacity,
+            uint elementSize,
+            out GoatBatch batch,
+            uint batchSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_session_destroy(ulong handle);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
