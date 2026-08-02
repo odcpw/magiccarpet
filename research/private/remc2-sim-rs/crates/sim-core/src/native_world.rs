@@ -771,6 +771,20 @@ fn level2_castle_stage_stats(level: u8) -> (i32, i32) {
     }
 }
 
+/// Source `my_sign32` vertical launch calculation shared by
+/// `TransformEntityToManaSphere_36BA0` and `sub_5FD00`:
+/// `(1024 - height - sign(1024 - height) * 7) >> 3`.
+#[must_use]
+fn level2_mana_sphere_vertical_velocity(height_above_ground: i32) -> i16 {
+    let delta = 1_024_i32.saturating_sub(height_above_ground);
+    let sign = match delta.cmp(&0) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    };
+    i16::try_from((delta - sign * 7) >> 3).expect("mana sphere vertical velocity fits i16")
+}
+
 /// `sub_60400`'s model-3 action-9 defender-holder count consumed by
 /// `sub_5FF50`. The source's stage-0/default path has no children to maintain.
 const fn level2_castle_defender_count(level: u8) -> u8 {
@@ -3534,7 +3548,7 @@ impl Level2EconomyState {
             crate::move_entity(&mut velocity, yaw, 0, speed);
             let ground = self.terrain.ground_height(position);
             let height_above_ground = i32::from(position.z) - i32::from(ground);
-            let vertical_velocity = (1_024 - height_above_ground).wrapping_div(8) as i16;
+            let vertical_velocity = level2_mana_sphere_vertical_velocity(height_above_ground);
             let sphere_mana = if sphere_index + 1 == fraction {
                 mana - each_mana * (fraction - 1)
             } else {
@@ -4124,7 +4138,7 @@ impl Level2EconomyState {
             crate::move_entity(&mut sphere_position, yaw, 0, radius);
             let ground = self.terrain.ground_height(castle.position);
             let height_above_ground = i32::from(castle.position.z) - i32::from(ground);
-            let vertical_velocity = (1_024 - height_above_ground).wrapping_div(8) as i16;
+            let vertical_velocity = level2_mana_sphere_vertical_velocity(height_above_ground);
             let sphere_mana = if sphere_index + 1 == sphere_count {
                 remaining
             } else {
@@ -13559,6 +13573,13 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, Level2EconomyEvent::CastleStageDestroyed { .. }))
         );
+    }
+
+    #[test]
+    fn level_two_mana_sphere_vertical_velocity_uses_signed_source_adjustment() {
+        assert_eq!(level2_mana_sphere_vertical_velocity(0), 127);
+        assert_eq!(level2_mana_sphere_vertical_velocity(1_024), 0);
+        assert_eq!(level2_mana_sphere_vertical_velocity(2_048), -128);
     }
 
     #[test]
