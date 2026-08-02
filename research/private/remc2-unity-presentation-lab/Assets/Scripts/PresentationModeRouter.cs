@@ -235,7 +235,7 @@ namespace MagicCarpet.PresentationLab
             }
 
             return ClassicHdSettings.profile + " / " + ClassicHdSettings.assetTier +
-                   " / persistent R8 surface / owner-bound Rust FINAL MAIN adapter / " +
+                   " / persistent R8 surface / owner-bound Rust profile-sized rerender / " +
                    (classicHdSettingsResult.UsedDefaults ? "defaults" : "settings file");
         }
 

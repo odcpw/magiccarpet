@@ -9,11 +9,10 @@ namespace MagicCarpet.PresentationLab
     /// Owner-bound Classic HD source adapter.
     ///
     /// Rust remains authoritative: this class opens the external owner
-    /// package/closure/cache, advances the native Rust session, consumes the
-    /// compositor-complete 320x200 FINAL MAIN frame, and performs only a
-    /// deterministic nearest-neighbour presentation upscale into the
-    /// caller-owned HD surface. It is intentionally not an asset loader or a
-    /// replacement gameplay simulation.
+    /// package/closure/cache, advances the native Rust session, and consumes a
+    /// profile-sized frame rerendered by the additive Classic HD Rust graph.
+    /// It is intentionally not an asset loader or a replacement gameplay
+    /// simulation.
     /// </summary>
     public sealed class ClassicHdOwnerSessionSource : IDisposable
     {
@@ -24,19 +23,15 @@ namespace MagicCarpet.PresentationLab
         private const uint RenderCameraStateSize = 72;
         private const uint QuerySize = 64;
         private const uint InfoSize = 128;
-        private const int SourceWidth = 320;
-        private const int SourceHeight = 200;
-        private const int SourcePixels = SourceWidth * SourceHeight;
         private const string AssetCacheEnvironment = "MC_ASSET_CACHE_PATH";
-        private const uint RequiredPresentationFlags =
-            0x2000u | // compositor complete
+        private const uint RequiredClassicHdFlags =
             0x4000u | // provenance present
-            0x8000u | // overlays composited
             0x10000u | // postprocess complete
-            0x20000u; // lighting complete
+            0x20000u | // lighting complete
+            0x40000u; // profile-sized Rust rerender
 
-        private byte[] sourceIndices;
-        private byte[] sourceProvenance;
+        private byte[] indexBytes;
+        private byte[] provenanceBytes;
         private byte[] snapshotBytes;
         private byte[] renderCameraBytes;
         private byte[] packageBytes;
@@ -54,6 +49,7 @@ namespace MagicCarpet.PresentationLab
         private bool ownsAssetCacheEnvironment;
         private int outputWidth;
         private int outputHeight;
+        private uint profileId;
         private ulong generation;
         private ulong tick;
         private ulong presentationRevision;
@@ -73,6 +69,7 @@ namespace MagicCarpet.PresentationLab
 
         public bool Configure(
             ClassicHdProfileInfo profile,
+            ClassicHdPresentationSettings requestedSettings,
             string packagePath,
             string closurePath,
             string assetCachePath,
@@ -84,6 +81,12 @@ namespace MagicCarpet.PresentationLab
             if (profile.Width <= 0 || profile.Height <= 0 || profile.Stride < profile.Width)
             {
                 reason = "Classic HD owner source received an invalid output profile";
+                return false;
+            }
+
+            if (requestedSettings == null || !requestedSettings.reflections || !requestedSettings.dynamicLighting)
+            {
+                reason = "owner Classic HD currently requires reflections and dynamic lighting to remain enabled";
                 return false;
             }
 
@@ -109,15 +112,16 @@ namespace MagicCarpet.PresentationLab
             {
                 outputWidth = profile.Width;
                 outputHeight = profile.Height;
-                sourceIndices = new byte[SourcePixels];
-                sourceProvenance = new byte[SourcePixels];
+                profileId = (uint)profile.Id;
+                indexBytes = new byte[checked(profile.Stride * profile.Height)];
+                provenanceBytes = new byte[checked(profile.Stride * profile.Height)];
                 snapshotBytes = new byte[SnapshotSize];
                 renderCameraBytes = new byte[RenderCameraStateSize];
                 packageBytes = Encoding.UTF8.GetBytes(packagePath);
                 closureBytes = Encoding.UTF8.GetBytes(closurePath);
-                sourceIndexHandle = GCHandle.Alloc(sourceIndices, GCHandleType.Pinned);
+                sourceIndexHandle = GCHandle.Alloc(indexBytes, GCHandleType.Pinned);
                 sourceIndexPinned = true;
-                sourceProvenanceHandle = GCHandle.Alloc(sourceProvenance, GCHandleType.Pinned);
+                sourceProvenanceHandle = GCHandle.Alloc(provenanceBytes, GCHandleType.Pinned);
                 sourceProvenancePinned = true;
                 snapshotHandle = GCHandle.Alloc(snapshotBytes, GCHandleType.Pinned);
                 snapshotPinned = true;
@@ -175,13 +179,15 @@ namespace MagicCarpet.PresentationLab
                     AbiVersion = AbiVersion,
                     StructSize = QuerySize,
                     PresentationRevision = presentationRevision,
-                    ViewportWidth = SourceWidth,
-                    ViewportHeight = SourceHeight,
-                    ScreenStride = SourceWidth,
+                    ViewportWidth = checked((ushort)profile.Width),
+                    ViewportHeight = checked((ushort)profile.Height),
+                    ScreenStride = checked((ushort)profile.Stride),
+                    ConfiguredBlurMode = BlurMode(requestedSettings.blur),
                     BlurCapability = 1,
                     HighSpeedSystem = 1,
                     ScratchPresent = 1,
                     VgaResolution = 1,
+                    SpatialSmoothing = (byte)(string.Equals(requestedSettings.blur, "spatial-2x2", StringComparison.OrdinalIgnoreCase) ? 1 : 0),
                     MinimapEnabled = 1,
                     TopBarEnabled = 1,
                     ObjectiveSelector = byte.MaxValue
@@ -217,7 +223,7 @@ namespace MagicCarpet.PresentationLab
             out string reason)
         {
             reason = string.Empty;
-            if (!IsConfigured || sourceIndices == null || sourceProvenance == null)
+            if (!IsConfigured || indexBytes == null || provenanceBytes == null)
             {
                 reason = "Classic HD owner source is not configured";
                 return false;
@@ -249,18 +255,19 @@ namespace MagicCarpet.PresentationLab
             }
             frameQuery.Generation = generation;
             frameQuery.Tick = tick;
-            status = mc_native_session_presentation_frame_copy(
+            status = mc_native_session_classic_hd_frame_copy(
                 handle,
+                profileId,
                 ref frameQuery,
                 sourceIndexHandle.AddrOfPinnedObject(),
-                SourcePixels,
+                checked((uint)indexBytes.Length),
                 sourceProvenanceHandle.AddrOfPinnedObject(),
-                SourcePixels,
+                checked((uint)provenanceBytes.Length),
                 out McPresentationFrameInfoV2 info,
                 InfoSize);
             if (status != 0)
             {
-                reason = StatusReason("owner FINAL MAIN copy", status);
+                reason = StatusReason("owner Classic HD profile rerender copy", status);
                 return false;
             }
 
@@ -269,20 +276,19 @@ namespace MagicCarpet.PresentationLab
                 info.Generation != generation ||
                 info.Tick != tick ||
                 info.PresentationRevision != presentationRevision ||
-                info.Width != SourceWidth ||
-                info.Height != SourceHeight ||
-                info.Stride != SourceWidth ||
-                info.ViewportWidth != SourceWidth ||
-                info.IndexBytes != SourcePixels ||
-                info.ProvenanceBytes != SourcePixels ||
-                info.HistoryState == 0 ||
-                (info.Flags & RequiredPresentationFlags) != RequiredPresentationFlags)
+                info.Width != outputWidth ||
+                info.Height != outputHeight ||
+                info.Stride != outputWidth ||
+                info.ViewportWidth != outputWidth ||
+                info.IndexBytes != indexBytes.Length ||
+                info.ProvenanceBytes != provenanceBytes.Length ||
+                (info.Flags & RequiredClassicHdFlags) != RequiredClassicHdFlags)
             {
-                reason = "owner FINAL MAIN copy returned an inconsistent receipt";
+                reason = "owner Classic HD profile rerender returned an inconsistent receipt";
                 return false;
             }
 
-            UpscaleNearest(destination);
+            Buffer.BlockCopy(indexBytes, 0, destination, 0, indexBytes.Length);
             LastIndexHash = info.IndexHash;
             LastProvenanceHash = info.ProvenanceHash;
             LastImmutableInputHash = info.ImmutableInputHash;
@@ -341,14 +347,15 @@ namespace MagicCarpet.PresentationLab
                 priorAssetCacheEnvironment = null;
             }
 
-            sourceIndices = null;
-            sourceProvenance = null;
+            indexBytes = null;
+            provenanceBytes = null;
             snapshotBytes = null;
             renderCameraBytes = null;
             packageBytes = null;
             closureBytes = null;
             generation = 0;
             tick = 0;
+            profileId = 0;
             presentationRevision = 0;
             LastIndexHash = 0;
             LastProvenanceHash = 0;
@@ -377,18 +384,19 @@ namespace MagicCarpet.PresentationLab
             return true;
         }
 
-        private void UpscaleNearest(byte[] destination)
+        private static byte BlurMode(string value)
         {
-            for (int y = 0; y < outputHeight; y++)
+            if (string.Equals(value, "spatial-2x2", StringComparison.OrdinalIgnoreCase))
             {
-                int sourceY = y * SourceHeight / outputHeight;
-                int destinationRow = y * outputWidth;
-                int sourceRow = sourceY * SourceWidth;
-                for (int x = 0; x < outputWidth; x++)
-                {
-                    destination[destinationRow + x] = sourceIndices[sourceRow + x * SourceWidth / outputWidth];
-                }
+                return 1;
             }
+
+            if (string.Equals(value, "tablesn", StringComparison.OrdinalIgnoreCase))
+            {
+                return 2;
+            }
+
+            return 0;
         }
 
         private static sbyte ClampInt8(float value)
@@ -588,8 +596,9 @@ namespace MagicCarpet.PresentationLab
             uint snapshotSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-        private static extern int mc_native_session_presentation_frame_copy(
+        private static extern int mc_native_session_classic_hd_frame_copy(
             ulong handle,
+            uint profileId,
             ref McPresentationFrameQueryV2 query,
             IntPtr indexBuffer,
             uint indexCapacity,

@@ -647,6 +647,43 @@ impl ClassicHdFrameWriter<'_> {
     }
 }
 
+impl<'a> ClassicHdFrameWriter<'a> {
+    /// Borrow caller-owned profile-sized planes for one Classic HD world pass.
+    ///
+    /// `ClassicHdRenderGraph` owns the transactional storage and history, while
+    /// the terrain/sprite raster adapters operate through this writer. Keeping
+    /// the constructor here prevents those adapters from reaching into graph
+    /// internals or falling back to the fixed 320x200 frame.
+    pub fn from_planes(
+        profile: &ClassicHdRenderProfile,
+        indices: &'a mut [u8],
+        provenance: &'a mut [u8],
+        generation: u64,
+        tick: u64,
+        input_hash: u64,
+        history_hash: u64,
+    ) -> Result<Self, ClassicHdError> {
+        let extent = profile.extent();
+        if indices.len() != extent || provenance.len() != extent {
+            return Err(ClassicHdError(format!(
+                "Classic HD external planes require {extent} bytes, got {} and {}",
+                indices.len(),
+                provenance.len()
+            )));
+        }
+        Ok(Self {
+            profile: profile.clone(),
+            indices,
+            provenance,
+            generation,
+            tick,
+            profile_revision: profile.profile_revision,
+            input_hash,
+            history_hash,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct ClassicHdFrameBuffers {
     profile: ClassicHdRenderProfile,

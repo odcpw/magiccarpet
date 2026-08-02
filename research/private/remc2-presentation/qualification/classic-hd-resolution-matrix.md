@@ -1,9 +1,9 @@
 # Classic HD resolution matrix
 
 This is the current measured matrix for the owner-free Classic HD render
-graph plus the separate owner-bound Unity route smoke. It keeps the Rust
-presentation workload distinct from sustained Unity GPU, copy/upload,
-owner-route, and preserved corpus qualification. A row is not a
+graph plus the separate owner-bound Unity profile-rerender binding smoke. It
+keeps the Rust presentation workload distinct from sustained Unity GPU,
+copy/upload, owner-route, and preserved corpus qualification. A row is not a
 player-facing production claim until those later measurements are attached.
 
 The reproducible command is:
@@ -19,7 +19,7 @@ T14 run produced:
 
 | Internal profile | Frame bytes | Graph memory | p95 CPU | Reset deterministic | Current status |
 | --- | ---: | ---: | ---: | --- | --- |
-| 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; owner route smoke passed; sustained Unity qualification pending |
+| 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; profile-rerender binding reached and failed closed on legacy sprite families; sustained Unity qualification pending |
 | 960x720 | 691,200 | 2,768,896 | 26.11 ms | yes | candidate; Unity/owner route pending |
 | 1280x960 | 1,228,800 | 4,919,296 | 45.64 ms | yes | rejected by current CPU budget |
 
@@ -28,11 +28,13 @@ The window is independent of the internal render profile. For example,
 composition; changing the window does not silently promote the internal
 profile.
 
-The fresh owner-bound smoke is recorded in
+The current owner-bound smoke is recorded in
 `qualification/classic-hd-owner-route-smoke.json`. It passed through the real
-`PresentationModeRouter`, Rust native session, FINAL MAIN copy, persistent R8
-surface, and one OpenGLCore upload on the local Mesa Intel graphics device.
-It is deliberately smoke evidence rather than a sustained performance claim.
+`PresentationModeRouter`, Rust native session, and additive profile-sized
+Classic HD endpoint, which then failed closed on the 101 legacy source sprite
+families that still need profile-sized adapters. No FINAL MAIN copy or Unity
+upload is claimed by this artifact. It is binding evidence, not a sustained
+performance or player-facing production claim.
 
 Remaining GFX-O evidence is intentionally explicit in the JSON matrix:
 idle/town/combat/flight/restart/completion/fullscreen/alt-tab/asset-fallback,

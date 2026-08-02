@@ -567,8 +567,14 @@ fn validate_plane(
 }
 
 fn validate_texture(texture_atlas: &[u8], texture_base: usize) -> Result<(), ClassicHdRasterError> {
+    // Terrain tiles are 32x32 pixels addressed through a 256-byte source
+    // stride. The packed BL32N bank therefore needs the last possible
+    // in-tile address, not a full 256x256 tail after every tile base.
+    const LAST_TILE_ADDRESS: usize =
+        (CLASSIC_HD_TERRAIN_TILE_SIZE - 1) * 256 + (CLASSIC_HD_TERRAIN_TILE_SIZE - 1);
     let end = texture_base
-        .checked_add(256 * 256)
+        .checked_add(LAST_TILE_ADDRESS)
+        .and_then(|address| address.checked_add(1))
         .ok_or_else(|| ClassicHdRasterError("Classic HD texture address overflow".to_owned()))?;
     if end > texture_atlas.len() {
         return Err(ClassicHdRasterError(format!(

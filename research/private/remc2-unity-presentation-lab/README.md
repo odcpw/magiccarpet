@@ -4,8 +4,8 @@ This is the isolated Unity project for the optional `classic-hd` and
 `unity-enhanced` presentation modes. It is deliberately separate from
 `remc2-unity-native`, which remains the sealed Exact project.
 
-The lab now provides the safe shell and the first player-facing Classic HD
-route for renderer work:
+The lab now provides the safe shell and the owner-bound Classic HD renderer
+binding under qualification:
 
 - Unity `6000.3.20f1` with URP `17.3.0`.
 - A `Boot` scene with a pre-session mode router.
@@ -18,12 +18,14 @@ route for renderer work:
   point/bilinear output filtering, and a centered 4:3 display rectangle.
 - A size-queried `sim-capi` binding contract. The player-facing Classic HD
   route opens the external owner package, closure, and cache through the Rust
-  native session, consumes the compositor-complete 320x200 FINAL MAIN frame,
-  and performs a deterministic nearest-neighbour upscale into the persistent
-  HD R8 surface; it fails closed if the private native plugin is absent. The
-  additive Classic HD ABI fixture remains available for contract tests, while
-  the direct component `Configure` overload remains a clearly synthetic,
-  owner-free Level 1 Night source for EditMode tests.
+  native session and calls the additive profile-sized Classic HD rerender
+  endpoint directly into the persistent HD R8 surface. It never enlarges the
+  320x200 Exact FINAL MAIN. The route fails closed when the native plugin is
+  absent or when a source sprite family has not yet received a profile-sized
+  adapter; the current Level 1 owner smoke records that deliberate blocker.
+  The additive Classic HD ABI fixture remains available for contract tests,
+  while the direct component `Configure` overload remains a clearly
+  synthetic, owner-free Level 1 Night source for EditMode tests.
 - JSON settings outside owner data with fail-closed schema/profile validation.
 - A procedural Unity Enhanced stack over the same snapshot boundary:
   authoritative height/type/shade/angle terrain planes with generated normals

@@ -173,6 +173,7 @@ namespace MagicCarpet.PresentationLab
                 ownerSession = new ClassicHdOwnerSessionSource();
                 if (!ownerSession.Configure(
                         profileInfo,
+                        requestedSettings,
                         packagePath,
                         closurePath,
                         assetCachePath,
@@ -187,8 +188,8 @@ namespace MagicCarpet.PresentationLab
             CreateDisplayObjects();
             IsConfigured = true;
             StatusLine = "Classic HD " + settings.profile + " / indexed R8 / " +
-                         (UsesNativeOwnerSession
-                             ? "owner-bound Rust FINAL MAIN adapter"
+                        (UsesNativeOwnerSession
+                             ? "owner-bound Rust profile-sized Classic HD rerender"
                              : (UsesNativeFixture ? "native additive ABI fixture" : "synthetic lab source"));
             UpdateDisplayViewport(true);
             ResetPresentationHistory();
