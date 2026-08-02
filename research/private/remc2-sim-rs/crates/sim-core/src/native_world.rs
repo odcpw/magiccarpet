@@ -3396,6 +3396,28 @@ fn level2_owner_mana_projection(rows: &[Level2OwnerManaRow]) -> (BTreeMap<u16, i
     (aggregate, global)
 }
 
+/// Project the source `maxMana` sink implemented by `sub_61000`.
+/// `sub_60F00` restores each imported player's baseline capacity before
+/// scanning the active arena; qualifying rows then add their mana to the
+/// player named by `playerEntityIndex_0x94`. Rows without an owner relation
+/// still contribute to the source global counter, but cannot update a
+/// player's capacity.
+fn level2_owner_max_mana_projection(
+    baseline: &BTreeMap<u16, i32>,
+    rows: &[Level2OwnerManaRow],
+) -> BTreeMap<u16, i32> {
+    let mut projected = baseline.clone();
+    for row in rows.iter().filter(|row| {
+        row.active
+            && row.player_entity_index != 0
+            && level2_owner_mana_row_qualifies(row.source_class, row.source_model)
+    }) {
+        let entry = projected.entry(row.player_entity_index).or_insert(0_i32);
+        *entry = entry.saturating_add(row.mana);
+    }
+    projected
+}
+
 /// The short-lived class-10/model-1/action-1 row created by the source
 /// `KillEntity_1C930` tail after a creature's mana conversion.  It is kept in
 /// the same dynamic arena as spheres and carriers so allocation order,
@@ -3601,13 +3623,15 @@ impl Level2EconomyState {
             .iter()
             .map(|entity| (entity.index, entity.source_player_entity_index()))
             .collect::<BTreeMap<_, _>>();
-        let owner_max_mana = entities
+        let baseline_owner_max_mana = entities
             .iter()
             .filter(|entity| entity.active)
             .map(|entity| (entity.index, entity.max_mana))
             .collect::<BTreeMap<_, _>>();
         let static_spheres = level2_static_mana_spheres_from_entities(entities, &source_owner);
         let owner_mana_rows = level2_owner_mana_rows_from_entities(entities);
+        let owner_max_mana =
+            level2_owner_max_mana_projection(&baseline_owner_max_mana, &owner_mana_rows);
         let (owner_mana_aggregate, owner_mana_global) =
             level2_owner_mana_projection(&owner_mana_rows);
         let raw_map_entries =
@@ -3669,7 +3693,7 @@ impl Level2EconomyState {
             source_owner,
             baseline_owner_class: owner_class.clone(),
             owner_class,
-            baseline_owner_max_mana: owner_max_mana.clone(),
+            baseline_owner_max_mana,
             owner_max_mana,
             baseline_owner_mana_rows: owner_mana_rows.clone(),
             owner_mana_rows,
@@ -3985,6 +4009,14 @@ impl Level2EconomyState {
         let (aggregate, global) = level2_owner_mana_projection(&self.owner_mana_rows);
         self.owner_mana_aggregate = aggregate;
         self.owner_mana_global = global;
+    }
+
+    /// Run the source `sub_60F00` max-mana reset/sink at its owning-pass
+    /// boundary. Generic sphere/carrier mutations rebuild dword-13C/global
+    /// rows but must not move this capacity earlier than the source turn.
+    fn rebuild_owner_max_mana_projection(&mut self) {
+        self.owner_max_mana =
+            level2_owner_max_mana_projection(&self.baseline_owner_max_mana, &self.owner_mana_rows);
     }
 
     #[must_use]
@@ -5522,6 +5554,7 @@ impl Level2EconomyState {
         }
 
         self.rebuild_owner_mana_projection();
+        self.rebuild_owner_max_mana_projection();
 
         // `sub_5FF50` resets the owner's aggregate defender mana/max counters
         // and then arbitrates each holder's `word_0x96_150` target. A full
@@ -6869,6 +6902,8 @@ impl Level2EconomyState {
         self.player_spell_holder_max_action = self.baseline_player_spell_holder_max_action;
         self.castle_stage_coefficients = self.baseline_castle_stage_coefficients;
         self.castle_controller_coefficients = self.baseline_castle_controller_coefficients;
+        self.rebuild_owner_mana_projection();
+        self.rebuild_owner_max_mana_projection();
         self.events.clear();
     }
 }
@@ -8633,6 +8668,13 @@ impl Level2ResetSession {
             control_flags: player_control_flags,
         }];
         self.economy.advance_global_rng();
+        // Pinned `UpdateEntities_57730` invokes `sub_60F00` once at the
+        // owning-pass boundary (EventsFunctions.cpp:40123), before any
+        // callback can spawn a fresh model-39 sphere or carrier.  Refresh
+        // maxMana here so rows created by the previous source turn become
+        // visible now, while same-pass merges still observe the prior
+        // boundary's capacity just like remc2.
+        self.economy.rebuild_owner_max_mana_projection();
         self.synchronize_level2_terrain();
         let mut goat_begin_events = BTreeMap::<u16, Vec<GoatStepEvent>>::new();
         for event in self.goats.begin_source_turn(&goat_players) {
@@ -16839,6 +16881,14 @@ mod tests {
         assert_eq!(aggregate.get(&0), None);
         assert_eq!(global, 1 + 7 + 11 + 13 + 17 + 19 + 23 + 29);
 
+        // `sub_61000` feeds every qualifying row into the owner's maxMana;
+        // model-39 is deliberately distinct from the model-45 aggregate
+        // assertion above.
+        let baseline = BTreeMap::from([(111_u16, 100_i32), (222_u16, 50_i32)]);
+        let projected = level2_owner_max_mana_projection(&baseline, &rows);
+        assert_eq!(projected.get(&111), Some(&190));
+        assert_eq!(projected.get(&222), Some(&50));
+
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
         let mut session = inspection
@@ -16847,24 +16897,53 @@ mod tests {
         assert_eq!(session.economy().owner_mana_global(), 12_835);
         assert_eq!(session.economy().owner_mana_aggregate(111), 0);
         let baseline_hash = session.economy().reset_hash();
+
+        // Keep a source-linked model-39 row in the baseline, then add a
+        // second active row and verify the owner capacity rebuild/reset path.
+        let mut owner_max_session = inspection
+            .level2_reset_session()
+            .expect("owner max-mana session");
         {
-            let economy = session.economy_mut();
-            economy.owner_mana_rows.push(Level2OwnerManaRow {
+            let economy = owner_max_session.economy_mut();
+            economy.baseline_owner_max_mana.insert(222, 100);
+            economy.baseline_owner_mana_rows.push(Level2OwnerManaRow {
                 source_entity_index: 900,
                 source_class: 10,
-                source_model: 45,
-                player_entity_index: 111,
-                mana: 900,
+                source_model: 39,
+                player_entity_index: 222,
+                mana: 75,
                 active: true,
             });
-            let (aggregate, global) = level2_owner_mana_projection(&economy.owner_mana_rows);
-            economy.owner_mana_aggregate = aggregate;
-            economy.owner_mana_global = global;
+            economy.rebuild_owner_mana_projection();
+            economy.rebuild_owner_max_mana_projection();
+            assert_eq!(economy.owner_max_mana.get(&222), Some(&175));
         }
-        assert_eq!(session.economy().owner_mana_aggregate(111), 900);
-        assert_eq!(session.economy().owner_mana_global(), 13_735);
+        {
+            let economy = owner_max_session.economy_mut();
+            economy.baseline_owner_mana_rows.push(Level2OwnerManaRow {
+                source_entity_index: 901,
+                source_class: 10,
+                source_model: 39,
+                player_entity_index: 222,
+                mana: 25,
+                active: true,
+            });
+            economy.rebuild_owner_mana_projection();
+            economy.rebuild_owner_max_mana_projection();
+            assert_eq!(economy.owner_max_mana.get(&222), Some(&200));
+        }
+        let owner_max_baseline_hash = owner_max_session.economy().reset_hash();
         session.reset();
         assert_eq!(session.economy().reset_hash(), baseline_hash);
+        owner_max_session.reset();
+        assert_eq!(
+            owner_max_session.economy().reset_hash(),
+            owner_max_baseline_hash
+        );
+        assert_eq!(
+            owner_max_session.economy().owner_max_mana.get(&222),
+            Some(&200)
+        );
         assert_eq!(session.economy().owner_mana_aggregate(111), 0);
         assert_eq!(session.economy().owner_mana_global(), 12_835);
 
@@ -17039,6 +17118,7 @@ mod tests {
         entities[1] = static_entity;
 
         let player_entity = &entities[usize::from(inspection.players()[0].entity_index)];
+        let player_baseline_max_mana = entities[usize::from(source_relation)].max_mana;
         let mut economy = Level2EconomyState::from_parts(
             SessionTerrain::from_inspection(&inspection),
             &entities,
@@ -17079,6 +17159,11 @@ mod tests {
         assert_eq!(
             economy.select_castle_defender_sphere(static_position, source_relation, 0, 0),
             Some(1)
+        );
+        assert_eq!(
+            economy.owner_max_mana.get(&source_relation),
+            Some(&(player_baseline_max_mana + 321)),
+            "sub_61000 adds static model-39 mana to the linked player's maxMana"
         );
 
         let baseline_hash = economy.reset_hash();
