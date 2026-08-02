@@ -131,6 +131,21 @@ Unity -batchmode -force-glcore \
 This proves the live Rust-to-Unity presentation bridge and reset replay, not
 the broader owner/GPU scenario matrix or human visual acceptance.
 
+The owner smoke requires a temporary owner-local native plugin. Build and copy
+it only for the probe, then remove the library and Unity-generated metadata
+before running package verification or committing:
+
+```text
+CARGO_TARGET_DIR=/tmp/magiccarpet-gfx-spec-cargo-target cargo build --release -p sim-capi --locked
+mkdir -p research/private/remc2-unity-presentation-lab/Assets/Plugins/x86_64
+cp /tmp/magiccarpet-gfx-spec-cargo-target/release/libsim_capi.so \
+  research/private/remc2-unity-presentation-lab/Assets/Plugins/x86_64/libsim_capi.so
+# run the owner smoke, then trash libsim_capi.so and its generated .meta files
+```
+
+The lab intentionally remains plugin-free at rest; missing native input fails
+the owner route closed rather than silently falling back to a synthetic world.
+
 Verify the project boundary and URP assignment with:
 
 ```text
