@@ -8,7 +8,8 @@
 //! complete before primary water triangles are submitted.
 
 use crate::mode5_raster::{
-    Mode5Scanline, Mode5Span, Mode5Vertex, setup_mode5_triangle, span_from_scanline,
+    Mode5Scanline, Mode5Span, Mode5TextureAddressing, Mode5Vertex, setup_mode5_triangle,
+    span_from_scanline, tile_texture_address,
 };
 
 /// Exact byte count of the qualified MC2 night renderer table resource.
@@ -83,6 +84,29 @@ pub fn rasterize_mode26_span_from_atlas(
         texture_base,
         tablesn,
         framebuffer_row,
+        Mode5TextureAddressing::Full256,
+        |pixel| pixels.push(pixel),
+    );
+    pixels
+}
+
+pub(crate) fn rasterize_mode26_span_from_tile_atlas(
+    span: Mode5Span,
+    viewport_width: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    framebuffer_row: &mut [u8],
+) -> Vec<Mode26Pixel> {
+    let mut pixels = Vec::new();
+    visit_mode26_span_from_atlas(
+        span,
+        viewport_width,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        framebuffer_row,
+        Mode5TextureAddressing::Tile32,
         |pixel| pixels.push(pixel),
     );
     pixels
@@ -95,6 +119,7 @@ fn visit_mode26_span_from_atlas<F>(
     texture_base: usize,
     tablesn: &[u8],
     framebuffer_row: &mut [u8],
+    addressing: Mode5TextureAddressing,
     mut visitor: F,
 ) where
     F: FnMut(Mode26Pixel),
@@ -129,13 +154,31 @@ fn visit_mode26_span_from_atlas<F>(
         .left_pnt5
         .wrapping_add(span.dpnt5.wrapping_mul(clipped));
     for x in start..end {
-        let texture_address = (u16::from(fixed_byte(v)) << 8) | u16::from(fixed_byte(u));
+        let texture_address = match addressing {
+            Mode5TextureAddressing::Full256 => {
+                (u16::from(fixed_byte(v)) << 8) | u16::from(fixed_byte(u))
+            }
+            Mode5TextureAddressing::Tile32 => {
+                let Some(texture_address) = tile_texture_address(u, v) else {
+                    break;
+                };
+                texture_address
+            }
+        };
         let atlas_address = texture_base
             .checked_add(usize::from(texture_address))
             .expect("mode-26 atlas address fits usize");
-        let source_index = *texture_atlas
-            .get(atlas_address)
-            .expect("mode-26 stepped texture address remains inside its source atlas");
+        let source_index = match addressing {
+            Mode5TextureAddressing::Full256 => *texture_atlas
+                .get(atlas_address)
+                .expect("mode-26 stepped texture address remains inside its source atlas"),
+            Mode5TextureAddressing::Tile32 => {
+                let Some(source_index) = texture_atlas.get(atlas_address) else {
+                    break;
+                };
+                *source_index
+            }
+        };
         let shade_address = (u16::from(fixed_byte(pnt5)) << 8) | u16::from(source_index);
         let shaded_index = tablesn[usize::from(shade_address)];
         let frame_index = usize::try_from(x).expect("clipped mode-26 X is non-negative");
@@ -208,6 +251,49 @@ pub fn rasterize_mode26_triangle_from_atlas_into_framebuffer(
     tablesn: &[u8],
     framebuffer: &mut [u8],
 ) -> Vec<Mode26FramePixel> {
+    rasterize_mode26_triangle_from_atlas_with_addressing(
+        vertices,
+        viewport_width,
+        viewport_height,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        framebuffer,
+        Mode5TextureAddressing::Full256,
+    )
+}
+
+pub(crate) fn rasterize_mode26_triangle_from_tile_atlas_into_framebuffer(
+    vertices: [Mode5Vertex; 3],
+    viewport_width: i32,
+    viewport_height: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    framebuffer: &mut [u8],
+) -> Vec<Mode26FramePixel> {
+    rasterize_mode26_triangle_from_atlas_with_addressing(
+        vertices,
+        viewport_width,
+        viewport_height,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        framebuffer,
+        Mode5TextureAddressing::Tile32,
+    )
+}
+
+fn rasterize_mode26_triangle_from_atlas_with_addressing(
+    vertices: [Mode5Vertex; 3],
+    viewport_width: i32,
+    viewport_height: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    framebuffer: &mut [u8],
+    addressing: Mode5TextureAddressing,
+) -> Vec<Mode26FramePixel> {
     assert!(
         viewport_width >= 0 && viewport_height >= 0,
         "mode-26 viewport dimensions must be non-negative"
@@ -242,14 +328,24 @@ pub fn rasterize_mode26_triangle_from_atlas_into_framebuffer(
             .checked_mul(width)
             .expect("mode-26 framebuffer row offset fits usize");
         let row_end = row_start + width;
-        let pixels = rasterize_mode26_span_from_atlas(
-            span,
-            viewport_width,
-            texture_atlas,
-            texture_base,
-            tablesn,
-            &mut framebuffer[row_start..row_end],
-        );
+        let pixels = match addressing {
+            Mode5TextureAddressing::Full256 => rasterize_mode26_span_from_atlas(
+                span,
+                viewport_width,
+                texture_atlas,
+                texture_base,
+                tablesn,
+                &mut framebuffer[row_start..row_end],
+            ),
+            Mode5TextureAddressing::Tile32 => rasterize_mode26_span_from_tile_atlas(
+                span,
+                viewport_width,
+                texture_atlas,
+                texture_base,
+                tablesn,
+                &mut framebuffer[row_start..row_end],
+            ),
+        };
         frame_pixels.extend(
             pixels
                 .into_iter()
@@ -260,11 +356,10 @@ pub fn rasterize_mode26_triangle_from_atlas_into_framebuffer(
 }
 
 /// Visit a complete mode-26 triangle without retaining one `Mode26Pixel`
-/// record per sampled pixel. The source wrapper above keeps its historical
-/// vector-returning API; Classic HD uses this streaming seam because large
-/// profile-sized water triangles otherwise spend most of their time growing
-/// and copying temporary sample vectors.
-pub(crate) fn visit_mode26_triangle_from_atlas_into_framebuffer<F>(
+/// record per sampled pixel. Classic HD uses this streaming seam because
+/// large profile-sized water triangles otherwise spend most of their time
+/// growing and copying temporary sample vectors.
+pub(crate) fn visit_mode26_triangle_from_tile_atlas_into_framebuffer<F>(
     vertices: [Mode5Vertex; 3],
     viewport_width: i32,
     viewport_height: i32,
@@ -272,6 +367,32 @@ pub(crate) fn visit_mode26_triangle_from_atlas_into_framebuffer<F>(
     texture_base: usize,
     tablesn: &[u8],
     framebuffer: &mut [u8],
+    visitor: F,
+) where
+    F: FnMut(Mode26FramePixel),
+{
+    visit_mode26_triangle_from_atlas_with_addressing(
+        vertices,
+        viewport_width,
+        viewport_height,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        framebuffer,
+        Mode5TextureAddressing::Tile32,
+        visitor,
+    );
+}
+
+fn visit_mode26_triangle_from_atlas_with_addressing<F>(
+    vertices: [Mode5Vertex; 3],
+    viewport_width: i32,
+    viewport_height: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    framebuffer: &mut [u8],
+    addressing: Mode5TextureAddressing,
     mut visitor: F,
 ) where
     F: FnMut(Mode26FramePixel),
@@ -316,6 +437,7 @@ pub(crate) fn visit_mode26_triangle_from_atlas_into_framebuffer<F>(
             texture_base,
             tablesn,
             &mut framebuffer[row_start..row_end],
+            addressing,
             |sample| visitor(Mode26FramePixel { y: row.y, sample }),
         );
     }
@@ -451,6 +573,39 @@ mod tests {
         );
         assert_eq!(pixels[0].texture_address, 0x0201);
         assert_eq!(pixels[0].shade_address, 0x0314);
+    }
+
+    #[test]
+    fn tile_atlas_addressing_aborts_span_before_out_of_range_dereference() {
+        let mut atlas = vec![0; 152 * 32 * 32];
+        let base = (151 / 8) * 32 * 256 + (151 % 8) * 32;
+        atlas[base + 0x0010] = 12;
+        let tablesn = tables();
+        let mut row = vec![77, 77];
+        let pixels = rasterize_mode26_span_from_tile_atlas(
+            Mode5Span {
+                left_x: 0,
+                right_x: 2,
+                left_u: 16 << 16,
+                left_v: 0,
+                dv: -(1 << 16),
+                ..Mode5Span::default()
+            },
+            2,
+            &atlas,
+            base,
+            &tablesn,
+            &mut row,
+        );
+        assert_eq!(pixels.len(), 1);
+        assert_eq!(
+            pixels
+                .iter()
+                .map(|pixel| pixel.texture_address)
+                .collect::<Vec<_>>(),
+            vec![0x0010]
+        );
+        assert_eq!(row, [12, 77]);
     }
 
     #[test]

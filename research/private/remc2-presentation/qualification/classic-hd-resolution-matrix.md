@@ -80,7 +80,8 @@ The optional-tier fallback receipt is recorded in
 still passes. Optional native-tier consumption remains open. The bounded
 focus/pause and exit-sidecar receipts separately prove pause-safe authoritative
 state and reset-safe exit observability, while real OS window/alt-tab capture
-and full authored completion/postgame remain open.
+remains open. The full authored completion/postgame route is recorded
+separately below.
 
 The effects-settings receipt is recorded in
 `qualification/classic-hd-owner-effects-matrix.json`. The owner-bound 640x480
@@ -89,8 +90,29 @@ lighting enabled, and rejects disabled reflections or dynamic lighting before
 opening the native session. This qualifies the settings contract; it does not
 replace the missing visual corpus or automatic high-speed postprocess proof.
 
+The owner-command replay route is recorded in
+`qualification/classic-hd-owner-completion-replay-smoke.json`. It reads the
+sealed external `mc-native-command-10-byte-le/v1` stream, passes each raw
+record to the Rust owner session, and asserts both clocks: the authoritative
+simulation tick advances from 1 through 1,112 while the render-camera
+presentation tick intentionally reports 0 through 1,111 for those same
+post-update frames. The smoke consumes 1,112 commands, uploads 1,112 frames,
+holds one allocation epoch, and keeps generation 2 stable. Its status remains
+open because the short owner journal does not reach the authored completion or
+postgame result; no synthetic input or completion state is substituted.
+
+The full authored completion/postgame route is recorded in
+`qualification/classic-hd-owner-completion-route.json`. It replays all 16,232
+records from the sealed external owner journal through the Rust session and
+Unity R8 surface, uploads one frame per command, holds allocation epoch 1 and
+generation 2, and proves authoritative ticks 1..16,232 alongside presentation
+ticks 0..16,231. The route reaches the authored exit result 10 with one
+completed task. This receipt was requalified with the source-faithful Classic
+HD tile-span guard; the runner used the quarantined native plugin build whose
+SHA-256 is recorded in the JSON matrix. Owner payload remains external.
+
 Remaining GFX-O evidence is intentionally explicit in the JSON matrix:
-Speed-jar automatic high-speed postprocess, completion/fullscreen/alt-tab,
+Speed-jar automatic high-speed postprocess, fullscreen/alt-tab,
 20-minute allocation growth, GPU timing and window presentation, the rejected
 960x720 alternative, visual corpus review, and the complete owner-bound
 reflection/lighting/blur matrix still require the private owner-data Unity

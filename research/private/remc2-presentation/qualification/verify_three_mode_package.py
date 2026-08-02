@@ -57,6 +57,9 @@ CLASSIC_HD_OWNER_FOCUS_PAUSE_ARTIFACT = Path(__file__).with_name(
 CLASSIC_HD_OWNER_EXIT_SIDECAR_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-exit-sidecar.json"
 )
+CLASSIC_HD_OWNER_COMPLETION_REPLAY_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-completion-replay-smoke.json"
+)
 CLASSIC_HD_OWNER_EFFECTS_MATRIX_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-effects-matrix.json"
 )
@@ -65,6 +68,9 @@ CLASSIC_HD_OWNER_OS_WINDOW_LIFECYCLE_ARTIFACT = Path(__file__).with_name(
 )
 CLASSIC_HD_OWNER_OS_WINDOW_FULLSCREEN_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-os-window-lifecycle-fullscreen-window.json"
+)
+CLASSIC_HD_OWNER_COMPLETION_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-completion-route.json"
 )
 CLASSIC_HD_OWNER_VISUAL_CAPTURE_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-visual-capture.json"
@@ -285,6 +291,78 @@ def validate_enhanced_owner_scenario_artifact(
     return errors
 
 
+def validate_classic_hd_owner_completion_artifact(
+    path: Path = CLASSIC_HD_OWNER_COMPLETION_ARTIFACT,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"Classic HD owner completion artifact read failed: {error}"]
+
+    if artifact.get("schema_version") != 1:
+        errors.append("Classic HD owner completion schema_version must be 1")
+    if artifact.get("mode") != "classic-hd":
+        errors.append("Classic HD owner completion mode is wrong")
+    if artifact.get("route") != "level1-completion-postgame":
+        errors.append("Classic HD owner completion route is wrong")
+    if artifact.get("status") != "pass":
+        errors.append("Classic HD owner completion must be a pass receipt")
+    if artifact.get("evidence_authority") != "owner-external-input-journal":
+        errors.append("Classic HD owner completion must identify the external owner journal")
+    if artifact.get("owner_payload_embedded") is not False:
+        errors.append("Classic HD owner completion must not embed owner payload")
+    if artifact.get("owner_inputs_external") is not True:
+        errors.append("Classic HD owner completion must identify owner inputs as external")
+    if artifact.get("journal_schema") != "mc2-unity-playthrough/v1":
+        errors.append("Classic HD owner completion journal schema is wrong")
+    if artifact.get("journal_status") != "complete":
+        errors.append("Classic HD owner completion journal must be complete")
+    if artifact.get("journal_command_encoding") != "mc-native-command-10-byte-le/v1":
+        errors.append("Classic HD owner completion journal encoding is wrong")
+
+    command_count = artifact.get("journal_command_count")
+    replayed_commands = artifact.get("journal_replayed_commands")
+    if not isinstance(command_count, int) or command_count < 1_000:
+        errors.append("Classic HD owner completion journal must contain at least 1,000 commands")
+    if replayed_commands != command_count:
+        errors.append("Classic HD owner completion must replay every journal command")
+    if artifact.get("frame_count") != replayed_commands:
+        errors.append("Classic HD owner completion frame_count must equal replayed commands")
+    if artifact.get("upload_count") != artifact.get("frame_count"):
+        errors.append("Classic HD owner completion must upload every replayed frame")
+    if artifact.get("allocation_epoch") != 1:
+        errors.append("Classic HD owner completion must keep one steady-state allocation")
+    if artifact.get("initial_tick") != 0 or artifact.get("source_initial_tick") != 0:
+        errors.append("Classic HD owner completion must start from tick zero")
+    if artifact.get("generation_stable") is not True:
+        errors.append("Classic HD owner completion generation must remain stable")
+    if artifact.get("authoritative_generation") != artifact.get("generation"):
+        errors.append("Classic HD owner completion authoritative/source generation must agree")
+    if artifact.get("exit_sequence_active_observed") is not True:
+        errors.append("Classic HD owner completion must observe the exit sequence")
+    if not isinstance(artifact.get("exit_sequence_active"), bool):
+        errors.append("Classic HD owner completion must record the terminal exit-active state")
+    if artifact.get("exit_sequence_complete") is not True:
+        errors.append("Classic HD owner completion must reach exit completion")
+    if artifact.get("exit_result_code") != 10:
+        errors.append("Classic HD owner completion must reach exit result 10")
+    if not isinstance(artifact.get("tasks_completed"), int) or artifact["tasks_completed"] <= 0:
+        errors.append("Classic HD owner completion must prove completed mission tasks")
+    for field in (
+        "journal_manifest_sha256",
+        "journal_commands_sha256",
+        "index_route_hash",
+        "provenance_route_hash",
+    ):
+        value = artifact.get(field)
+        if not isinstance(value, str) or not value:
+            errors.append(f"Classic HD owner completion is missing {field}")
+    if not isinstance(artifact.get("reason"), str) or not artifact["reason"]:
+        errors.append("Classic HD owner completion is missing its reason")
+    return errors
+
+
 def validate_classic_hd_owner_scenario_artifact(
     path: Path = CLASSIC_HD_OWNER_SCENARIO_ARTIFACT,
     profile: str = "hd-640x480",
@@ -500,6 +578,78 @@ def validate_classic_hd_owner_exit_sidecar_artifact(
             errors.append(f"Classic HD owner exit sidecar is missing {field}")
     if "remains open" not in str(artifact.get("qualification_status", "")):
         errors.append("Classic HD owner exit sidecar must keep the completion gate explicit")
+    return errors
+
+
+def validate_classic_hd_owner_completion_replay_artifact(
+    path: Path = CLASSIC_HD_OWNER_COMPLETION_REPLAY_ARTIFACT,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"Classic HD owner completion replay artifact read failed: {error}"]
+
+    if artifact.get("schema_version") != 1:
+        errors.append("Classic HD owner completion replay schema_version must be 1")
+    if artifact.get("kind") != "classic-hd-owner-completion-replay-smoke/v1":
+        errors.append("Classic HD owner completion replay artifact kind is wrong")
+    if artifact.get("mode") != "classic-hd" or artifact.get("profile") != "hd-640x480":
+        errors.append("Classic HD owner completion replay must target the 640x480 route")
+    if artifact.get("internal_width") != 640 or artifact.get("internal_height") != 480:
+        errors.append("Classic HD owner completion replay extent must be 640x480")
+    if artifact.get("route") != "level1-completion-postgame":
+        errors.append("Classic HD owner completion replay route is wrong")
+    if artifact.get("native_abi") != "sim-capi-v2":
+        errors.append("Classic HD owner completion replay must identify sim-capi-v2")
+    if artifact.get("status") != "open":
+        errors.append("Classic HD owner completion replay smoke must remain open")
+    if artifact.get("evidence_authority") != "owner-external-input-journal":
+        errors.append("Classic HD owner completion replay authority is wrong")
+    if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
+        errors.append("Classic HD owner completion replay must keep owner inputs external")
+
+    command_count = artifact.get("journal_command_count")
+    if not isinstance(command_count, int) or command_count < 1:
+        errors.append("Classic HD owner completion replay command count must be positive")
+    else:
+        if artifact.get("journal_replayed_commands") != command_count:
+            errors.append("Classic HD owner completion replay did not consume the full journal")
+        if artifact.get("frame_count") != command_count or artifact.get("upload_count") != command_count:
+            errors.append("Classic HD owner completion replay frame/upload count is wrong")
+        if artifact.get("final_tick") != command_count:
+            errors.append("Classic HD owner completion replay authoritative final tick is wrong")
+        if artifact.get("source_final_tick") != command_count - 1:
+            errors.append("Classic HD owner completion replay presentation final tick is wrong")
+
+    if artifact.get("journal_schema") != "mc2-unity-playthrough/v1":
+        errors.append("Classic HD owner completion replay journal schema is wrong")
+    if artifact.get("journal_status") != "complete":
+        errors.append("Classic HD owner completion replay journal must be complete")
+    if artifact.get("journal_command_encoding") != "mc-native-command-10-byte-le/v1":
+        errors.append("Classic HD owner completion replay command encoding is wrong")
+    if artifact.get("allocation_epoch") != 1 or artifact.get("generation_stable") is not True:
+        errors.append("Classic HD owner completion replay must prove one allocation epoch and stable generation")
+    if artifact.get("generation") != artifact.get("authoritative_generation"):
+        errors.append("Classic HD owner completion replay source and authoritative generations differ")
+    if artifact.get("exit_sequence_active") is not False or artifact.get("exit_sequence_complete") is not False:
+        errors.append("Classic HD owner completion replay smoke must not claim authored exit completion")
+    if artifact.get("exit_result_code") != 0 or artifact.get("tasks_completed") != 0:
+        errors.append("Classic HD owner completion replay smoke terminal fields are inconsistent")
+    for field in (
+        "journal_manifest_sha256",
+        "journal_commands_sha256",
+        "index_route_hash",
+        "provenance_route_hash",
+        "native_plugin_sha256",
+        "runner_log_path",
+        "runner_log_sha256",
+        "reason",
+    ):
+        if not isinstance(artifact.get(field), str) or not artifact[field]:
+            errors.append(f"Classic HD owner completion replay is missing {field}")
+    if "does not reach" not in str(artifact.get("reason", "")):
+        errors.append("Classic HD owner completion replay must state why completion remains open")
     return errors
 
 
@@ -1246,6 +1396,11 @@ def verify() -> dict[str, Any]:
     _validator_result("Unity Enhanced lifecycle shell", lambda: enhanced.verify(LAB_ROOT), checks)
     _validator_result("owner-bound Classic HD sequence artifact", validate_sequence_artifact, checks)
     _validator_result(
+        "owner-bound Classic HD completion artifact",
+        validate_classic_hd_owner_completion_artifact,
+        checks,
+    )
+    _validator_result(
         "owner-bound Unity Enhanced sequence artifact",
         validate_enhanced_owner_sequence_artifact,
         checks,
@@ -1278,6 +1433,11 @@ def verify() -> dict[str, Any]:
     _validator_result(
         "owner-bound Classic HD exit-sidecar artifact",
         validate_classic_hd_owner_exit_sidecar_artifact,
+        checks,
+    )
+    _validator_result(
+        "owner-bound Classic HD completion replay artifact",
+        validate_classic_hd_owner_completion_replay_artifact,
         checks,
     )
     _validator_result(
@@ -1399,6 +1559,16 @@ def verify() -> dict[str, Any]:
     if pending_route_cases:
         open_gates.append(
             "Classic HD remaining owner route cases remain pending: " + ", ".join(pending_route_cases)
+        )
+    completion_replay = json.loads(
+        CLASSIC_HD_OWNER_COMPLETION_REPLAY_ARTIFACT.read_text(encoding="utf-8")
+    )
+    completion_route = json.loads(
+        CLASSIC_HD_OWNER_COMPLETION_ARTIFACT.read_text(encoding="utf-8")
+    )
+    if completion_replay.get("status") == "open" and completion_route.get("status") != "pass":
+        open_gates.append(
+            "Classic HD owner command-journal replay is deterministic, but the authored completion/postgame route remains open"
         )
 
     status = "PASS" if all(check["passed"] for check in checks) else "FAIL"

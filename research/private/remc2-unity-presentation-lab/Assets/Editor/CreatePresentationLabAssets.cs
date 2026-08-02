@@ -1595,6 +1595,226 @@ namespace MagicCarpet.PresentationLab.Editor
             }
         }
 
+        [MenuItem("Magic Carpet/Presentation Lab/Run Owner Classic HD Completion Route")]
+        public static void RunOwnerClassicHdCompletionRoute()
+        {
+            string packagePath = CommandLineValue("-mc-package");
+            string closurePath = CommandLineValue("-mc-closure");
+            string assetCachePath = CommandLineValue("-mc-asset-cache");
+            string journalPath = CommandLineValue("-mc-command-journal");
+            string receiptPath = CommandLineValue("-mc-completion-receipt");
+            if (string.IsNullOrWhiteSpace(packagePath) ||
+                string.IsNullOrWhiteSpace(closurePath) ||
+                string.IsNullOrWhiteSpace(assetCachePath) ||
+                string.IsNullOrWhiteSpace(journalPath) ||
+                string.IsNullOrWhiteSpace(receiptPath))
+            {
+                throw new InvalidOperationException(
+                    "owner Classic HD completion route requires -mc-package, -mc-closure, " +
+                    "-mc-asset-cache, -mc-command-journal, and -mc-completion-receipt");
+            }
+
+            var root = new GameObject("Owner Classic HD Completion Route Router");
+            var router = root.AddComponent<PresentationModeRouter>();
+            MethodInfo awake = typeof(PresentationModeRouter).GetMethod(
+                "Awake",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (awake == null)
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                throw new InvalidOperationException("presentation router Awake method is missing");
+            }
+
+            ClassicHdOwnerCommandJournal journal = null;
+            try
+            {
+                awake.Invoke(router, null);
+                if (!router.SessionIsOpen ||
+                    router.ClassicHdRenderer == null ||
+                    !router.ClassicHdRenderer.UsesNativeOwnerSession)
+                {
+                    throw new InvalidOperationException(
+                        "owner Classic HD completion route did not open the owner-bound Rust session");
+                }
+
+                string reason;
+                if (!ClassicHdOwnerCommandJournal.TryOpen(journalPath, out journal, out reason))
+                {
+                    throw new InvalidOperationException(reason);
+                }
+
+                if (!journal.MatchesExternalInputs(packagePath, closurePath, out reason))
+                {
+                    throw new InvalidOperationException(reason);
+                }
+
+                if (journal.CommandCount < 1_000)
+                {
+                    throw new InvalidOperationException(
+                        "owner Classic HD completion journal is too short for a Level 1 route: " +
+                        journal.CommandCount);
+                }
+
+                ClassicHdPresentation classic = router.ClassicHdRenderer;
+                var indexHashes = new List<ulong>(journal.CommandCount);
+                var provenanceHashes = new List<ulong>(journal.CommandCount);
+                ulong initialGeneration = classic.SourceGeneration;
+                ulong initialAuthoritativeGeneration = classic.AuthoritativeGeneration;
+                short maxTargetSpeed = short.MinValue;
+                short maxActualSpeed = short.MinValue;
+                bool exitActiveObserved = false;
+
+                for (int commandIndex = 0; commandIndex < journal.CommandCount; commandIndex++)
+                {
+                    ClassicHdOwnerCommand command;
+                    if (!journal.ReadNext(out command, out reason))
+                    {
+                        throw new InvalidOperationException(reason);
+                    }
+
+                    if (!classic.CaptureOwnerCommand(command, out reason))
+                    {
+                        throw new InvalidOperationException(
+                            "owner Classic HD completion command " + commandIndex + " failed: " + reason);
+                    }
+
+                    // The command advances the authoritative session first;
+                    // the render-camera receipt is the pre-update presentation
+                    // clock used to render that completed turn.
+                    ulong expectedAuthoritativeTick = checked((ulong)commandIndex + 1UL);
+                    ulong expectedSourceTick = checked((ulong)commandIndex);
+                    if (classic.SourceGeneration != initialGeneration ||
+                        classic.AuthoritativeGeneration != initialAuthoritativeGeneration ||
+                        classic.AuthoritativeTick != expectedAuthoritativeTick ||
+                        classic.SourceTick != expectedSourceTick)
+                    {
+                        throw new InvalidOperationException(
+                            "owner Classic HD completion route changed generation or clock at command " +
+                            commandIndex +
+                            ": source_generation=" + classic.SourceGeneration +
+                            " expected_generation=" + initialGeneration +
+                            " authoritative_generation=" + classic.AuthoritativeGeneration +
+                            " expected_authoritative_generation=" + initialAuthoritativeGeneration +
+                            " authoritative_tick=" + classic.AuthoritativeTick +
+                            " expected_authoritative_tick=" + expectedAuthoritativeTick +
+                            " source_tick=" + classic.SourceTick +
+                            " expected_source_tick=" + expectedSourceTick);
+                    }
+
+                    indexHashes.Add(classic.LastNativeIndexHash);
+                    provenanceHashes.Add(classic.LastNativeProvenanceHash);
+                    maxTargetSpeed = Math.Max(maxTargetSpeed, classic.TargetSpeed);
+                    maxActualSpeed = Math.Max(maxActualSpeed, (short)Math.Abs((int)classic.ActualSpeed));
+                    exitActiveObserved |= classic.ExitSequenceActive;
+                    if ((commandIndex % 1024) == 0 || commandIndex + 1 == journal.CommandCount)
+                    {
+                        Debug.Log(
+                            "OWNER CLASSIC HD COMPLETION ROUTE PROGRESS: command=" +
+                            (commandIndex + 1) + "/" + journal.CommandCount +
+                            " authoritative_tick=" + classic.AuthoritativeTick +
+                            " source_tick=" + classic.SourceTick +
+                            " stage_tasks=" + classic.TasksCompleted +
+                            " exit_active=" + (classic.ExitSequenceActive ? 1 : 0) +
+                            " exit_complete=" + (classic.ExitSequenceComplete ? 1 : 0));
+                    }
+                }
+
+                if (journal.ReadCount != journal.CommandCount)
+                {
+                    throw new InvalidOperationException(
+                        "owner Classic HD completion route did not consume the full command journal");
+                }
+
+                // Completion transitions the native state out of its transient
+                // active phase. Keep the observed-active latch as the proof
+                // that the route entered the authored exit sequence.
+                bool terminal = exitActiveObserved &&
+                    classic.ExitSequenceComplete &&
+                    classic.ExitResultCode == 10 &&
+                    classic.TasksCompleted > 0;
+                string status = terminal ? "pass" : "open";
+                string routeReason = terminal
+                    ? "owner journal reached the authored exit result"
+                    : "owner journal replay completed without the qualified exit result";
+                var receipt = new ClassicHdOwnerCompletionReceipt
+                {
+                    schema_version = 1,
+                    mode = "classic-hd",
+                    route = "level1-completion-postgame",
+                    status = status,
+                    evidence_authority = "owner-external-input-journal",
+                    owner_payload_embedded = false,
+                    owner_inputs_external = true,
+                    journal_schema = journal.ManifestSchema,
+                    journal_status = journal.ManifestStatus,
+                    journal_command_encoding = journal.ManifestCommandEncoding,
+                    journal_command_count = journal.CommandCount,
+                    journal_replayed_commands = journal.ReadCount,
+                    journal_manifest_sha256 = Sha256File(journal.ManifestPath),
+                    journal_commands_sha256 = Sha256File(journal.CommandsPath),
+                    frame_count = indexHashes.Count,
+                    upload_count = classic.UploadCount,
+                    allocation_epoch = classic.AllocationEpoch,
+                    generation = classic.SourceGeneration,
+                    initial_tick = 0,
+                    final_tick = classic.AuthoritativeTick,
+                    source_initial_tick = 0,
+                    source_final_tick = classic.SourceTick,
+                    authoritative_generation = classic.AuthoritativeGeneration,
+                    generation_stable = classic.SourceGeneration == initialGeneration &&
+                        classic.AuthoritativeGeneration == initialAuthoritativeGeneration,
+                    exit_sequence_active_observed = exitActiveObserved,
+                    exit_sequence_active = classic.ExitSequenceActive,
+                    exit_sequence_complete = classic.ExitSequenceComplete,
+                    exit_result_code = classic.ExitResultCode,
+                    tasks_completed = classic.TasksCompleted,
+                    max_target_speed = maxTargetSpeed,
+                    max_actual_speed = maxActualSpeed,
+                    index_route_hash = SequenceHash(indexHashes).ToString("x16"),
+                    provenance_route_hash = SequenceHash(provenanceHashes).ToString("x16"),
+                    reason = routeReason
+                };
+                string absoluteReceiptPath = Path.GetFullPath(receiptPath);
+                string receiptDirectory = Path.GetDirectoryName(absoluteReceiptPath);
+                if (!string.IsNullOrEmpty(receiptDirectory))
+                {
+                    Directory.CreateDirectory(receiptDirectory);
+                }
+                File.WriteAllText(
+                    absoluteReceiptPath,
+                    JsonUtility.ToJson(receipt, true) + "\n");
+
+                Debug.Log(
+                    "OWNER CLASSIC HD COMPLETION ROUTE " + status.ToUpperInvariant() +
+                    ": command_count=" + journal.CommandCount +
+                    " frame_count=" + receipt.frame_count +
+                    " uploads=" + receipt.upload_count +
+                    " generation=" + receipt.generation +
+                    " final_tick=" + receipt.final_tick +
+                    " exit_complete=" + (receipt.exit_sequence_complete ? 1 : 0) +
+                    " result=" + receipt.exit_result_code +
+                    " receipt=" + absoluteReceiptPath +
+                    " reason=" + routeReason.Replace(' ', '_'));
+                EditorApplication.Exit(0);
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError("OWNER CLASSIC HD COMPLETION ROUTE FAIL: " + exception);
+                EditorApplication.Exit(1);
+            }
+            finally
+            {
+                if (journal != null)
+                {
+                    journal.Dispose();
+                }
+                if (root != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(root);
+                }
+            }
+        }
+
         [MenuItem("Magic Carpet/Presentation Lab/Run Owner Classic HD Performance Smoke")]
         public static void RunOwnerClassicHdPerformanceSmoke()
         {
@@ -2666,6 +2886,50 @@ namespace MagicCarpet.PresentationLab.Editor
                 byte[] digest = sha256.ComputeHash(bytes ?? Array.Empty<byte>());
                 return BitConverter.ToString(digest).Replace("-", string.Empty).ToLowerInvariant();
             }
+        }
+
+        private static string Sha256File(string path)
+        {
+            return Sha256Hex(File.ReadAllBytes(path));
+        }
+
+        [Serializable]
+        private sealed class ClassicHdOwnerCompletionReceipt
+        {
+            public int schema_version;
+            public string mode;
+            public string route;
+            public string status;
+            public string evidence_authority;
+            public bool owner_payload_embedded;
+            public bool owner_inputs_external;
+            public string journal_schema;
+            public string journal_status;
+            public string journal_command_encoding;
+            public int journal_command_count;
+            public int journal_replayed_commands;
+            public string journal_manifest_sha256;
+            public string journal_commands_sha256;
+            public int frame_count;
+            public int upload_count;
+            public int allocation_epoch;
+            public ulong generation;
+            public ulong initial_tick;
+            public ulong final_tick;
+            public ulong source_initial_tick;
+            public ulong source_final_tick;
+            public ulong authoritative_generation;
+            public bool generation_stable;
+            public bool exit_sequence_active_observed;
+            public bool exit_sequence_active;
+            public bool exit_sequence_complete;
+            public byte exit_result_code;
+            public byte tasks_completed;
+            public short max_target_speed;
+            public short max_actual_speed;
+            public string index_route_hash;
+            public string provenance_route_hash;
+            public string reason;
         }
 
         [Serializable]

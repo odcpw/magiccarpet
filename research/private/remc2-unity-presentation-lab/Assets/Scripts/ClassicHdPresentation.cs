@@ -461,6 +461,49 @@ namespace MagicCarpet.PresentationLab
                     verticalInput);
             }
 
+            return UploadFrame(out reason);
+        }
+
+        /// <summary>
+        /// Captures one raw owner-local native command.  This is the only
+        /// presentation-lab entry point for replaying an external command
+        /// journal; synthetic input helpers cannot stand in for this route.
+        /// </summary>
+        public bool CaptureOwnerCommand(
+            ClassicHdOwnerCommand ownerCommand,
+            out string reason)
+        {
+            reason = string.Empty;
+            if (!IsConfigured || surface == null || frameBytes == null)
+            {
+                reason = "Classic HD presentation is not configured";
+                return false;
+            }
+
+            if (IsApplicationSuspended)
+            {
+                reason = "Classic HD presentation is suspended";
+                return false;
+            }
+
+            if (!UsesNativeOwnerSession)
+            {
+                reason = "raw owner command replay requires the owner-bound Rust session";
+                return false;
+            }
+
+            tick++;
+            if (!ownerSession.Fill(frameBytes, ownerCommand, out reason))
+            {
+                return false;
+            }
+
+            return UploadFrame(out reason);
+        }
+
+        private bool UploadFrame(out string reason)
+        {
+            reason = string.Empty;
             string uploadError;
             long uploadStart = System.Diagnostics.Stopwatch.GetTimestamp();
             bool uploaded = surface.UploadTopRowFirst(frameBytes, surface.Stride, out uploadError);

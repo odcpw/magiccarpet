@@ -69,6 +69,9 @@ namespace MagicCarpet.PresentationLab
         public bool IsConfigured { get; private set; }
         public ulong Generation { get { return generation; } }
         public ulong Tick { get { return tick; } }
+        // The render-camera clock is captured before the just-issued command's
+        // simulation turn. It intentionally trails AuthoritativeTick by one
+        // after a successful owner step.
         public ulong SourceGeneration { get { return generation; } }
         public ulong SourceTick { get { return tick; } }
         public ulong AuthoritativeGeneration { get { return snapshot.Generation; } }
@@ -338,6 +341,42 @@ namespace MagicCarpet.PresentationLab
             int spellSelection,
             out string reason)
         {
+            sbyte opcode = 0;
+            sbyte argument1 = 0;
+            sbyte flags = 1;
+            if (spellSelection >= 0)
+            {
+                opcode = SpellSelectionOpcode;
+                argument1 = ClampInt8(spellSelection);
+            }
+            if (cast)
+            {
+                flags = unchecked((sbyte)(flags | SelectedSpellFlag));
+            }
+
+            return Fill(
+                destination,
+                new ClassicHdOwnerCommand(
+                    opcode,
+                    argument1,
+                    0,
+                    ClampInt8(horizontalInput * 127f),
+                    ClampInt8(verticalInput * 127f),
+                    flags,
+                    -1),
+                out reason);
+        }
+
+        /// <summary>
+        /// Replays one owner-local ordinary input record.  The caller must
+        /// provide a journal command; this method does not synthesize or
+        /// mutate gameplay state beyond passing the record to Rust.
+        /// </summary>
+        public bool Fill(
+            byte[] destination,
+            ClassicHdOwnerCommand ownerCommand,
+            out string reason)
+        {
             reason = string.Empty;
             if (!IsConfigured || indexBytes == null || provenanceBytes == null)
             {
@@ -353,21 +392,17 @@ namespace MagicCarpet.PresentationLab
 
             LastNativeFrameNanoseconds = 0;
             long nativeFrameStart = System.Diagnostics.Stopwatch.GetTimestamp();
-            command.Opcode = 0;
-            command.Argument1 = 0;
-            command.Roll = ClampInt8(horizontalInput * 127f);
-            command.Pitch = ClampInt8(verticalInput * 127f);
-            command.Flags = 1;
-            command.RequestedSpell = -1;
-            if (spellSelection >= 0)
-            {
-                command.Opcode = SpellSelectionOpcode;
-                command.Argument1 = ClampInt8(spellSelection);
-            }
-            if (cast)
-            {
-                command.Flags = unchecked((sbyte)(command.Flags | SelectedSpellFlag));
-            }
+            command.Opcode = ownerCommand.Opcode;
+            command.Argument1 = ownerCommand.Argument1;
+            command.Argument2 = ownerCommand.Argument2;
+            command.Roll = ownerCommand.Roll;
+            command.Pitch = ownerCommand.Pitch;
+            command.Flags = ownerCommand.Flags;
+            command.RequestedSpell = ownerCommand.RequestedSpell;
+            command.Reserved0 = 0;
+            command.Reserved1 = 0;
+            command.Reserved2 = 0;
+            command.Reserved3 = 0;
             int status = mc_native_session_step_with_camera(
                 handle,
                 ref command,

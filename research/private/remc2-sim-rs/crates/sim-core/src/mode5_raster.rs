@@ -70,6 +70,30 @@ pub struct Mode5FramePixel {
     pub sample: Mode5Pixel,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Mode5TextureAddressing {
+    Full256,
+    Tile32,
+}
+
+pub(crate) const fn tile_texture_address(u: i32, v: i32) -> Option<u16> {
+    // The qualified HD source checks the raw packed address against the
+    // 32-pixel tile span before dereferencing it. Do not wrap or clamp a
+    // stepped value: an invalid sample terminates the current span.
+    let address = raw_texture_address(u, v);
+    if address > (32_u16 << 8) {
+        None
+    } else {
+        Some(address)
+    }
+}
+
+const fn raw_texture_address(u: i32, v: i32) -> u16 {
+    let u_byte = fixed_byte(u);
+    let v_byte = fixed_byte(v);
+    ((v_byte as u16) << 8) | u_byte as u16
+}
+
 /// Source horizontal attribute increment.
 ///
 /// The rasterizer divides by `integer_width + 1`, not by the number of pixels
@@ -207,6 +231,27 @@ pub fn rasterize_mode5_triangle_from_atlas(
     frame_pixels
 }
 
+pub(crate) fn rasterize_mode5_triangle_from_tile_atlas(
+    vertices: [Mode5Vertex; 3],
+    viewport_width: i32,
+    viewport_height: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+) -> Vec<Mode5FramePixel> {
+    let mut frame_pixels = Vec::new();
+    visit_mode5_triangle_from_tile_atlas(
+        vertices,
+        viewport_width,
+        viewport_height,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        |pixel| frame_pixels.push(pixel),
+    );
+    frame_pixels
+}
+
 /// Visit complete mode-5 triangle samples without allocating a frame-sized
 /// sample vector. The source traversal and sample order are identical to
 /// [`rasterize_mode5_triangle_from_atlas`]; Classic HD uses this presentation
@@ -219,6 +264,53 @@ pub(crate) fn visit_mode5_triangle_from_atlas<F>(
     texture_atlas: &[u8],
     texture_base: usize,
     tablesn: &[u8],
+    visitor: F,
+) where
+    F: FnMut(Mode5FramePixel),
+{
+    visit_mode5_triangle_from_atlas_with_addressing(
+        vertices,
+        viewport_width,
+        viewport_height,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        Mode5TextureAddressing::Full256,
+        visitor,
+    );
+}
+
+pub(crate) fn visit_mode5_triangle_from_tile_atlas<F>(
+    vertices: [Mode5Vertex; 3],
+    viewport_width: i32,
+    viewport_height: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    visitor: F,
+) where
+    F: FnMut(Mode5FramePixel),
+{
+    visit_mode5_triangle_from_atlas_with_addressing(
+        vertices,
+        viewport_width,
+        viewport_height,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        Mode5TextureAddressing::Tile32,
+        visitor,
+    );
+}
+
+fn visit_mode5_triangle_from_atlas_with_addressing<F>(
+    vertices: [Mode5Vertex; 3],
+    viewport_width: i32,
+    viewport_height: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    addressing: Mode5TextureAddressing,
     mut visitor: F,
 ) where
     F: FnMut(Mode5FramePixel),
@@ -246,6 +338,7 @@ pub(crate) fn visit_mode5_triangle_from_atlas<F>(
             texture_atlas,
             texture_base,
             tablesn,
+            addressing,
             |sample| visitor(Mode5FramePixel { y: row.y, sample }),
         );
     }
@@ -686,6 +779,28 @@ pub fn rasterize_mode5_span_from_atlas(
         texture_atlas,
         texture_base,
         tablesn,
+        Mode5TextureAddressing::Full256,
+        |pixel| pixels.push(pixel),
+    );
+    pixels
+}
+
+#[cfg(test)]
+pub(crate) fn rasterize_mode5_span_from_tile_atlas(
+    span: Mode5Span,
+    viewport_width: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+) -> Vec<Mode5Pixel> {
+    let mut pixels = Vec::new();
+    visit_mode5_span_from_atlas(
+        span,
+        viewport_width,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        Mode5TextureAddressing::Tile32,
         |pixel| pixels.push(pixel),
     );
     pixels
@@ -697,6 +812,7 @@ fn visit_mode5_span_from_atlas<F>(
     texture_atlas: &[u8],
     texture_base: usize,
     tablesn: &[u8],
+    addressing: Mode5TextureAddressing,
     mut visitor: F,
 ) where
     F: FnMut(Mode5Pixel),
@@ -720,13 +836,29 @@ fn visit_mode5_span_from_atlas<F>(
         .left_pnt5
         .wrapping_add(span.dpnt5.wrapping_mul(clipped));
     for x in start..end {
-        let texture_address = (u16::from(fixed_byte(v)) << 8) | u16::from(fixed_byte(u));
+        let texture_address = match addressing {
+            Mode5TextureAddressing::Full256 => raw_texture_address(u, v),
+            Mode5TextureAddressing::Tile32 => {
+                let Some(texture_address) = tile_texture_address(u, v) else {
+                    break;
+                };
+                texture_address
+            }
+        };
         let atlas_address = texture_base
             .checked_add(usize::from(texture_address))
             .expect("mode-5 atlas address fits usize");
-        let source_index = *texture_atlas
-            .get(atlas_address)
-            .expect("mode-5 stepped texture address remains inside its source atlas");
+        let source_index = match addressing {
+            Mode5TextureAddressing::Full256 => *texture_atlas
+                .get(atlas_address)
+                .expect("mode-5 stepped texture address remains inside its source atlas"),
+            Mode5TextureAddressing::Tile32 => {
+                let Some(source_index) = texture_atlas.get(atlas_address) else {
+                    break;
+                };
+                *source_index
+            }
+        };
         let tablesn_address = (u16::from(fixed_byte(pnt5)) << 8) | u16::from(source_index);
         let output_index = tablesn[usize::from(tablesn_address)];
         visitor(Mode5Pixel {
@@ -1163,6 +1295,34 @@ mod tests {
                 (2, 0x0c04, 0x0e04, 18),
             ]
         );
+    }
+
+    #[test]
+    fn tile_atlas_addressing_aborts_span_before_out_of_range_dereference() {
+        let mut atlas = vec![0; 152 * 32 * 32];
+        let base = (151 / 8) * 32 * 256 + (151 % 8) * 32;
+        atlas[base + 0x0010] = 17;
+        let (_, tablesn) = banks();
+
+        let pixels = rasterize_mode5_span_from_tile_atlas(
+            Mode5Span {
+                left_x: 0,
+                right_x: 2,
+                left_u: 16 << 16,
+                left_v: 0,
+                dv: -(1 << 16),
+                ..Mode5Span::default()
+            },
+            2,
+            &atlas,
+            base,
+            &tablesn,
+        );
+        assert_eq!(pixels.len(), 1);
+        assert_eq!(pixels[0].texture_address, 0x0010);
+        assert_eq!(pixels[0].source_index, 17);
+        assert_eq!(tile_texture_address(16 << 16, 0), Some(0x0010));
+        assert_eq!(tile_texture_address(16 << 16, -(1 << 16)), None);
     }
 
     #[test]

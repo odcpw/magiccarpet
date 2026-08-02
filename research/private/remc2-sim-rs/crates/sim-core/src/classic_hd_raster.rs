@@ -16,11 +16,11 @@ use crate::{
         TABLESN_REQUIRED_BYTES,
     },
     mode5_raster::{
-        Mode5Vertex, rasterize_mode5_triangle_from_atlas, visit_mode5_triangle_from_atlas,
+        Mode5Vertex, rasterize_mode5_triangle_from_tile_atlas, visit_mode5_triangle_from_tile_atlas,
     },
     mode26_raster::{
-        NIGHT_TABLES_BYTES, rasterize_mode26_triangle_from_atlas_into_framebuffer,
-        visit_mode26_triangle_from_atlas_into_framebuffer,
+        NIGHT_TABLES_BYTES, rasterize_mode26_triangle_from_tile_atlas_into_framebuffer,
+        visit_mode26_triangle_from_tile_atlas_into_framebuffer,
     },
     terrain_reflection::TerrainPass,
 };
@@ -126,7 +126,7 @@ pub fn rasterize_classic_hd_mode5_triangle(
     let height = i32::try_from(writer.height()).map_err(|_| {
         ClassicHdRasterError("Classic HD mode-5 height does not fit i32".to_owned())
     })?;
-    let pixels = rasterize_mode5_triangle_from_atlas(
+    let pixels = rasterize_mode5_triangle_from_tile_atlas(
         vertices,
         width,
         height,
@@ -193,7 +193,7 @@ fn rasterize_classic_hd_mode5_triangle_streaming(
     let mut source_pixels = 0_u64;
     let mut written_pixels = 0_u64;
     let mut clipped_pixels = 0_u64;
-    visit_mode5_triangle_from_atlas(
+    visit_mode5_triangle_from_tile_atlas(
         vertices,
         width,
         height,
@@ -250,7 +250,7 @@ pub fn rasterize_classic_hd_mode26_triangle(
     let height = i32::try_from(writer.height()).map_err(|_| {
         ClassicHdRasterError("Classic HD mode-26 height does not fit i32".to_owned())
     })?;
-    let pixels = rasterize_mode26_triangle_from_atlas_into_framebuffer(
+    let pixels = rasterize_mode26_triangle_from_tile_atlas_into_framebuffer(
         vertices,
         width,
         height,
@@ -314,7 +314,7 @@ fn rasterize_classic_hd_mode26_triangle_streaming(
     let mut clipped_pixels = 0_u64;
     {
         let (indices, provenance_plane) = writer.planes_mut();
-        visit_mode26_triangle_from_atlas_into_framebuffer(
+        visit_mode26_triangle_from_tile_atlas_into_framebuffer(
             vertices,
             width,
             height,

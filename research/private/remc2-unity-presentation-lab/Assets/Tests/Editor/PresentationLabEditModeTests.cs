@@ -2,6 +2,7 @@
 using System.IO;
 using NUnit.Framework;
 using UnityEngine;
+using MagicCarpet.PresentationLab.Editor;
 
 namespace MagicCarpet.PresentationLab.Tests
 {
@@ -223,6 +224,137 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsTrue(ClassicHdAbiContract.HasExpectedLayout(out reason), reason);
             Assert.AreEqual(1u, ClassicHdAbiContract.AbiVersion);
             Assert.AreEqual(4u, ClassicHdAbiContract.ProfileCount);
+        }
+
+        [Test]
+        public void OwnerCommandJournalReadsTheSealedLittleEndianRecord()
+        {
+            string root = Path.Combine(
+                Path.GetTempPath(),
+                "mc2-command-journal-" + System.Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                File.WriteAllText(
+                    Path.Combine(root, "manifest.json"),
+                    "{\"schema\":\"mc2-unity-playthrough/v1\",\"status\":\"complete\"," +
+                    "\"package_path\":\"/external/package\",\"closure_path\":\"/external/closure.json\"," +
+                    "\"command_encoding\":\"mc-native-command-10-byte-le/v1\",\"command_bytes\":10," +
+                    "\"command_count\":1}");
+                File.WriteAllBytes(
+                    Path.Combine(root, "commands.bin"),
+                    new byte[] { 40, 7, 6, 0xFC, 0x80, 0x41, 0xFF, 0xFF, 0, 0 });
+
+                ClassicHdOwnerCommandJournal journal;
+                string reason;
+                Assert.IsTrue(
+                    ClassicHdOwnerCommandJournal.TryOpen(root, out journal, out reason),
+                    reason);
+                using (journal)
+                {
+                    Assert.IsTrue(
+                        journal.MatchesExternalInputs(
+                            "/external/package",
+                            "/external/closure.json",
+                            out reason),
+                        reason);
+                    Assert.IsFalse(
+                        journal.MatchesExternalInputs(
+                            "/external/other-package",
+                            "/external/closure.json",
+                            out reason),
+                        "a journal bound to a different external package must fail closed");
+                    ClassicHdOwnerCommand command;
+                    Assert.IsTrue(journal.ReadNext(out command, out reason), reason);
+                    Assert.AreEqual((sbyte)40, command.Opcode);
+                    Assert.AreEqual((sbyte)7, command.Argument1);
+                    Assert.AreEqual((sbyte)6, command.Argument2);
+                    Assert.AreEqual((sbyte)-4, command.Roll);
+                    Assert.AreEqual(sbyte.MinValue, command.Pitch);
+                    Assert.AreEqual((sbyte)0x41, command.Flags);
+                    Assert.AreEqual((short)-1, command.RequestedSpell);
+                    Assert.AreEqual(1, journal.ReadCount);
+                }
+            }
+            finally
+            {
+                if (Directory.Exists(root))
+                {
+                    Directory.Delete(root, true);
+                }
+            }
+        }
+
+        [Test]
+        public void OwnerCommandJournalRejectsIncompleteRecorderOutput()
+        {
+            string root = Path.Combine(
+                Path.GetTempPath(),
+                "mc2-command-journal-incomplete-" + System.Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                File.WriteAllText(
+                    Path.Combine(root, "manifest.json"),
+                    "{\"schema\":\"mc2-unity-playthrough/v1\",\"status\":\"running\"," +
+                    "\"package_path\":\"/external/package\",\"closure_path\":\"/external/closure.json\"," +
+                    "\"command_encoding\":\"mc-native-command-10-byte-le/v1\",\"command_bytes\":10," +
+                    "\"command_count\":0}");
+                File.WriteAllBytes(Path.Combine(root, "commands.bin"), new byte[0]);
+
+                ClassicHdOwnerCommandJournal journal;
+                string reason;
+                Assert.IsFalse(
+                    ClassicHdOwnerCommandJournal.TryOpen(root, out journal, out reason));
+                StringAssert.Contains("not complete", reason);
+            }
+            finally
+            {
+                if (Directory.Exists(root))
+                {
+                    Directory.Delete(root, true);
+                }
+            }
+        }
+
+        [Test]
+        public void OwnerCommandJournalRejectsNonZeroRecorderReservedWords()
+        {
+            string root = Path.Combine(
+                Path.GetTempPath(),
+                "mc2-command-journal-reserved-" + System.Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                File.WriteAllText(
+                    Path.Combine(root, "manifest.json"),
+                    "{\"schema\":\"mc2-unity-playthrough/v1\",\"status\":\"complete\"," +
+                    "\"package_path\":\"/external/package\",\"closure_path\":\"/external/closure.json\"," +
+                    "\"command_encoding\":\"mc-native-command-10-byte-le/v1\",\"command_bytes\":10," +
+                    "\"command_count\":1}");
+                File.WriteAllBytes(
+                    Path.Combine(root, "commands.bin"),
+                    new byte[] { 0, 0, 0, 0, 0, 1, 0xFF, 0xFF, 1, 0 });
+
+                ClassicHdOwnerCommandJournal journal;
+                string reason;
+                Assert.IsTrue(
+                    ClassicHdOwnerCommandJournal.TryOpen(root, out journal, out reason),
+                    reason);
+                using (journal)
+                {
+                    ClassicHdOwnerCommand command;
+                    Assert.IsFalse(journal.ReadNext(out command, out reason));
+                    StringAssert.Contains("reserved bytes", reason);
+                }
+            }
+            finally
+            {
+                if (Directory.Exists(root))
+                {
+                    Directory.Delete(root, true);
+                }
+            }
         }
 
     }
