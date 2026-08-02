@@ -43,20 +43,20 @@ use crate::{
     },
     level1_mission::{
         ARCHER_BASE_TMAP, ARCHER_LOGICAL_HEIGHT, ARCHER_RENDER_INDEX, ARCHER_RENDER_MODE,
-        CASTLE_SPELL_FAMILY, CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH, CASTLE_STAGE_ONE_LIFE,
-        CASTLE_STAGE_ONE_MANA_CAPACITY, CastleBuildFootprint, CastleTerrainUpdate,
-        DEATH_BURST_ACTION, DEATH_BURST_CLASS, DEATH_BURST_MODEL, FIREBALL_BASE_TMAP,
-        FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_LOGICAL_HEIGHT, FIREBALL_IMPACT_RENDER_INDEX,
-        FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LOGICAL_HEIGHT, FIREBALL_RENDER_INDEX,
-        FIREBALL_RENDER_MODE, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT, FIREFLY_RENDER_INDEX,
-        FIREFLY_RENDER_MODE, GROUND_FIRE_BASE_TMAP, GROUND_FIRE_FIRST_RENDER_INDEX,
-        GROUND_FIRE_LOGICAL_HEIGHTS, GROUND_FIRE_PRESENTATION_BYTE_11,
-        GROUND_FIRE_PRESENTATION_SPEEDS, GROUND_FIRE_RENDER_MODE, HouseResidentRequest,
-        Level1AmbientEntity, Level1CastlePlacementBlocker, Level1CollisionTarget,
-        Level1MissionState, Level1MissionTemplate, Level1ResetRawSourceState,
-        Level1ResetSourceSlot, Level1SourceCollisionTarget, Level1SourceEffect,
-        Level1SourceEntityAuthority, Level1SourceEntityView, MANA_CARRIER_ATTRACTION_RADIUS,
-        MANA_CARRIER_BASE_TMAP, MANA_CARRIER_COLLISION_HALF_HEIGHT,
+        AuthoredFeature, CASTLE_SPELL_FAMILY, CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH,
+        CASTLE_STAGE_ONE_LIFE, CASTLE_STAGE_ONE_MANA_CAPACITY, CastleBuildFootprint,
+        CastleTerrainUpdate, DEATH_BURST_ACTION, DEATH_BURST_CLASS, DEATH_BURST_MODEL,
+        FIREBALL_BASE_TMAP, FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_LOGICAL_HEIGHT,
+        FIREBALL_IMPACT_RENDER_INDEX, FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LOGICAL_HEIGHT,
+        FIREBALL_RENDER_INDEX, FIREBALL_RENDER_MODE, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT,
+        FIREFLY_RENDER_INDEX, FIREFLY_RENDER_MODE, GROUND_FIRE_BASE_TMAP,
+        GROUND_FIRE_FIRST_RENDER_INDEX, GROUND_FIRE_LOGICAL_HEIGHTS,
+        GROUND_FIRE_PRESENTATION_BYTE_11, GROUND_FIRE_PRESENTATION_SPEEDS, GROUND_FIRE_RENDER_MODE,
+        HouseResidentRequest, Level1AmbientEntity, Level1CastlePlacementBlocker,
+        Level1CollisionTarget, Level1MissionState, Level1MissionTemplate,
+        Level1ResetRawSourceState, Level1ResetSourceSlot, Level1SourceCollisionTarget,
+        Level1SourceEffect, Level1SourceEntityAuthority, Level1SourceEntityView,
+        MANA_CARRIER_ATTRACTION_RADIUS, MANA_CARRIER_BASE_TMAP, MANA_CARRIER_COLLISION_HALF_HEIGHT,
         MANA_CARRIER_COLLISION_HALF_WIDTH, MANA_CARRIER_COLLISION_VERTICAL_OFFSET,
         MANA_CARRIER_DESCENT, MANA_CARRIER_GROUND_CLEARANCE, MANA_CARRIER_LOGICAL_HEIGHT,
         MANA_CARRIER_MAX_LIFE, MANA_CARRIER_MAX_MANA, MANA_CARRIER_RENDER_INDEX,
@@ -86,7 +86,7 @@ use crate::{
     spell_activation::{
         PhysicalSpellActionRole, SpellActivationHolder, SpellCasterState,
         SpellHolderAcquisitionOutcome, SpellHolderAcquisitionResult, SpellHolderAcquisitionState,
-        acquire_level2_spell_holder_with_return_side, activate_spell,
+        acquire_level2_spell_holder_with_return_side, activate_spell, physical_spell_action,
     },
     state_hash,
     static_world_tmap::StaticWorldTmapBank,
@@ -3130,6 +3130,10 @@ pub struct Level2SharedSpellResetSession {
     terrain: SessionTerrain,
     baseline_pickups: Box<[EntitySnapshot]>,
     pickups: Box<[EntitySnapshot]>,
+    baseline_dynamic_pickups: Vec<EntitySnapshot>,
+    dynamic_pickups: Vec<EntitySnapshot>,
+    baseline_authored_pickup_slots: BTreeMap<u16, u16>,
+    authored_pickup_slots: BTreeMap<u16, u16>,
     baseline_holders: Box<[EntitySnapshot]>,
     holders: Box<[EntitySnapshot]>,
     baseline_player_mana: i32,
@@ -3525,6 +3529,37 @@ pub struct Level2SpellReplacement {
     pub active: bool,
 }
 
+/// A class-15 source row created by `sub_4A1E0`/`sub_4A310`, rather than a
+/// reset-time entity.  Authored spell pickups consume the same `NewEvent`
+/// free stack and RNG stream as every other dynamic Level 2 row, but retain
+/// their authored index so the dormant-to-live transition is auditable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2SpellPickupSource {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub authored_index: u16,
+    pub family: u8,
+    pub action: u8,
+    pub phase: u8,
+    pub position: Position,
+    pub active: bool,
+}
+
+/// The class-10/model-45 row created for authored group-8 event records.  Its
+/// callback remains a later Level 2 slice, but the constructor, map link, RNG,
+/// source cursor, and reclaim semantics are live now rather than skipped.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredModel45Source {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub authored_index: u16,
+    pub target_group: u16,
+    pub parameter_1: u16,
+    pub position: Position,
+    pub phase: u8,
+    pub active: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Level2EconomyEvent {
     ManaSphereSpawned {
@@ -3647,6 +3682,10 @@ pub struct Level2EconomyState {
     death_bursts: Vec<Level2DeathBurst>,
     baseline_spell_replacements: Vec<Level2SpellReplacement>,
     spell_replacements: Vec<Level2SpellReplacement>,
+    baseline_spell_pickups: Vec<Level2SpellPickupSource>,
+    spell_pickups: Vec<Level2SpellPickupSource>,
+    baseline_authored_model45: Vec<Level2AuthoredModel45Source>,
+    authored_model45: Vec<Level2AuthoredModel45Source>,
     baseline_carriers: Vec<ManaCarrier>,
     carriers: Vec<ManaCarrier>,
     baseline_castle: Option<Level2CastleState>,
@@ -3810,6 +3849,10 @@ impl Level2EconomyState {
             death_bursts: Vec::new(),
             baseline_spell_replacements: Vec::new(),
             spell_replacements: Vec::new(),
+            baseline_spell_pickups: Vec::new(),
+            spell_pickups: Vec::new(),
+            baseline_authored_model45: Vec::new(),
+            authored_model45: Vec::new(),
             baseline_carriers: Vec::new(),
             carriers: Vec::new(),
             baseline_castle: None,
@@ -3899,6 +3942,135 @@ impl Level2EconomyState {
     #[must_use]
     pub fn spell_replacements(&self) -> &[Level2SpellReplacement] {
         &self.spell_replacements
+    }
+
+    #[must_use]
+    pub fn spell_pickups(&self) -> &[Level2SpellPickupSource] {
+        &self.spell_pickups
+    }
+
+    #[must_use]
+    pub fn authored_model45(&self) -> &[Level2AuthoredModel45Source] {
+        &self.authored_model45
+    }
+
+    /// Allocate an authored class-15 source row through the shared
+    /// `NewEvent_4A050` arena.  The caller supplies the already decoded
+    /// `sub_4A310` family/action and terrain-centred position.
+    pub fn allocate_spell_pickup(
+        &mut self,
+        authored_index: u16,
+        family: u8,
+        action: u8,
+        position: Position,
+    ) -> Option<Level2SpellPickupSource> {
+        if physical_spell_action(family, PhysicalSpellActionRole::OrdinaryPickup) != Some(action) {
+            return None;
+        }
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let source = Level2SpellPickupSource {
+            source_entity_index,
+            entity_rng,
+            authored_index,
+            family,
+            action,
+            phase: source_entity_index as u8,
+            position,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.spell_pickups.push(source);
+        Some(source)
+    }
+
+    /// Allocate a class-10/model-45 producer row from authored group 8.
+    pub fn allocate_authored_model45(
+        &mut self,
+        authored_index: u16,
+        target_group: u16,
+        parameter_1: u16,
+        position: Position,
+    ) -> Option<Level2AuthoredModel45Source> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let source = Level2AuthoredModel45Source {
+            source_entity_index,
+            entity_rng,
+            authored_index,
+            target_group,
+            parameter_1,
+            position,
+            phase: source_entity_index as u8,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.authored_model45.push(source);
+        Some(source)
+    }
+
+    pub fn step_spell_pickup_slot(&mut self, source_slot: u16) -> bool {
+        let Some(source) = self
+            .spell_pickups
+            .iter_mut()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        source.phase = source.phase.wrapping_add(1);
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .is_ok()
+    }
+
+    pub fn step_authored_model45_slot(&mut self, source_slot: u16) -> bool {
+        let Some(source) = self
+            .authored_model45
+            .iter_mut()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        source.phase = source.phase.wrapping_add(1);
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .is_ok()
     }
 
     /// Allocate the source class-15 row created by `sub_69250`. This uses the
@@ -4039,6 +4211,18 @@ impl Level2EconomyState {
             slots.insert(
                 replacement.source_entity_index,
                 Level2DynamicArenaKind::SpellReplacement,
+            );
+        }
+        for source in self.spell_pickups.iter().filter(|source| source.active) {
+            slots.insert(
+                source.source_entity_index,
+                Level2DynamicArenaKind::SpellPickup,
+            );
+        }
+        for source in self.authored_model45.iter().filter(|source| source.active) {
+            slots.insert(
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredModel45,
             );
         }
         slots.into_iter().collect()
@@ -6947,6 +7131,38 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_spell_pickups = self
+            .spell_pickups
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.spell_pickups.retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_spell_pickups {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
+        let reclaimed_model45 = self
+            .authored_model45
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_model45.retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_model45 {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_children = self
             .castle_children
             .iter()
@@ -7065,6 +7281,28 @@ impl Level2EconomyState {
             hasher.update([replacement.family, replacement.action, replacement.phase]);
             hasher.update(replacement.control_flags.to_le_bytes());
             hasher.update([u8::from(replacement.active)]);
+        }
+        for source in &self.spell_pickups {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.authored_index.to_le_bytes());
+            hasher.update([source.family, source.action, source.phase]);
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+            hasher.update([u8::from(source.active)]);
+        }
+        for source in &self.authored_model45 {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.authored_index.to_le_bytes());
+            hasher.update(source.target_group.to_le_bytes());
+            hasher.update(source.parameter_1.to_le_bytes());
+            hasher.update(source.phase.to_le_bytes());
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+            hasher.update([u8::from(source.active)]);
         }
         if self.carriers.is_empty() {
             hasher.update([0]);
@@ -7272,6 +7510,8 @@ impl Level2EconomyState {
         self.spheres = self.baseline_spheres.clone();
         self.death_bursts = self.baseline_death_bursts.clone();
         self.spell_replacements = self.baseline_spell_replacements.clone();
+        self.spell_pickups = self.baseline_spell_pickups.clone();
+        self.authored_model45 = self.baseline_authored_model45.clone();
         self.carriers = self.baseline_carriers.clone();
         self.castle = self.baseline_castle;
         self.castle_children = self.baseline_castle_children.clone();
@@ -7475,6 +7715,10 @@ impl Level2SharedSpellResetSession {
             terrain,
             baseline_pickups: pickups.clone(),
             pickups,
+            baseline_dynamic_pickups: Vec::new(),
+            dynamic_pickups: Vec::new(),
+            baseline_authored_pickup_slots: BTreeMap::new(),
+            authored_pickup_slots: BTreeMap::new(),
             baseline_holders: holders.clone(),
             holders,
             baseline_player_mana: player_entity.mana,
@@ -7508,6 +7752,155 @@ impl Level2SharedSpellResetSession {
     #[must_use]
     pub fn pickups(&self) -> &[EntitySnapshot] {
         &self.pickups
+    }
+
+    #[must_use]
+    pub fn dynamic_pickups(&self) -> &[EntitySnapshot] {
+        &self.dynamic_pickups
+    }
+
+    #[must_use]
+    pub fn authored_pickup_slots(&self) -> &BTreeMap<u16, u16> {
+        &self.authored_pickup_slots
+    }
+
+    fn pickup(&self, source_slot: u16) -> Option<&EntitySnapshot> {
+        self.pickups
+            .iter()
+            .chain(self.dynamic_pickups.iter())
+            .find(|entity| entity.index == source_slot)
+    }
+
+    fn pickup_mut(&mut self, source_slot: u16) -> Option<&mut EntitySnapshot> {
+        if let Some(entity) = self
+            .pickups
+            .iter_mut()
+            .find(|entity| entity.index == source_slot)
+        {
+            return Some(entity);
+        }
+        self.dynamic_pickups
+            .iter_mut()
+            .find(|entity| entity.index == source_slot)
+    }
+
+    /// Materialise one authored class-15 row from `sub_4A1E0`'s group pass.
+    /// The source constructor is deliberately explicit: the row is absent at
+    /// reset, receives a shared-arena slot/RNG, and only then enters the
+    /// generic `sub_68FF0` acquisition scan.
+    pub fn materialize_authored_spell_pickup(
+        &mut self,
+        economy: &mut Level2EconomyState,
+        authored: AuthoredFeature,
+        terrain: &SessionTerrain,
+    ) -> Result<u16> {
+        if let Some(source_slot) = self.authored_pickup_slots.get(&authored.index) {
+            return Ok(*source_slot);
+        }
+        let family = match authored.subtype {
+            6 => 6,
+            11 => 11,
+            _ => {
+                return Err(NativeWorldError::new(format!(
+                    "unsupported authored Level 2 spell subtype {} at row {}",
+                    authored.subtype, authored.index
+                )));
+            }
+        };
+        if authored.kind != 15 || authored.stage_tag != 1 {
+            return Err(NativeWorldError::new(format!(
+                "authored Level 2 spell row {} is not a stage-1 class-15 source",
+                authored.index
+            )));
+        }
+        let action = physical_spell_action(family, PhysicalSpellActionRole::OrdinaryPickup)
+            .expect("validated authored Level 2 family has an ordinary action");
+        let position = authored.world_position(terrain.ground_height(authored.world_position(0)));
+        let source = economy
+            .allocate_spell_pickup(authored.index, family, action, position)
+            .ok_or_else(|| {
+                NativeWorldError::new(format!(
+                    "Level 2 authored spell row {} could not allocate a source slot",
+                    authored.index
+                ))
+            })?;
+        let template = self
+            .pickups
+            .first()
+            .ok_or_else(|| NativeWorldError::new("Level 2 shared spell template is absent"))?;
+        let mut entity = template.clone();
+        entity.index = source.source_entity_index;
+        entity.source_id = 0;
+        entity.authority = EntityAuthority::SpellActivationLive;
+        entity.active = true;
+        entity.max_life = 0;
+        entity.life = 0;
+        entity.class = 15;
+        entity.model = source.family;
+        entity.control_flags = 4;
+        entity.entity_rng = source.entity_rng;
+        entity.action = source.action;
+        entity.action_marker = 0;
+        entity.level_gate = 0;
+        entity.position = source.position;
+        entity.phase = source.phase;
+        entity.subspell_index = 0;
+        entity.byte_3b = 0;
+        entity.byte_3c = 0;
+        entity.font_type_index = 0;
+        entity.active_value = 0;
+        entity.activation_value = 0;
+        entity.mana_regen = 0;
+        entity.max_mana = 0;
+        entity.mana_cost = 0;
+        entity.mana = 0;
+        entity.next_relation = None;
+        entity.special_relation = EntitySpecialRelation::None;
+        entity.record[0..2].copy_from_slice(&source.source_entity_index.to_le_bytes());
+        entity.record[2] = 1;
+        entity.record[4..8].fill(0);
+        entity.record[8..16].fill(0);
+        entity.record[16..20].copy_from_slice(&4_u32.to_le_bytes());
+        entity.record[24..26].copy_from_slice(&source.entity_rng.to_le_bytes());
+        entity.record[26..30].fill(0);
+        entity.record[30..32].fill(0);
+        entity.record[46..54].fill(0);
+        entity.record[58..60].fill(0);
+        entity.record[63..66].fill(0);
+        entity.record[66] = source.phase;
+        entity.record[67] = 15;
+        entity.record[68] = source.family;
+        entity.record[73] = source.action;
+        entity.record[74] = 0;
+        entity.record[78..80].fill(0);
+        entity.record[80..82].copy_from_slice(&source.position.x.to_le_bytes());
+        entity.record[82..84].copy_from_slice(&source.position.y.to_le_bytes());
+        entity.record[84..86].copy_from_slice(&source.position.z.to_le_bytes());
+        entity.record[140..152].fill(0);
+        self.dynamic_pickups.push(entity.clone());
+        self.authored_pickup_slots
+            .insert(authored.index, source.source_entity_index);
+        let index = self
+            .acquisitions
+            .iter()
+            .position(|state| state.family == family)
+            .expect("authored Level 2 family has an acquisition state");
+        let state = &mut self.acquisitions[index];
+        state.source_slot = source.source_entity_index;
+        state.authored_source_index = authored.index;
+        state.source_action = source.action;
+        state.source_life = entity.life;
+        state.source_draw_enabled = true;
+        state.subspell_index = entity.subspell_index;
+        state.word_0x30 = entity.source_spell_word_30();
+        state.byte_0x3b = entity.byte_3b;
+        state.byte_0x3c = entity.byte_3c;
+        state.font_type_index = entity.font_type_index;
+        state.mana_regen = entity.mana_regen;
+        state.max_mana = entity.max_mana;
+        state.mana = entity.mana;
+        state.return_side = entity.source_word_4a();
+        Ok(source.source_entity_index)
     }
 
     #[must_use]
@@ -7654,11 +8047,7 @@ impl Level2SharedSpellResetSession {
         self.acquisitions[index].right_spell_slot = right_spell_slot;
         self.acquisitions[index].left_subspell_index = left_subspell_index;
         self.acquisitions[index].right_subspell_index = right_subspell_index;
-        if let Some(pickup) = self
-            .pickups
-            .iter()
-            .find(|entity| entity.index == self.acquisitions[index].source_slot)
-        {
+        if let Some(pickup) = self.pickup(self.acquisitions[index].source_slot) {
             self.acquisitions[index].return_side = pickup.source_word_4a();
         }
         // `SetSpell_6D5E0` has a distinct active-holder branch: it only
@@ -7666,9 +8055,7 @@ impl Level2SharedSpellResetSession {
         // untouched.  Preserve those fields across the generic owner/hand
         // transition so the typed state follows the same branch.
         let active_setspell_projection = self
-            .pickups
-            .iter()
-            .find(|entity| entity.index == self.acquisitions[index].source_slot)
+            .pickup(self.acquisitions[index].source_slot)
             .and_then(|pickup| {
                 (u16::from_le_bytes(
                     pickup.record[50..52]
@@ -7704,40 +8091,39 @@ impl Level2SharedSpellResetSession {
             state.mana = previous.mana;
         }
         let state = self.acquisitions[index];
-        let owner = &mut self.players[owner_index];
-        owner.enabled_spell_holders[family_index] = outcome.source_slot;
-        owner.spell_hand_eligibility[family_index] = state.eligibility;
-        owner.learned_spell_flags[family_index] = state.learned;
-        owner.family_selected_tiers[family_index] = state.selected_tier;
-        owner.record[268 + family_index * 2..270 + family_index * 2]
-            .copy_from_slice(&outcome.source_slot.to_le_bytes());
-        owner.record[398 + family_index] = state.eligibility;
-        owner.record[424 + family_index] = state.learned;
-        owner.record[528 + family_index] = state.selected_tier.to_le_bytes()[0];
-        match outcome.hand {
-            crate::spell_activation::SpellHand::Left => {
-                owner.left_spell_slot_raw = state.left_spell_slot;
-                owner.left_spell_slot = family;
-                owner.left_subspell_index = state.left_subspell_index;
-                owner.record[554..556].copy_from_slice(&state.left_spell_slot.to_le_bytes());
-                owner.record[558] = state.left_subspell_index.to_le_bytes()[0];
-            }
-            crate::spell_activation::SpellHand::Right => {
-                owner.right_spell_slot_raw = state.right_spell_slot;
-                owner.right_spell_slot = family;
-                owner.right_subspell_index = state.right_subspell_index;
-                owner.record[556..558].copy_from_slice(&state.right_spell_slot.to_le_bytes());
-                owner.record[559] = state.right_subspell_index.to_le_bytes()[0];
-            }
-        }
-        if owner_index == 0 {
-            self.local_player = owner.clone();
-        }
-        if let Some(pickup) = self
-            .pickups
-            .iter_mut()
-            .find(|entity| entity.index == outcome.source_slot)
+        let owner_entity_index = self.players[owner_index].entity_index;
         {
+            let owner = &mut self.players[owner_index];
+            owner.enabled_spell_holders[family_index] = outcome.source_slot;
+            owner.spell_hand_eligibility[family_index] = state.eligibility;
+            owner.learned_spell_flags[family_index] = state.learned;
+            owner.family_selected_tiers[family_index] = state.selected_tier;
+            owner.record[268 + family_index * 2..270 + family_index * 2]
+                .copy_from_slice(&outcome.source_slot.to_le_bytes());
+            owner.record[398 + family_index] = state.eligibility;
+            owner.record[424 + family_index] = state.learned;
+            owner.record[528 + family_index] = state.selected_tier.to_le_bytes()[0];
+            match outcome.hand {
+                crate::spell_activation::SpellHand::Left => {
+                    owner.left_spell_slot_raw = state.left_spell_slot;
+                    owner.left_spell_slot = family;
+                    owner.left_subspell_index = state.left_subspell_index;
+                    owner.record[554..556].copy_from_slice(&state.left_spell_slot.to_le_bytes());
+                    owner.record[558] = state.left_subspell_index.to_le_bytes()[0];
+                }
+                crate::spell_activation::SpellHand::Right => {
+                    owner.right_spell_slot_raw = state.right_spell_slot;
+                    owner.right_spell_slot = family;
+                    owner.right_subspell_index = state.right_subspell_index;
+                    owner.record[556..558].copy_from_slice(&state.right_spell_slot.to_le_bytes());
+                    owner.record[559] = state.right_subspell_index.to_le_bytes()[0];
+                }
+            }
+            if owner_index == 0 {
+                self.local_player = owner.clone();
+            }
+        }
+        if let Some(pickup) = self.pickup_mut(outcome.source_slot) {
             pickup.control_flags |= 1;
             pickup.record[16] |= 1;
             pickup.record[19] &= !2;
@@ -7791,7 +8177,7 @@ impl Level2SharedSpellResetSession {
         self.pickup_events
             .push(Level2SharedSpellEvent::SpellAcquired {
                 source_slot: outcome.source_slot,
-                player_entity_index: owner.entity_index,
+                player_entity_index: owner_entity_index,
                 family,
                 holder_action: outcome.holder_action,
             });
@@ -7799,7 +8185,7 @@ impl Level2SharedSpellResetSession {
         self.events.push(FlightEvent::PrepareSound {
             #[cfg(test)]
             audio_site: crate::MissionAudioSite::SpeedPickup,
-            entity_index: owner.entity_index,
+            entity_index: owner_entity_index,
             player_index: -1,
             sound_id: 18,
         });
@@ -7810,8 +8196,8 @@ impl Level2SharedSpellResetSession {
     /// the `sub_68FF0` prefix before calling the owner transition: life is
     /// decremented first, the pickup is terrain-relaxed, and the source map
     /// scan considers only live model-0 players with an empty SpellEnabled
-    /// relation. Rows 155/156 remain constructor-rooted metadata until their
-    /// event constructor materialises a map entity.
+    /// relation. Rows 155/156 are admitted only after their authored event
+    /// constructor materialises a live map entity.
     pub fn step_level2_spell_acquisition(
         &mut self,
         family: u8,
@@ -7854,11 +8240,7 @@ impl Level2SharedSpellResetSession {
             let source_life = self.acquisitions[index].source_life;
             if self.acquisitions[index].source_life == 0 {
                 let source_slot = self.acquisitions[index].source_slot;
-                if let Some(pickup) = self
-                    .pickups
-                    .iter_mut()
-                    .find(|entity| entity.index == source_slot)
-                {
+                if let Some(pickup) = self.pickup_mut(source_slot) {
                     pickup.life = source_life;
                     pickup.record[12..16].copy_from_slice(&source_life.to_le_bytes());
                     pickup.disable_drawing();
@@ -7866,11 +8248,7 @@ impl Level2SharedSpellResetSession {
                 self.acquisitions[index].source_draw_enabled = false;
             } else {
                 let source_slot = self.acquisitions[index].source_slot;
-                if let Some(pickup) = self
-                    .pickups
-                    .iter_mut()
-                    .find(|entity| entity.index == source_slot)
-                {
+                if let Some(pickup) = self.pickup_mut(source_slot) {
                     pickup.life = source_life;
                     pickup.record[12..16].copy_from_slice(&source_life.to_le_bytes());
                 }
@@ -7878,17 +8256,13 @@ impl Level2SharedSpellResetSession {
             return Ok(None);
         }
         let source_slot = self.acquisitions[index].source_slot;
-        let Some(pickup_index) = self
-            .pickups
-            .iter()
-            .position(|entity| entity.index == source_slot)
-        else {
-            // Dynamic authored rows 155/156 are intentionally not fabricated
-            // as frame-zero entities. Their constructor path can call the
-            // public acquisition method once it has installed a source row.
+        if self.pickup(source_slot).is_none() {
             return Ok(None);
-        };
-        let pickup = &mut self.pickups[pickup_index];
+        }
+        let mut pickup = self
+            .pickup(source_slot)
+            .cloned()
+            .expect("validated Level 2 spell source row remains live");
         let ground = self.terrain.ground_height(pickup.position);
         if pickup.position.z > ground {
             pickup.position.z = pickup.position.z.wrapping_sub(128);
@@ -7900,6 +8274,9 @@ impl Level2SharedSpellResetSession {
         // Source `byte_0x3E_62` is the action cadence byte at record 66,
         // distinct from the byte0 control flags at record 16.
         if pickup.phase & 3 != 0 {
+            if let Some(live) = self.pickup_mut(source_slot) {
+                live.clone_from(&pickup);
+            }
             return Ok(None);
         }
         // First source-list pass: the active level/player-colour owner marks
@@ -7939,15 +8316,21 @@ impl Level2SharedSpellResetSession {
             if entity.active
                 && entity.model == 0
                 && entity.life >= 0
-                && level2_source_intersects(pickup, entity)
+                && level2_source_intersects(&pickup, entity)
             {
                 owner_index = Some(player_index);
                 break;
             }
         }
         let Some(owner_index) = owner_index else {
+            if let Some(live) = self.pickup_mut(source_slot) {
+                live.clone_from(&pickup);
+            }
             return Ok(None);
         };
+        if let Some(live) = self.pickup_mut(source_slot) {
+            live.clone_from(&pickup);
+        }
         self.acquire_level2_spell_holder_for_player(
             family,
             PhysicalSpellActionRole::OrdinaryPickup,
@@ -8125,6 +8508,9 @@ impl Level2SharedSpellResetSession {
         for entity in self.pickups.iter().chain(self.holders.iter()) {
             hasher.update(entity.record_bytes());
         }
+        for entity in &self.dynamic_pickups {
+            hasher.update(entity.record_bytes());
+        }
         hasher.update(self.player_entity.record_bytes());
         for player in &self.players {
             hasher.update(player.record_bytes());
@@ -8143,6 +8529,7 @@ impl Level2SharedSpellResetSession {
         for state in &self.acquisitions {
             hasher.update([state.family]);
             hasher.update(state.source_slot.to_le_bytes());
+            hasher.update(state.authored_source_index.to_le_bytes());
             hasher.update(state.owner_entity_index.to_le_bytes());
             hasher.update([state.source_action, state.holder_action]);
             hasher.update(state.replacement_action.unwrap_or(u8::MAX).to_le_bytes());
@@ -8178,6 +8565,10 @@ impl Level2SharedSpellResetSession {
 
     pub fn reset(&mut self) {
         self.pickups.clone_from(&self.baseline_pickups);
+        self.dynamic_pickups
+            .clone_from(&self.baseline_dynamic_pickups);
+        self.authored_pickup_slots
+            .clone_from(&self.baseline_authored_pickup_slots);
         self.terrain = self.baseline_terrain.clone();
         self.holders.clone_from(&self.baseline_holders);
         self.player_mana = self.baseline_player_mana;
@@ -8624,6 +9015,8 @@ pub struct Level2ResetSession {
     mission: MissionContentSession,
     dispatch_events: Vec<Level2DispatchEvent>,
     economy_event_cursor: usize,
+    baseline_level2_group8_activated: bool,
+    level2_group8_activated: bool,
 }
 
 /// One lossless, source-ordered result from the bounded Level 2 dispatcher.
@@ -8644,6 +9037,12 @@ pub enum Level2DispatchEvent {
         source_slot: u16,
         family: u8,
         result: Option<SpellHolderAcquisitionOutcome>,
+    },
+    AuthoredGroupActivated {
+        pass: u8,
+        source_slot: u16,
+        group: u16,
+        authored_indices: Box<[u16]>,
     },
     BadStone {
         pass: u8,
@@ -8701,6 +9100,8 @@ pub enum Level2DynamicArenaKind {
     ManaCarrier,
     DeathBurst,
     SpellReplacement,
+    SpellPickup,
+    AuthoredModel45,
 }
 
 impl Level2DispatchEvent {
@@ -8722,6 +9123,18 @@ impl Level2DispatchEvent {
                 family,
                 result,
             } => (*pass, 2, *family, u8::from(result.is_some()), *source_slot),
+            Self::AuthoredGroupActivated {
+                pass,
+                source_slot,
+                group,
+                authored_indices,
+            } => (
+                *pass,
+                11,
+                u8::try_from(*group).unwrap_or(u8::MAX),
+                u8::try_from(authored_indices.len()).unwrap_or(u8::MAX),
+                *source_slot,
+            ),
             Self::BadStone { pass, step } => (
                 *pass,
                 3,
@@ -8797,6 +9210,8 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::ManaCarrier => 7,
         Level2DynamicArenaKind::DeathBurst => 8,
         Level2DynamicArenaKind::SpellReplacement => 9,
+        Level2DynamicArenaKind::SpellPickup => 10,
+        Level2DynamicArenaKind::AuthoredModel45 => 11,
     }
 }
 
@@ -8945,6 +9360,8 @@ impl Level2ResetSession {
             mission,
             dispatch_events: Vec::new(),
             economy_event_cursor: 0,
+            baseline_level2_group8_activated: false,
+            level2_group8_activated: false,
         }
     }
 
@@ -9180,6 +9597,182 @@ impl Level2ResetSession {
         }
     }
 
+    /// Run the one authored Level 2 stage-tag root which is live at reset.
+    /// Pinned `sub_4A1E0(0,1)` consumes row 152's class-11 stage tag 8 and
+    /// constructs the two group-8 model-45 producer rows.  Those producers
+    /// then activate groups 22 and 27, where rows 155/156 become live.  The
+    /// static outer route deliberately does not include those authored rows.
+    fn activate_level2_authored_group8(&mut self, pass: u8) {
+        if self.level2_group8_activated {
+            return;
+        }
+        let Some(root_slot) = self
+            .entities
+            .iter()
+            .filter(|entity| {
+                entity.active
+                    && entity.class == 11
+                    && entity.model == 32
+                    && entity.action == 32
+                    && entity.source_id == 8
+            })
+            .min_by_key(|entity| entity.index)
+            .map(|entity| entity.index)
+        else {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: 0,
+                message: "Level 2 stage-tag root source row is absent".to_owned(),
+            });
+            return;
+        };
+        let group_rows = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .filter(|feature| feature.activation_group == 8)
+            .collect::<Vec<_>>();
+        if group_rows.len() != 2 {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: root_slot,
+                message: format!(
+                    "Level 2 stage-tag group 8 has {} rows, expected 2",
+                    group_rows.len()
+                ),
+            });
+            return;
+        }
+        let economy_before = self.economy.clone();
+        let shared_before = self.shared_spells.clone();
+        let mut constructed = Vec::with_capacity(group_rows.len());
+        let result = (|| -> Result<()> {
+            for feature in group_rows.iter().copied() {
+                let position =
+                    feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+                if (feature.kind, feature.subtype) != (10, 45) {
+                    return Err(NativeWorldError::new(format!(
+                        "unsupported Level 2 group-8 authored row {} ({}/{})",
+                        feature.index, feature.kind, feature.subtype
+                    )));
+                }
+                let source = self
+                    .economy
+                    .allocate_authored_model45(
+                        feature.index,
+                        feature.parameter_2,
+                        feature.parameter_1,
+                        position,
+                    )
+                    .ok_or_else(|| {
+                        NativeWorldError::new(format!(
+                            "Level 2 authored model45 row {} could not allocate",
+                            feature.index
+                        ))
+                    })?;
+                constructed.push((feature.index, source.source_entity_index));
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.economy = economy_before;
+            self.shared_spells = shared_before;
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: root_slot,
+                message: error.to_string(),
+            });
+            return;
+        }
+        self.level2_group8_activated = true;
+        self.dispatch_events
+            .push(Level2DispatchEvent::AuthoredGroupActivated {
+                pass,
+                source_slot: root_slot,
+                group: 8,
+                authored_indices: constructed
+                    .into_iter()
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            });
+    }
+
+    fn activate_level2_authored_spell_group(
+        &mut self,
+        pass: u8,
+        producer_slot: u16,
+        target_group: u16,
+    ) {
+        let rows = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .filter(|feature| {
+                feature.activation_group == i16::try_from(target_group).unwrap_or(-1)
+                    && feature.kind == 15
+                    && matches!(feature.subtype, 6 | 11)
+            })
+            .collect::<Vec<_>>();
+        if rows.len() != 1 {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: producer_slot,
+                message: format!(
+                    "Level 2 producer group {target_group} has {} rows, expected 1",
+                    rows.len()
+                ),
+            });
+            return;
+        }
+        let feature = rows[0];
+        if !matches!((feature.kind, feature.subtype), (15, 6 | 11)) {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: producer_slot,
+                message: format!(
+                    "Level 2 producer group {target_group} row {} is not a spell source",
+                    feature.index
+                ),
+            });
+            return;
+        }
+        let economy_before = self.economy.clone();
+        let shared_before = self.shared_spells.clone();
+        let source_slot = match self.shared_spells.materialize_authored_spell_pickup(
+            &mut self.economy,
+            feature,
+            &self.terrain,
+        ) {
+            Ok(source_slot) => source_slot,
+            Err(error) => {
+                self.economy = economy_before;
+                self.shared_spells = shared_before;
+                self.dispatch_events.push(Level2DispatchEvent::Error {
+                    pass,
+                    source_slot: producer_slot,
+                    message: error.to_string(),
+                });
+                return;
+            }
+        };
+        self.dispatch_events
+            .push(Level2DispatchEvent::AuthoredGroupActivated {
+                pass,
+                source_slot: producer_slot,
+                group: target_group,
+                authored_indices: vec![feature.index].into_boxed_slice(),
+            });
+        debug_assert!(
+            self.economy
+                .spell_pickups()
+                .iter()
+                .any(|source| source.source_entity_index == source_slot)
+        );
+    }
+
     /// Dispatch the authored Level 2 rows in source-slot order alongside the
     /// generic player-flight pass. Each typed family remains authoritative for
     /// its own mutable state; unknown mission rows are not coerced into a
@@ -9208,6 +9801,7 @@ impl Level2ResetSession {
         // boundary's capacity just like remc2.
         self.economy.rebuild_owner_max_mana_projection();
         self.synchronize_level2_terrain();
+        self.activate_level2_authored_group8(pass);
         let mut goat_begin_events = BTreeMap::<u16, Vec<GoatStepEvent>>::new();
         for event in self.goats.begin_source_turn(&goat_players) {
             let source_slot = match event {
@@ -9222,7 +9816,7 @@ impl Level2ResetSession {
         let mut routes = [75_u16]
             .into_iter()
             .map(|slot| (slot, 0_u8))
-            .chain([38_u16, 155, 156].into_iter().map(|slot| (slot, 8_u8)))
+            .chain([38_u16].into_iter().map(|slot| (slot, 8_u8)))
             .chain(
                 self.bad_stones
                     .iter()
@@ -9422,7 +10016,31 @@ impl Level2ResetSession {
                         .copied()
                         .expect("dynamic source route has a live kind");
                     dispatched_dynamic_slots.insert(source_slot);
-                    let live = self.step_level2_dynamic_arena(source_slot, kind);
+                    if kind == Level2DynamicArenaKind::AuthoredModel45 {
+                        if let Some(target_group) = self
+                            .economy
+                            .authored_model45()
+                            .iter()
+                            .find(|source| source.source_entity_index == source_slot)
+                            .map(|source| source.target_group)
+                        {
+                            self.activate_level2_authored_spell_group(
+                                pass,
+                                source_slot,
+                                target_group,
+                            );
+                        }
+                    }
+                    let live = if kind == Level2DynamicArenaKind::SpellPickup {
+                        self.step_level2_dynamic_spell_pickup(
+                            pass,
+                            source_slot,
+                            player_entity_index,
+                            player_position,
+                        )
+                    } else {
+                        self.step_level2_dynamic_arena(source_slot, kind)
+                    };
                     self.append_new_economy_events(pass, source_slot);
                     if live {
                         self.dispatch_events
@@ -9470,7 +10088,27 @@ impl Level2ResetSession {
             }
             for (source_slot, kind) in unseen {
                 dispatched_dynamic_slots.insert(source_slot);
-                let live = self.step_level2_dynamic_arena(source_slot, kind);
+                if kind == Level2DynamicArenaKind::AuthoredModel45 {
+                    if let Some(target_group) = self
+                        .economy
+                        .authored_model45()
+                        .iter()
+                        .find(|source| source.source_entity_index == source_slot)
+                        .map(|source| source.target_group)
+                    {
+                        self.activate_level2_authored_spell_group(pass, source_slot, target_group);
+                    }
+                }
+                let live = if kind == Level2DynamicArenaKind::SpellPickup {
+                    self.step_level2_dynamic_spell_pickup(
+                        pass,
+                        source_slot,
+                        player_entity_index,
+                        player_position,
+                    )
+                } else {
+                    self.step_level2_dynamic_arena(source_slot, kind)
+                };
                 self.append_new_economy_events(pass, source_slot);
                 if live {
                     self.dispatch_events
@@ -9502,6 +10140,48 @@ impl Level2ResetSession {
         self.goats.finish_source_turn();
     }
 
+    fn step_level2_dynamic_spell_pickup(
+        &mut self,
+        pass: u8,
+        source_slot: u16,
+        player_entity_index: u16,
+        player_position: Position,
+    ) -> bool {
+        let Some(family) = self
+            .economy
+            .spell_pickups()
+            .iter()
+            .find(|source| source.source_entity_index == source_slot && source.active)
+            .map(|source| source.family)
+        else {
+            return false;
+        };
+        match self.shared_spells.step_level2_spell_acquisition(
+            family,
+            player_entity_index,
+            player_position,
+        ) {
+            Ok(result) => self
+                .dispatch_events
+                .push(Level2DispatchEvent::SpellAcquisition {
+                    pass,
+                    source_slot,
+                    family,
+                    result,
+                }),
+            Err(error) => self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot,
+                message: error.to_string(),
+            }),
+        }
+        if let Some(pickup) = self.shared_spells.pickup_mut(source_slot) {
+            pickup.phase = pickup.phase.wrapping_add(1);
+            pickup.record[66] = pickup.phase;
+        }
+        self.economy.step_spell_pickup_slot(source_slot)
+    }
+
     /// Dispatch one live dynamic row. The source class-10/model-1 burst
     /// handler falls through to unconditional drawing disable after one
     /// callback; all dynamic families therefore receive one cursor visit.
@@ -9519,6 +10199,10 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::DeathBurst => self.economy.step_death_burst_slot(source_slot),
             Level2DynamicArenaKind::SpellReplacement => {
                 self.economy.step_spell_replacement_slot(source_slot)
+            }
+            Level2DynamicArenaKind::SpellPickup => self.economy.step_spell_pickup_slot(source_slot),
+            Level2DynamicArenaKind::AuthoredModel45 => {
+                self.economy.step_authored_model45_slot(source_slot)
             }
             Level2DynamicArenaKind::CastleAuxiliary
             | Level2DynamicArenaKind::CastleChild
@@ -9696,6 +10380,7 @@ impl Level2ResetSession {
         self.mission.reset();
         self.dispatch_events.clear();
         self.economy_event_cursor = 0;
+        self.level2_group8_activated = self.baseline_level2_group8_activated;
     }
 }
 
@@ -17189,6 +17874,10 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("model-15 outer-dispatch session");
+        // Materialise the authored group-8 constructor before allocating a
+        // test Castle, so the test's free-stack assertions isolate the
+        // Castle lifecycle rather than same-turn authored construction.
+        session.step_outer_turn(PlayerCommand::default(), 0);
         let castle_slot = session
             .economy_mut()
             .build_castle(Position::default(), 111)
@@ -19290,9 +19979,9 @@ mod tests {
             }]
         ));
 
-        // Authored rows 155/156 are not live reset entities.  The production
-        // adapter reaches their generic states but correctly waits for their
-        // later constructors to supply a collision body.
+        // Authored rows 155/156 are not live reset entities.  A direct child
+        // projection remains bounded until the production stage constructor
+        // installs their collision bodies.
         assert!(
             session
                 .shared_spells_mut()
@@ -19700,6 +20389,164 @@ mod tests {
     }
 
     #[test]
+    fn level_two_stage_tag_materializes_authored_spell_sources_through_shared_arena() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 authored constructor session");
+        let baseline_shared_hash = session.shared_spells().reset_hash();
+        let baseline_economy_hash = session.economy().reset_hash();
+        let free_before = session.economy().free_slots.clone();
+        let global_before = session.economy().global_rng;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let model45 = session.economy().authored_model45();
+        let pickups = session.economy().spell_pickups();
+        let first_free = free_before[free_before.len() - 1];
+        let second_free = free_before[free_before.len() - 2];
+        let third_free = free_before[free_before.len() - 3];
+        let fourth_free = free_before[free_before.len() - 4];
+        let constructor_global = level2_next_rng32(global_before);
+        assert_eq!(model45.len(), 2, "events: {:?}", session.dispatch_events());
+        assert_eq!(pickups.len(), 2, "events: {:?}", session.dispatch_events());
+        assert_eq!(model45[0].source_entity_index, first_free);
+        assert_eq!(model45[1].source_entity_index, second_free);
+        assert_eq!(pickups[0].source_entity_index, third_free);
+        assert_eq!(pickups[1].source_entity_index, fourth_free);
+        assert_eq!(pickups[0].authored_index, 155);
+        assert_eq!(pickups[1].authored_index, 156);
+        assert_eq!(pickups[0].family, 6);
+        assert_eq!(pickups[1].family, 11);
+        assert_eq!(pickups[0].action, 19);
+        assert_eq!(pickups[1].action, 34);
+        for source in model45 {
+            assert_eq!(
+                source.entity_rng,
+                source
+                    .source_entity_index
+                    .wrapping_add(constructor_global as u16)
+            );
+            assert!(
+                session
+                    .economy()
+                    .map_chains()
+                    .linked_entity_indices()
+                    .contains(&source.source_entity_index)
+            );
+        }
+        for source in pickups {
+            assert_eq!(
+                source.entity_rng,
+                source
+                    .source_entity_index
+                    .wrapping_add(constructor_global as u16)
+            );
+            assert!(
+                session
+                    .economy()
+                    .map_chains()
+                    .linked_entity_indices()
+                    .contains(&source.source_entity_index)
+            );
+        }
+        assert_eq!(
+            session.shared_spells().authored_pickup_slots().get(&155),
+            Some(&pickups[0].source_entity_index)
+        );
+        assert_eq!(
+            session.shared_spells().authored_pickup_slots().get(&156),
+            Some(&pickups[1].source_entity_index)
+        );
+        assert!(
+            session
+                .shared_spells()
+                .dynamic_pickups()
+                .iter()
+                .all(|entity| {
+                    entity.active && entity.class == 15 && entity.control_flags & 4 != 0
+                })
+        );
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 8,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [153, 154]
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::SpellPickup,
+                source_slot,
+                ..
+            } if *source_slot == pickups[0].source_entity_index
+        )));
+
+        session.reset();
+        assert!(session.economy().spell_pickups().is_empty());
+        assert!(session.economy().authored_model45().is_empty());
+        assert!(session.shared_spells().dynamic_pickups().is_empty());
+        assert_eq!(session.shared_spells().reset_hash(), baseline_shared_hash);
+        assert_eq!(session.economy().reset_hash(), baseline_economy_hash);
+    }
+
+    #[test]
+    fn level_two_materialized_authored_spell_reaches_generic_acquisition_path() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 authored acquisition session");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|source| source.authored_index == 155)
+            .copied()
+            .expect("authored family-6 source");
+        session.state.position = source.position;
+        let mut acquired = None;
+        for _ in 0..4 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            acquired = session
+                .dispatch_events()
+                .iter()
+                .find_map(|event| match event {
+                    Level2DispatchEvent::SpellAcquisition {
+                        family: 6,
+                        result: Some(result),
+                        source_slot,
+                        ..
+                    } => Some((*source_slot, *result)),
+                    _ => None,
+                });
+            if acquired.is_some() {
+                break;
+            }
+        }
+        let (source_slot, outcome) = acquired.expect("authored family-6 acquisition");
+        assert_eq!(source_slot, source.source_entity_index);
+        assert_eq!(outcome.family, 6);
+        assert_eq!(outcome.source_slot, source.source_entity_index);
+        assert_eq!(outcome.holder_action, 18);
+        assert_eq!(outcome.replacement_action, None);
+        assert_eq!(
+            session
+                .shared_spells()
+                .acquisition_states()
+                .iter()
+                .find(|state| state.family == 6)
+                .expect("family-6 acquisition state")
+                .authored_source_index,
+            155
+        );
+    }
+
+    #[test]
     fn level_two_outer_turn_reaches_family12_pickup_at_source_slot38() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -19813,7 +20660,7 @@ mod tests {
         let all_slots = first
             .dispatch_events()
             .iter()
-            .map(|event| match event {
+            .filter_map(|event| match event {
                 Level2DispatchEvent::SharedPickup { source_slot, .. }
                 | Level2DispatchEvent::SpellAcquisition { source_slot, .. }
                 | Level2DispatchEvent::House { source_slot, .. }
@@ -19822,9 +20669,12 @@ mod tests {
                 | Level2DispatchEvent::Error { source_slot, .. }
                 | Level2DispatchEvent::DynamicArena { source_slot, .. }
                 | Level2DispatchEvent::Economy { source_slot, .. }
-                | Level2DispatchEvent::Goat { source_slot, .. } => *source_slot,
-                Level2DispatchEvent::BadStone { step, .. } => step.source_slot,
-                Level2DispatchEvent::Dolmen { step, .. } => step.source_slot,
+                | Level2DispatchEvent::Goat { source_slot, .. } => Some(*source_slot),
+                // This is constructor metadata emitted at the producer
+                // boundary; the live source rows below carry cursor order.
+                Level2DispatchEvent::AuthoredGroupActivated { .. } => return None,
+                Level2DispatchEvent::BadStone { step, .. } => Some(step.source_slot),
+                Level2DispatchEvent::Dolmen { step, .. } => Some(step.source_slot),
             })
             .collect::<Vec<_>>();
         assert!(all_slots.windows(2).all(|window| window[0] <= window[1]));
@@ -20256,7 +21106,8 @@ mod tests {
                     | Level2DispatchEvent::DynamicArena { pass, .. }
                     | Level2DispatchEvent::Economy { pass, .. }
                     | Level2DispatchEvent::Goat { pass, .. }
-                    | Level2DispatchEvent::Error { pass, .. } => *pass,
+                    | Level2DispatchEvent::Error { pass, .. }
+                    | Level2DispatchEvent::AuthoredGroupActivated { pass, .. } => *pass,
                 })
                 .collect::<Vec<_>>();
             assert!(!passes.is_empty(), "source pass {speed_index} was empty");
@@ -20989,6 +21840,7 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 dynamic cursor session");
+        session.step_outer_turn(PlayerCommand::default(), 0);
         let free_before_build = session.economy().free_slots.len();
         let castle_slot = session
             .economy_mut()

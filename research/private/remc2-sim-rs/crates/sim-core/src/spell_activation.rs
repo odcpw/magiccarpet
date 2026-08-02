@@ -89,6 +89,9 @@ pub enum SpellHand {
 pub struct SpellHolderAcquisitionState {
     pub family: u8,
     pub source_slot: u16,
+    /// Authored feature index which materialised this live source row. Zero
+    /// denotes a reset-time source (for example family 12 at slot 38).
+    pub authored_source_index: u16,
     pub owner_entity_index: u16,
     pub source_action: u8,
     pub holder_action: u8,
@@ -143,6 +146,7 @@ impl SpellHolderAcquisitionState {
         Self {
             family,
             source_slot,
+            authored_source_index: 0,
             owner_entity_index,
             source_action,
             holder_action: 0,
