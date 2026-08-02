@@ -20,7 +20,7 @@ T14 run produced:
 | Internal profile | Frame bytes | Graph memory | p95 CPU | Reset deterministic | Current status |
 | --- | ---: | ---: | ---: | --- | --- |
 | 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; owner profile rerender and persistent Unity upload proven across a 32-frame reset/replay sequence; scenario qualification pending |
-| 960x720 | 691,200 | 2,768,896 | 26.11 ms | yes | candidate; Unity/owner route pending |
+| 960x720 | 691,200 | 2,768,896 | 26.11 ms | yes | candidate; one owner profile rerender/upload smoke passed; sustained GPU/scenario qualification pending |
 | 1280x960 | 1,228,800 | 4,919,296 | 45.64 ms | yes | rejected by current CPU budget |
 
 The window is independent of the internal render profile. For example,
@@ -37,7 +37,9 @@ upload at 640x480. The sustained sequence is recorded separately in
 passes, 64 uploads, one allocation epoch, and matching indexed/provenance
 hashes after a native session reset. No FINAL MAIN copy is used. These are
 renderer-binding and replay evidence, not yet a full player-facing scenario
-or visual-corpus claim.
+or visual-corpus claim. The 960x720 candidate has a separate one-frame owner
+profile smoke in `qualification/classic-hd-owner-route-960x720-smoke.json`; it
+is not promoted because the CPU/GPU sustained budget is still open.
 
 Remaining GFX-O evidence is intentionally explicit in the JSON matrix:
 idle/town/combat/flight/restart/completion/fullscreen/alt-tab/asset-fallback,

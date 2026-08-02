@@ -37,6 +37,16 @@ class ThreeModePackageTests(unittest.TestCase):
             errors = PACKAGE.validate_sequence_artifact(candidate)
         self.assertIn("sequence reset replay did not match", errors)
 
+    def test_candidate_profile_smoke_rejects_promoted_status(self):
+        artifact_path = ROOT / "qualification" / "classic-hd-owner-route-960x720-smoke.json"
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        artifact["qualification_status"] = "qualified"
+        with tempfile.TemporaryDirectory() as temporary:
+            candidate = Path(temporary) / "profile.json"
+            candidate.write_text(json.dumps(artifact), encoding="utf-8")
+            errors = PACKAGE.validate_profile_smoke_artifact(candidate, "classic-hd-960x720", 960, 720)
+        self.assertIn("profile smoke must keep sustained qualification pending/open", errors)
+
 
 if __name__ == "__main__":
     unittest.main()

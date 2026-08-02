@@ -80,6 +80,43 @@ def validate_sequence_artifact(path: Path = SEQUENCE_ARTIFACT) -> list[str]:
     return errors
 
 
+def validate_profile_smoke_artifact(
+    path: Path,
+    profile: str,
+    width: int,
+    height: int,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"profile smoke artifact read failed: {error}"]
+
+    if artifact.get("schema_version") != 1:
+        errors.append("profile smoke artifact schema_version must be 1")
+    if artifact.get("kind") != "classic-hd-owner-route-profile-smoke/v1":
+        errors.append("profile smoke artifact kind is wrong")
+    if artifact.get("profile") != profile:
+        errors.append(f"profile smoke artifact must target {profile}")
+    if artifact.get("internal_width") != width or artifact.get("internal_height") != height:
+        errors.append(f"profile smoke artifact extent must be {width}x{height}")
+    if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
+        errors.append("profile smoke artifact must keep owner inputs external")
+    if artifact.get("frame_count") != 1 or artifact.get("upload_count") != 1:
+        errors.append("profile smoke artifact must prove one frame and one upload")
+    if artifact.get("profile_rerender_endpoint_reached") is not True:
+        errors.append("profile smoke did not reach the rerender endpoint")
+    for field in ("source_index_hash", "source_provenance_hash", "source_receipt_hash", "native_plugin_sha256", "log_sha256"):
+        if not isinstance(artifact.get(field), str) or not artifact[field]:
+            errors.append(f"profile smoke artifact is missing {field}")
+    if artifact.get("failure_reason") is not None:
+        errors.append("profile smoke artifact contains a failure reason")
+    status = str(artifact.get("qualification_status", ""))
+    if "pending" not in status and "open" not in status:
+        errors.append("profile smoke must keep sustained qualification pending/open")
+    return errors
+
+
 def _validator_result(name: str, callback: Callable[[], Any], checks: list[dict[str, Any]]) -> None:
     try:
         result = callback()
@@ -141,6 +178,16 @@ def verify() -> dict[str, Any]:
     _validator_result("isolated Unity presentation lab", lambda: lab.verify(LAB_ROOT), checks)
     _validator_result("Unity Enhanced lifecycle shell", lambda: enhanced.verify(LAB_ROOT), checks)
     _validator_result("owner-bound Classic HD sequence artifact", validate_sequence_artifact, checks)
+    _validator_result(
+        "owner-bound Classic HD 960x720 smoke artifact",
+        lambda: validate_profile_smoke_artifact(
+            Path(__file__).with_name("classic-hd-owner-route-960x720-smoke.json"),
+            "classic-hd-960x720",
+            960,
+            720,
+        ),
+        checks,
+    )
 
     matrix = json.loads((PRESENTATION_ROOT / "qualification" / "classic-hd-resolution-matrix.json").read_text(encoding="utf-8"))
     corpora_status = [

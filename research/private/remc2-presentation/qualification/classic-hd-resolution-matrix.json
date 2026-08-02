@@ -26,6 +26,14 @@
     "status": "profile-rerender-sequence-and-reset-replay-pass",
     "owner_payload_embedded": false
   },
+  "owner_route_960x720_smoke": {
+    "artifact": "qualification/classic-hd-owner-route-960x720-smoke.json",
+    "profile": "classic-hd-960x720",
+    "frame_count": 1,
+    "upload_count": 1,
+    "status": "profile-rerender-frame-and-upload-pass",
+    "owner_payload_embedded": false
+  },
   "window_resolution_is_separate_from_internal_render_resolution": true,
   "profiles": [
     {
@@ -48,7 +56,7 @@
       "p95_cpu_ns": 26112476,
       "deterministic_reset": true,
       "status": "candidate-awaiting-unity-gpu-and-owner-route-capture",
-      "unity_gpu_copy_status": "pending-owner-lab-capture"
+      "unity_gpu_copy_status": "single owner profile rerender and persistent Unity upload smoke passed; sustained capture pending"
     },
     {
       "profile": "classic-hd-1280x960",
