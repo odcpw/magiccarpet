@@ -13,6 +13,17 @@
   "owner_payload_embedded": false,
   "owner_inputs_external": true,
   "gpu_timing": "not-captured",
+  "gpu_recorder_probe": {
+    "captured_at_utc": "2026-08-02T15:19:33Z",
+    "source_revision": "8527043",
+    "status": "unsupported-on-owner-device",
+    "supports_gpu_recorder": false,
+    "profiler_recorder_valid": true,
+    "sample_count": 0,
+    "frame_timing_count": 0,
+    "log_path": "/tmp/magiccarpet-gfx-spec-temp-gpu-recorder-v2.log",
+    "log_sha256": "b919edfb6a32e8c8817bdb77bb32a04fe0f1bf3799ab00cc81c4b6c59f830d49"
+  },
   "readback_status": "pass",
   "fence_status": "open-platform-unsupported",
   "status": "open",

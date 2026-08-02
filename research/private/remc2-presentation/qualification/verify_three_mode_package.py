@@ -907,6 +907,21 @@ def validate_classic_hd_owner_gpu_fence_artifact(
         errors.append("Classic HD owner GPU fence must keep owner inputs external")
     if artifact.get("gpu_timing") != "not-captured":
         errors.append("Classic HD owner GPU fence must not claim GPU timing")
+    gpu_recorder = artifact.get("gpu_recorder_probe")
+    if not isinstance(gpu_recorder, dict):
+        errors.append("Classic HD owner GPU fence must retain the owner GPU recorder capability result")
+    else:
+        if gpu_recorder.get("status") != "unsupported-on-owner-device":
+            errors.append("Classic HD owner GPU recorder probe must keep the T14 capability result open")
+        if gpu_recorder.get("supports_gpu_recorder") is not False:
+            errors.append("Classic HD owner GPU recorder probe must report unsupported on T14")
+        if gpu_recorder.get("profiler_recorder_valid") is not True:
+            errors.append("Classic HD owner GPU recorder probe must record the valid-but-empty recorder distinction")
+        if gpu_recorder.get("sample_count") != 0 or gpu_recorder.get("frame_timing_count") != 0:
+            errors.append("Classic HD owner GPU recorder probe must retain zero timing samples")
+        for field in ("captured_at_utc", "source_revision", "log_path", "log_sha256"):
+            if not isinstance(gpu_recorder.get(field), str) or not gpu_recorder[field]:
+                errors.append(f"Classic HD owner GPU recorder probe is missing {field}")
     if artifact.get("readback_status") != "pass" or artifact.get("fence_status") != "open-platform-unsupported":
         errors.append("Classic HD owner GPU fence must separate readback pass from open fence status")
     if artifact.get("status") != "open":

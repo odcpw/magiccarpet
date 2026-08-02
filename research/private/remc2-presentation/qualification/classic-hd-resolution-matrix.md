@@ -62,8 +62,12 @@ The GPU consumption probe is recorded in
 `qualification/classic-hd-owner-gpu-fence.json`. Both profiles produce
 changing raw indexed and palette-resolved readbacks without readback errors,
 but the T14 OpenGLCore device cannot report the requested async graphics-fence
-status because async compute is unavailable. Unity GPU timing and real-time
-promotion therefore remain open.
+status because async compute is unavailable. A companion Unity GPU-recorder
+capability probe is retained in the same receipt: T14 reports
+`supportsGpuRecorder=0`, a valid recorder with zero samples, and no
+`FrameTimingManager` samples. This distinguishes an unavailable measurement
+from a zero-cost frame. Unity GPU timing and real-time promotion therefore
+remain open for a supported player/device capture.
 
 The mandatory 640x480 owner scenario receipt is recorded in
 `qualification/classic-hd-owner-route-scenarios.json`. It proves 49 persistent

@@ -303,8 +303,11 @@ and the 33.3 ms budget. `RunOwnerClassicHdGpuFenceProbe` submits two distinct
 indexed frames through the existing palette material and records raw/resolved
 `AsyncGPUReadback` hashes plus graphics-fence state. The current T14
 OpenGLCore result has readback pass and zero allocation growth, but the async
-fence cannot report passed without async compute; Unity GPU timing and
-real-time promotion remain open.
+fence cannot report passed without async compute. The companion GPU-recorder
+capability result records `supportsGpuRecorder=0`, a valid-but-empty recorder,
+and zero frame-timing samples on T14; it is not treated as a zero-cost GPU
+claim. Unity GPU timing and real-time promotion remain open until a supported
+player/device capture is available.
 
 Reproduce the owner performance receipt at either internal profile:
 
