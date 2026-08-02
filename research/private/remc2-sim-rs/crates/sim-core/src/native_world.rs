@@ -4024,6 +4024,29 @@ impl Level2EconomyState {
         true
     }
 
+    /// Apply the generation-time `ApplyEvents_498A0` terminal branch to one
+    /// typed Castle child. The source does not dispatch a model callback for
+    /// class-5/model-15 or class-10/model-41/42/79 rows: it sets the drawing
+    /// disable bit and immediately calls `sub_57F20`, which unlinks the map
+    /// row and returns the entity to the `NewEvent_4A050` free stack. Runtime
+    /// Castle creation (`sub_5FF50`/`sub_613D0`) remains a separate path.
+    pub fn applyevents_terminal_reclaim_castle_child(&mut self, source_slot: u16) -> bool {
+        let Some(child_index) = self.castle_children.iter().position(|child| {
+            child.active
+                && child.source_entity_index == source_slot
+                && matches!(child.model, 15 | 41 | 42 | 79)
+        }) else {
+            return false;
+        };
+        let child = self.castle_children[child_index];
+        self.castle_children[child_index].active = false;
+        self.sync_castle_child_map(Level2CastleChild {
+            active: false,
+            ..child
+        });
+        true
+    }
+
     pub fn claim_mana_sphere(&mut self, sphere_slot: u16, owner_entity_index: u16) -> bool {
         let Some(sphere) = self
             .spheres
@@ -16030,6 +16053,101 @@ mod tests {
             session.economy().castle().expect("downgraded Castle").level,
             1
         );
+    }
+
+    #[test]
+    fn level_two_applyevents_terminal_reclaims_castle_children() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("ApplyEvents terminal-reclaim session");
+        let baseline_hash = session.economy().reset_hash();
+        let models = [15_u8, 41, 42, 79];
+        let expected_count = models.len();
+        let (slots, free_before) = {
+            let economy = session.economy_mut();
+            let mut slots = Vec::with_capacity(expected_count);
+            for (ordinal, model) in models.iter().copied().enumerate() {
+                let source_entity_index = economy
+                    .allocate_slot()
+                    .expect("ApplyEvents terminal child slot");
+                let child = Level2CastleChild {
+                    source_entity_index,
+                    entity_rng: economy.new_event_rng(source_entity_index),
+                    id_entity_index: 111,
+                    source_class: if model == 15 { 5 } else { 10 },
+                    parent_entity_index: 111,
+                    owner_entity_index: 111,
+                    player_entity_index: 111,
+                    position: Position {
+                        x: 0x1000 + (ordinal as u16) * 0x100,
+                        y: 0x2000,
+                        z: 0,
+                    },
+                    model,
+                    action: if model == 15 { 121 } else { 0 },
+                    mana: 0,
+                    max_mana: 0,
+                    life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                    max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                    speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
+                    target_sphere_slot: 0,
+                    source_byte_3e: source_entity_index as u8,
+                    yaw: 0,
+                    roll: 0,
+                    control_flags: 0,
+                    chain_previous_slot: 0,
+                    chain_next_slot: 0,
+                    source_byte_43: 0,
+                    source_word_4a: 0,
+                    active: true,
+                };
+                economy.sync_castle_child_map(child);
+                slots.push(source_entity_index);
+                economy.castle_children.push(child);
+            }
+            (slots, economy.free_slots.len())
+        };
+        for slot in &slots {
+            assert!(
+                session
+                    .economy_mut()
+                    .applyevents_terminal_reclaim_castle_child(*slot)
+            );
+            assert!(
+                session
+                    .economy()
+                    .castle_children()
+                    .iter()
+                    .find(|child| child.source_entity_index == *slot)
+                    .is_some_and(|child| !child.active)
+            );
+            assert!(
+                !session
+                    .economy()
+                    .map_chains()
+                    .linked_entity_indices()
+                    .contains(slot)
+            );
+        }
+        assert!(
+            !session
+                .economy_mut()
+                .applyevents_terminal_reclaim_castle_child(slots[0])
+        );
+        session.economy_mut().reclaim_inactive_slots();
+        assert!(session.economy().castle_children().is_empty());
+        assert_eq!(
+            session.economy().free_slots.len(),
+            free_before + expected_count
+        );
+        for slot in &slots {
+            assert!(session.economy().source_rng.get(slot).is_none());
+        }
+        assert_ne!(session.economy().reset_hash(), baseline_hash);
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
     }
 
     #[test]
