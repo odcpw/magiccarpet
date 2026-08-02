@@ -3717,8 +3717,8 @@ impl Level2EconomyState {
             castle_controller_coefficients: [1; 8],
             events: Vec::new(),
         };
-        // The imported owner rows and the typed static sphere projection use
-        // the same source slot. Rebuild once after construction so the
+        // The imported owner rows and typed static sphere projection use the
+        // same source slot. Rebuild once after construction so the
         // install/replacement semantics remain explicit if a future profile
         // includes a source-linked model-39 row outside the baseline filter.
         state.rebuild_owner_mana_projection();
@@ -4261,6 +4261,12 @@ impl Level2EconomyState {
             return None;
         };
         let mut child = self.castle_children.remove(child_index);
+        // ApplyEvents advances byte_0x3E_62 for class-10 terminal rows before
+        // the same-visit sub_57F20 reclaim. Preserve that source write even
+        // though the row is immediately returned to the free stack.
+        if child.source_class == 10 {
+            child.source_byte_3e = child.source_byte_3e.wrapping_add(1);
+        }
         child.control_flags |= ENTITY_DRAW_DISABLED_BIT;
         child.active = false;
         self.sync_castle_child_map(child);
@@ -16524,10 +16530,29 @@ mod tests {
             .expect("restore class/model guard child")
             .source_class = 5;
         for (index, slot) in slots.iter().enumerate() {
-            assert!(
-                session.economy_mut().step_castle_child_terminal_slot(*slot),
-                "ApplyEvents disables and reclaims terminal child in one visit"
-            );
+            let reclaimed = if index == 0 {
+                assert!(
+                    session.economy_mut().step_castle_child_terminal_slot(*slot),
+                    "ApplyEvents disables and reclaims terminal child in one visit"
+                );
+                None
+            } else {
+                Some(
+                    session
+                        .economy_mut()
+                        .applyevents_terminal_reclaim_castle_child(*slot)
+                        .expect("terminal child reclaim returns source write"),
+                )
+            };
+            if let Some(reclaimed) = reclaimed {
+                assert_eq!(
+                    reclaimed.source_byte_3e,
+                    u8::try_from(*slot)
+                        .expect("fixture terminal source slot fits byte_0x3E")
+                        .wrapping_add(1),
+                    "class-10 terminal row advances byte_0x3E before reclaim"
+                );
+            }
             assert!(
                 session
                     .economy()
@@ -19438,15 +19463,18 @@ mod tests {
             .expect("source constructor Castle allocation");
         session.step_outer_turn(PlayerCommand::default(), 0);
         let events = session.dispatch_events();
-        let root_event = events.iter().position(|event| {
-            matches!(
-                event,
-                Level2DispatchEvent::Castle {
-                    source_slot,
-                    ..
-                } if *source_slot == castle_slot
-            )
-        });
+        let root_event = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::Castle {
+                        source_slot,
+                        ..
+                    } if *source_slot == castle_slot
+                )
+            })
+            .expect("same-pass Castle root event");
         let child_slot = events
             .iter()
             .find_map(|event| match event {
@@ -19458,16 +19486,19 @@ mod tests {
                 _ => None,
             })
             .expect("same-pass construction child event");
-        let child_event = events.iter().position(|event| {
-            matches!(
-                event,
-                Level2DispatchEvent::DynamicArena {
-                    source_slot,
-                    kind: Level2DynamicArenaKind::CastleChild,
-                    ..
-                } if *source_slot == child_slot
-            )
-        });
+        let child_event = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::DynamicArena {
+                        source_slot,
+                        kind: Level2DynamicArenaKind::CastleChild,
+                        ..
+                    } if *source_slot == child_slot
+                )
+            })
+            .expect("same-pass construction child event");
         assert!(
             root_event < child_event,
             "child must be visible on the runagain scan"
