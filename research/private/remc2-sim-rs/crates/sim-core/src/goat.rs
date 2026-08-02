@@ -6,7 +6,7 @@
 //! explicit.
 
 use crate::{
-    FlightWorld, Position, SourceAudioCallTag, angle_distance, distance_3d_wrapped,
+    FlightWorld, Position, SourceAudioCallTag, Tile, angle_distance, distance_3d_wrapped,
     goat_map_chain::{GoatMapChains, GoatMapSeed},
     heading_for_positions,
     house::{HouseFamily, HouseResidentEntry, HouseState, HouseStepEvent},
@@ -172,7 +172,10 @@ pub struct GoatState {
     pub roll: i16,
     pub position: Position,
     pub collision_half_width: i16,
+    /// Source `array_0x52_82.roll`, distinct from entity orientation `roll`.
+    pub collision_half_depth: i16,
     pub collision_vertical_offset: i16,
+    /// Source `array_0x52_82.fov`, used by the cave clearance gate.
     pub collision_half_height: i16,
     pub render_parameter_index: u16,
     pub animation_frame: i8,
@@ -233,6 +236,7 @@ impl GoatState {
                 z: read_i16(bytes, 0x0050),
             },
             collision_half_width: read_i16(bytes, 0x0054),
+            collision_half_depth: read_i16(bytes, 0x0056),
             collision_vertical_offset: read_i16(bytes, 0x0052),
             collision_half_height: read_i16(bytes, 0x0058),
             render_parameter_index: read_u16(bytes, 0x005a),
@@ -296,6 +300,7 @@ impl GoatState {
             roll: read_i16(bytes, 0x0024),
             position: snapshot.position,
             collision_half_width: read_i16(bytes, 0x0058),
+            collision_half_depth: read_i16(bytes, 0x005a),
             collision_vertical_offset: read_i16(bytes, 0x0056),
             collision_half_height: read_i16(bytes, 0x005c),
             render_parameter_index: read_u16(bytes, 0x005e),
@@ -1380,15 +1385,17 @@ impl GoatFamily {
             );
             let crossed_tile = source_tile(candidate) != source_tile(original);
             let blocked = crossed_tile
-                && (material_probe_blocked(
+                && (source_sub102d0_probe_blocked(
                     candidate,
                     heading,
                     self.goats[family_index].collision_half_width,
+                    self.goats[family_index].collision_half_depth,
+                    self.goats[family_index].collision_half_height,
+                    self.config.ground_clearance,
                     self.config.allowed_material_mask,
                     world,
                 ) || terrain_slope_measure(candidate, world)
-                    >= i32::from(self.config.terrain_threshold)
-                    || world.cave_collision_blocked(candidate));
+                    >= i32::from(self.config.terrain_threshold));
             if blocked {
                 self.goats[family_index].control_flags |= 0x0004_0000;
                 // `sub_1B8C0` commits each failed retry heading before it
@@ -2049,6 +2056,7 @@ impl LiveWorldState {
             hash.u16(goat.position.y);
             hash.i16(goat.position.z);
             hash.i16(goat.collision_half_width);
+            hash.i16(goat.collision_half_depth);
             hash.i16(goat.collision_vertical_offset);
             hash.i16(goat.collision_half_height);
             hash.u16(goat.render_parameter_index);
@@ -2293,6 +2301,57 @@ fn source_turn_delta(from: i16, to: i16, maximum: i16) -> i16 {
     i16::try_from(magnitude * delta.signum()).expect("source turn delta fits i16")
 }
 
+/// Port the `sub_102D0(a1, predicted, 1)` probe used by `sub_1B8C0`.
+///
+/// The source checks the complete forward footprint, not only the candidate
+/// tile: material and cave clearance are sampled every 256 units until the
+/// larger `array_0x52_82.pitch/roll` extent is reached. Keeping this separate
+/// from the Level 1 mover prevents the Level 2 action-11 path from silently
+/// inheriting a different collision contract.
+fn source_sub102d0_probe_blocked<W: FlightWorld>(
+    candidate: Position,
+    heading: i16,
+    collision_half_width: i16,
+    collision_half_depth: i16,
+    collision_half_height: i16,
+    ground_clearance: i16,
+    allowed_material_mask: u32,
+    world: &W,
+) -> bool {
+    let maximum = i32::from(collision_half_width.max(collision_half_depth).max(0));
+    let mut probe = candidate;
+    let mut distance = 0_i32;
+    while distance <= maximum {
+        if !allowed_material_mask & world.material_mask(probe) != 0 {
+            return true;
+        }
+
+        // `sub_102D0` checks the cave angle bit before `sub_11E70`.  The
+        // presence of a ceiling is the typed seam's cave-level marker.
+        if world.cave_collision_blocked(probe) {
+            return true;
+        }
+        if let Some(ceiling) = world.ceiling_height(probe) {
+            if world.angle_flags(Tile {
+                x: probe.x.to_be_bytes()[0],
+                y: probe.y.to_be_bytes()[0],
+            }) & 8
+                != 0
+                || i32::from(collision_half_height)
+                    + i32::from(world.ground_height(probe))
+                    + i32::from(ground_clearance)
+                    > i32::from(ceiling)
+            {
+                return true;
+            }
+        }
+
+        distance += 256;
+        move_entity(&mut probe, heading, 0, 256);
+    }
+    false
+}
+
 fn material_probe_blocked<W: FlightWorld>(
     candidate: Position,
     heading: i16,
@@ -2376,7 +2435,7 @@ fn read_u32(bytes: &[u8], offset: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{cell::Cell, path::PathBuf};
 
     use super::*;
     use crate::{
@@ -2429,6 +2488,58 @@ mod tests {
 
         fn angle_flags(&self, _tile: Tile) -> u8 {
             8
+        }
+    }
+
+    struct IntermediateMaterialProbeWorld {
+        material_calls: Cell<u8>,
+    }
+
+    impl FlightWorld for IntermediateMaterialProbeWorld {
+        fn ground_height(&self, _position: Position) -> i16 {
+            0
+        }
+
+        fn ceiling_height(&self, _position: Position) -> Option<i16> {
+            None
+        }
+
+        fn material_mask(&self, _position: Position) -> u32 {
+            let call = self.material_calls.get();
+            self.material_calls.set(call.saturating_add(1));
+            // The first heading is clear at its final candidate but blocked
+            // by the second 256-unit probe. Later retry headings are clear.
+            if call == 1 { 1 } else { 4 }
+        }
+
+        fn angle_flags(&self, _tile: Tile) -> u8 {
+            0
+        }
+    }
+
+    struct IntermediateCeilingProbeWorld {
+        ceiling_calls: Cell<u8>,
+    }
+
+    impl FlightWorld for IntermediateCeilingProbeWorld {
+        fn ground_height(&self, _position: Position) -> i16 {
+            0
+        }
+
+        fn ceiling_height(&self, _position: Position) -> Option<i16> {
+            let call = self.ceiling_calls.get();
+            self.ceiling_calls.set(call.saturating_add(1));
+            // Keep the first candidate open, then close the intermediate
+            // 256-unit sample; subsequent retry headings stay open.
+            Some(if call == 1 { 1 } else { 2_048 })
+        }
+
+        fn material_mask(&self, _position: Position) -> u32 {
+            4
+        }
+
+        fn angle_flags(&self, _tile: Tile) -> u8 {
+            0
         }
     }
 
@@ -2714,12 +2825,15 @@ mod tests {
         let reset_rng = 0xad6e_67d9;
         let reset_v1_hash = first.hash_v1();
         let reset_v2_hash = first.hash_v2(reset_rng);
+        // GOLDEN-CHANGE: the Level 2 source axis-4D roll extent is now part
+        // of the reset-visible Goat state, so the v1 preimage intentionally
+        // changes rather than aliasing two collision footprints.
         assert_eq!(
-            reset_v1_hash, 0xd85c_8aee_41a9_dc64,
-            "legacy v1 byte stream remains pinned"
+            reset_v1_hash, 0xa8b1_8d5b_d060_e521,
+            "v1 byte stream includes the source collision footprint"
         );
         assert_eq!(
-            reset_v2_hash, 0xc5f2_8129_5e04_4de5,
+            reset_v2_hash, 0xe029_6244_e51f_b914,
             "v2 composes the pinned v1 hash with reset global RNG"
         );
         assert_eq!(first, second, "live rows start byte-for-byte identical");
@@ -3994,6 +4108,69 @@ mod tests {
         assert_eq!(
             family.goats[primary_index].yaw,
             source_retry_headings(512)[3]
+        );
+    }
+
+    #[test]
+    fn action11_sub102d0_rejects_intermediate_material_probe() {
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        let goat = &mut family.goats[primary_index];
+        goat.position = Position { x: 0, y: 0, z: 0 };
+        goat.yaw = 0;
+        goat.actual_speed = 300;
+        goat.collision_half_width = 512;
+        goat.collision_half_depth = 512;
+        let world = IntermediateMaterialProbeWorld {
+            material_calls: Cell::new(0),
+        };
+
+        family.move_action11_source(primary_index, &world);
+
+        assert!(
+            world.material_calls.get() >= 4,
+            "source path probe must inspect an intermediate 256-unit sample"
+        );
+        assert_ne!(
+            family.goats[primary_index].yaw,
+            source_retry_headings(0)[0],
+            "the first heading must be rejected before the retry path accepts"
+        );
+    }
+
+    #[test]
+    fn action11_sub102d0_rejects_intermediate_ceiling_probe() {
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        let goat = &mut family.goats[primary_index];
+        goat.position = Position { x: 0, y: 0, z: 0 };
+        goat.yaw = 0;
+        goat.actual_speed = 300;
+        goat.collision_half_width = 512;
+        goat.collision_half_depth = 512;
+        goat.collision_half_height = 10;
+        let world = IntermediateCeilingProbeWorld {
+            ceiling_calls: Cell::new(0),
+        };
+
+        family.move_action11_source(primary_index, &world);
+
+        assert!(
+            world.ceiling_calls.get() >= 4,
+            "source path probe must inspect an intermediate cave sample"
+        );
+        assert_ne!(
+            family.goats[primary_index].yaw,
+            source_retry_headings(0)[0],
+            "the first heading must be rejected by the cave ceiling probe"
         );
     }
 }

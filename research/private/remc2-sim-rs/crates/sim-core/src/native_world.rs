@@ -10115,6 +10115,7 @@ impl Level2ResetSession {
             hasher.update(goat.position.y.to_le_bytes());
             hasher.update(goat.position.z.to_le_bytes());
             hasher.update(goat.collision_half_width.to_le_bytes());
+            hasher.update(goat.collision_half_depth.to_le_bytes());
             hasher.update(goat.collision_vertical_offset.to_le_bytes());
             hasher.update(goat.collision_half_height.to_le_bytes());
             hasher.update(goat.render_parameter_index.to_le_bytes());
@@ -11843,7 +11844,7 @@ fn goat_source_entity_view(goat: &GoatState) -> Level1SourceEntityView {
         actual_speed: goat.actual_speed,
         maximum_speed: goat.maximum_speed,
         collision_half_width: goat.collision_half_width,
-        collision_half_depth: goat.collision_half_width,
+        collision_half_depth: goat.collision_half_depth,
         collision_vertical_offset: goat.collision_vertical_offset,
         collision_half_height: goat.collision_half_height,
         villager_entry_eligible: false,

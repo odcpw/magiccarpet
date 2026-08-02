@@ -213,6 +213,7 @@ mod tests {
             roll: 0,
             position,
             collision_half_width: 0,
+            collision_half_depth: 0,
             collision_vertical_offset: 0,
             collision_half_height: 0,
             render_parameter_index: GOAT_RENDER_PARAMETER_INDEX,
