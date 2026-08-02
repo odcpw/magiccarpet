@@ -57,10 +57,13 @@ python3 research/private/remc2-presentation/qualification/validate_classic_hd_ma
 python3 research/private/remc2-presentation/qualification/verify_three_mode_package.py
 ```
 
-This matrix promotes only the 640x480 Rust CPU/determinism row, leaves 960x720
-as a candidate, and records 1280x960 as over the current CPU budget. Unity GPU,
-copy/upload, owner-route, and preserved corpus evidence remain required before
-any higher profile becomes a player-facing production claim.
+This matrix promotes 640x480 as the mandatory real-time-oriented Rust
+CPU/determinism row, leaves 960x720 as a measured candidate, and records
+1280x960 as over the current CPU budget. The 960x720 owner route now has a
+passing 64-frame reset-replay/upload artifact, but its traced owner terrain
+stage is approximately 1.52 seconds per frame on T14, so it is not a real-time
+or player-facing production claim. Unity GPU, scenario, and preserved corpus
+evidence remain required for any broader promotion.
 
 `qualification/verify_three_mode_package.py` is the final package-integrity
 gate. A PASS means the Exact, Classic HD, and Unity Enhanced contracts and

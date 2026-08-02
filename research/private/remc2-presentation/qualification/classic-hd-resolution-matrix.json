@@ -6,7 +6,7 @@
   "sample_count": 32,
   "owner_payload_embedded": false,
   "unity_gpu_and_owner_route": "pending-owner-lab-capture",
-  "owner_route_binding_status": "640x480 profile-sized source compositor rerender and Unity upload proven across a 32-frame reset/replay sequence; broader owner/GPU matrix remains pending",
+  "owner_route_binding_status": "640x480 and 960x720 profile-sized source compositor rerender and Unity upload proven across 32-frame reset/replay sequences; broader owner/GPU matrix remains pending",
   "owner_route_smoke": {
     "artifact": "qualification/classic-hd-owner-route-smoke.json",
     "profile": "classic-hd-640x480",
@@ -35,11 +35,14 @@
     "owner_payload_embedded": false
   },
   "owner_route_960x720_sequence_probe": {
-    "artifact": "qualification/classic-hd-owner-route-960x720-sequence-failure.json",
+    "artifact": "qualification/classic-hd-owner-route-960x720-sequence-smoke.json",
     "profile": "classic-hd-960x720",
     "target_frame_count": 64,
-    "observed_frame_receipts": 0,
-    "status": "not-promoted-bounded-run-over-budget",
+    "observed_frame_receipts": 64,
+    "upload_count": 64,
+    "allocation_epoch": 1,
+    "reset_replay_match": true,
+    "status": "profile-rerender-sequence-and-reset-replay-pass; real-time/GPU/scenario promotion remains open",
     "owner_payload_embedded": false
   },
   "window_resolution_is_separate_from_internal_render_resolution": true,
@@ -64,7 +67,7 @@
       "p95_cpu_ns": 26112476,
       "deterministic_reset": true,
       "status": "candidate-awaiting-unity-gpu-and-owner-route-capture",
-      "unity_gpu_copy_status": "single owner profile rerender and persistent Unity upload smoke passed; sustained capture pending"
+      "unity_gpu_copy_status": "single owner profile rerender and 64-frame two-pass reset replay with persistent Unity uploads passed; real-time/GPU/scenario capture remains pending"
     },
     {
       "profile": "classic-hd-1280x960",

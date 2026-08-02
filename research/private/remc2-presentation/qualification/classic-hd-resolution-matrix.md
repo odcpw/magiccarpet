@@ -20,7 +20,7 @@ T14 run produced:
 | Internal profile | Frame bytes | Graph memory | p95 CPU | Reset deterministic | Current status |
 | --- | ---: | ---: | ---: | --- | --- |
 | 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; owner profile rerender and persistent Unity upload proven across a 32-frame reset/replay sequence; scenario qualification pending |
-| 960x720 | 691,200 | 2,768,896 | 26.11 ms | yes | candidate; one owner profile rerender/upload smoke passed; sustained GPU/scenario qualification pending |
+| 960x720 | 691,200 | 2,768,896 | 26.11 ms | yes | candidate; owner profile rerender/upload and 64-frame two-pass reset replay now pass; traced owner terrain raster was ~1.52 s/frame, so real-time/GPU/scenario promotion remains pending |
 | 1280x960 | 1,228,800 | 4,919,296 | 45.64 ms | yes | rejected by current CPU budget |
 
 The window is independent of the internal render profile. For example,
@@ -37,20 +37,20 @@ upload at 640x480. The sustained sequence is recorded separately in
 passes, 64 uploads, one allocation epoch, and matching indexed/provenance
 hashes after a native session reset. No FINAL MAIN copy is used. These are
 renderer-binding and replay evidence, not yet a full player-facing scenario
-or visual-corpus claim. The 960x720 candidate has a separate one-frame owner
-profile smoke in `qualification/classic-hd-owner-route-960x720-smoke.json`; it
-is not promoted because the CPU/GPU sustained budget is still open.
-
-The 960x720 sustained owner probe is also recorded explicitly in
-`qualification/classic-hd-owner-route-960x720-sequence-failure.json`. Its
-64-frame two-pass Unity/OpenGLCore run produced no frame receipt within the
-four-minute bound while one Unity thread stayed CPU-bound and resident memory
-reached about 1.3 GiB. It is a not-promoted performance finding, not a visual
-or production qualification claim.
+or visual-corpus claim. The 960x720 candidate has a one-frame owner profile
+smoke in `qualification/classic-hd-owner-route-960x720-smoke.json` and a
+64-frame two-pass reset replay in
+`qualification/classic-hd-owner-route-960x720-sequence-smoke.json`. The
+streaming mode-5 terrain path reduced the traced owner terrain stage to about
+1.52 seconds per 960x720 frame on T14; therefore the sequence is promoted as
+deterministic owner-route evidence, but the profile is not promoted as
+real-time or player-facing GPU/scenario support. The earlier bounded failure
+record remains at `qualification/classic-hd-owner-route-960x720-sequence-failure.json`
+as a historical finding and is explicitly superseded by the passing rerun.
 
 Remaining GFX-O evidence is intentionally explicit in the JSON matrix:
 idle/town/combat/flight/restart/completion/fullscreen/alt-tab/asset-fallback,
-960x720 owner/GPU measurements, 20-minute allocation growth, and owner-bound
-reflection/lighting/blur route cases still require the private owner-data Unity
-capture and preserved qualification artifacts. The invalid-config case is
-covered by the launcher/settings focused tests.
+20-minute allocation growth, and owner-bound reflection/lighting/blur route
+cases still require the private owner-data Unity capture and preserved
+qualification artifacts. The invalid-config case is covered by the
+launcher/settings focused tests.
