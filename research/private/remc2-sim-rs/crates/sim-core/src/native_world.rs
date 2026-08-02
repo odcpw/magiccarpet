@@ -42,25 +42,29 @@ use crate::{
     },
     level1_mission::{
         ARCHER_BASE_TMAP, ARCHER_LOGICAL_HEIGHT, ARCHER_RENDER_INDEX, ARCHER_RENDER_MODE,
-        CASTLE_SPELL_FAMILY, CastleBuildFootprint, CastleTerrainUpdate, FIREBALL_BASE_TMAP,
-        FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_LOGICAL_HEIGHT, FIREBALL_IMPACT_RENDER_INDEX,
-        FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LOGICAL_HEIGHT, FIREBALL_RENDER_INDEX,
-        FIREBALL_RENDER_MODE, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT, FIREFLY_RENDER_INDEX,
-        FIREFLY_RENDER_MODE, GROUND_FIRE_BASE_TMAP, GROUND_FIRE_FIRST_RENDER_INDEX,
-        GROUND_FIRE_LOGICAL_HEIGHTS, GROUND_FIRE_PRESENTATION_BYTE_11,
-        GROUND_FIRE_PRESENTATION_SPEEDS, GROUND_FIRE_RENDER_MODE, HouseResidentRequest,
-        Level1AmbientEntity, Level1CastlePlacementBlocker, Level1CollisionTarget,
-        Level1MissionState, Level1MissionTemplate, Level1ResetRawSourceState,
-        Level1ResetSourceSlot, Level1SourceCollisionTarget, Level1SourceEffect,
-        Level1SourceEntityAuthority, Level1SourceEntityView, MANA_CARRIER_BASE_TMAP,
-        MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_RENDER_MODE,
-        POSSESSION_ATTRACTION_BASE_TMAP, POSSESSION_ATTRACTION_LOGICAL_HEIGHT,
-        POSSESSION_ATTRACTION_RENDER_INDEX, POSSESSION_ATTRACTION_RENDER_MODE,
-        POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_LOGICAL_HEIGHT,
-        POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_IMPACT_RENDER_MODE,
-        SPEED_SPELL_ACTIVATION_TICKS, SPEED_SPELL_FAMILY, SPEED_SPELL_MANA_COST,
-        SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX,
-        SPELL_JAR_RENDER_MODE,
+        CASTLE_SPELL_FAMILY, CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH, CASTLE_STAGE_ONE_LIFE,
+        CASTLE_STAGE_ONE_MANA_CAPACITY, CastleBuildFootprint, CastleTerrainUpdate,
+        FIREBALL_BASE_TMAP, FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_LOGICAL_HEIGHT,
+        FIREBALL_IMPACT_RENDER_INDEX, FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LOGICAL_HEIGHT,
+        FIREBALL_RENDER_INDEX, FIREBALL_RENDER_MODE, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT,
+        FIREFLY_RENDER_INDEX, FIREFLY_RENDER_MODE, GROUND_FIRE_BASE_TMAP,
+        GROUND_FIRE_FIRST_RENDER_INDEX, GROUND_FIRE_LOGICAL_HEIGHTS,
+        GROUND_FIRE_PRESENTATION_BYTE_11, GROUND_FIRE_PRESENTATION_SPEEDS, GROUND_FIRE_RENDER_MODE,
+        HouseResidentRequest, Level1AmbientEntity, Level1CastlePlacementBlocker,
+        Level1CollisionTarget, Level1MissionState, Level1MissionTemplate,
+        Level1ResetRawSourceState, Level1ResetSourceSlot, Level1SourceCollisionTarget,
+        Level1SourceEffect, Level1SourceEntityAuthority, Level1SourceEntityView,
+        MANA_CARRIER_ATTRACTION_RADIUS, MANA_CARRIER_BASE_TMAP, MANA_CARRIER_COLLISION_HALF_HEIGHT,
+        MANA_CARRIER_COLLISION_HALF_WIDTH, MANA_CARRIER_COLLISION_VERTICAL_OFFSET,
+        MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_MAX_LIFE, MANA_CARRIER_MAX_MANA,
+        MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_RENDER_MODE, MANA_CARRIER_SPEED,
+        MANA_SPHERE_COLLISION_DIMENSIONS, ManaCarrier, ManaSphere, POSSESSION_ATTRACTION_BASE_TMAP,
+        POSSESSION_ATTRACTION_LOGICAL_HEIGHT, POSSESSION_ATTRACTION_RENDER_INDEX,
+        POSSESSION_ATTRACTION_RENDER_MODE, POSSESSION_IMPACT_BASE_TMAP,
+        POSSESSION_IMPACT_LOGICAL_HEIGHT, POSSESSION_IMPACT_RENDER_INDEX,
+        POSSESSION_IMPACT_RENDER_MODE, SPEED_SPELL_ACTIVATION_TICKS, SPEED_SPELL_FAMILY,
+        SPEED_SPELL_MANA_COST, SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT,
+        SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE, mana_sphere_size_ordinal,
     },
     mark_source_audio_call,
     mission_content::{
@@ -703,6 +707,37 @@ fn level2_source_intersects(left: &EntitySnapshot, right: &EntitySnapshot) -> bo
     dx.abs() < i32::from(i16_at(left, 86)) + i32::from(i16_at(right, 86))
         && dy.abs() < i32::from(i16_at(left, 88)) + i32::from(i16_at(right, 88))
         && dz.abs() < i32::from(i16_at(left, 92)) + i32::from(i16_at(right, 92))
+}
+
+fn level2_wrapping_xy_distance(left: Position, right: Position) -> u32 {
+    let dx = i32::from(right.x.wrapping_sub(left.x).cast_signed());
+    let dy = i32::from(right.y.wrapping_sub(left.y).cast_signed());
+    dx.wrapping_mul(dx)
+        .wrapping_add(dy.wrapping_mul(dy))
+        .cast_unsigned()
+}
+
+fn level2_mana_sphere_dimension(mana: i32) -> i16 {
+    MANA_SPHERE_COLLISION_DIMENSIONS[usize::from(mana_sphere_size_ordinal(mana))]
+}
+
+fn level2_carrier_sphere_overlap(carrier: Position, sphere: &ManaSphere) -> bool {
+    let extent = level2_mana_sphere_dimension(sphere.mana);
+    let dx = i32::from(sphere.position.x.wrapping_sub(carrier.x).cast_signed());
+    let dy = i32::from(sphere.position.y.wrapping_sub(carrier.y).cast_signed());
+    let dz = i32::from(carrier.z) + i32::from(MANA_CARRIER_COLLISION_VERTICAL_OFFSET)
+        - i32::from(sphere.position.z);
+    dx.abs() < i32::from(MANA_CARRIER_COLLISION_HALF_WIDTH + extent)
+        && dy.abs() < i32::from(MANA_CARRIER_COLLISION_HALF_WIDTH + extent)
+        && dz.abs() < i32::from(MANA_CARRIER_COLLISION_HALF_HEIGHT + extent)
+}
+
+fn level2_castle_sphere_overlap(castle: Position, sphere: &ManaSphere) -> bool {
+    let extent = level2_mana_sphere_dimension(sphere.mana);
+    let dx = i32::from(sphere.position.x.wrapping_sub(castle.x).cast_signed());
+    let dy = i32::from(sphere.position.y.wrapping_sub(castle.y).cast_signed());
+    dx.abs() < i32::from(CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH + extent)
+        && dy.abs() < i32::from(CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH + extent)
 }
 
 impl Level2Dolmen {
@@ -2531,6 +2566,11 @@ impl NativeWorldInspection {
             self.players.clone(),
             self.presentation.clone(),
         )?;
+        let economy = Level2EconomyState::from_parts(
+            SessionTerrain::from_inspection(self),
+            &self.entities,
+            self.entities[usize::from(self.players[0].entity_index)].mana,
+        );
         Ok(Level2ResetSession::new(
             self.metadata.map_type.profile(),
             state,
@@ -2541,6 +2581,7 @@ impl NativeWorldInspection {
             self.presentation.clone(),
             bad_stones,
             shared_spells,
+            economy,
             ordinary,
             mission,
         ))
@@ -2650,6 +2691,1178 @@ pub struct Level2SpeedPickupStep {
     pub previous_phase: u8,
     pub phase: u8,
     pub collected: bool,
+}
+
+/// Mutable Level 2 Castle root fields shared by the mana/carrier seam. Castle
+/// construction animation and defense dispatch remain separate Level 2 work;
+/// this type owns the source life/mana/damage mailbox and kill credit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2CastleState {
+    pub source_entity_index: u16,
+    pub owner_entity_index: u16,
+    pub position: Position,
+    pub life: i32,
+    pub max_life: i32,
+    pub mana: i32,
+    pub mana_capacity: i32,
+    pub pending_damage: i32,
+    pub pending_attacker_entity_index: u16,
+    pub killer_entity_index: u16,
+    pub control_flags: u32,
+    pub timer: u8,
+    /// Root action (`4` stable, `5` construction, `6` destruction) and the
+    /// source construction substate used by `BeginOfCastleCreation_5FA70`.
+    pub action: u8,
+    pub build_state: u8,
+    pub level: u8,
+    pub construction_slot: u16,
+    pub defense_slot: u16,
+    pub construction_model: u8,
+    pub construction_action: u8,
+    pub construction_control_flags: u32,
+    pub construction_parent_slot: u16,
+    pub construction_owner_entity_index: u16,
+    pub construction_id: u16,
+    pub construction_position: Position,
+    pub defense_model: u8,
+    pub defense_action: u8,
+    pub defense_control_flags: u32,
+    pub defense_parent_slot: u16,
+    pub defense_owner_entity_index: u16,
+    pub defense_id: u16,
+    pub defense_position: Position,
+    pub construction_child_active: bool,
+    pub defense_child_active: bool,
+    pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Level2EconomyEvent {
+    ManaSphereSpawned {
+        sphere_id: u32,
+        source_entity_index: u16,
+        mana: i32,
+    },
+    ManaSphereClaimed {
+        sphere_id: u32,
+        owner_entity_index: u16,
+    },
+    ManaSphereCollected {
+        sphere_id: u32,
+        carrier_id: u32,
+        mana: i32,
+    },
+    ManaSpheresMerged {
+        target_sphere_id: u32,
+        source_sphere_id: u32,
+        owner_entity_index: u16,
+        mana: i32,
+    },
+    ManaCarrierSpawned {
+        source_entity_index: u16,
+        owner_entity_index: u16,
+    },
+    ManaCarrierArrived {
+        carrier_id: u32,
+        castle_id: u16,
+        mana: i32,
+    },
+    CastleBuilt {
+        source_entity_index: u16,
+        owner_entity_index: u16,
+    },
+    CastleDestroyed {
+        source_entity_index: u16,
+        killer_entity_index: u16,
+    },
+    DamageApplied {
+        target_entity_index: u16,
+        attacker_entity_index: u16,
+        damage: i32,
+        lethal: bool,
+    },
+}
+
+/// Production Level 2 economy projection for the shared mana sphere, carrier,
+/// Castle, damage, and bounded source allocation paths. The source arena free
+/// stack is reconstructed from the validated reset rows; failed allocations
+/// leave arena/object fields unchanged after the source's ordered dying-row
+/// RNG and owner writes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Level2EconomyState {
+    baseline_terrain: SessionTerrain,
+    terrain: SessionTerrain,
+    baseline_free_slots: Box<[u16]>,
+    free_slots: Vec<u16>,
+    baseline_slot_rng: BTreeMap<u16, u16>,
+    slot_rng: BTreeMap<u16, u16>,
+    baseline_source_rng: BTreeMap<u16, u16>,
+    source_rng: BTreeMap<u16, u16>,
+    baseline_source_owner: BTreeMap<u16, u16>,
+    source_owner: BTreeMap<u16, u16>,
+    baseline_owner_class: BTreeMap<u16, u8>,
+    owner_class: BTreeMap<u16, u8>,
+    baseline_owner_max_mana: BTreeMap<u16, i32>,
+    owner_max_mana: BTreeMap<u16, i32>,
+    baseline_spheres: Vec<ManaSphere>,
+    spheres: Vec<ManaSphere>,
+    baseline_carrier: Option<ManaCarrier>,
+    carrier: Option<ManaCarrier>,
+    baseline_castle: Option<Level2CastleState>,
+    castle: Option<Level2CastleState>,
+    baseline_player_mana: i32,
+    player_mana: i32,
+    events: Vec<Level2EconomyEvent>,
+}
+
+impl Level2EconomyState {
+    fn from_parts(terrain: SessionTerrain, entities: &[EntitySnapshot], player_mana: i32) -> Self {
+        let mut free_slots = entities
+            .iter()
+            .filter(|entity| !entity.active && entity.index != 0)
+            .map(|entity| entity.index)
+            .collect::<Vec<_>>();
+        free_slots.sort_unstable_by(|left, right| right.cmp(left));
+        let slot_rng = entities
+            .iter()
+            .filter(|entity| !entity.active && entity.index != 0)
+            .map(|entity| (entity.index, entity.entity_rng))
+            .collect::<BTreeMap<_, _>>();
+        let owner_class = entities
+            .iter()
+            .filter(|entity| entity.active)
+            .map(|entity| (entity.index, entity.class))
+            .collect::<BTreeMap<_, _>>();
+        let source_owner = entities
+            .iter()
+            .map(|entity| {
+                (
+                    entity.index,
+                    u16::from_le_bytes([entity.record[44], entity.record[45]]),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let owner_max_mana = entities
+            .iter()
+            .filter(|entity| entity.active)
+            .map(|entity| (entity.index, entity.mana))
+            .collect::<BTreeMap<_, _>>();
+        Self {
+            baseline_terrain: terrain.clone(),
+            terrain,
+            baseline_free_slots: free_slots.clone().into_boxed_slice(),
+            free_slots,
+            baseline_slot_rng: slot_rng.clone(),
+            slot_rng,
+            baseline_source_rng: BTreeMap::new(),
+            source_rng: BTreeMap::new(),
+            baseline_source_owner: source_owner.clone(),
+            source_owner,
+            baseline_owner_class: owner_class.clone(),
+            owner_class,
+            baseline_owner_max_mana: owner_max_mana.clone(),
+            owner_max_mana,
+            baseline_spheres: Vec::new(),
+            spheres: Vec::new(),
+            baseline_carrier: None,
+            carrier: None,
+            baseline_castle: None,
+            castle: None,
+            baseline_player_mana: player_mana,
+            player_mana,
+            events: Vec::new(),
+        }
+    }
+
+    fn allocate_slot(&mut self) -> Option<u16> {
+        self.free_slots.pop()
+    }
+
+    fn release_slot(&mut self, slot: u16, entity_rng: Option<u16>) {
+        if slot == 0 || self.free_slots.contains(&slot) {
+            return;
+        }
+        if let Some(entity_rng) = entity_rng {
+            self.slot_rng.insert(slot, entity_rng);
+        }
+        self.free_slots.push(slot);
+        self.free_slots
+            .sort_unstable_by(|left, right| right.cmp(left));
+    }
+
+    #[must_use]
+    pub fn spheres(&self) -> &[ManaSphere] {
+        &self.spheres
+    }
+
+    #[must_use]
+    pub fn carrier(&self) -> Option<&ManaCarrier> {
+        self.carrier.as_ref().filter(|carrier| carrier.active)
+    }
+
+    #[must_use]
+    pub const fn castle(&self) -> Option<Level2CastleState> {
+        self.castle
+    }
+
+    #[must_use]
+    pub const fn player_mana(&self) -> i32 {
+        self.player_mana
+    }
+
+    #[must_use]
+    pub const fn free_slot_count(&self) -> usize {
+        self.free_slots.len()
+    }
+
+    #[must_use]
+    pub fn events(&self) -> &[Level2EconomyEvent] {
+        &self.events
+    }
+
+    /// Start a new source turn's economy event stream. Mutations append to
+    /// this stream so one turn can be audited in source order.
+    pub fn begin_turn(&mut self) {
+        self.events.clear();
+    }
+
+    /// Override the imported owner capacity used by the source's
+    /// `sub_36D50` merge arbitration when two non-neutral owners collide.
+    pub fn set_owner_max_mana(&mut self, owner_entity_index: u16, max_mana: i32) {
+        self.owner_max_mana.insert(owner_entity_index, max_mana);
+    }
+
+    #[must_use]
+    pub fn source_owner(&self, source_entity_index: u16) -> u16 {
+        self.source_owner
+            .get(&source_entity_index)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Source `TransformEntityToManaSphere_36BA0` with `use_mana_fraction`
+    /// false. Allocation failure occurs after the dying source RNG write and
+    /// does not consume a free slot or create a partial sphere.
+    pub fn spawn_mana_sphere_from_death(
+        &mut self,
+        source_entity_index: u16,
+        position: Position,
+        source_yaw: i16,
+        source_rng_after_death: u16,
+        mana: i32,
+        owner_entity_index: u16,
+    ) -> Option<u32> {
+        self.spawn_mana_spheres_from_death(
+            source_entity_index,
+            position,
+            source_yaw,
+            source_rng_after_death,
+            mana,
+            owner_entity_index,
+            false,
+        )
+        .into_iter()
+        .next()
+    }
+
+    /// Source `TransformEntityToManaSphere_36BA0`. With `use_mana_fraction`
+    /// enabled, mana is split into `clamp(mana / 1000, 1, 16)` spheres and the
+    /// final sphere receives the exact remainder. The source writes the dying
+    /// entity RNG before attempting allocations, so an exhausted arena may
+    /// return a partial vector while preserving the already-created spheres.
+    pub fn spawn_mana_spheres_from_death(
+        &mut self,
+        source_entity_index: u16,
+        position: Position,
+        source_yaw: i16,
+        source_rng_after_death: u16,
+        mana: i32,
+        owner_entity_index: u16,
+        use_mana_fraction: bool,
+    ) -> Vec<u32> {
+        if mana <= 0 {
+            return Vec::new();
+        }
+        self.source_rng
+            .insert(source_entity_index, source_rng_after_death);
+        // TransformEntityToManaSphere_36BA0 clears the dying source's owner
+        // relation after the sphere loop, even when the arena is exhausted.
+        self.source_owner.insert(source_entity_index, 0);
+        let fraction = if use_mana_fraction {
+            (mana / 1_000).clamp(1, 16)
+        } else {
+            1
+        };
+        let each_mana = mana / fraction;
+        let mut sphere_ids = Vec::with_capacity(usize::try_from(fraction).unwrap_or(1));
+        for sphere_index in 0..fraction {
+            let Some(sphere_slot) = self.allocate_slot() else {
+                break;
+            };
+            let sphere_seed = self.slot_rng.get(&sphere_slot).copied().unwrap_or(0);
+            let sphere_rng = level2_next_rng16(sphere_seed);
+            let yaw =
+                i16::try_from((i32::from(sphere_rng % 0x71) + i32::from(source_yaw) - 56) & 0x07ff)
+                    .expect("Level 2 mana sphere yaw fits 11 bits");
+            let speed_rng = level2_next_rng16(sphere_rng);
+            let speed = i16::try_from(speed_rng % 0x30 + 16).expect("mana sphere speed fits i16");
+            let mut velocity = Position::default();
+            crate::move_entity(&mut velocity, yaw, 0, speed);
+            let ground = self.terrain.ground_height(position);
+            let height_above_ground = i32::from(position.z) - i32::from(ground);
+            let vertical_velocity = (1_024 - height_above_ground).wrapping_div(8) as i16;
+            let sphere_mana = if sphere_index + 1 == fraction {
+                mana - each_mana * (fraction - 1)
+            } else {
+                each_mana
+            };
+            let sphere = ManaSphere {
+                id: u32::from(sphere_slot),
+                source_entity_index: sphere_slot,
+                entity_rng: speed_rng,
+                position,
+                velocity_x: velocity.x.cast_signed(),
+                velocity_y: velocity.y.cast_signed(),
+                vertical_velocity,
+                yaw,
+                mana: sphere_mana,
+                owner_entity_index,
+                incoming_owner_entity_index: 0,
+                incoming_possession_payload: 0,
+                assigned_carrier_id: 0,
+                phase: sphere_slot as u8,
+                active: true,
+                pending_delete: false,
+            };
+            sphere_ids.push(sphere.id);
+            self.spheres.push(sphere);
+            self.events.push(Level2EconomyEvent::ManaSphereSpawned {
+                sphere_id: sphere.id,
+                source_entity_index,
+                mana: sphere_mana,
+            });
+        }
+        sphere_ids
+    }
+
+    pub fn claim_mana_sphere(&mut self, sphere_slot: u16, owner_entity_index: u16) -> bool {
+        let Some(sphere) = self
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.active && sphere.source_entity_index == sphere_slot)
+        else {
+            return false;
+        };
+        if sphere.owner_entity_index == owner_entity_index {
+            return false;
+        }
+        sphere.owner_entity_index = owner_entity_index;
+        self.events.push(Level2EconomyEvent::ManaSphereClaimed {
+            sphere_id: sphere.id,
+            owner_entity_index,
+        });
+        true
+    }
+
+    /// Source `sub_36D50`: merge one active mana sphere into another and
+    /// preserve owner arbitration. Neutral ownership adopts the other owner;
+    /// class-10 owners yield to a non-class-10 owner; otherwise the source
+    /// compares imported owner max-mana values (ties select the source side).
+    pub fn merge_mana_spheres(&mut self, target_slot: u16, source_slot: u16) -> bool {
+        if target_slot == source_slot {
+            return false;
+        }
+        let Some(target_index) = self
+            .spheres
+            .iter()
+            .position(|sphere| sphere.active && sphere.source_entity_index == target_slot)
+        else {
+            return false;
+        };
+        let Some(source_index) = self
+            .spheres
+            .iter()
+            .position(|sphere| sphere.active && sphere.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        let target_owner = self.spheres[target_index].owner_entity_index;
+        let source_owner = self.spheres[source_index].owner_entity_index;
+        let owner = if target_owner == 0 {
+            source_owner
+        } else if source_owner == 0 {
+            target_owner
+        } else if self.owner_class.get(&target_owner) == Some(&10)
+            && self.owner_class.get(&source_owner) != Some(&10)
+        {
+            source_owner
+        } else if self.owner_class.get(&source_owner) == Some(&10)
+            && self.owner_class.get(&target_owner) != Some(&10)
+        {
+            target_owner
+        } else if self
+            .owner_max_mana
+            .get(&target_owner)
+            .copied()
+            .unwrap_or_default()
+            > self
+                .owner_max_mana
+                .get(&source_owner)
+                .copied()
+                .unwrap_or_default()
+        {
+            target_owner
+        } else {
+            source_owner
+        };
+        let source_mana = self.spheres[source_index].mana;
+        let target_id = self.spheres[target_index].id;
+        let source_id = self.spheres[source_index].id;
+        self.spheres[target_index].mana = self.spheres[target_index].mana.wrapping_add(source_mana);
+        self.spheres[target_index].owner_entity_index = owner;
+        self.spheres[source_index].assigned_carrier_id = 0;
+        self.spheres[source_index].pending_delete = true;
+        self.spheres[source_index].active = false;
+        self.events.push(Level2EconomyEvent::ManaSpheresMerged {
+            target_sphere_id: target_id,
+            source_sphere_id: source_id,
+            owner_entity_index: owner,
+            mana: source_mana,
+        });
+        true
+    }
+
+    /// Source carrier action 9's sphere absorption tail. The carrier receives
+    /// the entire sphere payload only when the target is owned by the same
+    /// player, within the Day attraction radius, and inside the strict source
+    /// AABB (`AddBallon_60AB0`/`sub_106C0`). The sphere is disabled for the
+    /// next reclaim pass; no allocation is attempted on this path.
+    pub fn absorb_sphere_into_carrier(&mut self, sphere_slot: u16, carrier_slot: u16) -> bool {
+        let Some(carrier) = self
+            .carrier
+            .as_ref()
+            .copied()
+            .filter(|carrier| carrier.active && carrier.source_entity_index == carrier_slot)
+        else {
+            return false;
+        };
+        let Some(sphere) = self
+            .spheres
+            .iter()
+            .copied()
+            .find(|sphere| sphere.active && sphere.source_entity_index == sphere_slot)
+        else {
+            return false;
+        };
+        if sphere.owner_entity_index != carrier.owner_entity_index
+            || level2_wrapping_xy_distance(carrier.position, sphere.position)
+                > u32::from(MANA_CARRIER_ATTRACTION_RADIUS)
+                    * u32::from(MANA_CARRIER_ATTRACTION_RADIUS)
+            || !level2_carrier_sphere_overlap(carrier.position, &sphere)
+        {
+            return false;
+        }
+        let mana = sphere.mana;
+        let carrier_state = self.carrier.as_mut().expect("carrier remains installed");
+        carrier_state.carried_mana = carrier_state.carried_mana.wrapping_add(mana);
+        carrier_state.target_sphere_id = 0;
+        carrier_state.owner_entity_index = sphere.owner_entity_index;
+        carrier_state.life = carrier_state.max_life;
+        let sphere_state = self
+            .spheres
+            .iter_mut()
+            .find(|candidate| candidate.active && candidate.source_entity_index == sphere_slot)
+            .expect("sphere remains installed");
+        sphere_state.assigned_carrier_id = 0;
+        sphere_state.pending_delete = true;
+        sphere_state.active = false;
+        self.events.push(Level2EconomyEvent::ManaSphereCollected {
+            sphere_id: sphere.id,
+            carrier_id: carrier.id,
+            mana,
+        });
+        true
+    }
+
+    pub fn spawn_mana_carrier(
+        &mut self,
+        position: Position,
+        owner_entity_index: u16,
+        target_sphere_id: u32,
+    ) -> Option<u16> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self
+            .slot_rng
+            .get(&source_entity_index)
+            .copied()
+            .unwrap_or(0);
+        let carrier = ManaCarrier {
+            id: u32::from(source_entity_index),
+            source_entity_index,
+            entity_rng,
+            owner_entity_index,
+            position,
+            yaw: 0,
+            pitch: 0,
+            speed: MANA_CARRIER_SPEED,
+            life: MANA_CARRIER_MAX_LIFE,
+            max_life: MANA_CARRIER_MAX_LIFE,
+            max_mana: MANA_CARRIER_MAX_MANA,
+            target_sphere_id,
+            carried_mana: 0,
+            returning_to_castle: false,
+            pending_damage: 0,
+            pending_attacker_entity_index: 0,
+            active: true,
+        };
+        self.carrier = Some(carrier);
+        self.events.push(Level2EconomyEvent::ManaCarrierSpawned {
+            source_entity_index,
+            owner_entity_index,
+        });
+        Some(source_entity_index)
+    }
+
+    pub fn build_castle(&mut self, position: Position, owner_entity_index: u16) -> Option<u16> {
+        if self.castle.is_some_and(|castle| castle.active) {
+            return None;
+        }
+        let mut position = position;
+        position.z = self.terrain.ground_height(position);
+        let source_entity_index = self.allocate_slot()?;
+        self.castle = Some(Level2CastleState {
+            source_entity_index,
+            owner_entity_index,
+            position,
+            life: CASTLE_STAGE_ONE_LIFE,
+            max_life: CASTLE_STAGE_ONE_LIFE,
+            mana: 0,
+            mana_capacity: CASTLE_STAGE_ONE_MANA_CAPACITY,
+            pending_damage: 0,
+            pending_attacker_entity_index: 0,
+            killer_entity_index: 0,
+            control_flags: 0,
+            timer: 0,
+            action: 4,
+            build_state: 4,
+            level: 1,
+            construction_slot: 0,
+            defense_slot: 0,
+            construction_model: 0,
+            construction_action: 0,
+            construction_control_flags: 0,
+            construction_parent_slot: 0,
+            construction_owner_entity_index: 0,
+            construction_id: 0,
+            construction_position: Position::default(),
+            defense_model: 0,
+            defense_action: 0,
+            defense_control_flags: 0,
+            defense_parent_slot: 0,
+            defense_owner_entity_index: 0,
+            defense_id: 0,
+            defense_position: Position::default(),
+            construction_child_active: false,
+            defense_child_active: false,
+            active: true,
+        });
+        self.events.push(Level2EconomyEvent::CastleBuilt {
+            source_entity_index,
+            owner_entity_index,
+        });
+        Some(source_entity_index)
+    }
+
+    /// Re-enter the source Castle construction action for a reset root. This
+    /// is the bounded `BeginOfCastleCreation_5FA70` entry; child allocation is
+    /// committed only by the following `step_castle_action` call.
+    pub fn start_castle_construction(&mut self, castle_slot: u16) -> bool {
+        let Some(castle) = self
+            .castle
+            .as_mut()
+            .filter(|castle| castle.active && castle.source_entity_index == castle_slot)
+        else {
+            return false;
+        };
+        if castle.action != 4 {
+            return false;
+        }
+        castle.action = 5;
+        castle.build_state = 0;
+        castle.level = 0;
+        castle.construction_slot = 0;
+        castle.defense_slot = 0;
+        castle.control_flags = 0;
+        castle.timer = 0;
+        castle.construction_model = 0;
+        castle.construction_action = 0;
+        castle.construction_control_flags = 0;
+        castle.construction_parent_slot = 0;
+        castle.construction_owner_entity_index = 0;
+        castle.construction_id = 0;
+        castle.construction_position = Position::default();
+        castle.defense_model = 0;
+        castle.defense_action = 0;
+        castle.defense_control_flags = 0;
+        castle.defense_parent_slot = 0;
+        castle.defense_owner_entity_index = 0;
+        castle.defense_id = 0;
+        castle.defense_position = Position::default();
+        castle.construction_child_active = false;
+        castle.defense_child_active = false;
+        castle.life = 0;
+        castle.max_life = 0;
+        castle.mana_capacity = 5_000;
+        true
+    }
+
+    /// Commit the construction child completion callback (`state 2`) after
+    /// the model-42 child has finished its own action stream.
+    pub fn complete_castle_construction(&mut self, castle_slot: u16) -> bool {
+        let Some(castle) = self
+            .castle
+            .as_mut()
+            .filter(|castle| castle.active && castle.source_entity_index == castle_slot)
+        else {
+            return false;
+        };
+        if castle.action != 5 || castle.build_state != 4 || !castle.construction_child_active {
+            return false;
+        }
+        castle.construction_child_active = false;
+        castle.build_state = 2;
+        true
+    }
+
+    /// Enter the source model-41 defense-child state (`state 5`).
+    pub fn start_castle_defense_child(&mut self, castle_slot: u16) -> bool {
+        let Some(castle) = self
+            .castle
+            .as_mut()
+            .filter(|castle| castle.active && castle.source_entity_index == castle_slot)
+        else {
+            return false;
+        };
+        if castle.action != 5 || castle.build_state != 4 {
+            return false;
+        }
+        castle.build_state = 5;
+        true
+    }
+
+    /// Advance the bounded Castle root action. This follows the source state
+    /// table in `BeginOfCastleCreation_5FA70`: states 0/3 allocate a class-10
+    /// model-42 child, state 4 scans for that child, state 5 allocates the
+    /// model-41 child, and every allocation failure retries without mutation.
+    pub fn step_castle_action(&mut self, castle_slot: u16) -> bool {
+        let Some(snapshot) = self
+            .castle
+            .filter(|castle| castle.active && castle.source_entity_index == castle_slot)
+        else {
+            return false;
+        };
+        match snapshot.action {
+            5 if snapshot.build_state == 0 || snapshot.build_state == 3 => {
+                let Some(child_slot) = self.allocate_slot() else {
+                    return false;
+                };
+                let castle = self.castle.as_mut().expect("Castle remains installed");
+                castle.construction_slot = child_slot;
+                castle.construction_model = 42;
+                castle.construction_action = 44;
+                castle.construction_control_flags = 1;
+                castle.construction_parent_slot = castle.source_entity_index;
+                castle.construction_owner_entity_index = castle.owner_entity_index;
+                castle.construction_id = castle.owner_entity_index;
+                castle.construction_position = castle.position;
+                castle.construction_child_active = true;
+                castle.build_state = 4;
+                castle.level = 1;
+                castle.life = CASTLE_STAGE_ONE_LIFE;
+                castle.max_life = CASTLE_STAGE_ONE_LIFE;
+                castle.mana_capacity = CASTLE_STAGE_ONE_MANA_CAPACITY;
+                true
+            }
+            5 if snapshot.build_state == 2 => {
+                let castle = self.castle.as_mut().expect("Castle remains installed");
+                castle.action = 4;
+                castle.build_state = 0;
+                self.events.push(Level2EconomyEvent::CastleBuilt {
+                    source_entity_index: castle.source_entity_index,
+                    owner_entity_index: castle.owner_entity_index,
+                });
+                true
+            }
+            5 if snapshot.build_state == 1 => {
+                let castle = self.castle.as_mut().expect("Castle remains installed");
+                castle.position.z = self.terrain.ground_height(castle.position);
+                true
+            }
+            5 if snapshot.build_state == 4 && !snapshot.construction_child_active => {
+                self.castle
+                    .as_mut()
+                    .expect("Castle remains installed")
+                    .build_state = 3;
+                true
+            }
+            5 if snapshot.build_state == 5 => {
+                let Some(child_slot) = self.allocate_slot() else {
+                    return false;
+                };
+                let castle = self.castle.as_mut().expect("Castle remains installed");
+                castle.defense_slot = child_slot;
+                castle.defense_model = 41;
+                castle.defense_action = 43;
+                castle.defense_control_flags = 0;
+                castle.defense_parent_slot = castle.source_entity_index;
+                castle.defense_owner_entity_index = castle.owner_entity_index;
+                castle.defense_id = castle.owner_entity_index;
+                castle.defense_position = castle.position;
+                castle.defense_child_active = true;
+                castle.build_state = 6;
+                true
+            }
+            5 if snapshot.build_state == 6 => {
+                self.castle
+                    .as_mut()
+                    .expect("Castle remains installed")
+                    .position
+                    .z = self.terrain.ground_height(snapshot.position);
+                true
+            }
+            4 if snapshot.timer > 0 => {
+                let castle = self.castle.as_mut().expect("Castle remains installed");
+                if castle.timer == 1 {
+                    castle.timer = 0;
+                    if castle.control_flags & 0x10 == 0 {
+                        castle.action = 5;
+                        castle.build_state = 3;
+                    }
+                } else {
+                    castle.timer = castle.timer.wrapping_sub(1);
+                }
+                castle.position.z = self.terrain.ground_height(castle.position);
+                true
+            }
+            4 if snapshot.life < 0 => {
+                self.castle
+                    .as_mut()
+                    .expect("Castle remains installed")
+                    .action = 6;
+                true
+            }
+            4 if snapshot.control_flags & 0x40 != 0 => {
+                let castle = self.castle.as_mut().expect("Castle remains installed");
+                castle.control_flags &= !0x40;
+                castle.build_state = 3;
+                castle.action = 5;
+                true
+            }
+            4 => {
+                if snapshot.pending_attacker_entity_index != 0 {
+                    let _ = self.resolve_damage(castle_slot);
+                    if self.castle.is_some_and(|castle| castle.life < 0) {
+                        self.castle
+                            .as_mut()
+                            .expect("Castle remains installed")
+                            .action = 6;
+                        return true;
+                    }
+                }
+                let Some(castle) = self.castle else {
+                    return false;
+                };
+                if castle.mana >= castle.mana_capacity {
+                    return true;
+                }
+                let Some(sphere_index) = self.spheres.iter().position(|sphere| {
+                    sphere.active
+                        && sphere.owner_entity_index == castle.owner_entity_index
+                        && level2_castle_sphere_overlap(castle.position, sphere)
+                }) else {
+                    return true;
+                };
+                let sphere = self.spheres[sphere_index];
+                let castle = self.castle.as_mut().expect("Castle remains installed");
+                castle.mana = castle.mana.wrapping_add(sphere.mana);
+                self.spheres[sphere_index].pending_delete = true;
+                self.spheres[sphere_index].active = false;
+                self.events.push(Level2EconomyEvent::ManaSphereCollected {
+                    sphere_id: sphere.id,
+                    carrier_id: u32::from(castle.source_entity_index),
+                    mana: sphere.mana,
+                });
+                true
+            }
+            6 => {
+                if self.free_slots.is_empty() {
+                    return false;
+                }
+                let construction_slot = snapshot.construction_slot;
+                let defense_slot = snapshot.defense_slot;
+                if construction_slot != 0 {
+                    self.release_slot(construction_slot, None);
+                }
+                if defense_slot != 0 {
+                    self.release_slot(defense_slot, None);
+                }
+                let castle = self.castle.as_mut().expect("Castle remains installed");
+                castle.action = 4;
+                castle.build_state = 0;
+                castle.level = snapshot.level.saturating_sub(1);
+                castle.life = 0;
+                castle.max_life = 0;
+                castle.mana = 0;
+                castle.mana_capacity = 5_000;
+                castle.construction_slot = 0;
+                castle.defense_slot = 0;
+                castle.construction_model = 0;
+                castle.construction_action = 0;
+                castle.construction_control_flags = 0;
+                castle.construction_parent_slot = 0;
+                castle.construction_owner_entity_index = 0;
+                castle.construction_id = 0;
+                castle.construction_position = Position::default();
+                castle.defense_model = 0;
+                castle.defense_action = 0;
+                castle.defense_control_flags = 0;
+                castle.defense_parent_slot = 0;
+                castle.defense_owner_entity_index = 0;
+                castle.defense_id = 0;
+                castle.defense_position = Position::default();
+                castle.construction_child_active = false;
+                castle.defense_child_active = false;
+                castle.timer = 5;
+                if castle.level == 0 {
+                    castle.active = false;
+                    self.events.push(Level2EconomyEvent::CastleDestroyed {
+                        source_entity_index: castle.source_entity_index,
+                        killer_entity_index: castle.killer_entity_index,
+                    });
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn return_carrier_to_castle(&mut self, carrier_slot: u16) -> bool {
+        let Some(castle) = self.castle.as_mut().filter(|castle| castle.active) else {
+            return false;
+        };
+        let Some(carrier) = self
+            .carrier
+            .as_mut()
+            .filter(|carrier| carrier.active && carrier.source_entity_index == carrier_slot)
+        else {
+            return false;
+        };
+        if carrier.owner_entity_index != castle.owner_entity_index {
+            return false;
+        }
+        carrier.target_sphere_id = u32::from(castle.source_entity_index);
+        carrier.returning_to_castle = true;
+        true
+    }
+
+    /// Advance a returning carrier to a supplied source position and commit
+    /// `AddBallon_60AB0`'s Castle arrival only once the source X/Y distance,
+    /// stage, and terrain upper-bound gates pass. The carrier remains active
+    /// with its life restored; its mana payload is transferred and cleared at
+    /// arrival, not when the return is scheduled.
+    pub fn step_carrier_to_castle(&mut self, carrier_slot: u16, position: Position) -> bool {
+        let Some(castle) = self.castle.filter(|castle| castle.active) else {
+            return false;
+        };
+        let raw_position = position;
+        let ground = self.terrain.ground_height(raw_position);
+        let Some(carrier) = self
+            .carrier
+            .as_mut()
+            .filter(|carrier| carrier.active && carrier.source_entity_index == carrier_slot)
+        else {
+            return false;
+        };
+        if !carrier.returning_to_castle
+            || carrier.owner_entity_index != castle.owner_entity_index
+            || castle.level == 0
+        {
+            return false;
+        }
+        let radius = u32::from(carrier.speed.unsigned_abs()) * u32::from(castle.level);
+        let terrain_upper_bound = ground.saturating_add(MANA_CARRIER_COLLISION_VERTICAL_OFFSET);
+        if level2_wrapping_xy_distance(raw_position, castle.position) > radius.wrapping_mul(radius)
+            || raw_position.z > terrain_upper_bound
+        {
+            return false;
+        }
+        let mut position = raw_position;
+        if position.z < ground {
+            position.z = ground;
+        }
+        carrier.position = position;
+        let mana = carrier.carried_mana;
+        let castle_state = self.castle.as_mut().expect("Castle remains installed");
+        castle_state.mana = castle_state.mana.wrapping_add(mana);
+        carrier.carried_mana = 0;
+        carrier.target_sphere_id = 0;
+        carrier.returning_to_castle = false;
+        carrier.life = carrier.max_life;
+        self.events.push(Level2EconomyEvent::ManaCarrierArrived {
+            carrier_id: carrier.id,
+            castle_id: castle.source_entity_index,
+            mana,
+        });
+        true
+    }
+
+    pub fn submit_damage(&mut self, target_slot: u16, damage: i32, attacker: u16) -> bool {
+        if damage <= 0 || attacker == 0 {
+            return false;
+        }
+        if let Some(carrier) = self.carrier.as_mut().filter(|carrier| {
+            carrier.active && carrier.life >= 0 && carrier.source_entity_index == target_slot
+        }) {
+            carrier.pending_damage = if carrier.pending_attacker_entity_index == 0 {
+                damage
+            } else {
+                carrier.pending_damage.wrapping_add(damage)
+            };
+            carrier.pending_attacker_entity_index = attacker;
+            return true;
+        }
+        if let Some(castle) = self.castle.as_mut().filter(|castle| {
+            castle.active && castle.life >= 0 && castle.source_entity_index == target_slot
+        }) {
+            castle.pending_damage = if castle.pending_attacker_entity_index == 0 {
+                damage
+            } else {
+                castle.pending_damage.wrapping_add(damage)
+            };
+            castle.pending_attacker_entity_index = attacker;
+            return true;
+        }
+        false
+    }
+
+    pub fn resolve_damage(&mut self, target_slot: u16) -> Option<bool> {
+        if let Some(carrier) = self
+            .carrier
+            .as_mut()
+            .filter(|carrier| carrier.active && carrier.source_entity_index == target_slot)
+        {
+            let damage = carrier.pending_damage;
+            let attacker = carrier.pending_attacker_entity_index;
+            if attacker == 0 {
+                return None;
+            }
+            carrier.life = carrier.life.wrapping_sub(damage);
+            carrier.pending_damage = 0;
+            carrier.pending_attacker_entity_index = 0;
+            let lethal = carrier.life < 0;
+            if lethal {
+                carrier.active = false;
+            }
+            self.events.push(Level2EconomyEvent::DamageApplied {
+                target_entity_index: target_slot,
+                attacker_entity_index: attacker,
+                damage,
+                lethal,
+            });
+            return Some(lethal);
+        }
+        let castle = self.castle.as_mut()?;
+        if !castle.active || castle.source_entity_index != target_slot {
+            return None;
+        }
+        let damage = castle.pending_damage;
+        let attacker = castle.pending_attacker_entity_index;
+        if attacker == 0 {
+            return None;
+        }
+        castle.life = castle.life.wrapping_sub(damage);
+        castle.pending_damage = 0;
+        castle.pending_attacker_entity_index = 0;
+        let lethal = castle.life < 0;
+        if lethal {
+            castle.killer_entity_index = attacker;
+        }
+        self.events.push(Level2EconomyEvent::DamageApplied {
+            target_entity_index: target_slot,
+            attacker_entity_index: attacker,
+            damage,
+            lethal,
+        });
+        Some(lethal)
+    }
+
+    pub fn reclaim_inactive_slots(&mut self) {
+        if let Some(carrier) = self.carrier
+            && !carrier.active
+        {
+            self.release_slot(carrier.source_entity_index, Some(carrier.entity_rng));
+            self.carrier = None;
+        }
+        let reclaimed = self
+            .spheres
+            .iter()
+            .filter(|sphere| !sphere.active)
+            .map(|sphere| (sphere.source_entity_index, sphere.entity_rng))
+            .collect::<Vec<_>>();
+        self.spheres.retain(|sphere| sphere.active);
+        for (slot, entity_rng) in reclaimed {
+            self.release_slot(slot, Some(entity_rng));
+        }
+        if let Some(castle) = self.castle
+            && !castle.active
+        {
+            self.release_slot(castle.source_entity_index, None);
+            self.castle = None;
+        }
+    }
+
+    #[must_use]
+    pub fn reset_hash(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(REMC2_SPEC_COMMIT.as_bytes());
+        hasher.update(self.terrain.deterministic_hash().to_le_bytes());
+        hasher.update(self.player_mana.to_le_bytes());
+        for slot in &self.free_slots {
+            hasher.update(slot.to_le_bytes());
+        }
+        for (slot, rng) in &self.slot_rng {
+            hasher.update(slot.to_le_bytes());
+            hasher.update(rng.to_le_bytes());
+        }
+        for (slot, rng) in &self.source_rng {
+            hasher.update(slot.to_le_bytes());
+            hasher.update(rng.to_le_bytes());
+        }
+        for (slot, owner) in &self.source_owner {
+            hasher.update(slot.to_le_bytes());
+            hasher.update(owner.to_le_bytes());
+        }
+        for (owner, class) in &self.owner_class {
+            hasher.update(owner.to_le_bytes());
+            hasher.update([*class]);
+        }
+        for (owner, max_mana) in &self.owner_max_mana {
+            hasher.update(owner.to_le_bytes());
+            hasher.update(max_mana.to_le_bytes());
+        }
+        for sphere in &self.spheres {
+            hasher.update(sphere.id.to_le_bytes());
+            hasher.update(sphere.source_entity_index.to_le_bytes());
+            hasher.update(sphere.entity_rng.to_le_bytes());
+            hasher.update(sphere.position.x.to_le_bytes());
+            hasher.update(sphere.position.y.to_le_bytes());
+            hasher.update(sphere.position.z.to_le_bytes());
+            hasher.update(sphere.velocity_x.to_le_bytes());
+            hasher.update(sphere.velocity_y.to_le_bytes());
+            hasher.update(sphere.vertical_velocity.to_le_bytes());
+            hasher.update(sphere.yaw.to_le_bytes());
+            hasher.update(sphere.mana.to_le_bytes());
+            hasher.update(sphere.owner_entity_index.to_le_bytes());
+            hasher.update(sphere.incoming_owner_entity_index.to_le_bytes());
+            hasher.update(sphere.incoming_possession_payload.to_le_bytes());
+            hasher.update(sphere.assigned_carrier_id.to_le_bytes());
+            hasher.update([sphere.phase]);
+            hasher.update([u8::from(sphere.active), u8::from(sphere.pending_delete)]);
+        }
+        if let Some(carrier) = self.carrier {
+            hasher.update([1]);
+            hasher.update(carrier.id.to_le_bytes());
+            hasher.update(carrier.source_entity_index.to_le_bytes());
+            hasher.update(carrier.entity_rng.to_le_bytes());
+            hasher.update(carrier.owner_entity_index.to_le_bytes());
+            hasher.update(carrier.position.x.to_le_bytes());
+            hasher.update(carrier.position.y.to_le_bytes());
+            hasher.update(carrier.position.z.to_le_bytes());
+            hasher.update(carrier.yaw.to_le_bytes());
+            hasher.update(carrier.pitch.to_le_bytes());
+            hasher.update(carrier.speed.to_le_bytes());
+            hasher.update(carrier.carried_mana.to_le_bytes());
+            hasher.update(carrier.life.to_le_bytes());
+            hasher.update(carrier.max_life.to_le_bytes());
+            hasher.update(carrier.max_mana.to_le_bytes());
+            hasher.update(carrier.target_sphere_id.to_le_bytes());
+            hasher.update(carrier.pending_damage.to_le_bytes());
+            hasher.update(carrier.pending_attacker_entity_index.to_le_bytes());
+            hasher.update([
+                u8::from(carrier.returning_to_castle),
+                u8::from(carrier.active),
+            ]);
+        } else {
+            hasher.update([0]);
+        }
+        if let Some(castle) = self.castle {
+            hasher.update([1]);
+            hasher.update(castle.source_entity_index.to_le_bytes());
+            hasher.update(castle.owner_entity_index.to_le_bytes());
+            hasher.update(castle.position.x.to_le_bytes());
+            hasher.update(castle.position.y.to_le_bytes());
+            hasher.update(castle.position.z.to_le_bytes());
+            hasher.update(castle.mana.to_le_bytes());
+            hasher.update(castle.life.to_le_bytes());
+            hasher.update(castle.max_life.to_le_bytes());
+            hasher.update(castle.mana_capacity.to_le_bytes());
+            hasher.update(castle.pending_damage.to_le_bytes());
+            hasher.update(castle.pending_attacker_entity_index.to_le_bytes());
+            hasher.update(castle.killer_entity_index.to_le_bytes());
+            hasher.update(castle.control_flags.to_le_bytes());
+            hasher.update([castle.timer]);
+            hasher.update(castle.construction_slot.to_le_bytes());
+            hasher.update(castle.defense_slot.to_le_bytes());
+            hasher.update([
+                castle.action,
+                castle.build_state,
+                castle.level,
+                castle.construction_model,
+                castle.construction_action,
+                castle.defense_model,
+                castle.defense_action,
+                u8::from(castle.construction_child_active),
+                u8::from(castle.defense_child_active),
+                u8::from(castle.active),
+            ]);
+            hasher.update(castle.construction_control_flags.to_le_bytes());
+            hasher.update(castle.defense_control_flags.to_le_bytes());
+            hasher.update(castle.construction_parent_slot.to_le_bytes());
+            hasher.update(castle.construction_owner_entity_index.to_le_bytes());
+            hasher.update(castle.construction_id.to_le_bytes());
+            hasher.update(castle.construction_position.x.to_le_bytes());
+            hasher.update(castle.construction_position.y.to_le_bytes());
+            hasher.update(castle.construction_position.z.to_le_bytes());
+            hasher.update(castle.defense_parent_slot.to_le_bytes());
+            hasher.update(castle.defense_owner_entity_index.to_le_bytes());
+            hasher.update(castle.defense_id.to_le_bytes());
+            hasher.update(castle.defense_position.x.to_le_bytes());
+            hasher.update(castle.defense_position.y.to_le_bytes());
+            hasher.update(castle.defense_position.z.to_le_bytes());
+        } else {
+            hasher.update([0]);
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
+    pub fn reset(&mut self) {
+        self.terrain = self.baseline_terrain.clone();
+        self.free_slots = self.baseline_free_slots.to_vec();
+        self.slot_rng = self.baseline_slot_rng.clone();
+        self.source_rng = self.baseline_source_rng.clone();
+        self.source_owner = self.baseline_source_owner.clone();
+        self.owner_class = self.baseline_owner_class.clone();
+        self.owner_max_mana = self.baseline_owner_max_mana.clone();
+        self.spheres = self.baseline_spheres.clone();
+        self.carrier = self.baseline_carrier;
+        self.castle = self.baseline_castle;
+        self.player_mana = self.baseline_player_mana;
+        self.events.clear();
+    }
+}
+
+fn level2_next_rng16(seed: u16) -> u16 {
+    seed.wrapping_mul(9_377).wrapping_add(9_439)
 }
 
 impl Level2SharedSpellResetSession {
@@ -2939,10 +4152,10 @@ impl Level2SharedSpellResetSession {
         self.player_entity.record[82..84].copy_from_slice(&player_position.y.to_le_bytes());
         self.player_entity.record[84..86].copy_from_slice(&player_position.z.to_le_bytes());
 
-        let in_cadence = previous_phase.is_multiple_of(4);
         let overlaps = level2_source_intersects(pickup, &self.player_entity);
         let already_owned = self.speed.active_value != 0 || pickup.action == 9;
-        if pickup.action != 10 || !in_cadence || !overlaps || already_owned {
+        let in_cadence = previous_phase & 3 == 0;
+        if pickup.action != 10 || !overlaps || already_owned || !in_cadence {
             return Ok(Level2SpeedPickupStep {
                 source_slot: pickup.index,
                 player_entity_index,
@@ -3483,6 +4696,7 @@ pub struct Level2ResetSession {
     bad_stones: Box<[Level2BadStone]>,
     baseline_shared_spells: Level2SharedSpellResetSession,
     shared_spells: Level2SharedSpellResetSession,
+    economy: Level2EconomyState,
     ordinary: Level2OrdinaryResetSession,
     mission: MissionContentSession,
 }
@@ -3498,6 +4712,7 @@ impl Level2ResetSession {
         presentation: PresentationSelectors,
         bad_stones: Box<[Level2BadStone]>,
         shared_spells: Level2SharedSpellResetSession,
+        economy: Level2EconomyState,
         ordinary: Level2OrdinaryResetSession,
         mission: MissionContentSession,
     ) -> Self {
@@ -3532,6 +4747,7 @@ impl Level2ResetSession {
             bad_stones,
             baseline_shared_spells: shared_spells.clone(),
             shared_spells,
+            economy,
             ordinary,
             mission,
         }
@@ -3570,6 +4786,16 @@ impl Level2ResetSession {
     #[must_use]
     pub fn shared_spells_mut(&mut self) -> &mut Level2SharedSpellResetSession {
         &mut self.shared_spells
+    }
+
+    #[must_use]
+    pub fn economy(&self) -> &Level2EconomyState {
+        &self.economy
+    }
+
+    #[must_use]
+    pub fn economy_mut(&mut self) -> &mut Level2EconomyState {
+        &mut self.economy
     }
 
     #[must_use]
@@ -3694,6 +4920,7 @@ impl Level2ResetSession {
         self.context = self.baseline_context.clone();
         self.bad_stones.clone_from(&self.baseline_bad_stones);
         self.shared_spells = self.baseline_shared_spells.clone();
+        self.economy.reset();
         self.ordinary.reset();
         self.mission.reset();
     }
@@ -9081,6 +10308,557 @@ mod tests {
     }
 
     #[test]
+    fn level_two_economy_projection_tracks_source_order_failure_rng_and_reset() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut first = inspection
+            .level2_reset_session()
+            .expect("Level 2 reset session");
+        let second = inspection
+            .level2_reset_session()
+            .expect("independent Level 2 reset session");
+        let baseline_hash = first.economy().reset_hash();
+        let baseline_free_slots = first.economy().free_slot_count();
+        assert_eq!(baseline_free_slots, second.economy().free_slot_count());
+        assert_eq!(baseline_hash, second.economy().reset_hash());
+
+        let sphere_slot = *first.economy().free_slots.last().expect("free sphere slot");
+        let seed = first.economy().slot_rng[&sphere_slot];
+        let sphere_rng = level2_next_rng16(seed);
+        let expected_yaw =
+            i16::try_from((i32::from(sphere_rng % 0x71) + i32::from(0x120_i16) - 56) & 0x07ff)
+                .expect("sphere yaw");
+        let sphere_id = first
+            .economy_mut()
+            .spawn_mana_sphere_from_death(
+                42,
+                Position {
+                    x: 384,
+                    y: 62_080,
+                    z: 1_024,
+                },
+                0x120,
+                0x4321,
+                321,
+                0,
+            )
+            .expect("sphere allocation");
+        assert_eq!(sphere_id, u32::from(sphere_slot));
+        let sphere = &first.economy().spheres()[0];
+        assert_eq!(sphere.source_entity_index, sphere_slot);
+        assert_eq!(sphere.entity_rng, level2_next_rng16(sphere_rng));
+        assert_eq!(sphere.yaw, expected_yaw);
+        assert_eq!(sphere.mana, 321);
+        assert_eq!(sphere.owner_entity_index, 0);
+        assert_eq!(first.economy().source_owner(42), 0);
+        assert_eq!(
+            first.economy().events()[0],
+            Level2EconomyEvent::ManaSphereSpawned {
+                sphere_id,
+                source_entity_index: 42,
+                mana: 321,
+            }
+        );
+        assert_eq!(first.economy().free_slot_count(), baseline_free_slots - 1);
+
+        assert!(first.economy_mut().claim_mana_sphere(sphere_slot, 111));
+        assert_eq!(
+            first.economy().events()[1],
+            Level2EconomyEvent::ManaSphereClaimed {
+                sphere_id,
+                owner_entity_index: 111,
+            }
+        );
+        assert!(!first.economy_mut().claim_mana_sphere(sphere_slot, 111));
+
+        let carrier_slot = first
+            .economy_mut()
+            .spawn_mana_carrier(
+                Position {
+                    x: 384,
+                    y: 62_080,
+                    z: 1_024,
+                },
+                111,
+                sphere_id,
+            )
+            .expect("carrier allocation");
+        let carrier = first.economy().carrier().expect("active carrier");
+        assert_eq!(carrier.source_entity_index, carrier_slot);
+        assert_eq!(carrier.speed, MANA_CARRIER_SPEED);
+        assert_eq!(carrier.life, MANA_CARRIER_MAX_LIFE);
+        assert_eq!(carrier.max_mana, MANA_CARRIER_MAX_MANA);
+        assert_eq!(
+            first.economy().events()[2],
+            Level2EconomyEvent::ManaCarrierSpawned {
+                source_entity_index: carrier_slot,
+                owner_entity_index: 111,
+            }
+        );
+        assert!(
+            first
+                .economy_mut()
+                .absorb_sphere_into_carrier(sphere_slot, carrier_slot)
+        );
+        assert_eq!(first.economy().spheres()[0].active, false);
+        assert_eq!(first.economy().spheres()[0].assigned_carrier_id, 0);
+        assert_eq!(
+            first.economy().carrier().expect("carrier").carried_mana,
+            321
+        );
+        assert_eq!(
+            first.economy().events()[3],
+            Level2EconomyEvent::ManaSphereCollected {
+                sphere_id,
+                carrier_id: u32::from(carrier_slot),
+                mana: 321,
+            }
+        );
+
+        let castle_slot = first
+            .economy_mut()
+            .build_castle(
+                Position {
+                    x: 1_024,
+                    y: 1_024,
+                    z: 0,
+                },
+                111,
+            )
+            .expect("castle allocation");
+        assert_eq!(
+            first.economy().castle().expect("castle").life,
+            CASTLE_STAGE_ONE_LIFE
+        );
+        assert_eq!(
+            first.economy().events()[4],
+            Level2EconomyEvent::CastleBuilt {
+                source_entity_index: castle_slot,
+                owner_entity_index: 111,
+            }
+        );
+        assert!(first.economy_mut().return_carrier_to_castle(carrier_slot));
+        assert_eq!(first.economy().castle().expect("castle").mana, 0);
+        assert!(first.economy().carrier().expect("returning carrier").active);
+        let castle_position = first.economy().castle().expect("castle").position;
+        let below_ground_far = Position {
+            x: castle_position.x.wrapping_add(4_096),
+            y: castle_position.y,
+            z: i16::MIN,
+        };
+        let carrier_z_before_failed_move = first.economy().carrier().expect("carrier").position.z;
+        assert!(
+            !first
+                .economy_mut()
+                .step_carrier_to_castle(carrier_slot, below_ground_far)
+        );
+        assert_eq!(
+            first
+                .economy()
+                .carrier()
+                .expect("unchanged carrier")
+                .position
+                .z,
+            carrier_z_before_failed_move
+        );
+        assert!(
+            first
+                .economy_mut()
+                .step_carrier_to_castle(carrier_slot, castle_position)
+        );
+        assert_eq!(first.economy().castle().expect("castle").mana, 321);
+        assert_eq!(
+            first
+                .economy()
+                .carrier()
+                .expect("arrived carrier")
+                .carried_mana,
+            0
+        );
+        assert_eq!(
+            first.economy().events()[5],
+            Level2EconomyEvent::ManaCarrierArrived {
+                carrier_id: u32::from(carrier_slot),
+                castle_id: castle_slot,
+                mana: 321,
+            }
+        );
+
+        assert!(first.economy_mut().submit_damage(castle_slot, 100, 77));
+        assert!(first.economy_mut().submit_damage(castle_slot, 200, 77));
+        assert_eq!(
+            first.economy().castle().expect("castle").pending_damage,
+            300
+        );
+        assert_eq!(first.economy_mut().resolve_damage(castle_slot), Some(false));
+        assert_eq!(
+            first.economy().castle().expect("castle").life,
+            CASTLE_STAGE_ONE_LIFE - 300
+        );
+        assert_eq!(
+            first.economy().events()[6],
+            Level2EconomyEvent::DamageApplied {
+                target_entity_index: castle_slot,
+                attacker_entity_index: 77,
+                damage: 300,
+                lethal: false,
+            }
+        );
+        let remaining_life = first.economy().castle().expect("castle").life;
+        assert!(
+            first
+                .economy_mut()
+                .submit_damage(castle_slot, remaining_life + 1, 88)
+        );
+        assert_eq!(first.economy_mut().resolve_damage(castle_slot), Some(true));
+        let dead_castle = first.economy().castle().expect("castle");
+        assert!(dead_castle.active);
+        assert_eq!(dead_castle.killer_entity_index, 88);
+        assert_eq!(
+            first.economy().events()[7],
+            Level2EconomyEvent::DamageApplied {
+                target_entity_index: castle_slot,
+                attacker_entity_index: 88,
+                damage: remaining_life + 1,
+                lethal: true,
+            }
+        );
+        assert!(first.economy_mut().step_castle_action(castle_slot));
+        assert_eq!(first.economy().castle().expect("castle").action, 6);
+        assert!(first.economy_mut().step_castle_action(castle_slot));
+        let reset_castle = first.economy().castle().expect("reset Castle");
+        assert!(!reset_castle.active);
+        assert_eq!((reset_castle.action, reset_castle.level), (4, 0));
+
+        first.economy_mut().reclaim_inactive_slots();
+        assert_eq!(first.economy().free_slot_count(), baseline_free_slots - 1);
+        assert!(first.economy().spheres().is_empty());
+        assert!(first.economy().carrier().is_some());
+        assert!(first.economy().castle().is_none());
+
+        let failed_hash_before = first.economy().reset_hash();
+        first.economy_mut().free_slots.clear();
+        assert!(
+            first
+                .economy_mut()
+                .spawn_mana_sphere_from_death(43, Position::default(), 0, 0x9876, 12, 0)
+                .is_none()
+        );
+        assert!(first.economy().spheres().is_empty());
+        assert_eq!(first.economy().free_slot_count(), 0);
+        assert_ne!(first.economy().reset_hash(), failed_hash_before);
+        assert_eq!(first.economy().source_rng.get(&43), Some(&0x9876));
+
+        assert_eq!(second.economy().reset_hash(), baseline_hash);
+        first.reset();
+        assert_eq!(first.economy().reset_hash(), baseline_hash);
+        assert_eq!(first.economy().free_slot_count(), baseline_free_slots);
+        assert!(first.economy().spheres().is_empty());
+        assert!(first.economy().carrier().is_none());
+        assert!(first.economy().castle().is_none());
+
+        let fractional_ids = first.economy_mut().spawn_mana_spheres_from_death(
+            44,
+            Position::default(),
+            0,
+            0x2468,
+            3_500,
+            111,
+            true,
+        );
+        assert_eq!(fractional_ids.len(), 3);
+        let fractional_mana = fractional_ids
+            .iter()
+            .map(|id| {
+                first
+                    .economy()
+                    .spheres()
+                    .iter()
+                    .find(|sphere| sphere.id == *id)
+                    .expect("fractional sphere")
+                    .mana
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(fractional_mana, vec![1_166, 1_166, 1_168]);
+        assert_eq!(fractional_mana.iter().sum::<i32>(), 3_500);
+        assert_eq!(first.economy().events().len(), 3);
+        first.reset();
+        assert_eq!(first.economy().reset_hash(), baseline_hash);
+
+        let mut merge_session = inspection
+            .level2_reset_session()
+            .expect("merge projection session");
+        let neutral_id = merge_session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(45, Position::default(), 0, 0x1111, 100, 0)
+            .expect("neutral sphere");
+        let owned_id = merge_session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(46, Position::default(), 0, 0x2222, 50, 111)
+            .expect("owned sphere");
+        merge_session.economy_mut().begin_turn();
+        assert!(merge_session.economy_mut().merge_mana_spheres(
+            u16::try_from(neutral_id).expect("sphere slot"),
+            u16::try_from(owned_id).expect("sphere slot")
+        ));
+        let merged = merge_session
+            .economy()
+            .spheres()
+            .iter()
+            .find(|sphere| sphere.id == neutral_id)
+            .expect("merged target");
+        assert_eq!(merged.owner_entity_index, 111);
+        assert_eq!(merged.mana, 150);
+        assert!(
+            !merge_session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.id == owned_id)
+                .expect("merged source")
+                .active
+        );
+        assert_eq!(
+            merge_session.economy().events(),
+            &[Level2EconomyEvent::ManaSpheresMerged {
+                target_sphere_id: neutral_id,
+                source_sphere_id: owned_id,
+                owner_entity_index: 111,
+                mana: 50,
+            }]
+        );
+
+        let mut carrier_gates = inspection
+            .level2_reset_session()
+            .expect("carrier gate session");
+        let carrier_position = Position::default();
+        let carrier_slot = carrier_gates
+            .economy_mut()
+            .spawn_mana_carrier(carrier_position, 111, 0)
+            .expect("carrier allocation");
+        let wrong_owner = carrier_gates
+            .economy_mut()
+            .spawn_mana_sphere_from_death(47, carrier_position, 0, 0x3333, 1, 112)
+            .expect("wrong-owner sphere");
+        assert!(!carrier_gates.economy_mut().absorb_sphere_into_carrier(
+            u16::try_from(wrong_owner).expect("sphere slot"),
+            carrier_slot
+        ));
+        let far_sphere = carrier_gates
+            .economy_mut()
+            .spawn_mana_sphere_from_death(
+                48,
+                Position {
+                    x: 2_048,
+                    ..carrier_position
+                },
+                0,
+                0x4444,
+                1,
+                111,
+            )
+            .expect("far sphere");
+        assert!(!carrier_gates.economy_mut().absorb_sphere_into_carrier(
+            u16::try_from(far_sphere).expect("sphere slot"),
+            carrier_slot
+        ));
+        let near_non_overlap = carrier_gates
+            .economy_mut()
+            .spawn_mana_sphere_from_death(
+                49,
+                Position {
+                    x: 400,
+                    ..carrier_position
+                },
+                0,
+                0x5555,
+                1,
+                111,
+            )
+            .expect("near non-overlap sphere");
+        assert!(!carrier_gates.economy_mut().absorb_sphere_into_carrier(
+            u16::try_from(near_non_overlap).expect("sphere slot"),
+            carrier_slot
+        ));
+        let near = carrier_gates
+            .economy_mut()
+            .spawn_mana_sphere_from_death(50, carrier_position, 0, 0x6666, 1, 111)
+            .expect("near sphere");
+        assert!(
+            carrier_gates.economy_mut().absorb_sphere_into_carrier(
+                u16::try_from(near).expect("sphere slot"),
+                carrier_slot
+            )
+        );
+        assert_eq!(
+            carrier_gates
+                .economy()
+                .carrier()
+                .expect("carrier")
+                .target_sphere_id,
+            0
+        );
+
+        let mut castle_lifecycle = inspection
+            .level2_reset_session()
+            .expect("Castle lifecycle session");
+        let lifecycle_slot = castle_lifecycle
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("lifecycle Castle");
+        assert!(
+            castle_lifecycle
+                .economy_mut()
+                .start_castle_construction(lifecycle_slot)
+        );
+        castle_lifecycle.economy_mut().free_slots.clear();
+        assert!(
+            !castle_lifecycle
+                .economy_mut()
+                .step_castle_action(lifecycle_slot)
+        );
+        let blocked = castle_lifecycle.economy().castle().expect("blocked Castle");
+        assert_eq!(
+            (blocked.action, blocked.build_state, blocked.level),
+            (5, 0, 0)
+        );
+        castle_lifecycle.reset();
+        let lifecycle_slot = castle_lifecycle
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("lifecycle Castle retry");
+        assert!(
+            castle_lifecycle
+                .economy_mut()
+                .start_castle_construction(lifecycle_slot)
+        );
+        assert!(
+            castle_lifecycle
+                .economy_mut()
+                .step_castle_action(lifecycle_slot)
+        );
+        let construction = castle_lifecycle
+            .economy()
+            .castle()
+            .expect("construction Castle");
+        assert_eq!(
+            (
+                construction.construction_model,
+                construction.construction_action,
+                construction.construction_control_flags
+            ),
+            (42, 44, 1)
+        );
+        assert!(
+            castle_lifecycle
+                .economy_mut()
+                .complete_castle_construction(lifecycle_slot)
+        );
+        assert!(
+            castle_lifecycle
+                .economy_mut()
+                .step_castle_action(lifecycle_slot)
+        );
+        let built = castle_lifecycle.economy().castle().expect("built Castle");
+        assert_eq!((built.action, built.build_state, built.level), (4, 0, 1));
+
+        let mut defense_lifecycle = inspection
+            .level2_reset_session()
+            .expect("Castle defense lifecycle session");
+        let defense_root = defense_lifecycle
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("defense Castle");
+        assert!(
+            defense_lifecycle
+                .economy_mut()
+                .start_castle_construction(defense_root)
+        );
+        assert!(
+            defense_lifecycle
+                .economy_mut()
+                .step_castle_action(defense_root)
+        );
+        assert!(
+            defense_lifecycle
+                .economy_mut()
+                .start_castle_defense_child(defense_root)
+        );
+        assert!(
+            defense_lifecycle
+                .economy_mut()
+                .step_castle_action(defense_root)
+        );
+        let defense = defense_lifecycle.economy().castle().expect("defense child");
+        assert_eq!(
+            (
+                defense.defense_model,
+                defense.defense_action,
+                defense.defense_control_flags
+            ),
+            (41, 43, 0)
+        );
+
+        let mut action4_session = inspection
+            .level2_reset_session()
+            .expect("Castle action-4 session");
+        let action4_slot = action4_session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("action-4 Castle");
+        let action4_position = action4_session.economy().castle().expect("Castle").position;
+        let action4_sphere = action4_session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(51, action4_position, 0, 0x7777, 100, 111)
+            .expect("Castle absorption sphere");
+        action4_session.economy_mut().begin_turn();
+        assert!(
+            action4_session
+                .economy_mut()
+                .step_castle_action(action4_slot)
+        );
+        assert_eq!(
+            action4_session.economy().castle().expect("Castle").mana,
+            100
+        );
+        assert!(
+            !action4_session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.id == action4_sphere)
+                .expect("absorbed sphere")
+                .active
+        );
+        action4_session
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("Castle")
+            .timer = 2;
+        assert!(
+            action4_session
+                .economy_mut()
+                .step_castle_action(action4_slot)
+        );
+        assert_eq!(action4_session.economy().castle().expect("Castle").timer, 1);
+        assert!(
+            action4_session
+                .economy_mut()
+                .step_castle_action(action4_slot)
+        );
+        let timer_transition = action4_session.economy().castle().expect("Castle");
+        assert_eq!(
+            (
+                timer_transition.action,
+                timer_transition.build_state,
+                timer_transition.timer
+            ),
+            (5, 3, 0)
+        );
+    }
+
+    #[test]
     fn level_two_reset_state_matches_preserved_frame_zero_projection() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -9641,11 +11419,11 @@ mod tests {
         first.shared_spells_mut().reset();
         first.shared_spells_mut().pickups[1].phase = 77;
         first.shared_spells_mut().pickups[1].record[66] = 77;
-        let non_cadence = first
+        let direct_update = first
             .shared_spells_mut()
             .step_speed_pickup(111, pickup_position)
             .expect("non-cadence source dispatch");
-        assert!(!non_cadence.collected);
+        assert!(!direct_update.collected);
         assert_eq!(first.shared_spells().pickups()[1].action, 10);
 
         // The model-12 row is a later Level 2 family, not a Level 1 Speed
