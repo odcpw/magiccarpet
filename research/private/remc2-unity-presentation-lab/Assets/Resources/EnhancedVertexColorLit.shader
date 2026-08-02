@@ -112,7 +112,11 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
                 float detail = ValueNoise(input.positionWS.xz * _DetailScale);
                 half detailFactor = lerp(0.88h, 1.12h, detail);
                 baseColor *= lerp(1.0h, detailFactor, _DetailStrength);
-                half3 lighting = max(SampleSH(normalWS), _AmbientBoost.xxx);
+                // Keep shadowed surfaces readable without flattening the night
+                // palette into neutral gray. Warm emissive families and local
+                // spell lights remain distinct against this cool fill.
+                half3 ambientFloor = _AmbientBoost * half3(0.68h, 0.80h, 1.0h);
+                half3 lighting = max(SampleSH(normalWS), ambientFloor);
 
                 Light mainLight = GetMainLight(TransformWorldToShadowCoord(input.positionWS));
                 lighting += EvaluateLight(mainLight, normalWS, viewDirectionWS);
