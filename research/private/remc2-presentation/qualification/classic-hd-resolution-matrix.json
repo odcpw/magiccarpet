@@ -6,14 +6,14 @@
   "sample_count": 32,
   "owner_payload_embedded": false,
   "unity_gpu_and_owner_route": "pending-owner-lab-capture",
-  "owner_route_binding_status": "profile-sized rerender endpoint exercised; fail-closed on unsupported legacy sprite families before qualification",
+  "owner_route_binding_status": "640x480 profile-sized source compositor rerender and Unity upload proven; sustained owner/GPU matrix remains pending",
   "owner_route_smoke": {
     "artifact": "qualification/classic-hd-owner-route-smoke.json",
     "profile": "classic-hd-640x480",
     "frame_count": 1,
     "graphics_api": "OpenGLCore",
     "graphics_device": "Mesa Intel(R) Graphics (LNL)",
-    "status": "profile-rerender-binding-fail-closed",
+    "status": "profile-rerender-frame-and-upload-pass",
     "owner_payload_embedded": false
   },
   "window_resolution_is_separate_from_internal_render_resolution": true,
@@ -27,7 +27,7 @@
       "p95_cpu_ns": 10949142,
       "deterministic_reset": true,
       "status": "supported-cpu-and-deterministic",
-      "unity_gpu_copy_status": "profile-rerender binding reached; fail-closed on legacy sprite families; sustained capture pending"
+      "unity_gpu_copy_status": "640x480 profile rerender and persistent Unity upload proven on idle frame; sustained capture pending"
     },
     {
       "profile": "classic-hd-960x720",

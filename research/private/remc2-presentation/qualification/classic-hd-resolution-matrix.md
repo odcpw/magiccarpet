@@ -30,11 +30,12 @@ profile.
 
 The current owner-bound smoke is recorded in
 `qualification/classic-hd-owner-route-smoke.json`. It passed through the real
-`PresentationModeRouter`, Rust native session, and additive profile-sized
-Classic HD endpoint, which then failed closed on the 101 legacy source sprite
-families that still need profile-sized adapters. No FINAL MAIN copy or Unity
-upload is claimed by this artifact. It is binding evidence, not a sustained
-performance or player-facing production claim.
+`PresentationModeRouter`, Rust native session, additive profile-sized Classic
+HD endpoint, source-ordered legacy/typed compositor, and persistent Unity R8
+upload at 640x480. Two independent runs produced the same index, provenance,
+and receipt hashes. No FINAL MAIN copy is used. This is binding evidence for
+the first idle frame, not a sustained performance or player-facing production
+claim.
 
 Remaining GFX-O evidence is intentionally explicit in the JSON matrix:
 idle/town/combat/flight/restart/completion/fullscreen/alt-tab/asset-fallback,

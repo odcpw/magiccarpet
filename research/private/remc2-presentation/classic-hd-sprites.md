@@ -19,16 +19,23 @@ source sprite census and a profile-sized indexed frame.
   explicit source exclusion; there is no wildcard sprite fallback.
 
 Legacy-family rows remain named delegation points because their family-specific
-source clocks and payload lookup already live in the existing typed world
-compositor. The bridge does not invent a tuple or allow Unity to decide
-visibility. The next integration slice can feed those family renderers the
-same `ClassicHdSpriteCamera` and pass buffer without changing the Exact path.
+source clocks and payload lookup already live in the existing source world
+compositor. `terrain_frame::raster_level1_source_world_sprites` now feeds that
+compositor a profile-sized projection and caller-owned profile plane, so typed
+and legacy rows share the established source order, reflection gate, shadow
+rules, animation clocks, and family banks without changing the Exact path. The
+adapter does not invent a tuple or allow Unity to decide visibility.
 
 Focused gate:
 
 ```text
 cargo test -p sim-core classic_hd_sprites --lib -j1  # 4 passed
 ```
+
+The owner-bound 640x480 idle smoke also exercises the complete profile-sized
+source compositor and one persistent Unity R8 upload; its hashes are preserved
+in `qualification/classic-hd-owner-route-smoke.json`. The broader town,
+combat, flight, restart, and sustained GPU/performance matrix remains open.
 
 The Exact sprite projector and compatibility route remain unchanged; the new
 profile-limit wrappers are additive and use the original constants by default.

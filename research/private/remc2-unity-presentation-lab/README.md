@@ -19,10 +19,12 @@ binding under qualification:
 - A size-queried `sim-capi` binding contract. The player-facing Classic HD
   route opens the external owner package, closure, and cache through the Rust
   native session and calls the additive profile-sized Classic HD rerender
-  endpoint directly into the persistent HD R8 surface. It never enlarges the
-  320x200 Exact FINAL MAIN. The route fails closed when the native plugin is
-  absent or when a source sprite family has not yet received a profile-sized
-  adapter; the current Level 1 owner smoke records that deliberate blocker.
+  endpoint directly into the persistent HD R8 surface. The profile-sized
+  source compositor retains source order and the existing family-specific
+  clocks, banks, reflection, and shadow rules for typed and legacy families. It
+  never enlarges the 320x200 Exact FINAL MAIN. The route still fails closed
+  when the native plugin is absent or a future source family is unbound; the
+  current Level 1 owner smoke proves the 640x480 idle frame and upload.
   The additive Classic HD ABI fixture remains available for contract tests,
   while the direct component `Configure` overload remains a clearly
   synthetic, owner-free Level 1 Night source for EditMode tests.
