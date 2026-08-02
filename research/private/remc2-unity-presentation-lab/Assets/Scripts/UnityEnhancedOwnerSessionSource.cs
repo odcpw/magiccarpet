@@ -126,6 +126,7 @@ namespace MagicCarpet.PresentationLab
         public bool PlayerDead { get { return mission.playerDead != 0; } }
         public bool ExitSequenceActive { get { return mission.exitSequenceActive != 0; } }
         public bool ExitSequenceComplete { get { return mission.exitSequenceComplete != 0; } }
+        public byte ExitResultCode { get { return mission.exitResultCode; } }
         public int PlayerLife { get { return mission.playerLife; } }
         public int PlayerMaxLife { get { return mission.playerMaxLife; } }
         public int PlayerMana { get { return mission.playerMana; } }
@@ -446,6 +447,86 @@ namespace MagicCarpet.PresentationLab
             catch (Exception exception)
             {
                 reason = "Unity Enhanced owner snapshot failed: " + exception.Message;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Advances the same owner-bound native session from one sealed
+        /// external PlaythroughRecorder command. This preserves opcode,
+        /// arguments, flags, and requested-spell fields for cross-mode replay;
+        /// Unity still only receives the resulting immutable snapshot.
+        /// </summary>
+        public bool AdvanceOwnerCommand(
+            sbyte opcode,
+            sbyte argument1,
+            sbyte argument2,
+            sbyte roll,
+            sbyte pitch,
+            sbyte flags,
+            short requestedSpell,
+            out UnityEnhancedWorldSnapshot enhancedSnapshot,
+            out string reason)
+        {
+            enhancedSnapshot = null;
+            reason = string.Empty;
+            if (!IsConfigured || handle == 0)
+            {
+                reason = "Unity Enhanced owner source is not configured";
+                return false;
+            }
+
+            if (pendingResetSnapshot != null)
+            {
+                reason = "Unity Enhanced reset snapshot must be applied before stepping the owner session";
+                return false;
+            }
+
+            try
+            {
+                Command command = new Command
+                {
+                    abiVersion = AbiVersion,
+                    structSize = 32,
+                    opcode = opcode,
+                    argument1 = argument1,
+                    argument2 = argument2,
+                    roll = roll,
+                    pitch = pitch,
+                    flags = flags,
+                    requestedSpell = requestedSpell,
+                    reserved = new uint[4]
+                };
+                CameraInput camera = new CameraInput
+                {
+                    abiVersion = AbiVersion,
+                    structSize = 28,
+                    reserved = new uint[4]
+                };
+                int status = mc_native_session_step_with_camera(
+                    handle,
+                    ref command,
+                    ref camera,
+                    out snapshot,
+                    SessionSnapshotSize);
+                if (status != 0)
+                {
+                    reason = StatusReason("Unity Enhanced owner raw command step", status);
+                    return false;
+                }
+
+                if (!ValidateSessionSnapshot(out reason) ||
+                    !ReadObservations(false, out reason))
+                {
+                    return false;
+                }
+
+                enhancedSnapshot = BuildSnapshot(false);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                reason = "Unity Enhanced owner raw command snapshot failed: " + exception.Message;
                 return false;
             }
         }

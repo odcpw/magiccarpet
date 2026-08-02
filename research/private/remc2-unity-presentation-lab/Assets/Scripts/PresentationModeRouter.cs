@@ -426,6 +426,56 @@ namespace MagicCarpet.PresentationLab
         }
 
         /// <summary>
+        /// Applies one raw external owner command to the Enhanced presentation
+        /// route. This is the parity path for the sealed PlaythroughRecorder
+        /// journal; it does not synthesize completion or gameplay state.
+        /// </summary>
+        public bool CaptureEnhancedOwnerCommand(
+            sbyte opcode,
+            sbyte argument1,
+            sbyte argument2,
+            sbyte roll,
+            sbyte pitch,
+            sbyte flags,
+            short requestedSpell,
+            out string reason)
+        {
+            reason = string.Empty;
+            if (enhancedOwnerSession == null || enhancedRoot == null)
+            {
+                reason = "Unity Enhanced owner session is not configured";
+                return false;
+            }
+
+            UnityEnhancedWorldSnapshot snapshot;
+            if (!enhancedOwnerSession.AdvanceOwnerCommand(
+                    opcode,
+                    argument1,
+                    argument2,
+                    roll,
+                    pitch,
+                    flags,
+                    requestedSpell,
+                    out snapshot,
+                    out reason))
+            {
+                return false;
+            }
+
+            if (!enhancedRoot.ApplySnapshot(snapshot))
+            {
+                reason = "Unity Enhanced rejected the owner raw-command snapshot at generation " +
+                         snapshot.Generation + " tick " + snapshot.Tick +
+                         (string.IsNullOrEmpty(enhancedRoot.LastRejectReason)
+                             ? string.Empty
+                             : ": " + enhancedRoot.LastRejectReason);
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
         /// Replays the owner session from its Rust reset boundary without
         /// recreating the Unity hierarchy. The next accepted snapshot carries
         /// the generation reset and clears presentation-only pools.
