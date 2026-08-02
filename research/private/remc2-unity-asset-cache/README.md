@@ -152,11 +152,11 @@ source asset identities, decoder and generator hashes, output hashes, exact
 bindings, inclusion reasons, and palette status.
 
 The PLAN29 final sealed cache identity is 1,249 outputs, manifest SHA-256
-`1050b4f1e3f0e63fa292fe7798d19f4b390c063aa5afd5a350fba9e300298082`,
+`1eeb90e39927cb28e214e017c2603f3200ee2d3899f3f81ce53063f6d64a63d6`,
 content SHA-256
-`b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf`,
+`cb58b2190d3f6ed7c676e0180d0dfc909c7fe692e42946a927f887568be2eb8a`,
 and source-frame-census SHA-256
-`8a9fb362badbeb37d0b5ef4dae15be4fcdee92c690e0f2017689c5cf0af31f5e`.
+`60b6be08f57ab7feadf59d014d161129c5df31a8c5a752ceb04bc7fcc9634a21`.
 Earlier cache identities remain accepted only on the historical native load
 paths that explicitly name them; qualified current Unity presentation pins
 this PLAN29 pair and its sealed closure-contract identity.

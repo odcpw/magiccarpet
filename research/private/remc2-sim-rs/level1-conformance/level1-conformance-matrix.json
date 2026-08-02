@@ -58,7 +58,7 @@
   ],
   "test_inventory": {
    "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked -- --list",
-  "count": 481
+  "count": 538
   },
   "census_method": "independent traversal from Level 1 load/reset state: typed owner authored-table census (authored_census: 308 non-zero rows, partition-proved), reset arena census (177 actives, 14 class/model/action families), activation-graph traversal (load-time G-1, G0 at start, switch-driven groups incl. proximity ids 12-33), and typed dispatch census (dispatch_census: all 845 mechanical slots partitioned between rows and exclusions), with per-handler source reads at the pinned commit",
   "totals": {

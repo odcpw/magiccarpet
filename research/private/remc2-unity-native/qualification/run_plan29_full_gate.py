@@ -35,10 +35,10 @@ PUBLIC_BOUNDARY_TEST = REPO / "tools/provenance/test_public_boundary.py"
 PUBLIC_SANDBOX_TEST = REPO / "tools/provenance/test_public_sandbox.py"
 UNITY = Path("/home/oliver/Unity/Hub/Editor/6000.3.20f1/Editor/Unity")
 EXPECTED_CONTRACT_SHA256 = (
-    "e8b2f760f24e8de2003e856027420fce4609c47c481d7ad5cf67b51f668f3f0a"
+    "170bf5a1b9ee1190f89cf4d34ac9f139ca7ceb28761cd45785026575b112f110"
 )
 EXPECTED_POLICY_SHA256 = (
-    "9f35b769521717a3bc8fbe86d8ff123e522ee34a95267b3fc28a31d88c8114ca"
+    "e50aed7a3961cd5ea2447df5bce96f7d485d4bb66042b54ed0e531464ad0a400"
 )
 PINNED_REMC2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
 REQUIRED_GATES = {
@@ -114,7 +114,7 @@ def validate_policy(policy: dict[str, Any]) -> None:
     behavior = policy.get("behavior_contract", {})
     if (
         behavior.get("file_sha256") != EXPECTED_CONTRACT_SHA256
-        or behavior.get("self_sha256") != "0d59fdb5f43ef794308bc45614a6b2edbffa46f23e29286695406838185b08a7"
+        or behavior.get("self_sha256") != "8007568bcfb4180137a7e0432fe2f094d44817fd771f90d4a98017036d9efcd4"
     ):
         raise GateError("qualification policy behavior-contract binding mismatch")
     acceptance = policy.get("acceptance", {})
@@ -307,7 +307,7 @@ def finalize_preserved_run(root: Path, contract: dict[str, Any]) -> dict[str, An
             logs / "matrix.log", ('"closed": true', '"exact_rows": 182')
         ),
         "cache": require_log(
-            logs / "cache.log", ("content_sha256=b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf",)
+            logs / "cache.log", ("content_sha256=cb58b2190d3f6ed7c676e0180d0dfc909c7fe692e42946a927f887568be2eb8a",)
         ),
         "unity_edit_mode": sha256_file(composite_path),
         "unity_play_mode": sha256_file(play_xml),

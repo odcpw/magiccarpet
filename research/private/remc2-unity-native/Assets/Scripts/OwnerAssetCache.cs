@@ -12,15 +12,15 @@ namespace MagicCarpet.Native
     {
         public const string Schema = "mc2-owner-unity-asset-cache/v1";
         private const string ExactManifestFileHash =
-            "1050b4f1e3f0e63fa292fe7798d19f4b390c063aa5afd5a350fba9e300298082";
+            "1eeb90e39927cb28e214e017c2603f3200ee2d3899f3f81ce53063f6d64a63d6";
         private const string ExactContentHash =
-            "b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf";
+            "cb58b2190d3f6ed7c676e0180d0dfc909c7fe692e42946a927f887568be2eb8a";
         private const string ExactContractFileHash =
-            "e8b2f760f24e8de2003e856027420fce4609c47c481d7ad5cf67b51f668f3f0a";
+            "170bf5a1b9ee1190f89cf4d34ac9f139ca7ceb28761cd45785026575b112f110";
         private const string ExactContractSelfHash =
-            "0d59fdb5f43ef794308bc45614a6b2edbffa46f23e29286695406838185b08a7";
+            "8007568bcfb4180137a7e0432fe2f094d44817fd771f90d4a98017036d9efcd4";
         private const string ExactSealHash =
-            "988058c2d08a3ebf7eed089de0e4ecd5a7739e7278689462d67a65856854342b";
+            "becd3151922ccde6508ef4a77bf7987981c7fdedad04a3c040a9cdd72c88a96a";
         private const string PinnedRemc2Commit =
             "6806c7204d17220ecc0430759f784aea8ee2ddb2";
 
