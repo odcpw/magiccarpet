@@ -787,6 +787,151 @@ namespace MagicCarpet.PresentationLab.Editor
             }
         }
 
+        [MenuItem("Magic Carpet/Presentation Lab/Run Owner Classic HD Effects Matrix Probe")]
+        public static void RunOwnerClassicHdEffectsMatrixProbe()
+        {
+            string packagePath = CommandLineValue("-mc-package");
+            string closurePath = CommandLineValue("-mc-closure");
+            string assetCachePath = CommandLineValue("-mc-asset-cache");
+            if (string.IsNullOrWhiteSpace(packagePath) ||
+                string.IsNullOrWhiteSpace(closurePath) ||
+                string.IsNullOrWhiteSpace(assetCachePath))
+            {
+                throw new InvalidOperationException(
+                    "owner Classic HD effects matrix probe requires -mc-package, -mc-closure, and -mc-asset-cache");
+            }
+
+            const string Profile = "hd-640x480";
+            string[] blurModes = { "off", "spatial-2x2", "tablesn" };
+            var rootObjects = new List<GameObject>();
+            var successfulBlurModes = new List<string>();
+            string rejectionReasonReflection = string.Empty;
+            string rejectionReasonLighting = string.Empty;
+
+            try
+            {
+                foreach (string blurMode in blurModes)
+                {
+                    GameObject root = new GameObject("Owner Classic HD Effects Matrix " + blurMode);
+                    rootObjects.Add(root);
+                    ClassicHdPresentation presentation = root.AddComponent<ClassicHdPresentation>();
+                    ClassicHdPresentationSettings settings = ClassicHdPresentationSettings.Default();
+                    settings.profile = Profile;
+                    settings.assetTier = ClassicHdAssetTierResolver.OriginalIndexedToken;
+                    settings.blur = blurMode;
+                    settings.reflections = true;
+                    settings.dynamicLighting = true;
+                    string reason;
+                    if (!presentation.ConfigureOwnerSession(
+                            settings,
+                            packagePath,
+                            closurePath,
+                            assetCachePath,
+                            out reason) ||
+                        !presentation.CaptureFrame(0f, 0f, out reason) ||
+                        presentation.UploadCount != 1 ||
+                        presentation.LastNativeIndexHash == 0 ||
+                        presentation.LastNativeProvenanceHash == 0)
+                    {
+                        Debug.LogError(
+                            "OWNER CLASSIC HD EFFECTS MATRIX PROBE FAIL: blur=" + blurMode +
+                            " reason=" + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    successfulBlurModes.Add(blurMode);
+                    Debug.Log(
+                        "OWNER CLASSIC HD EFFECTS MATRIX CASE PASS: profile=" + Profile +
+                        " blur=" + blurMode +
+                        " reflections=1 dynamic_lighting=1" +
+                        " uploads=" + presentation.UploadCount +
+                        " allocation_epoch=" + presentation.AllocationEpoch +
+                        " effective_postprocess_mode=" + presentation.EffectivePostprocessMode +
+                        " index_hash=" + presentation.LastNativeIndexHash.ToString("x16") +
+                        " provenance_hash=" + presentation.LastNativeProvenanceHash.ToString("x16"));
+
+                    UnityEngine.Object.DestroyImmediate(root);
+                    rootObjects.Remove(root);
+                }
+
+                GameObject reflectionRoot = new GameObject("Owner Classic HD Effects Matrix Reflection Rejection");
+                rootObjects.Add(reflectionRoot);
+                ClassicHdPresentation reflectionPresentation = reflectionRoot.AddComponent<ClassicHdPresentation>();
+                ClassicHdPresentationSettings reflectionSettings = ClassicHdPresentationSettings.Default();
+                reflectionSettings.profile = Profile;
+                reflectionSettings.reflections = false;
+                string reflectionReason;
+                bool reflectionConfigured = reflectionPresentation.ConfigureOwnerSession(
+                    reflectionSettings,
+                    packagePath,
+                    closurePath,
+                    assetCachePath,
+                    out reflectionReason);
+                if (reflectionConfigured)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD EFFECTS MATRIX PROBE FAIL: reflections-off owner route was accepted");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+                rejectionReasonReflection = reflectionReason;
+
+                GameObject lightingRoot = new GameObject("Owner Classic HD Effects Matrix Lighting Rejection");
+                rootObjects.Add(lightingRoot);
+                ClassicHdPresentation lightingPresentation = lightingRoot.AddComponent<ClassicHdPresentation>();
+                ClassicHdPresentationSettings lightingSettings = ClassicHdPresentationSettings.Default();
+                lightingSettings.profile = Profile;
+                lightingSettings.dynamicLighting = false;
+                string lightingReason;
+                bool lightingConfigured = lightingPresentation.ConfigureOwnerSession(
+                    lightingSettings,
+                    packagePath,
+                    closurePath,
+                    assetCachePath,
+                    out lightingReason);
+                if (lightingConfigured)
+                {
+                    Debug.LogError(
+                        "OWNER CLASSIC HD EFFECTS MATRIX PROBE FAIL: dynamic-lighting-off owner route was accepted");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+                rejectionReasonLighting = lightingReason;
+
+                if (successfulBlurModes.Count != blurModes.Length ||
+                    string.IsNullOrWhiteSpace(rejectionReasonReflection) ||
+                    string.IsNullOrWhiteSpace(rejectionReasonLighting))
+                {
+                    Debug.LogError("OWNER CLASSIC HD EFFECTS MATRIX PROBE FAIL: settings matrix was incomplete");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                Debug.Log(
+                    "OWNER CLASSIC HD EFFECTS MATRIX PROBE PASS: profile=" + Profile +
+                    " blur_modes=" + string.Join(",", successfulBlurModes.ToArray()) +
+                    " reflections_on_status=pass dynamic_lighting_on_status=pass" +
+                    " reflections_off_status=rejected" +
+                    " dynamic_lighting_off_status=rejected" +
+                    " reflections_off_reason=" + rejectionReasonReflection.Replace(' ', '_') +
+                    " dynamic_lighting_off_reason=" + rejectionReasonLighting.Replace(' ', '_') +
+                    " visual_capture_status=open-corpus-capture-required" +
+                    " owner_inputs_external=true");
+                EditorApplication.Exit(0);
+            }
+            finally
+            {
+                for (int index = rootObjects.Count - 1; index >= 0; index--)
+                {
+                    if (rootObjects[index] != null)
+                    {
+                        UnityEngine.Object.DestroyImmediate(rootObjects[index]);
+                    }
+                }
+            }
+        }
+
         [MenuItem("Magic Carpet/Presentation Lab/Run Owner Classic HD High-Speed Probe")]
         public static void RunOwnerClassicHdHighSpeedProbe()
         {
