@@ -13,6 +13,7 @@ class XrSmokeTests(unittest.TestCase):
         self.assertEqual(result["profiles"], ["flat-disabled", "pc-openxr"])
         self.assertFalse(result["runtime_verified"])
         self.assertEqual(result["build_method"], "BuildOpenXrSmokePlayer")
+        self.assertEqual(result["windows_runner"], "qualification/run_xr_smoke.ps1")
 
 
 if __name__ == "__main__":

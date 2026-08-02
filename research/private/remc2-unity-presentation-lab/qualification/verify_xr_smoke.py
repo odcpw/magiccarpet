@@ -30,6 +30,7 @@ def validate() -> dict[str, object]:
     action_path = PROJECT / "Assets" / "InputSystem" / "XrSmoke.inputactions"
     script_path = PROJECT / "Assets" / "Scripts" / "XrSmokeBootstrap.cs"
     editor_script_path = PROJECT / "Assets" / "Editor" / "CreatePresentationLabAssets.cs"
+    windows_runner_path = PROJECT / "qualification" / "run_xr_smoke.ps1"
     general_settings_path = PROJECT / "Assets" / "XR" / "XRGeneralSettingsPerBuildTarget.asset"
     loader_path = PROJECT / "Assets" / "XR" / "Loaders" / "OpenXRLoader.asset"
     openxr_settings_path = PROJECT / "Assets" / "XR" / "Settings" / "OpenXR Package Settings.asset"
@@ -40,6 +41,7 @@ def validate() -> dict[str, object]:
         action_path,
         script_path,
         editor_script_path,
+        windows_runner_path,
         general_settings_path,
         loader_path,
         openxr_settings_path,
@@ -109,6 +111,20 @@ def validate() -> dict[str, object]:
         fail("Standalone XR manager/OpenXR loader mapping is missing")
     if "Unity.XR.OpenXR::UnityEngine.XR.OpenXR.OpenXRLoader" not in loader_path.read_text(encoding="utf-8"):
         fail("OpenXR loader asset is incomplete")
+    windows_runner = windows_runner_path.read_text(encoding="utf-8")
+    for marker in (
+        "-buildTarget",
+        "StandaloneWindows64",
+        "BuildOpenXrSmokePlayer",
+        "-mc-xr-smoke-once",
+        "XR DISABLED",
+        "XR UNAVAILABLE",
+        "XR CONTROLLERS UNAVAILABLE",
+        "XR loader shutdown complete",
+        "qualification-result.json",
+    ):
+        if marker not in windows_runner:
+            fail(f"Windows XR smoke runner lacks marker: {marker}")
     for forbidden in ("NativeSession", "OwnerInputValidator", "PresentationSessionLease"):
         if forbidden in script:
             fail(f"XR smoke bootstrap has forbidden gameplay/owner coupling: {forbidden}")
@@ -121,6 +137,7 @@ def validate() -> dict[str, object]:
         "runtime_verified": False,
         "build_method": "BuildOpenXrSmokePlayer",
         "standalone_loader_configured": True,
+        "windows_runner": "qualification/run_xr_smoke.ps1",
     }
 
 

@@ -52,3 +52,19 @@ deinitializes the loader. Missing SteamVR/OpenXR or missing left/right
 controllers is a non-silent `XR UNAVAILABLE`/`XR CONTROLLERS UNAVAILABLE`
 diagnostic with a non-zero smoke exit. XR initialization does not open a Rust
 session, load owner data, or write gameplay state.
+
+For the Legion/Windows gate, run the checked-in PowerShell harness from a
+logged-in Windows desktop session with the headset and both controllers
+connected. The PC invocation intentionally keeps graphics enabled; a
+headless Tailscale SSH session is suitable for inspection and staging, not for
+claiming physical XR startup:
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File .\qualification\run_xr_smoke.ps1 `
+  -ProjectPath .\research\private\remc2-unity-presentation-lab
+```
+
+Exit code `0` means active OpenXR plus left/right controller identities and
+clean loader shutdown. Exit code `2` is a captured runtime/controller
+diagnostic; exit code `1` is a harness/build error. The output directory holds
+`build.log`, `flat.log`, `pc-openxr.log`, and `qualification-result.json`.
