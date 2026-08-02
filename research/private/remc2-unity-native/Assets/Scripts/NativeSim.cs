@@ -54,6 +54,16 @@ namespace MagicCarpet.Native
         internal const uint EventLevel1ExitSequenceCompleted = 36;
         internal const uint EventLevel1WaterSplashed = 37;
         internal const uint EventLevel1AbilityImproved = 38;
+        internal const byte CampaignEventSharedPickup = 1;
+        internal const byte CampaignEventSpellAcquisition = 2;
+        internal const byte CampaignEventBadStone = 3;
+        internal const byte CampaignEventHouse = 4;
+        internal const byte CampaignEventVillager = 5;
+        internal const byte CampaignEventDolmen = 6;
+        internal const byte CampaignEventCastle = 7;
+        internal const byte CampaignEventDynamicArena = 8;
+        internal const byte CampaignEventGoat = 9;
+        internal const byte CampaignEventError = 255;
         internal const byte AudioActionPreparedPending = 0;
         internal const byte AudioActionStart = 1;
         internal const byte AudioActionRestart = 2;
@@ -154,6 +164,186 @@ namespace MagicCarpet.Native
             internal ushort terrainHeight;
             internal ulong resetStateHash;
             internal ulong resetConformanceHash;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignSelection
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ushort externalLevel;
+            internal ushort internalLevel;
+            internal byte mapType;
+            internal byte reserved0;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal uint[] reserved;
+
+            internal static CampaignSelection Level2Day()
+            {
+                return new CampaignSelection
+                {
+                    abiVersion = AbiVersion,
+                    structSize = 32,
+                    externalLevel = 2,
+                    internalLevel = 1,
+                    mapType = 0,
+                    reserved = new uint[4]
+                };
+            }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignStepInput
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal Command command;
+            internal byte playerSlot;
+            internal byte speedIndex;
+            internal ushort reserved0;
+            internal ushort playerX;
+            internal ushort playerY;
+            internal short playerZ;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal uint[] reserved;
+
+            internal static CampaignStepInput Create(
+                ulong generation,
+                Command command,
+                byte playerSlot,
+                byte speedIndex,
+                ushort playerX,
+                ushort playerY,
+                short playerZ)
+            {
+                return new CampaignStepInput
+                {
+                    abiVersion = AbiVersion,
+                    structSize = 80,
+                    generation = generation,
+                    command = command,
+                    playerSlot = playerSlot,
+                    speedIndex = speedIndex,
+                    playerX = playerX,
+                    playerY = playerY,
+                    playerZ = playerZ,
+                    reserved = new uint[4]
+                };
+            }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignEvent
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal uint ordinal;
+            internal byte pass;
+            internal byte kind;
+            internal byte family;
+            internal byte flags;
+            internal ushort sourceSlot;
+            internal ushort reserved0;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignStepSnapshot
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal ulong revision;
+            internal ulong stateHash;
+            internal ulong terrainHash;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
+            internal byte[] dispatchHash;
+            internal uint eventCount;
+            internal uint eventKindMask;
+            internal byte playerSlot;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
+            internal byte[] reserved0;
+            internal ushort playerEntityIndex;
+            internal ushort reserved1;
+            internal ushort x;
+            internal ushort y;
+            internal short z;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignWorldInfo
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ushort externalLevel;
+            internal ushort internalLevel;
+            internal byte mapType;
+            internal byte profile;
+            internal ushort reserved0;
+            internal uint entityCount;
+            internal uint activeEntityCount;
+            internal uint playerCount;
+            internal uint objectiveCount;
+            internal ushort terrainWidth;
+            internal ushort terrainHeight;
+            internal ulong resetStateHash;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignPlayerSnapshot
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal byte slot;
+            internal byte isAi;
+            internal byte active;
+            internal byte reserved0;
+            internal ushort entityIndex;
+            internal short activePlayerIndex;
+            internal int turn;
+            internal short leftSpellSlotRaw;
+            internal short rightSpellSlotRaw;
+            internal sbyte leftSubspellIndex;
+            internal sbyte rightSubspellIndex;
+            internal byte selectedSpellUiIndex;
+            internal sbyte selectedSubspellIndex;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
+            internal byte[] reserved1;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignEntitySnapshot
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ushort entityIndex;
+            internal ushort sourceId;
+            internal ushort nextRelation;
+            internal ushort parameterRelation;
+            internal byte authority;
+            internal byte active;
+            internal byte classId;
+            internal byte model;
+            internal byte action;
+            internal byte phase;
+            internal ushort x;
+            internal ushort y;
+            internal short z;
+            internal short yaw;
+            internal short pitch;
+            internal short fov;
+            internal short actualSpeed;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
             internal uint[] reserved;
         }
@@ -1450,6 +1640,66 @@ namespace MagicCarpet.Native
             out ulong handle);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_session_open(
+            byte[] packageDir,
+            uint packageDirLength,
+            byte[] closurePath,
+            uint closurePathLength,
+            ref CampaignSelection selection,
+            out ulong handle);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_session_destroy(ulong handle);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_session_reset(ulong handle);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_session_step(
+            ulong handle,
+            ref CampaignStepInput input,
+            out CampaignStepSnapshot snapshot,
+            uint snapshotSize,
+            [Out] CampaignEvent[] events,
+            uint eventCapacity,
+            uint eventElementSize,
+            out uint eventCount);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_world_info(
+            ulong handle,
+            out CampaignWorldInfo info,
+            uint infoSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_player_count(
+            ulong handle,
+            out uint count);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_entity_count(
+            ulong handle,
+            out uint count);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_players_copy(
+            ulong handle,
+            uint startSlot,
+            [Out] CampaignPlayerSnapshot[] buffer,
+            uint capacity,
+            uint elementSize,
+            out uint written);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_entities_copy(
+            ulong handle,
+            uint startIndex,
+            [Out] CampaignEntitySnapshot[] buffer,
+            uint capacity,
+            uint elementSize,
+            out uint written);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_session_destroy(ulong handle);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
@@ -1891,6 +2141,13 @@ namespace MagicCarpet.Native
         internal static void AssertLayouts()
         {
             RequireSize<WorldInfo>(72);
+            RequireSize<CampaignSelection>(32);
+            RequireSize<CampaignStepInput>(80);
+            RequireSize<CampaignEvent>(48);
+            RequireSize<CampaignStepSnapshot>(112);
+            RequireSize<CampaignWorldInfo>(64);
+            RequireSize<CampaignPlayerSnapshot>(48);
+            RequireSize<CampaignEntitySnapshot>(52);
             RequireSize<Command>(32);
             RequireSize<CameraInput>(28);
             RequireSize<SessionSnapshot>(120);
@@ -1936,6 +2193,13 @@ namespace MagicCarpet.Native
             RequireSize<NativeEvent>(72);
             RequireSize<AudioCommand>(88);
             RequireOffset<WorldInfo>(nameof(WorldInfo.resetStateHash), 40);
+            RequireOffset<CampaignSelection>(nameof(CampaignSelection.reserved), 16);
+            RequireOffset<CampaignStepInput>(nameof(CampaignStepInput.command), 16);
+            RequireOffset<CampaignEvent>(nameof(CampaignEvent.sourceSlot), 24);
+            RequireOffset<CampaignStepSnapshot>(nameof(CampaignStepSnapshot.dispatchHash), 40);
+            RequireOffset<CampaignWorldInfo>(nameof(CampaignWorldInfo.resetStateHash), 40);
+            RequireOffset<CampaignPlayerSnapshot>(nameof(CampaignPlayerSnapshot.turn), 16);
+            RequireOffset<CampaignEntitySnapshot>(nameof(CampaignEntitySnapshot.reserved), 36);
             RequireOffset<Command>(nameof(Command.requestedSpell), 14);
             RequireOffset<CameraInput>(nameof(CameraInput.lookYaw), 8);
             RequireOffset<CameraInput>(nameof(CameraInput.reserved), 12);
