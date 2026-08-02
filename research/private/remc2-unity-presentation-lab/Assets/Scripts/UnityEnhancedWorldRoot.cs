@@ -541,6 +541,12 @@ namespace MagicCarpet.PresentationLab
                 InterpolatePresentation(1f);
                 camera.targetTexture = target;
                 camera.Render();
+                if (hudPresentation == null ||
+                    !hudPresentation.CompositeOwnerHudTo(target, out reason))
+                {
+                    return false;
+                }
+
                 RenderTexture.active = target;
                 readback = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
                 readback.name = "UnityEnhanced_QualificationResolvedReadback";

@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.UI;
 
 namespace MagicCarpet.PresentationLab
@@ -43,6 +44,51 @@ namespace MagicCarpet.PresentationLab
         public Texture2D PaletteTexture { get { return paletteTexture; } }
         public Material OwnerHudMaterial { get { return ownerHudMaterial; } }
         public RawImage FrameImage { get { return frameImage; } }
+
+        public bool CompositeOwnerHudTo(RenderTexture target, out string reason)
+        {
+            reason = string.Empty;
+            if (target == null || !target.IsCreated())
+            {
+                reason = "Unity Enhanced owner HUD capture target is not created";
+                return false;
+            }
+
+            if (ownerHudMaterial == null || indexTexture == null || provenanceTexture == null ||
+                paletteTexture == null || frameWidth <= 0 || frameHeight <= 0)
+            {
+                reason = "Unity Enhanced owner HUD material is not uploaded for capture";
+                return false;
+            }
+
+            Rect viewport = AspectFitViewport(target.width, target.height);
+            CommandBuffer command = new CommandBuffer
+            {
+                name = "UnityEnhanced_OwnerHudCaptureComposite"
+            };
+            RenderTexture previousActive = RenderTexture.active;
+            try
+            {
+                command.SetRenderTarget(target);
+                command.SetViewport(viewport);
+                command.Blit(
+                    Texture2D.whiteTexture,
+                    BuiltinRenderTextureType.CurrentActive,
+                    ownerHudMaterial);
+                Graphics.ExecuteCommandBuffer(command);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                reason = "Unity Enhanced owner HUD capture composite failed: " + exception.Message;
+                return false;
+            }
+            finally
+            {
+                RenderTexture.active = previousActive;
+                command.Release();
+            }
+        }
 
         public bool ApplySnapshot(UnityEnhancedHudSnapshot snapshot, Camera targetCamera)
         {
@@ -268,6 +314,24 @@ namespace MagicCarpet.PresentationLab
             aspectFitter = frameObject.AddComponent<AspectRatioFitter>();
             aspectFitter.aspectMode = AspectRatioFitter.AspectMode.FitInParent;
             aspectFitter.aspectRatio = 4f / 3f;
+        }
+
+        private Rect AspectFitViewport(int targetWidth, int targetHeight)
+        {
+            float frameAspect = (float)frameWidth / frameHeight;
+            int viewportWidth = targetWidth;
+            int viewportHeight = Mathf.RoundToInt(viewportWidth / frameAspect);
+            if (viewportHeight > targetHeight)
+            {
+                viewportHeight = targetHeight;
+                viewportWidth = Mathf.RoundToInt(viewportHeight * frameAspect);
+            }
+
+            return new Rect(
+                (targetWidth - viewportWidth) / 2,
+                (targetHeight - viewportHeight) / 2,
+                viewportWidth,
+                viewportHeight);
         }
 
         private void OnDestroy()

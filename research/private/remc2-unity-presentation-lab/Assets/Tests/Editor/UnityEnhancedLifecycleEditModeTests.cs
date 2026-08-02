@@ -158,6 +158,57 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void HudCaptureCompositorFitsOwnerFrameInsideWidescreenTarget()
+        {
+            GameObject gameObject = new GameObject("enhanced-hud-capture-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+            Assert.IsTrue(root.ApplySnapshot(OwnerHudWorldSnapshot(3, 4)));
+
+            RenderTexture resolved = new RenderTexture(
+                1280,
+                720,
+                0,
+                RenderTextureFormat.ARGB32,
+                RenderTextureReadWrite.Linear);
+            Texture2D readback = new Texture2D(1280, 720, TextureFormat.RGBA32, false, true);
+            RenderTexture previousActive = RenderTexture.active;
+            Color background = new Color(0.2f, 0.4f, 0.7f, 1f);
+            try
+            {
+                resolved.Create();
+                Graphics.SetRenderTarget(resolved);
+                GL.Clear(true, true, background);
+                string reason;
+                Assert.IsTrue(root.HudPresentation.CompositeOwnerHudTo(resolved, out reason), reason);
+
+                RenderTexture.active = resolved;
+                readback.ReadPixels(new Rect(0f, 0f, 1280f, 720f), 0, 0, false);
+                readback.Apply(false, false);
+                Color sideMargin = readback.GetPixel(80, 360);
+                Color centeredHidden = readback.GetPixel(300, 360);
+                Color centeredOverlay = readback.GetPixel(800, 360);
+                Assert.That(sideMargin.r, Is.EqualTo(background.r).Within(0.03f));
+                Assert.That(sideMargin.g, Is.EqualTo(background.g).Within(0.03f));
+                Assert.That(sideMargin.b, Is.EqualTo(background.b).Within(0.03f));
+                Assert.That(centeredHidden.r, Is.EqualTo(background.r).Within(0.03f));
+                Assert.That(centeredHidden.g, Is.EqualTo(background.g).Within(0.03f));
+                Assert.That(centeredHidden.b, Is.EqualTo(background.b).Within(0.03f));
+                Assert.That(centeredOverlay.r, Is.EqualTo(44f / 255f).Within(0.03f));
+                Assert.That(centeredOverlay.g, Is.EqualTo(55f / 255f).Within(0.03f));
+                Assert.That(centeredOverlay.b, Is.EqualTo(66f / 255f).Within(0.03f));
+            }
+            finally
+            {
+                RenderTexture.active = previousActive;
+                Object.DestroyImmediate(readback);
+                resolved.Release();
+                Object.DestroyImmediate(resolved);
+                Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        [Test]
         public void HudRejectsStaleFrameGenerationAndTickWithoutReplacingVisibleFrame()
         {
             GameObject gameObject = new GameObject("enhanced-hud-stale-test");
