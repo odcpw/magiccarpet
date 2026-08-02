@@ -445,6 +445,15 @@ namespace MagicCarpet.PresentationLab.Editor
                     return;
                 }
 
+                if (classic.LastNativeIndexHash == 0 || classic.LastNativeProvenanceHash == 0)
+                {
+                    Debug.LogError("OWNER CLASSIC HD SCENARIO SMOKE FAIL: death frame has an empty indexed receipt");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                indexRouteHashes.Add(classic.LastNativeIndexHash);
+                provenanceRouteHashes.Add(classic.LastNativeProvenanceHash);
                 deathObserved = classic.PlayerDead || classic.PlayerLife <= 0;
                 generationBeforeRestart = classic.SourceGeneration;
                 if (!deathObserved)
@@ -483,6 +492,8 @@ namespace MagicCarpet.PresentationLab.Editor
                     " town_frames=" + TownFrames +
                     " combat_frames=" + CombatFrames +
                     " flight_frames=" + FlightFrames +
+                    " frame_count=" + indexRouteHashes.Count +
+                    " uploads=" + classic.UploadCount +
                     " town_camera_distance=" + townCameraDistance +
                     " combat_projectiles=" + combatProjectiles +
                     " combat_impacts=" + combatImpacts +
@@ -492,7 +503,9 @@ namespace MagicCarpet.PresentationLab.Editor
                     " restart_generation=" + generationAfterRestart +
                     " restart_tick=" + restartTick +
                     " index_route_hash=" + SequenceHash(indexRouteHashes).ToString("x16") +
-                    " provenance_route_hash=" + SequenceHash(provenanceRouteHashes).ToString("x16"));
+                    " provenance_route_hash=" + SequenceHash(provenanceRouteHashes).ToString("x16") +
+                    " last_receipt_hash=" + classic.LastNativeReceiptHash.ToString("x16") +
+                    " owner_inputs_external=true");
                 EditorApplication.Exit(0);
             }
             finally
