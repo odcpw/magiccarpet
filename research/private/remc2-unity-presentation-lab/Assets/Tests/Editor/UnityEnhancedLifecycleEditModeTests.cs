@@ -239,7 +239,7 @@ namespace MagicCarpet.PresentationLab.Tests
         [Test]
         public void OwnerHudReceiptCacheRequiresMatchingCameraTickAndGeneration()
         {
-            const uint validFlags = 0x4000u | 0x10000u | 0x20000u | 0x40000u;
+            const uint validFlags = 0x2000u | 0x4000u | 0x8000u | 0x10000u | 0x20000u;
 
             Assert.IsTrue(UnityEnhancedOwnerSessionSource.CanReuseOwnerHudFrame(
                 2,
@@ -250,12 +250,14 @@ namespace MagicCarpet.PresentationLab.Tests
                 12,
                 1,
                 1,
-                960,
-                720,
-                960,
-                960u * 720u,
-                960u * 720u,
-                validFlags));
+                320,
+                200,
+                320,
+                320u * 200u,
+                320u * 200u,
+                validFlags,
+                1,
+                1));
             Assert.IsFalse(UnityEnhancedOwnerSessionSource.CanReuseOwnerHudFrame(
                 2,
                 128,
@@ -265,12 +267,14 @@ namespace MagicCarpet.PresentationLab.Tests
                 13,
                 1,
                 1,
-                960,
-                720,
-                960,
-                960u * 720u,
-                960u * 720u,
-                validFlags));
+                320,
+                200,
+                320,
+                320u * 200u,
+                320u * 200u,
+                validFlags,
+                1,
+                1));
             Assert.IsFalse(UnityEnhancedOwnerSessionSource.CanReuseOwnerHudFrame(
                 2,
                 128,
@@ -280,12 +284,14 @@ namespace MagicCarpet.PresentationLab.Tests
                 12,
                 1,
                 1,
-                960,
-                720,
-                960,
-                960u * 720u,
-                960u * 720u,
-                validFlags));
+                320,
+                200,
+                320,
+                320u * 200u,
+                320u * 200u,
+                validFlags,
+                1,
+                1));
             Assert.IsFalse(UnityEnhancedOwnerSessionSource.CanReuseOwnerHudFrame(
                 2,
                 128,
@@ -295,12 +301,48 @@ namespace MagicCarpet.PresentationLab.Tests
                 12,
                 1,
                 1,
-                960,
-                720,
-                960,
-                960u * 720u,
-                960u * 720u,
-                0x4000u));
+                320,
+                200,
+                320,
+                320u * 200u,
+                320u * 200u,
+                0x4000u,
+                1,
+                1));
+            Assert.IsFalse(UnityEnhancedOwnerSessionSource.CanReuseOwnerHudFrame(
+                2,
+                128,
+                7,
+                12,
+                7,
+                12,
+                1,
+                1,
+                320,
+                200,
+                320,
+                320u * 200u,
+                320u * 200u,
+                validFlags,
+                0,
+                1));
+            Assert.IsFalse(UnityEnhancedOwnerSessionSource.CanReuseOwnerHudFrame(
+                2,
+                128,
+                7,
+                12,
+                7,
+                12,
+                1,
+                1,
+                320,
+                200,
+                320,
+                320u * 200u,
+                320u * 200u,
+                validFlags,
+                1,
+                0));
         }
 
         [Test]

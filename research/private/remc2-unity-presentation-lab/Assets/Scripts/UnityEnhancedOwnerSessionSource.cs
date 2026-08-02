@@ -35,18 +35,18 @@ namespace MagicCarpet.PresentationLab
         private const uint EventQuerySize = 40;
         private const uint EventBatchSize = 56;
         private const uint EventElementSize = 72;
-        private const uint OwnerHudProfileId = 2;
-        private const int OwnerHudWidth = 960;
-        private const int OwnerHudHeight = 720;
+        private const int OwnerHudWidth = 320;
+        private const int OwnerHudHeight = 200;
         private const int OwnerHudStride = OwnerHudWidth;
         private const uint OwnerHudQuerySize = 64;
         private const uint OwnerHudInfoSize = 128;
         private const int OwnerPaletteBytes = 256 * 3;
         private const uint RequiredOwnerHudFlags =
+            0x2000u | // compositor complete
             0x4000u | // provenance present
+            0x8000u | // overlays composited
             0x10000u | // postprocess complete
-            0x20000u | // lighting complete
-            0x40000u; // profile-sized Rust rerender
+            0x20000u; // lighting complete
         private const string OwnerPaletteRelativePath = "palette/paln.rgb8";
         private const byte Level1MissionLive = 6;
         private const int EventBatchCapacity = 128;
@@ -172,7 +172,9 @@ namespace MagicCarpet.PresentationLab
             uint receiptStride,
             uint receiptIndexBytes,
             uint receiptProvenanceBytes,
-            uint receiptFlags)
+            uint receiptFlags,
+            uint receiptOverlayPixelsWritten,
+            ushort receiptOverlayStageCount)
         {
             return receiptAbiVersion == AbiVersion &&
                    receiptStructSize == OwnerHudInfoSize &&
@@ -184,7 +186,9 @@ namespace MagicCarpet.PresentationLab
                    receiptStride == OwnerHudStride &&
                    receiptIndexBytes == OwnerHudWidth * OwnerHudHeight &&
                    receiptProvenanceBytes == OwnerHudWidth * OwnerHudHeight &&
-                   (receiptFlags & RequiredOwnerHudFlags) == RequiredOwnerHudFlags;
+                   (receiptFlags & RequiredOwnerHudFlags) == RequiredOwnerHudFlags &&
+                   receiptOverlayPixelsWritten > 0 &&
+                   receiptOverlayStageCount > 0;
         }
         public byte MissionStage { get { return mission.currentStage; } }
         public byte TasksCompleted { get { return mission.tasksCompleted; } }
@@ -981,7 +985,9 @@ namespace MagicCarpet.PresentationLab
                     ownerHudFrameInfo.stride,
                     ownerHudFrameInfo.indexBytes,
                     ownerHudFrameInfo.provenanceBytes,
-                    ownerHudFrameInfo.flags))
+                    ownerHudFrameInfo.flags,
+                    ownerHudFrameInfo.overlayPixelsWritten,
+                    ownerHudFrameInfo.overlayStageCount))
             {
                 return true;
             }
@@ -991,9 +997,9 @@ namespace MagicCarpet.PresentationLab
                 abiVersion = AbiVersion,
                 structSize = OwnerHudQuerySize,
                 generation = snapshot.generation,
-                // The native Classic HD graph is keyed to the render-camera
-                // clock. Enhanced carries that source frame with the same
-                // owner generation and authoritative snapshot that produced
+                // The compositor-complete presentation graph is keyed to the
+                // render-camera clock. Enhanced carries that source frame with
+                // the same owner generation and camera history that produced
                 // the camera pose.
                 tick = presentation.tick,
                 presentationRevision = ownerHudPresentationRevision,
@@ -1022,9 +1028,8 @@ namespace MagicCarpet.PresentationLab
                 reserved2 = 0
             };
 
-            int status = mc_native_session_classic_hd_frame_copy(
+            int status = mc_native_session_presentation_frame_copy(
                 handle,
-                OwnerHudProfileId,
                 ref ownerHudFrameQuery,
                 ownerHudIndexHandle.AddrOfPinnedObject(),
                 checked((uint)ownerHudIndexBytes.Length),
@@ -1049,9 +1054,11 @@ namespace MagicCarpet.PresentationLab
                 ownerHudFrameInfo.viewportWidth != OwnerHudWidth ||
                 ownerHudFrameInfo.indexBytes != ownerHudIndexBytes.Length ||
                 ownerHudFrameInfo.provenanceBytes != ownerHudProvenanceBytes.Length ||
-                (ownerHudFrameInfo.flags & RequiredOwnerHudFlags) != RequiredOwnerHudFlags)
+                (ownerHudFrameInfo.flags & RequiredOwnerHudFlags) != RequiredOwnerHudFlags ||
+                ownerHudFrameInfo.overlayPixelsWritten == 0 ||
+                ownerHudFrameInfo.overlayStageCount == 0)
             {
-                reason = "Unity Enhanced owner HUD frame failed its generation/extent/provenance receipt contract";
+                reason = "Unity Enhanced owner HUD frame failed its compositor-complete receipt contract";
                 return false;
             }
 
@@ -2725,9 +2732,8 @@ namespace MagicCarpet.PresentationLab
             uint snapshotSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-        private static extern int mc_native_session_classic_hd_frame_copy(
+        private static extern int mc_native_session_presentation_frame_copy(
             ulong handle,
-            uint profileId,
             ref McPresentationFrameQueryV2 query,
             IntPtr indexBuffer,
             uint indexCapacity,

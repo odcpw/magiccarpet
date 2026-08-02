@@ -14,6 +14,7 @@ namespace MagicCarpet.PresentationLab
     public sealed class UnityEnhancedHudPresentation : MonoBehaviour
     {
         private const string ShaderResourceName = "EnhancedOwnerHudIndexed";
+        private const float OwnerHudDisplayAspectRatio = 4f / 3f;
 
         private Canvas canvas;
         private RawImage frameImage;
@@ -166,7 +167,7 @@ namespace MagicCarpet.PresentationLab
                 ownerHudMaterial != null)
             {
                 canvas.worldCamera = targetCamera;
-                aspectFitter.aspectRatio = (float)frame.Width / frame.Height;
+                aspectFitter.aspectRatio = OwnerHudDisplayAspectRatio;
                 return true;
             }
 
@@ -313,12 +314,12 @@ namespace MagicCarpet.PresentationLab
             frameRect.offsetMax = Vector2.zero;
             aspectFitter = frameObject.AddComponent<AspectRatioFitter>();
             aspectFitter.aspectMode = AspectRatioFitter.AspectMode.FitInParent;
-            aspectFitter.aspectRatio = 4f / 3f;
+            aspectFitter.aspectRatio = OwnerHudDisplayAspectRatio;
         }
 
         private Rect AspectFitViewport(int targetWidth, int targetHeight)
         {
-            float frameAspect = (float)frameWidth / frameHeight;
+            float frameAspect = OwnerHudDisplayAspectRatio;
             int viewportWidth = targetWidth;
             int viewportHeight = Mathf.RoundToInt(viewportWidth / frameAspect);
             if (viewportHeight > targetHeight)
