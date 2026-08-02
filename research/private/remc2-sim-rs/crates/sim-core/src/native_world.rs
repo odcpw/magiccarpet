@@ -105,6 +105,11 @@ use crate::{
 const MANIFEST_SCHEMA: &str = "mc2-owner-level-export/v2";
 const CLOSURE_SCHEMA: &str = "mc2-level-asset-closure/v2";
 const AUDIO_CACHE_SCHEMA: &str = "mc2-owner-unity-asset-cache/v1";
+/// `NewEvent_4A050` defaults used by the Castle model-3/action-9 holder.
+/// `AddBallon_60AB0` multiplies this holder speed by the target Castle's
+/// `dword_0x10_16` stage scalar when deciding whether to transfer mana.
+const LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE: i32 = 300;
+const LEVEL2_CASTLE_CHILD_DEFAULT_SPEED: i16 = 16;
 const AUDIO_CACHE_MANIFEST_SHA256: &str =
     "e3aaf1cf03e390850c5da44ed4b3880352b425bd063657e3cdbbcb8086a4d7ee";
 const AUDIO_CACHE_CONTENT_SHA256: &str =
@@ -800,6 +805,20 @@ fn level2_wrapping_xy_distance(left: Position, right: Position) -> u32 {
     dx.wrapping_mul(dx)
         .wrapping_add(dy.wrapping_mul(dy))
         .cast_unsigned()
+}
+
+/// Pinned signed-16 XY distance used by `Maths::EuclideanDistXYZ_58490` in
+/// `AddBallon_60AB0` before its class-3 target gate.  The helper's recovered
+/// cutoff path ignores Z; the holder's Z participates only in the later
+/// terrain gate.
+fn level2_wrapping_target_distance(left: Position, right: Position) -> u32 {
+    let dx = i32::from(right.x.wrapping_sub(left.x).cast_signed());
+    let dy = i32::from(right.y.wrapping_sub(left.y).cast_signed());
+    crate::legacy_sqrt(
+        dx.wrapping_mul(dx)
+            .wrapping_add(dy.wrapping_mul(dy))
+            .cast_unsigned(),
+    )
 }
 
 fn level2_mana_sphere_dimension(mana: i32) -> i16 {
@@ -3236,6 +3255,11 @@ pub struct Level2CastleChild {
     pub action: u8,
     pub mana: i32,
     pub max_mana: i32,
+    /// Source `NewEvent_4A050` life/speed defaults retained for the typed
+    /// model-3/action-9 `AddBallon_60AB0` holder path.
+    pub life: i32,
+    pub max_life: i32,
+    pub speed: i16,
     pub target_sphere_slot: u16,
     /// Source `byte_0x3E_62`, used by `sub_5FF50`'s modulo cadence gate.
     /// This is explicitly injectable because it is not the Castle phase.
@@ -3304,6 +3328,12 @@ pub enum Level2EconomyEvent {
     },
     ManaCarrierArrived {
         carrier_id: u32,
+        castle_id: u16,
+        mana: i32,
+    },
+    /// Source `AddBallon_60AB0` class-3 transfer into the typed Castle root.
+    CastleDefenderArrived {
+        defender_slot: u16,
         castle_id: u16,
         mana: i32,
     },
@@ -4103,6 +4133,92 @@ impl Level2EconomyState {
                 self.merge_mana_spheres(sphere_slot, absorbed_slot);
             }
         }
+        true
+    }
+
+    /// Advance one live Castle model-3/action-9 holder through the proven
+    /// class-3 branch of `AddBallon_60AB0`.  `sub_5FF50` installs the Castle
+    /// root in the holder's raw `word_0x96_150`; the root `level` is the
+    /// target `dword_0x10_16` range multiplier.  Sphere/class-10 targets and
+    /// the deeper combat/spell callbacks remain deliberately outside this
+    /// typed handler.
+    pub fn step_castle_defender_slot(&mut self, source_slot: u16) -> bool {
+        let Some(child_index) = self.castle_children.iter().position(|child| {
+            child.active
+                && child.source_entity_index == source_slot
+                && child.source_class == 3
+                && child.model == 3
+                && child.action == 9
+        }) else {
+            return false;
+        };
+        let child_snapshot = self.castle_children[child_index];
+        let mut predicted = child_snapshot.position;
+        let mut yaw = child_snapshot.yaw as i16;
+        let mut transfer_mana = None;
+        let castle_snapshot = self.castle.filter(|castle| {
+            castle.active && child_snapshot.target_sphere_slot == castle.source_entity_index
+        });
+        if let Some(castle) = castle_snapshot {
+            yaw = i16::try_from(heading_for_positions(predicted, castle.position))
+                .expect("Castle defender heading fits");
+            let distance = level2_wrapping_target_distance(predicted, castle.position);
+            let target_range = u32::from(castle.level);
+            let threshold =
+                u32::from(child_snapshot.speed.unsigned_abs()).saturating_mul(target_range);
+            if distance <= threshold {
+                // NewEvent_4A050 binds the holder's str_160 word_0xc to zero
+                // for the default event profile.  This is the exact source
+                // altitude gate before the class-3 mana transfer.
+                let ground = self.terrain.ground_height(predicted);
+                if predicted.z <= ground && castle.level > 0 {
+                    transfer_mana = Some(child_snapshot.mana);
+                    // The source snaps the holder's predicted axis to the
+                    // class-3 target position; the target Castle itself does
+                    // not move. Its mana receives the holder payload.
+                    predicted.x = castle.position.x;
+                    predicted.y = castle.position.y;
+                    if let Some(target) = self
+                        .castle
+                        .as_mut()
+                        .filter(|target| target.source_entity_index == castle.source_entity_index)
+                    {
+                        target.mana = target.mana.wrapping_add(child_snapshot.mana);
+                    }
+                }
+            } else {
+                crate::move_entity(&mut predicted, yaw, 0, child_snapshot.speed);
+            }
+        }
+
+        // `AddBallon_60AB0` always runs the shared non-cave sub_580E0 settle
+        // with the default str_160 words (c=0, a=0, e=-4) after targeting.
+        let ground = self.terrain.ground_height(predicted);
+        if predicted.z > ground {
+            predicted.z = predicted.z.wrapping_sub(4);
+        }
+        if predicted.z <= ground {
+            predicted.z = ground;
+        }
+        if let Some(mana) = transfer_mana {
+            let child = &mut self.castle_children[child_index];
+            child.position = predicted;
+            child.yaw = yaw as u16;
+            child.mana = 0;
+            child.player_entity_index = child.id_entity_index;
+            child.life = child.max_life;
+            self.events.push(Level2EconomyEvent::CastleDefenderArrived {
+                defender_slot: source_slot,
+                castle_id: child_snapshot.target_sphere_slot,
+                mana,
+            });
+        } else {
+            let child = &mut self.castle_children[child_index];
+            child.position = predicted;
+            child.yaw = yaw as u16;
+        }
+        let child = self.castle_children[child_index];
+        self.sync_castle_child_map(child);
         true
     }
 
@@ -4939,6 +5055,9 @@ impl Level2EconomyState {
                 action: 0,
                 mana: 0,
                 max_mana: 0,
+                life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                 target_sphere_slot: 0,
                 source_byte_3e: stage_slot as u8,
                 yaw: 0,
@@ -5029,6 +5148,9 @@ impl Level2EconomyState {
                 action: 9,
                 mana: 0,
                 max_mana: 0,
+                life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                 target_sphere_slot: 0,
                 source_byte_3e: snapshot.phase,
                 yaw: 0,
@@ -5079,7 +5201,11 @@ impl Level2EconomyState {
             // Source leaves word96 untouched when cadence/action/mana gates
             // fail; begin with the relation already installed on the child.
             let mut target_slot = child.target_sphere_slot;
-            if defender_total_max_mana.saturating_add(snapshot.mana) >= snapshot.mana_capacity {
+            // `sub_5FF50` gates on the owner's aggregate *current* defender
+            // mana (`dword_0x13C_316`), not the aggregate max-mana display
+            // counter (`dword_0x12A_298`). The source tests that value before
+            // adding this holder's payload to the rebuilt totals below.
+            if defender_total_mana.saturating_add(snapshot.mana) >= snapshot.mana_capacity {
                 target_slot = castle_slot;
             } else if child.source_byte_3e % u8::try_from(defender_target_count.max(1)).unwrap_or(1)
                 == 0
@@ -5179,6 +5305,9 @@ impl Level2EconomyState {
                             action: 121,
                             mana: 0,
                             max_mana: 0,
+                            life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                            max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                            speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                             target_sphere_slot: 0,
                             source_byte_3e: slot as u8,
                             yaw: 512,
@@ -5330,6 +5459,9 @@ impl Level2EconomyState {
                     action: 44,
                     mana: 0,
                     max_mana: 0,
+                    life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                    max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                    speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                     target_sphere_slot: 0,
                     source_byte_3e: child_slot as u8,
                     yaw: 0,
@@ -5395,6 +5527,9 @@ impl Level2EconomyState {
                             action: 0,
                             mana: 0,
                             max_mana: 0,
+                            life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                            max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                            speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                             target_sphere_slot: 0,
                             source_byte_3e: stage_slot as u8,
                             yaw: 0,
@@ -5511,6 +5646,9 @@ impl Level2EconomyState {
                     action: 43,
                     mana: 0,
                     max_mana: 0,
+                    life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                    max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                    speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                     target_sphere_slot: 0,
                     source_byte_3e: child_slot as u8,
                     yaw: 0,
@@ -6298,6 +6436,9 @@ impl Level2EconomyState {
             hasher.update([child.model, child.action, u8::from(child.active)]);
             hasher.update(child.mana.to_le_bytes());
             hasher.update(child.max_mana.to_le_bytes());
+            hasher.update(child.life.to_le_bytes());
+            hasher.update(child.max_life.to_le_bytes());
+            hasher.update(child.speed.to_le_bytes());
             hasher.update(child.target_sphere_slot.to_le_bytes());
             hasher.update(child.yaw.to_le_bytes());
             hasher.update(child.roll.to_le_bytes());
@@ -8355,6 +8496,9 @@ impl Level2ResetSession {
         kind: Level2DynamicArenaKind,
     ) {
         let live = match kind {
+            Level2DynamicArenaKind::CastleDefender => {
+                self.economy.step_castle_defender_slot(source_slot)
+            }
             Level2DynamicArenaKind::ManaSphere => self.economy.step_mana_sphere_slot(source_slot),
             Level2DynamicArenaKind::ManaCarrier => self.economy.step_mana_carrier_slot(source_slot),
             Level2DynamicArenaKind::DeathBurst => self.economy.step_death_burst_slot(source_slot),
@@ -14447,6 +14591,9 @@ mod tests {
                 action: 44,
                 mana: 0,
                 max_mana: 0,
+                life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                max_life: LEVEL2_CASTLE_CHILD_DEFAULT_MAX_LIFE,
+                speed: LEVEL2_CASTLE_CHILD_DEFAULT_SPEED,
                 target_sphere_slot: 0,
                 source_byte_3e: construction.construction_slot as u8,
                 yaw: 0,
@@ -16128,9 +16275,9 @@ mod tests {
                 .castle
                 .as_mut()
                 .expect("defender arbitration Castle");
-            // The source checks aggregate max-mana *before* adding this
-            // holder, so a one-holder fixture reaches the Castle branch at
-            // the zero-capacity boundary.
+            // The source checks aggregate current defender mana *before*
+            // adding this holder, so a one-holder fixture reaches the Castle
+            // branch at the zero-capacity boundary.
             castle.mana_capacity = 0;
             economy.maintain_castle_defenders(castle_slot);
         }
@@ -16149,6 +16296,206 @@ mod tests {
                 .iter()
                 .any(|sphere| sphere.source_entity_index == sphere_slot)
         );
+    }
+
+    #[test]
+    fn level_two_castle_defender_addballon_class3_threshold_terrain_and_life() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let setup = || {
+            let mut session = inspection
+                .level2_reset_session()
+                .expect("Castle defender AddBallon session");
+            let baseline_hash = session.economy().reset_hash();
+            let castle_position = Position::default();
+            let castle_slot = session
+                .economy_mut()
+                .build_castle(castle_position, 111)
+                .expect("Castle defender AddBallon Castle");
+            session
+                .economy_mut()
+                .castle
+                .as_mut()
+                .expect("Castle defender AddBallon Castle")
+                .level = 1;
+            session.economy_mut().maintain_castle_defenders(castle_slot);
+            let defender_slot = session
+                .economy()
+                .castle()
+                .expect("Castle defender AddBallon Castle")
+                .defender_slots[0];
+            let holder_position = Position {
+                x: castle_position.x.wrapping_add(16),
+                y: castle_position.y,
+                z: 0,
+            };
+            let holder_ground = session.economy().terrain.ground_height(holder_position);
+            (
+                session,
+                baseline_hash,
+                castle_slot,
+                defender_slot,
+                castle_position,
+                holder_position,
+                holder_ground,
+            )
+        };
+
+        // The source distance helper is XY-only. A holder below the local
+        // terrain plane still transfers at exactly speed*target-dword10.
+        let (
+            mut session,
+            baseline_hash,
+            castle_slot,
+            defender_slot,
+            castle_position,
+            mut holder_position,
+            holder_ground,
+        ) = setup();
+        holder_position.z = holder_ground.saturating_sub(100);
+        {
+            let economy = session.economy_mut();
+            let child = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("model-3 defender");
+            child.position = holder_position;
+            child.target_sphere_slot = castle_slot;
+            child.mana = 7;
+            child.life = 1;
+        }
+        let map_before = session.economy().map_chains().linked_entity_indices();
+        let free_before_transfer = session.economy().free_slot_count();
+        assert!(
+            session
+                .economy_mut()
+                .step_castle_defender_slot(defender_slot)
+        );
+        let castle = session.economy().castle().expect("Castle target");
+        let child = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == defender_slot)
+            .expect("model-3 defender");
+        assert_eq!(castle.position, castle_position);
+        assert_eq!(castle.mana, 7);
+        assert_eq!(
+            (child.position.x, child.position.y),
+            (castle_position.x, castle_position.y)
+        );
+        assert_eq!(child.mana, 0);
+        assert_eq!(child.player_entity_index, child.id_entity_index);
+        assert_eq!(child.life, child.max_life);
+        assert_eq!(
+            session
+                .economy()
+                .events()
+                .iter()
+                .filter(|event| matches!(event, Level2EconomyEvent::CastleDefenderArrived { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            session.economy().free_slot_count(),
+            free_before_transfer,
+            "the typed transfer does not allocate or reclaim a source row"
+        );
+        assert!(map_before.iter().all(|slot| {
+            session
+                .economy()
+                .map_chains()
+                .linked_entity_indices()
+                .contains(slot)
+        }));
+        assert_ne!(session.economy().reset_hash(), baseline_hash);
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
+
+        // One unit beyond the pinned range moves the holder by its source
+        // speed and leaves mana/life untouched.
+        let (
+            mut session,
+            _baseline_hash,
+            castle_slot,
+            defender_slot,
+            castle_position,
+            mut holder_position,
+            holder_ground,
+        ) = setup();
+        holder_position.x = holder_position.x.wrapping_add(1);
+        holder_position.z = holder_ground;
+        {
+            let economy = session.economy_mut();
+            let child = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("model-3 defender");
+            child.position = holder_position;
+            child.target_sphere_slot = castle_slot;
+            child.mana = 7;
+            child.life = 1;
+        }
+        assert!(
+            session
+                .economy_mut()
+                .step_castle_defender_slot(defender_slot)
+        );
+        let child = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == defender_slot)
+            .expect("model-3 defender");
+        assert_eq!(child.mana, 7);
+        assert_eq!(child.life, 1);
+        assert_ne!(child.position.x, holder_position.x);
+        assert_eq!(
+            session.economy().castle().expect("Castle target").position,
+            castle_position
+        );
+
+        // At the same XY threshold, an above-ground holder fails the exact
+        // source altitude gate and does not transfer or snap.
+        let (
+            mut session,
+            _baseline_hash,
+            castle_slot,
+            defender_slot,
+            _castle_position,
+            mut holder_position,
+            holder_ground,
+        ) = setup();
+        holder_position.z = holder_ground.saturating_add(10);
+        {
+            let economy = session.economy_mut();
+            let child = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("model-3 defender");
+            child.position = holder_position;
+            child.target_sphere_slot = castle_slot;
+            child.mana = 7;
+            child.life = 1;
+        }
+        assert!(
+            session
+                .economy_mut()
+                .step_castle_defender_slot(defender_slot)
+        );
+        let child = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == defender_slot)
+            .expect("model-3 defender");
+        assert_eq!(child.mana, 7);
+        assert_eq!(child.life, 1);
+        assert_eq!(child.position.x, holder_position.x);
+        assert_eq!(child.position.z, holder_ground.saturating_add(6));
     }
 
     #[test]
