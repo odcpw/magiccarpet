@@ -16320,6 +16320,19 @@ mod tests {
         assert_eq!(initial_goat_batch.written, 36);
         assert_eq!(initial_goat_batch.total_count, 36);
         assert_eq!(initial_goat_batch.has_more, 0);
+        assert_eq!(
+            initial_goats
+                .iter()
+                .map(|goat| goat.entity_index)
+                .collect::<Vec<_>>(),
+            LEVEL_TWO_GOAT_INDICES.to_vec(),
+            "Level 2 Goat ABI rows preserve authored source-slot order"
+        );
+        assert!(
+            initial_goats
+                .iter()
+                .all(|goat| goat.class_id == GOAT_CLASS && goat.model == GOAT_MODEL)
+        );
         let initial_action11_slots = initial_goats
             .iter()
             .filter(|goat| goat.action == 11)
@@ -16555,6 +16568,11 @@ mod tests {
             .filter(|event| event.kind == MC_CAMPAIGN_EVENT_GOAT)
             .map(|event| event.source_slot)
             .collect::<BTreeSet<_>>();
+        assert_eq!(
+            goat_slots,
+            LEVEL_TWO_GOAT_INDICES.into_iter().collect::<BTreeSet<_>>(),
+            "public Level 2 C ABI must expose every authored Goat source slot"
+        );
         assert!(
             goat_slots.contains(&39) && goat_slots.contains(&71),
             "public Level 2 C ABI must expose Goat source slots 39 and 71"
