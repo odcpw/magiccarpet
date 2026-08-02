@@ -12139,9 +12139,8 @@ mod tests {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
         let terrain = SessionTerrain::from_inspection(&inspection);
-        let footprint =
-            CastleBuildFootprint::from_owner_cells(1, 2, 2, &[0xff, 0xff, 1, 1, 9, 2, 0xff, 0xff])
-                .expect("source BUILD vector");
+        let footprint = CastleBuildFootprint::from_owner_cells(1, 8, 8, &[0xff; 128])
+            .expect("source 8x8 BUILD vector");
         let projectile = Position {
             x: 0x13_45,
             y: 0x56_78,
@@ -12152,8 +12151,8 @@ mod tests {
         assert_eq!((anchor.x, anchor.y), (root.x, root.y));
         let center_x = (root.x >> 8) as u8;
         let center_y = (root.y >> 8) as u8;
-        let width = footprint.width >> 1;
-        let height = footprint.height >> 1;
+        let width = footprint.width;
+        let height = footprint.height;
         let start_x = center_x.wrapping_sub(width / 2);
         let start_y = center_y.wrapping_sub(height / 2);
         let mut minimum = 250_u8;
@@ -12211,6 +12210,18 @@ mod tests {
         );
         assert_eq!(session.economy().player_castle_entity_index(), 0);
         assert!(session.economy().map_chains().is_linked(castle_slot));
+        assert!(session.economy_mut().step_castle_action(castle_slot));
+        let stage_controller = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.active && child.model == 79)
+            .expect("stage-one model-79 controller");
+        assert_eq!(
+            (stage_controller.position.x, stage_controller.position.y),
+            (root.x, root.y)
+        );
+        assert_eq!(stage_controller.chain_previous_slot, castle_slot);
     }
 
     #[test]
