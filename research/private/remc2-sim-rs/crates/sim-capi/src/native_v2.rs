@@ -271,6 +271,8 @@ pub const MC_EVENT_LEVEL1_EXIT_SEQUENCE_COMPLETED: u32 = 36;
 pub const MC_EVENT_LEVEL1_WATER_SPLASHED: u32 = 37;
 pub const MC_EVENT_LEVEL1_ABILITY_IMPROVED: u32 = 38;
 
+/// Additive Level 2 campaign event kinds (`mc_sim_level2.h`).
+pub const MC_CAMPAIGN_EVENT_SPELL_ACQUISITION: u8 = 2;
 /// Additive Level 2 campaign economy events (`mc_sim_level2.h`, kind 10).
 pub const MC_CAMPAIGN_EVENT_ECONOMY: u8 = 10;
 
@@ -9702,10 +9704,10 @@ fn campaign_event_snapshot(
     event: &Level2DispatchEvent,
 ) -> McCampaignEventV2 {
     let (pass, projected_kind, family, flags, source_slot) = event.campaign_projection();
-    let kind = if matches!(event, Level2DispatchEvent::Economy { .. }) {
-        MC_CAMPAIGN_EVENT_ECONOMY
-    } else {
-        projected_kind
+    let kind = match event {
+        Level2DispatchEvent::Economy { .. } => MC_CAMPAIGN_EVENT_ECONOMY,
+        Level2DispatchEvent::SpellAcquisition { .. } => MC_CAMPAIGN_EVENT_SPELL_ACQUISITION,
+        _ => projected_kind,
     };
     McCampaignEventV2 {
         abi_version: MC_NATIVE_ABI_VERSION,
@@ -16114,6 +16116,153 @@ mod tests {
             MC_STATUS_OK
         );
         assert_eq!(mc_native_session_destroy(level1_handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn level2_campaign_step_projects_family12_source_slot38() {
+        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        let package = level2_package.to_string_lossy();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 2,
+            internal_level: 1,
+            map_type: 0,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut handle = 0;
+        assert_eq!(
+            mc_native_campaign_session_open(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                &raw const selection,
+                &raw mut handle,
+            ),
+            MC_STATUS_OK
+        );
+        let pickup_position = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            let pickup = reset
+                .shared_spells()
+                .pickups()
+                .iter()
+                .find(|pickup| pickup.index == 38)
+                .expect("family-12 source slot 38 is present");
+            assert_eq!(pickup.action, 37);
+            Ok(pickup.position)
+        })
+        .expect("read family-12 source position");
+
+        let input_command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            flags: 1,
+            requested_spell: MC_REQUESTED_SPELL_NONE,
+            ..McCommandV2::default()
+        };
+        let mut input = McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation: 0,
+            command: input_command,
+            player_slot: 0,
+            player_x: pickup_position.x,
+            player_y: pickup_position.y,
+            player_z: pickup_position.z,
+            ..McCampaignStepInputV2::default()
+        };
+        let mut snapshot = McCampaignStepSnapshotV2::default();
+        let mut events = [McCampaignEventV2::default(); 1024];
+        let mut event_count;
+        let mut acquired = None;
+        // The source cadence is part of the reset-visible row. Walk the
+        // minimum bounded number of turns needed to reach its phase gate
+        // instead of mutating private source bytes through the C ABI.
+        for _ in 0..4 {
+            event_count = 0;
+            assert_eq!(
+                mc_native_campaign_session_step(
+                    handle,
+                    &raw const input,
+                    &raw mut snapshot,
+                    struct_size::<McCampaignStepSnapshotV2>(),
+                    events.as_mut_ptr(),
+                    events.len() as u32,
+                    struct_size::<McCampaignEventV2>(),
+                    &raw mut event_count,
+                ),
+                MC_STATUS_OK
+            );
+            acquired = events[..event_count as usize]
+                .iter()
+                .find(|event| {
+                    event.kind == MC_CAMPAIGN_EVENT_SPELL_ACQUISITION
+                        && event.family == 12
+                        && event.source_slot == 38
+                        && event.flags == 1
+                })
+                .copied()
+                .or(acquired);
+            if acquired.is_some() {
+                break;
+            }
+        }
+        let acquired = acquired.expect("C ABI exposes family-12 slot-38 acquisition");
+        assert_eq!(acquired.pass, 0);
+        assert_eq!(acquired.generation, 0);
+        assert_eq!(acquired.abi_version, MC_NATIVE_ABI_VERSION);
+        let acquired_snapshot = snapshot;
+
+        assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        input.generation = 1;
+        let mut replay = None;
+        for _ in 0..4 {
+            event_count = 0;
+            assert_eq!(
+                mc_native_campaign_session_step(
+                    handle,
+                    &raw const input,
+                    &raw mut snapshot,
+                    struct_size::<McCampaignStepSnapshotV2>(),
+                    events.as_mut_ptr(),
+                    events.len() as u32,
+                    struct_size::<McCampaignEventV2>(),
+                    &raw mut event_count,
+                ),
+                MC_STATUS_OK
+            );
+            replay = events[..event_count as usize]
+                .iter()
+                .find(|event| {
+                    event.kind == MC_CAMPAIGN_EVENT_SPELL_ACQUISITION
+                        && event.family == 12
+                        && event.source_slot == 38
+                        && event.flags == 1
+                })
+                .copied()
+                .or(replay);
+            if replay.is_some() {
+                break;
+            }
+        }
+        let replay = replay.expect("reset replay exposes family-12 slot-38 acquisition");
+        assert_eq!(replay.generation, 1);
+        assert_eq!(replay.pass, acquired.pass);
+        assert_eq!(replay.kind, acquired.kind);
+        assert_eq!(replay.family, acquired.family);
+        assert_eq!(replay.flags, acquired.flags);
+        assert_eq!(replay.source_slot, acquired.source_slot);
+        assert_eq!(snapshot.state_hash, acquired_snapshot.state_hash);
+        assert_eq!(snapshot.terrain_hash, acquired_snapshot.terrain_hash);
+        assert_eq!(snapshot.dispatch_hash, acquired_snapshot.dispatch_hash);
+        assert_eq!(snapshot.event_count, acquired_snapshot.event_count);
+        assert_eq!(snapshot.event_kind_mask, acquired_snapshot.event_kind_mask);
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
     }
 
     #[test]

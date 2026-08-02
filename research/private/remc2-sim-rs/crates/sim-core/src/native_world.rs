@@ -7728,7 +7728,6 @@ impl Level2SharedSpellResetSession {
             )));
         }
         self.events.clear();
-        self.pickup_events.clear();
         let pickup_index = self
             .pickups
             .iter()
@@ -8921,6 +8920,9 @@ impl Level2ResetSession {
     fn step_level2_source_pass(&mut self, pass: u8) {
         let player_entity_index = self.state.entity_index;
         let player_position = self.state.position;
+        // Retain event chronology across all source slots in this pass;
+        // individual handlers must not erase an earlier pickup row.
+        self.shared_spells.pickup_events.clear();
         let player_control_flags = self
             .entities
             .get(usize::from(player_entity_index))
@@ -18020,7 +18022,6 @@ mod tests {
                 .iter()
                 .any(|sphere| sphere.source_entity_index == sphere_slot && sphere.active)
         );
-
         // The Day attraction threshold is strict on the positive side: a
         // sphere at 1025 source units is not consumed and clears byte-0 bit
         // 0x40 before the holder moves toward it.
@@ -19251,6 +19252,64 @@ mod tests {
         assert_eq!(session.shared_spells().pickups()[1].action, 10);
         assert!(session.dispatch_events().is_empty());
         assert_ne!(session.dispatch_observability_hash(), dispatch_hash);
+    }
+
+    #[test]
+    fn level_two_outer_turn_reaches_family12_pickup_at_source_slot38() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 family-12 production session");
+        let baseline_hash = session.shared_spells().reset_hash();
+        let pickup_position = session.shared_spells().pickups()[0].position;
+        let player_entity_index = session.state.entity_index;
+        assert_eq!(session.shared_spells().pickups()[0].index, 38);
+        assert_eq!(session.shared_spells().pickups()[0].action, 37);
+        session.shared_spells_mut().pickups[0].phase = 0;
+        session.shared_spells_mut().pickups[0].record[66] = 0;
+
+        session.state.position = pickup_position;
+        let evidence = session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(session.shared_spells().pickups()[0].action, 36);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::SpellAcquisition {
+                    pass: 0,
+                    source_slot: 38,
+                    family: 12,
+                    result: Some(outcome),
+                } if outcome.family == 12
+                    && outcome.source_slot == 38
+                    && outcome.parent_entity_index == player_entity_index
+                    && outcome.holder_action == 36
+            )
+        }));
+        let stepped_hash = session.shared_spells().reset_hash();
+        assert_ne!(stepped_hash, baseline_hash);
+
+        session.reset();
+        assert_eq!(session.shared_spells().reset_hash(), baseline_hash);
+        assert_eq!(session.shared_spells().pickups()[0].action, 37);
+        assert!(session.shared_spells().pickup_events().is_empty());
+        session.shared_spells_mut().pickups[0].phase = 0;
+        session.shared_spells_mut().pickups[0].record[66] = 0;
+        session.state.position = pickup_position;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.shared_spells().reset_hash(), stepped_hash);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::SpellAcquisition {
+                    source_slot: 38,
+                    family: 12,
+                    result: Some(_),
+                    ..
+                }
+            )
+        }));
     }
 
     #[test]
