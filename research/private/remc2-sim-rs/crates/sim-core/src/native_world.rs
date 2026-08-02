@@ -3047,6 +3047,9 @@ pub struct Level2CastleChild {
     pub mana: i32,
     pub max_mana: i32,
     pub target_sphere_slot: u16,
+    /// Source `byte_0x3E_62`, used by `sub_5FF50`'s modulo cadence gate.
+    /// This is explicitly injectable because it is not the Castle phase.
+    pub source_byte_3e: u8,
     pub yaw: u16,
     pub roll: u16,
     pub control_flags: u32,
@@ -3476,6 +3479,22 @@ impl Level2EconomyState {
             return false;
         };
         *value = coefficient;
+        true
+    }
+
+    /// Bind a defender's source `byte_0x3E_62` cadence phase. The source
+    /// stores this byte on the child entity, independently of Castle phase;
+    /// callers without an imported byte use the Castle phase at allocation.
+    pub fn set_castle_defender_source_phase(&mut self, slot: u16, phase: u8) -> bool {
+        let Some(child) = self.castle_children.iter_mut().find(|child| {
+            child.active
+                && child.source_entity_index == slot
+                && child.model == 3
+                && child.action == 9
+        }) else {
+            return false;
+        };
+        child.source_byte_3e = phase;
         true
     }
 
@@ -4272,6 +4291,7 @@ impl Level2EconomyState {
                 mana: 0,
                 max_mana: 0,
                 target_sphere_slot: 0,
+                source_byte_3e: stage_slot as u8,
                 yaw: 0,
                 roll: 0,
                 control_flags: 0,
@@ -4360,6 +4380,7 @@ impl Level2EconomyState {
                 mana: 0,
                 max_mana: 0,
                 target_sphere_slot: 0,
+                source_byte_3e: snapshot.phase,
                 yaw: 0,
                 roll: 0,
                 control_flags: 0,
@@ -4387,12 +4408,12 @@ impl Level2EconomyState {
         }
 
         // `sub_5FF50` resets the owner's aggregate defender mana/max counters
-        // and then arbitrates each holder's `word_0x96_150` target.  A full
+        // and then arbitrates each holder's `word_0x96_150` target. A full
         // Castle first claims the holder; otherwise an eligible action-9
-        // holder receives the nearest unclaimed model-39 sphere, excluding
-        // the two following holder targets from `sub_5F810`.
+        // holder receives a bounded nearest model-39 sphere approximation.
+        // Exact `sub_5F810` target arbitration remains a follow-up gap.
         let prior_targets = snapshot.defender_target_spheres;
-        let mut defender_targets = [0_u16; 3];
+        let mut defender_targets = snapshot.defender_target_spheres;
         let mut defender_total_mana = 0_i32;
         let mut defender_total_max_mana = 0_i32;
         let defender_target_count = defenders.len().min(3);
@@ -4405,10 +4426,13 @@ impl Level2EconomyState {
             else {
                 continue;
             };
-            let mut target_slot = 0_u16;
+            // Source leaves word96 untouched when cadence/action/mana gates
+            // fail; begin with the relation already installed on the child.
+            let mut target_slot = child.target_sphere_slot;
             if defender_total_max_mana.saturating_add(snapshot.mana) >= snapshot.mana_capacity {
                 target_slot = castle_slot;
-            } else if snapshot.phase % u8::try_from(defender_target_count.max(1)).unwrap_or(1) == 0
+            } else if child.source_byte_3e % u8::try_from(defender_target_count.max(1)).unwrap_or(1)
+                == 0
                 && child.action == 9
                 && child.mana < child.max_mana
             {
@@ -4505,6 +4529,7 @@ impl Level2EconomyState {
                             mana: 0,
                             max_mana: 0,
                             target_sphere_slot: 0,
+                            source_byte_3e: slot as u8,
                             yaw: 512,
                             roll: 512,
                             control_flags: 0,
@@ -4529,7 +4554,6 @@ impl Level2EconomyState {
             let valid = self.castle_children.iter().any(|child| {
                 child.active
                     && child.source_entity_index == slot
-                    && child.parent_entity_index == castle_slot
                     && child.source_class == 5
                     && child.model == 15
                     && child.action != 125
@@ -4631,6 +4655,7 @@ impl Level2EconomyState {
                     mana: 0,
                     max_mana: 0,
                     target_sphere_slot: 0,
+                    source_byte_3e: child_slot as u8,
                     yaw: 0,
                     roll: 0,
                     control_flags: 1,
@@ -4694,6 +4719,7 @@ impl Level2EconomyState {
                             mana: 0,
                             max_mana: 0,
                             target_sphere_slot: 0,
+                            source_byte_3e: stage_slot as u8,
                             yaw: 0,
                             roll: 0,
                             control_flags: 0,
@@ -4808,6 +4834,7 @@ impl Level2EconomyState {
                     mana: 0,
                     max_mana: 0,
                     target_sphere_slot: 0,
+                    source_byte_3e: child_slot as u8,
                     yaw: 0,
                     roll: 0,
                     control_flags: 0,
@@ -6644,6 +6671,73 @@ impl Level2ResetSession {
         Ok(stone.step_action_9(&self.terrain))
     }
 
+    /// Dispatch the authored Level 2 rows in source-slot order alongside the
+    /// generic player-flight pass. Each typed family remains authoritative for
+    /// its own mutable state; unknown mission rows are not coerced into a
+    /// neighboring Level 1 handler.
+    fn step_level2_source_pass(&mut self) {
+        let player_entity_index = self.shared_spells.player_entity.index;
+        let player_position = self.state.position;
+        let mut routes = LEVEL2_SHARED_SPELL_PICKUP_SLOTS
+            .into_iter()
+            .map(|slot| (slot, 0_u8))
+            .chain(
+                self.bad_stones
+                    .iter()
+                    .map(|stone| (stone.entity.index, 1_u8)),
+            )
+            .chain(
+                self.ordinary
+                    .houses()
+                    .iter()
+                    .map(|house| (house.entity_index, 2_u8)),
+            )
+            .chain(
+                self.ordinary
+                    .villagers()
+                    .iter()
+                    .map(|villager| (villager.entity_index, 3_u8)),
+            )
+            .chain(
+                self.ordinary
+                    .dolmens()
+                    .iter()
+                    .map(|dolmen| (dolmen.entity.index, 4_u8)),
+            )
+            .collect::<Vec<_>>();
+        if let Some(castle) = self.economy.castle().filter(|castle| castle.active) {
+            routes.push((castle.source_entity_index, 5_u8));
+        }
+        routes.sort_unstable_by_key(|(slot, _)| *slot);
+        for (source_slot, kind) in routes {
+            match kind {
+                0 => {
+                    let _ = self.shared_spells.step_shared_pickup(
+                        source_slot,
+                        player_entity_index,
+                        player_position,
+                    );
+                }
+                1 => {
+                    let _ = self.step_bad_stone_action_9(source_slot);
+                }
+                2 => {
+                    let _ = self.ordinary.step_house_action_52(source_slot);
+                }
+                3 => {
+                    let _ = self.ordinary.step_villager_action_105(source_slot);
+                }
+                4 => {
+                    let _ = self.ordinary.step_dolmen_action_6(source_slot);
+                }
+                5 => {
+                    let _ = self.economy.step_castle_action(source_slot);
+                }
+                _ => unreachable!("bounded Level 2 source route"),
+            }
+        }
+    }
+
     #[must_use]
     pub fn mission(&self) -> &MissionContentSession {
         &self.mission
@@ -6665,14 +6759,18 @@ impl Level2ResetSession {
         command: PlayerCommand,
         speed_index: u8,
     ) -> Vec<crate::StepEvidence> {
-        crate::step_outer_turn_with_context(
+        let evidence = crate::step_outer_turn_with_context(
             &mut self.state,
             command,
             speed_index,
             self.profile,
             &self.terrain,
             &mut self.context,
-        )
+        );
+        for _ in 0..crate::entity_passes_for_speed_index(speed_index) {
+            self.step_level2_source_pass();
+        }
+        evidence
     }
 
     /// Restore every mutable session projection to the decoded frame zero.
@@ -12589,6 +12687,7 @@ mod tests {
                 mana: 0,
                 max_mana: 0,
                 target_sphere_slot: 0,
+                source_byte_3e: construction.construction_slot as u8,
                 yaw: 0,
                 roll: 0,
                 control_flags: 1,
@@ -14382,6 +14481,39 @@ mod tests {
                 .step_speed_pickup(112, pickup_position)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn level_two_outer_turn_dispatches_typed_source_rows() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 production dispatch session");
+        let pickup_position = session.shared_spells().pickups()[1].position;
+        let baseline_hash = session.shared_spells().reset_hash();
+        session.state.position = pickup_position;
+
+        let evidence = session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(session.shared_spells().pickups()[1].action, 9);
+        assert!(session.shared_spells().speed_pickup_state().collected);
+        assert_eq!(
+            session.shared_spells().pickup_events(),
+            &[Level2SharedSpellEvent::SpellCollected {
+                source_slot: 75,
+                player_entity_index: session.state.entity_index,
+                family: SPEED_SPELL_FAMILY,
+            }]
+        );
+        assert!(matches!(
+            session.shared_spells().activation_events(),
+            [FlightEvent::PrepareSound { sound_id: 18, .. }]
+        ));
+
+        session.reset();
+        assert_eq!(session.shared_spells().reset_hash(), baseline_hash);
+        assert_eq!(session.shared_spells().pickups()[1].action, 10);
     }
 
     #[test]
