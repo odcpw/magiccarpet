@@ -45,29 +45,31 @@ use crate::{
         ARCHER_BASE_TMAP, ARCHER_LOGICAL_HEIGHT, ARCHER_RENDER_INDEX, ARCHER_RENDER_MODE,
         CASTLE_SPELL_FAMILY, CASTLE_STAGE_ONE_COLLISION_HALF_WIDTH, CASTLE_STAGE_ONE_LIFE,
         CASTLE_STAGE_ONE_MANA_CAPACITY, CastleBuildFootprint, CastleTerrainUpdate,
-        FIREBALL_BASE_TMAP, FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_LOGICAL_HEIGHT,
-        FIREBALL_IMPACT_RENDER_INDEX, FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LOGICAL_HEIGHT,
-        FIREBALL_RENDER_INDEX, FIREBALL_RENDER_MODE, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT,
-        FIREFLY_RENDER_INDEX, FIREFLY_RENDER_MODE, GROUND_FIRE_BASE_TMAP,
-        GROUND_FIRE_FIRST_RENDER_INDEX, GROUND_FIRE_LOGICAL_HEIGHTS,
-        GROUND_FIRE_PRESENTATION_BYTE_11, GROUND_FIRE_PRESENTATION_SPEEDS, GROUND_FIRE_RENDER_MODE,
-        HouseResidentRequest, Level1AmbientEntity, Level1CastlePlacementBlocker,
-        Level1CollisionTarget, Level1MissionState, Level1MissionTemplate,
-        Level1ResetRawSourceState, Level1ResetSourceSlot, Level1SourceCollisionTarget,
-        Level1SourceEffect, Level1SourceEntityAuthority, Level1SourceEntityView,
-        MANA_CARRIER_ATTRACTION_RADIUS, MANA_CARRIER_BASE_TMAP, MANA_CARRIER_COLLISION_HALF_HEIGHT,
+        DEATH_BURST_ACTION, DEATH_BURST_CLASS, DEATH_BURST_MODEL, FIREBALL_BASE_TMAP,
+        FIREBALL_IMPACT_BASE_TMAP, FIREBALL_IMPACT_LOGICAL_HEIGHT, FIREBALL_IMPACT_RENDER_INDEX,
+        FIREBALL_IMPACT_RENDER_MODE, FIREBALL_LOGICAL_HEIGHT, FIREBALL_RENDER_INDEX,
+        FIREBALL_RENDER_MODE, FIREFLY_BASE_TMAP, FIREFLY_LOGICAL_HEIGHT, FIREFLY_RENDER_INDEX,
+        FIREFLY_RENDER_MODE, GROUND_FIRE_BASE_TMAP, GROUND_FIRE_FIRST_RENDER_INDEX,
+        GROUND_FIRE_LOGICAL_HEIGHTS, GROUND_FIRE_PRESENTATION_BYTE_11,
+        GROUND_FIRE_PRESENTATION_SPEEDS, GROUND_FIRE_RENDER_MODE, HouseResidentRequest,
+        Level1AmbientEntity, Level1CastlePlacementBlocker, Level1CollisionTarget,
+        Level1MissionState, Level1MissionTemplate, Level1ResetRawSourceState,
+        Level1ResetSourceSlot, Level1SourceCollisionTarget, Level1SourceEffect,
+        Level1SourceEntityAuthority, Level1SourceEntityView, MANA_CARRIER_ATTRACTION_RADIUS,
+        MANA_CARRIER_BASE_TMAP, MANA_CARRIER_COLLISION_HALF_HEIGHT,
         MANA_CARRIER_COLLISION_HALF_WIDTH, MANA_CARRIER_COLLISION_VERTICAL_OFFSET,
         MANA_CARRIER_DESCENT, MANA_CARRIER_GROUND_CLEARANCE, MANA_CARRIER_LOGICAL_HEIGHT,
         MANA_CARRIER_MAX_LIFE, MANA_CARRIER_MAX_MANA, MANA_CARRIER_RENDER_INDEX,
         MANA_CARRIER_RENDER_MODE, MANA_CARRIER_SPEED, MANA_SPHERE_COLLISION_DIMENSIONS,
         MANA_SPHERE_GRAVITY, MANA_SPHERE_MAX_XY_VELOCITY, MANA_SPHERE_TERMINAL_VELOCITY,
-        ManaCarrier, ManaSphere, POSSESSION_ATTRACTION_BASE_TMAP,
-        POSSESSION_ATTRACTION_LOGICAL_HEIGHT, POSSESSION_ATTRACTION_RENDER_INDEX,
-        POSSESSION_ATTRACTION_RENDER_MODE, POSSESSION_IMPACT_BASE_TMAP,
-        POSSESSION_IMPACT_LOGICAL_HEIGHT, POSSESSION_IMPACT_RENDER_INDEX,
-        POSSESSION_IMPACT_RENDER_MODE, SPEED_SPELL_ACTIVATION_TICKS, SPEED_SPELL_FAMILY,
-        SPEED_SPELL_MANA_COST, SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT,
-        SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE, mana_sphere_size_ordinal,
+        ManaCarrier, ManaSphere, PLAYER_DEATH_BURST_MAX_LIFE, PLAYER_DEATH_BURST_SUBSPELL_INDEX,
+        POSSESSION_ATTRACTION_BASE_TMAP, POSSESSION_ATTRACTION_LOGICAL_HEIGHT,
+        POSSESSION_ATTRACTION_RENDER_INDEX, POSSESSION_ATTRACTION_RENDER_MODE,
+        POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_LOGICAL_HEIGHT,
+        POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_IMPACT_RENDER_MODE, SOURCE_REPLACEABLE_FLAG,
+        SPEED_SPELL_ACTIVATION_TICKS, SPEED_SPELL_FAMILY, SPEED_SPELL_MANA_COST,
+        SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX,
+        SPELL_JAR_RENDER_MODE, mana_sphere_size_ordinal,
     },
     mark_source_audio_call,
     mission_content::{
@@ -804,6 +806,15 @@ fn level2_carrier_sphere_overlap(carrier: Position, sphere: &ManaSphere) -> bool
     dx.abs() < i32::from(MANA_CARRIER_COLLISION_HALF_WIDTH + extent)
         && dy.abs() < i32::from(MANA_CARRIER_COLLISION_HALF_WIDTH + extent)
         && dz.abs() < i32::from(MANA_CARRIER_COLLISION_HALF_HEIGHT + extent)
+}
+
+/// `AddBallon_60AB0` compares a class-10 target's raw
+/// `playerEntityIndex_0x94` with the carrier's raw `id_0x1A` relation. The
+/// Level 2 projection stores that raw carrier relation in
+/// `owner_entity_index`; `ManaCarrier::id` remains the presentation/source
+/// slot identity and must not be used for this gate.
+fn level2_carrier_sphere_relation_matches(carrier: &ManaCarrier, sphere: &ManaSphere) -> bool {
+    sphere.owner_entity_index == carrier.owner_entity_index
 }
 
 fn level2_castle_sphere_overlap(castle: Position, sphere: &ManaSphere) -> bool {
@@ -3177,6 +3188,23 @@ pub struct Level2CastleChild {
     pub active: bool,
 }
 
+/// The short-lived class-10/model-1/action-1 row created by the source
+/// `KillEntity_1C930` tail after a creature's mana conversion.  It is kept in
+/// the same dynamic arena as spheres and carriers so allocation order,
+/// source-cursor reachability, and reclaim are observable in Level 2.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2DeathBurst {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub parent_entity_index: u16,
+    pub position: Position,
+    pub max_life: i32,
+    pub life_ticks: i16,
+    pub subspell_index: u16,
+    pub control_flags: u32,
+    pub active: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Level2EconomyEvent {
     ManaSphereSpawned {
@@ -3207,6 +3235,14 @@ pub enum Level2EconomyEvent {
         carrier_id: u32,
         castle_id: u16,
         mana: i32,
+    },
+    DeathBurstSpawned {
+        source_entity_index: u16,
+        parent_entity_index: u16,
+    },
+    DeathBurstExpired {
+        source_entity_index: u16,
+        parent_entity_index: u16,
     },
     CastleBuilt {
         source_entity_index: u16,
@@ -3262,6 +3298,8 @@ pub struct Level2EconomyState {
     owner_max_mana: BTreeMap<u16, i32>,
     baseline_spheres: Vec<ManaSphere>,
     spheres: Vec<ManaSphere>,
+    baseline_death_bursts: Vec<Level2DeathBurst>,
+    death_bursts: Vec<Level2DeathBurst>,
     baseline_carrier: Option<ManaCarrier>,
     carrier: Option<ManaCarrier>,
     baseline_castle: Option<Level2CastleState>,
@@ -3414,6 +3452,8 @@ impl Level2EconomyState {
             owner_max_mana,
             baseline_spheres: Vec::new(),
             spheres: Vec::new(),
+            baseline_death_bursts: Vec::new(),
+            death_bursts: Vec::new(),
             baseline_carrier: None,
             carrier: None,
             baseline_castle: None,
@@ -3490,6 +3530,11 @@ impl Level2EconomyState {
     }
 
     #[must_use]
+    pub fn death_bursts(&self) -> &[Level2DeathBurst] {
+        &self.death_bursts
+    }
+
+    #[must_use]
     pub fn carrier(&self) -> Option<&ManaCarrier> {
         self.carrier.as_ref().filter(|carrier| carrier.active)
     }
@@ -3533,6 +3578,12 @@ impl Level2EconomyState {
             slots.insert(
                 sphere.source_entity_index,
                 Level2DynamicArenaKind::ManaSphere,
+            );
+        }
+        for burst in self.death_bursts.iter().filter(|burst| burst.active) {
+            slots.insert(
+                burst.source_entity_index,
+                Level2DynamicArenaKind::DeathBurst,
             );
         }
         if let Some(carrier) = self.carrier.filter(|carrier| carrier.active) {
@@ -3781,6 +3832,80 @@ impl Level2EconomyState {
         sphere_ids
     }
 
+    /// Source `KillEntity_1C930` allocates a class-10/model-1/action-1
+    /// death-burst row immediately after `TransformEntityToManaSphere` unless
+    /// the dying entity's suppression bit is set.  The Level 2 Goat seam
+    /// supplies the same ordered allocation through this production economy
+    /// method; the burst's one-tick lifetime is consumed by its own dynamic
+    /// source handler below.
+    pub fn spawn_death_burst_from_death(
+        &mut self,
+        parent_entity_index: u16,
+        position: Position,
+    ) -> Option<u16> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let burst = Level2DeathBurst {
+            source_entity_index,
+            entity_rng,
+            parent_entity_index,
+            position,
+            max_life: PLAYER_DEATH_BURST_MAX_LIFE,
+            life_ticks: 1,
+            subspell_index: PLAYER_DEATH_BURST_SUBSPELL_INDEX,
+            control_flags: SOURCE_REPLACEABLE_FLAG,
+            active: true,
+        };
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .expect("Level 2 death-burst source slot fits the map chain");
+        self.death_bursts.push(burst);
+        self.events.push(Level2EconomyEvent::DeathBurstSpawned {
+            source_entity_index,
+            parent_entity_index,
+        });
+        debug_assert_eq!(
+            (DEATH_BURST_CLASS, DEATH_BURST_MODEL, DEATH_BURST_ACTION),
+            (10, 1, 1)
+        );
+        Some(source_entity_index)
+    }
+
+    /// Advance the source class-10/model-1/action-1 burst.  Its qualified
+    /// reset projection has one life tick, so the first dispatch consumes the
+    /// lifetime and marks the row for the normal reclaim pass.
+    pub fn step_death_burst_slot(&mut self, source_slot: u16) -> bool {
+        let Some(burst) = self
+            .death_bursts
+            .iter_mut()
+            .find(|burst| burst.active && burst.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        burst.life_ticks = burst.life_ticks.saturating_sub(1);
+        if burst.life_ticks <= 0 {
+            burst.active = false;
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: false,
+                    x: burst.position.x,
+                    y: burst.position.y,
+                })
+                .expect("Level 2 death-burst source slot fits the map chain");
+            self.events.push(Level2EconomyEvent::DeathBurstExpired {
+                source_entity_index: source_slot,
+                parent_entity_index: burst.parent_entity_index,
+            });
+        }
+        true
+    }
+
     pub fn claim_mana_sphere(&mut self, sphere_slot: u16, owner_entity_index: u16) -> bool {
         let Some(sphere) = self
             .spheres
@@ -3975,14 +4100,13 @@ impl Level2EconomyState {
                 let sphere = self.spheres[sphere_index];
                 yaw = i16::try_from(heading_for_positions(position, sphere.position))
                     .expect("Level 2 carrier sphere heading fits");
-                if sphere.owner_entity_index == owner_entity_index {
+                if level2_carrier_sphere_relation_matches(&original, &sphere) {
                     let distance = level2_wrapping_xy_distance(position, sphere.position);
                     if distance
                         > u32::from(MANA_CARRIER_ATTRACTION_RADIUS)
                             .saturating_mul(u32::from(MANA_CARRIER_ATTRACTION_RADIUS))
                     {
                         self.spheres[sphere_index].assigned_carrier_id = 0;
-                        target_sphere_id = 0;
                     } else {
                         self.spheres[sphere_index].assigned_carrier_id = u32::from(carrier_slot);
                         if level2_carrier_sphere_overlap(position, &sphere) {
@@ -3992,6 +4116,14 @@ impl Level2EconomyState {
                             target_sphere_id = 0;
                             self.spheres[sphere_index].pending_delete = true;
                             self.spheres[sphere_index].active = false;
+                            self.map_chains
+                                .sync_entity(RenderableMapSeed {
+                                    entity_index: sphere.source_entity_index,
+                                    active: false,
+                                    x: sphere.position.x,
+                                    y: sphere.position.y,
+                                })
+                                .expect("Level 2 sphere source slot fits the map chain");
                             self.events.push(Level2EconomyEvent::ManaSphereCollected {
                                 sphere_id: sphere.id,
                                 carrier_id: original.id,
@@ -4140,7 +4272,7 @@ impl Level2EconomyState {
         else {
             return false;
         };
-        if sphere.owner_entity_index != carrier.owner_entity_index
+        if !level2_carrier_sphere_relation_matches(&carrier, &sphere)
             || level2_wrapping_xy_distance(carrier.position, sphere.position)
                 > u32::from(MANA_CARRIER_ATTRACTION_RADIUS)
                     * u32::from(MANA_CARRIER_ATTRACTION_RADIUS)
@@ -4162,6 +4294,14 @@ impl Level2EconomyState {
         sphere_state.assigned_carrier_id = 0;
         sphere_state.pending_delete = true;
         sphere_state.active = false;
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: sphere.source_entity_index,
+                active: false,
+                x: sphere.position.x,
+                y: sphere.position.y,
+            })
+            .expect("Level 2 sphere source slot fits the map chain");
         self.events.push(Level2EconomyEvent::ManaSphereCollected {
             sphere_id: sphere.id,
             carrier_id: carrier.id,
@@ -5788,6 +5928,16 @@ impl Level2EconomyState {
         for (slot, entity_rng) in reclaimed {
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_bursts = self
+            .death_bursts
+            .iter()
+            .filter(|burst| !burst.active)
+            .map(|burst| (burst.source_entity_index, burst.entity_rng))
+            .collect::<Vec<_>>();
+        self.death_bursts.retain(|burst| burst.active);
+        for (slot, entity_rng) in reclaimed_bursts {
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_children = self
             .castle_children
             .iter()
@@ -5865,6 +6015,19 @@ impl Level2EconomyState {
             hasher.update(sphere.assigned_carrier_id.to_le_bytes());
             hasher.update([sphere.phase]);
             hasher.update([u8::from(sphere.active), u8::from(sphere.pending_delete)]);
+        }
+        for burst in &self.death_bursts {
+            hasher.update(burst.source_entity_index.to_le_bytes());
+            hasher.update(burst.entity_rng.to_le_bytes());
+            hasher.update(burst.parent_entity_index.to_le_bytes());
+            hasher.update(burst.position.x.to_le_bytes());
+            hasher.update(burst.position.y.to_le_bytes());
+            hasher.update(burst.position.z.to_le_bytes());
+            hasher.update(burst.max_life.to_le_bytes());
+            hasher.update(burst.life_ticks.to_le_bytes());
+            hasher.update(burst.subspell_index.to_le_bytes());
+            hasher.update(burst.control_flags.to_le_bytes());
+            hasher.update([u8::from(burst.active)]);
         }
         if let Some(carrier) = self.carrier {
             hasher.update([1]);
@@ -6062,6 +6225,7 @@ impl Level2EconomyState {
         self.owner_class = self.baseline_owner_class.clone();
         self.owner_max_mana = self.baseline_owner_max_mana.clone();
         self.spheres = self.baseline_spheres.clone();
+        self.death_bursts = self.baseline_death_bursts.clone();
         self.carrier = self.baseline_carrier;
         self.castle = self.baseline_castle;
         self.castle_children = self.baseline_castle_children.clone();
@@ -7451,6 +7615,7 @@ pub enum Level2DynamicArenaKind {
     CastleController,
     ManaSphere,
     ManaCarrier,
+    DeathBurst,
 }
 
 impl Level2DispatchEvent {
@@ -7534,6 +7699,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::CastleController => 5,
         Level2DynamicArenaKind::ManaSphere => 6,
         Level2DynamicArenaKind::ManaCarrier => 7,
+        Level2DynamicArenaKind::DeathBurst => 8,
     }
 }
 
@@ -7994,21 +8160,26 @@ impl Level2ResetSession {
                         .copied()
                         .expect("dynamic source route has a live kind");
                     dispatched_dynamic_slots.insert(source_slot);
-                    match kind {
+                    let live = match kind {
                         Level2DynamicArenaKind::ManaSphere => {
-                            let _ = self.economy.step_mana_sphere_slot(source_slot);
+                            self.economy.step_mana_sphere_slot(source_slot)
                         }
                         Level2DynamicArenaKind::ManaCarrier => {
-                            let _ = self.economy.step_mana_carrier_slot(source_slot);
+                            self.economy.step_mana_carrier_slot(source_slot)
                         }
-                        _ => {}
+                        Level2DynamicArenaKind::DeathBurst => {
+                            self.economy.step_death_burst_slot(source_slot)
+                        }
+                        _ => true,
+                    };
+                    if live {
+                        self.dispatch_events
+                            .push(Level2DispatchEvent::DynamicArena {
+                                pass,
+                                source_slot,
+                                kind,
+                            });
                     }
-                    self.dispatch_events
-                        .push(Level2DispatchEvent::DynamicArena {
-                            pass,
-                            source_slot,
-                            kind,
-                        });
                 }
                 7 => {
                     let mut events = goat_begin_events.remove(&source_slot).unwrap_or_default();
@@ -8017,6 +8188,7 @@ impl Level2ResetSession {
                         &self.terrain,
                         &goat_players,
                     ));
+                    self.apply_level2_goat_economy_events(&events);
                     self.dispatch_events.push(Level2DispatchEvent::Goat {
                         pass,
                         source_slot,
@@ -8045,25 +8217,91 @@ impl Level2ResetSession {
             }
             for (source_slot, kind) in unseen {
                 dispatched_dynamic_slots.insert(source_slot);
-                match kind {
+                let live = match kind {
                     Level2DynamicArenaKind::ManaSphere => {
-                        let _ = self.economy.step_mana_sphere_slot(source_slot);
+                        self.economy.step_mana_sphere_slot(source_slot)
                     }
                     Level2DynamicArenaKind::ManaCarrier => {
-                        let _ = self.economy.step_mana_carrier_slot(source_slot);
+                        self.economy.step_mana_carrier_slot(source_slot)
                     }
-                    _ => {}
+                    Level2DynamicArenaKind::DeathBurst => {
+                        self.economy.step_death_burst_slot(source_slot)
+                    }
+                    _ => true,
+                };
+                if live {
+                    self.dispatch_events
+                        .push(Level2DispatchEvent::DynamicArena {
+                            pass,
+                            source_slot,
+                            kind,
+                        });
                 }
-                self.dispatch_events
-                    .push(Level2DispatchEvent::DynamicArena {
-                        pass,
-                        source_slot,
-                        kind,
-                    });
             }
             self.economy.reclaim_inactive_slots();
         }
+        let remaining_dynamic = self
+            .economy
+            .live_arena_slots()
+            .into_iter()
+            .filter(|(slot, _)| !dispatched_dynamic_slots.contains(slot))
+            .collect::<Vec<_>>();
+        if !remaining_dynamic.is_empty() {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: 0,
+                message: format!(
+                    "Level 2 dynamic runagain cap reached with {} undispatched rows",
+                    remaining_dynamic.len()
+                ),
+            });
+        }
         self.goats.finish_source_turn();
+    }
+
+    /// Apply the source `KillEntity_1C930` side effects emitted by the typed
+    /// Goat family in the same event order: mana conversion allocates the
+    /// model-39 sphere first, the extra-sphere request allocates the
+    /// class-10/model-1 death burst second, and the removal marker then leaves
+    /// both rows for the live-arena cursor/reclaim pass.
+    fn apply_level2_goat_economy_events(&mut self, events: &[GoatStepEvent]) {
+        for event in events {
+            match *event {
+                GoatStepEvent::ManaConverted { entity_index, mana } => {
+                    if let Some((position, yaw, rng)) = self
+                        .goats
+                        .goats()
+                        .iter()
+                        .find(|goat| goat.entity_index == entity_index)
+                        .map(|goat| (goat.position, goat.yaw, goat.rng))
+                    {
+                        let owner_entity_index = self.economy.source_owner(entity_index);
+                        let _ = self.economy.spawn_mana_sphere_from_death(
+                            entity_index,
+                            position,
+                            yaw,
+                            rng,
+                            mana,
+                            owner_entity_index,
+                        );
+                    }
+                }
+                GoatStepEvent::ExtraManaSphereRequested { entity_index } => {
+                    if let Some(position) = self
+                        .goats
+                        .goats()
+                        .iter()
+                        .find(|goat| goat.entity_index == entity_index)
+                        .map(|goat| goat.position)
+                    {
+                        let _ = self
+                            .economy
+                            .spawn_death_burst_from_death(entity_index, position);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     #[must_use]
@@ -16929,6 +17167,89 @@ mod tests {
     }
 
     #[test]
+    fn level_two_goat_death_routes_mana_and_burst_through_live_arena() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Goat economy session");
+        let baseline_economy_hash = session.economy().reset_hash();
+        let goat_slot = LEVEL_TWO_GOAT_INDICES[0];
+        session
+            .goats
+            .inject_damage(
+                goat_slot,
+                1_000_000,
+                session.state.entity_index.cast_signed(),
+            )
+            .expect("inject lethal Goat damage");
+
+        let mut observed_death = false;
+        for _ in 0..32 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            observed_death = session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::Goat {
+                        source_slot,
+                        events,
+                        ..
+                    } if *source_slot == goat_slot
+                        && events.iter().any(|event| matches!(
+                            event,
+                            GoatStepEvent::ManaConverted { .. }
+                                | GoatStepEvent::ExtraManaSphereRequested { .. }
+                        ))
+                )
+            });
+            if observed_death {
+                break;
+            }
+        }
+        assert!(
+            observed_death,
+            "lethal Level 2 Goat reached KillEntity tail"
+        );
+        assert!(session.economy().events().iter().any(|event| {
+            matches!(event, Level2EconomyEvent::ManaSphereSpawned {
+                source_entity_index,
+                ..
+            } if *source_entity_index == goat_slot)
+        }));
+        let burst_slot = session
+            .economy()
+            .events()
+            .iter()
+            .find_map(|event| match event {
+                Level2EconomyEvent::DeathBurstSpawned {
+                    source_entity_index,
+                    parent_entity_index,
+                } if *parent_entity_index == goat_slot => Some(*source_entity_index),
+                _ => None,
+            })
+            .expect("Goat KillEntity allocated death burst");
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::DeathBurst,
+                    ..
+                } if *source_slot == burst_slot
+            )
+        }));
+        assert!(session.economy().events().iter().any(|event| {
+            matches!(event, Level2EconomyEvent::DeathBurstExpired { source_entity_index, .. }
+                if *source_entity_index == burst_slot)
+        }));
+
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_economy_hash);
+        assert!(session.economy().death_bursts().is_empty());
+        assert!(session.economy().spheres().is_empty());
+    }
+
+    #[test]
     fn level_two_goat_production_rejects_tampered_parameter_row() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -17286,6 +17607,9 @@ mod tests {
             .spawn_mana_sphere_from_death(901, Position::default(), 0, 0x3456, 10, 111)
             .expect("sphere allocation");
         let sphere_id = sphere_slot;
+        // The raw AddBallon target relation is the carrier's owner field;
+        // `ManaCarrier::id` is the presentation/source slot and differs.
+        assert_ne!(session.economy().carrier().expect("live carrier").id, 111);
         assert!(
             session
                 .economy_mut()
@@ -17307,11 +17631,141 @@ mod tests {
                 .iter()
                 .all(|sphere| sphere.source_entity_index != u16::try_from(sphere_slot).unwrap())
         );
+        assert!(
+            !session
+                .economy()
+                .map_chains()
+                .linked_entity_indices()
+                .contains(&u16::try_from(sphere_slot).expect("sphere slot fits"))
+        );
+        assert!(!session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::ManaSphere,
+                    ..
+                } if *source_slot == u16::try_from(sphere_slot).expect("sphere slot fits")
+            )
+        }));
         assert!(session.economy().events().iter().any(|event| {
             matches!(
                 event,
                 Level2EconomyEvent::ManaSphereCollected { carrier_id, mana, .. }
                     if *carrier_id == u32::from(carrier_slot) && *mana == 10
+            )
+        }));
+        assert_ne!(session.economy().reset_hash(), baseline_hash);
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_mana_carrier_outside_attraction_retries_target_and_releases_claim() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 carrier retry session");
+        let carrier_slot = session
+            .economy_mut()
+            .spawn_mana_carrier(Position::default(), 111, 0)
+            .expect("carrier allocation");
+        let sphere_slot = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(
+                901,
+                Position {
+                    x: 4_096,
+                    y: 0,
+                    z: 0,
+                },
+                0,
+                0x3456,
+                10,
+                111,
+            )
+            .expect("sphere allocation");
+        session
+            .economy_mut()
+            .carrier
+            .as_mut()
+            .expect("live carrier")
+            .target_sphere_id = sphere_slot;
+        session
+            .economy_mut()
+            .spheres
+            .iter_mut()
+            .find(|sphere| sphere.source_entity_index == u16::try_from(sphere_slot).unwrap())
+            .expect("live sphere")
+            .assigned_carrier_id = u32::from(carrier_slot);
+
+        assert!(session.economy_mut().step_mana_carrier_slot(carrier_slot));
+        let carrier = session.economy().carrier().expect("live carrier");
+        assert_eq!(carrier.target_sphere_id, sphere_slot);
+        assert_eq!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .find(|sphere| sphere.source_entity_index == u16::try_from(sphere_slot).unwrap())
+                .expect("live sphere")
+                .assigned_carrier_id,
+            0
+        );
+    }
+
+    #[test]
+    fn level_two_death_burst_dynamic_row_dispatches_reclaims_and_resets() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 death-burst session");
+        let baseline_hash = session.economy().reset_hash();
+        let burst_slot = session
+            .economy_mut()
+            .spawn_death_burst_from_death(901, Position::default())
+            .expect("death-burst allocation");
+        assert!(
+            session
+                .economy()
+                .live_arena_slots()
+                .contains(&(burst_slot, Level2DynamicArenaKind::DeathBurst))
+        );
+        assert!(
+            session
+                .economy()
+                .map_chains()
+                .linked_entity_indices()
+                .contains(&burst_slot)
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(session.economy().death_bursts().is_empty());
+        assert!(
+            !session
+                .economy()
+                .map_chains()
+                .linked_entity_indices()
+                .contains(&burst_slot)
+        );
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::DeathBurst,
+                    ..
+                } if *source_slot == burst_slot
+            )
+        }));
+        assert!(session.economy().events().iter().any(|event| {
+            matches!(
+                event,
+                Level2EconomyEvent::DeathBurstExpired { source_entity_index, .. }
+                    if *source_entity_index == burst_slot
             )
         }));
         assert_ne!(session.economy().reset_hash(), baseline_hash);

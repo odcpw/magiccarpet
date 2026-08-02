@@ -5272,8 +5272,9 @@ pub(crate) struct GlobalRngTraceEntry {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ManaCarrier {
-    /// Presentation identity is the authoritative source-arena slot. remc2's
-    /// raw `id_0x1A_26` is overwritten with the owning player relation.
+    /// Presentation identity is the authoritative source-arena slot. The
+    /// source `id_0x1A_26` relation used by `AddBallon_60AB0` is represented by
+    /// `owner_entity_index`; it is distinct from this presentation `id`.
     pub id: u32,
     pub source_entity_index: u16,
     pub entity_rng: u16,
