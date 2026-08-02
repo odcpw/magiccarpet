@@ -1212,6 +1212,42 @@ pub const IMPORTED_RESET_SPRITE_PROFILES: [ImportedResetSpriteProfile; 17] = [
     },
 ];
 
+/// Level 2 class-2/model-3/action-9 bad-stone render tuple. Kept separate
+/// from the sealed Level 1 imported-reset table so Level 1 profile cardinality
+/// and behavior remain unchanged.
+pub const LEVEL2_BAD_STONE_SPRITE_PROFILE: ImportedResetSpriteProfile =
+    ImportedResetSpriteProfile {
+        tuple: ImportedResetSpriteTuple {
+            class: 2,
+            model: 3,
+            action: 9,
+            entity_parameter_index: 59,
+            particle_parameter_index: 270,
+            animation_frame: 0,
+            control_flags: 131_076,
+        },
+        disposition: template(270, 198, 0, 42),
+    };
+
+pub fn level2_bad_stone_sprite_disposition(
+    tuple: ImportedResetSpriteTuple,
+) -> Result<SourceSpriteTemplateDisposition, String> {
+    (tuple == LEVEL2_BAD_STONE_SPRITE_PROFILE.tuple)
+        .then_some(LEVEL2_BAD_STONE_SPRITE_PROFILE.disposition)
+        .ok_or_else(|| {
+            format!(
+                "unknown Level 2 bad-stone sprite tuple class={} model={} action={} entity_parameter={} particle_parameter={} frame={} control={:#010x}",
+                tuple.class,
+                tuple.model,
+                tuple.action,
+                tuple.entity_parameter_index,
+                tuple.particle_parameter_index,
+                tuple.animation_frame,
+                tuple.control_flags
+            )
+        })
+}
+
 pub fn imported_reset_sprite_disposition(
     tuple: ImportedResetSpriteTuple,
 ) -> Result<SourceSpriteTemplateDisposition, String> {

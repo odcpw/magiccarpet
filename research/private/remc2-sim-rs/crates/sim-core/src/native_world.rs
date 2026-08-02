@@ -58,13 +58,16 @@ use crate::{
         POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_IMPACT_RENDER_MODE, SPELL_JAR_BASE_TMAP,
         SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE,
     },
-    mission_content::{MissionContentProfile, MissionContentSession, MissionContentTemplate},
+    mission_content::{
+        MissionContentProfile, MissionContentSession, MissionContentTemplate, REMC2_SPEC_COMMIT,
+    },
     renderable_map_chain::{RenderableMapChains, RenderableMapSeed, raw_source_map_chain_entries},
     source_sprite_tmap::{
         ImportedResetSpriteTuple, SourceSpriteContractRoute, SourceSpriteContractRow,
         SourceSpriteDisposition, SourceSpriteLegacyFamily, SourceSpriteTemplateDisposition,
         SourceSpriteTmapBank, SourceSpriteTmapFrame, imported_reset_sprite_disposition,
-        source_sprite_dispositions, unknown_source_sprite_tuple,
+        level2_bad_stone_sprite_disposition, source_sprite_dispositions,
+        unknown_source_sprite_tuple,
     },
     spell_activation::{SpellActivationHolder, SpellCasterState},
     state_hash,
@@ -147,6 +150,18 @@ const PLAYER_SPELL_COUNT_I16: i16 = 26;
 const FRAME_ASSET_COUNT: usize = 76;
 const LEVEL_ONE_CONTROL_MODE_SEAM_DEFAULT: u8 = 0;
 const LEVEL2_UPSTREAM_COMMIT: &str = "6806c7204d17220ecc0430759f784aea8ee2ddb2";
+const LEVEL2_BAD_STONE_SLOTS: [u16; 4] = [33, 34, 35, 36];
+const LEVEL2_BAD_STONE_PARAMETER: u16 = 60;
+const LEVEL2_BAD_STONE_PARTICLE: u16 = 270;
+const LEVEL2_BAD_STONE_CLASS: u8 = 2;
+const LEVEL2_BAD_STONE_MODEL: u8 = 3;
+const LEVEL2_BAD_STONE_ACTION: u8 = 9;
+const LEVEL2_BAD_STONE_RECORD_SHA256: [&str; 4] = [
+    "981e405438d22a87b31ba98a0497661e32ada9b92cc39ac5a8ab8db1da75af64",
+    "147ee088b9bc5a93ad82e4a9f6436f027091d818e2a2485edb4e244453fecc83",
+    "172814a4c5b93c5fb8540f91b8b7f40ab7cb02fc91c21ef5b6e97e8e92035e5f",
+    "21c50f0a7f1e9156c3ae57fd0e214e6320006ca7bb6eae34f481e344a9319061",
+];
 
 const PACKAGE_MEMBERS: [(&str, usize); 6] = [
     ("authored-level.bin", AUTHORED_LEVEL_BYTES),
@@ -350,6 +365,13 @@ impl EntitySnapshot {
         u16::from_le_bytes([self.record[28], self.record[29]])
     }
 
+    /// Raw source `dword_0x10` constructor field. Scenery constructors use
+    /// this as their deterministic slot modulo eleven value.
+    #[must_use]
+    pub fn source_word_10(&self) -> u16 {
+        u16::from_le_bytes([self.record[20], self.record[21]])
+    }
+
     /// Raw source `word_0x24_36` targeted by the action-51 first pass.
     #[must_use]
     pub fn word_24(&self) -> u16 {
@@ -442,6 +464,140 @@ impl EntitySnapshot {
             last_material_effect: None,
             collision_probe_ran: false,
         })
+    }
+}
+
+/// One Level 2 class-2/model-3/action-9 bad stone.  The package already
+/// contains the post-`GenerateEvents_49290` reset rows; this wrapper keeps the
+/// source row lossless while giving the production Level 2 session the exact
+/// action-9 terrain-snap seam from remc2 `sub_65110`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Level2BadStone {
+    baseline: EntitySnapshot,
+    entity: EntitySnapshot,
+    map_cell: (u8, u8),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2BadStoneStep {
+    pub source_slot: u16,
+    pub previous_position: Position,
+    pub position: Position,
+    pub previous_control_flags: u32,
+    pub control_flags: u32,
+    pub previous_phase: u8,
+    pub phase: u8,
+}
+
+impl Level2BadStone {
+    fn from_entity(entity: &EntitySnapshot, planes: &TerrainPlanes) -> Result<Self> {
+        let Some(ordinal) = LEVEL2_BAD_STONE_SLOTS
+            .iter()
+            .position(|slot| *slot == entity.index)
+        else {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 bad stone source slot {} is not one of 33..=36",
+                entity.index
+            )));
+        };
+        if !entity.active
+            || entity.class != LEVEL2_BAD_STONE_CLASS
+            || entity.model != LEVEL2_BAD_STONE_MODEL
+            || entity.action != LEVEL2_BAD_STONE_ACTION
+        {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 bad stone {} has class/model/action {}/{}/{}",
+                entity.index, entity.class, entity.model, entity.action
+            )));
+        }
+        if entity.max_life != 300
+            || entity.life != 300
+            || entity.actual_speed != 16
+            || entity.source_word_10() != entity.index % 11
+            || entity.control_flags & 4 == 0
+            || entity.control_flags & 0x0002_0000 == 0
+            || entity.particle_parameter_index != Some(LEVEL2_BAD_STONE_PARTICLE)
+            || entity.parameter_relation != Some(LEVEL2_BAD_STONE_PARAMETER - 1)
+            || entity.special_relation != EntitySpecialRelation::GlobalSpecialState
+            || entity.old_map_entity() != 0
+            || entity.next_entity() != 0
+        {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 bad stone {} constructor fields do not match pinned sub_4AE80",
+                entity.index
+            )));
+        }
+        let map_cell = (
+            (entity.position.x >> 8) as u8,
+            (entity.position.y >> 8) as u8,
+        );
+        let map_index = terrain_index(map_cell.0, map_cell.1);
+        if planes.entity_indices[map_index] != entity.index as i16 {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 bad stone {} is not the head of its authored terrain map cell",
+                entity.index
+            )));
+        }
+        let record_hash = sha256_hex(entity.record_bytes());
+        if record_hash != LEVEL2_BAD_STONE_RECORD_SHA256[ordinal] {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 bad stone {} record hash changed: {record_hash}",
+                entity.index
+            )));
+        }
+        Ok(Self {
+            baseline: entity.clone(),
+            entity: entity.clone(),
+            map_cell,
+        })
+    }
+
+    #[must_use]
+    pub fn entity(&self) -> &EntitySnapshot {
+        &self.entity
+    }
+
+    #[must_use]
+    pub const fn map_cell(&self) -> (u8, u8) {
+        self.map_cell
+    }
+
+    #[must_use]
+    pub fn source_record_sha256(&self) -> String {
+        sha256_hex(self.entity.record_bytes())
+    }
+
+    /// Apply the exact class-2 action-9 body: set source control byte 2 bit 1,
+    /// snap Z to the shared terrain query, then advance the source action
+    /// cadence byte. No movement, RNG draw, or allocation is performed.
+    pub fn step_action_9(&mut self, terrain: &SessionTerrain) -> Level2BadStoneStep {
+        let previous_position = self.entity.position;
+        let previous_control_flags = self.entity.control_flags;
+        let previous_phase = self.entity.phase;
+        self.entity.record[18] |= 2;
+        self.entity.control_flags = u32::from_le_bytes([
+            self.entity.record[16],
+            self.entity.record[17],
+            self.entity.record[18],
+            self.entity.record[19],
+        ]);
+        self.entity.position.z = FlightWorld::ground_height(terrain, self.entity.position);
+        self.entity.record[84..86].copy_from_slice(&self.entity.position.z.to_le_bytes());
+        self.entity.phase = self.entity.phase.wrapping_add(1);
+        self.entity.record[66] = self.entity.phase;
+        Level2BadStoneStep {
+            source_slot: self.entity.index,
+            previous_position,
+            position: self.entity.position,
+            previous_control_flags,
+            control_flags: self.entity.control_flags,
+            previous_phase,
+            phase: self.entity.phase,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.entity = self.baseline.clone();
     }
 }
 
@@ -2167,6 +2323,7 @@ impl NativeWorldInspection {
             .reset_state
             .ok_or_else(|| NativeWorldError::new("validated Level 2 package has no reset state"))?;
         let mission = self.mission_content_template()?.session();
+        let bad_stones = level2_bad_stones(&self.entities, &self.terrain_planes)?;
         Ok(Level2ResetSession::new(
             self.metadata.map_type.profile(),
             state,
@@ -2174,6 +2331,8 @@ impl NativeWorldInspection {
             self.entities.clone(),
             self.players.clone(),
             self.runtime.clone(),
+            self.presentation.clone(),
+            bad_stones,
             mission,
         ))
     }
@@ -2202,6 +2361,9 @@ pub struct Level2ResetSession {
     entities: Box<[EntitySnapshot]>,
     players: Box<[PlayerSnapshot]>,
     runtime: RuntimeSnapshot,
+    presentation: PresentationSelectors,
+    baseline_bad_stones: Box<[Level2BadStone]>,
+    bad_stones: Box<[Level2BadStone]>,
     mission: MissionContentSession,
 }
 
@@ -2213,6 +2375,8 @@ impl Level2ResetSession {
         entities: Box<[EntitySnapshot]>,
         players: Box<[PlayerSnapshot]>,
         runtime: RuntimeSnapshot,
+        presentation: PresentationSelectors,
+        bad_stones: Box<[Level2BadStone]>,
         mission: MissionContentSession,
     ) -> Self {
         // Pinned `sub_56D60` reset order (6806c7204d17):
@@ -2241,6 +2405,9 @@ impl Level2ResetSession {
             entities,
             players,
             runtime,
+            presentation,
+            baseline_bad_stones: bad_stones.clone(),
+            bad_stones,
             mission,
         }
     }
@@ -2263,6 +2430,85 @@ impl Level2ResetSession {
     #[must_use]
     pub const fn runtime(&self) -> &RuntimeSnapshot {
         &self.runtime
+    }
+
+    #[must_use]
+    pub fn bad_stones(&self) -> &[Level2BadStone] {
+        &self.bad_stones
+    }
+
+    #[must_use]
+    pub fn bad_stone_hash(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(REMC2_SPEC_COMMIT.as_bytes());
+        for stone in &self.bad_stones {
+            hasher.update(stone.entity.record_bytes());
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
+    #[must_use]
+    pub fn bad_stone_presentation(
+        &self,
+        source_slot: u16,
+    ) -> Option<&[u8; ENTITY_PARAMETER_BYTES]> {
+        self.bad_stones
+            .iter()
+            .find(|stone| stone.entity.index == source_slot)
+            .and_then(|stone| stone.entity.parameter_relation)
+            .and_then(|index| self.presentation.entity_parameters.get(usize::from(index)))
+    }
+
+    #[must_use]
+    pub fn bad_stone_particle_presentation(&self, source_slot: u16) -> Option<&ParticleParameter> {
+        let index = self
+            .bad_stones
+            .iter()
+            .find(|stone| stone.entity.index == source_slot)
+            .and_then(|stone| stone.entity.particle_parameter_index)?;
+        self.presentation.particles.get(usize::from(index))
+    }
+
+    #[must_use]
+    pub fn bad_stone_sprite_selector(&self, source_slot: u16) -> Option<u8> {
+        let particle = self.bad_stone_particle_presentation(source_slot)?;
+        self.presentation
+            .level_sprite_selectors
+            .get(usize::from(particle.base_tmap))
+            .copied()
+    }
+
+    pub fn bad_stone_sprite_disposition(
+        &self,
+        source_slot: u16,
+    ) -> std::result::Result<SourceSpriteTemplateDisposition, String> {
+        let stone = self
+            .bad_stones
+            .iter()
+            .find(|stone| stone.entity.index == source_slot)
+            .ok_or_else(|| format!("unknown Level 2 bad stone source slot {source_slot}"))?;
+        level2_bad_stone_sprite_disposition(ImportedResetSpriteTuple {
+            class: stone.entity.class,
+            model: stone.entity.model,
+            action: stone.entity.action,
+            entity_parameter_index: stone.entity.parameter_relation.unwrap_or_default(),
+            particle_parameter_index: stone.entity.particle_parameter_index.unwrap_or_default(),
+            animation_frame: stone.entity.animation_frame(),
+            control_flags: stone.entity.control_flags,
+        })
+    }
+
+    pub fn step_bad_stone_action_9(&mut self, source_slot: u16) -> Result<Level2BadStoneStep> {
+        let Some(stone) = self
+            .bad_stones
+            .iter_mut()
+            .find(|stone| stone.entity.index == source_slot)
+        else {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 bad stone source slot {source_slot} is not active"
+            )));
+        };
+        Ok(stone.step_action_9(&self.terrain))
     }
 
     #[must_use]
@@ -2301,8 +2547,25 @@ impl Level2ResetSession {
         self.state = self.baseline_state;
         self.terrain = self.baseline_terrain.clone();
         self.context = self.baseline_context.clone();
+        self.bad_stones.clone_from(&self.baseline_bad_stones);
         self.mission.reset();
     }
+}
+
+fn level2_bad_stones(
+    entities: &[EntitySnapshot],
+    planes: &TerrainPlanes,
+) -> Result<Box<[Level2BadStone]>> {
+    LEVEL2_BAD_STONE_SLOTS
+        .iter()
+        .map(|slot| {
+            let entity = entities.get(usize::from(*slot)).ok_or_else(|| {
+                NativeWorldError::new(format!("missing Level 2 bad stone slot {slot}"))
+            })?;
+            Level2BadStone::from_entity(entity, planes)
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Vec::into_boxed_slice)
 }
 
 struct CommonPackage {
@@ -7838,6 +8101,139 @@ mod tests {
         assert_eq!(session.state.tick, before.tick + 1);
         session.reset();
         assert_eq!(session.state, before);
+    }
+
+    #[test]
+    fn level_two_bad_stones_reconstruct_action9_map_chain_and_presentation() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 reset session with bad stones");
+        let expected_cells = [(2, 203), (2, 103), (51, 154), (208, 154)];
+        let expected_hashes = LEVEL2_BAD_STONE_RECORD_SHA256;
+        let baseline_hash = session.bad_stone_hash();
+        assert_eq!(session.bad_stones().len(), 4);
+        assert_eq!(
+            session
+                .bad_stone_presentation(33)
+                .map(|bytes| sha256_hex(bytes)),
+            Some("2c3dfa0bc2870d8d1f2c9aa203f9ca6f19363f5411f515627bf43437397f0f78".to_owned())
+        );
+        assert_eq!(
+            session
+                .bad_stone_presentation(33)
+                .expect("bad-stone presentation"),
+            &[
+                0, 0, 56, 0, 5, 0, 22, 0, 5, 0, 0, 7, 0, 0, 252, 255, 0, 1, 0, 2, 255, 255, 255,
+                255, 0, 12, 50, 0, 0, 16, 0, 2, 0, 0,
+            ]
+        );
+        assert_eq!(
+            session.bad_stone_particle_presentation(33),
+            Some(&ParticleParameter {
+                base_tmap: 198,
+                word_2: 8_492,
+                word_4: 42,
+                speed: 138,
+                rotation_speed: 400,
+                byte_10: 0,
+                byte_11: 1,
+                render_mode: 0,
+                byte_13: 0,
+            })
+        );
+        assert_eq!(session.bad_stone_sprite_selector(33), Some(0));
+        assert_eq!(
+            session.bad_stone_sprite_disposition(33).unwrap(),
+            SourceSpriteTemplateDisposition::Render(
+                crate::source_sprite_tmap::SourceSpriteTemplate {
+                    render_parameter_index: 270,
+                    base_tmap: 198,
+                    render_mode: 0,
+                    logical_height: 42,
+                    animation_owner:
+                        crate::source_sprite_tmap::SourceSpriteAnimationOwner::SourceEntity,
+                    palette_owner: crate::source_sprite_tmap::SourceSpritePaletteOwner::NightLevel,
+                    shadow_eligible: true,
+                    reflection_eligible: true,
+                }
+            )
+        );
+        for (ordinal, stone) in session.bad_stones().iter().enumerate() {
+            let entity = stone.entity();
+            assert_eq!(entity.index, LEVEL2_BAD_STONE_SLOTS[ordinal]);
+            assert_eq!((entity.class, entity.model, entity.action), (2, 3, 9));
+            assert_eq!(entity.max_life, 300);
+            assert_eq!(entity.life, 300);
+            assert_eq!(entity.source_word_10(), entity.index % 11);
+            assert_eq!(entity.particle_parameter_index, Some(270));
+            assert_eq!(entity.parameter_relation, Some(59));
+            assert_eq!(
+                entity.special_relation,
+                EntitySpecialRelation::GlobalSpecialState
+            );
+            assert_eq!(entity.old_map_entity(), 0);
+            assert_eq!(entity.next_entity(), 0);
+            assert_eq!(stone.source_record_sha256(), expected_hashes[ordinal]);
+            assert_eq!(stone.map_cell(), expected_cells[ordinal]);
+            let map_index = terrain_index(stone.map_cell().0, stone.map_cell().1);
+            assert_eq!(
+                session.terrain.planes().entity_indices[map_index],
+                entity.index as i16
+            );
+            assert_eq!(
+                entity.position.z,
+                FlightWorld::ground_height(&session.terrain, entity.position)
+            );
+        }
+        let terrain_hash = session.terrain_hash();
+        let mission_hash = session.mission().state_hash();
+        let baseline_phase = session.bad_stones()[0].entity.phase;
+        let expected_z =
+            FlightWorld::ground_height(&session.terrain, session.bad_stones()[0].entity.position);
+        {
+            let stone = &mut session.bad_stones[0];
+            stone.entity.position.z = expected_z.wrapping_add(1);
+            stone.entity.record[84..86].copy_from_slice(&stone.entity.position.z.to_le_bytes());
+            stone.entity.control_flags &= !0x0002_0000;
+            stone.entity.record[18] &= !2;
+        }
+        let step = session
+            .step_bad_stone_action_9(33)
+            .expect("action-9 source dispatch");
+        assert_eq!(step.source_slot, 33);
+        assert_eq!(step.position.z, expected_z);
+        assert_ne!(step.position.z, step.previous_position.z);
+        assert_eq!(step.previous_control_flags & 0x0002_0000, 0);
+        assert_ne!(step.control_flags & 0x0002_0000, 0);
+        assert_eq!(step.phase, step.previous_phase.wrapping_add(1));
+        assert_ne!(session.bad_stone_hash(), baseline_hash);
+        assert_eq!(session.terrain_hash(), terrain_hash);
+        assert_eq!(session.mission().state_hash(), mission_hash);
+        assert!(session.step_bad_stone_action_9(32).is_err());
+        session.reset();
+        assert_eq!(session.bad_stone_hash(), baseline_hash);
+        assert_eq!(session.bad_stones()[0].entity().phase, baseline_phase);
+    }
+
+    #[test]
+    fn level_two_bad_stone_constructor_rejects_wrong_model_action_parameter_and_cross_level_rows() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let stone = inspection.entities()[33].clone();
+        let planes = inspection.terrain_planes();
+        let mut wrong_model = stone.clone();
+        wrong_model.model = 2;
+        assert!(Level2BadStone::from_entity(&wrong_model, planes).is_err());
+        let mut wrong_action = stone.clone();
+        wrong_action.action = 6;
+        assert!(Level2BadStone::from_entity(&wrong_action, planes).is_err());
+        let mut wrong_parameter = stone.clone();
+        wrong_parameter.parameter_relation = Some(60);
+        assert!(Level2BadStone::from_entity(&wrong_parameter, planes).is_err());
+        let dolmen = inspection.entities()[108].clone();
+        assert!(Level2BadStone::from_entity(&dolmen, planes).is_err());
     }
 
     #[test]
