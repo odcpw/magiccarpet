@@ -3163,6 +3163,11 @@ pub struct Level2SharedSpellResetSession {
     /// 11, and 12.  Family-specific active lifecycles remain separate.
     baseline_acquisitions: Box<[SpellHolderAcquisitionState]>,
     acquisitions: Box<[SpellHolderAcquisitionState]>,
+    /// Persistent replacement rows can coexist with the authored ordinary
+    /// source for the same family. Keep their source-local acquisition state
+    /// separate instead of letting one family slot overwrite the other.
+    baseline_persistent_acquisitions: BTreeMap<u16, SpellHolderAcquisitionState>,
+    persistent_acquisitions: BTreeMap<u16, SpellHolderAcquisitionState>,
     player_entity_sha256: String,
     events: Vec<FlightEvent>,
     pickup_events: Vec<Level2SharedSpellEvent>,
@@ -4114,6 +4119,22 @@ impl Level2EconomyState {
         self.source_rng.insert(source_entity_index, entity_rng);
         self.spell_replacements.push(replacement);
         Some(replacement)
+    }
+
+    /// Convert one persistent pickup source into its holder action after the
+    /// shared `sub_68FF0` transition. The source row remains in the live
+    /// arena (the new replacement is the row that carries the persistent
+    /// action), so the cursor can still observe its phase/map writes.
+    pub fn mark_spell_replacement_acquired(
+        &mut self,
+        source_slot: u16,
+        holder_action: u8,
+    ) -> Option<Position> {
+        let replacement = self.spell_replacements.iter_mut().find(|replacement| {
+            replacement.active && replacement.source_entity_index == source_slot
+        })?;
+        replacement.action = holder_action;
+        Some(replacement.position)
     }
 
     /// The family callback remains outside this bounded allocator slice. The
@@ -7743,6 +7764,8 @@ impl Level2SharedSpellResetSession {
             speed,
             baseline_acquisitions: acquisitions.clone(),
             acquisitions,
+            baseline_persistent_acquisitions: BTreeMap::new(),
+            persistent_acquisitions: BTreeMap::new(),
             player_entity_sha256: LEVEL2_SHARED_SPELL_PLAYER_ENTITY_SHA256.to_owned(),
             events: Vec::new(),
             pickup_events: Vec::new(),
@@ -7903,6 +7926,107 @@ impl Level2SharedSpellResetSession {
         Ok(source.source_entity_index)
     }
 
+    /// Bind an economy-owned `sub_69250` replacement to the shared spell
+    /// source projection. In remc2 the newly allocated class-15 row is a live
+    /// persistent pickup in the same entity arena; keeping an entity record
+    /// here lets the normal collision/hand transition inspect its action and
+    /// position on the next cursor pass.
+    fn materialize_spell_replacement_pickup(
+        &mut self,
+        replacement: Level2SpellReplacement,
+    ) -> Result<()> {
+        let family_index = self
+            .acquisitions
+            .iter()
+            .position(|state| state.family == replacement.family)
+            .ok_or_else(|| {
+                NativeWorldError::new(format!(
+                    "unsupported Level 2 persistent spell family {}",
+                    replacement.family
+                ))
+            })?;
+        if self
+            .dynamic_pickups
+            .iter()
+            .any(|entity| entity.index == replacement.source_entity_index)
+        {
+            return Ok(());
+        }
+        let template = self
+            .pickups
+            .first()
+            .ok_or_else(|| NativeWorldError::new("Level 2 shared spell template is absent"))?;
+        let mut entity = template.clone();
+        entity.index = replacement.source_entity_index;
+        entity.source_id = 0;
+        entity.authority = EntityAuthority::SpellActivationLive;
+        entity.active = replacement.active;
+        entity.max_life = 0;
+        entity.life = 0;
+        entity.class = 15;
+        entity.model = replacement.family;
+        entity.control_flags = replacement.control_flags | 4;
+        entity.entity_rng = replacement.entity_rng;
+        entity.action = replacement.action;
+        entity.action_marker = 0;
+        entity.level_gate = 0;
+        entity.position = replacement.position;
+        entity.phase = replacement.phase;
+        entity.subspell_index = 0;
+        entity.byte_3b = 0;
+        entity.byte_3c = 0;
+        entity.font_type_index = 0;
+        entity.active_value = 0;
+        entity.activation_value = 0;
+        entity.mana_regen = 0;
+        entity.max_mana = 0;
+        entity.mana_cost = 0;
+        entity.mana = 0;
+        entity.next_relation = None;
+        entity.special_relation = EntitySpecialRelation::None;
+        entity.record[0..2].copy_from_slice(&replacement.source_entity_index.to_le_bytes());
+        entity.record[2] = 1;
+        entity.record[4..8].fill(0);
+        entity.record[8..16].fill(0);
+        entity.record[16..20].copy_from_slice(&entity.control_flags.to_le_bytes());
+        entity.record[24..26].copy_from_slice(&replacement.entity_rng.to_le_bytes());
+        entity.record[26..30].fill(0);
+        entity.record[30..32].fill(0);
+        entity.record[46..54].fill(0);
+        entity.record[58..60].fill(0);
+        entity.record[63..66].fill(0);
+        entity.record[66] = replacement.phase;
+        entity.record[67] = 15;
+        entity.record[68] = replacement.family;
+        entity.record[73] = replacement.action;
+        entity.record[74] = 0;
+        entity.record[78..80].fill(0);
+        entity.record[80..82].copy_from_slice(&replacement.position.x.to_le_bytes());
+        entity.record[82..84].copy_from_slice(&replacement.position.y.to_le_bytes());
+        entity.record[84..86].copy_from_slice(&replacement.position.z.to_le_bytes());
+        entity.record[140..152].fill(0);
+        self.dynamic_pickups.push(entity.clone());
+
+        let mut state = self.acquisitions[family_index];
+        state.source_slot = replacement.source_entity_index;
+        state.authored_source_index = 0;
+        state.source_action = replacement.action;
+        state.source_life = entity.life;
+        state.source_draw_enabled = true;
+        state.subspell_index = entity.subspell_index;
+        state.word_0x30 = entity.source_spell_word_30();
+        state.byte_0x3b = entity.byte_3b;
+        state.byte_0x3c = entity.byte_3c;
+        state.font_type_index = entity.font_type_index;
+        state.mana_regen = entity.mana_regen;
+        state.max_mana = entity.max_mana;
+        state.mana = entity.mana;
+        state.return_side = entity.source_word_4a();
+        self.persistent_acquisitions
+            .insert(replacement.source_entity_index, state);
+        Ok(())
+    }
+
     #[must_use]
     pub fn holders(&self) -> &[EntitySnapshot] {
         &self.holders
@@ -7996,6 +8120,11 @@ impl Level2SharedSpellResetSession {
     #[must_use]
     pub fn acquisition_states(&self) -> &[SpellHolderAcquisitionState] {
         &self.acquisitions
+    }
+
+    #[must_use]
+    pub fn persistent_acquisition_states(&self) -> &BTreeMap<u16, SpellHolderAcquisitionState> {
+        &self.persistent_acquisitions
     }
 
     /// Reach the pinned generic `sub_68FF0` acquisition helper from the
@@ -8233,6 +8362,31 @@ impl Level2SharedSpellResetSession {
                 "unsupported Level 2 spell family {family}"
             )));
         };
+        let source_slot = self.acquisitions[index].source_slot;
+        let source_action = self
+            .pickup(source_slot)
+            .map(|pickup| pickup.action)
+            .unwrap_or(self.acquisitions[index].source_action);
+        let role = if physical_spell_action(family, PhysicalSpellActionRole::PersistentPickup)
+            == Some(source_action)
+        {
+            PhysicalSpellActionRole::PersistentPickup
+        } else if physical_spell_action(family, PhysicalSpellActionRole::OrdinaryPickup)
+            == Some(source_action)
+        {
+            PhysicalSpellActionRole::OrdinaryPickup
+        } else if physical_spell_action(family, PhysicalSpellActionRole::Active)
+            == Some(source_action)
+        {
+            // The source cursor still reaches the live holder row, but its
+            // pickup transition has already completed. Active lifecycle work
+            // is a separate Level 2 branch and must not reacquire it.
+            return Ok(None);
+        } else {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 spell family {family} has unsupported source action {source_action}"
+            )));
+        };
         if !self.acquisitions[index].step_source_life() {
             // `sub_68FF0` disables drawing exactly when the positive source
             // life reaches zero. Keep the raw entity byte17 bit2/dword 0x400
@@ -8255,7 +8409,6 @@ impl Level2SharedSpellResetSession {
             }
             return Ok(None);
         }
-        let source_slot = self.acquisitions[index].source_slot;
         if self.pickup(source_slot).is_none() {
             return Ok(None);
         }
@@ -8331,13 +8484,140 @@ impl Level2SharedSpellResetSession {
         if let Some(live) = self.pickup_mut(source_slot) {
             live.clone_from(&pickup);
         }
-        self.acquire_level2_spell_holder_for_player(
-            family,
-            PhysicalSpellActionRole::OrdinaryPickup,
-            true,
-            owner_index,
-        )
-        .map(Some)
+        self.acquire_level2_spell_holder_for_player(family, role, true, owner_index)
+            .map(Some)
+    }
+
+    /// Production source-dispatch wrapper for `sub_69250`: when the live
+    /// source carries a persistent action, the successful holder transition
+    /// creates the next replacement in the shared economy arena and binds it
+    /// back into this same entity projection for the run-again cursor.
+    pub fn step_level2_spell_acquisition_with_economy(
+        &mut self,
+        economy: &mut Level2EconomyState,
+        family: u8,
+        player_entity_index: u16,
+        player_position: Position,
+    ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
+        let result =
+            self.step_level2_spell_acquisition(family, player_entity_index, player_position)?;
+        let Some(outcome) = result else {
+            return Ok(None);
+        };
+        if outcome.replacement_action.is_none() {
+            return Ok(Some(outcome));
+        }
+        let economy_before = economy.clone();
+        let position = economy
+            .mark_spell_replacement_acquired(outcome.source_slot, outcome.holder_action)
+            .ok_or_else(|| {
+                NativeWorldError::new(format!(
+                    "Level 2 persistent source {} is absent from the economy arena",
+                    outcome.source_slot
+                ))
+            })?;
+        let Some(replacement) =
+            economy.allocate_spell_replacement(family, outcome.parent_entity_index, position)
+        else {
+            // `sub_69250` keeps the successful holder transition even when
+            // NewEvent has no free row; the next replacement is simply
+            // absent until a later source creates one.
+            return Ok(Some(outcome));
+        };
+        if let Err(error) = self.materialize_spell_replacement_pickup(replacement) {
+            *economy = economy_before;
+            return Err(error);
+        }
+        Ok(Some(outcome))
+    }
+
+    /// Dispatch one economy-owned persistent source without aliasing the
+    /// authored ordinary source of the same family. The source game can keep
+    /// both rows live at once, so the temporary family slot is restored after
+    /// this source-local transition and the replacement state is keyed by its
+    /// own arena slot.
+    pub fn step_level2_spell_replacement_acquisition_with_economy(
+        &mut self,
+        economy: &mut Level2EconomyState,
+        source_slot: u16,
+        family: u8,
+        player_entity_index: u16,
+        player_position: Position,
+    ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
+        let family_index = self
+            .acquisitions
+            .iter()
+            .position(|state| state.family == family)
+            .ok_or_else(|| {
+                NativeWorldError::new(format!("unsupported Level 2 spell family {family}"))
+            })?;
+        let pickup = self.pickup(source_slot).cloned().ok_or_else(|| {
+            NativeWorldError::new(format!(
+                "Level 2 persistent source row {source_slot} is absent"
+            ))
+        })?;
+        let base_state = self.acquisitions[family_index];
+        let mut source_state = self
+            .persistent_acquisitions
+            .remove(&source_slot)
+            .unwrap_or(base_state);
+        source_state.source_slot = source_slot;
+        source_state.authored_source_index = 0;
+        source_state.source_action = pickup.action;
+        source_state.source_life = pickup.life;
+        source_state.source_draw_enabled = pickup.control_flags & ENTITY_DRAW_DISABLED_BIT == 0;
+        self.acquisitions[family_index] = source_state;
+        let result =
+            self.step_level2_spell_acquisition(family, player_entity_index, player_position);
+        let result_state = self.acquisitions[family_index];
+        self.acquisitions[family_index] = base_state;
+        let outcome = match result {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.persistent_acquisitions
+                    .insert(source_slot, result_state);
+                return Err(error);
+            }
+        };
+        let Some(outcome) = outcome else {
+            self.persistent_acquisitions
+                .insert(source_slot, result_state);
+            return Ok(None);
+        };
+        if outcome.replacement_action.is_none() {
+            return Ok(Some(outcome));
+        }
+
+        let economy_before = economy.clone();
+        let position = economy
+            .mark_spell_replacement_acquired(source_slot, outcome.holder_action)
+            .ok_or_else(|| {
+                NativeWorldError::new(format!(
+                    "Level 2 persistent source {source_slot} is absent from the economy arena"
+                ))
+            })?;
+        let Some(replacement) =
+            economy.allocate_spell_replacement(family, outcome.parent_entity_index, position)
+        else {
+            // The holder transition has succeeded; a full source arena simply
+            // means there is no next persistent row to materialise.
+            return Ok(Some(outcome));
+        };
+        if let Err(error) = self.materialize_spell_replacement_pickup(replacement) {
+            *economy = economy_before;
+            self.persistent_acquisitions
+                .insert(source_slot, result_state);
+            return Err(error);
+        }
+        let mut next_state = result_state;
+        next_state.source_slot = replacement.source_entity_index;
+        next_state.authored_source_index = 0;
+        next_state.source_action = replacement.action;
+        next_state.source_life = 0;
+        next_state.source_draw_enabled = true;
+        self.persistent_acquisitions
+            .insert(replacement.source_entity_index, next_state);
+        Ok(Some(outcome))
     }
 
     /// Dispatch the authored Level 2 Speed pickup at source slot 75.
@@ -8556,6 +8836,16 @@ impl Level2SharedSpellResetSession {
             hasher.update(state.source_life.to_le_bytes());
             hasher.update(state.return_side.to_le_bytes());
         }
+        for (source_slot, state) in &self.persistent_acquisitions {
+            hasher.update([0xfe]);
+            hasher.update(source_slot.to_le_bytes());
+            hasher.update([state.family, state.source_action, state.holder_action]);
+            hasher.update(state.source_slot.to_le_bytes());
+            hasher.update(state.holder_relation.to_le_bytes());
+            hasher.update([state.eligibility, state.learned]);
+            hasher.update(state.source_life.to_le_bytes());
+            hasher.update([u8::from(state.source_draw_enabled)]);
+        }
         hasher.update(self.speed_pickup_state.owner_entity_index.to_le_bytes());
         hasher.update([u8::from(self.speed_pickup_state.collected)]);
         hasher.update([u8::from(self.speed_pickup_state.visible)]);
@@ -8583,6 +8873,8 @@ impl Level2SharedSpellResetSession {
         self.possession = self.baseline_possession;
         self.speed = self.baseline_speed;
         self.acquisitions.clone_from(&self.baseline_acquisitions);
+        self.persistent_acquisitions
+            .clone_from(&self.baseline_persistent_acquisitions);
         self.events.clear();
         self.pickup_events.clear();
     }
@@ -9419,8 +9711,19 @@ impl Level2ResetSession {
         parent_entity_index: u16,
         position: Position,
     ) -> Option<Level2SpellReplacement> {
-        self.economy
-            .allocate_spell_replacement(family, parent_entity_index, position)
+        let economy_before = self.economy.clone();
+        let replacement =
+            self.economy
+                .allocate_spell_replacement(family, parent_entity_index, position)?;
+        if self
+            .shared_spells
+            .materialize_spell_replacement_pickup(replacement)
+            .is_err()
+        {
+            self.economy = economy_before;
+            return None;
+        }
+        Some(replacement)
     }
 
     #[must_use]
@@ -9891,11 +10194,14 @@ impl Level2ResetSession {
                         .find(|(_, slot, _)| *slot == source_slot)
                         .map(|(family, _, _)| *family)
                         .expect("generic Level 2 spell route has a family");
-                    match self.shared_spells.step_level2_spell_acquisition(
-                        family,
-                        player_entity_index,
-                        player_position,
-                    ) {
+                    match self
+                        .shared_spells
+                        .step_level2_spell_acquisition_with_economy(
+                            &mut self.economy,
+                            family,
+                            player_entity_index,
+                            player_position,
+                        ) {
                         Ok(result) => {
                             self.dispatch_events
                                 .push(Level2DispatchEvent::SpellAcquisition {
@@ -10038,6 +10344,13 @@ impl Level2ResetSession {
                             player_entity_index,
                             player_position,
                         )
+                    } else if kind == Level2DynamicArenaKind::SpellReplacement {
+                        self.step_level2_dynamic_spell_replacement(
+                            pass,
+                            source_slot,
+                            player_entity_index,
+                            player_position,
+                        )
                     } else {
                         self.step_level2_dynamic_arena(source_slot, kind)
                     };
@@ -10106,6 +10419,13 @@ impl Level2ResetSession {
                         player_entity_index,
                         player_position,
                     )
+                } else if kind == Level2DynamicArenaKind::SpellReplacement {
+                    self.step_level2_dynamic_spell_replacement(
+                        pass,
+                        source_slot,
+                        player_entity_index,
+                        player_position,
+                    )
                 } else {
                     self.step_level2_dynamic_arena(source_slot, kind)
                 };
@@ -10156,11 +10476,14 @@ impl Level2ResetSession {
         else {
             return false;
         };
-        match self.shared_spells.step_level2_spell_acquisition(
-            family,
-            player_entity_index,
-            player_position,
-        ) {
+        match self
+            .shared_spells
+            .step_level2_spell_acquisition_with_economy(
+                &mut self.economy,
+                family,
+                player_entity_index,
+                player_position,
+            ) {
             Ok(result) => self
                 .dispatch_events
                 .push(Level2DispatchEvent::SpellAcquisition {
@@ -10180,6 +10503,59 @@ impl Level2ResetSession {
             pickup.record[66] = pickup.phase;
         }
         self.economy.step_spell_pickup_slot(source_slot)
+    }
+
+    fn step_level2_dynamic_spell_replacement(
+        &mut self,
+        pass: u8,
+        source_slot: u16,
+        player_entity_index: u16,
+        player_position: Position,
+    ) -> bool {
+        let Some((family, action, active)) = self
+            .economy
+            .spell_replacements()
+            .iter()
+            .find(|replacement| replacement.source_entity_index == source_slot)
+            .map(|replacement| (replacement.family, replacement.action, replacement.active))
+        else {
+            return false;
+        };
+        if !active {
+            return false;
+        }
+        let persistent_action =
+            physical_spell_action(family, PhysicalSpellActionRole::PersistentPickup);
+        if persistent_action == Some(action) {
+            match self
+                .shared_spells
+                .step_level2_spell_replacement_acquisition_with_economy(
+                    &mut self.economy,
+                    source_slot,
+                    family,
+                    player_entity_index,
+                    player_position,
+                ) {
+                Ok(result) => self
+                    .dispatch_events
+                    .push(Level2DispatchEvent::SpellAcquisition {
+                        pass,
+                        source_slot,
+                        family,
+                        result,
+                    }),
+                Err(error) => self.dispatch_events.push(Level2DispatchEvent::Error {
+                    pass,
+                    source_slot,
+                    message: error.to_string(),
+                }),
+            }
+        }
+        if let Some(pickup) = self.shared_spells.pickup_mut(source_slot) {
+            pickup.phase = pickup.phase.wrapping_add(1);
+            pickup.record[66] = pickup.phase;
+        }
+        self.economy.step_spell_replacement_slot(source_slot)
     }
 
     /// Dispatch one live dynamic row. The source class-10/model-1 burst
@@ -21756,6 +22132,78 @@ mod tests {
         assert_eq!(session.economy().reset_hash(), baseline_hash);
         assert!(session.economy().spell_replacements().is_empty());
         assert!(session.economy().carriers().is_empty());
+    }
+
+    #[test]
+    fn level_two_persistent_replacement_reaches_production_acquisition_and_reallocates() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 persistent replacement session");
+        let position = Position {
+            x: 3_072,
+            y: 5_120,
+            z: 128,
+        };
+        let first = session
+            .allocate_level2_spell_replacement(11, 38, position)
+            .expect("persistent family-11 source allocation");
+        session.state.position = position;
+        let mut acquired = None;
+        for _ in 0..4 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            acquired = session
+                .dispatch_events()
+                .iter()
+                .find_map(|event| match event {
+                    Level2DispatchEvent::SpellAcquisition {
+                        family: 11,
+                        source_slot,
+                        result: Some(outcome),
+                        ..
+                    } => Some((*source_slot, *outcome)),
+                    _ => None,
+                });
+            if acquired.is_some() {
+                break;
+            }
+        }
+        let (source_slot, outcome) = acquired.expect("persistent family-11 source acquisition");
+        assert_eq!(source_slot, first.source_entity_index);
+        assert_eq!(outcome.holder_action, 33);
+        assert_eq!(outcome.replacement_action, Some(35));
+        let rows = session.economy().spell_replacements();
+        let holder = rows
+            .iter()
+            .find(|row| row.source_entity_index == first.source_entity_index)
+            .expect("acquired persistent source remains in arena");
+        assert_eq!(holder.action, 33);
+        let replacement = rows
+            .iter()
+            .find(|row| row.source_entity_index != first.source_entity_index && row.action == 35)
+            .expect("sub_69250 replacement source");
+        assert_eq!(replacement.family, 11);
+        assert_eq!(replacement.parent_entity_index, outcome.parent_entity_index);
+        assert_eq!(replacement.position, position);
+        assert!(
+            session
+                .shared_spells()
+                .dynamic_pickups()
+                .iter()
+                .any(|entity| {
+                    entity.index == replacement.source_entity_index && entity.action == 35
+                })
+        );
+        assert_eq!(
+            session
+                .shared_spells()
+                .persistent_acquisition_states()
+                .get(&replacement.source_entity_index)
+                .expect("persistent family-11 acquisition state")
+                .source_slot,
+            replacement.source_entity_index
+        );
     }
 
     #[test]
