@@ -84,9 +84,11 @@ use crate::{
         unknown_source_sprite_tuple,
     },
     spell_activation::{
-        PhysicalSpellActionRole, SpellActivationHolder, SpellCasterState,
-        SpellHolderAcquisitionOutcome, SpellHolderAcquisitionResult, SpellHolderAcquisitionState,
-        acquire_level2_spell_holder_with_return_side, activate_spell, physical_spell_action,
+        PhysicalSpellActionRole, SHIELD_ACTIVE_ACTION, ShieldState, ShieldStep,
+        SpellActivationHolder, SpellCasterState, SpellHolderAcquisitionOutcome,
+        SpellHolderAcquisitionResult, SpellHolderAcquisitionState,
+        acquire_level2_spell_holder_with_return_side, activate_spell, level2_set_spell_profile,
+        physical_spell_action,
     },
     state_hash,
     static_world_tmap::StaticWorldTmapBank,
@@ -3165,6 +3167,10 @@ pub struct Level2SharedSpellResetSession {
     possession: SpellActivationHolder,
     baseline_speed: SpellActivationHolder,
     speed: SpellActivationHolder,
+    /// Reachable family-6 active lifecycle. Other new active families remain
+    /// explicitly outside this bounded slice.
+    baseline_shield: Option<ShieldState>,
+    shield: Option<ShieldState>,
     /// Generic source acquisition states for authored Level 2 families 6,
     /// 11, and 12.  Family-specific active lifecycles remain separate.
     baseline_acquisitions: Box<[SpellHolderAcquisitionState]>,
@@ -8043,6 +8049,8 @@ impl Level2SharedSpellResetSession {
             possession,
             baseline_speed: speed,
             speed,
+            baseline_shield: None,
+            shield: None,
             baseline_acquisitions: acquisitions.clone(),
             acquisitions,
             baseline_persistent_acquisitions: BTreeMap::new(),
@@ -8086,6 +8094,125 @@ impl Level2SharedSpellResetSession {
         self.dynamic_pickups
             .iter_mut()
             .find(|entity| entity.index == source_slot)
+    }
+
+    #[must_use]
+    pub fn shield_state(&self) -> Option<ShieldState> {
+        self.shield
+    }
+
+    fn sync_shield_projection(&mut self) {
+        let Some(shield) = self.shield else {
+            return;
+        };
+
+        if let Some(holder) = self.pickup_mut(shield.holder_entity_index) {
+            holder.action = shield.action;
+            holder.active_value = shield.active_value;
+            holder.activation_value = shield.activation_value.cast_unsigned();
+            holder.record[44..46].copy_from_slice(&shield.parent_entity_index.to_le_bytes());
+            holder.record[50..52].copy_from_slice(&shield.active_value.to_le_bytes());
+            holder.record[52..54].copy_from_slice(&shield.activation_value.to_le_bytes());
+            holder.record[58..60].copy_from_slice(&shield.countdown.to_le_bytes());
+            holder.record[73] = shield.action;
+        }
+
+        let sync_parent = |entity: &mut EntitySnapshot| {
+            if entity.index != shield.parent_entity_index {
+                return;
+            }
+            entity.life = shield.parent_life;
+            entity.mana = shield.parent_mana;
+            entity.mana_regen = shield.parent_mana_regen;
+            entity.control_flags = shield.parent_status_flags;
+            entity.record[12..16].copy_from_slice(&shield.parent_life.to_le_bytes());
+            entity.record[16..20].copy_from_slice(&shield.parent_status_flags.to_le_bytes());
+            entity.record[140..144].copy_from_slice(&shield.parent_mana_regen.to_le_bytes());
+            entity.record[148..152].copy_from_slice(&shield.parent_mana.to_le_bytes());
+        };
+        sync_parent(&mut self.player_entity);
+        for entity in &mut self.player_entities {
+            sync_parent(entity);
+        }
+        if shield.parent_entity_index == self.player_entity.index {
+            self.player_mana = shield.parent_mana;
+        }
+    }
+
+    fn apply_shield_cleanup(&mut self) {
+        let Some(shield) = self.shield else {
+            return;
+        };
+        let queued_spell = self
+            .pickup(shield.holder_entity_index)
+            .map(|holder| {
+                u16::from_le_bytes(
+                    holder.record[48..50]
+                        .try_into()
+                        .expect("queued Shield SetSpell word extent"),
+                )
+            })
+            .unwrap_or_default();
+        if queued_spell != 0 {
+            let tier = queued_spell.saturating_sub(1).min(2) as u8;
+            if let Some(profile) = level2_set_spell_profile(6, tier) {
+                if let Some(holder) = self.pickup_mut(shield.holder_entity_index) {
+                    holder.level_gate = tier.cast_signed();
+                    holder.subspell_index = profile.subspell_index;
+                    holder.activation_value = profile.word_0x30;
+                    holder.byte_3b = profile.byte_0x3b;
+                    holder.mana_regen = profile.mana_regen;
+                    holder.max_mana = profile.max_mana;
+                    holder.mana_cost = profile.max_mana;
+                    holder.mana = profile.mana;
+                    holder.record[46..48].copy_from_slice(&profile.subspell_index.to_le_bytes());
+                    holder.record[48..50].fill(0);
+                    holder.record[52..54].copy_from_slice(&profile.word_0x30.to_le_bytes());
+                    holder.record[63] = profile.byte_0x3b;
+                    holder.record[74] = tier.cast_signed().cast_unsigned();
+                    holder.record[140..144].copy_from_slice(&profile.mana_regen.to_le_bytes());
+                    holder.record[144..148].copy_from_slice(&profile.max_mana.to_le_bytes());
+                    holder.record[148..152].copy_from_slice(&profile.mana.to_le_bytes());
+                }
+                if let Some(shield) = self.shield.as_mut() {
+                    shield.tier = tier;
+                    shield.activation_value = profile.word_0x30.cast_signed();
+                    shield.mana_cost = profile.max_mana;
+                }
+            } else if let Some(holder) = self.pickup_mut(shield.holder_entity_index) {
+                holder.record[48..50].fill(0);
+            }
+        }
+        if let Some(shield) = self.shield.as_mut() {
+            shield.cleanup_requested = false;
+        }
+    }
+
+    pub fn activate_shield(&mut self, direction_mask: u16, help_enabled: bool) -> bool {
+        self.events.clear();
+        let Some(shield) = self.shield.as_mut() else {
+            return false;
+        };
+        let activated = shield.activate(direction_mask, help_enabled, &mut self.events);
+        self.sync_shield_projection();
+        activated
+    }
+
+    fn step_shield_source_slot(&mut self, source_slot: u16) {
+        if self
+            .shield
+            .is_none_or(|shield| shield.holder_entity_index != source_slot)
+        {
+            return;
+        }
+        if let Some(shield) = self.shield.as_mut() {
+            let _step: ShieldStep = shield.step();
+        }
+        self.sync_shield_projection();
+        if self.shield.is_some_and(|shield| shield.cleanup_requested) {
+            self.apply_shield_cleanup();
+            self.sync_shield_projection();
+        }
     }
 
     /// Materialise one authored class-15 row from `sub_4A1E0`'s group pass.
@@ -8584,6 +8711,25 @@ impl Level2SharedSpellResetSession {
             // the positive-life prefix when life decrements from one to zero.
             pickup.record[78..80].copy_from_slice(&0_i16.to_le_bytes());
         }
+        if family == 6 {
+            let parent = self
+                .player_entities
+                .get(owner_index)
+                .cloned()
+                .unwrap_or_else(|| self.player_entity.clone());
+            let mut shield = ShieldState::new(
+                state.selected_tier.cast_unsigned(),
+                outcome.source_slot,
+                outcome.parent_entity_index,
+                parent.mana,
+                parent.life,
+            )
+            .expect("validated Level 2 Shield tier");
+            shield.parent_mana_regen = parent.mana_regen;
+            shield.parent_status_flags = parent.control_flags;
+            self.shield = Some(shield);
+            self.sync_shield_projection();
+        }
         self.pickup_events
             .push(Level2SharedSpellEvent::SpellAcquired {
                 source_slot: outcome.source_slot,
@@ -8659,9 +8805,13 @@ impl Level2SharedSpellResetSession {
         } else if physical_spell_action(family, PhysicalSpellActionRole::Active)
             == Some(source_action)
         {
+            if family == 6 && source_action == SHIELD_ACTIVE_ACTION {
+                self.step_shield_source_slot(source_slot);
+            }
             // The source cursor still reaches the live holder row, but its
-            // pickup transition has already completed. Active lifecycle work
-            // is a separate Level 2 branch and must not reacquire it.
+            // pickup transition has already completed. Family-6 Shield now
+            // advances its active lifecycle above; the other active families
+            // remain deliberately bounded to their acquisition seam.
             return Ok(None);
         } else {
             return Err(NativeWorldError::new(format!(
@@ -9087,6 +9237,24 @@ impl Level2SharedSpellResetSession {
         hasher.update(self.speed.active_value.to_le_bytes());
         hasher.update(self.speed.activation_value.to_le_bytes());
         hasher.update(self.speed.mana_cost.to_le_bytes());
+        if let Some(shield) = self.shield {
+            hasher.update([1]);
+            hasher.update(shield.holder_entity_index.to_le_bytes());
+            hasher.update(shield.parent_entity_index.to_le_bytes());
+            hasher.update([shield.tier, shield.action]);
+            hasher.update(shield.active_value.to_le_bytes());
+            hasher.update(shield.activation_value.to_le_bytes());
+            hasher.update(shield.mana_cost.to_le_bytes());
+            hasher.update(shield.parent_mana.to_le_bytes());
+            hasher.update(shield.parent_life.to_le_bytes());
+            hasher.update(shield.parent_mana_regen.to_le_bytes());
+            hasher.update(shield.parent_status_flags.to_le_bytes());
+            hasher.update(shield.countdown.to_le_bytes());
+            hasher.update(shield.experience_awarded.to_le_bytes());
+            hasher.update([u8::from(shield.cleanup_requested)]);
+        } else {
+            hasher.update([0]);
+        }
         for state in &self.acquisitions {
             hasher.update([state.family]);
             hasher.update(state.source_slot.to_le_bytes());
@@ -9153,6 +9321,7 @@ impl Level2SharedSpellResetSession {
         self.fireball = self.baseline_fireball;
         self.possession = self.baseline_possession;
         self.speed = self.baseline_speed;
+        self.shield = self.baseline_shield;
         self.acquisitions.clone_from(&self.baseline_acquisitions);
         self.persistent_acquisitions
             .clone_from(&self.baseline_persistent_acquisitions);
@@ -21345,6 +21514,204 @@ mod tests {
                 .expect("family-6 acquisition state")
                 .authored_source_index,
             155
+        );
+    }
+
+    #[test]
+    fn level_two_shield_active_holder_ticks_through_outer_turn_and_reset() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Shield production session");
+        let baseline_hash = session.shared_spells().reset_hash();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|source| source.authored_index == 155)
+            .copied()
+            .expect("authored family-6 source");
+        session.state.position = source.position;
+        let acquired = (0..4).find_map(|_| {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            session
+                .dispatch_events()
+                .iter()
+                .find_map(|event| match event {
+                    Level2DispatchEvent::SpellAcquisition {
+                        family: 6,
+                        result: Some(outcome),
+                        ..
+                    } => Some(*outcome),
+                    _ => None,
+                })
+        });
+        let outcome = acquired.expect("authored family-6 acquisition");
+        let cold = session
+            .shared_spells()
+            .shield_state()
+            .expect("family-6 acquisition seeds Shield state");
+        assert_eq!(cold.holder_entity_index, outcome.source_slot);
+        assert_eq!(cold.active_value, 0);
+        assert!(session.shared_spells_mut().activate_shield(256, false));
+        let active = session
+            .shared_spells()
+            .shield_state()
+            .expect("activated family-6 Shield state");
+        assert_eq!(active.active_value, active.activation_value);
+        assert_ne!(session.shared_spells().reset_hash(), baseline_hash);
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let stepped = session
+            .shared_spells()
+            .shield_state()
+            .expect("Shield state after outer source turn");
+        assert_eq!(stepped.active_value, active.active_value - 1);
+        assert_ne!(
+            stepped.parent_status_flags & crate::spell_activation::SHIELD_MANA_STATUS_BIT,
+            0
+        );
+
+        session.reset();
+        assert!(session.shared_spells().shield_state().is_none());
+        assert_eq!(session.shared_spells().reset_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_remote_shield_owner_does_not_overwrite_local_mana_projection() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 remote Shield session");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|source| source.authored_index == 155)
+            .copied()
+            .expect("authored family-6 source");
+        let source_position = source.position;
+        let local_mana = session.shared_spells().player_mana();
+        let remote_mana = local_mana.wrapping_add(7_777);
+        {
+            let shared = session.shared_spells_mut();
+            let remote = &mut shared.player_entities[1];
+            remote.active = true;
+            remote.model = 0;
+            remote.mana = remote_mana;
+            remote.record[2] = 1;
+            remote.record[68] = 0;
+            remote.position = source_position;
+            remote.record[80..82].copy_from_slice(&source_position.x.to_le_bytes());
+            remote.record[82..84].copy_from_slice(&source_position.y.to_le_bytes());
+            remote.record[84..86].copy_from_slice(&source_position.z.to_le_bytes());
+        }
+        let far_position = Position {
+            x: source_position.x.wrapping_add(0x2000),
+            y: source_position.y,
+            z: source_position.z,
+        };
+        session
+            .shared_spells_mut()
+            .dynamic_pickups
+            .iter_mut()
+            .find(|entity| entity.index == source.source_entity_index)
+            .expect("authored family-6 source row")
+            .phase = 0;
+        session
+            .shared_spells_mut()
+            .dynamic_pickups
+            .iter_mut()
+            .find(|entity| entity.index == source.source_entity_index)
+            .expect("authored family-6 source row")
+            .record[66] = 0;
+        let mut acquired = None;
+        for _ in 0..4 {
+            acquired = session
+                .shared_spells_mut()
+                .step_level2_spell_acquisition(6, 111, far_position)
+                .expect("remote family-6 source pass");
+            if acquired.is_some() {
+                break;
+            }
+        }
+        let outcome = acquired.expect("remote model-0 player acquires Shield");
+        assert_eq!(outcome.parent_entity_index, 112);
+        let shield = session
+            .shared_spells()
+            .shield_state()
+            .expect("remote acquisition seeds Shield state");
+        assert_eq!(shield.parent_entity_index, 112);
+        assert_eq!(shield.parent_mana, remote_mana);
+        assert_eq!(session.shared_spells().player_mana(), local_mana);
+    }
+
+    #[test]
+    fn level_two_shield_expiry_replays_queued_setspell_word() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Shield cleanup session");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|source| source.authored_index == 155)
+            .copied()
+            .expect("authored family-6 source");
+        session.state.position = source.position;
+        let acquired = (0..4).find_map(|_| {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            session
+                .dispatch_events()
+                .iter()
+                .find_map(|event| match event {
+                    Level2DispatchEvent::SpellAcquisition {
+                        family: 6,
+                        result: Some(outcome),
+                        ..
+                    } => Some(*outcome),
+                    _ => None,
+                })
+        });
+        let outcome = acquired.expect("authored family-6 acquisition");
+        assert!(session.shared_spells_mut().activate_shield(256, false));
+        {
+            let shared = session.shared_spells_mut();
+            shared
+                .shield
+                .as_mut()
+                .expect("active Shield state")
+                .active_value = 1;
+            shared
+                .pickup_mut(outcome.source_slot)
+                .expect("active Shield holder row")
+                .record[48..50]
+                .copy_from_slice(&2_u16.to_le_bytes());
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let holder = session
+            .shared_spells()
+            .dynamic_pickups()
+            .iter()
+            .find(|entity| entity.index == outcome.source_slot)
+            .expect("active Shield holder remains projected");
+        assert_eq!(holder.record_bytes()[48..50], [0, 0]);
+        assert_eq!(holder.activation_value, 201);
+        assert_eq!(holder.record_bytes()[52..54], 201_u16.to_le_bytes());
+        assert_eq!(
+            session
+                .shared_spells()
+                .shield_state()
+                .expect("Shield state retained after expiry")
+                .active_value,
+            0
         );
     }
 
