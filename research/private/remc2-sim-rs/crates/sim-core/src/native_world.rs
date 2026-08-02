@@ -756,6 +756,43 @@ fn level2_castle_stage_stats(level: u8) -> (i32, i32) {
     }
 }
 
+/// `sub_60400`'s stage-controller counts and the corresponding model-79
+/// placement points from `x_BYTE_DB038` (pinned `EventsFunctions.cpp`).  The
+/// source stores this as one compact count/offset table; spelling it out here
+/// keeps source order stable and makes allocation failure observable after any
+/// committed prefix.
+fn level2_castle_controller_points(level: u8) -> &'static [(i8, i8)] {
+    match level {
+        1 => &[(4, 4)],
+        2 | 3 => &[(3, 3), (17, 3), (3, 17), (17, 17)],
+        4 | 5 => &[(3, 3), (31, 3), (3, 31), (31, 31)],
+        6 | 7 => &[
+            (3, 3),
+            (24, 3),
+            (45, 3),
+            (3, 24),
+            (45, 24),
+            (3, 45),
+            (24, 45),
+            (45, 45),
+        ],
+        _ => &[],
+    }
+}
+
+/// BUILD00DATTAB dimensions implied by the source controller point table.
+/// The table is symmetric for level pairs (2/3, 4/5, 6/7); these dimensions
+/// are used only by `sub_613D0` to centre model-79 children around the root.
+fn level2_castle_controller_dimensions(level: u8) -> (u8, u8) {
+    match level {
+        1 => (8, 8),
+        2 | 3 => (20, 20),
+        4 | 5 => (34, 34),
+        6 | 7 => (48, 48),
+        _ => (0, 0),
+    }
+}
+
 /// Port of `sub_4AA40`'s Castle root/`axis_0x9A_154x` placement split. The
 /// caller supplies the validated owner BUILD footprint; Level 2's legacy
 /// compatibility `build_castle` path still uses the projectile position as
@@ -765,6 +802,22 @@ pub fn level2_castle_root_positions<W: FlightWorld>(
     world: &W,
     footprint: &CastleBuildFootprint,
     projectile_position: Position,
+) -> (Position, Position) {
+    level2_castle_root_positions_with_resolution(world, footprint, projectile_position, false)
+}
+
+/// Derive the Castle root and `axis_0x9A_154x` anchor exactly as
+/// `sub_4AA40` does, including the source's VGA-size split.  The pinned
+/// 320x200 path passes `low_resolution = true`, which halves the BUILD table
+/// dimensions before the perimeter minimum (`sub_48E60`) is sampled.  Keeping
+/// the selector explicit makes the alternate-resolution exclusion visible at
+/// this seam instead of silently inferring it from host display state.
+#[must_use]
+pub fn level2_castle_root_positions_with_resolution<W: FlightWorld>(
+    world: &W,
+    footprint: &CastleBuildFootprint,
+    projectile_position: Position,
+    low_resolution: bool,
 ) -> (Position, Position) {
     let mut root_position = Position {
         x: projectile_position.x & 0xff00,
@@ -776,8 +829,18 @@ pub fn level2_castle_root_positions<W: FlightWorld>(
     }
     let center_x = (root_position.x >> 8) as u8;
     let center_y = (root_position.y >> 8) as u8;
-    let start_x = center_x.wrapping_sub(footprint.width / 2);
-    let start_y = center_y.wrapping_sub(footprint.height / 2);
+    let width = if low_resolution {
+        footprint.width >> 1
+    } else {
+        footprint.width
+    };
+    let height = if low_resolution {
+        footprint.height >> 1
+    } else {
+        footprint.height
+    };
+    let start_x = center_x.wrapping_sub(width / 2);
+    let start_y = center_y.wrapping_sub(height / 2);
     let mut minimum = 250_u8;
     let mut sample = |x: u8, y: u8| {
         let height = world.ground_height(Position {
@@ -785,16 +848,21 @@ pub fn level2_castle_root_positions<W: FlightWorld>(
             y: u16::from(y) << 8,
             z: 0,
         });
-        minimum = minimum.min((height >> 5) as u8);
+        // `sub_48E60` scans the byte height plane, not the interpolated
+        // world-height result.  At an exact tile corner the interpolation
+        // is exactly `32 * mapHeightmap`; retain the source byte boundary
+        // while making the conversion explicit for generic FlightWorlds.
+        let cell_height = (i32::from(height) >> 5).clamp(0, i32::from(u8::MAX)) as u8;
+        minimum = minimum.min(cell_height);
     };
-    for offset in 0..footprint.width {
+    for offset in 0..width {
         let x = start_x.wrapping_add(offset);
         sample(x, start_y);
-        sample(x, start_y.wrapping_add(footprint.height));
+        sample(x, start_y.wrapping_add(height));
     }
-    for offset in 0..footprint.height {
+    for offset in 0..height {
         let y = start_y.wrapping_add(offset);
-        sample(start_x.wrapping_add(footprint.width), y);
+        sample(start_x.wrapping_add(width), y);
         sample(start_x, y);
     }
     let construction_anchor = Position {
@@ -2634,7 +2702,7 @@ impl NativeWorldInspection {
             SessionTerrain::from_inspection(self),
             &self.entities,
             self.entities[usize::from(self.players[0].entity_index)].mana,
-        );
+        )?;
         Ok(Level2ResetSession::new(
             self.metadata.map_type.profile(),
             state,
@@ -2805,6 +2873,13 @@ pub struct Level2CastleState {
     pub child_chain_slots: [u16; 2],
     pub child_chain_models: [u8; 2],
     pub child_chain_active: [bool; 2],
+    /// Source `word_0x34_52` head/tail and ordered model-79 chain created by
+    /// `sub_613D0`.  The fixed array covers the largest pinned stage (eight
+    /// controllers) without introducing an allocation into this Copy state.
+    pub controller_chain_slots: [u16; 8],
+    pub controller_chain_count: u8,
+    pub controller_chain_head: u16,
+    pub controller_chain_tail: u16,
     pub construction_child_active: bool,
     pub defense_child_active: bool,
     pub active: bool,
@@ -2823,6 +2898,11 @@ pub struct Level2CastleChild {
     pub model: u8,
     pub action: u8,
     pub control_flags: u32,
+    /// Source `word_0x32_50` / `word_0x34_52` links.  `chain_previous_slot`
+    /// is the root or prior model-79 child; `chain_next_slot` is updated on
+    /// that predecessor when the next child is committed.
+    pub chain_previous_slot: u16,
+    pub chain_next_slot: u16,
     pub active: bool,
 }
 
@@ -2916,11 +2996,21 @@ pub struct Level2EconomyState {
     player_castle_stage: u8,
     baseline_player_castle_aux_flags: u8,
     player_castle_aux_flags: u8,
+    /// Imported `sub_60810` life coefficient per Castle stage. The owner
+    /// export does not expose the nested player-state array, so fixed-profile
+    /// sessions default to the source identity coefficient (256); callers
+    /// preserving those bytes can bind each stage explicitly.
+    baseline_castle_stage_coefficients: [u16; 8],
+    castle_stage_coefficients: [u16; 8],
     events: Vec<Level2EconomyEvent>,
 }
 
 impl Level2EconomyState {
-    fn from_parts(terrain: SessionTerrain, entities: &[EntitySnapshot], player_mana: i32) -> Self {
+    fn from_parts(
+        terrain: SessionTerrain,
+        entities: &[EntitySnapshot],
+        player_mana: i32,
+    ) -> Result<Self> {
         let mut free_slots = entities
             .iter()
             .filter(|entity| !entity.active && entity.index != 0)
@@ -2951,13 +3041,23 @@ impl Level2EconomyState {
             .filter(|entity| entity.active)
             .map(|entity| (entity.index, entity.mana))
             .collect::<BTreeMap<_, _>>();
-        let map_seeds = entities
+        let raw_map_entries =
+            raw_source_map_chain_entries(&terrain.planes().entity_indices, |source_entity_index| {
+                entities
+                    .get(usize::from(source_entity_index))
+                    .map(EntitySnapshot::old_map_entity)
+            })
+            .map_err(NativeWorldError::new)?;
+        let map_seeds = raw_map_entries
             .iter()
-            .map(|entity| RenderableMapSeed {
-                entity_index: entity.index,
-                active: entity.active,
-                x: entity.position.x,
-                y: entity.position.y,
+            .map(|entry| {
+                let entity = &entities[usize::from(entry.entity_index)];
+                RenderableMapSeed {
+                    entity_index: entry.entity_index,
+                    active: entity.active,
+                    x: entity.position.x,
+                    y: entity.position.y,
+                }
             })
             .collect::<Vec<_>>();
         let map_chains = RenderableMapChains::from_raw_reset(
@@ -2974,8 +3074,8 @@ impl Level2EconomyState {
                     .map(EntitySnapshot::next_entity)
             },
         )
-        .unwrap_or_else(|_| RenderableMapChains::empty());
-        Self {
+        .map_err(NativeWorldError::new)?;
+        Ok(Self {
             baseline_terrain: terrain.clone(),
             terrain,
             baseline_free_slots: free_slots.clone().into_boxed_slice(),
@@ -3008,8 +3108,10 @@ impl Level2EconomyState {
             player_castle_stage: 0,
             baseline_player_castle_aux_flags: 0,
             player_castle_aux_flags: 0,
+            baseline_castle_stage_coefficients: [256; 8],
+            castle_stage_coefficients: [256; 8],
             events: Vec::new(),
-        }
+        })
     }
 
     fn allocate_slot(&mut self) -> Option<u16> {
@@ -3093,6 +3195,17 @@ impl Level2EconomyState {
     /// `sub_36D50` merge arbitration when two non-neutral owners collide.
     pub fn set_owner_max_mana(&mut self, owner_entity_index: u16, max_mana: i32) {
         self.owner_max_mana.insert(owner_entity_index, max_mana);
+    }
+
+    /// Bind one imported `sub_60810` life coefficient. `256` is the source
+    /// identity coefficient; callers with the preserved nested player-state
+    /// bytes can provide the exact value for each stage.
+    pub fn set_castle_stage_coefficient(&mut self, level: u8, coefficient: u16) -> bool {
+        let Some(value) = self.castle_stage_coefficients.get_mut(usize::from(level)) else {
+            return false;
+        };
+        *value = coefficient;
+        true
     }
 
     #[must_use]
@@ -3455,6 +3568,10 @@ impl Level2EconomyState {
             child_chain_slots: [0; 2],
             child_chain_models: [0; 2],
             child_chain_active: [false; 2],
+            controller_chain_slots: [0; 8],
+            controller_chain_count: 0,
+            controller_chain_head: 0,
+            controller_chain_tail: 0,
             construction_child_active: false,
             defense_child_active: false,
             active: true,
@@ -3757,6 +3874,8 @@ impl Level2EconomyState {
                     model: 42,
                     action: 44,
                     control_flags: 1,
+                    chain_previous_slot: 0,
+                    chain_next_slot: 0,
                     active: true,
                 };
                 self.sync_castle_child_map(construction_child);
@@ -3780,6 +3899,8 @@ impl Level2EconomyState {
                         model: 79,
                         action: 0,
                         control_flags: 0,
+                        chain_previous_slot: 0,
+                        chain_next_slot: 0,
                         active: true,
                     };
                     self.sync_castle_child_map(stage_child);
@@ -3862,6 +3983,8 @@ impl Level2EconomyState {
                     model: 41,
                     action: 43,
                     control_flags: 0,
+                    chain_previous_slot: 0,
+                    chain_next_slot: 0,
                     active: true,
                 };
                 self.sync_castle_child_map(defense_child);
@@ -4281,6 +4404,9 @@ impl Level2EconomyState {
         hasher.update(self.player_mana.to_le_bytes());
         hasher.update(self.player_castle_entity_index.to_le_bytes());
         hasher.update([self.player_castle_stage, self.player_castle_aux_flags]);
+        for coefficient in self.castle_stage_coefficients {
+            hasher.update(coefficient.to_le_bytes());
+        }
         for slot in &self.free_slots {
             hasher.update(slot.to_le_bytes());
         }
@@ -4406,6 +4532,12 @@ impl Level2EconomyState {
                 u8::from(castle.child_chain_active[0]),
                 u8::from(castle.child_chain_active[1]),
             ]);
+            for slot in castle.controller_chain_slots {
+                hasher.update(slot.to_le_bytes());
+            }
+            hasher.update(castle.controller_chain_count.to_le_bytes());
+            hasher.update(castle.controller_chain_head.to_le_bytes());
+            hasher.update(castle.controller_chain_tail.to_le_bytes());
         } else {
             hasher.update([0]);
         }
@@ -4419,6 +4551,8 @@ impl Level2EconomyState {
             hasher.update(child.position.z.to_le_bytes());
             hasher.update([child.model, child.action, u8::from(child.active)]);
             hasher.update(child.control_flags.to_le_bytes());
+            hasher.update(child.chain_previous_slot.to_le_bytes());
+            hasher.update(child.chain_next_slot.to_le_bytes());
         }
         for source_entity_index in self.map_chains.linked_entity_indices() {
             hasher.update(source_entity_index.to_le_bytes());
@@ -4454,6 +4588,7 @@ impl Level2EconomyState {
         self.player_castle_entity_index = self.baseline_player_castle_entity_index;
         self.player_castle_stage = self.baseline_player_castle_stage;
         self.player_castle_aux_flags = self.baseline_player_castle_aux_flags;
+        self.castle_stage_coefficients = self.baseline_castle_stage_coefficients;
         self.events.clear();
     }
 }
@@ -10918,6 +11053,41 @@ mod tests {
         let baseline_free_slots = first.economy().free_slot_count();
         assert_eq!(baseline_free_slots, second.economy().free_slot_count());
         assert_eq!(baseline_hash, second.economy().reset_hash());
+        let raw_map_entries = raw_source_map_chain_entries(
+            &inspection.terrain_planes().entity_indices,
+            |source_entity_index| {
+                inspection
+                    .entities()
+                    .get(usize::from(source_entity_index))
+                    .map(EntitySnapshot::old_map_entity)
+            },
+        )
+        .expect("validated Level 2 raw map chains");
+        let mut expected_linked = raw_map_entries
+            .iter()
+            .map(|entry| entry.entity_index)
+            .collect::<Vec<_>>();
+        expected_linked.sort_unstable();
+        assert_eq!(
+            first.economy().map_chains().linked_entity_indices(),
+            expected_linked
+        );
+        let mut expected_by_tile = BTreeMap::<u16, Vec<u16>>::new();
+        for entry in raw_map_entries {
+            expected_by_tile
+                .entry(entry.tile)
+                .or_default()
+                .push(entry.entity_index);
+        }
+        for (tile, expected_chain) in expected_by_tile {
+            assert_eq!(
+                first
+                    .economy()
+                    .map_chains()
+                    .entity_chain((tile & 0xff) as u8, (tile >> 8) as u8),
+                expected_chain
+            );
+        }
 
         let sphere_slot = *first.economy().free_slots.last().expect("free sphere slot");
         let seed = first.economy().slot_rng[&sphere_slot];
@@ -11330,6 +11500,13 @@ mod tests {
             (5, 0, 0)
         );
         castle_lifecycle.reset();
+        assert_eq!(
+            castle_lifecycle
+                .economy()
+                .map_chains()
+                .linked_entity_indices(),
+            expected_linked
+        );
         let lifecycle_slot = castle_lifecycle
             .economy_mut()
             .build_castle(Position::default(), 111)
@@ -11373,6 +11550,8 @@ mod tests {
                 model: 42,
                 action: 44,
                 control_flags: 1,
+                chain_previous_slot: 0,
+                chain_next_slot: 0,
                 active: true,
             }
         );
