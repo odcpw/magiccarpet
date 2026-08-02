@@ -3033,6 +3033,8 @@ pub struct Level2CastleState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2CastleChild {
     pub source_entity_index: u16,
+    /// Source `NewEvent_4A050` rand_0x14 seed (slot + global D41A0 rand).
+    pub entity_rng: u16,
     pub id_entity_index: u16,
     /// Source allocation class.  The model-15 auxiliary tail is class 5;
     /// construction, controller, and defense children use source class 10.
@@ -3353,15 +3355,6 @@ impl Level2EconomyState {
         // Pinned remc2 NewEvent_4A050: rand_0x14 is the source slot plus the
         // global D41A0.rand_0x8 stream, not the inactive row's stale RNG.
         source_slot.wrapping_add(self.global_rng as u16)
-    }
-
-    /// Advance the source-global `D41A0.rand_0x8` stream once for each
-    /// `ApplyEvents_498A0` invocation. The source keeps this as a full
-    /// 32-bit value; NewEvent consumes its low word only after adding the
-    /// allocated source slot. Keeping the full stream is required so the
-    /// next source pass does not silently repeat after a high-word carry.
-    fn advance_global_rng(&mut self) {
-        self.global_rng = level2_next_rng32(self.global_rng);
     }
 
     fn release_slot(&mut self, slot: u16, entity_rng: Option<u16>) {
@@ -4337,6 +4330,7 @@ impl Level2EconomyState {
             let ground = self.terrain.ground_height(stage_position);
             let stage_child = Level2CastleChild {
                 source_entity_index: stage_slot,
+                entity_rng: self.new_event_rng(stage_slot),
                 id_entity_index: snapshot.source_id_entity_index,
                 source_class: 10,
                 parent_entity_index: snapshot.source_entity_index,
@@ -4429,6 +4423,7 @@ impl Level2EconomyState {
             };
             let child = Level2CastleChild {
                 source_entity_index: slot,
+                entity_rng: self.new_event_rng(slot),
                 id_entity_index: snapshot.source_id_entity_index,
                 source_class: 3,
                 parent_entity_index: castle_slot,
@@ -4578,6 +4573,7 @@ impl Level2EconomyState {
                     if let Some(slot) = self.allocate_slot() {
                         let child = Level2CastleChild {
                             source_entity_index: slot,
+                            entity_rng: self.new_event_rng(slot),
                             id_entity_index: snapshot.source_id_entity_index,
                             source_class: 5,
                             parent_entity_index: castle_slot,
@@ -4704,6 +4700,7 @@ impl Level2EconomyState {
                 }
                 let construction_child = Level2CastleChild {
                     source_entity_index: child_slot,
+                    entity_rng: self.new_event_rng(child_slot),
                     id_entity_index: snapshot.source_id_entity_index,
                     source_class: 10,
                     parent_entity_index: snapshot.source_entity_index,
@@ -4758,6 +4755,7 @@ impl Level2EconomyState {
                         let ground = self.terrain.ground_height(stage_position);
                         let stage_child = Level2CastleChild {
                             source_entity_index: stage_slot,
+                            entity_rng: self.new_event_rng(stage_slot),
                             id_entity_index: snapshot.source_id_entity_index,
                             source_class: 10,
                             // Retain the root relation as the typed owner of
@@ -4883,6 +4881,7 @@ impl Level2EconomyState {
                 };
                 let defense_child = Level2CastleChild {
                     source_entity_index: child_slot,
+                    entity_rng: self.new_event_rng(child_slot),
                     id_entity_index: snapshot.source_id_entity_index,
                     source_class: 10,
                     parent_entity_index: snapshot.source_entity_index,
@@ -5431,6 +5430,7 @@ impl Level2EconomyState {
         if let Some(castle) = self.castle
             && !castle.active
         {
+            self.source_rng.remove(&castle.source_entity_index);
             self.release_slot(castle.source_entity_index, None);
             self.castle = None;
         }
@@ -5628,6 +5628,7 @@ impl Level2EconomyState {
         }
         for child in &self.castle_children {
             hasher.update(child.source_entity_index.to_le_bytes());
+            hasher.update(child.entity_rng.to_le_bytes());
             hasher.update(child.id_entity_index.to_le_bytes());
             hasher.update([child.source_class]);
             hasher.update(child.parent_entity_index.to_le_bytes());
@@ -5712,10 +5713,6 @@ impl Level2EconomyState {
 }
 
 fn level2_next_rng16(seed: u16) -> u16 {
-    seed.wrapping_mul(9_377).wrapping_add(9_439)
-}
-
-fn level2_next_rng32(seed: u32) -> u32 {
     seed.wrapping_mul(9_377).wrapping_add(9_439)
 }
 
@@ -6814,7 +6811,6 @@ impl Level2ResetSession {
     fn step_level2_source_pass(&mut self, pass: u8) {
         let player_entity_index = self.state.entity_index;
         let player_position = self.state.position;
-        self.economy.advance_global_rng();
         self.synchronize_level2_terrain();
         let mut routes = LEVEL2_SHARED_SPELL_PICKUP_SLOTS
             .into_iter()
@@ -12910,6 +12906,9 @@ mod tests {
             castle_lifecycle.economy().castle_children()[0],
             Level2CastleChild {
                 source_entity_index: construction.construction_slot,
+                entity_rng: construction
+                    .construction_slot
+                    .wrapping_add(castle_lifecycle.economy().global_rng as u16),
                 id_entity_index: lifecycle_slot,
                 source_class: 10,
                 parent_entity_index: lifecycle_slot,
@@ -15339,80 +15338,38 @@ mod tests {
     }
 
     #[test]
-    fn level_two_economy_global_new_event_rng_advances_per_source_pass() {
-        // Pinned remc2 Events.cpp:419-420 (ApplyEvents_498A0) advances the
-        // full D41A0.rand_0x8 stream once before walking source rows. Each
-        // NewEvent_4A050 then seeds rand_0x14 with the allocated slot plus
-        // the low word of that pass-global value.
+    fn level_two_castle_rebuild_discards_reclaimed_source_rng() {
+        // Pinned remc2 NewEvent_4A050 overwrites rand_0x14 on every fresh
+        // allocation. A reclaimed Castle must not resurrect its old source
+        // RNG when the same arena slot is reused.
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
         let mut session = inspection
             .level2_reset_session()
-            .expect("global NewEvent RNG session");
-        let baseline_global = session.economy().global_rng;
-        let changed_global = 0xabcd_1234_u32;
-        session.economy_mut().global_rng = changed_global;
-
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        let pass_one_global = level2_next_rng32(changed_global);
-        assert_eq!(session.economy().global_rng, pass_one_global);
-        let first_slot = session
-            .economy()
-            .free_slots
-            .last()
-            .copied()
-            .expect("first free source slot");
-        let first_id = session
+            .expect("Castle rebuild session");
+        let slot = session
             .economy_mut()
-            .spawn_mana_sphere_from_death(901, Position::default(), 0, 0x1111, 321, 111)
-            .expect("first NewEvent allocation");
-        assert_eq!(first_id, u32::from(first_slot));
-        let first_seed = first_slot.wrapping_add(pass_one_global as u16);
-        let first_rng = level2_next_rng16(first_seed);
-        let first_speed_rng = level2_next_rng16(first_rng);
-        assert_eq!(
-            session
-                .economy()
-                .spheres()
-                .iter()
-                .find(|sphere| sphere.id == first_id)
-                .expect("first sphere")
-                .entity_rng,
-            first_speed_rng
-        );
-
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        let pass_two_global = level2_next_rng32(pass_one_global);
-        assert_eq!(session.economy().global_rng, pass_two_global);
-        let second_slot = session
-            .economy()
-            .free_slots
-            .last()
-            .copied()
-            .expect("second free source slot");
-        let second_id = session
+            .build_castle(Position::default(), 111)
+            .expect("initial Castle allocation");
+        session.economy_mut().source_rng.insert(slot, 0xdead);
+        session.economy_mut().free_slots.clear();
+        session
             .economy_mut()
-            .spawn_mana_sphere_from_death(902, Position::default(), 0, 0x2222, 654, 111)
-            .expect("second NewEvent allocation");
-        assert_eq!(second_id, u32::from(second_slot));
-        let second_seed = second_slot.wrapping_add(pass_two_global as u16);
-        let second_rng = level2_next_rng16(second_seed);
-        let second_speed_rng = level2_next_rng16(second_rng);
+            .castle
+            .as_mut()
+            .expect("initial Castle")
+            .active = false;
+        session.economy_mut().reclaim_inactive_slots();
+        assert!(!session.economy().source_rng.contains_key(&slot));
+        let rebuilt = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("same-slot Castle rebuild");
+        assert_eq!(rebuilt, slot);
         assert_eq!(
-            session
-                .economy()
-                .spheres()
-                .iter()
-                .find(|sphere| sphere.id == second_id)
-                .expect("second sphere")
-                .entity_rng,
-            second_speed_rng
+            session.economy().source_rng.get(&slot),
+            Some(&(slot.wrapping_add(session.economy().global_rng as u16)))
         );
-        assert_ne!(pass_one_global, pass_two_global);
-
-        session.reset();
-        assert_eq!(session.economy().global_rng, baseline_global);
-        assert!(session.economy().spheres().is_empty());
     }
 
     #[test]
