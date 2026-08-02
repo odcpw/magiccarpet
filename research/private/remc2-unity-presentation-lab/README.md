@@ -4,8 +4,9 @@ This is the isolated Unity project for the optional `classic-hd` and
 `unity-enhanced` presentation modes. It is deliberately separate from
 `remc2-unity-native`, which remains the sealed Exact project.
 
-The lab now provides the safe shell and the owner-bound Classic HD renderer
-binding under qualification:
+The lab now provides the safe shell, the owner-bound Classic HD renderer
+binding, and the owner-bound Unity Enhanced presentation binding under
+qualification:
 
 - Unity `6000.3.20f1` with URP `17.3.0`.
 - A `Boot` scene with a pre-session mode router.
@@ -41,6 +42,14 @@ binding under qualification:
   motion controls, frame/pool/drop diagnostics, and explicit spatial render
   scale choices (`1.0`, `0.85`, `0.75`). Temporal upscaling is gated off by
   default and cannot be enabled accidentally by a quality preset.
+- The owner-bound Unity Enhanced route opens the external package, closure, and
+  asset cache through the existing Rust `sim-capi` v2 session, validates the
+  presentation-camera history and live terrain/entity records, and applies
+  immutable generation-bound snapshots to the URP-only hierarchy. Unity owns
+  only generated meshes, lights, effects, camera interpolation, and pooling;
+  Rust remains gameplay authority. The deterministic owner sequence smoke
+  covers flight input, spell selection/cast, reset replay, terrain/water/night
+  lighting, and native hash correspondence without embedding owner payloads.
 - No copied owner assets, native libraries, Exact scripts, or Exact corpus.
 
 Run the editor setup once after opening the project:
@@ -106,6 +115,21 @@ It records renderer-binding evidence only. Town, combat, death/restart,
 completion, window/alt-tab, asset-fallback, and sustained GPU cases remain
 separate owner-lab gates until their actual states and visual review artifacts
 are captured.
+
+The owner-bound Unity Enhanced sequence smoke is also explicit:
+
+```text
+Unity -batchmode -force-glcore \
+  -projectPath research/private/remc2-unity-presentation-lab \
+  -executeMethod MagicCarpet.PresentationLab.Editor.CreatePresentationLabAssets.RunOwnerUnityEnhancedSequenceSmoke \
+  -mc-presentation-mode unity-enhanced \
+  -mc-package /absolute/path/to/level1-export-m \
+  -mc-closure /absolute/path/to/level1-asset-closure.json \
+  -mc-asset-cache /absolute/path/to/level1-unity-asset-cache
+```
+
+This proves the live Rust-to-Unity presentation bridge and reset replay, not
+the broader owner/GPU scenario matrix or human visual acceptance.
 
 Verify the project boundary and URP assignment with:
 

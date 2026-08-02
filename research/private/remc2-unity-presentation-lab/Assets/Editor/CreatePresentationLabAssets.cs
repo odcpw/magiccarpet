@@ -271,6 +271,183 @@ namespace MagicCarpet.PresentationLab.Editor
             }
         }
 
+        [MenuItem("Magic Carpet/Presentation Lab/Run Owner Unity Enhanced Sequence Smoke")]
+        public static void RunOwnerUnityEnhancedSequenceSmoke()
+        {
+            string packagePath = CommandLineValue("-mc-package");
+            string closurePath = CommandLineValue("-mc-closure");
+            string assetCachePath = CommandLineValue("-mc-asset-cache");
+            if (string.IsNullOrWhiteSpace(packagePath) ||
+                string.IsNullOrWhiteSpace(closurePath) ||
+                string.IsNullOrWhiteSpace(assetCachePath))
+            {
+                throw new InvalidOperationException(
+                    "owner Unity Enhanced sequence smoke requires -mc-package, -mc-closure, and -mc-asset-cache");
+            }
+
+            var root = new GameObject("Owner Unity Enhanced Sequence Smoke Router");
+            var router = root.AddComponent<PresentationModeRouter>();
+            MethodInfo awake = typeof(PresentationModeRouter).GetMethod(
+                "Awake",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            if (awake == null)
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+                throw new InvalidOperationException("presentation router Awake method is missing");
+            }
+
+            const int FramesPerPass = 8;
+            ulong[] firstStateHashes = new ulong[FramesPerPass];
+            ulong[] firstTerrainHashes = new ulong[FramesPerPass];
+            ulong[] firstWorldHashes = new ulong[FramesPerPass];
+            ulong firstGeneration;
+            ulong firstTick;
+            ulong secondGeneration;
+            ulong secondTick;
+
+            try
+            {
+                awake.Invoke(router, null);
+                if (!router.SessionIsOpen ||
+                    router.EnhancedRoot == null ||
+                    router.EnhancedOwnerSession == null ||
+                    router.EnhancedRoot.State != UnityEnhancedLifecycleState.Open)
+                {
+                    Debug.LogError(
+                        "OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: router did not open the owner-bound Enhanced route");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                string reason;
+                for (int frame = 0; frame < FramesPerPass; frame++)
+                {
+                    Vector2 input = SequenceInput(frame);
+                    bool cast = frame == 4;
+                    int spellSelection = frame == 3 ? 0 : -1;
+                    if (!router.CaptureEnhancedFrame(
+                            input.x,
+                            input.y,
+                            cast,
+                            spellSelection,
+                            out reason))
+                    {
+                        Debug.LogError(
+                            "OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: first pass frame " +
+                            frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    UnityEnhancedWorldRoot enhanced = router.EnhancedRoot;
+                    UnityEnhancedOwnerSessionSource source = router.EnhancedOwnerSession;
+                    if (enhanced.State != UnityEnhancedLifecycleState.Open ||
+                        !enhanced.TerrainPresentation.HasSnapshot ||
+                        !enhanced.WaterPresentation.HasSnapshot ||
+                        !enhanced.NightLighting.HasDescriptor ||
+                        enhanced.ActorPresentation.ActiveVisualCount == 0 ||
+                        source.ActiveEntityCount == 0 ||
+                        source.PresentationTick + 1 != source.Tick)
+                    {
+                        Debug.LogError(
+                            "OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: incomplete live snapshot at frame " +
+                            frame + " tick=" + source.Tick +
+                            " presentation_tick=" + source.PresentationTick +
+                            " active_entities=" + source.ActiveEntityCount +
+                            " active_visuals=" + enhanced.ActorPresentation.ActiveVisualCount);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    firstStateHashes[frame] = source.LastStateHash;
+                    firstTerrainHashes[frame] = source.LastTerrainHash;
+                    firstWorldHashes[frame] = source.LastWorldHash;
+                    if (firstStateHashes[frame] == 0 ||
+                        firstTerrainHashes[frame] == 0 ||
+                        firstWorldHashes[frame] == 0)
+                    {
+                        Debug.LogError(
+                            "OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: empty native hash at frame " + frame);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+                }
+
+                firstGeneration = router.EnhancedOwnerSession.Generation;
+                firstTick = router.EnhancedOwnerSession.Tick;
+                ulong firstStateSequenceHash = SequenceHash(firstStateHashes);
+                ulong firstTerrainSequenceHash = SequenceHash(firstTerrainHashes);
+                ulong firstWorldSequenceHash = SequenceHash(firstWorldHashes);
+
+                if (!router.ResetEnhancedOwnerSession(out reason))
+                {
+                    Debug.LogError("OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: reset: " + reason);
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                for (int frame = 0; frame < FramesPerPass; frame++)
+                {
+                    Vector2 input = SequenceInput(frame);
+                    bool cast = frame == 4;
+                    int spellSelection = frame == 3 ? 0 : -1;
+                    if (!router.CaptureEnhancedFrame(
+                            input.x,
+                            input.y,
+                            cast,
+                            spellSelection,
+                            out reason))
+                    {
+                        Debug.LogError(
+                            "OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: reset pass frame " +
+                            frame + ": " + reason);
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+
+                    UnityEnhancedOwnerSessionSource source = router.EnhancedOwnerSession;
+                    if (source.LastStateHash != firstStateHashes[frame] ||
+                        source.LastTerrainHash != firstTerrainHashes[frame] ||
+                        source.LastWorldHash != firstWorldHashes[frame])
+                    {
+                        Debug.LogError(
+                            "OWNER UNITY ENHANCED SEQUENCE SMOKE FAIL: reset replay diverged at frame " +
+                            frame + " first=" + firstStateHashes[frame].ToString("x16") + "/" +
+                            firstTerrainHashes[frame].ToString("x16") + "/" +
+                            firstWorldHashes[frame].ToString("x16") + " second=" +
+                            source.LastStateHash.ToString("x16") + "/" +
+                            source.LastTerrainHash.ToString("x16") + "/" +
+                            source.LastWorldHash.ToString("x16"));
+                        EditorApplication.Exit(1);
+                        return;
+                    }
+                }
+
+                secondGeneration = router.EnhancedOwnerSession.Generation;
+                secondTick = router.EnhancedOwnerSession.Tick;
+                Debug.Log(
+                    "OWNER UNITY ENHANCED SEQUENCE SMOKE PASS: frames_per_pass=" + FramesPerPass +
+                    " first_generation=" + firstGeneration +
+                    " first_tick=" + firstTick +
+                    " second_generation=" + secondGeneration +
+                    " second_tick=" + secondTick +
+                    " active_entities=" + router.EnhancedOwnerSession.ActiveEntityCount +
+                    " active_visuals=" + router.EnhancedRoot.ActorPresentation.ActiveVisualCount +
+                    " terrain_vertices=" + router.EnhancedRoot.TerrainPresentation.VertexCount +
+                    " shoreline_cells=" + router.EnhancedRoot.WaterPresentation.ShorelineCellCount +
+                    " state_sequence=" + firstStateSequenceHash.ToString("x16") +
+                    " terrain_sequence=" + firstTerrainSequenceHash.ToString("x16") +
+                    " world_sequence=" + firstWorldSequenceHash.ToString("x16") +
+                    " lighting=" + router.EnhancedRoot.NightLighting.HasDescriptor +
+                    " reflection=" + router.EnhancedRoot.WaterPresentation.ReflectionEnabled);
+                EditorApplication.Exit(0);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
         private static Vector2 SequenceInput(int frame)
         {
             if (frame < 8)

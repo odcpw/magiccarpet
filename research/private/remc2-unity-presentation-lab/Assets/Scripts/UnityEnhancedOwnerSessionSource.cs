@@ -1,0 +1,1145 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using UnityEngine;
+
+namespace MagicCarpet.PresentationLab
+{
+    /// <summary>
+    /// Owner-bound Rust source for the Unity Enhanced presentation route.
+    ///
+    /// This adapter owns no gameplay state. It opens the external owner
+    /// package, submits the same command/camera records as the native client,
+    /// and translates immutable native observations into an Enhanced snapshot
+    /// consumed by UnityEnhancedWorldRoot. The generated meshes, lights, and
+    /// effects remain presentation-only.
+    /// </summary>
+    public sealed class UnityEnhancedOwnerSessionSource : IDisposable
+    {
+        private const string Library = "sim_capi";
+        private const string AssetCacheEnvironment = "MC_ASSET_CACHE_PATH";
+        private const uint AbiVersion = 2;
+        private const uint SessionSnapshotSize = 120;
+        private const uint PresentationStateSize = 64;
+        private const uint RenderCameraStateSize = 72;
+        private const uint TerrainStateSize = 64;
+        private const uint EntityElementSize = 52;
+        private const int TerrainWidth = 256;
+        private const int TerrainHeight = 256;
+        private const int TerrainCellCount = TerrainWidth * TerrainHeight;
+        private const float SourceUnitsPerUnityUnit = 64f;
+        private const float TerrainSourceStep = 256f;
+        private const float TerrainCellSize = TerrainSourceStep / SourceUnitsPerUnityUnit;
+        private const uint TerrainTypes = 0;
+        private const uint TerrainHeightPlane = 1;
+        private const uint TerrainShade = 2;
+        private const uint TerrainAngle = 3;
+        private const byte CameraAuthorityPlayerFlightLive = 2;
+        private const byte PresentationCameraExactInputs = 0x01;
+        private const byte PresentationCameraEyeZPlus128 = 0x02;
+        private const byte RenderCameraTerrainSlopeXY = 0x01;
+        private const byte SessionTerrainLive = 7;
+        private const byte TerrainHashSchema = 1;
+        private const int SelectedSpellFlag = 0x40;
+        private const sbyte SpellSelectionOpcode = 40;
+
+        private byte[] packageBytes;
+        private byte[] closureBytes;
+        private ulong handle;
+        private string priorAssetCacheEnvironment;
+        private bool ownsAssetCacheEnvironment;
+        private byte[] terrainTypes;
+        private byte[] terrainHeights;
+        private byte[] terrainShade;
+        private byte[] terrainAngles;
+        private EntitySnapshot[] entities = Array.Empty<EntitySnapshot>();
+        private ulong terrainMutationSequence;
+        private ushort previousCameraX;
+        private ushort previousCameraY;
+        private long unwrappedCameraX;
+        private long unwrappedCameraY;
+        private ulong cameraGeneration;
+        private bool hasCameraHistory;
+        private ulong lastSnapshotGeneration;
+        private bool hasBuiltSnapshot;
+        private ulong nextVfxSequence;
+        private uint previousFireSequence;
+        private SessionSnapshot snapshot;
+        private PresentationState presentation;
+        private RenderCameraState renderCamera;
+
+        public bool IsConfigured { get; private set; }
+        public ulong Generation { get { return snapshot.generation; } }
+        public ulong Tick { get { return snapshot.tick; } }
+        public ulong LastStateHash { get { return snapshot.stateHash; } }
+        public ulong LastConformanceHash { get { return snapshot.conformanceHash; } }
+        public ulong PresentationTick { get { return presentation.tick; } }
+        public ulong LastTerrainHash { get; private set; }
+        public ulong LastWorldHash { get; private set; }
+        public int EntityCount { get { return entities == null ? 0 : entities.Length; } }
+        public int ActiveEntityCount
+        {
+            get
+            {
+                int count = 0;
+                for (int index = 0; index < entities.Length; index++)
+                {
+                    if (entities[index].active != 0) count++;
+                }
+
+                return count;
+            }
+        }
+
+        public bool Configure(
+            string packagePath,
+            string closurePath,
+            string assetCachePath,
+            out string reason)
+        {
+            reason = string.Empty;
+            Dispose();
+
+            if (string.IsNullOrWhiteSpace(packagePath) || !Directory.Exists(packagePath))
+            {
+                reason = "Unity Enhanced owner package directory does not exist";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(closurePath) || !File.Exists(closurePath))
+            {
+                reason = "Unity Enhanced owner closure file does not exist";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(assetCachePath) || !Directory.Exists(assetCachePath))
+            {
+                reason = "Unity Enhanced owner asset-cache directory does not exist";
+                return false;
+            }
+
+            try
+            {
+                packageBytes = Encoding.UTF8.GetBytes(packagePath);
+                closureBytes = Encoding.UTF8.GetBytes(closurePath);
+                priorAssetCacheEnvironment = Environment.GetEnvironmentVariable(AssetCacheEnvironment);
+                Environment.SetEnvironmentVariable(AssetCacheEnvironment, assetCachePath);
+                ownsAssetCacheEnvironment = true;
+
+                int status = mc_native_session_open(
+                    packageBytes,
+                    checked((uint)packageBytes.Length),
+                    closureBytes,
+                    checked((uint)closureBytes.Length),
+                    out handle);
+                if (status != 0)
+                {
+                    reason = StatusReason("Unity Enhanced owner session open", status);
+                    Dispose();
+                    return false;
+                }
+
+                if (!Reset(out reason))
+                {
+                    Dispose();
+                    return false;
+                }
+
+                IsConfigured = true;
+                return true;
+            }
+            catch (DllNotFoundException exception)
+            {
+                reason = "Unity Enhanced owner native plugin is unavailable: " + exception.Message;
+            }
+            catch (EntryPointNotFoundException exception)
+            {
+                reason = "Unity Enhanced owner native ABI is missing: " + exception.Message;
+            }
+            catch (BadImageFormatException exception)
+            {
+                reason = "Unity Enhanced owner native plugin has the wrong architecture: " + exception.Message;
+            }
+            catch (Exception exception)
+            {
+                reason = "Unity Enhanced owner source setup failed: " + exception.Message;
+            }
+
+            Dispose();
+            return false;
+        }
+
+        public bool Reset(out string reason)
+        {
+            reason = string.Empty;
+            if (handle == 0)
+            {
+                reason = "Unity Enhanced owner source is not configured";
+                return false;
+            }
+
+            int status = mc_native_session_reset(handle, out snapshot, SessionSnapshotSize);
+            if (status != 0)
+            {
+                reason = StatusReason("Unity Enhanced owner session reset", status);
+                return false;
+            }
+
+            if (!ValidateSessionSnapshot(out reason))
+            {
+                return false;
+            }
+
+            terrainTypes = null;
+            terrainHeights = null;
+            terrainShade = null;
+            terrainAngles = null;
+            entities = Array.Empty<EntitySnapshot>();
+            terrainMutationSequence = ulong.MaxValue;
+            cameraGeneration = 0;
+            hasCameraHistory = false;
+            lastSnapshotGeneration = 0;
+            hasBuiltSnapshot = false;
+            nextVfxSequence = 0;
+            previousFireSequence = snapshot.fireSequence;
+            return ReadObservations(true, out reason);
+        }
+
+        /// <summary>
+        /// Advances the Rust session once and returns one complete immutable
+        /// Enhanced snapshot. The input values are presentation-client input;
+        /// they are encoded into the existing native command ABI unchanged.
+        /// </summary>
+        public bool Advance(
+            float horizontalInput,
+            float verticalInput,
+            bool cast,
+            int spellSelection,
+            out UnityEnhancedWorldSnapshot enhancedSnapshot,
+            out string reason)
+        {
+            enhancedSnapshot = null;
+            reason = string.Empty;
+            if (!IsConfigured || handle == 0)
+            {
+                reason = "Unity Enhanced owner source is not configured";
+                return false;
+            }
+
+            try
+            {
+                Command command = new Command
+                {
+                    abiVersion = AbiVersion,
+                    structSize = 32,
+                    roll = ClampInt8(horizontalInput * 127f),
+                    pitch = ClampInt8(verticalInput * 127f),
+                    flags = 1,
+                    requestedSpell = -1,
+                    reserved = new uint[4]
+                };
+                if (spellSelection >= 0)
+                {
+                    command.opcode = SpellSelectionOpcode;
+                    command.argument1 = ClampInt8(spellSelection);
+                }
+                if (cast)
+                {
+                    command.flags = unchecked((sbyte)(command.flags | SelectedSpellFlag));
+                }
+
+                CameraInput camera = new CameraInput
+                {
+                    abiVersion = AbiVersion,
+                    structSize = 28,
+                    reserved = new uint[4]
+                };
+                int status = mc_native_session_step_with_camera(
+                    handle,
+                    ref command,
+                    ref camera,
+                    out snapshot,
+                    SessionSnapshotSize);
+                if (status != 0)
+                {
+                    reason = StatusReason("Unity Enhanced owner session step", status);
+                    return false;
+                }
+
+                if (!ValidateSessionSnapshot(out reason))
+                {
+                    return false;
+                }
+
+                if (!ReadObservations(false, out reason))
+                {
+                    return false;
+                }
+
+                enhancedSnapshot = BuildSnapshot();
+                return true;
+            }
+            catch (Exception exception)
+            {
+                reason = "Unity Enhanced owner snapshot failed: " + exception.Message;
+                return false;
+            }
+        }
+
+        public void Dispose()
+        {
+            IsConfigured = false;
+            if (handle != 0)
+            {
+                try
+                {
+                    mc_native_session_destroy(handle);
+                }
+                catch (Exception)
+                {
+                    // Teardown must not prevent managed and environment cleanup.
+                }
+
+                handle = 0;
+            }
+
+            if (ownsAssetCacheEnvironment)
+            {
+                Environment.SetEnvironmentVariable(AssetCacheEnvironment, priorAssetCacheEnvironment);
+                priorAssetCacheEnvironment = null;
+                ownsAssetCacheEnvironment = false;
+            }
+
+            packageBytes = null;
+            closureBytes = null;
+            terrainTypes = null;
+            terrainHeights = null;
+            terrainShade = null;
+            terrainAngles = null;
+            entities = Array.Empty<EntitySnapshot>();
+            snapshot = default(SessionSnapshot);
+            presentation = default(PresentationState);
+            renderCamera = default(RenderCameraState);
+            terrainMutationSequence = 0;
+            previousCameraX = 0;
+            previousCameraY = 0;
+            unwrappedCameraX = 0;
+            unwrappedCameraY = 0;
+            cameraGeneration = 0;
+            hasCameraHistory = false;
+            lastSnapshotGeneration = 0;
+            hasBuiltSnapshot = false;
+            nextVfxSequence = 0;
+            previousFireSequence = 0;
+        }
+
+        private bool ReadObservations(bool forceTerrain, out string reason)
+        {
+            reason = string.Empty;
+            int status = mc_native_presentation_state(handle, out presentation, PresentationStateSize);
+            if (status != 0)
+            {
+                reason = StatusReason("Unity Enhanced owner presentation state", status);
+                return false;
+            }
+
+            if (presentation.abiVersion != AbiVersion ||
+                presentation.structSize != PresentationStateSize ||
+                presentation.generation != snapshot.generation ||
+                presentation.cameraAuthority != CameraAuthorityPlayerFlightLive ||
+                (presentation.cameraFlags & (PresentationCameraExactInputs | PresentationCameraEyeZPlus128)) !=
+                    (PresentationCameraExactInputs | PresentationCameraEyeZPlus128) ||
+                !AllZero(presentation.reserved))
+            {
+                reason = "Unity Enhanced owner presentation state failed its authority/layout contract";
+                return false;
+            }
+
+            status = mc_native_render_camera_state(handle, out renderCamera, RenderCameraStateSize);
+            if (status != 0)
+            {
+                reason = StatusReason("Unity Enhanced owner render camera", status);
+                return false;
+            }
+
+            if (renderCamera.abiVersion != AbiVersion ||
+                renderCamera.structSize != RenderCameraStateSize ||
+                renderCamera.generation != presentation.generation ||
+                renderCamera.tick != presentation.tick ||
+                renderCamera.sourceTurn != presentation.sourceTurn ||
+                renderCamera.historyX != presentation.cameraX ||
+                renderCamera.historyY != presentation.cameraY ||
+                renderCamera.eyeZ != presentation.cameraZ ||
+                renderCamera.yaw != (presentation.cameraYaw & 0x07ff) ||
+                renderCamera.pitch != presentation.cameraPitch ||
+                renderCamera.roll != presentation.cameraRoll ||
+                renderCamera.fov != presentation.cameraFov ||
+                renderCamera.authority != CameraAuthorityPlayerFlightLive ||
+                (renderCamera.flags & RenderCameraTerrainSlopeXY) == 0 ||
+                !AllZero(renderCamera.reserved))
+            {
+                reason = "Unity Enhanced owner render camera failed its history/layout contract";
+                return false;
+            }
+
+            status = mc_native_session_terrain_state(handle, out TerrainState terrainState, TerrainStateSize);
+            if (status != 0)
+            {
+                reason = StatusReason("Unity Enhanced owner terrain state", status);
+                return false;
+            }
+
+            if (terrainState.width != TerrainWidth || terrainState.height != TerrainHeight ||
+                terrainState.planeCount != 6 || terrainState.hashSchema != TerrainHashSchema ||
+                terrainState.authority != SessionTerrainLive ||
+                terrainState.generation != snapshot.generation ||
+                terrainState.tick != snapshot.tick || !AllZero(terrainState.reserved))
+            {
+                reason = "Unity Enhanced owner terrain state does not match the session snapshot";
+                return false;
+            }
+
+            LastTerrainHash = terrainState.terrainHash;
+            bool terrainChanged = forceTerrain || terrainTypes == null || terrainState.mutationSequence != terrainMutationSequence;
+            if (terrainChanged)
+            {
+                terrainTypes = ReadPlane(TerrainTypes, out reason);
+                if (terrainTypes == null) return false;
+                terrainHeights = ReadPlane(TerrainHeightPlane, out reason);
+                if (terrainHeights == null) return false;
+                terrainShade = ReadPlane(TerrainShade, out reason);
+                if (terrainShade == null) return false;
+                terrainAngles = ReadPlane(TerrainAngle, out reason);
+                if (terrainAngles == null) return false;
+                terrainMutationSequence = terrainState.mutationSequence;
+            }
+
+            status = mc_native_entity_count(handle, out uint entityCount);
+            if (status != 0)
+            {
+                reason = StatusReason("Unity Enhanced owner entity count", status);
+                return false;
+            }
+
+            EntitySnapshot[] nextEntities = new EntitySnapshot[checked((int)entityCount)];
+            status = mc_native_entities_copy(
+                handle,
+                0,
+                nextEntities,
+                entityCount,
+                EntityElementSize,
+                out uint written);
+            if (status != 0)
+            {
+                reason = StatusReason("Unity Enhanced owner entities", status);
+                return false;
+            }
+
+            if (written != entityCount)
+            {
+                reason = "Unity Enhanced owner entity batch is incomplete";
+                return false;
+            }
+
+            entities = nextEntities;
+            for (int index = 0; index < entities.Length; index++)
+            {
+                EntitySnapshot entity = entities[index];
+                if (entity.abiVersion != AbiVersion ||
+                    entity.structSize != EntityElementSize ||
+                    !AllZero(entity.reserved))
+                {
+                    reason = "Unity Enhanced owner entity batch failed its ABI/layout contract";
+                    return false;
+                }
+            }
+
+            LastWorldHash = HashEntities(entities);
+            return UpdateCameraHistory();
+        }
+
+        private byte[] ReadPlane(uint kind, out string reason)
+        {
+            reason = string.Empty;
+            int status = mc_native_terrain_plane_length(handle, kind, out uint count);
+            if (status != 0)
+            {
+                reason = StatusReason("Unity Enhanced owner terrain plane length", status);
+                return null;
+            }
+
+            if (count != TerrainCellCount)
+            {
+                reason = "Unity Enhanced owner terrain plane has an unexpected extent";
+                return null;
+            }
+
+            byte[] values = new byte[checked((int)count)];
+            status = mc_native_terrain_plane_copy_u8(handle, kind, values, count, out uint written);
+            if (status != 0)
+            {
+                reason = StatusReason("Unity Enhanced owner terrain plane copy", status);
+                return null;
+            }
+
+            if (written != count)
+            {
+                reason = "Unity Enhanced owner terrain plane copy is incomplete";
+                return null;
+            }
+
+            return values;
+        }
+
+        private bool UpdateCameraHistory()
+        {
+            if (!hasCameraHistory || cameraGeneration != snapshot.generation)
+            {
+                unwrappedCameraX = presentation.cameraX;
+                unwrappedCameraY = presentation.cameraY;
+                cameraGeneration = snapshot.generation;
+                hasCameraHistory = true;
+            }
+            else
+            {
+                unwrappedCameraX += ModularDelta(presentation.cameraX, previousCameraX);
+                unwrappedCameraY += ModularDelta(presentation.cameraY, previousCameraY);
+            }
+
+            previousCameraX = presentation.cameraX;
+            previousCameraY = presentation.cameraY;
+            return true;
+        }
+
+        private UnityEnhancedWorldSnapshot BuildSnapshot()
+        {
+            bool reset = !hasBuiltSnapshot ||
+                         snapshot.generation != lastSnapshotGeneration ||
+                         snapshot.tick == 0;
+            var result = new UnityEnhancedWorldSnapshot
+            {
+                Generation = snapshot.generation,
+                Tick = snapshot.tick,
+                Reset = reset,
+                CameraPose = BuildCameraPose(),
+                Entities = BuildEntities(),
+                Terrain = BuildTerrainSnapshot(reset),
+                Water = BuildWaterSnapshot(reset),
+                NightLighting = UnityEnhancedNightLightingDescriptor.Level1Night(),
+                LocalLights = BuildLocalLights(),
+                VfxEvents = BuildVfxEvents(),
+                Quality = UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog)
+            };
+            lastSnapshotGeneration = snapshot.generation;
+            hasBuiltSnapshot = true;
+            return result;
+        }
+
+        private UnityEnhancedCameraPose BuildCameraPose()
+        {
+            float x = (float)(unwrappedCameraX + renderCamera.renderOffsetX) / SourceUnitsPerUnityUnit;
+            float y = presentation.cameraZ / SourceUnitsPerUnityUnit;
+            float z = (float)(unwrappedCameraY + renderCamera.renderOffsetY) / SourceUnitsPerUnityUnit;
+            float yaw = 180f - renderCamera.yaw * (360f / 2048f);
+            float pitch = -SignedAngle11(presentation.cameraPitch) * (360f / 2048f);
+            float roll = -SignedAngle11(presentation.cameraRoll) * (360f / 2048f);
+            float fov = Mathf.Clamp(VerticalFov(presentation.cameraFov), 30f, 120f);
+            return new UnityEnhancedCameraPose(
+                new Vector3(x, y, z),
+                Quaternion.Euler(pitch, yaw, roll),
+                fov);
+        }
+
+        private UnityEnhancedTerrainSnapshot BuildTerrainSnapshot(bool reset)
+        {
+            float[] heights = new float[TerrainCellCount];
+            for (int index = 0; index < heights.Length; index++)
+            {
+                heights[index] = terrainHeights[index] * 32f / SourceUnitsPerUnityUnit;
+            }
+
+            return new UnityEnhancedTerrainSnapshot
+            {
+                Generation = snapshot.generation,
+                Tick = snapshot.tick,
+                Reset = reset,
+                Width = TerrainWidth,
+                Height = TerrainHeight,
+                CellSize = TerrainCellSize,
+                Origin = Vector3.zero,
+                Heights = heights,
+                TerrainTypes = (byte[])terrainTypes.Clone(),
+                Shade = (byte[])terrainShade.Clone(),
+                Angles = (byte[])terrainAngles.Clone(),
+                DirtyRegions = reset || snapshot.tick == 0
+                    ? new[] { new UnityEnhancedTerrainDirtyRegion(0, 0, TerrainWidth, TerrainHeight) }
+                    : Array.Empty<UnityEnhancedTerrainDirtyRegion>(),
+                WrapMode = UnityEnhancedTerrainWrapMode.Repeat
+            };
+        }
+
+        private UnityEnhancedWaterSnapshot BuildWaterSnapshot(bool reset)
+        {
+            byte[] shoreline = new byte[TerrainCellCount];
+            bool hasWater = false;
+            for (int index = 0; index < shoreline.Length; index++)
+            {
+                if (terrainTypes[index] == 0)
+                {
+                    shoreline[index] = 1;
+                    hasWater = true;
+                }
+            }
+
+            return new UnityEnhancedWaterSnapshot
+            {
+                Generation = snapshot.generation,
+                Tick = snapshot.tick,
+                Reset = reset,
+                Level = 0f,
+                Center = new Vector3(TerrainWidth * TerrainCellSize * 0.5f, 0f, TerrainHeight * TerrainCellSize * 0.5f),
+                Size = new Vector2(TerrainWidth * TerrainCellSize, TerrainHeight * TerrainCellSize),
+                ReflectionEnabled = hasWater,
+                ShorelineMask = shoreline,
+                ShorelineWidth = TerrainWidth,
+                ShorelineHeight = TerrainHeight,
+                ShorelineCellSize = TerrainCellSize
+            };
+        }
+
+        private UnityEnhancedEntitySnapshot[] BuildEntities()
+        {
+            var result = new List<UnityEnhancedEntitySnapshot>(entities.Length);
+            for (int index = 0; index < entities.Length; index++)
+            {
+                EntitySnapshot source = entities[index];
+                int family = PresentationFamily(source, snapshot.entityIndex);
+                if (!UnityEnhancedActorPresentation.HasCoverage(family))
+                {
+                    family = (int)UnityEnhancedPresentationFamily.Generic;
+                }
+
+                ushort sourceX = source.x;
+                ushort sourceY = source.y;
+                float x = (float)(unwrappedCameraX + ModularDelta(sourceX, presentation.cameraX)) / SourceUnitsPerUnityUnit;
+                float z = (float)(unwrappedCameraY + ModularDelta(sourceY, presentation.cameraY)) / SourceUnitsPerUnityUnit;
+                float y = source.z / SourceUnitsPerUnityUnit;
+                ulong stableIdentity = ((ulong)snapshot.generation << 32) | (uint)(source.entityIndex + 1);
+                result.Add(new UnityEnhancedEntitySnapshot
+                {
+                    StableIdentity = stableIdentity,
+                    Generation = snapshot.generation,
+                    Position = new Vector3(x, y, z),
+                    Rotation = Quaternion.Euler(0f, 180f - source.yaw * (360f / 2048f), 0f),
+                    Visible = source.active != 0,
+                    PresentationFamily = family,
+                    FacingDegrees = 180f - source.yaw * (360f / 2048f),
+                    AnimationPhase = source.phase / 255f,
+                    Scale = family == (int)UnityEnhancedPresentationFamily.Player ? 1.25f : 1f,
+                    RenderLayer = source.entityIndex
+                });
+            }
+
+            return result.ToArray();
+        }
+
+        private UnityEnhancedLocalLightRequest[] BuildLocalLights()
+        {
+            var result = new List<UnityEnhancedLocalLightRequest>();
+            for (int index = 0; index < entities.Length && result.Count < 24; index++)
+            {
+                EntitySnapshot source = entities[index];
+                int family = PresentationFamily(source, snapshot.entityIndex);
+                if (family != (int)UnityEnhancedPresentationFamily.Firefly &&
+                    family != (int)UnityEnhancedPresentationFamily.Mana &&
+                    family != (int)UnityEnhancedPresentationFamily.Projectile &&
+                    family != (int)UnityEnhancedPresentationFamily.Impact)
+                {
+                    continue;
+                }
+
+                Vector3 position = EntityPosition(source);
+                Color color = family == (int)UnityEnhancedPresentationFamily.Firefly
+                    ? new Color(0.48f, 0.92f, 0.28f, 1f)
+                    : new Color(0.22f, 0.64f, 1f, 1f);
+                result.Add(new UnityEnhancedLocalLightRequest(
+                    ((ulong)snapshot.generation << 32) | (uint)(source.entityIndex + 1),
+                    position,
+                    color,
+                    family == (int)UnityEnhancedPresentationFamily.Impact ? 2.5f : 1.5f,
+                    family == (int)UnityEnhancedPresentationFamily.Impact ? 8f : 5f,
+                    source.entityIndex));
+            }
+
+            return result.ToArray();
+        }
+
+        private UnityEnhancedVfxEvent[] BuildVfxEvents()
+        {
+            if (snapshot.fireSequence == previousFireSequence)
+            {
+                return Array.Empty<UnityEnhancedVfxEvent>();
+            }
+
+            previousFireSequence = snapshot.fireSequence;
+            nextVfxSequence++;
+            return new[]
+            {
+                new UnityEnhancedVfxEvent(
+                    nextVfxSequence,
+                    snapshot.generation,
+                    snapshot.tick,
+                    ((ulong)snapshot.generation << 32) | (uint)(snapshot.entityIndex + 1),
+                    UnityEnhancedVfxKind.SpellCast,
+                    EntityPosition(FindEntity(snapshot.entityIndex)),
+                    1.2f,
+                    12)
+            };
+        }
+
+        private Vector3 EntityPosition(EntitySnapshot source)
+        {
+            if (source.entityIndex == 0 && source.active == 0)
+            {
+                return BuildCameraPose().Position;
+            }
+
+            float x = (float)(unwrappedCameraX + ModularDelta(source.x, presentation.cameraX)) / SourceUnitsPerUnityUnit;
+            float y = source.z / SourceUnitsPerUnityUnit;
+            float z = (float)(unwrappedCameraY + ModularDelta(source.y, presentation.cameraY)) / SourceUnitsPerUnityUnit;
+            return new Vector3(x, y, z);
+        }
+
+        private EntitySnapshot FindEntity(ushort entityIndex)
+        {
+            for (int index = 0; index < entities.Length; index++)
+            {
+                if (entities[index].entityIndex == entityIndex)
+                {
+                    return entities[index];
+                }
+            }
+
+            return default(EntitySnapshot);
+        }
+
+        private static int PresentationFamily(EntitySnapshot source, ushort playerEntityIndex)
+        {
+            if (source.entityIndex == playerEntityIndex)
+            {
+                return (int)UnityEnhancedPresentationFamily.Player;
+            }
+
+            if (source.classId == 2)
+            {
+                return source.model == 2
+                    ? (int)UnityEnhancedPresentationFamily.Dolmen
+                    : (int)UnityEnhancedPresentationFamily.Tree;
+            }
+
+            if (source.classId == 5)
+            {
+                switch (source.model)
+                {
+                    case 1: return (int)UnityEnhancedPresentationFamily.Goat;
+                    case 4: return (int)UnityEnhancedPresentationFamily.Archer;
+                    case 13: return (int)UnityEnhancedPresentationFamily.Villager;
+                    case 19: return (int)UnityEnhancedPresentationFamily.Firefly;
+                    default: return (int)UnityEnhancedPresentationFamily.Generic;
+                }
+            }
+
+            if (source.classId == 3)
+            {
+                return (int)UnityEnhancedPresentationFamily.Castle;
+            }
+
+            if (source.classId == 10)
+            {
+                return source.model == 5
+                    ? (int)UnityEnhancedPresentationFamily.Impact
+                    : (int)UnityEnhancedPresentationFamily.Smoke;
+            }
+
+            if (source.classId == 15)
+            {
+                return (int)UnityEnhancedPresentationFamily.SpellJar;
+            }
+
+            return (int)UnityEnhancedPresentationFamily.Generic;
+        }
+
+        private static int ModularDelta(ushort current, ushort previous)
+        {
+            return ((current - previous + 32768) & 0xffff) - 32768;
+        }
+
+        private static sbyte ClampInt8(float value)
+        {
+            int rounded = Mathf.RoundToInt(value);
+            return (sbyte)Mathf.Clamp(rounded, sbyte.MinValue, sbyte.MaxValue);
+        }
+
+        private static short SignedAngle11(short value)
+        {
+            int result = value & 0x07ff;
+            return (short)(result >= 1024 ? result - 2048 : result);
+        }
+
+        private static float VerticalFov(short sourceFov)
+        {
+            if (sourceFov <= 0)
+            {
+                return 70f;
+            }
+
+            int sourceScale = (7 * 377 * sourceFov) >> 11;
+            if (sourceScale <= 0)
+            {
+                return 70f;
+            }
+
+            return 2f * Mathf.Atan(120f / sourceScale) * Mathf.Rad2Deg;
+        }
+
+        private static ulong HashEntities(EntitySnapshot[] values)
+        {
+            unchecked
+            {
+                ulong hash = 0xcbf29ce484222325UL;
+                for (int index = 0; index < values.Length; index++)
+                {
+                    hash ^= values[index].entityIndex;
+                    hash *= 0x100000001b3UL;
+                    hash ^= values[index].x;
+                    hash *= 0x100000001b3UL;
+                    hash ^= values[index].y;
+                    hash *= 0x100000001b3UL;
+                    hash ^= (uint)values[index].z;
+                    hash *= 0x100000001b3UL;
+                    hash ^= values[index].active;
+                    hash *= 0x100000001b3UL;
+                }
+
+                return hash;
+            }
+        }
+
+        private static bool AllZero(uint[] values)
+        {
+            if (values == null)
+            {
+                return false;
+            }
+
+            for (int index = 0; index < values.Length; index++)
+            {
+                if (values[index] != 0) return false;
+            }
+
+            return true;
+        }
+
+        private static bool AllZero(byte[] values)
+        {
+            if (values == null)
+            {
+                return false;
+            }
+
+            for (int index = 0; index < values.Length; index++)
+            {
+                if (values[index] != 0) return false;
+            }
+
+            return true;
+        }
+
+        private bool ValidateSessionSnapshot(out string reason)
+        {
+            if (snapshot.abiVersion != AbiVersion ||
+                snapshot.structSize != SessionSnapshotSize ||
+                snapshot.generation == 0 ||
+                snapshot.reserved0 != 0 ||
+                !AllZero(snapshot.reserved1) ||
+                !AllZero(snapshot.reserved))
+            {
+                reason = "Unity Enhanced owner session snapshot failed its ABI/layout contract";
+                return false;
+            }
+
+            reason = string.Empty;
+            return true;
+        }
+
+        private static string StatusReason(string operation, int status)
+        {
+            string nativeMessage = string.Empty;
+            try
+            {
+                if (mc_native_last_error_length(out uint length) == 0 && length > 0)
+                {
+                    byte[] buffer = new byte[checked((int)length + 1)];
+                    if (mc_native_last_error_copy(buffer, (uint)buffer.Length, out uint written) == 0)
+                    {
+                        nativeMessage = Encoding.UTF8.GetString(buffer, 0, checked((int)written));
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                nativeMessage = string.Empty;
+            }
+
+            return string.IsNullOrEmpty(nativeMessage)
+                ? operation + " returned status " + status
+                : operation + " returned status " + status + ": " + nativeMessage;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Command
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public sbyte opcode;
+            public sbyte argument1;
+            public sbyte argument2;
+            public sbyte roll;
+            public sbyte pitch;
+            public sbyte flags;
+            public short requestedSpell;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct CameraInput
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public ushort lookYaw;
+            public ushort lookPitch;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SessionSnapshot
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public ulong generation;
+            public ulong tick;
+            public ulong eventHead;
+            public ulong stateHash;
+            public ulong conformanceHash;
+            public ushort entityIndex;
+            public ushort x;
+            public ushort y;
+            public short z;
+            public short yaw;
+            public short displayPitch;
+            public short effectivePitch;
+            public short rollAccumulator;
+            public short targetSpeed;
+            public short actualSpeed;
+            public short strafeSpeed;
+            public byte phase;
+            public byte lastResolution;
+            public byte profile;
+            public byte localPlayerSlot;
+            public byte leftSpellSlot;
+            public byte rightSpellSlot;
+            public byte selectedSpellUiIndex;
+            public byte objectiveTextboxTicks;
+            public byte objectiveCount;
+            public byte objectivesAuthority;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
+            public byte[] reserved1;
+            public ushort leftSpellHolder;
+            public ushort rightSpellHolder;
+            public ushort selectedSpellHolder;
+            public ushort reserved0;
+            public int casterMana;
+            public int maptypeMusic;
+            public uint fireSequence;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct PresentationState
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public ulong generation;
+            public ulong tick;
+            public int sourceTurn;
+            public ushort cameraX;
+            public ushort cameraY;
+            public short cameraZ;
+            public short cameraYaw;
+            public short cameraPitch;
+            public short cameraRoll;
+            public short cameraFov;
+            public byte cameraAuthority;
+            public byte cameraFlags;
+            public uint reserved0;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RenderCameraState
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public ulong generation;
+            public ulong tick;
+            public int sourceTurn;
+            public ushort historyX;
+            public ushort historyY;
+            public short eyeZ;
+            public short yaw;
+            public short pitch;
+            public short roll;
+            public short fov;
+            public short slopeTargetX;
+            public short slopeTargetY;
+            public short renderOffsetX;
+            public short renderOffsetY;
+            public byte authority;
+            public byte flags;
+            public ushort reserved0;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct TerrainState
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public ulong generation;
+            public ulong tick;
+            public ulong mutationSequence;
+            public ulong terrainHash;
+            public ushort width;
+            public ushort height;
+            public byte planeCount;
+            public byte hashSchema;
+            public byte authority;
+            public byte reserved0;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct EntitySnapshot
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public ushort entityIndex;
+            public ushort parameterRecordIndex;
+            public byte authority;
+            public byte active;
+            public byte classId;
+            public byte model;
+            public byte action;
+            public byte phase;
+            public byte hasParameterRecord;
+            public byte reserved0;
+            public ushort x;
+            public ushort y;
+            public short z;
+            public short yaw;
+            public short pitch;
+            public short fov;
+            public short actualSpeed;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public uint[] reserved;
+        }
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_session_open(
+            byte[] packageDir,
+            uint packageDirLength,
+            byte[] closurePath,
+            uint closurePathLength,
+            out ulong handle);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_session_destroy(ulong handle);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_session_reset(
+            ulong handle,
+            out SessionSnapshot snapshot,
+            uint snapshotSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_session_step_with_camera(
+            ulong handle,
+            ref Command command,
+            ref CameraInput cameraInput,
+            out SessionSnapshot snapshot,
+            uint snapshotSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_presentation_state(
+            ulong handle,
+            out PresentationState state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_render_camera_state(
+            ulong handle,
+            out RenderCameraState state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_session_terrain_state(
+            ulong handle,
+            out TerrainState state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_terrain_plane_length(
+            ulong handle,
+            uint kind,
+            out uint count);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_terrain_plane_copy_u8(
+            ulong handle,
+            uint kind,
+            [Out] byte[] buffer,
+            uint capacity,
+            out uint written);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_entity_count(
+            ulong handle,
+            out uint count);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_entities_copy(
+            ulong handle,
+            uint startIndex,
+            [Out] EntitySnapshot[] buffer,
+            uint capacity,
+            uint elementSize,
+            out uint written);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_last_error_length(out uint length);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_last_error_copy(
+            byte[] buffer,
+            uint capacity,
+            out uint written);
+    }
+}

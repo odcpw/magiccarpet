@@ -28,6 +28,7 @@ namespace MagicCarpet.PresentationLab
         private OwnerInputValidation ownerValidation;
         private ClassicHdSettingsLoadResult classicHdSettingsResult;
         private ClassicHdPresentation classicHdPresentation;
+        private UnityEnhancedOwnerSessionSource enhancedOwnerSession;
         private string statusLine;
         private GUIStyle badgeStyle;
         private GUIStyle detailStyle;
@@ -46,6 +47,7 @@ namespace MagicCarpet.PresentationLab
             get { return classicHdSettingsResult == null ? string.Empty : classicHdSettingsResult.SettingsPath; }
         }
         public UnityEnhancedWorldRoot EnhancedRoot { get { return enhancedRoot; } }
+        public UnityEnhancedOwnerSessionSource EnhancedOwnerSession { get { return enhancedOwnerSession; } }
 
         private void Awake()
         {
@@ -122,6 +124,22 @@ namespace MagicCarpet.PresentationLab
                 }
 
                 enhancedRoot.Open(SelectedMode, sessionLease);
+                enhancedOwnerSession = new UnityEnhancedOwnerSessionSource();
+                string enhancedSourceError;
+                if (!enhancedOwnerSession.Configure(
+                        packagePath,
+                        closurePath,
+                        cachePath,
+                        out enhancedSourceError))
+                {
+                    enhancedOwnerSession.Dispose();
+                    enhancedOwnerSession = null;
+                    enhancedRoot.Close();
+                    sessionLease.Dispose();
+                    sessionLease = null;
+                    statusLine = "UNITY ENHANCED PRESENTATION FAILED CLOSED: " + enhancedSourceError;
+                    return;
+                }
             }
 
             statusLine = "PRESENTATION SESSION OPEN: " + ModeName(SelectedMode) +
@@ -131,6 +149,12 @@ namespace MagicCarpet.PresentationLab
 
         private void OnDestroy()
         {
+            if (enhancedOwnerSession != null)
+            {
+                enhancedOwnerSession.Dispose();
+                enhancedOwnerSession = null;
+            }
+
             if (enhancedRoot != null)
             {
                 enhancedRoot.Close();
@@ -148,6 +172,88 @@ namespace MagicCarpet.PresentationLab
                 sessionLease.Dispose();
                 sessionLease = null;
             }
+        }
+
+        private void Update()
+        {
+            if (SelectedMode != PresentationModeId.UnityEnhanced ||
+                enhancedOwnerSession == null ||
+                enhancedRoot == null ||
+                enhancedRoot.State != UnityEnhancedLifecycleState.Open)
+            {
+                return;
+            }
+
+            string reason;
+            if (!CaptureEnhancedFrame(
+                    Input.GetAxisRaw("Horizontal"),
+                    Input.GetAxisRaw("Vertical"),
+                    Input.GetMouseButton(0),
+                    SpellSelectionFromInput(),
+                    out reason))
+            {
+                statusLine = "UNITY ENHANCED CAPTURE STOPPED: " + reason;
+            }
+        }
+
+        /// <summary>
+        /// Advances the owner-backed Enhanced route once. Editor qualification
+        /// commands use this method with a deterministic input recording; the
+        /// normal player loop samples the host input in Update above.
+        /// </summary>
+        public bool CaptureEnhancedFrame(
+            float horizontalInput,
+            float verticalInput,
+            bool cast,
+            int spellSelection,
+            out string reason)
+        {
+            reason = string.Empty;
+            if (enhancedOwnerSession == null || enhancedRoot == null)
+            {
+                reason = "Unity Enhanced owner session is not configured";
+                return false;
+            }
+
+            if (!enhancedOwnerSession.Advance(
+                    horizontalInput,
+                    verticalInput,
+                    cast,
+                    spellSelection,
+                    out UnityEnhancedWorldSnapshot snapshot,
+                    out reason))
+            {
+                return false;
+            }
+
+            if (!enhancedRoot.ApplySnapshot(snapshot))
+            {
+                reason = "Unity Enhanced rejected the owner snapshot at generation " +
+                         snapshot.Generation + " tick " + snapshot.Tick +
+                         (string.IsNullOrEmpty(enhancedRoot.LastRejectReason)
+                             ? string.Empty
+                             : ": " + enhancedRoot.LastRejectReason);
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Replays the owner session from its Rust reset boundary without
+        /// recreating the Unity hierarchy. The next accepted snapshot carries
+        /// the generation reset and clears presentation-only pools.
+        /// </summary>
+        public bool ResetEnhancedOwnerSession(out string reason)
+        {
+            reason = string.Empty;
+            if (enhancedOwnerSession == null || enhancedRoot == null)
+            {
+                reason = "Unity Enhanced owner session is not configured";
+                return false;
+            }
+
+            return enhancedOwnerSession.Reset(out reason);
         }
 
         private void OnGUI()
@@ -229,14 +335,30 @@ namespace MagicCarpet.PresentationLab
 
         private string PresentationDetail()
         {
+            if (SelectedMode == PresentationModeId.UnityEnhanced)
+            {
+                return enhancedOwnerSession == null
+                    ? "Unity Enhanced diagnostic shell"
+                    : "owner-bound Rust snapshots / URP terrain / generated presentation families";
+            }
+
             if (SelectedMode != PresentationModeId.ClassicHd || ClassicHdSettings == null)
             {
-                return "Unity Enhanced lab placeholder";
+                return "presentation lab diagnostic shell";
             }
 
             return ClassicHdSettings.profile + " / " + ClassicHdSettings.assetTier +
                    " / persistent R8 surface / owner-bound Rust profile-sized rerender / " +
                    (classicHdSettingsResult.UsedDefaults ? "defaults" : "settings file");
+        }
+
+        private static int SpellSelectionFromInput()
+        {
+            if (Input.GetKeyDown(KeyCode.Alpha1)) return 0;
+            if (Input.GetKeyDown(KeyCode.Alpha2)) return 1;
+            if (Input.GetKeyDown(KeyCode.Alpha3)) return 2;
+            if (Input.GetKeyDown(KeyCode.Alpha4)) return 3;
+            return -1;
         }
 
         private static void ApplyClassicHdOutputSettings(ClassicHdPresentationSettings settings)

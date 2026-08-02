@@ -26,6 +26,11 @@ python3 research/private/remc2-presentation/validate_enhanced_coverage.py
 python3 -m unittest research/private/remc2-presentation/tests/test_enhanced_coverage.py -v
 ```
 
-The current Unity lab remains a mode/session diagnostic shell. This artifact
-does not claim that the shell already renders the listed content; it defines
-the exact fields GFX-Q must add while preserving Rust as gameplay authority.
+The Unity lab now has an owner-bound Level 1 presentation slice for the live
+native-v2 terrain/camera/entity surfaces, including generated terrain, mapped
+actor families, night lighting, water, and reset-safe snapshot application.
+The sequence smoke is recorded separately from visual-corpus acceptance. This
+artifact still does not claim that every listed content row is rendered: the
+unmapped projectiles, buildings, lifecycle events, pickups, authored tuples,
+full combat/restart routes, and owner GPU/scenario matrix remain explicit
+GFX-Q/GFX-O work while Rust stays gameplay authority.

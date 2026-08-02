@@ -26,6 +26,9 @@ PROFILE_960_SEQUENCE_ARTIFACT = Path(__file__).with_name(
 PROFILE_960_SEQUENCE_FAILURE_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-route-960x720-sequence-failure.json"
 )
+ENHANCED_OWNER_SEQUENCE_ARTIFACT = Path(__file__).with_name(
+    "unity-enhanced-owner-route-sequence-smoke.json"
+)
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -127,6 +130,51 @@ def validate_profile_smoke_artifact(
     status = str(artifact.get("qualification_status", ""))
     if "pending" not in status and "open" not in status:
         errors.append("profile smoke must keep sustained qualification pending/open")
+    return errors
+
+
+def validate_enhanced_owner_sequence_artifact(
+    path: Path = ENHANCED_OWNER_SEQUENCE_ARTIFACT,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"Unity Enhanced owner sequence artifact read failed: {error}"]
+
+    if artifact.get("schema_version") != 1:
+        errors.append("Unity Enhanced owner sequence schema_version must be 1")
+    if artifact.get("kind") != "unity-enhanced-owner-route-sequence-smoke/v1":
+        errors.append("Unity Enhanced owner sequence artifact kind is wrong")
+    if artifact.get("mode") != "unity-enhanced":
+        errors.append("Unity Enhanced owner sequence artifact mode is wrong")
+    if artifact.get("native_abi") != "sim-capi-v2":
+        errors.append("Unity Enhanced owner sequence must identify sim-capi-v2")
+    if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
+        errors.append("Unity Enhanced owner sequence must keep owner inputs external")
+    if artifact.get("frames_per_pass") != 8 or artifact.get("pass_count") != 2:
+        errors.append("Unity Enhanced owner sequence must retain two eight-frame passes")
+    if artifact.get("frame_count") != 16 or artifact.get("reset_replay") is not True:
+        errors.append("Unity Enhanced owner sequence must prove reset replay over 16 frames")
+    if artifact.get("first_tick") != 8 or artifact.get("second_tick") != 8:
+        errors.append("Unity Enhanced owner sequence must reach tick 8 in both passes")
+    if artifact.get("active_entity_count", 0) <= 0 or artifact.get("active_visual_count", 0) <= 0:
+        errors.append("Unity Enhanced owner sequence must apply active owner entities to Unity")
+    if artifact.get("terrain_vertex_count", 0) <= 0 or artifact.get("shoreline_cell_count", 0) <= 0:
+        errors.append("Unity Enhanced owner sequence must apply terrain and shoreline geometry")
+    if artifact.get("night_lighting") is not True or artifact.get("reflection") is not True:
+        errors.append("Unity Enhanced owner sequence must apply night lighting and reflection")
+    for field in (
+        "state_sequence_hash",
+        "terrain_sequence_hash",
+        "world_sequence_hash",
+        "log_sha256",
+    ):
+        if not isinstance(artifact.get(field), str) or not artifact[field]:
+            errors.append(f"Unity Enhanced owner sequence is missing {field}")
+    status = str(artifact.get("qualification_status", ""))
+    if "open" not in status:
+        errors.append("Unity Enhanced owner sequence must keep broader gates open")
     return errors
 
 
@@ -232,6 +280,11 @@ def verify() -> dict[str, Any]:
     _validator_result("isolated Unity presentation lab", lambda: lab.verify(LAB_ROOT), checks)
     _validator_result("Unity Enhanced lifecycle shell", lambda: enhanced.verify(LAB_ROOT), checks)
     _validator_result("owner-bound Classic HD sequence artifact", validate_sequence_artifact, checks)
+    _validator_result(
+        "owner-bound Unity Enhanced sequence artifact",
+        validate_enhanced_owner_sequence_artifact,
+        checks,
+    )
     _validator_result(
         "owner-bound Classic HD 960x720 sequence artifact",
         lambda: validate_sequence_artifact(PROFILE_960_SEQUENCE_ARTIFACT, "classic-hd-960x720", 960, 720),

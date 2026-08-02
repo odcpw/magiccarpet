@@ -35,6 +35,7 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
         script_root / "UnityEnhancedVfxPresentation.cs",
         script_root / "UnityEnhancedQualityAndPost.cs",
         script_root / "UnityEnhancedDiagnostics.cs",
+        script_root / "UnityEnhancedOwnerSessionSource.cs",
     ]
 
     _check(checks, "project exists", project_root.is_dir(), str(project_root))
@@ -62,6 +63,10 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     _check(checks, "URP quality/post and spatial upscaling are gated", all(token in source_text for token in ("UniversalAdditionalCameraData", "Volume", "renderScale", "UpscalingFilterSelection", "TemporalMode", "TemporalUpscalingEnabled")), str(script_root / "UnityEnhancedQualityAndPost.cs"))
     _check(checks, "support diagnostics are path-free and measurable", all(token in source_text for token in ("UnityEnhancedPresentationMetrics", "BuildSupportReport", "LastFrameMilliseconds", "DroppedEffects", "DroppedLights", "MeetsFrameBudget")), str(script_root / "UnityEnhancedDiagnostics.cs"))
     _check(checks, "Boot router opens and closes Enhanced root", all(token in router_text for token in ("FindFirstObjectByType<UnityEnhancedWorldRoot>", "enhancedRoot.Open(SelectedMode, sessionLease)", "enhancedRoot.Close()")), str(router_path))
+    owner_source_path = script_root / "UnityEnhancedOwnerSessionSource.cs"
+    owner_source_text = owner_source_path.read_text(encoding="utf-8") if owner_source_path.is_file() else ""
+    _check(checks, "owner-bound Enhanced source consumes native v2 observations", all(token in owner_source_text for token in ("UnityEnhancedOwnerSessionSource", "mc_native_session_open", "mc_native_session_step_with_camera", "mc_native_terrain_plane_copy_u8", "mc_native_entities_copy", "ReadObservations", "BuildSnapshot")), str(owner_source_path))
+    _check(checks, "owner-bound Enhanced route is explicit and reset-safe", all(token in router_text for token in ("enhancedOwnerSession.Configure", "CaptureEnhancedFrame", "ResetEnhancedOwnerSession")), str(router_path))
     _check(checks, "no gameplay or renderer-boundary imports", not any(token in source_text for token in ("remc2-unity-native", "MagicCarpet.Native", "NativeSession", "VoxelMode")), str(script_root))
     _check(checks, "no physics authority is present", "Collider" not in source_text and "Rigidbody" not in source_text, str(script_root))
 

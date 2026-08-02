@@ -97,6 +97,7 @@ namespace MagicCarpet.PresentationLab
         private bool hasSnapshot;
 
         public UnityEnhancedLifecycleState State { get; private set; }
+        public string LastRejectReason { get; private set; }
         public ulong Generation { get { return generation; } }
         public ulong LastTick { get { return lastTick; } }
         public int ActiveEntityCount { get { return activeEntities.Count; } }
@@ -191,6 +192,7 @@ namespace MagicCarpet.PresentationLab
             hasSnapshot = false;
             generation = 0;
             lastTick = 0;
+            LastRejectReason = string.Empty;
             State = UnityEnhancedLifecycleState.Closed;
         }
 
@@ -200,13 +202,18 @@ namespace MagicCarpet.PresentationLab
         /// </summary>
         public bool ApplySnapshot(UnityEnhancedWorldSnapshot snapshot)
         {
+            LastRejectReason = string.Empty;
             if (State != UnityEnhancedLifecycleState.Open || snapshot == null)
             {
+                LastRejectReason = snapshot == null
+                    ? "snapshot was null"
+                    : "Enhanced root was not open";
                 return false;
             }
 
             if (!ValidateSnapshot(snapshot))
             {
+                LastRejectReason = "snapshot identity or generation validation failed";
                 if (diagnostics != null) diagnostics.RecordRejectedSnapshot();
                 State = UnityEnhancedLifecycleState.Faulted;
                 return false;
@@ -214,6 +221,7 @@ namespace MagicCarpet.PresentationLab
 
             if (hasSnapshot && snapshot.Generation == generation && snapshot.Tick < lastTick)
             {
+                LastRejectReason = "snapshot tick regressed within its generation";
                 if (diagnostics != null) diagnostics.RecordRejectedSnapshot();
                 return false;
             }
@@ -225,6 +233,7 @@ namespace MagicCarpet.PresentationLab
 
             if (snapshot.Terrain != null && !terrainPresentation.ApplySnapshot(snapshot.Terrain))
             {
+                LastRejectReason = "terrain presentation rejected snapshot";
                 if (diagnostics != null) diagnostics.RecordRejectedSnapshot();
                 State = UnityEnhancedLifecycleState.Faulted;
                 return false;
@@ -232,6 +241,7 @@ namespace MagicCarpet.PresentationLab
 
             if (snapshot.Water != null && !waterPresentation.ApplySnapshot(snapshot.Water))
             {
+                LastRejectReason = "water presentation rejected snapshot";
                 if (diagnostics != null) diagnostics.RecordRejectedSnapshot();
                 State = UnityEnhancedLifecycleState.Faulted;
                 return false;
@@ -248,6 +258,7 @@ namespace MagicCarpet.PresentationLab
 
             if (snapshot.Quality != null && !qualityAndPost.Apply(snapshot.Quality, cameraRig.PresentationCamera))
             {
+                LastRejectReason = "quality/post presentation rejected snapshot";
                 if (diagnostics != null) diagnostics.RecordRejectedSnapshot();
                 State = UnityEnhancedLifecycleState.Faulted;
                 return false;
@@ -376,6 +387,7 @@ namespace MagicCarpet.PresentationLab
             generation = nextGeneration;
             lastTick = 0;
             hasSnapshot = false;
+            LastRejectReason = string.Empty;
             State = UnityEnhancedLifecycleState.Open;
             presentationAdapters.Reset(nextGeneration);
             terrainPresentation.ResetPresentation(nextGeneration);
@@ -431,6 +443,7 @@ namespace MagicCarpet.PresentationLab
                     cameraRig = cameraObject.AddComponent<UnityEnhancedCameraRig>();
                 }
             }
+            cameraRig.EnsureCamera();
 
             if (InputAdapter == null)
             {

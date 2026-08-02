@@ -23,10 +23,14 @@ mutation.
 
 `mc_unity_enhanced_snapshot_page_fixture` and
 `mc_unity_enhanced_frame_state_fixture` are deterministic bridge fixtures.
-They are marked with `MC_ENHANCED_SNAPSHOT_FLAG_FIXTURE` and exist to lock the
-managed/native record layout and boundary behavior while the live
-`NativeSession` wiring is added. They are not a claim that Unity already owns
-the gameplay session or that a synthetic fixture is a renderer.
+They are marked with `MC_ENHANCED_SNAPSHOT_FLAG_FIXTURE` and continue to lock
+the managed/native record layout and boundary behavior. The isolated Unity
+presentation lab now also has an owner-bound adapter over the existing
+native-v2 session, camera, terrain-plane, and entity-copy surfaces. That
+adapter produces the same immutable generation-bound Unity snapshot shape and
+feeds the URP presentation hierarchy; it does not submit gameplay state back
+to Rust. The fixture ABI and the owner-bound v2 route are complementary
+surfaces, not a claim that Unity owns simulation authority.
 
 Focused gates:
 
@@ -35,6 +39,7 @@ cargo test -p sim-core enhanced_presentation --lib -j1   # 7 passed
 cargo test -p sim-capi enhanced_abi --lib -j1            # 4 passed
 ```
 
-The next integration bead binds a live Rust session to the same ledger and
-keeps the Classic HD and Unity Enhanced consumers on the same authoritative
-state/checkpoint path.
+The remaining integration work is to widen the owner-bound mapping from the
+currently covered Level 1 actor/terrain/night presentation slice to the full
+coverage matrix and scenario corpus, while keeping Classic HD, Unity
+Enhanced, and Exact on the same authoritative Rust checkpoint path.
