@@ -98,13 +98,28 @@ pub struct SpellHolderAcquisitionState {
     pub presentation_timer: u16,
     /// Player `SpellEnabled[family]` relation.
     pub holder_relation: u16,
-    /// Player `array_0x403_1027x.SpellIndex[family]` eligibility byte.
+    /// Player `array_0x3B5` hand-side byte (1 = left, 2 = right).
     pub eligibility: u8,
+    /// Player `array_0x403` learned/acquired byte, kept separate from hand
+    /// eligibility as in the source player record.
+    pub learned: u8,
     pub left_spell_slot: i16,
     pub right_spell_slot: i16,
     pub left_subspell_index: i8,
     pub right_subspell_index: i8,
     pub selected_tier: i8,
+    /// Lossless `SetSpell_6D5E0` source projection. These fields mirror the
+    /// authored entity bytes which are copied into the holder record when the
+    /// pickup is acquired (subSpellIndex, word_0x30, byte_0x3B, and mana
+    /// bookkeeping respectively).
+    pub subspell_index: u16,
+    pub word_0x30: u16,
+    pub byte_0x3b: u8,
+    pub byte_0x3c: u8,
+    pub font_type_index: u8,
+    pub mana_regen: i32,
+    pub max_mana: i32,
+    pub mana: i32,
     /// Source pickup life/cadence state consumed by `sub_68FF0` before the
     /// player scan.  A positive value is decremented and suppresses the scan
     /// for that pulse; reaching zero disables drawing while retaining the
@@ -136,11 +151,20 @@ impl SpellHolderAcquisitionState {
             presentation_timer: 0,
             holder_relation: 0,
             eligibility: 0,
+            learned: 0,
             left_spell_slot: -1,
             right_spell_slot: -1,
             left_subspell_index: 0,
             right_subspell_index: 0,
             selected_tier,
+            subspell_index: 0,
+            word_0x30: 0,
+            byte_0x3b: 0,
+            byte_0x3c: 0,
+            font_type_index: 0,
+            mana_regen: 0,
+            max_mana: 0,
+            mana: 0,
             source_life: 0,
             source_draw_enabled: true,
             return_side: 0,
@@ -168,6 +192,7 @@ pub enum SpellHolderAcquisitionFailure {
     InvalidSourceSlot,
     InvalidOwner,
     InvalidSourceAction,
+    InvalidTier,
     NoOverlap,
     AlreadyOwned,
 }
@@ -225,6 +250,9 @@ pub fn acquire_level2_spell_holder_with_return_side(
             SpellHolderAcquisitionFailure::InvalidSourceSlot,
         );
     }
+    if !(0..=2).contains(&state.selected_tier) {
+        return SpellHolderAcquisitionResult::Rejected(SpellHolderAcquisitionFailure::InvalidTier);
+    }
     if state.owner_entity_index == 0 {
         return SpellHolderAcquisitionResult::Rejected(SpellHolderAcquisitionFailure::InvalidOwner);
     }
@@ -245,6 +273,11 @@ pub fn acquire_level2_spell_holder_with_return_side(
         return SpellHolderAcquisitionResult::Rejected(SpellHolderAcquisitionFailure::AlreadyOwned);
     }
 
+    // SetSpell receives a source subspell index; the authored tables expose
+    // only tiers 0..2 for these rooted Level 2 families, so clamp malformed
+    // imported selections before hand and holder writes.
+    state.selected_tier = state.selected_tier.clamp(0, 2);
+
     // `sub_68FF0` writes the active action and owner relation first. The
     // persistent path then allocates an action-3f+2 replacement in source
     // order; allocation itself remains owned by the arena dispatcher.
@@ -260,7 +293,7 @@ pub fn acquire_level2_spell_holder_with_return_side(
     state.parent_entity_index = state.owner_entity_index;
     state.presentation_timer = 64;
     state.holder_relation = state.source_slot;
-    state.eligibility = 1;
+    state.learned = 1;
 
     // Exact source hand order: a remembered return-side flag wins and is
     // consumed.  Otherwise choose left when it is empty or the right hand is
@@ -276,6 +309,10 @@ pub fn acquire_level2_spell_holder_with_return_side(
         state.right_spell_slot = i16::from(state.family);
         state.right_subspell_index = state.selected_tier;
         SpellHand::Right
+    };
+    state.eligibility = match hand {
+        SpellHand::Left => 1,
+        SpellHand::Right => 2,
     };
     state.return_side = 0;
 
@@ -1352,6 +1389,7 @@ mod tests {
         assert_eq!(state.source_action, 36);
         assert_eq!(state.holder_relation, 38);
         assert_eq!(state.eligibility, 1);
+        assert_eq!(state.learned, 1);
         assert_eq!(state.left_spell_slot, 12);
         assert_eq!(state.left_subspell_index, 2);
     }

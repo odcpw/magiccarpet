@@ -142,6 +142,9 @@ const ENTITY_COUNT: usize = 1_000;
 const ENTITY_COUNT_U32: u32 = 1_000;
 const ENTITY_RECORD_BYTES: usize = 176;
 const ENTITY_RECORD_BYTES_U16: u16 = 176;
+/// `DisableEntityDrawing04_57F10` sets byte 17 bit 2 of the exported entity
+/// control dword (the source dword value is 0x400).
+const ENTITY_DRAW_DISABLED_BIT: u32 = 0x0000_0400;
 const PLAYER_COUNT: usize = 8;
 const PLAYER_COUNT_I16: i16 = 8;
 const PLAYER_COUNT_U32: u32 = 8;
@@ -400,9 +403,27 @@ pub struct EntitySnapshot {
     pub pitch: i16,
     pub fov: i16,
     pub phase: u8,
+    /// Source `subSpellIndex_0x2A_42` (the low word exported at bytes
+    /// 46..48 after the four-byte entity header). `SetSpell_6D5E0` carries
+    /// this into allocated spell holders.
+    pub subspell_index: u16,
+    /// Source `byte_0x3B_59`, exported at byte 63 after the four-byte entity
+    /// header and written by `SetSpell_6D5E0`.
+    pub byte_3b: u8,
+    /// Source `byte_0x3C_60`, reset by `SetSpell_6D5E0`.
+    pub byte_3c: u8,
+    /// Source `fontTypeIndex_0x3D_61`, reset by `SetSpell_6D5E0`.
+    pub font_type_index: u8,
     pub active_value: i16,
     pub activation_value: u16,
+    /// Source `manaRegen_0x88_136`, exported at bytes 140..144 after the
+    /// four-byte entity header.
+    pub mana_regen: i32,
     pub actual_speed: i16,
+    /// Source `maxMana_0x8C_140`, exported at bytes 144..148. `mana_cost`
+    /// remains as the historical activation-cost name for callers that use
+    /// the lossless entity projection.
+    pub max_mana: i32,
     pub mana_cost: i32,
     pub mana: i32,
     /// Signed source field at record offset 94. Active renderable rows use a
@@ -417,6 +438,21 @@ impl EntitySnapshot {
     #[must_use]
     pub fn record_bytes(&self) -> &[u8] {
         &self.record
+    }
+
+    /// Return the source draw-disable state written by
+    /// `DisableEntityDrawing04_57F10`. This is byte 17 bit 2 (the 0x400 bit
+    /// of the control dword), not byte 16 bit 0 used by pickup ownership.
+    #[must_use]
+    pub const fn drawing_disabled(&self) -> bool {
+        self.control_flags & ENTITY_DRAW_DISABLED_BIT != 0
+    }
+
+    /// Apply the source draw-disable write to both the typed control dword
+    /// and its lossless exported record bytes.
+    fn disable_drawing(&mut self) {
+        self.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        self.record[16..20].copy_from_slice(&self.control_flags.to_le_bytes());
     }
 
     #[cfg(test)]
@@ -473,6 +509,15 @@ impl EntitySnapshot {
     #[must_use]
     pub fn source_word_30(&self) -> u16 {
         u16::from_le_bytes([self.record[48], self.record[49]])
+    }
+
+    /// Exported `word_0x30_48` from the spell-holder source struct. The
+    /// entities export prepends a four-byte slot/active header, so this
+    /// source field is at record bytes 52..54. Keep this helper separate from
+    /// the legacy `source_word_30` projection used by older economy rows.
+    #[must_use]
+    pub fn source_spell_word_30(&self) -> u16 {
+        u16::from_le_bytes([self.record[52], self.record[53]])
     }
 
     /// Raw source `word_0x4A_74`, the return-side hand override consumed by
@@ -1103,6 +1148,9 @@ pub struct PlayerSnapshot {
     pub selected_subspell_index: i8,
     pub enabled_spell_holders: [u16; PLAYER_SPELL_COUNT],
     pub spell_hand_eligibility: [u8; PLAYER_SPELL_COUNT],
+    /// Source `array_0x403` learned/acquired flags (record 424..450), kept
+    /// distinct from the hand-side bytes at record 398..424.
+    pub learned_spell_flags: [u8; PLAYER_SPELL_COUNT],
     pub family_selected_tiers: [i8; PLAYER_SPELL_COUNT],
     record: Box<[u8]>,
 }
@@ -5928,13 +5976,23 @@ impl Level2SharedSpellResetSession {
                 );
                 state.holder_relation = local_player.enabled_spell_holders[family_index];
                 state.eligibility = local_player.spell_hand_eligibility[family_index];
+                state.learned = local_player.learned_spell_flags[family_index];
                 state.left_spell_slot = local_player.left_spell_slot_raw;
                 state.right_spell_slot = local_player.right_spell_slot_raw;
                 state.left_subspell_index = local_player.left_subspell_index;
                 state.right_subspell_index = local_player.right_subspell_index;
                 if let Some(source) = entities.get(usize::from(source_slot)) {
+                    state.subspell_index = source.subspell_index;
+                    state.word_0x30 = source.source_spell_word_30();
+                    state.byte_0x3b = source.byte_3b;
+                    state.byte_0x3c = source.byte_3c;
+                    state.font_type_index = source.font_type_index;
+                    state.mana_regen = source.mana_regen;
+                    state.max_mana = source.max_mana;
+                    state.mana = source.mana;
                     state.source_life = source.life;
-                    state.source_draw_enabled = source.control_flags & 1 == 0;
+                    state.source_draw_enabled =
+                        source.control_flags & ENTITY_DRAW_DISABLED_BIT == 0;
                     state.return_side = source.source_word_4a();
                 }
                 state
@@ -6147,10 +6205,12 @@ impl Level2SharedSpellResetSession {
         let owner = &mut self.players[owner_index];
         owner.enabled_spell_holders[family_index] = outcome.source_slot;
         owner.spell_hand_eligibility[family_index] = state.eligibility;
+        owner.learned_spell_flags[family_index] = state.learned;
         owner.family_selected_tiers[family_index] = state.selected_tier;
         owner.record[268 + family_index * 2..270 + family_index * 2]
             .copy_from_slice(&outcome.source_slot.to_le_bytes());
-        owner.record[424 + family_index] = state.eligibility;
+        owner.record[398 + family_index] = state.eligibility;
+        owner.record[424 + family_index] = state.learned;
         owner.record[528 + family_index] = state.selected_tier.to_le_bytes()[0];
         match outcome.hand {
             crate::spell_activation::SpellHand::Left => {
@@ -6179,16 +6239,52 @@ impl Level2SharedSpellResetSession {
             pickup.control_flags |= 1;
             pickup.record[16] |= 1;
             pickup.record[19] &= !2;
+            pickup.control_flags = u32::from_le_bytes(
+                pickup.record[16..20]
+                    .try_into()
+                    .expect("entity control flag record extent"),
+            );
             pickup.record[44..46].copy_from_slice(&state.parent_entity_index.to_le_bytes());
             pickup.action = outcome.holder_action;
             pickup.record[73] = outcome.holder_action;
             pickup.record[58..60].copy_from_slice(&state.presentation_timer.to_le_bytes());
-            // SetSpell_6D5E0's source-visible writes: selected tier and
-            // consumed return-side hand override.  The source keeps this
-            // entity in the pool but removes it from drawing via byte0 bit0.
+            // SetSpell_6D5E0's source-visible writes. An already-active
+            // holder updates only word_0x2C; a cold holder receives the full
+            // subspell/font/mana payload.
+            let active_word_2e = u16::from_le_bytes(
+                pickup.record[50..52]
+                    .try_into()
+                    .expect("entity word 0x2e record extent"),
+            );
+            if active_word_2e != 0 {
+                let loc_spell_id = u16::from(state.selected_tier.cast_unsigned()) + 1;
+                pickup.record[48..50].copy_from_slice(&loc_spell_id.to_le_bytes());
+            } else {
+                pickup.subspell_index = state.subspell_index;
+                pickup.record[46..48].copy_from_slice(&state.subspell_index.to_le_bytes());
+                pickup.record[52..54].copy_from_slice(&state.word_0x30.to_le_bytes());
+                pickup.activation_value = state.word_0x30;
+                pickup.byte_3b = state.byte_0x3b;
+                pickup.record[63] = state.byte_0x3b;
+                pickup.byte_3c = 0;
+                pickup.record[64] = 0;
+                pickup.action_marker = 0;
+                pickup.font_type_index = 0;
+                pickup.record[65] = 0;
+                pickup.mana_regen = state.mana_regen;
+                pickup.record[140..144].copy_from_slice(&state.mana_regen.to_le_bytes());
+                pickup.max_mana = state.max_mana;
+                pickup.mana_cost = state.max_mana;
+                pickup.record[144..148].copy_from_slice(&state.max_mana.to_le_bytes());
+                pickup.mana = state.mana;
+                pickup.record[148..152].copy_from_slice(&state.mana.to_le_bytes());
+            }
+            // Successful `sub_68FF0` sets the pickup ownership bit; it does
+            // not call DisableEntityDrawing. The latter is only applied by
+            // the positive-life prefix when life decrements from one to zero.
             pickup.record[74] = state.selected_tier.to_le_bytes()[0];
+            pickup.level_gate = state.selected_tier;
             pickup.record[78..80].copy_from_slice(&0_i16.to_le_bytes());
-            self.acquisitions[index].source_draw_enabled = false;
         }
         self.pickup_events
             .push(Level2SharedSpellEvent::SpellAcquired {
@@ -6202,7 +6298,7 @@ impl Level2SharedSpellResetSession {
             #[cfg(test)]
             audio_site: crate::MissionAudioSite::SpeedPickup,
             entity_index: owner.entity_index,
-            player_index: 0,
+            player_index: -1,
             sound_id: 18,
         });
         Ok(outcome)
@@ -6250,6 +6346,33 @@ impl Level2SharedSpellResetSession {
             )));
         };
         if !self.acquisitions[index].step_source_life() {
+            // `sub_68FF0` disables drawing exactly when the positive source
+            // life reaches zero. Keep the raw entity byte17 bit2/dword 0x400
+            // in lock-step with the typed cadence state.
+            let source_life = self.acquisitions[index].source_life;
+            if self.acquisitions[index].source_life == 0 {
+                let source_slot = self.acquisitions[index].source_slot;
+                if let Some(pickup) = self
+                    .pickups
+                    .iter_mut()
+                    .find(|entity| entity.index == source_slot)
+                {
+                    pickup.life = source_life;
+                    pickup.record[12..16].copy_from_slice(&source_life.to_le_bytes());
+                    pickup.disable_drawing();
+                }
+                self.acquisitions[index].source_draw_enabled = false;
+            } else {
+                let source_slot = self.acquisitions[index].source_slot;
+                if let Some(pickup) = self
+                    .pickups
+                    .iter_mut()
+                    .find(|entity| entity.index == source_slot)
+                {
+                    pickup.life = source_life;
+                    pickup.record[12..16].copy_from_slice(&source_life.to_le_bytes());
+                }
+            }
             return Ok(None);
         }
         let source_slot = self.acquisitions[index].source_slot;
@@ -6526,6 +6649,7 @@ impl Level2SharedSpellResetSession {
             hasher.update(state.presentation_timer.to_le_bytes());
             hasher.update(state.holder_relation.to_le_bytes());
             hasher.update([state.eligibility]);
+            hasher.update([state.learned]);
             hasher.update(state.left_spell_slot.to_le_bytes());
             hasher.update(state.right_spell_slot.to_le_bytes());
             hasher.update([
@@ -6534,6 +6658,13 @@ impl Level2SharedSpellResetSession {
                 state.selected_tier.to_le_bytes()[0],
                 u8::from(state.source_draw_enabled),
             ]);
+            hasher.update(state.subspell_index.to_le_bytes());
+            hasher.update(state.word_0x30.to_le_bytes());
+            hasher.update([state.byte_0x3b]);
+            hasher.update([state.byte_0x3c, state.font_type_index]);
+            hasher.update(state.mana_regen.to_le_bytes());
+            hasher.update(state.max_mana.to_le_bytes());
+            hasher.update(state.mana.to_le_bytes());
             hasher.update(state.source_life.to_le_bytes());
             hasher.update(state.return_side.to_le_bytes());
         }
@@ -7408,6 +7539,19 @@ impl Level2ResetSession {
                             source_slot,
                             message: error.to_string(),
                         }),
+                    }
+                    // The outer entity dispatcher advances byte_0x3E after
+                    // the action-bearing handler returns; keep the live
+                    // pickup record in that source cadence rather than
+                    // relying on test-only phase mutation.
+                    if let Some(pickup) = self
+                        .shared_spells
+                        .pickups
+                        .iter_mut()
+                        .find(|entity| entity.index == source_slot)
+                    {
+                        pickup.phase = pickup.phase.wrapping_add(1);
+                        pickup.record[66] = pickup.phase;
                     }
                 }
                 1 => match self.step_bad_stone_action_9(source_slot) {
@@ -10384,9 +10528,15 @@ fn parse_entities(bytes: &[u8]) -> Result<Vec<EntitySnapshot>> {
             pitch: read_i16(record, 34, "entity pitch")?,
             fov: read_i16(record, 38, "entity fov")?,
             phase: read_u8(record, 66, "entity phase")?,
+            subspell_index: read_u16(record, 46, "entity subspell index")?,
+            byte_3b: read_u8(record, 63, "entity byte 0x3b")?,
+            byte_3c: read_u8(record, 64, "entity byte 0x3c")?,
+            font_type_index: read_u8(record, 65, "entity font type index")?,
             active_value: read_i16(record, 50, "entity active value")?,
             activation_value: read_u16(record, 52, "entity activation value")?,
+            mana_regen: read_i32(record, 140, "entity mana regen")?,
             actual_speed: read_i16(record, 134, "entity actual speed")?,
+            max_mana: read_i32(record, 144, "entity max mana")?,
             mana_cost: read_i32(record, 144, "entity mana cost")?,
             mana: read_i32(record, 148, "entity mana")?,
             particle_parameter_index,
@@ -10462,6 +10612,8 @@ fn parse_players(bytes: &[u8], profile: OwnerPackageProfile) -> Result<Vec<Playe
         }
         let mut spell_hand_eligibility = [0_u8; PLAYER_SPELL_COUNT];
         spell_hand_eligibility.copy_from_slice(&record[398..424]);
+        let mut learned_spell_flags = [0_u8; PLAYER_SPELL_COUNT];
+        learned_spell_flags.copy_from_slice(&record[424..450]);
         let mut family_selected_tiers = [0_i8; PLAYER_SPELL_COUNT];
         for (tier, value) in family_selected_tiers.iter_mut().zip(&record[528..554]) {
             *tier = value.cast_signed();
@@ -10482,6 +10634,7 @@ fn parse_players(bytes: &[u8], profile: OwnerPackageProfile) -> Result<Vec<Playe
             selected_subspell_index,
             enabled_spell_holders: holders,
             spell_hand_eligibility,
+            learned_spell_flags,
             family_selected_tiers,
             record: record.to_vec().into_boxed_slice(),
         });
@@ -15891,6 +16044,7 @@ mod tests {
             session.shared_spells().acquisition_states()[family_index].source_life,
             1
         );
+        assert_eq!(session.shared_spells().pickups()[0].life, 1);
         assert!(
             session
                 .shared_spells_mut()
@@ -15902,7 +16056,14 @@ mod tests {
             session.shared_spells().acquisition_states()[family_index].source_life,
             0
         );
+        assert_eq!(session.shared_spells().pickups()[0].life, 0);
+        assert!(session.shared_spells().pickups()[0].drawing_disabled());
         assert!(!session.shared_spells().acquisition_states()[family_index].source_draw_enabled);
+        assert!(session.shared_spells().pickups()[0].drawing_disabled());
+        assert_eq!(
+            session.shared_spells().pickups()[0].record_bytes()[17] & 4,
+            4
+        );
 
         // The source's non-zero word_0x4A_74 return-side flag wins even with
         // both hands occupied (2 means left); the source clears it and writes
@@ -15992,6 +16153,144 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[test]
+    fn level_two_setspell_projection_and_nonlocal_acquisition_are_isolated() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 acquisition production session");
+
+        let family_index = session
+            .shared_spells()
+            .acquisition_states()
+            .iter()
+            .position(|state| state.family == 12)
+            .expect("family-12 acquisition state");
+        let source = &session.shared_spells().pickups()[0];
+        let source_state = &session.shared_spells().acquisition_states()[family_index];
+        assert_eq!(source.subspell_index, source_state.subspell_index);
+        assert_eq!(
+            u16::from_le_bytes(source.record_bytes()[52..54].try_into().unwrap()),
+            source_state.word_0x30
+        );
+        assert_eq!(source.byte_3b, source_state.byte_0x3b);
+        assert_eq!(source.byte_3c, source_state.byte_0x3c);
+        assert_eq!(source.font_type_index, source_state.font_type_index);
+        assert_eq!(source.mana_regen, source_state.mana_regen);
+        assert_eq!(source.max_mana, source_state.max_mana);
+        assert_eq!(source.mana, source_state.mana);
+
+        // Seed the source projection with discriminating values. The
+        // acquisition must carry every SetSpell_6D5E0 field into the live
+        // entity record and typed projection, not just the hand/action pair.
+        {
+            let state = &mut session.shared_spells_mut().acquisitions[family_index];
+            state.subspell_index = 0x1234;
+            state.word_0x30 = 0x2345;
+            state.byte_0x3b = 1;
+            state.mana_regen = 0x0102_0304;
+            state.max_mana = 0x1112_1314;
+            state.mana = 0x2122_2324;
+        }
+        let local_player_before = session.shared_spells().local_player.record_bytes().to_vec();
+        let local_entity_before = session
+            .shared_spells()
+            .player_entity
+            .record_bytes()
+            .to_vec();
+        let outcome = session
+            .shared_spells_mut()
+            .acquire_level2_spell_holder_for_player(
+                12,
+                PhysicalSpellActionRole::OrdinaryPickup,
+                true,
+                0,
+            )
+            .expect("local SetSpell projection");
+        assert_eq!(outcome.parent_entity_index, 111);
+        assert!(matches!(
+            session.shared_spells().activation_events(),
+            [FlightEvent::PrepareSound {
+                entity_index: 111,
+                player_index: -1,
+                sound_id: 18,
+                ..
+            }]
+        ));
+        let pickup = &session.shared_spells().pickups()[0];
+        assert_eq!(pickup.record_bytes()[46..48], [0x34, 0x12]);
+        assert_eq!(pickup.record_bytes()[52..54], [0x45, 0x23]);
+        assert_eq!(pickup.record_bytes()[63], 1);
+        assert_eq!(pickup.record_bytes()[64], 0);
+        assert_eq!(pickup.record_bytes()[65], 0);
+        assert_eq!(
+            session.shared_spells().players[0].record_bytes()[398 + 12],
+            1
+        );
+        assert_eq!(
+            session.shared_spells().players[0].record_bytes()[424 + 12],
+            1
+        );
+        assert_eq!(
+            pickup.record_bytes()[140..144],
+            0x0102_0304_i32.to_le_bytes()
+        );
+        assert_eq!(
+            pickup.record_bytes()[144..148],
+            0x1112_1314_i32.to_le_bytes()
+        );
+        assert_eq!(
+            pickup.record_bytes()[148..152],
+            0x2122_2324_i32.to_le_bytes()
+        );
+        assert!(!pickup.drawing_disabled());
+        assert_eq!(pickup.record_bytes()[17] & 4, 0);
+        assert_eq!(pickup.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+
+        session.shared_spells_mut().reset();
+        assert_eq!(
+            session.shared_spells().local_player.record_bytes(),
+            local_player_before
+        );
+        assert_eq!(
+            session.shared_spells().player_entity.record_bytes(),
+            local_entity_before
+        );
+
+        // A direct remote-owner call is allowed to update the remote player
+        // and shared source row, but it must never rewrite the local player or
+        // local player-entity projection.
+        let local_player_before_remote =
+            session.shared_spells().local_player.record_bytes().to_vec();
+        let local_entity_before_remote = session
+            .shared_spells()
+            .player_entity
+            .record_bytes()
+            .to_vec();
+        session
+            .shared_spells_mut()
+            .acquire_level2_spell_holder_for_player(
+                12,
+                PhysicalSpellActionRole::OrdinaryPickup,
+                true,
+                1,
+            )
+            .expect("remote direct holder acquisition");
+        assert_eq!(
+            session.shared_spells().local_player.record_bytes(),
+            local_player_before_remote
+        );
+        assert_eq!(
+            session.shared_spells().player_entity.record_bytes(),
+            local_entity_before_remote
+        );
+        assert_eq!(
+            session.shared_spells().players[1].enabled_spell_holders[12],
+            38
+        );
     }
 
     #[test]
