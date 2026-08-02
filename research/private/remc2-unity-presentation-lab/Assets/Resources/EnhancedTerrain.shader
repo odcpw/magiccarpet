@@ -9,6 +9,8 @@ Shader "MagicCarpet/Enhanced/Terrain"
         _SlopeStrength ("Slope Tint Strength", Range(0, 1)) = 0.42
         _AmbientBoost ("Night Ambient Boost", Range(0, 2)) = 0.65
         _SpecularStrength ("Moon Specular Strength", Range(0, 1)) = 0.10
+        _NormalStrength ("Procedural Relief Strength", Range(0, 1)) = 0.16
+        _RidgeStrength ("Procedural Ridge Strength", Range(0, 1)) = 0.24
     }
 
     SubShader
@@ -45,6 +47,8 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 half _SlopeStrength;
                 half _AmbientBoost;
                 half _SpecularStrength;
+                half _NormalStrength;
+                half _RidgeStrength;
             CBUFFER_END
 
             struct Attributes
@@ -109,6 +113,24 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 float macro = ValueNoise(input.positionWS.xz * _DetailScale);
                 float fine = ValueNoise(input.positionWS.xz * (_DetailScale * 3.5));
                 float detail = lerp(macro, fine, 0.32);
+
+                // The terrain mesh is intentionally asset-free.  Reuse the
+                // stable scalar field above as a bounded normal perturbation
+                // so moonlight breaks across broad relief instead of only
+                // changing the albedo.  The finite-difference step is large
+                // enough to avoid noisy pixel-scale shimmer at game scale.
+                float2 reliefCoord = input.positionWS.xz * max(_DetailScale * 2.4, 0.001);
+                const float reliefStep = 0.12;
+                float reliefLeft = ValueNoise(reliefCoord - float2(reliefStep, 0.0));
+                float reliefRight = ValueNoise(reliefCoord + float2(reliefStep, 0.0));
+                float reliefDown = ValueNoise(reliefCoord - float2(0.0, reliefStep));
+                float reliefUp = ValueNoise(reliefCoord + float2(0.0, reliefStep));
+                float2 reliefGradient = float2(reliefRight - reliefLeft, reliefUp - reliefDown);
+                normalWS = SafeNormalize(normalWS + half3(
+                    -reliefGradient.x * _NormalStrength,
+                    0.0h,
+                    -reliefGradient.y * _NormalStrength));
+
                 half variation = lerp(0.68h, 1.34h, detail);
                 baseColor *= lerp(1.0h, variation, _DetailStrength);
 
@@ -118,6 +140,21 @@ Shader "MagicCarpet/Enhanced/Terrain"
                     baseColor,
                     baseColor * _SlopeTint.rgb,
                     exposedFace * _SlopeStrength);
+
+                // A soft ridge mask adds readable strata to the low-poly
+                // surface while remaining a single material pass.  It is
+                // deliberately restrained so the night palette remains cool
+                // and the original terrain selectors stay legible.
+                half ridgeMask = smoothstep(0.58h, 0.94h, 1.0h - abs(2.0h * detail - 1.0h));
+                ridgeMask *= saturate(0.18h + slope * 1.15h);
+                half3 ridgeTint = lerp(
+                    _SlopeTint.rgb * 0.62h,
+                    _SlopeTint.rgb * 0.88h,
+                    saturate(detail * 1.4h));
+                baseColor = lerp(
+                    baseColor,
+                    baseColor * ridgeTint + ridgeTint * 0.015h,
+                    ridgeMask * _RidgeStrength);
 
                 half3 lighting = max(SampleSH(normalWS), _AmbientBoost * half3(0.68h, 0.80h, 1.0h));
                 Light mainLight = GetMainLight(TransformWorldToShadowCoord(input.positionWS));

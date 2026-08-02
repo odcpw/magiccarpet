@@ -259,6 +259,8 @@ namespace MagicCarpet.PresentationLab
                         terrainMaterial.SetColor("_SlopeTint", new Color(0.72f, 0.84f, 1.08f, 1f));
                         terrainMaterial.SetFloat("_SlopeStrength", 0.48f);
                         terrainMaterial.SetFloat("_SpecularStrength", 0.10f);
+                        terrainMaterial.SetFloat("_NormalStrength", 0.16f);
+                        terrainMaterial.SetFloat("_RidgeStrength", 0.24f);
                     }
                     else
                     {
