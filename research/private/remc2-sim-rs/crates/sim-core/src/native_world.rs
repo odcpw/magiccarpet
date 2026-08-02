@@ -4071,6 +4071,7 @@ impl Level2EconomyState {
         let mut owner_entity_index = original.owner_entity_index;
         let mut life = original.life;
         let mut target_sphere_id = original.target_sphere_id;
+        let mut returning_to_castle = original.returning_to_castle;
         let mut valid_target = false;
 
         if original.returning_to_castle {
@@ -4099,6 +4100,8 @@ impl Level2EconomyState {
                         carried_mana = 0;
                         owner_entity_index = castle.owner_entity_index;
                         life = original.max_life;
+                        target_sphere_id = 0;
+                        returning_to_castle = false;
                         self.events.push(Level2EconomyEvent::ManaCarrierArrived {
                             carrier_id: original.id,
                             castle_id: castle.source_entity_index,
@@ -4178,6 +4181,7 @@ impl Level2EconomyState {
         carrier.owner_entity_index = owner_entity_index;
         carrier.life = life;
         carrier.target_sphere_id = target_sphere_id;
+        carrier.returning_to_castle = returning_to_castle;
         if carrier.life >= 0 && carrier.pending_attacker_entity_index != 0 {
             carrier.life = carrier.life.wrapping_sub(carrier.pending_damage);
             if carrier.life >= 0 {
@@ -17833,6 +17837,55 @@ mod tests {
         assert_ne!(session.economy().reset_hash(), baseline_hash);
         session.reset();
         assert_eq!(session.economy().reset_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_mana_carrier_arrival_clears_return_target_once() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 carrier arrival session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("Castle allocation");
+        let castle = session.economy().castle().expect("live Castle");
+        let carrier_slot = session
+            .economy_mut()
+            .spawn_mana_carrier(castle.position, 111, u32::from(castle_slot))
+            .expect("carrier allocation");
+        {
+            let carrier = session
+                .economy_mut()
+                .carrier
+                .as_mut()
+                .expect("live carrier");
+            carrier.returning_to_castle = true;
+            carrier.target_sphere_id = u32::from(castle_slot);
+            carrier.carried_mana = 7;
+        }
+
+        session.economy_mut().begin_turn();
+        assert!(session.economy_mut().step_mana_carrier_slot(carrier_slot));
+        let carrier = session.economy().carrier().expect("arrived carrier");
+        assert!(!carrier.returning_to_castle);
+        assert_eq!(carrier.target_sphere_id, 0);
+        assert_eq!(carrier.carried_mana, 0);
+        assert_eq!(session.economy().castle().expect("Castle").mana, 7);
+        assert_eq!(
+            session
+                .economy()
+                .events()
+                .iter()
+                .filter(|event| matches!(event, Level2EconomyEvent::ManaCarrierArrived { .. }))
+                .count(),
+            1
+        );
+
+        session.economy_mut().begin_turn();
+        assert!(session.economy_mut().step_mana_carrier_slot(carrier_slot));
+        assert!(session.economy().events().is_empty());
     }
 
     #[test]
