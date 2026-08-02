@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     FlightContext, FlightEffectsContext, FlightEvent, FlightProfile, FlightState, FlightWorld,
-    PlayerCommand, Position, SOURCE_SPELL_INDEX_MAP, SpellFireContext,
+    PlayerCommand, Position, SOURCE_SPELL_INDEX_MAP, SourceAudioCallTag, SpellFireContext,
     archer_tmap::{ArcherTmapBank, ArcherTmapClocks},
     combat_tmap::{CombatTmapBank, FireballTmapClock, PossessionTmapClock},
     conformance_hash,
@@ -62,6 +62,7 @@ use crate::{
         SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX,
         SPELL_JAR_RENDER_MODE,
     },
+    mark_source_audio_call,
     mission_content::{
         MissionContentProfile, MissionContentSession, MissionContentTemplate, REMC2_SPEC_COMMIT,
     },
@@ -2519,6 +2520,7 @@ impl NativeWorldInspection {
         let mission = self.mission_content_template()?.session();
         let bad_stones = level2_bad_stones(&self.entities, &self.terrain_planes)?;
         let shared_spells = Level2SharedSpellResetSession::from_parts(
+            SessionTerrain::from_inspection(self),
             &self.entities,
             &self.players,
             &self.presentation,
@@ -2574,12 +2576,20 @@ const LEVEL2_SHARED_SPELL_PLAYER_ENTITY_SHA256: &str =
 /// not admitted here.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2SharedSpellResetSession {
+    baseline_terrain: SessionTerrain,
+    terrain: SessionTerrain,
     baseline_pickups: Box<[EntitySnapshot]>,
     pickups: Box<[EntitySnapshot]>,
     baseline_holders: Box<[EntitySnapshot]>,
     holders: Box<[EntitySnapshot]>,
     baseline_player_mana: i32,
     player_mana: i32,
+    baseline_player_entity: EntitySnapshot,
+    player_entity: EntitySnapshot,
+    baseline_local_player: PlayerSnapshot,
+    local_player: PlayerSnapshot,
+    baseline_speed_pickup_state: Level2SpeedPickupState,
+    speed_pickup_state: Level2SpeedPickupState,
     baseline_caster: SpellCasterState,
     caster: SpellCasterState,
     baseline_fireball: SpellActivationHolder,
@@ -2590,10 +2600,61 @@ pub struct Level2SharedSpellResetSession {
     speed: SpellActivationHolder,
     player_entity_sha256: String,
     events: Vec<FlightEvent>,
+    pickup_events: Vec<Level2SharedSpellEvent>,
+}
+
+/// Mutable ownership projection for the authored Speed pickup. These fields
+/// are the source's owner/collected/visible/state-timer writes that do not fit
+/// the lossless reset entity record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2SpeedPickupState {
+    pub owner_entity_index: u16,
+    pub collected: bool,
+    pub visible: bool,
+    pub state_timer: u8,
+}
+
+impl Default for Level2SpeedPickupState {
+    fn default() -> Self {
+        Self {
+            owner_entity_index: 0,
+            collected: false,
+            visible: true,
+            state_timer: 0,
+        }
+    }
+}
+
+/// Typed mission event emitted before the pickup's sound preparation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Level2SharedSpellEvent {
+    SpellCollected {
+        source_slot: u16,
+        player_entity_index: u16,
+        family: u8,
+    },
+}
+
+/// One source-turn result for the Level 2 authored Speed pickup (slot 75).
+///
+/// The reset row is a world pickup (`class 15/model 3/action 10`), so the
+/// source converts the same entity into the player's holder (`action 9`).
+/// There is no respawning variant in the Level 2 reset census; replacement
+/// allocation therefore remains deliberately absent from this result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2SpeedPickupStep {
+    pub source_slot: u16,
+    pub player_entity_index: u16,
+    pub previous_action: u8,
+    pub action: u8,
+    pub previous_phase: u8,
+    pub phase: u8,
+    pub collected: bool,
 }
 
 impl Level2SharedSpellResetSession {
     fn from_parts(
+        terrain: SessionTerrain,
         entities: &[EntitySnapshot],
         players: &[PlayerSnapshot],
         presentation: &PresentationSelectors,
@@ -2664,6 +2725,7 @@ impl Level2SharedSpellResetSession {
         let local_player = players
             .first()
             .ok_or_else(|| NativeWorldError::new("Level 2 shared spell local player is absent"))?;
+        let baseline_local_player = local_player.clone();
         let player_entity = entities
             .get(usize::from(local_player.entity_index))
             .ok_or_else(|| NativeWorldError::new("Level 2 shared spell player entity is absent"))?;
@@ -2707,12 +2769,20 @@ impl Level2SharedSpellResetSession {
             action_marker: 0,
         };
         Ok(Self {
+            baseline_terrain: terrain.clone(),
+            terrain,
             baseline_pickups: pickups.clone(),
             pickups,
             baseline_holders: holders.clone(),
             holders,
             baseline_player_mana: player_entity.mana,
             player_mana: player_entity.mana,
+            baseline_player_entity: player_entity.clone(),
+            player_entity: player_entity.clone(),
+            baseline_local_player: baseline_local_player.clone(),
+            local_player: baseline_local_player,
+            baseline_speed_pickup_state: Level2SpeedPickupState::default(),
+            speed_pickup_state: Level2SpeedPickupState::default(),
             baseline_caster: caster,
             caster,
             baseline_fireball: fireball,
@@ -2723,6 +2793,7 @@ impl Level2SharedSpellResetSession {
             speed,
             player_entity_sha256: LEVEL2_SHARED_SPELL_PLAYER_ENTITY_SHA256.to_owned(),
             events: Vec::new(),
+            pickup_events: Vec::new(),
         })
     }
 
@@ -2812,26 +2883,214 @@ impl Level2SharedSpellResetSession {
     }
 
     #[must_use]
+    pub const fn speed_pickup_state(&self) -> Level2SpeedPickupState {
+        self.speed_pickup_state
+    }
+
+    #[must_use]
+    pub fn pickup_events(&self) -> &[Level2SharedSpellEvent] {
+        &self.pickup_events
+    }
+
+    /// Dispatch the authored Level 2 Speed pickup at source slot 75.
+    ///
+    /// This follows the source order of `GetScroll_69DB0`: advance the pickup
+    /// cadence byte, reject non-overlap or an already-owned family, then
+    /// convert the world pickup into its holder and prepare sound 18. The
+    /// model-12 row at slot 38 is intentionally not routed through this
+    /// Level 1 family primitive; its later Level 2 family owns that behavior.
+    pub fn step_speed_pickup(
+        &mut self,
+        player_entity_index: u16,
+        player_position: Position,
+    ) -> Result<Level2SpeedPickupStep> {
+        if player_entity_index != self.player_entity.index {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 Speed pickup received player slot {player_entity_index}, expected {}",
+                self.player_entity.index
+            )));
+        }
+        self.events.clear();
+        self.pickup_events.clear();
+        let pickup_index = self
+            .pickups
+            .iter()
+            .position(|entity| entity.index == LEVEL2_SHARED_SPELL_PICKUP_SLOTS[1])
+            .ok_or_else(|| NativeWorldError::new("Level 2 Speed pickup slot 75 is absent"))?;
+        let pickup = &mut self.pickups[pickup_index];
+        let previous_action = pickup.action;
+        let previous_phase = pickup.phase;
+        // `sub_68FF0` begins by relaxing the pickup body against the shared
+        // terrain query. The surrounding Level2 session owns map-chain
+        // surgery; this adapter deliberately claims only the row-local Z
+        // write and records that boundary in the typed state below.
+        let ground = self.terrain.ground_height(pickup.position);
+        if pickup.position.z > ground {
+            pickup.position.z = pickup.position.z.wrapping_sub(128);
+        }
+        if pickup.position.z <= ground {
+            pickup.position.z = ground;
+        }
+        pickup.record[84..86].copy_from_slice(&pickup.position.z.to_le_bytes());
+        pickup.phase = pickup.phase.wrapping_add(1);
+        pickup.record[66] = pickup.phase;
+        self.player_entity.position = player_position;
+        self.player_entity.record[80..82].copy_from_slice(&player_position.x.to_le_bytes());
+        self.player_entity.record[82..84].copy_from_slice(&player_position.y.to_le_bytes());
+        self.player_entity.record[84..86].copy_from_slice(&player_position.z.to_le_bytes());
+
+        let in_cadence = previous_phase.is_multiple_of(4);
+        let overlaps = level2_source_intersects(pickup, &self.player_entity);
+        let already_owned = self.speed.active_value != 0 || pickup.action == 9;
+        if pickup.action != 10 || !in_cadence || !overlaps || already_owned {
+            return Ok(Level2SpeedPickupStep {
+                source_slot: pickup.index,
+                player_entity_index,
+                previous_action,
+                action: pickup.action,
+                previous_phase,
+                phase: pickup.phase,
+                collected: false,
+            });
+        }
+
+        // `sub_68FF0` preserves the class-15 source row as the holder. The
+        // fixed Speed action/cost are the Level 1 family constants already
+        // bound by this Level 2 census.
+        pickup.record[16] |= 1;
+        pickup.record[19] &= !2;
+        pickup.control_flags |= 1;
+        pickup.control_flags &= !0x0200_0000;
+        pickup.record[44..46].copy_from_slice(&player_entity_index.to_le_bytes());
+        pickup.action = 9;
+        pickup.record[73] = pickup.action;
+        pickup.active_value = 0;
+        pickup.record[50..52].copy_from_slice(&0_i16.to_le_bytes());
+        pickup.record[58..60].copy_from_slice(&64_i16.to_le_bytes());
+        // The player state stores the holder relation and subspell selection
+        // separately from the entity row. Level 2's source uses family 3 and
+        // the first Speed subspell for this authored pickup.
+        let family = usize::from(SPEED_SPELL_FAMILY);
+        self.local_player.enabled_spell_holders[family] = pickup.index;
+        self.local_player.record[268 + family * 2..270 + family * 2]
+            .copy_from_slice(&pickup.index.to_le_bytes());
+        self.local_player.record[424 + family] = 1;
+        self.local_player.family_selected_tiers[family] = 0;
+        self.local_player.record[528 + family] = 0;
+        if self.local_player.left_spell_slot_raw < 0 || self.local_player.right_spell_slot_raw != -1
+        {
+            self.local_player.left_spell_slot_raw = i16::from(SPEED_SPELL_FAMILY);
+            self.local_player.left_spell_slot = SPEED_SPELL_FAMILY;
+            self.local_player.left_subspell_index = 0;
+            self.local_player.record[554..556]
+                .copy_from_slice(&i16::from(SPEED_SPELL_FAMILY).to_le_bytes());
+            self.local_player.record[558] = 0;
+        } else {
+            self.local_player.right_spell_slot_raw = i16::from(SPEED_SPELL_FAMILY);
+            self.local_player.right_spell_slot = SPEED_SPELL_FAMILY;
+            self.local_player.right_subspell_index = 0;
+            self.local_player.record[556..558]
+                .copy_from_slice(&i16::from(SPEED_SPELL_FAMILY).to_le_bytes());
+            self.local_player.record[559] = 0;
+        }
+        self.speed_pickup_state = Level2SpeedPickupState {
+            owner_entity_index: player_entity_index,
+            collected: true,
+            visible: false,
+            state_timer: 64,
+        };
+        self.speed.entity_index = pickup.index;
+        self.speed.model = SPEED_SPELL_FAMILY;
+        self.speed.activation_value = SPEED_SPELL_ACTIVATION_TICKS;
+        self.speed.mana_cost = SPEED_SPELL_MANA_COST;
+        self.pickup_events
+            .push(Level2SharedSpellEvent::SpellCollected {
+                source_slot: pickup.index,
+                player_entity_index,
+                family: SPEED_SPELL_FAMILY,
+            });
+        mark_source_audio_call(SourceAudioCallTag::SpeedPickup);
+        self.events.push(FlightEvent::PrepareSound {
+            #[cfg(test)]
+            audio_site: crate::MissionAudioSite::SpeedPickup,
+            entity_index: player_entity_index,
+            player_index: 0,
+            sound_id: 18,
+        });
+        Ok(Level2SpeedPickupStep {
+            source_slot: pickup.index,
+            player_entity_index,
+            previous_action,
+            action: pickup.action,
+            previous_phase,
+            phase: pickup.phase,
+            collected: true,
+        })
+    }
+
+    /// Dispatch one of the two reset-census pickup rows in source order.
+    ///
+    /// Slot 38 is returned as a mechanical exclusion (`None`) because its
+    /// model-12 family is owned by a later Level 2 bead. Unknown slots fail
+    /// closed instead of being treated as a nearby Level 1 family.
+    pub fn step_shared_pickup(
+        &mut self,
+        source_slot: u16,
+        player_entity_index: u16,
+        player_position: Position,
+    ) -> Result<Option<Level2SpeedPickupStep>> {
+        match source_slot {
+            38 if player_entity_index == self.player_entity.index => Ok(None),
+            38 => Err(NativeWorldError::new(format!(
+                "Level 2 shared pickup received player slot {player_entity_index}, expected {}",
+                self.player_entity.index
+            ))),
+            75 => self
+                .step_speed_pickup(player_entity_index, player_position)
+                .map(Some),
+            _ => Err(NativeWorldError::new(format!(
+                "unknown Level 2 shared pickup source slot {source_slot}"
+            ))),
+        }
+    }
+
+    #[must_use]
     pub fn reset_hash(&self) -> String {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
         for entity in self.pickups.iter().chain(self.holders.iter()) {
             hasher.update(entity.record_bytes());
         }
+        hasher.update(self.player_entity.record_bytes());
+        hasher.update(self.local_player.record_bytes());
         hasher.update(self.player_entity_sha256.as_bytes());
-        hasher.update(self.baseline_player_mana.to_le_bytes());
+        hasher.update(self.terrain.deterministic_hash().to_le_bytes());
+        hasher.update(self.player_mana.to_le_bytes());
+        hasher.update(self.speed.entity_index.to_le_bytes());
+        hasher.update(self.speed.active_value.to_le_bytes());
+        hasher.update(self.speed.activation_value.to_le_bytes());
+        hasher.update(self.speed.mana_cost.to_le_bytes());
+        hasher.update(self.speed_pickup_state.owner_entity_index.to_le_bytes());
+        hasher.update([u8::from(self.speed_pickup_state.collected)]);
+        hasher.update([u8::from(self.speed_pickup_state.visible)]);
+        hasher.update([self.speed_pickup_state.state_timer]);
         format!("{:x}", hasher.finalize())
     }
 
     pub fn reset(&mut self) {
         self.pickups.clone_from(&self.baseline_pickups);
+        self.terrain = self.baseline_terrain.clone();
         self.holders.clone_from(&self.baseline_holders);
         self.player_mana = self.baseline_player_mana;
+        self.player_entity = self.baseline_player_entity.clone();
+        self.local_player = self.baseline_local_player.clone();
+        self.speed_pickup_state = self.baseline_speed_pickup_state;
         self.caster = self.baseline_caster;
         self.fireball = self.baseline_fireball;
         self.possession = self.baseline_possession;
         self.speed = self.baseline_speed;
         self.events.clear();
+        self.pickup_events.clear();
     }
 }
 
@@ -9290,6 +9549,135 @@ mod tests {
     }
 
     #[test]
+    fn level_two_speed_pickup_converts_in_source_order_and_rejects_excluded_family() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut first = inspection
+            .level2_reset_session()
+            .expect("Level 2 reset session");
+        let second = inspection
+            .level2_reset_session()
+            .expect("isolated Level 2 reset session");
+        let pickup_position = first.shared_spells().pickups()[1].position;
+        let baseline_hash = first.shared_spells().reset_hash();
+
+        let step = first
+            .shared_spells_mut()
+            .step_speed_pickup(111, pickup_position)
+            .expect("Speed pickup source dispatch");
+        assert!(step.collected);
+        assert_eq!(step.source_slot, 75);
+        assert_eq!(step.previous_action, 10);
+        assert_eq!(step.action, 9);
+        assert_eq!(step.phase, step.previous_phase.wrapping_add(1));
+        assert_eq!(first.shared_spells().pickups()[1].action, 9);
+        let collected_pickup = &first.shared_spells().pickups()[1];
+        assert_eq!(
+            u16::from_le_bytes([
+                collected_pickup.record_bytes()[44],
+                collected_pickup.record_bytes()[45]
+            ]),
+            111
+        );
+        assert_ne!(collected_pickup.control_flags & 1, 0);
+        assert_eq!(collected_pickup.record_bytes()[19] & 2, 0);
+        assert_eq!(
+            i16::from_le_bytes([
+                collected_pickup.record_bytes()[58],
+                collected_pickup.record_bytes()[59]
+            ]),
+            64
+        );
+        assert_eq!(first.shared_spells().speed_holder().entity_index, 75);
+        assert_eq!(
+            first.shared_spells().speed_pickup_state(),
+            Level2SpeedPickupState {
+                owner_entity_index: 111,
+                collected: true,
+                visible: false,
+                state_timer: 64,
+            }
+        );
+        assert_ne!(first.shared_spells().reset_hash(), baseline_hash);
+        assert_eq!(
+            first.shared_spells().pickup_events(),
+            &[Level2SharedSpellEvent::SpellCollected {
+                source_slot: 75,
+                player_entity_index: 111,
+                family: SPEED_SPELL_FAMILY,
+            }]
+        );
+        assert!(matches!(
+            first.shared_spells().activation_events(),
+            [FlightEvent::PrepareSound {
+                sound_id: 18,
+                entity_index: 111,
+                player_index: 0,
+                ..
+            }]
+        ));
+
+        // A second source turn sees the converted holder, so no duplicate
+        // acquisition or second sound is emitted.
+        let second_step = first
+            .shared_spells_mut()
+            .step_speed_pickup(111, pickup_position)
+            .expect("converted holder source dispatch");
+        assert!(!second_step.collected);
+        assert!(first.shared_spells().activation_events().is_empty());
+
+        first.shared_spells_mut().reset();
+        let far_position = Position {
+            x: pickup_position.x.wrapping_add(0x2000),
+            y: pickup_position.y,
+            z: pickup_position.z,
+        };
+        let non_overlap = first
+            .shared_spells_mut()
+            .step_speed_pickup(111, far_position)
+            .expect("non-overlapping source dispatch");
+        assert!(!non_overlap.collected);
+        assert_eq!(first.shared_spells().pickups()[1].action, 10);
+        first.shared_spells_mut().reset();
+        first.shared_spells_mut().pickups[1].phase = 77;
+        first.shared_spells_mut().pickups[1].record[66] = 77;
+        let non_cadence = first
+            .shared_spells_mut()
+            .step_speed_pickup(111, pickup_position)
+            .expect("non-cadence source dispatch");
+        assert!(!non_cadence.collected);
+        assert_eq!(first.shared_spells().pickups()[1].action, 10);
+
+        // The model-12 row is a later Level 2 family, not a Level 1 Speed
+        // pickup; this bounded adapter never silently coerces it.
+        let mut excluded = inspection
+            .level2_reset_session()
+            .expect("Level 2 reset session");
+        let slot38 = excluded.shared_spells().pickups()[0].position;
+        let excluded_step = excluded
+            .shared_spells_mut()
+            .step_shared_pickup(38, 111, slot38)
+            .expect("Speed source dispatch remains well formed");
+        assert!(excluded_step.is_none());
+        assert_eq!(excluded.shared_spells().pickups()[0].action, 37);
+
+        first.shared_spells_mut().reset();
+        assert_eq!(first.shared_spells(), second.shared_spells());
+        assert!(
+            first
+                .shared_spells_mut()
+                .step_shared_pickup(38, 112, pickup_position)
+                .is_err()
+        );
+        assert!(
+            first
+                .shared_spells_mut()
+                .step_speed_pickup(112, pickup_position)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn level_two_shared_spell_census_rejects_tampered_rows_and_presentation() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -9298,6 +9686,7 @@ mod tests {
         entities[38].record[68] = 3;
         assert!(
             Level2SharedSpellResetSession::from_parts(
+                SessionTerrain::from_inspection(&inspection),
                 &entities,
                 players,
                 inspection.presentation(),
@@ -9308,6 +9697,18 @@ mod tests {
         entities[113].record[28] ^= 1;
         assert!(
             Level2SharedSpellResetSession::from_parts(
+                SessionTerrain::from_inspection(&inspection),
+                &entities,
+                players,
+                inspection.presentation(),
+            )
+            .is_err()
+        );
+        let mut entities = inspection.entities().to_vec();
+        entities[75].record[73] = 9;
+        assert!(
+            Level2SharedSpellResetSession::from_parts(
+                SessionTerrain::from_inspection(&inspection),
                 &entities,
                 players,
                 inspection.presentation(),
@@ -9318,6 +9719,7 @@ mod tests {
         presentation.level_sprite_selectors[59] = 0;
         assert!(
             Level2SharedSpellResetSession::from_parts(
+                SessionTerrain::from_inspection(&inspection),
                 inspection.entities(),
                 players,
                 &presentation,
