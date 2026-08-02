@@ -6,19 +6,19 @@
   "sample_count": 32,
   "owner_payload_embedded": false,
   "unity_gpu_and_owner_route": "pending-owner-lab-capture",
-  "owner_route_binding_status": "640x480 and 960x720 profile-sized source compositor rerender and Unity upload proven across 32-frame reset/replay sequences, with 49-frame owner route smokes at both profiles; broader owner/GPU matrix remains pending",
+  "owner_route_binding_status": "640x480 and 960x720 profile-sized source compositor rerender and Unity upload proven across 32-frame reset/replay sequences, with 49-frame owner route smokes at both profiles; the flight route reaches the observed speed limit but automatic high-speed postprocess remains open; broader owner/GPU matrix remains pending",
   "owner_route_scenario": {
     "artifact": "qualification/classic-hd-owner-route-scenarios.json",
     "profile": "hd-640x480",
     "frame_count": 49,
-    "status": "idle-town-combat-flight-death-restart-route-pass; broader owner/GPU/window/corpus qualification remains pending",
+    "status": "idle-town-combat-flight-death-restart-route-pass; automatic high-speed postprocess remains open; broader owner/GPU/window/corpus qualification remains pending",
     "owner_payload_embedded": false
   },
   "owner_route_960x720_scenario": {
     "artifact": "qualification/classic-hd-owner-route-960x720-scenarios.json",
     "profile": "hd-960x720",
     "frame_count": 49,
-    "status": "idle-town-combat-flight-death-restart-route-pass; sustained real-time/GPU promotion remains pending",
+    "status": "idle-town-combat-flight-death-restart-route-pass; automatic high-speed postprocess and sustained real-time/GPU promotion remain pending",
     "owner_payload_embedded": false,
     "log_sha256": "3193a66b8aad19fe3bd8d45693e3157bd3ae416286e9f2b7c11a7de20f2bbb75"
   },
@@ -101,11 +101,21 @@
     { "window_width": 1920, "window_height": 1080, "internal_profile": "classic-hd-640x480" },
     { "window_width": 2560, "window_height": 1440, "internal_profile": "classic-hd-960x720" }
   ],
+  "owner_high_speed_probe": {
+    "artifact": "qualification/classic-hd-owner-high-speed-probe.json",
+    "profiles": ["hd-640x480", "hd-960x720"],
+    "status": "open-owner-route-does-not-reach-automatic-high-speed-mode",
+    "automatic_postprocess_mode": 1,
+    "observed_max_actual_speed": 80,
+    "observed_max_effective_postprocess_mode": 0,
+    "gpu_readback_fence": "not-captured",
+    "owner_payload_embedded": false
+  },
   "route_cases": {
     "idle": "owner-hd-640x480-scenario-pass",
     "town": "owner-hd-640x480-scenario-pass",
     "combat": "owner-hd-640x480-scenario-pass",
-    "high_speed_flight": "owner-hd-640x480-scenario-pass",
+    "high_speed_flight": "pending-owner-lab-capture",
     "death_restart": "owner-hd-640x480-scenario-pass",
     "completion_postgame": "pending-owner-lab-capture",
     "fullscreen_window_alt_tab": "pending-owner-lab-capture",

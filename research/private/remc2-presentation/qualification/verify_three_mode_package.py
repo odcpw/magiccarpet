@@ -38,6 +38,9 @@ CLASSIC_HD_OWNER_SCENARIO_ARTIFACT = Path(__file__).with_name(
 CLASSIC_HD_OWNER_SCENARIO_960_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-route-960x720-scenarios.json"
 )
+CLASSIC_HD_OWNER_HIGH_SPEED_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-high-speed-probe.json"
+)
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -281,12 +284,85 @@ def validate_classic_hd_owner_scenario_artifact(
 
     if artifact.get("night_lighting") is not True or artifact.get("reflection") is not True:
         errors.append("Classic HD owner scenario must retain night lighting and reflection")
+    if artifact.get("high_speed_postprocess_status") != "automatic-mode-not-reached-open":
+        errors.append("Classic HD owner scenario must distinguish flight motion from automatic high-speed postprocess")
     for field in ("index_route_hash", "provenance_route_hash", "last_receipt_hash", "native_plugin_sha256", "log_sha256"):
         if not isinstance(artifact.get(field), str) or not artifact[field]:
             errors.append(f"Classic HD owner scenario is missing {field}")
     status = str(artifact.get("qualification_status", ""))
     if "remain open" not in status:
         errors.append("Classic HD owner scenario must keep unqualified gates explicit")
+    return errors
+
+
+def validate_classic_hd_owner_high_speed_artifact(
+    path: Path = CLASSIC_HD_OWNER_HIGH_SPEED_ARTIFACT,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"Classic HD owner high-speed artifact read failed: {error}"]
+
+    if artifact.get("schema_version") != 1:
+        errors.append("Classic HD owner high-speed schema_version must be 1")
+    if artifact.get("kind") != "classic-hd-owner-high-speed-probe/v1":
+        errors.append("Classic HD owner high-speed artifact kind is wrong")
+    if artifact.get("native_abi") != "sim-capi-v2":
+        errors.append("Classic HD owner high-speed artifact must identify sim-capi-v2")
+    if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
+        errors.append("Classic HD owner high-speed artifact must keep owner inputs external")
+    if artifact.get("configured_blur") != "off":
+        errors.append("Classic HD owner high-speed probe must run with blur off")
+    if artifact.get("frames_per_pass") != 32 or artifact.get("pass_count") != 2:
+        errors.append("Classic HD owner high-speed probe must retain two 32-frame passes")
+    if artifact.get("upload_count") != 64 or artifact.get("allocation_epoch") != 1:
+        errors.append("Classic HD owner high-speed probe must prove 64 uploads and one allocation epoch")
+    if artifact.get("reset_replay_match") is not True:
+        errors.append("Classic HD owner high-speed probe reset replay did not match")
+    if artifact.get("gpu_readback_fence") != "not-captured":
+        errors.append("Classic HD owner high-speed probe must state that GPU readback fencing is not captured")
+    if artifact.get("status") != "open":
+        errors.append("Classic HD owner high-speed probe must remain open")
+    if not isinstance(artifact.get("failure_reason"), str) or not artifact["failure_reason"]:
+        errors.append("Classic HD owner high-speed probe must record why automatic mode remains open")
+    for field in ("source_revision", "native_plugin_sha256", "captured_at_utc"):
+        if not isinstance(artifact.get(field), str) or not artifact[field]:
+            errors.append(f"Classic HD owner high-speed artifact is missing {field}")
+
+    profiles = artifact.get("profiles")
+    expected_profiles = {
+        "hd-640x480": (640, 480),
+        "hd-960x720": (960, 720),
+    }
+    if not isinstance(profiles, list) or len(profiles) != len(expected_profiles):
+        errors.append("Classic HD owner high-speed artifact must contain both qualified profiles")
+    else:
+        seen: set[str] = set()
+        for profile in profiles:
+            name = profile.get("profile") if isinstance(profile, dict) else None
+            if name not in expected_profiles:
+                errors.append(f"Classic HD owner high-speed artifact has unexpected profile {name!r}")
+                continue
+            seen.add(name)
+            width, height = expected_profiles[name]
+            if profile.get("internal_width") != width or profile.get("internal_height") != height:
+                errors.append(f"Classic HD owner high-speed profile {name} extent is wrong")
+            if profile.get("speed_spell_present") is not False:
+                errors.append(f"Classic HD owner high-speed profile {name} must prove no synthetic Speed-jar activation")
+            if profile.get("max_target_speed") != 80 or profile.get("max_actual_speed") != 80:
+                errors.append(f"Classic HD owner high-speed profile {name} must record the observed speed limit of 80")
+            if profile.get("max_effective_postprocess_mode") != 0:
+                errors.append(f"Classic HD owner high-speed profile {name} unexpectedly reached automatic mode")
+            if profile.get("automatic_high_speed_frames") != 0:
+                errors.append(f"Classic HD owner high-speed profile {name} unexpectedly recorded high-speed frames")
+            if profile.get("reset_replay_match") is not True or profile.get("status") != "open":
+                errors.append(f"Classic HD owner high-speed profile {name} must retain an open deterministic result")
+            for field in ("index_route_hash", "provenance_route_hash", "log_sha256", "log_path"):
+                if not isinstance(profile.get(field), str) or not profile[field]:
+                    errors.append(f"Classic HD owner high-speed profile {name} is missing {field}")
+        if seen != set(expected_profiles):
+            errors.append("Classic HD owner high-speed artifact must include exactly 640x480 and 960x720")
     return errors
 
 
@@ -408,6 +484,11 @@ def verify() -> dict[str, Any]:
         checks,
     )
     _validator_result(
+        "owner-bound Classic HD automatic high-speed probe",
+        validate_classic_hd_owner_high_speed_artifact,
+        checks,
+    )
+    _validator_result(
         "owner-bound Classic HD 960x720 scenario artifact",
         lambda: validate_classic_hd_owner_scenario_artifact(
             CLASSIC_HD_OWNER_SCENARIO_960_ARTIFACT,
@@ -448,6 +529,9 @@ def verify() -> dict[str, Any]:
         open_gates.append("visual corpora are still placeholder-not-captured")
     if matrix.get("unity_gpu_and_owner_route") == "pending-owner-lab-capture":
         open_gates.append("owner/GPU matrix remains pending-owner-lab-capture")
+    high_speed_probe = json.loads(CLASSIC_HD_OWNER_HIGH_SPEED_ARTIFACT.read_text(encoding="utf-8"))
+    if high_speed_probe.get("status") == "open":
+        open_gates.append("Classic HD automatic high-speed postprocess remains open; Speed-jar activation and GPU fencing are not qualified")
     pending_route_cases = [
         name
         for name, value in matrix.get("route_cases", {}).items()

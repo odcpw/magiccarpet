@@ -62,8 +62,14 @@ CPU/determinism row, leaves 960x720 as a measured candidate, and records
 1280x960 as over the current CPU budget. The 960x720 owner route now has a
 passing 64-frame reset-replay/upload artifact, but its traced owner terrain
 stage is approximately 1.52 seconds per frame on T14, so it is not a real-time
-or player-facing production claim. Unity GPU, scenario, and preserved corpus
-evidence remain required for any broader promotion.
+or player-facing production claim. The owner flight route at both profiles
+reaches the observed speed limit of 80; it does not by itself prove remc2's
+automatic high-speed postprocess. The explicit two-profile probe records that
+the effective mode remains 0 because no legitimate Speed-jar activation is
+exposed by the current owner ABI:
+`qualification/classic-hd-owner-high-speed-probe.json`. Unity GPU, scenario,
+high-speed-postprocess, and preserved corpus evidence remain required for any
+broader promotion.
 
 `qualification/verify_three_mode_package.py` is the final package-integrity
 gate. A PASS means the Exact, Classic HD, and Unity Enhanced contracts and

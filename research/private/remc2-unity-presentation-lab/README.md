@@ -164,6 +164,28 @@ render size, but remains route evidence only: the measured Classic CPU/GPU
 budget and sustained allocation gates still decide whether 960x720 is
 promoted as a supported real-time profile.
 
+The flight routes above are movement observations, not proof that remc2's
+automatic high-speed postprocess activated. The explicit owner probe checks the
+effective native mode at both candidate profiles with blur disabled:
+
+```text
+Unity -batchmode -force-glcore \
+  -projectPath research/private/remc2-unity-presentation-lab \
+  -executeMethod MagicCarpet.PresentationLab.Editor.CreatePresentationLabAssets.RunOwnerClassicHdHighSpeedProbe \
+  -mc-presentation-mode classic-hd \
+  -mc-classic-profile hd-640x480 \
+  -mc-classic-blur off \
+  -mc-package /absolute/path/to/level1-export-m \
+  -mc-closure /absolute/path/to/level1-asset-closure.json \
+  -mc-asset-cache /absolute/path/to/level1-unity-asset-cache
+```
+
+Repeat with `-mc-classic-profile hd-960x720`. The receipt is
+`research/private/remc2-presentation/qualification/classic-hd-owner-high-speed-probe.json`.
+The current owner ABI reaches target/actual speed 80 and remains at effective
+postprocess mode 0 in both runs, so this gate stays open until a legitimate
+Speed-jar activation path and GPU readback fence are qualified.
+
 The owner-bound Unity Enhanced sequence smoke is also explicit:
 
 ```text

@@ -66,6 +66,7 @@
   "log_sha256": "c2d0ab51c63ef20e083a6a74bde10d8365947cda42dd5ec2ae67d4ffec0433dd",
   "log_path": "/tmp/magiccarpet-gfx-spec-owner-classic-hd-scenario4.log",
   "visual_capture_status": "not-captured-by-this-route-smoke",
-  "qualification_status": "owner-bound idle, moving town, combat projectile/impact, high-speed flight, and lethal death/restart route observations pass at hd-640x480; visual corpus, owner/GPU matrix, 960x720 promotion, completion/postgame, and window/alt-tab evidence remain open",
+  "high_speed_postprocess_status": "automatic-mode-not-reached-open",
+  "qualification_status": "owner-bound idle, moving town, combat projectile/impact, flight, and lethal death/restart route observations pass at hd-640x480; automatic high-speed postprocess is not reached by this route and remains open; visual corpus, owner/GPU matrix, 960x720 promotion, completion/postgame, and window/alt-tab evidence remain open",
   "reproduce_command_template": "Unity -batchmode -force-glcore -projectPath research/private/remc2-unity-presentation-lab -executeMethod MagicCarpet.PresentationLab.Editor.CreatePresentationLabAssets.RunOwnerClassicHdScenarioSmoke -mc-presentation-mode classic-hd -mc-classic-profile hd-640x480 -mc-package <external-owner-package> -mc-closure <external-owner-closure> -mc-asset-cache <external-owner-cache>"
 }
