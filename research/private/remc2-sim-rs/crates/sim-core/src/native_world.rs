@@ -803,7 +803,10 @@ pub fn level2_castle_root_positions<W: FlightWorld>(
     footprint: &CastleBuildFootprint,
     projectile_position: Position,
 ) -> (Position, Position) {
-    level2_castle_root_positions_with_resolution(world, footprint, projectile_position, false)
+    // The qualified Level 2 profile pins `x_WORD_180660_VGA_type_resolution`
+    // to 1 (the fixed 320x200 path), so the production helper uses the
+    // source's halved BUILD dimensions by default.
+    level2_castle_root_positions_with_resolution(world, footprint, projectile_position, true)
 }
 
 /// Derive the Castle root and `axis_0x9A_154x` anchor exactly as
@@ -3515,6 +3518,9 @@ impl Level2EconomyState {
         owner_entity_index: u16,
         footprint: &CastleBuildFootprint,
     ) -> Option<u16> {
+        if footprint.index != 1 {
+            return None;
+        }
         let (root_position, construction_anchor) =
             level2_castle_root_positions(&self.terrain, footprint, projectile_position);
         self.build_castle_at(root_position, construction_anchor, owner_entity_index)
@@ -3646,6 +3652,10 @@ impl Level2EconomyState {
         castle.child_chain_slots = [0; 2];
         castle.child_chain_models = [0; 2];
         castle.child_chain_active = [false; 2];
+        castle.controller_chain_slots = [0; 8];
+        castle.controller_chain_count = 0;
+        castle.controller_chain_head = 0;
+        castle.controller_chain_tail = 0;
         castle.construction_child_active = false;
         castle.defense_child_active = false;
         castle.life = 0;
@@ -3841,7 +3851,15 @@ impl Level2EconomyState {
                     return false;
                 };
                 let next_level = snapshot.level.saturating_add(1).max(1);
-                let (stage_life, stage_mana_capacity) = level2_castle_stage_stats(next_level);
+                let (base_life, stage_mana_capacity) = level2_castle_stage_stats(next_level);
+                let stage_coefficient = self
+                    .castle_stage_coefficients
+                    .get(usize::from(next_level))
+                    .copied()
+                    .unwrap_or(256);
+                let stage_life =
+                    i32::try_from((i64::from(base_life) * i64::from(stage_coefficient)) >> 8)
+                        .unwrap_or(if base_life >= 0 { i32::MAX } else { i32::MIN });
                 let stale_stage_children = self
                     .castle_children
                     .iter()
@@ -3880,31 +3898,60 @@ impl Level2EconomyState {
                 };
                 self.sync_castle_child_map(construction_child);
                 self.castle_children.push(construction_child);
-                // sub_613D0 installs the stage controller chain after the
-                // model-42 construction child. Level 2 keeps one typed
-                // model-79 controller (the source may create more from the
-                // authored footprint); failure is non-atomic just like the
-                // source loop, which leaves the model-42 child committed.
-                if let Some(stage_slot) = self.allocate_slot() {
-                    let ground = self.terrain.ground_height(snapshot.position);
+                // `sub_613D0` removes the prior `word_0x34_52` chain, then
+                // allocates the source-ordered model-79 controller points
+                // from x_BYTE_DB038.  NewEvent failure is deliberately
+                // non-atomic: model-42 and any committed controller prefix
+                // remain installed, exactly as in the source loop.
+                let (controller_width, controller_height) =
+                    level2_castle_controller_dimensions(next_level);
+                let center_x = snapshot.position.x.wrapping_add(128).to_be_bytes()[0];
+                let center_y = snapshot.position.y.wrapping_add(128).to_be_bytes()[0];
+                let start_x = center_x.wrapping_sub(controller_width / 2);
+                let start_y = center_y.wrapping_sub(controller_height / 2);
+                let mut controller_slots = [0_u16; 8];
+                let mut controller_count = 0_u8;
+                let mut previous_child_index: Option<usize> = None;
+                let mut previous_slot = snapshot.source_entity_index;
+                for &(offset_x, offset_y) in level2_castle_controller_points(next_level) {
+                    let Some(stage_slot) = self.allocate_slot() else {
+                        break;
+                    };
+                    let stage_position = Position {
+                        x: u16::from(start_x.wrapping_add_signed(offset_x)) << 8,
+                        y: u16::from(start_y.wrapping_add_signed(offset_y)) << 8,
+                        z: 0,
+                    };
+                    let ground = self.terrain.ground_height(stage_position);
                     let stage_child = Level2CastleChild {
                         source_entity_index: stage_slot,
                         id_entity_index: snapshot.source_id_entity_index,
+                        // Retain the root relation as the typed owner of the
+                        // chain; exact source word32/word34 links are exposed
+                        // separately below.
                         parent_entity_index: snapshot.source_entity_index,
                         owner_entity_index: snapshot.owner_entity_index,
                         position: Position {
                             z: ground.saturating_add(if next_level <= 1 { 384 } else { 224 }),
-                            ..snapshot.position
+                            ..stage_position
                         },
                         model: 79,
                         action: 0,
                         control_flags: 0,
-                        chain_previous_slot: 0,
+                        chain_previous_slot: previous_slot,
                         chain_next_slot: 0,
                         active: true,
                     };
                     self.sync_castle_child_map(stage_child);
                     self.castle_children.push(stage_child);
+                    let child_index = self.castle_children.len() - 1;
+                    if let Some(previous_index) = previous_child_index {
+                        self.castle_children[previous_index].chain_next_slot = stage_slot;
+                    }
+                    previous_child_index = Some(child_index);
+                    previous_slot = stage_slot;
+                    controller_slots[usize::from(controller_count)] = stage_slot;
+                    controller_count = controller_count.saturating_add(1);
                 }
                 let castle = self.castle.as_mut().expect("Castle remains installed");
                 castle.construction_slot = child_slot;
@@ -3918,6 +3965,14 @@ impl Level2EconomyState {
                 castle.child_chain_slots[0] = child_slot;
                 castle.child_chain_models[0] = 42;
                 castle.child_chain_active[0] = true;
+                castle.controller_chain_slots = controller_slots;
+                castle.controller_chain_count = controller_count;
+                castle.controller_chain_head = controller_slots[0];
+                castle.controller_chain_tail = if controller_count == 0 {
+                    0
+                } else {
+                    controller_slots[usize::from(controller_count - 1)]
+                };
                 castle.construction_child_active = true;
                 castle.build_state = 4;
                 castle.level = next_level;
@@ -4175,6 +4230,10 @@ impl Level2EconomyState {
                 castle.child_chain_slots = [0; 2];
                 castle.child_chain_models = [0; 2];
                 castle.child_chain_active = [false; 2];
+                castle.controller_chain_slots = [0; 8];
+                castle.controller_chain_count = 0;
+                castle.controller_chain_head = 0;
+                castle.controller_chain_tail = 0;
                 castle.construction_child_active = false;
                 castle.defense_child_active = false;
                 castle.timer = 5;
@@ -11892,16 +11951,15 @@ mod tests {
         assert_eq!((anchor.x, anchor.y), (root.x, root.y));
         let center_x = (root.x >> 8) as u8;
         let center_y = (root.y >> 8) as u8;
-        let start_x = center_x.wrapping_sub(footprint.width / 2);
-        let start_y = center_y.wrapping_sub(footprint.height / 2);
+        let width = footprint.width >> 1;
+        let height = footprint.height >> 1;
+        let start_x = center_x.wrapping_sub(width / 2);
+        let start_y = center_y.wrapping_sub(height / 2);
         let mut minimum = 250_u8;
-        for offset in 0..footprint.width {
+        for offset in 0..width {
             for (x, y) in [
                 (start_x.wrapping_add(offset), start_y),
-                (
-                    start_x.wrapping_add(offset),
-                    start_y.wrapping_add(footprint.height),
-                ),
+                (start_x.wrapping_add(offset), start_y.wrapping_add(height)),
             ] {
                 minimum = minimum.min(
                     (terrain.ground_height(Position {
@@ -11912,12 +11970,9 @@ mod tests {
                 );
             }
         }
-        for offset in 0..footprint.height {
+        for offset in 0..height {
             for (x, y) in [
-                (
-                    start_x.wrapping_add(footprint.width),
-                    start_y.wrapping_add(offset),
-                ),
+                (start_x.wrapping_add(width), start_y.wrapping_add(offset)),
                 (start_x, start_y.wrapping_add(offset)),
             ] {
                 minimum = minimum.min(
