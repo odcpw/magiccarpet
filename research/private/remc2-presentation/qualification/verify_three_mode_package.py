@@ -41,6 +41,12 @@ CLASSIC_HD_OWNER_SCENARIO_960_ARTIFACT = Path(__file__).with_name(
 CLASSIC_HD_OWNER_HIGH_SPEED_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-high-speed-probe.json"
 )
+CLASSIC_HD_OWNER_PERFORMANCE_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-performance-smoke.json"
+)
+CLASSIC_HD_OWNER_GPU_FENCE_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-gpu-fence.json"
+)
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -366,6 +372,144 @@ def validate_classic_hd_owner_high_speed_artifact(
     return errors
 
 
+def validate_classic_hd_owner_performance_artifact(
+    path: Path = CLASSIC_HD_OWNER_PERFORMANCE_ARTIFACT,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"Classic HD owner performance artifact read failed: {error}"]
+
+    if artifact.get("schema_version") != 1:
+        errors.append("Classic HD owner performance schema_version must be 1")
+    if artifact.get("kind") != "classic-hd-owner-performance-smoke/v1":
+        errors.append("Classic HD owner performance artifact kind is wrong")
+    if artifact.get("execution_context") != "UnityEditor-batchmode":
+        errors.append("Classic HD owner performance context must be explicit")
+    if artifact.get("native_abi") != "sim-capi-v2":
+        errors.append("Classic HD owner performance must identify sim-capi-v2")
+    if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
+        errors.append("Classic HD owner performance must keep owner inputs external")
+    if artifact.get("warmup_frames") != 8 or artifact.get("measurement_frames") != 64:
+        errors.append("Classic HD owner performance must retain the bounded 8+64 frame sample")
+    if artifact.get("upload_count_including_warmup") != 72 or artifact.get("allocation_epoch") != 1:
+        errors.append("Classic HD owner performance must prove 72 uploads and one allocation epoch")
+    if artifact.get("presentation_budget_ns") != 33333333:
+        errors.append("Classic HD owner performance must identify the 33.3 ms budget")
+    if artifact.get("gpu_timing") != "not-captured" or artifact.get("status") != "open":
+        errors.append("Classic HD owner performance must keep GPU timing and promotion open")
+    if not isinstance(artifact.get("failure_reason"), str) or not artifact["failure_reason"]:
+        errors.append("Classic HD owner performance must record its open reason")
+    for field in ("source_revision", "native_plugin_sha256", "captured_at_utc"):
+        if not isinstance(artifact.get(field), str) or not artifact[field]:
+            errors.append(f"Classic HD owner performance is missing {field}")
+
+    profiles = artifact.get("profiles")
+    expected_profiles = {"hd-640x480": (640, 480), "hd-960x720": (960, 720)}
+    if not isinstance(profiles, list) or len(profiles) != len(expected_profiles):
+        errors.append("Classic HD owner performance must contain both candidate profiles")
+    else:
+        seen: set[str] = set()
+        for profile in profiles:
+            name = profile.get("profile") if isinstance(profile, dict) else None
+            if name not in expected_profiles:
+                errors.append(f"Classic HD owner performance has unexpected profile {name!r}")
+                continue
+            seen.add(name)
+            width, height = expected_profiles[name]
+            if profile.get("internal_width") != width or profile.get("internal_height") != height:
+                errors.append(f"Classic HD owner performance profile {name} extent is wrong")
+            if profile.get("start_generation") != profile.get("end_generation"):
+                errors.append(f"Classic HD owner performance profile {name} changed generation")
+            if profile.get("start_tick") != 8 or profile.get("end_tick") != 71:
+                errors.append(f"Classic HD owner performance profile {name} tick window is wrong")
+            if profile.get("monotonic") is not True or profile.get("hashes_present") is not True:
+                errors.append(f"Classic HD owner performance profile {name} route contract is not deterministic")
+            if profile.get("uploads") != 72 or profile.get("allocation_epoch") != 1:
+                errors.append(f"Classic HD owner performance profile {name} upload/allocation contract is wrong")
+            if profile.get("steady_allocations") is not True or profile.get("route_contract") is not True:
+                errors.append(f"Classic HD owner performance profile {name} steady route contract is not proven")
+            if profile.get("budget_pass") is not False:
+                errors.append(f"Classic HD owner performance profile {name} must remain over-budget/open")
+            if not isinstance(profile.get("p95_total_ns"), int) or profile["p95_total_ns"] <= artifact["presentation_budget_ns"]:
+                errors.append(f"Classic HD owner performance profile {name} must record p95 total over budget")
+            if profile.get("p95_allocation_bytes") != 0 or profile.get("max_allocation_bytes") != 0:
+                errors.append(f"Classic HD owner performance profile {name} must prove zero measured steady allocations")
+            for field in ("index_route_hash", "provenance_route_hash", "log_path", "log_sha256"):
+                if not isinstance(profile.get(field), str) or not profile[field]:
+                    errors.append(f"Classic HD owner performance profile {name} is missing {field}")
+            if profile.get("status") != "open":
+                errors.append(f"Classic HD owner performance profile {name} must remain open")
+        if seen != set(expected_profiles):
+            errors.append("Classic HD owner performance must include exactly 640x480 and 960x720")
+    return errors
+
+
+def validate_classic_hd_owner_gpu_fence_artifact(
+    path: Path = CLASSIC_HD_OWNER_GPU_FENCE_ARTIFACT,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"Classic HD owner GPU fence artifact read failed: {error}"]
+
+    if artifact.get("schema_version") != 1:
+        errors.append("Classic HD owner GPU fence schema_version must be 1")
+    if artifact.get("kind") != "classic-hd-owner-gpu-fence-probe/v1":
+        errors.append("Classic HD owner GPU fence artifact kind is wrong")
+    if artifact.get("execution_context") != "UnityEditor-batchmode":
+        errors.append("Classic HD owner GPU fence context must be explicit")
+    if artifact.get("native_abi") != "sim-capi-v2":
+        errors.append("Classic HD owner GPU fence must identify sim-capi-v2")
+    if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
+        errors.append("Classic HD owner GPU fence must keep owner inputs external")
+    if artifact.get("gpu_timing") != "not-captured":
+        errors.append("Classic HD owner GPU fence must not claim GPU timing")
+    if artifact.get("readback_status") != "pass" or artifact.get("fence_status") != "open-platform-unsupported":
+        errors.append("Classic HD owner GPU fence must separate readback pass from open fence status")
+    if artifact.get("status") != "open":
+        errors.append("Classic HD owner GPU fence must remain open")
+    if not isinstance(artifact.get("failure_reason"), str) or not artifact["failure_reason"]:
+        errors.append("Classic HD owner GPU fence must record its open reason")
+    for field in ("source_revision", "native_plugin_sha256", "captured_at_utc"):
+        if not isinstance(artifact.get(field), str) or not artifact[field]:
+            errors.append(f"Classic HD owner GPU fence is missing {field}")
+
+    profiles = artifact.get("profiles")
+    expected_profiles = {"hd-640x480": (640, 480), "hd-960x720": (960, 720)}
+    if not isinstance(profiles, list) or len(profiles) != len(expected_profiles):
+        errors.append("Classic HD owner GPU fence must contain both candidate profiles")
+    else:
+        seen: set[str] = set()
+        for profile in profiles:
+            name = profile.get("profile") if isinstance(profile, dict) else None
+            if name not in expected_profiles:
+                errors.append(f"Classic HD owner GPU fence has unexpected profile {name!r}")
+                continue
+            seen.add(name)
+            width, height = expected_profiles[name]
+            if profile.get("internal_width") != width or profile.get("internal_height") != height:
+                errors.append(f"Classic HD owner GPU fence profile {name} extent is wrong")
+            if profile.get("frames") != 2 or profile.get("uploads") != 2 or profile.get("allocation_epoch") != 1:
+                errors.append(f"Classic HD owner GPU fence profile {name} upload contract is wrong")
+            if profile.get("hashes_differ") is not True:
+                errors.append(f"Classic HD owner GPU fence profile {name} must prove frame hashes differ")
+            if profile.get("readback_error_a") is not False or profile.get("readback_error_b") is not False:
+                errors.append(f"Classic HD owner GPU fence profile {name} has a readback error")
+            if any(profile.get(field) is not False for field in ("fence_valid_a", "fence_passed_a", "fence_valid_b", "fence_passed_b")):
+                errors.append(f"Classic HD owner GPU fence profile {name} must keep the unsupported fence open")
+            if profile.get("status") != "readback-pass-fence-open":
+                errors.append(f"Classic HD owner GPU fence profile {name} status is wrong")
+            for field in ("raw_hash_a", "raw_hash_b", "resolved_hash_a", "resolved_hash_b", "log_path", "log_sha256"):
+                if not isinstance(profile.get(field), str) or not profile[field]:
+                    errors.append(f"Classic HD owner GPU fence profile {name} is missing {field}")
+        if seen != set(expected_profiles):
+            errors.append("Classic HD owner GPU fence must include exactly 640x480 and 960x720")
+    return errors
+
+
 def validate_profile_sequence_failure_artifact(
     path: Path = PROFILE_960_SEQUENCE_FAILURE_ARTIFACT,
 ) -> list[str]:
@@ -489,6 +633,16 @@ def verify() -> dict[str, Any]:
         checks,
     )
     _validator_result(
+        "owner-bound Classic HD performance smoke",
+        validate_classic_hd_owner_performance_artifact,
+        checks,
+    )
+    _validator_result(
+        "owner-bound Classic HD GPU readback/fence probe",
+        validate_classic_hd_owner_gpu_fence_artifact,
+        checks,
+    )
+    _validator_result(
         "owner-bound Classic HD 960x720 scenario artifact",
         lambda: validate_classic_hd_owner_scenario_artifact(
             CLASSIC_HD_OWNER_SCENARIO_960_ARTIFACT,
@@ -532,6 +686,22 @@ def verify() -> dict[str, Any]:
     high_speed_probe = json.loads(CLASSIC_HD_OWNER_HIGH_SPEED_ARTIFACT.read_text(encoding="utf-8"))
     if high_speed_probe.get("status") == "open":
         open_gates.append("Classic HD automatic high-speed postprocess remains open; Speed-jar activation and GPU fencing are not qualified")
+    performance_probe = json.loads(CLASSIC_HD_OWNER_PERFORMANCE_ARTIFACT.read_text(encoding="utf-8"))
+    if performance_probe.get("status") == "open":
+        over_budget = [
+            profile.get("profile")
+            for profile in performance_probe.get("profiles", [])
+            if profile.get("budget_pass") is False
+        ]
+        open_gates.append(
+            "Classic HD owner-bound performance remains over the 30 Hz presentation budget at: " +
+            ", ".join(over_budget)
+        )
+    gpu_fence_probe = json.loads(CLASSIC_HD_OWNER_GPU_FENCE_ARTIFACT.read_text(encoding="utf-8"))
+    if gpu_fence_probe.get("status") == "open":
+        open_gates.append(
+            "Classic HD GPU timing remains open; readbacks differ but the current OpenGLCore platform cannot report async graphics-fence status"
+        )
     pending_route_cases = [
         name
         for name, value in matrix.get("route_cases", {}).items()

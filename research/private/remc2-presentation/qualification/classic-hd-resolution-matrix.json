@@ -111,6 +111,28 @@
     "gpu_readback_fence": "not-captured",
     "owner_payload_embedded": false
   },
+  "owner_performance_smoke": {
+    "artifact": "qualification/classic-hd-owner-performance-smoke.json",
+    "profiles": ["hd-640x480", "hd-960x720"],
+    "status": "open-owner-p95-over-budget",
+    "presentation_budget_ns": 33333333,
+    "p95_total_ns": {
+      "hd-640x480": 487693800,
+      "hd-960x720": 4616598500
+    },
+    "steady_allocations": true,
+    "gpu_timing": "not-captured",
+    "owner_payload_embedded": false
+  },
+  "owner_gpu_fence_probe": {
+    "artifact": "qualification/classic-hd-owner-gpu-fence.json",
+    "profiles": ["hd-640x480", "hd-960x720"],
+    "status": "open-readback-pass-fence-unavailable",
+    "readback_status": "pass",
+    "fence_status": "open-platform-unsupported",
+    "gpu_timing": "not-captured",
+    "owner_payload_embedded": false
+  },
   "route_cases": {
     "idle": "owner-hd-640x480-scenario-pass",
     "town": "owner-hd-640x480-scenario-pass",

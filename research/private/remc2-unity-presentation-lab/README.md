@@ -186,6 +186,32 @@ The current owner ABI reaches target/actual speed 80 and remains at effective
 postprocess mode 0 in both runs, so this gate stays open until a legitimate
 Speed-jar activation path and GPU readback fence are qualified.
 
+Owner performance and GPU-consumption probes are separate from route evidence.
+`RunOwnerClassicHdPerformanceSmoke` records an 8-frame warm-up plus 64 measured
+frames, native frame time, Unity upload-submission time, allocations, hashes,
+and the 33.3 ms budget. `RunOwnerClassicHdGpuFenceProbe` submits two distinct
+indexed frames through the existing palette material and records raw/resolved
+`AsyncGPUReadback` hashes plus graphics-fence state. The current T14
+OpenGLCore result has readback pass and zero allocation growth, but the async
+fence cannot report passed without async compute; Unity GPU timing and
+real-time promotion remain open.
+
+Reproduce the owner performance receipt at either internal profile:
+
+```text
+Unity -batchmode -force-glcore \
+  -projectPath research/private/remc2-unity-presentation-lab \
+  -executeMethod MagicCarpet.PresentationLab.Editor.CreatePresentationLabAssets.RunOwnerClassicHdPerformanceSmoke \
+  -mc-presentation-mode classic-hd \
+  -mc-classic-profile hd-640x480 \
+  -mc-package /absolute/path/to/level1-export-m \
+  -mc-closure /absolute/path/to/level1-asset-closure.json \
+  -mc-asset-cache /absolute/path/to/level1-unity-asset-cache
+```
+
+Repeat with `-mc-classic-profile hd-960x720`; the measured receipt is
+`research/private/remc2-presentation/qualification/classic-hd-owner-performance-smoke.json`.
+
 The owner-bound Unity Enhanced sequence smoke is also explicit:
 
 ```text

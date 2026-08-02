@@ -71,6 +71,15 @@ exposed by the current owner ABI:
 high-speed-postprocess, and preserved corpus evidence remain required for any
 broader promotion.
 
+The owner-lab performance and GPU receipts are separate from the owner-free
+Rust matrix. `qualification/classic-hd-owner-performance-smoke.json` proves
+steady allocations and deterministic 8+64-frame routes, but its p95 owner
+generation is about 487.7 ms at 640x480 and 4.62 s at 960x720, so neither is a
+real-time owner/GPU promotion. `qualification/classic-hd-owner-gpu-fence.json`
+proves changing raw indexed and palette-resolved readbacks with no readback
+errors; this T14 OpenGLCore platform cannot report the async graphics fence and
+GPU timing is not captured.
+
 `qualification/verify_three_mode_package.py` is the final package-integrity
 gate. A PASS means the Exact, Classic HD, and Unity Enhanced contracts and
 their current evidence are internally consistent. Its output separately lists
