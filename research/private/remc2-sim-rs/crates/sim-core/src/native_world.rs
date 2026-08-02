@@ -15,8 +15,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    FlightContext, FlightEffectsContext, FlightProfile, FlightState, FlightWorld, PlayerCommand,
-    Position, SOURCE_SPELL_INDEX_MAP, SpellFireContext,
+    FlightContext, FlightEffectsContext, FlightEvent, FlightProfile, FlightState, FlightWorld,
+    PlayerCommand, Position, SOURCE_SPELL_INDEX_MAP, SpellFireContext,
     archer_tmap::{ArcherTmapBank, ArcherTmapClocks},
     combat_tmap::{CombatTmapBank, FireballTmapClock, PossessionTmapClock},
     conformance_hash,
@@ -57,8 +57,10 @@ use crate::{
         POSSESSION_ATTRACTION_BASE_TMAP, POSSESSION_ATTRACTION_LOGICAL_HEIGHT,
         POSSESSION_ATTRACTION_RENDER_INDEX, POSSESSION_ATTRACTION_RENDER_MODE,
         POSSESSION_IMPACT_BASE_TMAP, POSSESSION_IMPACT_LOGICAL_HEIGHT,
-        POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_IMPACT_RENDER_MODE, SPELL_JAR_BASE_TMAP,
-        SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE,
+        POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_IMPACT_RENDER_MODE,
+        SPEED_SPELL_ACTIVATION_TICKS, SPEED_SPELL_FAMILY, SPEED_SPELL_MANA_COST,
+        SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX,
+        SPELL_JAR_RENDER_MODE,
     },
     mission_content::{
         MissionContentProfile, MissionContentSession, MissionContentTemplate, REMC2_SPEC_COMMIT,
@@ -71,7 +73,7 @@ use crate::{
         level2_bad_stone_sprite_disposition, source_sprite_dispositions,
         unknown_source_sprite_tuple,
     },
-    spell_activation::{SpellActivationHolder, SpellCasterState},
+    spell_activation::{SpellActivationHolder, SpellCasterState, activate_spell},
     state_hash,
     static_world_tmap::StaticWorldTmapBank,
     step_entity_body_with_context, step_entity_pass_with_context,
@@ -2516,6 +2518,11 @@ impl NativeWorldInspection {
             .ok_or_else(|| NativeWorldError::new("validated Level 2 package has no reset state"))?;
         let mission = self.mission_content_template()?.session();
         let bad_stones = level2_bad_stones(&self.entities, &self.terrain_planes)?;
+        let shared_spells = Level2SharedSpellResetSession::from_parts(
+            &self.entities,
+            &self.players,
+            &self.presentation,
+        )?;
         let ordinary = Level2OrdinaryResetSession::from_parts(
             SessionTerrain::from_inspection(self),
             self.entities.clone(),
@@ -2531,6 +2538,7 @@ impl NativeWorldInspection {
             self.runtime.clone(),
             self.presentation.clone(),
             bad_stones,
+            shared_spells,
             ordinary,
             mission,
         ))
@@ -2549,6 +2557,284 @@ impl NativeWorldInspection {
 /// Production Level 2 reset projection for the ordinary resident/static
 /// families.  It owns the shared `HouseFamily`/`VillagerFamily` behavior and
 /// the three typed dolmens; no Level 1 slot assumptions are consulted.
+const LEVEL2_SHARED_SPELL_PICKUP_SLOTS: [u16; 2] = [38, 75];
+const LEVEL2_SHARED_SPELL_HOLDER_SLOTS: [u16; 2] = [113, 114];
+const LEVEL2_SHARED_SPELL_ENTITY_SHA256: [&str; 4] = [
+    "21f016732b7a687ac53cd9fc452a148dce204e4944b30755abc2f312c5460182",
+    "899b6f9f0c614cdb77c1c7c3e7922ac6eadd03391fdd252f347b29d93fee3e81",
+    "9312c195108896b32d553bdce73a43484bf80e010fcf762fc7c01d7f7ecca954",
+    "fedeb2b2fbe40c6ec72614bc4a971e2e826d52a8348156040e872c14a7c0a80e",
+];
+const LEVEL2_SHARED_SPELL_PLAYER_ENTITY_SHA256: &str =
+    "b5234d405349902b3ef653ed52ac175c929b6024a19869a503fbe65f190d3834";
+
+/// Level 2's shared spell/economy reset projection. The two active authored
+/// pickups and the AI's Fireball/Possession holders are retained as typed,
+/// source-ordered records; Shield, Invisible, and Beyond Sight are deliberately
+/// not admitted here.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Level2SharedSpellResetSession {
+    baseline_pickups: Box<[EntitySnapshot]>,
+    pickups: Box<[EntitySnapshot]>,
+    baseline_holders: Box<[EntitySnapshot]>,
+    holders: Box<[EntitySnapshot]>,
+    baseline_player_mana: i32,
+    player_mana: i32,
+    baseline_caster: SpellCasterState,
+    caster: SpellCasterState,
+    baseline_fireball: SpellActivationHolder,
+    fireball: SpellActivationHolder,
+    baseline_possession: SpellActivationHolder,
+    possession: SpellActivationHolder,
+    baseline_speed: SpellActivationHolder,
+    speed: SpellActivationHolder,
+    player_entity_sha256: String,
+    events: Vec<FlightEvent>,
+}
+
+impl Level2SharedSpellResetSession {
+    fn from_parts(
+        entities: &[EntitySnapshot],
+        players: &[PlayerSnapshot],
+        presentation: &PresentationSelectors,
+    ) -> Result<Self> {
+        const PARAMETER_60: [u8; ENTITY_PARAMETER_BYTES] = [
+            1, 0, 22, 0, 5, 0, 22, 0, 5, 0, 0, 7, 0, 0, 252, 255, 0, 1, 0, 2, 255, 255, 255, 255,
+            0, 9, 40, 0, 0, 16, 0, 2, 0, 0,
+        ];
+        const PARTICLE_77: ParticleParameter = ParticleParameter {
+            base_tmap: 59,
+            word_2: 8492,
+            word_4: 42,
+            speed: 184,
+            rotation_speed: 150,
+            byte_10: 0,
+            byte_11: -1,
+            render_mode: 1,
+            byte_13: 0,
+        };
+        if presentation.entity_parameters.get(60) != Some(&PARAMETER_60)
+            || presentation.particles.get(77) != Some(&PARTICLE_77)
+            || presentation.level_sprite_selectors.get(59) != Some(&255)
+        {
+            return Err(NativeWorldError::new(
+                "Level 2 shared spell parameter or presentation row changed",
+            ));
+        }
+        let mut rows = Vec::with_capacity(4);
+        for (ordinal, slot) in LEVEL2_SHARED_SPELL_PICKUP_SLOTS
+            .into_iter()
+            .chain(LEVEL2_SHARED_SPELL_HOLDER_SLOTS)
+            .enumerate()
+        {
+            let entity = entities.get(usize::from(slot)).ok_or_else(|| {
+                NativeWorldError::new(format!("missing Level 2 shared spell slot {slot}"))
+            })?;
+            let expected = if ordinal < 2 {
+                (
+                    15,
+                    if slot == 38 { 12 } else { 3 },
+                    if slot == 38 { 37 } else { 10 },
+                    0x4,
+                    (0, 0),
+                )
+            } else if slot == 113 {
+                (15, 0, 0, 0x5, (112, 114))
+            } else {
+                (15, 1, 3, 0x5, (113, 0))
+            };
+            if !entity.active
+                || (
+                    entity.class,
+                    entity.model,
+                    entity.action,
+                    entity.control_flags,
+                    (entity.old_map_entity(), entity.next_entity()),
+                ) != expected
+                || entity.particle_parameter_index != Some(77)
+                || entity.parameter_relation != Some(59)
+                || sha256_hex(entity.record_bytes()) != LEVEL2_SHARED_SPELL_ENTITY_SHA256[ordinal]
+            {
+                return Err(NativeWorldError::new(format!(
+                    "Level 2 shared spell census row {slot} changed"
+                )));
+            }
+            rows.push(entity.clone());
+        }
+        let local_player = players
+            .first()
+            .ok_or_else(|| NativeWorldError::new("Level 2 shared spell local player is absent"))?;
+        let player_entity = entities
+            .get(usize::from(local_player.entity_index))
+            .ok_or_else(|| NativeWorldError::new("Level 2 shared spell player entity is absent"))?;
+        if !player_entity.active
+            || player_entity.class != 3
+            || player_entity.model != 0
+            || sha256_hex(player_entity.record_bytes()) != LEVEL2_SHARED_SPELL_PLAYER_ENTITY_SHA256
+        {
+            return Err(NativeWorldError::new(
+                "Level 2 shared spell player entity changed",
+            ));
+        }
+        let pickups = rows[..2].to_vec().into_boxed_slice();
+        let holders = rows[2..].to_vec().into_boxed_slice();
+        let caster = SpellCasterState {
+            entity_index: local_player.entity_index,
+            model: player_entity.model,
+            mana: player_entity.mana,
+            control_flags: player_entity.control_flags,
+            player_color_index: 0,
+            control_mode: 0,
+        };
+        let spell_holder = |entity: &EntitySnapshot| SpellActivationHolder {
+            entity_index: entity.index,
+            model: entity.model,
+            level_gate: entity.level_gate,
+            active_value: entity.active_value,
+            activation_value: entity.activation_value,
+            mana_cost: entity.mana_cost,
+            action_marker: entity.action_marker,
+        };
+        let fireball = spell_holder(&holders[0]);
+        let possession = spell_holder(&holders[1]);
+        let speed = SpellActivationHolder {
+            entity_index: 75,
+            model: SPEED_SPELL_FAMILY,
+            level_gate: 0,
+            active_value: 0,
+            activation_value: SPEED_SPELL_ACTIVATION_TICKS,
+            mana_cost: SPEED_SPELL_MANA_COST,
+            action_marker: 0,
+        };
+        Ok(Self {
+            baseline_pickups: pickups.clone(),
+            pickups,
+            baseline_holders: holders.clone(),
+            holders,
+            baseline_player_mana: player_entity.mana,
+            player_mana: player_entity.mana,
+            baseline_caster: caster,
+            caster,
+            baseline_fireball: fireball,
+            fireball,
+            baseline_possession: possession,
+            possession,
+            baseline_speed: speed,
+            speed,
+            player_entity_sha256: LEVEL2_SHARED_SPELL_PLAYER_ENTITY_SHA256.to_owned(),
+            events: Vec::new(),
+        })
+    }
+
+    #[must_use]
+    pub fn pickups(&self) -> &[EntitySnapshot] {
+        &self.pickups
+    }
+
+    #[must_use]
+    pub fn holders(&self) -> &[EntitySnapshot] {
+        &self.holders
+    }
+
+    #[must_use]
+    pub const fn player_mana(&self) -> i32 {
+        self.player_mana
+    }
+
+    #[must_use]
+    pub const fn baseline_player_mana(&self) -> i32 {
+        self.baseline_player_mana
+    }
+
+    /// Execute remc2's shared `sub_5F660` activation primitive for the
+    /// qualified Level 2 Fireball holder (model 0) or Possession holder
+    /// (model 1). Projectile factories remain owned by their existing Level 1
+    /// mission implementation; this seam proves the exact mana/gate,
+    /// direction, timer, pointer, and audio-event transition on the Level 2
+    /// reset data.
+    pub fn activate_fireball(&mut self, direction_mask: u16, help_enabled: bool) -> bool {
+        self.events.clear();
+        let activated = activate_spell(
+            &mut self.caster,
+            Some(&mut self.fireball),
+            direction_mask,
+            help_enabled,
+            &mut self.events,
+        );
+        self.player_mana = self.caster.mana;
+        activated
+    }
+
+    pub fn activate_possession(&mut self, direction_mask: u16, help_enabled: bool) -> bool {
+        self.events.clear();
+        let activated = activate_spell(
+            &mut self.caster,
+            Some(&mut self.possession),
+            direction_mask,
+            help_enabled,
+            &mut self.events,
+        );
+        self.player_mana = self.caster.mana;
+        activated
+    }
+
+    pub fn activate_speed(&mut self, direction_mask: u16, help_enabled: bool) -> bool {
+        self.events.clear();
+        let activated = activate_spell(
+            &mut self.caster,
+            Some(&mut self.speed),
+            direction_mask,
+            help_enabled,
+            &mut self.events,
+        );
+        self.player_mana = self.caster.mana;
+        activated
+    }
+
+    #[must_use]
+    pub fn fireball_holder(&self) -> SpellActivationHolder {
+        self.fireball
+    }
+
+    #[must_use]
+    pub fn possession_holder(&self) -> SpellActivationHolder {
+        self.possession
+    }
+
+    #[must_use]
+    pub fn speed_holder(&self) -> SpellActivationHolder {
+        self.speed
+    }
+
+    #[must_use]
+    pub fn activation_events(&self) -> &[FlightEvent] {
+        &self.events
+    }
+
+    #[must_use]
+    pub fn reset_hash(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(REMC2_SPEC_COMMIT.as_bytes());
+        for entity in self.pickups.iter().chain(self.holders.iter()) {
+            hasher.update(entity.record_bytes());
+        }
+        hasher.update(self.player_entity_sha256.as_bytes());
+        hasher.update(self.baseline_player_mana.to_le_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+
+    pub fn reset(&mut self) {
+        self.pickups.clone_from(&self.baseline_pickups);
+        self.holders.clone_from(&self.baseline_holders);
+        self.player_mana = self.baseline_player_mana;
+        self.caster = self.baseline_caster;
+        self.fireball = self.baseline_fireball;
+        self.possession = self.baseline_possession;
+        self.speed = self.baseline_speed;
+        self.events.clear();
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2OrdinaryResetSession {
     baseline_terrain: SessionTerrain,
@@ -2936,6 +3222,8 @@ pub struct Level2ResetSession {
     presentation: PresentationSelectors,
     baseline_bad_stones: Box<[Level2BadStone]>,
     bad_stones: Box<[Level2BadStone]>,
+    baseline_shared_spells: Level2SharedSpellResetSession,
+    shared_spells: Level2SharedSpellResetSession,
     ordinary: Level2OrdinaryResetSession,
     mission: MissionContentSession,
 }
@@ -2950,6 +3238,7 @@ impl Level2ResetSession {
         runtime: RuntimeSnapshot,
         presentation: PresentationSelectors,
         bad_stones: Box<[Level2BadStone]>,
+        shared_spells: Level2SharedSpellResetSession,
         ordinary: Level2OrdinaryResetSession,
         mission: MissionContentSession,
     ) -> Self {
@@ -2982,6 +3271,8 @@ impl Level2ResetSession {
             presentation,
             baseline_bad_stones: bad_stones.clone(),
             bad_stones,
+            baseline_shared_spells: shared_spells.clone(),
+            shared_spells,
             ordinary,
             mission,
         }
@@ -3010,6 +3301,16 @@ impl Level2ResetSession {
     #[must_use]
     pub fn bad_stones(&self) -> &[Level2BadStone] {
         &self.bad_stones
+    }
+
+    #[must_use]
+    pub fn shared_spells(&self) -> &Level2SharedSpellResetSession {
+        &self.shared_spells
+    }
+
+    #[must_use]
+    pub fn shared_spells_mut(&mut self) -> &mut Level2SharedSpellResetSession {
+        &mut self.shared_spells
     }
 
     #[must_use]
@@ -3133,6 +3434,7 @@ impl Level2ResetSession {
         self.terrain = self.baseline_terrain.clone();
         self.context = self.baseline_context.clone();
         self.bad_stones.clone_from(&self.baseline_bad_stones);
+        self.shared_spells = self.baseline_shared_spells.clone();
         self.ordinary.reset();
         self.mission.reset();
     }
@@ -8933,6 +9235,95 @@ mod tests {
             dead_player_flags
         );
         assert_eq!(second.ordinary().reset_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_shared_spells_bind_activation_mana_events_and_reset() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut first = inspection
+            .level2_reset_session()
+            .expect("Level 2 reset session");
+        let second = inspection
+            .level2_reset_session()
+            .expect("isolated Level 2 reset session");
+        assert_eq!(
+            first
+                .shared_spells()
+                .pickups()
+                .iter()
+                .map(|entity| entity.index)
+                .collect::<Vec<_>>(),
+            vec![38, 75]
+        );
+        assert_eq!(
+            first
+                .shared_spells()
+                .holders()
+                .iter()
+                .map(|entity| entity.index)
+                .collect::<Vec<_>>(),
+            vec![113, 114]
+        );
+        assert_eq!(first.shared_spells().player_mana(), 1_000);
+        assert!(first.shared_spells_mut().activate_fireball(256, true));
+        assert_eq!(first.shared_spells().fireball_holder().active_value, 5);
+        assert_eq!(first.shared_spells().activation_events(), &[]);
+        assert!(first.shared_spells_mut().activate_possession(512, true));
+        assert_eq!(first.shared_spells().possession_holder().active_value, 3);
+        first.shared_spells_mut().reset();
+        assert!(first.shared_spells_mut().activate_speed(256, true));
+        assert_eq!(
+            first.shared_spells().speed_holder().active_value,
+            i16::try_from(SPEED_SPELL_ACTIVATION_TICKS).expect("speed timer fits i16")
+        );
+        first.shared_spells_mut().reset();
+        assert_eq!(second.shared_spells().fireball_holder().active_value, 0);
+        first.shared_spells_mut().caster.mana = 0;
+        first.shared_spells_mut().fireball.active_value = 0;
+        assert!(!first.shared_spells_mut().activate_fireball(256, true));
+        assert!(!first.shared_spells().activation_events().is_empty());
+        first.shared_spells_mut().reset();
+        assert_eq!(first.shared_spells().fireball_holder().active_value, 0);
+        assert_eq!(first.shared_spells().player_mana(), 1_000);
+        assert_eq!(first.shared_spells(), second.shared_spells());
+    }
+
+    #[test]
+    fn level_two_shared_spell_census_rejects_tampered_rows_and_presentation() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let players = inspection.players();
+        let mut entities = inspection.entities().to_vec();
+        entities[38].record[68] = 3;
+        assert!(
+            Level2SharedSpellResetSession::from_parts(
+                &entities,
+                players,
+                inspection.presentation(),
+            )
+            .is_err()
+        );
+        let mut entities = inspection.entities().to_vec();
+        entities[113].record[28] ^= 1;
+        assert!(
+            Level2SharedSpellResetSession::from_parts(
+                &entities,
+                players,
+                inspection.presentation(),
+            )
+            .is_err()
+        );
+        let mut presentation = inspection.presentation().clone();
+        presentation.level_sprite_selectors[59] = 0;
+        assert!(
+            Level2SharedSpellResetSession::from_parts(
+                inspection.entities(),
+                players,
+                &presentation,
+            )
+            .is_err()
+        );
     }
 
     #[test]
