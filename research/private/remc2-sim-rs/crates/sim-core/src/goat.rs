@@ -79,20 +79,11 @@ impl GoatBehaviorConfig {
         behavior_flags: 9,
     };
 
-    /// Level 2 Day parameter row 99 consumed by the action-11 Goat band.
-    /// The row keeps the Level 1 material/vertical fields but widens the
-    /// turn/perception settings and clears the player-engagement flag.
-    pub const LEVEL_TWO: Self = Self {
-        turn_clamp: 91,
-        ground_clearance: 0,
-        vertical_relaxation: -256,
-        terrain_threshold: 20,
-        allowed_material_mask: 0xfff0_80fe,
-        perception_cadence: 40,
-        perception_radius: 3_584,
-        perception_half_angle: 1_991,
-        behavior_flags: 1,
-    };
+    /// Level 2 Day Goat rows use the same class-5/model-1 parameter row as
+    /// the source `AddCreature_4B490` constructor: zero-based presentation
+    /// row 98 (the exported one-based relation is 99). Row 99 belongs to the
+    /// class-5/model-26 constructor and is not a Goat parameter.
+    pub const LEVEL_TWO: Self = Self::LEVEL_ONE;
 
     /// Decode the consumed fields of exact entity-parameter row 98.
     ///
@@ -120,26 +111,10 @@ impl GoatBehaviorConfig {
         Ok(config)
     }
 
-    /// Decode the Level 2 Day Goat parameter row 99 without weakening the
-    /// Level 1 row-98 validator above.
+    /// Decode the Level 2 Day Goat parameter relation. The source relation is
+    /// one-based `99`, which the export parser resolves to row 98.
     pub fn from_level_two_parameter_record(bytes: &[u8; 34]) -> Result<Self, String> {
-        let config = Self {
-            turn_clamp: read_i16(bytes, 2),
-            ground_clearance: read_i16(bytes, 12),
-            vertical_relaxation: read_i16(bytes, 14),
-            terrain_threshold: read_i16(bytes, 16),
-            allowed_material_mask: read_u32(bytes, 20),
-            perception_cadence: read_u16(bytes, 26),
-            perception_radius: read_u16(bytes, 28),
-            perception_half_angle: read_i16(bytes, 30),
-            behavior_flags: bytes[32],
-        };
-        if config != Self::LEVEL_TWO {
-            return Err(format!(
-                "Level 2 Goat parameter row 99 mismatch: {config:?}"
-            ));
-        }
-        Ok(config)
+        Self::from_parameter_record(bytes)
     }
 }
 
@@ -1241,9 +1216,9 @@ impl GoatFamily {
 
             let goat = &mut self.goats[family_index];
             goat.position = candidate;
-            goat.yaw = heading
-                .wrapping_add(turn_toward(heading, goat.roll, self.config.turn_clamp))
-                & 0x07ff;
+            goat.yaw =
+                heading.wrapping_add(turn_toward(heading, goat.roll, self.config.turn_clamp))
+                    & 0x07ff;
             return;
         }
 
