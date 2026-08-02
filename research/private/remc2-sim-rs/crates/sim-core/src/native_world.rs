@@ -4217,6 +4217,26 @@ impl Level2EconomyState {
         Some(child)
     }
 
+    /// Advance one dynamic Castle child through the no-callback branches of
+    /// `ApplyEvents_498A0`.  The pinned source disables drawing for
+    /// class-5/model-15 and class-10/model-41/42/79 rows, then immediately
+    /// tests the newly written bit and falls through to `sub_57F20` in the
+    /// same cursor visit.  Do both writes atomically here so a production
+    /// outer turn cannot leave a terminal row as a stale live marker.
+    pub fn step_castle_child_terminal_slot(&mut self, source_slot: u16) -> bool {
+        let Some(child_index) = self.castle_children.iter().position(|child| {
+            child.active
+                && child.source_entity_index == source_slot
+                && ((child.source_class == 5 && child.model == 15)
+                    || (child.source_class == 10 && matches!(child.model, 41 | 42 | 79)))
+        }) else {
+            return false;
+        };
+        self.castle_children[child_index].control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        self.applyevents_terminal_reclaim_castle_child(source_slot)
+            .is_some()
+    }
+
     pub fn claim_mana_sphere(&mut self, sphere_slot: u16, owner_entity_index: u16) -> bool {
         let Some(sphere) = self
             .spheres
@@ -8843,7 +8863,12 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::ManaSphere => self.economy.step_mana_sphere_slot(source_slot),
             Level2DynamicArenaKind::ManaCarrier => self.economy.step_mana_carrier_slot(source_slot),
             Level2DynamicArenaKind::DeathBurst => self.economy.step_death_burst_slot(source_slot),
-            _ => true,
+            Level2DynamicArenaKind::CastleAuxiliary
+            | Level2DynamicArenaKind::CastleChild
+            | Level2DynamicArenaKind::CastleController => {
+                self.economy.step_castle_child_terminal_slot(source_slot)
+            }
+            Level2DynamicArenaKind::CastleRoot => true,
         };
         if live {
             self.dispatch_events
@@ -16437,8 +16462,8 @@ mod tests {
         assert!(
             session
                 .economy_mut()
-                .applyevents_terminal_reclaim_castle_child(slots[0])
-                .is_none()
+                .step_castle_child_terminal_slot(slots[0])
+                == false
         );
         session
             .economy_mut()
@@ -16448,13 +16473,10 @@ mod tests {
             .expect("restore class/model guard child")
             .source_class = 5;
         for (index, slot) in slots.iter().enumerate() {
-            let reclaimed = session
-                .economy_mut()
-                .applyevents_terminal_reclaim_castle_child(*slot)
-                .expect("ApplyEvents terminal child reclaim");
-            assert_eq!(reclaimed.source_entity_index, *slot);
-            assert!(!reclaimed.active);
-            assert_ne!(reclaimed.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
+            assert!(
+                session.economy_mut().step_castle_child_terminal_slot(*slot),
+                "ApplyEvents disables and reclaims terminal child in one visit"
+            );
             assert!(
                 session
                     .economy()
@@ -16474,8 +16496,8 @@ mod tests {
         assert!(
             session
                 .economy_mut()
-                .applyevents_terminal_reclaim_castle_child(slots[0])
-                .is_none()
+                .step_castle_child_terminal_slot(slots[0])
+                == false
         );
         assert!(session.economy().castle_children().is_empty());
         for slot in &slots {
@@ -19281,18 +19303,12 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 dynamic cursor session");
+        let free_before_build = session.economy().free_slots.len();
         let castle_slot = session
             .economy_mut()
             .build_castle_with_footprint(Position::default(), 111, &footprint)
             .expect("source constructor Castle allocation");
         session.step_outer_turn(PlayerCommand::default(), 0);
-        let child = session
-            .economy()
-            .castle_children()
-            .iter()
-            .find(|child| child.active && child.model == 42)
-            .copied()
-            .expect("same-pass construction child");
         let events = session.dispatch_events();
         let root_event = events.iter().position(|event| {
             matches!(
@@ -19303,6 +19319,17 @@ mod tests {
                 } if *source_slot == castle_slot
             )
         });
+        let child_slot = events
+            .iter()
+            .find_map(|event| match event {
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::CastleChild,
+                    ..
+                } => Some(*source_slot),
+                _ => None,
+            })
+            .expect("same-pass construction child event");
         let child_event = events.iter().position(|event| {
             matches!(
                 event,
@@ -19310,29 +19337,27 @@ mod tests {
                     source_slot,
                     kind: Level2DynamicArenaKind::CastleChild,
                     ..
-                } if *source_slot == child.source_entity_index
+                } if *source_slot == child_slot
             )
         });
         assert!(
             root_event < child_event,
             "child must be visible on the runagain scan"
         );
-        let free_before = session.economy().free_slots.len();
-        session
-            .economy_mut()
-            .castle_children
-            .iter_mut()
-            .find(|candidate| candidate.source_entity_index == child.source_entity_index)
-            .expect("same-pass child remains installed")
-            .active = false;
-        session.economy_mut().reclaim_inactive_slots();
-        assert_eq!(session.economy().free_slots.len(), free_before + 1);
+        assert_eq!(session.economy().free_slots.len(), free_before_build - 1);
         assert!(
             session
                 .economy()
                 .castle_children()
                 .iter()
-                .all(|candidate| candidate.source_entity_index != child.source_entity_index)
+                .all(|candidate| candidate.source_entity_index != child_slot)
+        );
+        assert!(
+            !session
+                .economy()
+                .map_chains()
+                .linked_entity_indices()
+                .contains(&child_slot)
         );
     }
 
