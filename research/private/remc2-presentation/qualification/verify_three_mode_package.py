@@ -1196,6 +1196,8 @@ def validate_unity_enhanced_visual_capture_tooling() -> list[str]:
         root_path: (
             "CapturePresentationFramePng",
             "camera.Render()",
+            "RenderTextureReadWrite.sRGB",
+            "TextureFormat.RGBA32, false, true",
             "never advances or mutates the authoritative owner session",
         ),
         editor_path: (

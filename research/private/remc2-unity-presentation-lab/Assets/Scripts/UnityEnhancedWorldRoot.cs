@@ -438,7 +438,11 @@ namespace MagicCarpet.PresentationLab
                 height,
                 24,
                 RenderTextureFormat.ARGB32,
-                RenderTextureReadWrite.Linear);
+                // Enhanced resolves through the display-space color path.
+                // Pair the sRGB target with a linear readback texture so the
+                // PNG records those resolved pixels without a second gamma
+                // decode in Gamma-color-space qualification projects.
+                RenderTextureReadWrite.sRGB);
             target.name = "UnityEnhanced_QualificationResolvedCapture";
             Texture2D readback = null;
             RenderTexture previousActive = RenderTexture.active;
@@ -454,7 +458,7 @@ namespace MagicCarpet.PresentationLab
                 camera.targetTexture = target;
                 camera.Render();
                 RenderTexture.active = target;
-                readback = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
+                readback = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
                 readback.name = "UnityEnhanced_QualificationResolvedReadback";
                 readback.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
                 readback.Apply(false, false);
