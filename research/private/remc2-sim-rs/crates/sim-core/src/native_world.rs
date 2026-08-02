@@ -8237,6 +8237,7 @@ pub struct Level2ResetSession {
     goats: GoatFamily,
     mission: MissionContentSession,
     dispatch_events: Vec<Level2DispatchEvent>,
+    economy_event_cursor: usize,
 }
 
 /// One lossless, source-ordered result from the bounded Level 2 dispatcher.
@@ -8290,6 +8291,11 @@ pub enum Level2DispatchEvent {
         pass: u8,
         source_slot: u16,
         kind: Level2DynamicArenaKind,
+    },
+    Economy {
+        pass: u8,
+        source_slot: u16,
+        event: Level2EconomyEvent,
     },
     Goat {
         pass: u8,
@@ -8369,6 +8375,17 @@ impl Level2DispatchEvent {
                 1,
                 *source_slot,
             ),
+            Self::Economy {
+                pass,
+                source_slot,
+                event,
+            } => (
+                *pass,
+                10,
+                level2_economy_event_family(*event),
+                1,
+                *source_slot,
+            ),
             Self::Goat {
                 pass,
                 source_slot,
@@ -8393,6 +8410,89 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::ManaCarrier => 7,
         Level2DynamicArenaKind::DeathBurst => 8,
     }
+}
+
+#[must_use]
+pub const fn level2_economy_event_family(event: Level2EconomyEvent) -> u8 {
+    match event {
+        Level2EconomyEvent::ManaSphereSpawned { .. }
+        | Level2EconomyEvent::ManaSphereClaimed { .. }
+        | Level2EconomyEvent::ManaSphereCollected { .. }
+        | Level2EconomyEvent::ManaSpheresMerged { .. } => 1,
+        Level2EconomyEvent::ManaCarrierSpawned { .. }
+        | Level2EconomyEvent::ManaCarrierArrived { .. } => 2,
+        Level2EconomyEvent::CastleDefenderArrived { .. }
+        | Level2EconomyEvent::CastleBuilt { .. }
+        | Level2EconomyEvent::CastleDestroyed { .. }
+        | Level2EconomyEvent::CastleConstructionSound { .. }
+        | Level2EconomyEvent::CastleDestructionSound { .. }
+        | Level2EconomyEvent::CastleStageDestroyed { .. } => 3,
+        Level2EconomyEvent::DeathBurstSpawned { .. }
+        | Level2EconomyEvent::DeathBurstExpired { .. } => 4,
+        Level2EconomyEvent::DamageApplied { .. } => 5,
+    }
+}
+
+#[must_use]
+fn level2_economy_event_source_slot(event: Level2EconomyEvent, fallback: u16) -> u16 {
+    let id = match event {
+        Level2EconomyEvent::ManaSphereSpawned {
+            source_entity_index,
+            ..
+        }
+        | Level2EconomyEvent::ManaCarrierSpawned {
+            source_entity_index,
+            ..
+        }
+        | Level2EconomyEvent::DeathBurstSpawned {
+            source_entity_index,
+            ..
+        }
+        | Level2EconomyEvent::DeathBurstExpired {
+            source_entity_index,
+            ..
+        }
+        | Level2EconomyEvent::CastleBuilt {
+            source_entity_index,
+            ..
+        }
+        | Level2EconomyEvent::CastleDestroyed {
+            source_entity_index,
+            ..
+        }
+        | Level2EconomyEvent::CastleConstructionSound {
+            source_entity_index,
+            ..
+        }
+        | Level2EconomyEvent::CastleDestructionSound {
+            source_entity_index,
+            ..
+        }
+        | Level2EconomyEvent::CastleStageDestroyed {
+            source_entity_index,
+            ..
+        } => u32::from(source_entity_index),
+        Level2EconomyEvent::ManaSphereClaimed { sphere_id, .. }
+        | Level2EconomyEvent::ManaSpheresMerged {
+            target_sphere_id: sphere_id,
+            ..
+        }
+        | Level2EconomyEvent::ManaCarrierArrived {
+            carrier_id: sphere_id,
+            ..
+        } => sphere_id,
+        // The collection callback is owned by the carrier source row even
+        // though the payload also names the collected sphere. Keep the
+        // dispatcher slot bound to that handler, matching ApplyEvents' live
+        // cursor rather than the consumed object.
+        Level2EconomyEvent::ManaSphereCollected { carrier_id, .. } => carrier_id,
+        Level2EconomyEvent::CastleDefenderArrived { defender_slot, .. } => u32::from(defender_slot),
+        Level2EconomyEvent::DamageApplied {
+            target_entity_index,
+            ..
+        } => u32::from(target_entity_index),
+    };
+    u16::try_from(id).unwrap_or(fallback)
 }
 
 impl Level2ResetSession {
@@ -8448,6 +8548,7 @@ impl Level2ResetSession {
             goats,
             mission,
             dispatch_events: Vec::new(),
+            economy_event_cursor: 0,
         }
     }
 
@@ -8649,6 +8750,25 @@ impl Level2ResetSession {
         self.shared_spells.terrain = self.terrain.clone();
         self.ordinary.terrain = self.terrain.clone();
         self.economy.terrain = self.terrain.clone();
+    }
+
+    /// Publish only economy events created since the last source-handler
+    /// boundary. Direct economy API calls may populate the retained event
+    /// history before an outer turn; the turn-start cursor deliberately
+    /// excludes those stale entries from dispatcher output.
+    fn append_new_economy_events(&mut self, pass: u8, fallback_source_slot: u16) {
+        let events = self.economy.events();
+        let start = self.economy_event_cursor.min(events.len());
+        let pending = events[start..].to_vec();
+        self.economy_event_cursor = events.len();
+        for event in pending {
+            let source_slot = level2_economy_event_source_slot(event, fallback_source_slot);
+            self.dispatch_events.push(Level2DispatchEvent::Economy {
+                pass,
+                source_slot,
+                event,
+            });
+        }
     }
 
     /// Dispatch the authored Level 2 rows in source-slot order alongside the
@@ -8885,7 +9005,16 @@ impl Level2ResetSession {
                         .copied()
                         .expect("dynamic source route has a live kind");
                     dispatched_dynamic_slots.insert(source_slot);
-                    self.step_level2_dynamic_arena(pass, source_slot, kind);
+                    let live = self.step_level2_dynamic_arena(source_slot, kind);
+                    self.append_new_economy_events(pass, source_slot);
+                    if live {
+                        self.dispatch_events
+                            .push(Level2DispatchEvent::DynamicArena {
+                                pass,
+                                source_slot,
+                                kind,
+                            });
+                    }
                 }
                 7 => {
                     let mut events = goat_begin_events.remove(&source_slot).unwrap_or_default();
@@ -8903,6 +9032,7 @@ impl Level2ResetSession {
                 }
                 _ => unreachable!("bounded Level 2 source route"),
             }
+            self.append_new_economy_events(pass, source_slot);
         }
         // A root/typed handler may have allocated a Castle child, carrier, or
         // sphere after the initial cursor reached its slot.  Re-scan live
@@ -8923,7 +9053,16 @@ impl Level2ResetSession {
             }
             for (source_slot, kind) in unseen {
                 dispatched_dynamic_slots.insert(source_slot);
-                self.step_level2_dynamic_arena(pass, source_slot, kind);
+                let live = self.step_level2_dynamic_arena(source_slot, kind);
+                self.append_new_economy_events(pass, source_slot);
+                if live {
+                    self.dispatch_events
+                        .push(Level2DispatchEvent::DynamicArena {
+                            pass,
+                            source_slot,
+                            kind,
+                        });
+                }
             }
             self.economy.reclaim_inactive_slots();
         }
@@ -8951,10 +9090,9 @@ impl Level2ResetSession {
     /// callback; all dynamic families therefore receive one cursor visit.
     fn step_level2_dynamic_arena(
         &mut self,
-        pass: u8,
         source_slot: u16,
         kind: Level2DynamicArenaKind,
-    ) {
+    ) -> bool {
         let live = match kind {
             Level2DynamicArenaKind::CastleDefender => {
                 self.economy.step_castle_defender_slot(source_slot)
@@ -8969,14 +9107,7 @@ impl Level2ResetSession {
             }
             Level2DynamicArenaKind::CastleRoot => true,
         };
-        if live {
-            self.dispatch_events
-                .push(Level2DispatchEvent::DynamicArena {
-                    pass,
-                    source_slot,
-                    kind,
-                });
-        }
+        live
     }
 
     /// Apply the source `KillEntity_1C930` side effects emitted by the typed
@@ -9115,6 +9246,7 @@ impl Level2ResetSession {
         speed_index: u8,
     ) -> Vec<crate::StepEvidence> {
         self.dispatch_events.clear();
+        self.economy_event_cursor = self.economy.events().len();
         let latched_command =
             crate::latch_command_with_context(&mut self.state, command, &mut self.context);
         let mut evidence = Vec::new();
@@ -9143,6 +9275,7 @@ impl Level2ResetSession {
         self.goats = self.baseline_goats.clone();
         self.mission.reset();
         self.dispatch_events.clear();
+        self.economy_event_cursor = 0;
     }
 }
 
@@ -18664,6 +18797,7 @@ mod tests {
                 | Level2DispatchEvent::Castle { source_slot, .. }
                 | Level2DispatchEvent::Error { source_slot, .. }
                 | Level2DispatchEvent::DynamicArena { source_slot, .. }
+                | Level2DispatchEvent::Economy { source_slot, .. }
                 | Level2DispatchEvent::Goat { source_slot, .. } => *source_slot,
                 Level2DispatchEvent::BadStone { step, .. } => step.source_slot,
                 Level2DispatchEvent::Dolmen { step, .. } => step.source_slot,
@@ -18740,6 +18874,13 @@ mod tests {
                 _ => None,
             })
             .expect("Goat dispatch row");
+        let converted_mana = goat_events
+            .iter()
+            .find_map(|event| match event {
+                GoatStepEvent::ManaConverted { mana, .. } => Some(*mana),
+                _ => None,
+            })
+            .expect("Goat mana conversion payload");
         let mana_index = goat_events
             .iter()
             .position(|event| matches!(event, GoatStepEvent::ManaConverted { .. }))
@@ -18753,6 +18894,46 @@ mod tests {
             .position(|event| matches!(event, GoatStepEvent::RemovalQueued { .. }))
             .expect("Goat removal event");
         assert!(mana_index < extra_index && extra_index < removal_index);
+        let economy_payloads = session
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2DispatchEvent::Economy {
+                    source_slot, event, ..
+                } => Some((*source_slot, *event)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let sphere_payload_index = economy_payloads
+            .iter()
+            .position(|(_, event)| {
+                matches!(
+                    event,
+                    Level2EconomyEvent::ManaSphereSpawned {
+                        source_entity_index,
+                        mana,
+                        ..
+                    } if *source_entity_index == goat_slot && *mana == converted_mana
+                )
+            })
+            .expect("Goat dispatch includes sphere payload");
+        let burst_payload_index = economy_payloads
+            .iter()
+            .position(|(_, event)| {
+                matches!(
+                    event,
+                    Level2EconomyEvent::DeathBurstSpawned {
+                        parent_entity_index,
+                        ..
+                    } if *parent_entity_index == goat_slot
+                )
+            })
+            .expect("Goat dispatch includes burst payload");
+        assert!(sphere_payload_index < burst_payload_index);
+        assert_eq!(
+            economy_payloads[sphere_payload_index].0, goat_slot,
+            "sphere payload keeps the Goat source slot"
+        );
         assert!(session.economy().events().iter().any(|event| {
             matches!(event, Level2EconomyEvent::ManaSphereSpawned {
                 source_entity_index,
@@ -18790,6 +18971,24 @@ mod tests {
             })
             .expect("Goat mana sphere slot");
         assert!(sphere_slot < burst_slot, "source allocations retain order");
+        let burst_expired_payload_index = economy_payloads
+            .iter()
+            .position(|(_, event)| {
+                matches!(
+                    event,
+                    Level2EconomyEvent::DeathBurstExpired {
+                        source_entity_index,
+                        parent_entity_index,
+                    } if *source_entity_index == burst_slot
+                        && *parent_entity_index == goat_slot
+                )
+            })
+            .expect("Goat dispatch includes burst expiry payload");
+        assert!(burst_payload_index < burst_expired_payload_index);
+        assert_eq!(
+            economy_payloads[burst_expired_payload_index].0, burst_slot,
+            "burst expiry keeps the burst source slot"
+        );
         let dynamic_slots = session
             .dispatch_events()
             .iter()
@@ -18830,6 +19029,117 @@ mod tests {
         assert_eq!(session.economy().reset_hash(), baseline_economy_hash);
         assert!(session.economy().death_bursts().is_empty());
         assert!(session.economy().spheres().is_empty());
+    }
+
+    #[test]
+    fn level_two_economy_dispatch_cursor_isolated_and_reset_replays_payloads() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+
+        // Direct API history is retained for economy auditing but is not a
+        // source-dispatch payload for the next outer turn.
+        let mut stale = inspection
+            .level2_reset_session()
+            .expect("stale economy session");
+        stale
+            .economy_mut()
+            .spawn_mana_sphere_from_death(901, Position::default(), 0, 0x3456, 10, 111)
+            .expect("pre-step sphere allocation");
+        stale.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!stale.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Economy {
+                    event: Level2EconomyEvent::ManaSphereSpawned {
+                        source_entity_index,
+                        ..
+                    },
+                    ..
+                } if *source_entity_index == 901
+            )
+        }));
+
+        // A dynamic handler-created event is published once, not again on a
+        // later source turn, and reset returns the cursor to frame zero.
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("economy cursor session");
+        let carrier_slot = session
+            .economy_mut()
+            .spawn_mana_carrier(Position::default(), 111, 0)
+            .expect("carrier allocation");
+        let sphere_slot = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(902, Position::default(), 0, 0x4567, 10, 111)
+            .expect("sphere allocation");
+        session
+            .economy_mut()
+            .carriers
+            .iter_mut()
+            .find(|carrier| carrier.source_entity_index == carrier_slot)
+            .expect("carrier row")
+            .target_sphere_id = sphere_slot;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Economy {
+                    source_slot,
+                    event: Level2EconomyEvent::ManaSphereCollected { sphere_id, .. },
+                    ..
+                } if *source_slot == carrier_slot && *sphere_id == sphere_slot
+            )
+        }));
+        let first_payloads = session
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2DispatchEvent::Economy { event, .. } => Some(*event),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(first_payloads.iter().any(|event| {
+            matches!(
+                event,
+                Level2EconomyEvent::ManaSphereCollected { sphere_id, .. }
+                    if *sphere_id == sphere_slot
+            )
+        }));
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Level2DispatchEvent::Economy { .. }))
+        );
+
+        session.reset();
+        let replay_carrier_slot = session
+            .economy_mut()
+            .spawn_mana_carrier(Position::default(), 111, 0)
+            .expect("replay carrier allocation");
+        let replay_sphere_slot = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(902, Position::default(), 0, 0x4567, 10, 111)
+            .expect("replay sphere allocation");
+        session
+            .economy_mut()
+            .carriers
+            .iter_mut()
+            .find(|carrier| carrier.source_entity_index == replay_carrier_slot)
+            .expect("replay carrier row")
+            .target_sphere_id = replay_sphere_slot;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let replay_payloads = session
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2DispatchEvent::Economy { event, .. } => Some(*event),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(first_payloads, replay_payloads);
     }
 
     #[test]
@@ -18920,6 +19230,7 @@ mod tests {
                     | Level2DispatchEvent::Dolmen { pass, .. }
                     | Level2DispatchEvent::Castle { pass, .. }
                     | Level2DispatchEvent::DynamicArena { pass, .. }
+                    | Level2DispatchEvent::Economy { pass, .. }
                     | Level2DispatchEvent::Goat { pass, .. }
                     | Level2DispatchEvent::Error { pass, .. } => *pass,
                 })
