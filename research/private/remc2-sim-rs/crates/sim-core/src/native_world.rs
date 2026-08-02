@@ -445,6 +445,15 @@ impl EntitySnapshot {
         &self.record
     }
 
+    /// Raw source `playerEntityIndex_0x94_148`, exported four bytes after the
+    /// original source offset because the package record carries a four-byte
+    /// header.  This relation is distinct from `parentId_0x28` and from the
+    /// presentation `source_id`.
+    #[must_use]
+    pub fn source_player_entity_index(&self) -> u16 {
+        u16::from_le_bytes([self.record[152], self.record[153]])
+    }
+
     /// Return the source draw-disable state written by
     /// `DisableEntityDrawing04_57F10`. This is byte 17 bit 2 (the 0x400 bit
     /// of the control dword), not byte 16 bit 0 used by pickup ownership.
@@ -3379,17 +3388,12 @@ impl Level2EconomyState {
             .collect::<BTreeMap<_, _>>();
         let source_owner = entities
             .iter()
-            .map(|entity| {
-                (
-                    entity.index,
-                    u16::from_le_bytes([entity.record[44], entity.record[45]]),
-                )
-            })
+            .map(|entity| (entity.index, entity.source_player_entity_index()))
             .collect::<BTreeMap<_, _>>();
         let owner_max_mana = entities
             .iter()
             .filter(|entity| entity.active)
-            .map(|entity| (entity.index, entity.mana))
+            .map(|entity| (entity.index, entity.max_mana))
             .collect::<BTreeMap<_, _>>();
         let raw_map_entries =
             raw_source_map_chain_entries(&terrain.planes().entity_indices, |source_entity_index| {
@@ -17253,11 +17257,10 @@ mod tests {
         let baseline_economy_hash = session.economy().reset_hash();
         let goat_slot = LEVEL_TWO_GOAT_INDICES[0];
         let goat_source_id = session
-            .goats
             .goats()
             .iter()
             .find(|goat| goat.entity_index == goat_slot)
-            .expect("Goat source row")
+            .expect("Level 2 Goat source row")
             .source_id;
         session
             .goats
@@ -17396,6 +17399,54 @@ mod tests {
         assert_eq!(session.economy().reset_hash(), baseline_economy_hash);
         assert!(session.economy().death_bursts().is_empty());
         assert!(session.economy().spheres().is_empty());
+    }
+
+    #[test]
+    fn level_two_goat_death_respects_source_burst_suppression_bit() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 suppressed Goat session");
+        let goat_slot = LEVEL_TWO_GOAT_INDICES[0];
+        assert!(session.goats.set_control_flags(goat_slot, 0x0010_0000));
+        session
+            .goats
+            .inject_damage(
+                goat_slot,
+                1_000_000,
+                session.state.entity_index.cast_signed(),
+            )
+            .expect("inject lethal Goat damage");
+
+        let mut observed_death = false;
+        for _ in 0..32 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            if session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::Goat {
+                        source_slot,
+                        events,
+                        ..
+                    } if *source_slot == goat_slot
+                        && events.iter().any(|event| matches!(
+                            event,
+                            GoatStepEvent::ExtraManaSphereRequested { .. }
+                        ))
+                )
+            }) {
+                observed_death = true;
+                break;
+            }
+        }
+        assert!(observed_death, "suppressed Goat reached KillEntity tail");
+        assert!(!session.economy().events().iter().any(|event| {
+            matches!(event, Level2EconomyEvent::DeathBurstSpawned {
+                parent_entity_index,
+                ..
+            } if *parent_entity_index == goat_slot)
+        }));
     }
 
     #[test]

@@ -1461,6 +1461,21 @@ impl GoatFamily {
         });
     }
 
+    /// Bind the imported raw control dword for a live source row.  This keeps
+    /// source byte[2] suppression (including `KillEntity_1C930`'s death-burst
+    /// gate) testable without exposing the backing family storage.
+    pub fn set_control_flags(&mut self, entity_index: u16, control_flags: u32) -> bool {
+        let Some(goat) = self
+            .goats
+            .iter_mut()
+            .find(|goat| goat.entity_index == entity_index)
+        else {
+            return false;
+        };
+        goat.control_flags = control_flags;
+        true
+    }
+
     /// Inject the source pending-damage fields for private qualification.
     ///
     /// # Errors
