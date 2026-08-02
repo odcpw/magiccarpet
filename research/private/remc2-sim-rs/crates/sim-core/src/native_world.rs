@@ -33,6 +33,7 @@ use crate::{
         GOAT_TMAP_SELECTORS, GOAT_TMAP_STATE_COUNT, GoatTmapBank, GoatTmapClocks, GoatTmapFrame,
         GoatTmapSelectorBank,
     },
+    heading_for_positions,
     house::{
         HOUSE_CLASS, HOUSE_MODEL, HouseFamily, HouseResidentEntry, HouseState, HouseStepEvent,
     },
@@ -56,10 +57,11 @@ use crate::{
         Level1SourceEffect, Level1SourceEntityAuthority, Level1SourceEntityView,
         MANA_CARRIER_ATTRACTION_RADIUS, MANA_CARRIER_BASE_TMAP, MANA_CARRIER_COLLISION_HALF_HEIGHT,
         MANA_CARRIER_COLLISION_HALF_WIDTH, MANA_CARRIER_COLLISION_VERTICAL_OFFSET,
-        MANA_CARRIER_LOGICAL_HEIGHT, MANA_CARRIER_MAX_LIFE, MANA_CARRIER_MAX_MANA,
-        MANA_CARRIER_RENDER_INDEX, MANA_CARRIER_RENDER_MODE, MANA_CARRIER_SPEED,
-        MANA_SPHERE_COLLISION_DIMENSIONS, MANA_SPHERE_GRAVITY, MANA_SPHERE_MAX_XY_VELOCITY,
-        MANA_SPHERE_TERMINAL_VELOCITY, ManaCarrier, ManaSphere, POSSESSION_ATTRACTION_BASE_TMAP,
+        MANA_CARRIER_DESCENT, MANA_CARRIER_GROUND_CLEARANCE, MANA_CARRIER_LOGICAL_HEIGHT,
+        MANA_CARRIER_MAX_LIFE, MANA_CARRIER_MAX_MANA, MANA_CARRIER_RENDER_INDEX,
+        MANA_CARRIER_RENDER_MODE, MANA_CARRIER_SPEED, MANA_SPHERE_COLLISION_DIMENSIONS,
+        MANA_SPHERE_GRAVITY, MANA_SPHERE_MAX_XY_VELOCITY, MANA_SPHERE_TERMINAL_VELOCITY,
+        ManaCarrier, ManaSphere, POSSESSION_ATTRACTION_BASE_TMAP,
         POSSESSION_ATTRACTION_LOGICAL_HEIGHT, POSSESSION_ATTRACTION_RENDER_INDEX,
         POSSESSION_ATTRACTION_RENDER_MODE, POSSESSION_IMPACT_BASE_TMAP,
         POSSESSION_IMPACT_LOGICAL_HEIGHT, POSSESSION_IMPACT_RENDER_INDEX,
@@ -3906,6 +3908,138 @@ impl Level2EconomyState {
                 self.merge_mana_spheres(sphere_slot, absorbed_slot);
             }
         }
+        true
+    }
+
+    /// Advance one live Level 2 carrier through its source target/return
+    /// action.  The handler deliberately uses the imported Day terrain and
+    /// economy-owned sphere list, so collection and Castle deposit mutate the
+    /// same production state that the dispatcher hashes and exports.
+    pub fn step_mana_carrier_slot(&mut self, carrier_slot: u16) -> bool {
+        let Some(original) = self
+            .carrier
+            .filter(|carrier| carrier.active && carrier.source_entity_index == carrier_slot)
+        else {
+            return false;
+        };
+        let mut position = original.position;
+        let mut yaw = original.yaw;
+        let mut carried_mana = original.carried_mana;
+        let mut owner_entity_index = original.owner_entity_index;
+        let mut life = original.life;
+        let mut target_sphere_id = original.target_sphere_id;
+        let mut valid_target = false;
+
+        if original.returning_to_castle {
+            if let Some(castle) = self.castle.filter(|castle| castle.active) {
+                valid_target = true;
+                yaw = i16::try_from(heading_for_positions(position, castle.position))
+                    .expect("Level 2 carrier Castle heading fits");
+                let arrival = u32::from(original.speed.unsigned_abs())
+                    .saturating_mul(u32::from(castle.level));
+                if level2_wrapping_xy_distance(position, castle.position)
+                    <= arrival.saturating_mul(arrival)
+                    && position.z
+                        <= self
+                            .terrain
+                            .ground_height(position)
+                            .wrapping_add(MANA_CARRIER_GROUND_CLEARANCE)
+                    && castle.level > 0
+                {
+                    position.x = castle.position.x;
+                    position.y = castle.position.y;
+                    let deposited = carried_mana;
+                    self.castle.as_mut().expect("Castle remains installed").mana =
+                        castle.mana.wrapping_add(deposited);
+                    carried_mana = 0;
+                    owner_entity_index = castle.owner_entity_index;
+                    life = original.max_life;
+                    self.events.push(Level2EconomyEvent::ManaCarrierArrived {
+                        carrier_id: original.id,
+                        castle_id: castle.source_entity_index,
+                        mana: deposited,
+                    });
+                } else {
+                    crate::move_entity(&mut position, yaw, original.pitch, original.speed);
+                }
+            }
+        } else if target_sphere_id != 0 {
+            let sphere_index = self
+                .spheres
+                .iter()
+                .position(|sphere| sphere.active && sphere.id == target_sphere_id);
+            if let Some(sphere_index) = sphere_index {
+                valid_target = true;
+                let sphere = self.spheres[sphere_index];
+                yaw = i16::try_from(heading_for_positions(position, sphere.position))
+                    .expect("Level 2 carrier sphere heading fits");
+                if sphere.owner_entity_index == owner_entity_index {
+                    let distance = level2_wrapping_xy_distance(position, sphere.position);
+                    if distance
+                        > u32::from(MANA_CARRIER_ATTRACTION_RADIUS)
+                            .saturating_mul(u32::from(MANA_CARRIER_ATTRACTION_RADIUS))
+                    {
+                        target_sphere_id = 0;
+                    } else {
+                        self.spheres[sphere_index].assigned_carrier_id = u32::from(carrier_slot);
+                        if level2_carrier_sphere_overlap(position, &sphere) {
+                            carried_mana = carried_mana.wrapping_add(sphere.mana);
+                            owner_entity_index = sphere.owner_entity_index;
+                            life = original.max_life;
+                            target_sphere_id = 0;
+                            self.spheres[sphere_index].pending_delete = true;
+                            self.spheres[sphere_index].active = false;
+                            self.events.push(Level2EconomyEvent::ManaSphereCollected {
+                                sphere_id: sphere.id,
+                                carrier_id: original.id,
+                                mana: sphere.mana,
+                            });
+                        }
+                    }
+                    let speed_squared = u32::from(original.speed.unsigned_abs())
+                        .saturating_mul(u32::from(original.speed.unsigned_abs()));
+                    if distance <= speed_squared {
+                        position.x = sphere.position.x;
+                        position.y = sphere.position.y;
+                    } else {
+                        crate::move_entity(&mut position, yaw, original.pitch, original.speed);
+                    }
+                }
+            }
+        }
+
+        if valid_target {
+            let ground = self.terrain.ground_height(position);
+            if position.z > ground {
+                position.z = position.z.wrapping_add(MANA_CARRIER_DESCENT);
+            }
+            if position.z <= ground.wrapping_add(MANA_CARRIER_GROUND_CLEARANCE) {
+                position.z = ground.wrapping_add(MANA_CARRIER_GROUND_CLEARANCE);
+            }
+        }
+
+        let carrier = self.carrier.as_mut().expect("carrier remains installed");
+        carrier.position = position;
+        carrier.yaw = yaw;
+        carrier.carried_mana = carried_mana;
+        carrier.owner_entity_index = owner_entity_index;
+        carrier.life = life;
+        carrier.target_sphere_id = target_sphere_id;
+        if carrier.life >= 0 && carrier.pending_attacker_entity_index != 0 {
+            carrier.life = carrier.life.wrapping_sub(carrier.pending_damage);
+            if carrier.life >= 0 {
+                carrier.pending_attacker_entity_index = 0;
+                carrier.pending_damage = 0;
+            }
+        }
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: carrier_slot,
+                active: carrier.active,
+                x: position.x,
+                y: position.y,
+            })
+            .expect("Level 2 carrier source slot fits the map chain");
         true
     }
 
@@ -7847,8 +7981,14 @@ impl Level2ResetSession {
                         .copied()
                         .expect("dynamic source route has a live kind");
                     dispatched_dynamic_slots.insert(source_slot);
-                    if matches!(kind, Level2DynamicArenaKind::ManaSphere) {
-                        let _ = self.economy.step_mana_sphere_slot(source_slot);
+                    match kind {
+                        Level2DynamicArenaKind::ManaSphere => {
+                            let _ = self.economy.step_mana_sphere_slot(source_slot);
+                        }
+                        Level2DynamicArenaKind::ManaCarrier => {
+                            let _ = self.economy.step_mana_carrier_slot(source_slot);
+                        }
+                        _ => {}
                     }
                     self.dispatch_events
                         .push(Level2DispatchEvent::DynamicArena {
@@ -7892,8 +8032,14 @@ impl Level2ResetSession {
             }
             for (source_slot, kind) in unseen {
                 dispatched_dynamic_slots.insert(source_slot);
-                if matches!(kind, Level2DynamicArenaKind::ManaSphere) {
-                    let _ = self.economy.step_mana_sphere_slot(source_slot);
+                match kind {
+                    Level2DynamicArenaKind::ManaSphere => {
+                        let _ = self.economy.step_mana_sphere_slot(source_slot);
+                    }
+                    Level2DynamicArenaKind::ManaCarrier => {
+                        let _ = self.economy.step_mana_carrier_slot(source_slot);
+                    }
+                    _ => {}
                 }
                 self.dispatch_events
                     .push(Level2DispatchEvent::DynamicArena {
@@ -17108,6 +17254,52 @@ mod tests {
                 .first(),
             Some(&sphere_slot)
         );
+    }
+
+    #[test]
+    fn level_two_mana_carrier_dynamic_handler_collects_and_reclaims_sphere() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 carrier handler session");
+        let carrier_slot = session
+            .economy_mut()
+            .spawn_mana_carrier(Position::default(), 111, 0)
+            .expect("carrier allocation");
+        let sphere_slot = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(901, Position::default(), 0, 0x3456, 10, 111)
+            .expect("sphere allocation");
+        let sphere_id = sphere_slot;
+        assert!(
+            session
+                .economy_mut()
+                .carrier
+                .as_mut()
+                .is_some_and(|carrier| {
+                    carrier.target_sphere_id = sphere_id;
+                    true
+                })
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let carrier = session.economy().carrier().expect("live carrier");
+        assert_eq!(carrier.source_entity_index, carrier_slot);
+        assert_eq!(carrier.carried_mana, 10);
+        assert!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .all(|sphere| sphere.source_entity_index != u16::try_from(sphere_slot).unwrap())
+        );
+        assert!(session.economy().events().iter().any(|event| {
+            matches!(
+                event,
+                Level2EconomyEvent::ManaSphereCollected { carrier_id, mana, .. }
+                    if *carrier_id == u32::from(carrier_slot) && *mana == 10
+            )
+        }));
     }
 
     #[test]

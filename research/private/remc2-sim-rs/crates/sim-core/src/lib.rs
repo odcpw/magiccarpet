@@ -2859,7 +2859,7 @@ fn cave_overlap<W: FlightWorld>(
         > i32::from(ceiling) - i32::from(profile.ceiling_clearance)
 }
 
-fn heading_for_positions(from: Position, to: Position) -> i32 {
+pub(crate) fn heading_for_positions(from: Position, to: Position) -> i32 {
     heading_for_delta(
         i32::from(to.x.wrapping_sub(from.x).cast_signed()),
         i32::from(to.y.wrapping_sub(from.y).cast_signed()),
