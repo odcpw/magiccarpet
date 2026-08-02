@@ -3006,6 +3006,13 @@ pub struct Level2CastleState {
     /// source order after a stage transition.
     pub defender_slots: [u16; 3],
     pub defender_count: u8,
+    /// Source owner aggregate counters (`dword_0x12E_302` and
+    /// `dword_0x13C_316`) rebuilt by `sub_5FF50`.
+    pub defender_total_mana: i32,
+    pub defender_total_max_mana: i32,
+    /// Per-holder source `word_0x96_150` target relation: Castle root slot
+    /// or the selected nearest mana-sphere slot.
+    pub defender_target_spheres: [u16; 3],
     /// Source `sub_5FF50` model-15 tail slots (`array_0x5C_92`).
     pub auxiliary_slots: [u16; 34],
     pub auxiliary_count: u8,
@@ -3038,6 +3045,9 @@ pub struct Level2CastleChild {
     pub position: Position,
     pub model: u8,
     pub action: u8,
+    pub mana: i32,
+    pub max_mana: i32,
+    pub target_sphere_slot: u16,
     pub yaw: u16,
     pub roll: u16,
     pub control_flags: u32,
@@ -3901,6 +3911,9 @@ impl Level2EconomyState {
             source_word_30: 0,
             defender_slots: [0; 3],
             defender_count: 0,
+            defender_total_mana: 0,
+            defender_total_max_mana: 0,
+            defender_target_spheres: [0; 3],
             auxiliary_slots: [0; 34],
             auxiliary_count: 0,
             auxiliary_cooldown: 0,
@@ -3994,6 +4007,9 @@ impl Level2EconomyState {
         castle.source_word_30 = 0;
         castle.defender_slots = [0; 3];
         castle.defender_count = 0;
+        castle.defender_total_mana = 0;
+        castle.defender_total_max_mana = 0;
+        castle.defender_target_spheres = [0; 3];
         castle.auxiliary_slots = [0; 34];
         castle.auxiliary_count = 0;
         castle.auxiliary_cooldown = 0;
@@ -4254,6 +4270,9 @@ impl Level2EconomyState {
                 },
                 model: 79,
                 action: 0,
+                mana: 0,
+                max_mana: 0,
+                target_sphere_slot: 0,
                 yaw: 0,
                 roll: 0,
                 control_flags: 0,
@@ -4339,6 +4358,9 @@ impl Level2EconomyState {
                 position: snapshot.position,
                 model: 3,
                 action: 9,
+                mana: 0,
+                max_mana: 0,
+                target_sphere_slot: 0,
                 yaw: 0,
                 roll: 0,
                 control_flags: 0,
@@ -4363,6 +4385,71 @@ impl Level2EconomyState {
                 defenders.get(2).copied().unwrap_or_default(),
             ];
             castle.defender_count = defenders.len() as u8;
+        }
+
+        // `sub_5FF50` resets the owner's aggregate defender mana/max counters
+        // and then arbitrates each holder's `word_0x96_150` target.  A full
+        // Castle first claims the holder; otherwise an eligible action-9
+        // holder receives the nearest unclaimed model-39 sphere, excluding
+        // the two following holder targets from `sub_5F810`.
+        let prior_targets = snapshot.defender_target_spheres;
+        let mut defender_targets = [0_u16; 3];
+        let mut defender_total_mana = 0_i32;
+        let mut defender_total_max_mana = 0_i32;
+        let defender_target_count = defenders.len().min(3);
+        for (index, &slot) in defenders.iter().take(defender_target_count).enumerate() {
+            let Some(child) = self
+                .castle_children
+                .iter()
+                .find(|child| child.source_entity_index == slot && child.active)
+                .copied()
+            else {
+                continue;
+            };
+            let mut target_slot = 0_u16;
+            if defender_total_max_mana.saturating_add(snapshot.mana) >= snapshot.mana_capacity {
+                target_slot = castle_slot;
+            } else if snapshot.phase % u8::try_from(defender_target_count.max(1)).unwrap_or(1) == 0
+                && child.action == 9
+                && child.mana < child.max_mana
+            {
+                let exclude_one = prior_targets[(index + 1) % 3];
+                let exclude_two = prior_targets[(index + 2) % 3];
+                target_slot = self
+                    .spheres
+                    .iter()
+                    .filter(|sphere| {
+                        sphere.active
+                            && sphere.owner_entity_index == snapshot.source_id_entity_index
+                            && sphere.assigned_carrier_id == 0
+                            && sphere.source_entity_index != exclude_one
+                            && sphere.source_entity_index != exclude_two
+                    })
+                    .min_by_key(|sphere| {
+                        level2_wrapping_xy_distance(child.position, sphere.position)
+                    })
+                    .map(|sphere| sphere.source_entity_index)
+                    .unwrap_or_default();
+            }
+            if let Some(installed) = self
+                .castle_children
+                .iter_mut()
+                .find(|installed| installed.source_entity_index == slot)
+            {
+                installed.target_sphere_slot = target_slot;
+            }
+            defender_targets[index] = target_slot;
+            defender_total_mana = defender_total_mana.saturating_add(child.mana);
+            defender_total_max_mana = defender_total_max_mana.saturating_add(child.max_mana);
+        }
+        if let Some(castle) = self
+            .castle
+            .as_mut()
+            .filter(|castle| castle.source_entity_index == castle_slot)
+        {
+            castle.defender_total_mana = defender_total_mana;
+            castle.defender_total_max_mana = defender_total_max_mana;
+            castle.defender_target_spheres = defender_targets;
         }
 
         // The source then walks `array_0x5C_92`, first decrementing the root
@@ -4416,6 +4503,9 @@ impl Level2EconomyState {
                             position: child_position,
                             model: 15,
                             action: 121,
+                            mana: 0,
+                            max_mana: 0,
+                            target_sphere_slot: 0,
                             yaw: 512,
                             roll: 512,
                             control_flags: 0,
@@ -4539,6 +4629,9 @@ impl Level2EconomyState {
                     position: snapshot.anchor_position,
                     model: 42,
                     action: 44,
+                    mana: 0,
+                    max_mana: 0,
+                    target_sphere_slot: 0,
                     yaw: 0,
                     roll: 0,
                     control_flags: 1,
@@ -4599,6 +4692,9 @@ impl Level2EconomyState {
                             },
                             model: 79,
                             action: 0,
+                            mana: 0,
+                            max_mana: 0,
+                            target_sphere_slot: 0,
                             yaw: 0,
                             roll: 0,
                             control_flags: 0,
@@ -4710,6 +4806,9 @@ impl Level2EconomyState {
                     position: snapshot.anchor_position,
                     model: 41,
                     action: 43,
+                    mana: 0,
+                    max_mana: 0,
+                    target_sphere_slot: 0,
                     yaw: 0,
                     roll: 0,
                     control_flags: 0,
@@ -5415,6 +5514,11 @@ impl Level2EconomyState {
                 hasher.update(slot.to_le_bytes());
             }
             hasher.update([castle.defender_count]);
+            hasher.update(castle.defender_total_mana.to_le_bytes());
+            hasher.update(castle.defender_total_max_mana.to_le_bytes());
+            for slot in castle.defender_target_spheres {
+                hasher.update(slot.to_le_bytes());
+            }
             for slot in castle.auxiliary_slots {
                 hasher.update(slot.to_le_bytes());
             }
@@ -5447,6 +5551,9 @@ impl Level2EconomyState {
             hasher.update(child.position.y.to_le_bytes());
             hasher.update(child.position.z.to_le_bytes());
             hasher.update([child.model, child.action, u8::from(child.active)]);
+            hasher.update(child.mana.to_le_bytes());
+            hasher.update(child.max_mana.to_le_bytes());
+            hasher.update(child.target_sphere_slot.to_le_bytes());
             hasher.update(child.yaw.to_le_bytes());
             hasher.update(child.roll.to_le_bytes());
             hasher.update(child.control_flags.to_le_bytes());
@@ -12480,6 +12587,9 @@ mod tests {
                 position: construction_anchor,
                 model: 42,
                 action: 44,
+                mana: 0,
+                max_mana: 0,
+                target_sphere_slot: 0,
                 yaw: 0,
                 roll: 0,
                 control_flags: 1,
@@ -13528,6 +13638,102 @@ mod tests {
         let castle = session.economy().castle().expect("tail-bound Castle");
         assert_eq!(castle.auxiliary_cooldown, 15);
         assert_eq!(castle.auxiliary_slots[4], 0xbeef);
+    }
+
+    #[test]
+    fn level_two_castle_defender_arbitration_tracks_nearest_sphere_and_aggregate() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("defender arbitration session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("defender arbitration Castle");
+        {
+            let economy = session.economy_mut();
+            let castle = economy
+                .castle
+                .as_mut()
+                .expect("defender arbitration Castle");
+            castle.level = 1;
+            castle.phase = 1;
+            castle.mana = 0;
+            castle.mana_capacity = 10_000;
+        }
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let defender_slot = session
+            .economy()
+            .castle()
+            .expect("defender arbitration Castle")
+            .defender_slots[0];
+        {
+            let economy = session.economy_mut();
+            let defender = economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("model-3 defender");
+            defender.mana = 7;
+            defender.max_mana = 100;
+        }
+        let sphere_id = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(
+                77,
+                Position {
+                    x: 256,
+                    y: 128,
+                    z: 0,
+                },
+                0,
+                0x1234,
+                50,
+                castle_slot,
+            )
+            .expect("nearest defender sphere");
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+        let castle = session
+            .economy()
+            .castle()
+            .expect("defender arbitration Castle");
+        assert_eq!(
+            (castle.defender_total_mana, castle.defender_total_max_mana),
+            (7, 100)
+        );
+        assert_eq!(
+            castle.defender_target_spheres[0],
+            u16::try_from(sphere_id).unwrap()
+        );
+        let sphere_slot = u16::try_from(sphere_id).unwrap();
+        {
+            let economy = session.economy_mut();
+            let castle = economy
+                .castle
+                .as_mut()
+                .expect("defender arbitration Castle");
+            // The source checks aggregate max-mana *before* adding this
+            // holder, so a one-holder fixture reaches the Castle branch at
+            // the zero-capacity boundary.
+            castle.mana_capacity = 0;
+            economy.maintain_castle_defenders(castle_slot);
+        }
+        assert_eq!(
+            session
+                .economy()
+                .castle()
+                .expect("defender arbitration Castle")
+                .defender_target_spheres[0],
+            castle_slot
+        );
+        assert!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .any(|sphere| sphere.source_entity_index == sphere_slot)
+        );
     }
 
     #[test]
