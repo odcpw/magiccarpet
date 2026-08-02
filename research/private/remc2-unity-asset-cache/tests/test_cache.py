@@ -1810,5 +1810,131 @@ class Level2DayGameplayTests(unittest.TestCase):
             cache.validate_day_gameplay_cache(tampered)
 
 
+class Level2DayAudioTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.temp_root = Path(
+            tempfile.mkdtemp(prefix="level2-day-audio-test.", dir=cache.GENERATED)
+        )
+        cls.first = cls.temp_root / "first"
+        cls.second = cls.temp_root / "second"
+        for output in (cls.first, cls.second):
+            cache.build_day_audio_cache(
+                cache.DEFAULT_OWNER,
+                cache.DEFAULT_LEVEL2_PACKAGE,
+                cache.DEFAULT_LEVEL2_CLOSURE,
+                cache.DEFAULT_CATALOG,
+                output,
+            )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.temp_root)
+
+    def test_deterministic_banks_occurrences_and_day_music_selector(self) -> None:
+        self.assertEqual(tree_identity(self.first), tree_identity(self.second))
+        manifest = cache.validate_day_audio_cache(self.first)
+        self.assertEqual(len(manifest["outputs"]), 27)
+        descriptor = json.loads(
+            (self.first / "audio/descriptor.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(len(descriptor["sound"]["occurrences"]), 26)
+        self.assertEqual(len(descriptor["excluded"]), 93)
+        self.assertEqual(
+            [row["sound_id"] for row in descriptor["sound"]["records"]],
+            [1, 2, 3, 4, 5, 8, 9, 10, 14, 15, 16, 18, 23, 29, 31, 40, 41, 46, 54, 55, 56, 57, 61],
+        )
+        self.assertEqual(
+            [row["filename"] for row in descriptor["music"]["records"]][:3],
+            ["C2GAME1.XMI", "C2GAME2.XMI", "C2GAME3.XMI"],
+        )
+        self.assertEqual(
+            len({row["stable_occurrence_hash_sha256"] for row in descriptor["sound"]["occurrences"]}),
+            26,
+        )
+        self.assertEqual(descriptor["music"]["maptype_music"], 2)
+        self.assertEqual(descriptor["music"]["channel"], 0)
+        self.assertEqual(descriptor["music"]["driver"], "f")
+
+    def test_audio_output_and_binding_tamper_fail_closed(self) -> None:
+        path = self.first / "audio/SOUND.DAT"
+        original = path.read_bytes()
+        path.write_bytes(original + b"tamper")
+        with self.assertRaisesRegex(cache.CacheError, "output hash mismatch"):
+            cache.validate_day_audio_cache(self.first)
+        path.write_bytes(original)
+        manifest_path = self.first / "manifest.json"
+        manifest_original = manifest_path.read_bytes()
+        manifest = json.loads(manifest_original)
+        manifest["profile"]["package_sha256"] = "0" * 64
+        manifest_path.write_bytes(cache.canonical_json(manifest))
+        with self.assertRaisesRegex(cache.CacheError, "metadata hash mismatch"):
+            cache.validate_day_audio_cache(self.first)
+        manifest_path.write_bytes(manifest_original)
+        descriptor_path = self.first / "audio/descriptor.json"
+        descriptor_original = descriptor_path.read_bytes()
+        descriptor = json.loads(descriptor_original)
+        descriptor["sound"]["occurrences"][0]["sound_selector"]["sound_ids"] = [99]
+        descriptor_path.write_bytes(cache.canonical_json(descriptor))
+        manifest = json.loads(manifest_original)
+        for row in manifest["outputs"]:
+            if row["path"] == "audio/descriptor.json":
+                row["bytes"] = descriptor_path.stat().st_size
+                row["sha256"] = cache.sha256_file(descriptor_path)
+        manifest["cache_content_sha256"] = cache._level2_cache_identity(manifest["outputs"])
+        unsigned = dict(manifest)
+        unsigned.pop("manifest_payload_sha256", None)
+        manifest["manifest_payload_sha256"] = cache.sha256_bytes(cache.canonical_json(unsigned))
+        manifest_path.write_bytes(cache.canonical_json(manifest))
+        with self.assertRaisesRegex(cache.CacheError, "occurrence descriptor changed"):
+            cache.validate_day_audio_cache(self.first)
+        descriptor_path.write_bytes(descriptor_original)
+        manifest_path.write_bytes(manifest_original)
+        descriptor = json.loads(descriptor_original)
+        descriptor["sound"]["records"][0]["filename"] = "EVIL.WAV"
+        descriptor_path.write_bytes(cache.canonical_json(descriptor))
+        manifest = json.loads(manifest_original)
+        for row in manifest["outputs"]:
+            if row["path"] == "audio/descriptor.json":
+                row["bytes"] = descriptor_path.stat().st_size
+                row["sha256"] = cache.sha256_file(descriptor_path)
+        manifest["cache_content_sha256"] = cache._level2_cache_identity(manifest["outputs"])
+        unsigned = dict(manifest)
+        unsigned.pop("manifest_payload_sha256", None)
+        manifest["manifest_payload_sha256"] = cache.sha256_bytes(cache.canonical_json(unsigned))
+        manifest_path.write_bytes(cache.canonical_json(manifest))
+        with self.assertRaisesRegex(cache.CacheError, "sound record descriptor changed"):
+            cache.validate_day_audio_cache(self.first)
+        descriptor_path.write_bytes(descriptor_original)
+        manifest_path.write_bytes(manifest_original)
+        wav_path = self.first / "audio/sfx/001.wav"
+        wav_original = wav_path.read_bytes()
+        wav_path.write_bytes(wav_original + b"tamper")
+        manifest = json.loads(manifest_original)
+        for row in manifest["outputs"]:
+            if row["path"] == "audio/sfx/001.wav":
+                row["bytes"] = wav_path.stat().st_size
+                row["sha256"] = cache.sha256_file(wav_path)
+        manifest["cache_content_sha256"] = cache._level2_cache_identity(manifest["outputs"])
+        unsigned = dict(manifest)
+        unsigned.pop("manifest_payload_sha256", None)
+        manifest["manifest_payload_sha256"] = cache.sha256_bytes(cache.canonical_json(unsigned))
+        manifest_path.write_bytes(cache.canonical_json(manifest))
+        with self.assertRaisesRegex(cache.CacheError, "sound record asset binding mismatch"):
+            cache.validate_day_audio_cache(self.first)
+        wav_path.write_bytes(wav_original)
+        manifest_path.write_bytes(manifest_original)
+
+    def test_audio_cross_level_input_fails_before_materialization(self) -> None:
+        with self.assertRaisesRegex(cache.CacheError, "requires external=2"):
+            cache.build_day_audio_cache(
+                cache.DEFAULT_OWNER,
+                cache.DEFAULT_PACKAGE,
+                cache.DEFAULT_CLOSURE,
+                cache.DEFAULT_CATALOG,
+                self.temp_root / "wrong-profile",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

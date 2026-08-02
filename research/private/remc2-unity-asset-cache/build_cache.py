@@ -80,6 +80,14 @@ GOAT_TMAP_GOLDEN = (
 SCHEMA = "mc2-owner-unity-asset-cache/v1"
 LEVEL2_MATERIAL_SCHEMA = "mc2-level2-day-material-cache/v1"
 LEVEL2_GAMEPLAY_SCHEMA = "mc2-level2-day-gameplay-cache/v1"
+LEVEL2_AUDIO_SCHEMA = "mc2-level2-day-audio-cache/v1"
+EXPECTED_LEVEL2_SOUND_RECORDS_SHA256 = "23c6a8fbb3ff907e72ce127bbe3163ee6a4955e0319371268a7e8d65b1422555"
+EXPECTED_LEVEL2_MUSIC_RECORDS_SHA256 = "1cb48c36ee4f3d8ec12ca8f3572ad9ec2b171026aa09a2039dfbd80309c0dcb5"
+LEVEL2_AUDIO_DENOMINATOR = (
+    PRIVATE
+    / "remc2-sim-rs/level2-conformance/denominator/level2-dispatch-rng-audio-presentation.json"
+)
+DEFAULT_LEVEL2_AUDIO_OUTPUT = GENERATED / "level2-day-audio-cache"
 CONFORMANCE_SEAL_SCHEMA = "mc2-plan29-cache-conformance-identity/v1"
 GENERATOR_VERSION = "1.15.0"
 PINNED_REMC2_COMMIT = "6806c7204d17220ecc0430759f784aea8ee2ddb2"
@@ -4326,6 +4334,7 @@ LEVEL2_GAMEPLAY_SOURCE_PATHS = (
     "LEVELS/LEVELS.TAB",
     "LANGUAGE/L1.TXT",
 )
+LEVEL2_AUDIO_SOURCE_PATHS = ("SOUND/SOUND.DAT", "SOUND/MUSIC.DAT")
 
 
 def _level2_catalog_identity(catalog_path: Path) -> tuple[dict[str, Any], str]:
@@ -4855,6 +4864,407 @@ def validate_day_gameplay_cache(
         raise CacheError("Level 2 gameplay cache tree contains symlink")
     if actual_tree != {"manifest.json", *seen}:
         raise CacheError("Level 2 gameplay cache tree has missing or extra files")
+    return manifest
+
+
+def _level2_audio_denominator() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    denominator = load_json(LEVEL2_AUDIO_DENOMINATOR)
+    audio = denominator.get("audio", {})
+    rows = audio.get("rows")
+    if audio.get("denominator") != 119 or audio.get("counts") != {
+        "mechanically_unreachable_level2": 93,
+        "reachable_level2": 26,
+    } or not isinstance(rows, list) or len(rows) != 119:
+        raise CacheError("Level 2 audio denominator changed")
+    if len({row.get("stable_occurrence_hash_sha256") for row in rows}) != 119:
+        raise CacheError("Level 2 audio occurrence identities are not unique")
+    reachable = [row for row in rows if row.get("classification") == "reachable_level2"]
+    unreachable = [row for row in rows if row.get("classification") != "reachable_level2"]
+    if len(reachable) != 26 or len(unreachable) != 93:
+        raise CacheError("Level 2 audio reachable/unreachable partition changed")
+    return reachable, unreachable
+
+
+def _level2_sound_selector(expression: str) -> dict[str, Any]:
+    numbers = [int(value) for value in re.findall(r"\d+", expression)]
+    if expression == "v6":
+        return {
+            "expression": expression,
+            "status": "qualified_bounded_source_selector",
+            "sound_ids": [9, 15, 23],
+            "source_binding": "sub_6DCA0 v6 initializes 15 and assigns 9/23 on spell branches",
+        }
+    if "54" in expression and "3" in expression:
+        return {"expression": expression, "status": "bounded_runtime_range", "sound_ids": [54, 55, 56, 57]}
+    if len(numbers) == 1:
+        return {"expression": expression, "status": "qualified_constant", "sound_ids": numbers}
+    return {"expression": expression, "status": "source_expression_requires_runtime_resolution", "sound_ids": numbers}
+
+
+def build_day_audio_cache(
+    owner_root: Path,
+    package_dir: Path,
+    closure_path: Path,
+    catalog_path: Path,
+    output: Path,
+) -> dict[str, Any]:
+    """Materialize the exact Level 2 sound/music banks and occurrence ledger."""
+    output = validate_output_path(output)
+    profile, package, closure, catalog_rows = _level2_profile(
+        package_dir, closure_path, catalog_path
+    )
+    reachable, unreachable = _level2_audio_denominator()
+    dynamic_assets = {
+        row["asset_id"]: row
+        for row in closure.get("sets", {}).get("dynamic_dependencies", {}).get("assets", [])
+    }
+    for relative in LEVEL2_AUDIO_SOURCE_PATHS:
+        asset_id = f"owner_data:{relative}"
+        row = dynamic_assets.get(asset_id)
+        file_row = catalog_rows.get(relative)
+        if not isinstance(row, dict) or not isinstance(file_row, dict):
+            raise CacheError(f"Level 2 audio closure is missing {relative}")
+        source_path = confined_source(owner_root, relative)
+        source = source_path.read_bytes()
+        if sha256_bytes(source) != file_row.get("sha256") or row.get("content_address") != f"sha256:{sha256_bytes(source)}":
+            raise CacheError(f"Level 2 audio source hash mismatch: {relative}")
+    sound = confined_source(owner_root, "SOUND/SOUND.DAT").read_bytes()
+    music = confined_source(owner_root, "SOUND/MUSIC.DAT").read_bytes()
+    stage = Path(tempfile.mkdtemp(prefix=".level2-day-audio-", dir=output.parent))
+    try:
+        outputs: list[dict[str, Any]] = []
+        sound_output = write_output(
+            stage,
+            outputs,
+            "audio/SOUND.DAT",
+            sound,
+            kind="owner_sound_bank_exact_container",
+            source_asset_ids=["owner_data:SOUND/SOUND.DAT"],
+            extra={"bank": 1, "reachable_occurrence_count": len(reachable)},
+        )
+        music_output = write_output(
+            stage,
+            outputs,
+            "audio/MUSIC.DAT",
+            music,
+            kind="owner_music_bank_exact_container",
+            source_asset_ids=["owner_data:SOUND/MUSIC.DAT"],
+            extra={"bank": 1, "map_type": "Day", "maptype_music": 2, "channel": 0, "driver": "f"},
+        )
+        rnc_work = stage / ".rnc-work"
+        rnc_work.mkdir()
+        decoder, decoder_identity = compile_rnc_decoder(rnc_work)
+        sound_counts, sound_descriptor_raw = container_descriptor(
+            sound,
+            count_rows=6,
+            selector=1,
+            row=3,
+            label="level2-sound-bank-1-quality-822",
+        )
+        if sound_counts != [0, 0, 0, 10, 10, 0]:
+            raise CacheError("Level 2 sound quality rows changed")
+        sound_metadata = decode_container_blob(
+            decoder, sound, sound_descriptor_raw["metadata_offset"], sound_descriptor_raw["metadata_size"], rnc_work, "level2-sound-metadata"
+        )
+        sound_data = decode_container_blob(
+            decoder, sound, sound_descriptor_raw["data_offset"], sound_descriptor_raw["data_size"], rnc_work, "level2-sound-data"
+        )
+        sound_records = packed_audio_records(sound_metadata, sound_data, expected_count=64, label="level2-sound-bank-1")
+        resolved_ids = sorted({sound_id for row in reachable for sound_id in _level2_sound_selector(row["sound_expression"]).get("sound_ids", [])})
+        sound_record_rows = []
+        for sound_id in resolved_ids:
+            if not 1 <= sound_id <= len(sound_records):
+                raise CacheError(f"Level 2 sound selector is outside the bank: {sound_id}")
+            record = sound_records[sound_id - 1]
+            payload = sound_data[record["relative_data_offset"] : record["relative_data_offset"] + record["bytes"]]
+            wav = wav_properties(payload, f"Level 2 sound ID {sound_id}")
+            sound_file = write_output(
+                stage,
+                outputs,
+                f"audio/sfx/{sound_id:03d}.wav",
+                payload,
+                kind="owner_RIFF_WAVE_exact_level2_record",
+                source_asset_ids=["owner_data:SOUND/SOUND.DAT"],
+                extra={"bank": 1, "quality": 822, "quality_index": 3, "sound_id": sound_id, **wav},
+            )
+            sound_record_rows.append({
+                "sound_id": sound_id,
+                "metadata_slot": sound_id - 1,
+                "filename": record["filename"],
+                "relative_data_offset": record["relative_data_offset"],
+                "record_bytes": record["bytes"],
+                "record_sha256": record["payload_sha256"],
+                "metadata_word": record["word"],
+                "bank": 1,
+                "quality": 822,
+                "asset_path": sound_file["path"],
+                "asset_sha256": sound_file["sha256"],
+                "wav": wav,
+            })
+        music_counts, music_descriptor_raw = container_descriptor(
+            music,
+            count_rows=4,
+            selector=0,
+            row=2,
+            label="level2-music-channel-0-driver-f",
+        )
+        if music_counts != [2, 2, 2, 2]:
+            raise CacheError("Level 2 music channel rows changed")
+        music_metadata = decode_container_blob(
+            decoder, music, music_descriptor_raw["metadata_offset"], music_descriptor_raw["metadata_size"], rnc_work, "level2-music-metadata"
+        )
+        music_data = decode_container_blob(
+            decoder, music, music_descriptor_raw["data_offset"], music_descriptor_raw["data_size"], rnc_work, "level2-music-data"
+        )
+        music_records = packed_audio_records(music_metadata, music_data, expected_count=6, label="level2-music-channel-0")
+        music_payload = music_data[: music_records[0]["bytes"]]
+        if music_payload[:4] != b"FORM" or music_payload[8:12] != b"XDIR":
+            raise CacheError("Level 2 C2GAME1 track is not an XMIDI FORM/XDIR payload")
+        music_track_output = write_output(
+            stage,
+            outputs,
+            "audio/music/C2GAME1.xmi",
+            music_payload,
+            kind="owner_XMIDI_FORM_XDIR_exact_level2_record",
+            source_asset_ids=["owner_data:SOUND/MUSIC.DAT"],
+            extra={"logical_track": 1, "playback_slot": 0, "channel": 0, "driver": "f"},
+        )
+        music_record_rows = [
+            {"slot": row["slot"], "filename": row["filename"], "relative_data_offset": row["relative_data_offset"], "record_bytes": row["bytes"], "record_sha256": row["payload_sha256"], "metadata_word": row["word"], "channel": 0, "driver": "f", "asset_path": music_track_output["path"] if row["slot"] == 0 else None, "asset_sha256": music_track_output["sha256"] if row["slot"] == 0 else None}
+            for row in music_records
+        ]
+        shutil.rmtree(rnc_work)
+        occurrence_rows = []
+        for row in reachable:
+            selector = _level2_sound_selector(row["sound_expression"])
+            occurrence_rows.append({
+                "id": row["id"],
+                "stable_occurrence_hash_sha256": row["stable_occurrence_hash_sha256"],
+                "source": {
+                    "path": row["path"],
+                    "pinned_line": row["pinned_line"],
+                    "enclosing_symbol": row["enclosing_symbol"],
+                    "symbol_ordinal_1based": row["symbol_ordinal_1based"],
+                    "file_ordinal_1based": row["file_ordinal_1based"],
+                },
+                "sound_selector": selector,
+                "owner_expression": row["owner_expression"],
+                "helper_path": row["helper_path"],
+                "dispatch_bindings": row["dispatch_bindings"],
+                "source_asset_id": "owner_data:SOUND/SOUND.DAT",
+                "shared_voice_identity": [
+                    f"sound-bank-1-slot-{sound_id}" for sound_id in selector.get("sound_ids", [])
+                ],
+                "playback_metadata": {
+                    "pitch": "source_call_site_or_runtime_expression",
+                    "volume": "owner_sound_bank_default_or_source_call_site",
+                    "position": "owner_expression_listener_relative_context",
+                    "status": "explicit_source_metadata_boundary; no guessed constants",
+                },
+            })
+        presentation = load_json(LEVEL2_AUDIO_DENOMINATOR).get("presentation", {})
+        music_refs = [
+            row for row in presentation.get("source_references", [])
+            if row.get("classification") == "reachable_level2" and row.get("dependency_kind") == "music"
+        ]
+        descriptor = {
+            "schema": "mc2-level2-day-audio/v1",
+            "profile": profile,
+            "sound": {
+                "bank": 1,
+                "container_path": sound_output["path"],
+                "container_sha256": sound_output["sha256"],
+                "occurrences": occurrence_rows,
+                "reachable_occurrence_count": len(occurrence_rows),
+                "source_ledger_denominator": 119,
+                "records": sound_record_rows,
+                "decoder": decoder_identity,
+                "record_census_sha256": EXPECTED_LEVEL2_SOUND_RECORDS_SHA256,
+            },
+            "music": {
+                "container_path": music_output["path"],
+                "container_sha256": music_output["sha256"],
+                "bank": 1,
+                "map_type": "Day",
+                "maptype_music": 2,
+                "channel": 0,
+                "driver": "f",
+                "lifecycle": ["StartMusic", "FadeWarMusic", "UpdateMusic", "StopMusic"],
+                "reachable_source_references": music_refs,
+                "records": music_record_rows,
+                "decoder": decoder_identity,
+                "record_census_sha256": EXPECTED_LEVEL2_MUSIC_RECORDS_SHA256,
+            },
+            "excluded": [
+                {
+                    "id": row["id"],
+                    "stable_occurrence_hash_sha256": row["stable_occurrence_hash_sha256"],
+                    "classification": row["classification"],
+                    "source": {"path": row["path"], "pinned_line": row["pinned_line"], "enclosing_symbol": row["enclosing_symbol"]},
+                    "reason": "mechanically_unreachable_level2",
+                }
+                for row in unreachable
+            ],
+            "armed_empty": {"sound": "none_claimed_without_occurrence_evidence", "music": "no_trace_audio_observation_supplied"},
+        }
+        descriptor_output = write_output(
+            stage,
+            outputs,
+            "audio/descriptor.json",
+            canonical_json(descriptor),
+            kind="canonical_json_level2_audio_descriptor",
+            source_asset_ids=["owner_data:SOUND/SOUND.DAT", "owner_data:SOUND/MUSIC.DAT"],
+            extra={"reachable_occurrences": 26, "excluded_occurrences": 93},
+        )
+        manifest = {
+            "schema": LEVEL2_AUDIO_SCHEMA,
+            "generator": {"name": "build_cache.py", "version": GENERATOR_VERSION},
+            "profile": profile,
+            "bindings": {
+                "level_export_package_sha256": profile["package_sha256"],
+                "level_asset_closure_sha256": profile["closure_sha256"],
+                "owner_catalog_sha256": profile["catalog_sha256"],
+                "owner_catalog_file_sha256": profile["catalog_file_sha256"],
+                "remc2_commit": PINNED_REMC2_COMMIT,
+                "audio_denominator_sha256": sha256_file(LEVEL2_AUDIO_DENOMINATOR),
+            },
+            "outputs": outputs,
+            "cache_content_sha256": _level2_cache_identity(outputs),
+        }
+        manifest["manifest_payload_sha256"] = sha256_bytes(canonical_json(manifest))
+        (stage / "manifest.json").write_bytes(canonical_json(manifest))
+        validate_day_audio_cache(stage, profile["package_sha256"], profile["closure_sha256"])
+        fsync_tree(stage)
+        commit_stage(output, stage)
+        return manifest
+    except Exception:
+        if stage.exists():
+            shutil.rmtree(stage)
+        raise
+
+
+def validate_day_audio_cache(
+    cache_dir: Path,
+    expected_package: str | None = EXPECTED_LEVEL2_PACKAGE,
+    expected_closure: str | None = EXPECTED_LEVEL2_CLOSURE,
+) -> dict[str, Any]:
+    cache_dir = cache_dir.expanduser().resolve()
+    manifest_path = cache_dir / "manifest.json"
+    if manifest_path.is_symlink():
+        raise CacheError("Level 2 audio cache contains symlink")
+    manifest = load_json(manifest_path)
+    unsigned = dict(manifest)
+    claim = unsigned.pop("manifest_payload_sha256", None)
+    if sha256_bytes(canonical_json(unsigned)) != claim:
+        raise CacheError("Level 2 audio manifest metadata hash mismatch")
+    if manifest.get("schema") != LEVEL2_AUDIO_SCHEMA:
+        raise CacheError("unsupported Level 2 audio cache schema")
+    profile = manifest.get("profile", {})
+    if profile.get("name") != "level2-day" or profile.get("external_level") != 2 or profile.get("internal_level") != 1 or profile.get("map_type") != {"id": 0, "name": "Day"} or profile.get("spec_commit") != PINNED_REMC2_COMMIT:
+        raise CacheError("Level 2 audio profile identity mismatch")
+    if profile.get("package_sha256") != expected_package:
+        raise CacheError("Level 2 audio package binding mismatch")
+    if profile.get("closure_sha256") != expected_closure:
+        raise CacheError("Level 2 audio closure binding mismatch")
+    bindings = manifest.get("bindings", {})
+    if (
+        bindings.get("level_export_package_sha256") != profile.get("package_sha256")
+        or bindings.get("level_asset_closure_sha256") != profile.get("closure_sha256")
+        or bindings.get("owner_catalog_sha256") != profile.get("catalog_sha256")
+        or bindings.get("owner_catalog_file_sha256") != profile.get("catalog_file_sha256")
+        or bindings.get("remc2_commit") != PINNED_REMC2_COMMIT
+        or bindings.get("audio_denominator_sha256") != sha256_file(LEVEL2_AUDIO_DENOMINATOR)
+    ):
+        raise CacheError("Level 2 audio manifest bindings mismatch")
+    outputs = manifest.get("outputs")
+    if not isinstance(outputs, list) or len(outputs) < 3:
+        raise CacheError("Level 2 audio output set changed")
+    seen = set()
+    for row in outputs:
+        relative = row.get("path")
+        if not isinstance(relative, str) or relative in seen or relative.startswith("/") or ".." in Path(relative).parts:
+            raise CacheError("invalid Level 2 audio output path")
+        seen.add(relative)
+        path = cache_dir / relative
+        if path.is_symlink() or not path.is_file() or path.stat().st_size != row.get("bytes") or sha256_file(path) != row.get("sha256"):
+            raise CacheError(f"Level 2 audio output hash mismatch: {relative}")
+    if _level2_cache_identity(outputs) != manifest.get("cache_content_sha256"):
+        raise CacheError("Level 2 audio cache content identity mismatch")
+    descriptor_path = cache_dir / "audio/descriptor.json"
+    if descriptor_path.is_symlink() or not descriptor_path.is_file():
+        raise CacheError("Level 2 audio descriptor is missing or symlinked")
+    descriptor = load_json(descriptor_path)
+    if descriptor.get("schema") != "mc2-level2-day-audio/v1" or descriptor.get("profile") != profile:
+        raise CacheError("Level 2 audio descriptor identity mismatch")
+    if len(descriptor.get("sound", {}).get("occurrences", [])) != 26 or len(descriptor.get("excluded", [])) != 93:
+        raise CacheError("Level 2 audio occurrence partition changed")
+    sound_records = descriptor.get("sound", {}).get("records", [])
+    music_records = descriptor.get("music", {}).get("records", [])
+    if sha256_bytes(canonical_json(sound_records)) != EXPECTED_LEVEL2_SOUND_RECORDS_SHA256:
+        raise CacheError("Level 2 sound record descriptor changed")
+    if sha256_bytes(canonical_json(music_records)) != EXPECTED_LEVEL2_MUSIC_RECORDS_SHA256:
+        raise CacheError("Level 2 music record descriptor changed")
+    if descriptor.get("music", {}).get("maptype_music") != 2 or descriptor.get("music", {}).get("channel") != 0:
+        raise CacheError("Level 2 Day music selector changed")
+    expected_output_paths = {
+        "audio/SOUND.DAT",
+        "audio/MUSIC.DAT",
+        "audio/descriptor.json",
+        *[row.get("asset_path") for row in descriptor.get("sound", {}).get("records", [])],
+        descriptor.get("music", {}).get("records", [{}])[0].get("asset_path"),
+    }
+    if None in expected_output_paths or {row.get("path") for row in outputs} != expected_output_paths:
+        raise CacheError("Level 2 audio record output set changed")
+    output_by_path = {row["path"]: row for row in outputs}
+    for record in sound_records:
+        asset_path = record.get("asset_path")
+        asset_sha256 = record.get("asset_sha256")
+        if (
+            not isinstance(asset_path, str)
+            or not isinstance(asset_sha256, str)
+            or output_by_path.get(asset_path, {}).get("sha256") != asset_sha256
+        ):
+            raise CacheError("Level 2 sound record asset binding mismatch")
+    for index, record in enumerate(music_records):
+        asset_path = record.get("asset_path")
+        asset_sha256 = record.get("asset_sha256")
+        if index == 0:
+            if (
+                not isinstance(asset_path, str)
+                or not isinstance(asset_sha256, str)
+                or output_by_path.get(asset_path, {}).get("sha256") != asset_sha256
+            ):
+                raise CacheError("Level 2 music record asset binding mismatch")
+        elif asset_path is not None or asset_sha256 is not None:
+            raise CacheError("unexpected Level 2 music record asset binding")
+    expected_reachable, expected_excluded = _level2_audio_denominator()
+    actual_occurrences = descriptor.get("sound", {}).get("occurrences", [])
+    if [row.get("id") for row in actual_occurrences] != [row["id"] for row in expected_reachable]:
+        raise CacheError("Level 2 audio reachable occurrence identity changed")
+    for actual, expected in zip(actual_occurrences, expected_reachable):
+        if (
+            actual.get("stable_occurrence_hash_sha256") != expected["stable_occurrence_hash_sha256"]
+            or actual.get("source", {}).get("path") != expected["path"]
+            or actual.get("source", {}).get("pinned_line") != expected["pinned_line"]
+            or actual.get("sound_selector") != _level2_sound_selector(expected["sound_expression"])
+        ):
+            raise CacheError(f"Level 2 audio occurrence descriptor changed: {expected['id']}")
+    if [row.get("id") for row in descriptor.get("excluded", [])] != [row["id"] for row in expected_excluded]:
+        raise CacheError("Level 2 audio exclusion identity changed")
+    expected_music_refs = [
+        row for row in load_json(LEVEL2_AUDIO_DENOMINATOR).get("presentation", {}).get("source_references", [])
+        if row.get("classification") == "reachable_level2" and row.get("dependency_kind") == "music"
+    ]
+    if descriptor.get("music", {}).get("reachable_source_references") != expected_music_refs:
+        raise CacheError("Level 2 music source-reference closure changed")
+    if (
+        descriptor.get("sound", {}).get("container_sha256") != output_by_path.get("audio/SOUND.DAT", {}).get("sha256")
+        or descriptor.get("music", {}).get("container_sha256") != output_by_path.get("audio/MUSIC.DAT", {}).get("sha256")
+    ):
+        raise CacheError("Level 2 audio descriptor/container binding mismatch")
+    actual_tree = {path.relative_to(cache_dir).as_posix() for path in cache_dir.rglob("*") if path.is_file()}
+    if any(path.is_symlink() for path in cache_dir.rglob("*")) or actual_tree != {"manifest.json", *seen}:
+        raise CacheError("Level 2 audio cache tree has missing, extra, or symlinked files")
     return manifest
 
 
@@ -7937,6 +8347,12 @@ def parse_args() -> argparse.Namespace:
     build_gameplay.add_argument("--closure", type=Path, default=DEFAULT_LEVEL2_CLOSURE)
     build_gameplay.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
     build_gameplay.add_argument("--output", type=Path, default=DEFAULT_LEVEL2_GAMEPLAY_OUTPUT)
+    build_audio = subparsers.add_parser("build-day-audio")
+    build_audio.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
+    build_audio.add_argument("--package", type=Path, default=DEFAULT_LEVEL2_PACKAGE)
+    build_audio.add_argument("--closure", type=Path, default=DEFAULT_LEVEL2_CLOSURE)
+    build_audio.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
+    build_audio.add_argument("--output", type=Path, default=DEFAULT_LEVEL2_AUDIO_OUTPUT)
     validate = subparsers.add_parser("validate")
     validate.add_argument("--cache", type=Path, default=DEFAULT_OUTPUT)
     validate.add_argument("--package-sha256", default=EXPECTED_PACKAGE)
@@ -7954,6 +8370,10 @@ def parse_args() -> argparse.Namespace:
     validate_gameplay.add_argument("--cache", type=Path, default=DEFAULT_LEVEL2_GAMEPLAY_OUTPUT)
     validate_gameplay.add_argument("--package-sha256", default=EXPECTED_LEVEL2_PACKAGE)
     validate_gameplay.add_argument("--closure-sha256", default=EXPECTED_LEVEL2_CLOSURE)
+    validate_audio = subparsers.add_parser("validate-day-audio")
+    validate_audio.add_argument("--cache", type=Path, default=DEFAULT_LEVEL2_AUDIO_OUTPUT)
+    validate_audio.add_argument("--package-sha256", default=EXPECTED_LEVEL2_PACKAGE)
+    validate_audio.add_argument("--closure-sha256", default=EXPECTED_LEVEL2_CLOSURE)
     return parser.parse_args()
 
 
@@ -7998,6 +8418,18 @@ def main() -> int:
                 f"cache={args.output} outputs={len(manifest['outputs'])} "
                 f"content_sha256={manifest['cache_content_sha256']}"
             )
+        elif args.command == "build-day-audio":
+            manifest = build_day_audio_cache(
+                args.owner_root,
+                args.package,
+                args.closure,
+                args.catalog,
+                args.output,
+            )
+            print(
+                f"cache={args.output} outputs={len(manifest['outputs'])} "
+                f"content_sha256={manifest['cache_content_sha256']}"
+            )
         elif args.command == "validate-day":
             manifest = validate_day_material_cache(
                 args.cache,
@@ -8010,6 +8442,16 @@ def main() -> int:
             )
         elif args.command == "validate-day-gameplay":
             manifest = validate_day_gameplay_cache(
+                args.cache,
+                args.package_sha256,
+                args.closure_sha256,
+            )
+            print(
+                f"valid schema={manifest['schema']} "
+                f"content_sha256={manifest['cache_content_sha256']}"
+            )
+        elif args.command == "validate-day-audio":
+            manifest = validate_day_audio_cache(
                 args.cache,
                 args.package_sha256,
                 args.closure_sha256,
