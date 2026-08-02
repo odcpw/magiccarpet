@@ -69,13 +69,13 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
                 return output;
             }
 
-            half3 EvaluateLight(Light light, half3 normalWS, half3 viewDirectionWS, half3 baseColor)
+            half3 EvaluateLight(Light light, half3 normalWS, half3 viewDirectionWS)
             {
                 half diffuse = saturate(dot(normalWS, light.direction));
                 half3 halfDirection = SafeNormalize(light.direction + viewDirectionWS);
-                half specular = pow(saturate(dot(normalWS, halfDirection)), 32h) * _SpecularStrength;
+                half specular = pow(saturate(dot(normalWS, halfDirection)), 32.0) * _SpecularStrength;
                 half attenuation = light.distanceAttenuation * light.shadowAttenuation;
-                return (baseColor * diffuse + specular.xxx) * light.color * attenuation;
+                return (diffuse.xxx + specular.xxx) * light.color * attenuation;
             }
 
             half4 Frag(Varyings input) : SV_Target
@@ -86,14 +86,14 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
                 half3 lighting = max(SampleSH(normalWS), _AmbientBoost.xxx);
 
                 Light mainLight = GetMainLight(TransformWorldToShadowCoord(input.positionWS));
-                lighting += EvaluateLight(mainLight, normalWS, viewDirectionWS, baseColor);
+                lighting += EvaluateLight(mainLight, normalWS, viewDirectionWS);
 
                 #if defined(_ADDITIONAL_LIGHTS)
                     uint additionalLightCount = GetAdditionalLightsCount();
                     for (uint index = 0u; index < additionalLightCount; index++)
                     {
                         Light additionalLight = GetAdditionalLight(index, input.positionWS);
-                        lighting += EvaluateLight(additionalLight, normalWS, viewDirectionWS, baseColor);
+                        lighting += EvaluateLight(additionalLight, normalWS, viewDirectionWS);
                     }
                 #endif
 

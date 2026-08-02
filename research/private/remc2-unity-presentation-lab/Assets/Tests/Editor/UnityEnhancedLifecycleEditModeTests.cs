@@ -296,6 +296,37 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void ClosingDestroysPooledEntitiesImmediatelyInEditMode()
+        {
+            GameObject gameObject = new GameObject("enhanced-close-pool-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 1,
+                Tick = 1,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Entities = new[] { Entity(1, 30, Vector3.zero) }
+            }));
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 2,
+                Tick = 0,
+                Reset = true,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Entities = new UnityEnhancedEntitySnapshot[0]
+            }));
+            Assert.AreEqual(1, root.PooledEntityCount);
+
+            root.Close();
+
+            Assert.AreEqual(UnityEnhancedLifecycleState.Closed, root.State);
+            Assert.AreEqual(0, root.PooledEntityCount);
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void PresentationAdaptersRejectDuplicateEvents()
         {
             GameObject gameObject = new GameObject("enhanced-adapter-test");

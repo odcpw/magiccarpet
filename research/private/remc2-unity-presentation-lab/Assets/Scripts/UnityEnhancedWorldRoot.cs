@@ -820,7 +820,14 @@ namespace MagicCarpet.PresentationLab
                 GameObject view = pooledEntities.Pop();
                 if (view != null)
                 {
-                    Destroy(view);
+                    if (Application.isPlaying)
+                    {
+                        Destroy(view);
+                    }
+                    else
+                    {
+                        DestroyImmediate(view);
+                    }
                 }
             }
         }
