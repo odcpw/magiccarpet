@@ -21,6 +21,7 @@ pub mod indexed_postprocess;
 pub mod legacy_terrain;
 pub mod level1_mission;
 pub mod level1_parity;
+pub mod mission_content;
 pub mod mode26_raster;
 pub mod mode5_raster;
 pub mod music;

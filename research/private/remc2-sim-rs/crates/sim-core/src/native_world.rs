@@ -58,6 +58,7 @@ use crate::{
         POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_IMPACT_RENDER_MODE, SPELL_JAR_BASE_TMAP,
         SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX, SPELL_JAR_RENDER_MODE,
     },
+    mission_content::{MissionContentProfile, MissionContentSession, MissionContentTemplate},
     renderable_map_chain::{RenderableMapChains, RenderableMapSeed, raw_source_map_chain_entries},
     source_sprite_tmap::{
         ImportedResetSpriteTuple, SourceSpriteContractRoute, SourceSpriteContractRow,
@@ -2033,6 +2034,7 @@ pub struct NativeWorldInspection {
     runtime: RuntimeSnapshot,
     presentation: PresentationSelectors,
     reset_state: Option<FlightState>,
+    authored_level: Box<[u8]>,
 }
 
 impl NativeWorldInspection {
@@ -2091,6 +2093,50 @@ impl NativeWorldInspection {
         self.reset_state.as_ref()
     }
 
+    /// Select the typed mission profile from metadata already checked by the
+    /// owner-package loader. Unknown metadata cannot fall back to Level 1.
+    pub fn mission_content_profile(&self) -> Result<MissionContentProfile> {
+        MissionContentProfile::from_metadata(
+            self.metadata.external_level,
+            self.metadata.internal_level,
+            self.metadata.map_type.id(),
+        )
+        .map_err(|error| NativeWorldError::new(error.to_string()))
+    }
+
+    /// Build the generic authored/reset template from the qualified package.
+    /// This retains all 1,200 authored records and all 1,000 reset slots before
+    /// any Level 2 behavior dispatcher is selected.
+    pub fn mission_content_template(&self) -> Result<MissionContentTemplate> {
+        let profile = self.mission_content_profile()?;
+        let slots = self
+            .entities
+            .iter()
+            .map(|entity| Level1ResetSourceSlot {
+                index: entity.index,
+                active: entity.active,
+                class: entity.class,
+                model: entity.model,
+                action: entity.action,
+                phase: entity.phase,
+                entity_rng: entity.entity_rng,
+                control_flags: entity.control_flags,
+            })
+            .collect::<Vec<_>>();
+        MissionContentTemplate::decode(
+            profile,
+            &self.authored_level,
+            &slots,
+            self.runtime.random_state,
+        )
+        .map_err(|error| NativeWorldError::new(error.to_string()))
+    }
+
+    /// Construct an isolated deterministic session from the generic profile.
+    pub fn mission_content_session(&self) -> Result<MissionContentSession> {
+        Ok(self.mission_content_template()?.session())
+    }
+
     /// Mission construction is intentionally fail-closed until the Level 2
     /// content profile is implemented by the later mission beads.
     pub fn mission_unimplemented(&self) -> Result<()> {
@@ -2111,6 +2157,7 @@ struct CommonPackage {
     runtime: RuntimeSnapshot,
     presentation: PresentationSelectors,
     reset_state: Option<FlightState>,
+    authored: Vec<u8>,
 }
 
 impl NativeWorld {
@@ -2192,6 +2239,7 @@ impl NativeWorld {
             runtime: common.runtime,
             presentation: common.presentation,
             reset_state: common.reset_state,
+            authored_level: common.authored.into_boxed_slice(),
         })
     }
 
@@ -2216,6 +2264,7 @@ impl NativeWorld {
             runtime,
             presentation,
             reset_state,
+            authored: _,
         } = common;
         let reset_state = reset_state.ok_or_else(|| {
             NativeWorldError::new("Level 1 common package is missing reset_projection")
@@ -4595,6 +4644,7 @@ fn parse_common_package(
     }
 
     let package = validate_package(package_dir, manifest)?;
+    let authored = member(&package.members, "authored-level.bin")?.to_vec();
     if profile == OwnerPackageProfile::Level2 {
         validate_level_two_provenance_members(&package.members)?;
     }
@@ -4604,7 +4654,6 @@ fn parse_common_package(
     validate_manifest_counts(counts, profile)?;
     validate_manifest_layouts(manifest)?;
 
-    let authored = member(&package.members, "authored-level.bin")?;
     if authored.get(6).copied() != Some(metadata.map_type.id()) {
         return Err(NativeWorldError::new(
             "authored-level.bin map type does not match manifest",
@@ -4672,6 +4721,7 @@ fn parse_common_package(
         runtime,
         presentation,
         reset_state,
+        authored,
     })
 }
 
@@ -4704,6 +4754,11 @@ fn validate_package(
         .map(|(name, _)| *name)
         .collect::<BTreeSet<_>>();
     allowed_paths.insert("manifest.json");
+    if files.len() != expected_members.len() {
+        return Err(NativeWorldError::new(
+            "manifest files map does not contain the exact typed package member set",
+        ));
+    }
     for entry in fs::read_dir(package_dir).map_err(|error| {
         NativeWorldError::new(format!(
             "cannot enumerate package {}: {error}",
@@ -4729,11 +4784,6 @@ fn validate_package(
                 "package contains an unlisted or non-file member {name}"
             )));
         }
-    }
-    if files.len() != expected_members.len() {
-        return Err(NativeWorldError::new(
-            "manifest files map does not contain the exact typed package member set",
-        ));
     }
     let mut members = BTreeMap::new();
     let mut identity = Vec::new();
