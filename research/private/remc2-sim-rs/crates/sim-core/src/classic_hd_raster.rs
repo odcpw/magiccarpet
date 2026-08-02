@@ -18,7 +18,10 @@ use crate::{
     mode5_raster::{
         Mode5Vertex, rasterize_mode5_triangle_from_atlas, visit_mode5_triangle_from_atlas,
     },
-    mode26_raster::{NIGHT_TABLES_BYTES, rasterize_mode26_triangle_from_atlas_into_framebuffer},
+    mode26_raster::{
+        NIGHT_TABLES_BYTES, rasterize_mode26_triangle_from_atlas_into_framebuffer,
+        visit_mode26_triangle_from_atlas_into_framebuffer,
+    },
     terrain_reflection::TerrainPass,
 };
 
@@ -281,6 +284,80 @@ pub fn rasterize_classic_hd_mode26_triangle(
     })
 }
 
+fn rasterize_classic_hd_mode26_triangle_streaming(
+    writer: &mut ClassicHdFrameWriter<'_>,
+    vertices: [Mode5Vertex; 3],
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    provenance: u8,
+) -> Result<ClassicHdRasterReceipt, ClassicHdRasterError> {
+    validate_writer(writer)?;
+    validate_texture(texture_atlas, texture_base)?;
+    if tablesn.len() != NIGHT_TABLES_BYTES {
+        return Err(ClassicHdRasterError(format!(
+            "Classic HD mode-26 TABLESN requires {NIGHT_TABLES_BYTES} bytes, got {}",
+            tablesn.len()
+        )));
+    }
+    let width = i32::try_from(writer.width()).map_err(|_| {
+        ClassicHdRasterError("Classic HD mode-26 width does not fit i32".to_owned())
+    })?;
+    let height = i32::try_from(writer.height()).map_err(|_| {
+        ClassicHdRasterError("Classic HD mode-26 height does not fit i32".to_owned())
+    })?;
+    let stride = usize::try_from(writer.stride()).map_err(|_| {
+        ClassicHdRasterError("Classic HD mode-26 stride does not fit usize".to_owned())
+    })?;
+    let mut source_pixels = 0_u64;
+    let mut written_pixels = 0_u64;
+    let mut clipped_pixels = 0_u64;
+    {
+        let (indices, provenance_plane) = writer.planes_mut();
+        visit_mode26_triangle_from_atlas_into_framebuffer(
+            vertices,
+            width,
+            height,
+            texture_atlas,
+            texture_base,
+            tablesn,
+            indices,
+            |pixel| {
+                source_pixels = source_pixels.wrapping_add(1);
+                let Ok(x) = usize::try_from(pixel.sample.x) else {
+                    clipped_pixels = clipped_pixels.wrapping_add(1);
+                    return;
+                };
+                let Ok(y) = usize::try_from(pixel.y) else {
+                    clipped_pixels = clipped_pixels.wrapping_add(1);
+                    return;
+                };
+                let Some(offset) = y.checked_mul(stride).and_then(|row| row.checked_add(x)) else {
+                    clipped_pixels = clipped_pixels.wrapping_add(1);
+                    return;
+                };
+                if offset >= provenance_plane.len() {
+                    clipped_pixels = clipped_pixels.wrapping_add(1);
+                    return;
+                }
+                provenance_plane[offset] = provenance;
+                written_pixels = written_pixels.wrapping_add(1);
+            },
+        );
+    }
+    Ok(ClassicHdRasterReceipt {
+        mode5_triangles: 0,
+        mode26_triangles: 1,
+        source_pixels,
+        written_pixels,
+        clipped_pixels,
+        // The complete terrain pass computes its receipt from the final
+        // profile plane, so the streaming helper avoids a second sample hash.
+        output_hash: 0,
+        provenance_hash: writer_provenance_hash(writer),
+    })
+}
+
 /// Rasterize the terrain adapter's complete reflection-then-primary plan.
 /// All submissions are preflighted before the first write, so malformed
 /// topology, profile changes, unsupported selectors, and undersized banks
@@ -333,14 +410,16 @@ pub fn rasterize_classic_hd_terrain(
                 &tablesn[..CLASSIC_HD_TABLESN_BYTES],
                 provenance_for(triangle.pass, provenance),
             )?,
-            26 if triangle.pass == TerrainPass::Primary => rasterize_classic_hd_mode26_triangle(
-                writer,
-                vertices,
-                terrain_atlas,
-                texture_base,
-                tablesn,
-                provenance_for(triangle.pass, provenance),
-            )?,
+            26 if triangle.pass == TerrainPass::Primary => {
+                rasterize_classic_hd_mode26_triangle_streaming(
+                    writer,
+                    vertices,
+                    terrain_atlas,
+                    texture_base,
+                    tablesn,
+                    provenance_for(triangle.pass, provenance),
+                )?
+            }
             selector => {
                 return Err(ClassicHdRasterError(format!(
                     "Classic HD terrain selector {selector} is unsupported; no approximation allowed"
@@ -970,6 +1049,77 @@ mod tests {
         assert!(receipt.written_pixels >= 1);
         assert_eq!(frame.row_mut(0).unwrap()[0], 217);
         assert_eq!(frame.provenance_row_mut(0).unwrap()[0], 0x40);
+    }
+
+    #[test]
+    fn profile_mode26_streaming_matches_vector_kernel() {
+        let profile = ClassicHdRenderProfile::hd_640x480();
+        let (mut texture, tablesn) = tables();
+        texture[0] = 11;
+        let vertices = [
+            Mode5Vertex {
+                x: 2,
+                y: 1,
+                u: 0,
+                v: 0,
+                pnt5: 3 << 16,
+            },
+            Mode5Vertex {
+                x: 26,
+                y: 1,
+                u: 0,
+                v: 0,
+                pnt5: 3 << 16,
+            },
+            Mode5Vertex {
+                x: 2,
+                y: 18,
+                u: 0,
+                v: 0,
+                pnt5: 3 << 16,
+            },
+        ];
+
+        let mut vector_buffers = ClassicHdFrameBuffers::new(profile.clone(), 4).unwrap();
+        let mut vector_frame = vector_buffers
+            .begin_frame(4, 0, profile.profile_revision, 9)
+            .unwrap();
+        let vector_receipt = rasterize_classic_hd_mode26_triangle(
+            &mut vector_frame,
+            vertices,
+            &texture,
+            0,
+            &tablesn,
+            0x40,
+        )
+        .unwrap();
+        let vector_indices = vector_frame.indices().to_vec();
+        let vector_provenance = vector_frame.provenance().to_vec();
+
+        let mut streaming_buffers = ClassicHdFrameBuffers::new(profile.clone(), 4).unwrap();
+        let mut streaming_frame = streaming_buffers
+            .begin_frame(4, 0, profile.profile_revision, 9)
+            .unwrap();
+        let streaming_receipt = rasterize_classic_hd_mode26_triangle_streaming(
+            &mut streaming_frame,
+            vertices,
+            &texture,
+            0,
+            &tablesn,
+            0x40,
+        )
+        .unwrap();
+
+        assert_eq!(streaming_frame.indices(), vector_indices);
+        assert_eq!(streaming_frame.provenance(), vector_provenance);
+        assert_eq!(
+            streaming_receipt,
+            ClassicHdRasterReceipt {
+                output_hash: 0,
+                provenance_hash: vector_receipt.provenance_hash,
+                ..vector_receipt
+            }
+        );
     }
 
     #[test]

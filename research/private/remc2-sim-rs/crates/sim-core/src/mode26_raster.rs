@@ -75,6 +75,30 @@ pub fn rasterize_mode26_span_from_atlas(
     tablesn: &[u8],
     framebuffer_row: &mut [u8],
 ) -> Vec<Mode26Pixel> {
+    let mut pixels = Vec::new();
+    visit_mode26_span_from_atlas(
+        span,
+        viewport_width,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        framebuffer_row,
+        |pixel| pixels.push(pixel),
+    );
+    pixels
+}
+
+fn visit_mode26_span_from_atlas<F>(
+    span: Mode5Span,
+    viewport_width: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    framebuffer_row: &mut [u8],
+    mut visitor: F,
+) where
+    F: FnMut(Mode26Pixel),
+{
     assert!(
         texture_base < texture_atlas.len(),
         "mode-26 texture base must point inside its atlas"
@@ -95,7 +119,7 @@ pub fn rasterize_mode26_span_from_atlas(
     let start = span.left_x.max(0);
     let end = span.right_x.min(viewport_width);
     if end <= start {
-        return Vec::new();
+        return;
     }
 
     let clipped = start.wrapping_sub(span.left_x);
@@ -104,9 +128,6 @@ pub fn rasterize_mode26_span_from_atlas(
     let mut pnt5 = span
         .left_pnt5
         .wrapping_add(span.dpnt5.wrapping_mul(clipped));
-    let mut pixels =
-        Vec::with_capacity(usize::try_from(end - start).expect("positive span width fits usize"));
-
     for x in start..end {
         let texture_address = (u16::from(fixed_byte(v)) << 8) | u16::from(fixed_byte(u));
         let atlas_address = texture_base
@@ -131,7 +152,7 @@ pub fn rasterize_mode26_span_from_atlas(
             )
         };
         framebuffer_row[frame_index] = output_index;
-        pixels.push(Mode26Pixel {
+        visitor(Mode26Pixel {
             x,
             u,
             v,
@@ -148,8 +169,6 @@ pub fn rasterize_mode26_span_from_atlas(
         v = v.wrapping_add(span.dv);
         pnt5 = pnt5.wrapping_add(span.dpnt5);
     }
-
-    pixels
 }
 
 /// Setup and composite one complete mode-26 triangle into an indexed frame.
@@ -238,6 +257,68 @@ pub fn rasterize_mode26_triangle_from_atlas_into_framebuffer(
         );
     }
     frame_pixels
+}
+
+/// Visit a complete mode-26 triangle without retaining one `Mode26Pixel`
+/// record per sampled pixel. The source wrapper above keeps its historical
+/// vector-returning API; Classic HD uses this streaming seam because large
+/// profile-sized water triangles otherwise spend most of their time growing
+/// and copying temporary sample vectors.
+pub(crate) fn visit_mode26_triangle_from_atlas_into_framebuffer<F>(
+    vertices: [Mode5Vertex; 3],
+    viewport_width: i32,
+    viewport_height: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    framebuffer: &mut [u8],
+    mut visitor: F,
+) where
+    F: FnMut(Mode26FramePixel),
+{
+    assert!(
+        viewport_width >= 0 && viewport_height >= 0,
+        "mode-26 viewport dimensions must be non-negative"
+    );
+    assert!(
+        texture_base < texture_atlas.len(),
+        "mode-26 texture base must point inside its atlas"
+    );
+    let width = usize::try_from(viewport_width).expect("viewport width fits usize");
+    let height = usize::try_from(viewport_height).expect("viewport height fits usize");
+    assert_eq!(
+        framebuffer.len(),
+        width
+            .checked_mul(height)
+            .expect("mode-26 framebuffer extent fits usize"),
+        "mode-26 framebuffer must match the viewport"
+    );
+
+    let Some(setup) = setup_mode5_triangle(vertices[0], vertices[1], vertices[2], viewport_height)
+    else {
+        return;
+    };
+    for row in setup.scanlines {
+        let Some(span) =
+            mode26_span_from_scanline(row, setup.du, setup.dv, setup.dpnt5, viewport_width)
+        else {
+            continue;
+        };
+        let row_start = usize::try_from(row.y)
+            .expect("mode-26 setup clips Y non-negative")
+            .checked_mul(width)
+            .expect("mode-26 framebuffer row offset fits usize");
+        let row_end = row_start + width;
+        visit_mode26_span_from_atlas(
+            span,
+            viewport_width,
+            texture_atlas,
+            texture_base,
+            tablesn,
+            &mut framebuffer[row_start..row_end],
+            |sample| visitor(Mode26FramePixel { y: row.y, sample }),
+        );
+    }
 }
 
 fn mode26_span_from_scanline(

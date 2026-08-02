@@ -558,6 +558,14 @@ impl ClassicHdFrameWriter<'_> {
         self.provenance
     }
 
+    /// Borrow the indexed and provenance planes together for a streaming
+    /// raster pass. Callers must preserve the same painter order as the
+    /// source compositor; the pair is exposed only to avoid per-pixel bounds
+    /// checks and temporary sample vectors in the Classic HD adapters.
+    pub fn planes_mut(&mut self) -> (&mut [u8], &mut [u8]) {
+        (&mut *self.indices, &mut *self.provenance)
+    }
+
     #[must_use]
     pub fn provenance(&self) -> &[u8] {
         self.provenance

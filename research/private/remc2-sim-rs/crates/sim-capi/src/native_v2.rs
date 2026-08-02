@@ -3158,19 +3158,26 @@ impl SessionRecord {
                     .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
             }
         }
-        let assets = self.terrain_frame_assets.as_ref().ok_or_else(|| {
-            AbiError::new(
-                MC_STATUS_GENERATION_MISMATCH,
-                "source-render generation has no qualified asset banks",
-            )
-        })?;
-        let generation_asset_digest = source_render_asset_digest(self.world.as_ref(), assets)?;
-        if Some(generation_asset_digest) != self.source_render_asset_digest {
+        if self.terrain_frame_assets.is_none() {
             return Err(AbiError::new(
                 MC_STATUS_GENERATION_MISMATCH,
-                "source-render asset banks changed within the active generation",
+                "source-render generation has no qualified asset banks",
             ));
         }
+        // `TerrainFrameAssets` is held behind an immutable `Arc` for the
+        // lifetime of the session. Its digest was computed and stored when
+        // the owner cache opened, so recomputing a hash over the terrain,
+        // TABLESN, sky, and every TMAP debug record on every HD frame adds
+        // tens of milliseconds without providing a possible mutation gate.
+        // Reuse the generation-bound receipt instead; cache replacement still
+        // requires a session reset/open and therefore cannot silently cross a
+        // generation here.
+        let generation_asset_digest = self.source_render_asset_digest.ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                "source-render generation has no asset digest",
+            )
+        })?;
         let camera = Level1TerrainFrameCamera {
             render_x: self
                 .camera_history
@@ -3336,9 +3343,18 @@ impl SessionRecord {
                 "Classic HD owner render requires MC_ASSET_CACHE_PATH assets".to_owned(),
             )
         })?);
-        let inputs = self
+        let inputs_started = std::time::Instant::now();
+        let mut inputs = self
             .source_render_inputs(false)
             .map_err(|error| ClassicHdGraphError(error.message))?;
+        if profile_trace {
+            eprintln!(
+                "[CLASSIC HD TRACE] profile={} source_inputs_ms={} dispositions={}",
+                profile.id.as_str(),
+                inputs_started.elapsed().as_millis(),
+                inputs.dispositions.len(),
+            );
+        }
 
         let terrain_build_started = std::time::Instant::now();
         let terrain = {
@@ -3407,9 +3423,11 @@ impl SessionRecord {
         }
 
         let disposition_started = std::time::Instant::now();
-        let dispositions = self
-            .source_sprite_dispositions()
-            .map_err(|error| ClassicHdGraphError(error.message))?;
+        // `source_render_inputs` already validates and orders the complete
+        // disposition list. Reusing that owned list avoids rebuilding the
+        // BTreeSet/imported-row admission pass a second time on every HD
+        // frame; the authoritative state remains the same session snapshot.
+        let dispositions = std::mem::take(&mut inputs.dispositions);
         let source_bank = self.world.source_sprite_tmap_bank().ok_or_else(|| {
             ClassicHdGraphError(
                 "Classic HD owner render requires the CP1 source TMAP bank".to_owned(),
