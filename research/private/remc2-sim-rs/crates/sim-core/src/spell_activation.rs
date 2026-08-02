@@ -121,7 +121,7 @@ pub struct SpellHolderAcquisitionState {
     pub max_mana: i32,
     pub mana: i32,
     /// Source pickup life/cadence state consumed by `sub_68FF0` before the
-    /// player scan.  A positive value is decremented and suppresses the scan
+    /// player scan.  Any nonzero value is decremented and suppresses the scan
     /// for that pulse; reaching zero disables drawing while retaining the
     /// source entity in the arena for the next source pulse.
     pub source_life: i32,
@@ -175,7 +175,7 @@ impl SpellHolderAcquisitionState {
     /// leaves a zero-life source eligible for the following pulse, matching
     /// the source's `if (life) ... else scan` branch.
     pub fn step_source_life(&mut self) -> bool {
-        if self.source_life > 0 {
+        if self.source_life != 0 {
             self.source_life -= 1;
             if self.source_life == 0 {
                 self.source_draw_enabled = false;
@@ -184,6 +184,118 @@ impl SpellHolderAcquisitionState {
         }
         true
     }
+}
+
+/// The authored `Spells.cpp` rows consumed by `SetSpell_6D5E0` for the three
+/// generic Level 2 families.  Keeping this projection beside the generic
+/// acquisition helper makes the tier-dependent writes explicit instead of
+/// treating the frame-zero pickup bytes as the authority after a player
+/// changes `array_0x437[family]`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2SetSpellProfile {
+    pub subspell_index: u16,
+    pub word_0x30: u16,
+    pub byte_0x3b: u8,
+    pub mana_regen: i32,
+    pub max_mana: i32,
+    pub mana: i32,
+}
+
+/// Return the pinned `Spells.cpp` profile for a generic Level 2 family/tier.
+/// `max_mana` is the `GetSpellManaCost_6D710` result; the source then derives
+/// the initial `mana` by dividing it by `word_0x30` when that word is nonzero.
+#[must_use]
+pub const fn level2_set_spell_profile(family: u8, tier: u8) -> Option<Level2SetSpellProfile> {
+    let rows: &[[Level2SetSpellProfile; 3]] = &[
+        [
+            Level2SetSpellProfile {
+                subspell_index: 100,
+                word_0x30: 101,
+                byte_0x3b: 1,
+                mana_regen: 0,
+                max_mana: 1_000,
+                mana: 9,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 100,
+                word_0x30: 201,
+                byte_0x3b: 1,
+                mana_regen: 0,
+                max_mana: 1_500,
+                mana: 7,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 100,
+                word_0x30: 301,
+                byte_0x3b: 1,
+                mana_regen: 0,
+                max_mana: 10_000,
+                mana: 33,
+            },
+        ],
+        [
+            Level2SetSpellProfile {
+                subspell_index: 0,
+                word_0x30: 181,
+                byte_0x3b: 1,
+                mana_regen: 2_000,
+                max_mana: 2_000,
+                mana: 11,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 0,
+                word_0x30: 183,
+                byte_0x3b: 1,
+                mana_regen: 3_000,
+                max_mana: 2_500,
+                mana: 13,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 0,
+                word_0x30: 183,
+                byte_0x3b: 1,
+                mana_regen: 4_000,
+                max_mana: 3_000,
+                mana: 16,
+            },
+        ],
+        [
+            Level2SetSpellProfile {
+                subspell_index: 0,
+                word_0x30: 151,
+                byte_0x3b: 1,
+                mana_regen: 0,
+                max_mana: 1_800,
+                mana: 11,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 0,
+                word_0x30: 261,
+                byte_0x3b: 1,
+                mana_regen: 10_000,
+                max_mana: 2_400,
+                mana: 9,
+            },
+            Level2SetSpellProfile {
+                subspell_index: 0,
+                word_0x30: 361,
+                byte_0x3b: 1,
+                mana_regen: 10_000,
+                max_mana: 5_000,
+                mana: 13,
+            },
+        ],
+    ];
+    let row = match family {
+        6 => 0,
+        11 => 1,
+        12 => 2,
+        _ => return None,
+    };
+    if tier > 2 {
+        return None;
+    }
+    Some(rows[row][tier as usize])
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -273,10 +385,18 @@ pub fn acquire_level2_spell_holder_with_return_side(
         return SpellHolderAcquisitionResult::Rejected(SpellHolderAcquisitionFailure::AlreadyOwned);
     }
 
-    // SetSpell receives a source subspell index; the authored tables expose
-    // only tiers 0..2 for these rooted Level 2 families, so clamp malformed
-    // imported selections before hand and holder writes.
-    state.selected_tier = state.selected_tier.clamp(0, 2);
+    let Some(profile) = level2_set_spell_profile(state.family, state.selected_tier.cast_unsigned())
+    else {
+        return SpellHolderAcquisitionResult::Rejected(SpellHolderAcquisitionFailure::InvalidTier);
+    };
+    state.subspell_index = profile.subspell_index;
+    state.word_0x30 = profile.word_0x30;
+    state.byte_0x3b = profile.byte_0x3b;
+    state.byte_0x3c = 0;
+    state.font_type_index = 0;
+    state.mana_regen = profile.mana_regen;
+    state.max_mana = profile.max_mana;
+    state.mana = profile.mana;
 
     // `sub_68FF0` writes the active action and owner relation first. The
     // persistent path then allocates an action-3f+2 replacement in source
@@ -1372,6 +1492,23 @@ mod tests {
     }
 
     #[test]
+    fn level_two_setspell_profiles_follow_pinned_spells_rows() {
+        assert_eq!(
+            level2_set_spell_profile(12, 1),
+            Some(Level2SetSpellProfile {
+                subspell_index: 0,
+                word_0x30: 261,
+                byte_0x3b: 1,
+                mana_regen: 10_000,
+                max_mana: 2_400,
+                mana: 9,
+            })
+        );
+        assert_eq!(level2_set_spell_profile(6, 3), None);
+        assert_eq!(level2_set_spell_profile(3, 0), None);
+    }
+
+    #[test]
     fn level_two_generic_acquisition_binds_beyond_sight_reset_row_and_hand() {
         // Reset census slot 38 is class-15/model-12/action-37, i.e. the
         // ordinary-pickup row for family 12.
@@ -1463,6 +1600,26 @@ mod tests {
             )
         );
         assert_eq!(state, before);
+    }
+
+    #[test]
+    fn level_two_generic_acquisition_rejects_invalid_tier_without_mutation() {
+        let mut state = SpellHolderAcquisitionState::new(12, 38, 111, 37, 3);
+        let before = state;
+        assert_eq!(
+            acquire_level2_spell_holder(&mut state, PhysicalSpellActionRole::OrdinaryPickup, true,),
+            SpellHolderAcquisitionResult::Rejected(SpellHolderAcquisitionFailure::InvalidTier)
+        );
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn source_life_treats_negative_values_as_nonzero_source_prefix() {
+        let mut state = SpellHolderAcquisitionState::new(12, 38, 111, 37, 0);
+        state.source_life = -1;
+        assert!(!state.step_source_life());
+        assert_eq!(state.source_life, -2);
+        assert!(state.source_draw_enabled);
     }
 
     #[test]

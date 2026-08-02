@@ -6168,12 +6168,17 @@ impl Level2SharedSpellResetSession {
                 NativeWorldError::new(format!("unsupported Level 2 spell family {family}"))
             })?;
         let owner = self.players[owner_index].clone();
+        let family_index = usize::from(family);
         let left_spell_slot = owner.left_spell_slot_raw;
         let right_spell_slot = owner.right_spell_slot_raw;
         let left_subspell_index = owner.left_subspell_index;
         let right_subspell_index = owner.right_subspell_index;
         self.acquisitions[index].owner_entity_index = owner.entity_index;
         self.acquisitions[index].holder_relation = owner.enabled_spell_holders[usize::from(family)];
+        // SetSpell reads the owner's current array_0x437 entry on every
+        // acquisition; do not keep the reset-time tier when gameplay changes
+        // the selected tier between source pulses.
+        self.acquisitions[index].selected_tier = owner.family_selected_tiers[family_index];
         self.acquisitions[index].left_spell_slot = left_spell_slot;
         self.acquisitions[index].right_spell_slot = right_spell_slot;
         self.acquisitions[index].left_subspell_index = left_subspell_index;
@@ -6201,7 +6206,6 @@ impl Level2SharedSpellResetSession {
             }
         };
         let state = self.acquisitions[index];
-        let family_index = usize::from(family);
         let owner = &mut self.players[owner_index];
         owner.enabled_spell_holders[family_index] = outcome.source_slot;
         owner.spell_hand_eligibility[family_index] = state.eligibility;
@@ -6278,12 +6282,12 @@ impl Level2SharedSpellResetSession {
                 pickup.record[144..148].copy_from_slice(&state.max_mana.to_le_bytes());
                 pickup.mana = state.mana;
                 pickup.record[148..152].copy_from_slice(&state.mana.to_le_bytes());
+                pickup.record[74] = state.selected_tier.to_le_bytes()[0];
+                pickup.level_gate = state.selected_tier;
             }
             // Successful `sub_68FF0` sets the pickup ownership bit; it does
             // not call DisableEntityDrawing. The latter is only applied by
             // the positive-life prefix when life decrements from one to zero.
-            pickup.record[74] = state.selected_tier.to_le_bytes()[0];
-            pickup.level_gate = state.selected_tier;
             pickup.record[78..80].copy_from_slice(&0_i16.to_le_bytes());
         }
         self.pickup_events
@@ -16183,18 +16187,11 @@ mod tests {
         assert_eq!(source.max_mana, source_state.max_mana);
         assert_eq!(source.mana, source_state.mana);
 
-        // Seed the source projection with discriminating values. The
-        // acquisition must carry every SetSpell_6D5E0 field into the live
-        // entity record and typed projection, not just the hand/action pair.
-        {
-            let state = &mut session.shared_spells_mut().acquisitions[family_index];
-            state.subspell_index = 0x1234;
-            state.word_0x30 = 0x2345;
-            state.byte_0x3b = 1;
-            state.mana_regen = 0x0102_0304;
-            state.max_mana = 0x1112_1314;
-            state.mana = 0x2122_2324;
-        }
+        // Change the owner's selected tier after reset. SetSpell reads the
+        // current array_0x437 value and must derive the holder payload from
+        // the pinned family-12 tier-1 row, not copy the tier-0 pickup bytes.
+        session.shared_spells_mut().players[0].family_selected_tiers[12] = 1;
+        session.shared_spells_mut().players[0].record[528 + 12] = 1;
         let local_player_before = session.shared_spells().local_player.record_bytes().to_vec();
         let local_entity_before = session
             .shared_spells()
@@ -16221,11 +16218,12 @@ mod tests {
             }]
         ));
         let pickup = &session.shared_spells().pickups()[0];
-        assert_eq!(pickup.record_bytes()[46..48], [0x34, 0x12]);
-        assert_eq!(pickup.record_bytes()[52..54], [0x45, 0x23]);
+        assert_eq!(pickup.record_bytes()[46..48], [0, 0]);
+        assert_eq!(pickup.record_bytes()[52..54], [0x05, 0x01]);
         assert_eq!(pickup.record_bytes()[63], 1);
         assert_eq!(pickup.record_bytes()[64], 0);
         assert_eq!(pickup.record_bytes()[65], 0);
+        assert_eq!(pickup.record_bytes()[74], 1);
         assert_eq!(
             session.shared_spells().players[0].record_bytes()[398 + 12],
             1
@@ -16234,18 +16232,16 @@ mod tests {
             session.shared_spells().players[0].record_bytes()[424 + 12],
             1
         );
-        assert_eq!(
-            pickup.record_bytes()[140..144],
-            0x0102_0304_i32.to_le_bytes()
-        );
-        assert_eq!(
-            pickup.record_bytes()[144..148],
-            0x1112_1314_i32.to_le_bytes()
-        );
-        assert_eq!(
-            pickup.record_bytes()[148..152],
-            0x2122_2324_i32.to_le_bytes()
-        );
+        assert_eq!(pickup.record_bytes()[140..144], 10_000_i32.to_le_bytes());
+        assert_eq!(pickup.record_bytes()[144..148], 2_400_i32.to_le_bytes());
+        assert_eq!(pickup.record_bytes()[148..152], 9_i32.to_le_bytes());
+        let state = &session.shared_spells().acquisition_states()[family_index];
+        assert_eq!(state.selected_tier, 1);
+        assert_eq!(state.subspell_index, 0);
+        assert_eq!(state.word_0x30, 261);
+        assert_eq!(state.mana_regen, 10_000);
+        assert_eq!(state.max_mana, 2_400);
+        assert_eq!(state.mana, 9);
         assert!(!pickup.drawing_disabled());
         assert_eq!(pickup.record_bytes()[17] & 4, 0);
         assert_eq!(pickup.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
