@@ -7,6 +7,8 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
         _EmissionStrength ("Emission Strength", Range(0, 2)) = 0
         _AmbientBoost ("Night Ambient Boost", Range(0, 1)) = 0.2
         _SpecularStrength ("Specular Strength", Range(0, 1)) = 0.12
+        _RimColor ("Night Rim Color", Color) = (0.08, 0.16, 0.52, 1)
+        _RimStrength ("Night Rim Strength", Range(0, 1)) = 0
     }
 
     SubShader
@@ -40,6 +42,8 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
                 half _EmissionStrength;
                 half _AmbientBoost;
                 half _SpecularStrength;
+                half4 _RimColor;
+                half _RimStrength;
             CBUFFER_END
 
             struct Attributes
@@ -98,6 +102,8 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
                 #endif
 
                 half3 color = baseColor * lighting;
+                half rim = pow(saturate(1.0h - dot(normalWS, viewDirectionWS)), 2.0h);
+                color += _RimColor.rgb * (rim * _RimStrength);
                 color += _EmissionColor.rgb * _EmissionStrength;
                 return half4(color, _BaseColor.a * input.color.a);
             }

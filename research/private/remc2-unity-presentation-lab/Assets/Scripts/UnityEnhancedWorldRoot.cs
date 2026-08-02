@@ -183,7 +183,7 @@ namespace MagicCarpet.PresentationLab
 
             if (terrainPresentation != null) terrainPresentation.ResetPresentation(0);
             if (waterPresentation != null) waterPresentation.ResetPresentation(0);
-            if (nightLighting != null) nightLighting.ResetForGeneration(0);
+            if (nightLighting != null) nightLighting.ResetForSession();
             if (vfxPresentation != null) vfxPresentation.ResetForGeneration(0);
             if (actorPresentation != null) actorPresentation.ResetForSession();
             if (qualityAndPost != null) qualityAndPost.ResetForSession();
@@ -253,10 +253,17 @@ namespace MagicCarpet.PresentationLab
                     snapshot.Generation,
                     snapshot.NightLighting.Value,
                     snapshot.LocalLights,
-                    snapshot.Reset);
+                    snapshot.Reset,
+                    cameraRig.PresentationCamera);
             }
 
-            if (snapshot.Quality != null && !qualityAndPost.Apply(snapshot.Quality, cameraRig.PresentationCamera))
+            float sceneExposure = snapshot.NightLighting.HasValue
+                ? snapshot.NightLighting.Value.Exposure
+                : 0f;
+            if (snapshot.Quality != null && !qualityAndPost.Apply(
+                    snapshot.Quality,
+                    cameraRig.PresentationCamera,
+                    sceneExposure))
             {
                 LastRejectReason = "quality/post presentation rejected snapshot";
                 if (diagnostics != null) diagnostics.RecordRejectedSnapshot();

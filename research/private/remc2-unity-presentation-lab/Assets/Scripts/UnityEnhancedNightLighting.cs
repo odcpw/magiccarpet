@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace MagicCarpet.PresentationLab
 {
@@ -22,6 +23,10 @@ namespace MagicCarpet.PresentationLab
         public float FogDensity;
         public Color AmbientColor;
         public float Exposure;
+        public Color SkyColor;
+        public Color HorizonColor;
+        public Color GroundColor;
+        public float AmbientIntensity;
 
         public static UnityEnhancedNightLightingDescriptor Level1Night()
         {
@@ -31,9 +36,13 @@ namespace MagicCarpet.PresentationLab
                 MoonColor = new Color(0.42f, 0.56f, 1f, 1f),
                 MoonIntensity = 0.65f,
                 FogColor = new Color(0.018f, 0.028f, 0.09f, 1f),
-                FogDensity = 0.012f,
-                AmbientColor = new Color(0.035f, 0.055f, 0.12f, 1f),
-                Exposure = -0.2f
+                FogDensity = 0.006f,
+                AmbientColor = new Color(0.065f, 0.095f, 0.22f, 1f),
+                Exposure = 0.35f,
+                SkyColor = new Color(0.035f, 0.075f, 0.24f, 1f),
+                HorizonColor = new Color(0.02f, 0.045f, 0.14f, 1f),
+                GroundColor = new Color(0.008f, 0.016f, 0.045f, 1f),
+                AmbientIntensity = 1.15f
             };
         }
     }
@@ -81,6 +90,20 @@ namespace MagicCarpet.PresentationLab
         private Color priorFogColor;
         private float priorFogDensity;
         private Color priorAmbient;
+        private AmbientMode priorAmbientMode;
+        private float priorAmbientIntensity;
+        private Color priorAmbientSky;
+        private Color priorAmbientEquator;
+        private Color priorAmbientGround;
+        private FogMode priorFogMode;
+        private float priorFogStartDistance;
+        private float priorFogEndDistance;
+        private Material priorSkybox;
+        private Light priorSun;
+        private Camera presentationCamera;
+        private CameraClearFlags priorCameraClearFlags;
+        private Color priorCameraBackgroundColor;
+        private bool capturedCameraSettings;
 
         public UnityEnhancedLightingQuality Quality { get { return quality; } }
         public int ActiveLocalLightCount { get { return activeLights.Count; } }
@@ -88,6 +111,7 @@ namespace MagicCarpet.PresentationLab
         public int DroppedLocalLightCount { get; private set; }
         public ulong Generation { get { return generation; } }
         public bool HasDescriptor { get { return hasDescriptor; } }
+        public float AppliedExposure { get; private set; }
 
         public int LocalLightCap
         {
@@ -122,7 +146,18 @@ namespace MagicCarpet.PresentationLab
             IList<UnityEnhancedLocalLightRequest> requests,
             bool reset)
         {
+            ApplyDescriptor(nextGeneration, descriptor, requests, reset, null);
+        }
+
+        public void ApplyDescriptor(
+            ulong nextGeneration,
+            UnityEnhancedNightLightingDescriptor descriptor,
+            IList<UnityEnhancedLocalLightRequest> requests,
+            bool reset,
+            Camera camera)
+        {
             CaptureRenderSettings();
+            CaptureCamera(camera);
             if (reset || !hasDescriptor || nextGeneration != generation)
             {
                 ResetForGeneration(nextGeneration);
@@ -136,7 +171,20 @@ namespace MagicCarpet.PresentationLab
             RenderSettings.fog = descriptor.FogDensity > 0f;
             RenderSettings.fogColor = descriptor.FogColor;
             RenderSettings.fogDensity = Mathf.Max(0f, descriptor.FogDensity);
+            RenderSettings.fogMode = FogMode.ExponentialSquared;
+            RenderSettings.ambientMode = AmbientMode.Trilight;
+            RenderSettings.ambientSkyColor = descriptor.SkyColor;
+            RenderSettings.ambientEquatorColor = descriptor.AmbientColor;
+            RenderSettings.ambientGroundColor = descriptor.GroundColor;
+            RenderSettings.ambientIntensity = Mathf.Clamp(descriptor.AmbientIntensity, 0f, 8f);
             RenderSettings.ambientLight = descriptor.AmbientColor;
+            RenderSettings.sun = moon;
+            AppliedExposure = Mathf.Clamp(descriptor.Exposure, -4f, 4f);
+            if (presentationCamera != null)
+            {
+                presentationCamera.clearFlags = CameraClearFlags.SolidColor;
+                presentationCamera.backgroundColor = descriptor.HorizonColor;
+            }
             sortedRequests.Clear();
             if (requests != null)
             {
@@ -173,11 +221,18 @@ namespace MagicCarpet.PresentationLab
             generation = nextGeneration;
             hasDescriptor = false;
             DroppedLocalLightCount = 0;
+            AppliedExposure = 0f;
             while (activeLights.Count > 0)
             {
                 RecycleLight(activeLights[activeLights.Count - 1]);
                 activeLights.RemoveAt(activeLights.Count - 1);
             }
+        }
+
+        public void ResetForSession()
+        {
+            ResetForGeneration(0);
+            RestoreRenderSettings();
         }
 
         private static int CompareRequests(UnityEnhancedLocalLightRequest left, UnityEnhancedLocalLightRequest right)
@@ -257,18 +312,69 @@ namespace MagicCarpet.PresentationLab
             priorFogColor = RenderSettings.fogColor;
             priorFogDensity = RenderSettings.fogDensity;
             priorAmbient = RenderSettings.ambientLight;
+            priorAmbientMode = RenderSettings.ambientMode;
+            priorAmbientIntensity = RenderSettings.ambientIntensity;
+            priorAmbientSky = RenderSettings.ambientSkyColor;
+            priorAmbientEquator = RenderSettings.ambientEquatorColor;
+            priorAmbientGround = RenderSettings.ambientGroundColor;
+            priorFogMode = RenderSettings.fogMode;
+            priorFogStartDistance = RenderSettings.fogStartDistance;
+            priorFogEndDistance = RenderSettings.fogEndDistance;
+            priorSkybox = RenderSettings.skybox;
+            priorSun = RenderSettings.sun;
             capturedRenderSettings = true;
         }
 
-        private void OnDestroy()
+        private void CaptureCamera(Camera camera)
+        {
+            if (camera == null)
+            {
+                return;
+            }
+
+            if (!capturedCameraSettings || presentationCamera != camera)
+            {
+                presentationCamera = camera;
+                priorCameraClearFlags = camera.clearFlags;
+                priorCameraBackgroundColor = camera.backgroundColor;
+                capturedCameraSettings = true;
+            }
+        }
+
+        private void RestoreRenderSettings()
         {
             if (capturedRenderSettings)
             {
                 RenderSettings.fog = priorFog;
                 RenderSettings.fogColor = priorFogColor;
                 RenderSettings.fogDensity = priorFogDensity;
+                RenderSettings.fogMode = priorFogMode;
+                RenderSettings.fogStartDistance = priorFogStartDistance;
+                RenderSettings.fogEndDistance = priorFogEndDistance;
+                RenderSettings.ambientMode = priorAmbientMode;
+                RenderSettings.ambientIntensity = priorAmbientIntensity;
+                RenderSettings.ambientSkyColor = priorAmbientSky;
+                RenderSettings.ambientEquatorColor = priorAmbientEquator;
+                RenderSettings.ambientGroundColor = priorAmbientGround;
                 RenderSettings.ambientLight = priorAmbient;
+                RenderSettings.skybox = priorSkybox;
+                RenderSettings.sun = priorSun;
+                capturedRenderSettings = false;
             }
+
+            if (capturedCameraSettings && presentationCamera != null)
+            {
+                presentationCamera.clearFlags = priorCameraClearFlags;
+                presentationCamera.backgroundColor = priorCameraBackgroundColor;
+                capturedCameraSettings = false;
+            }
+
+            presentationCamera = null;
+        }
+
+        private void OnDestroy()
+        {
+            RestoreRenderSettings();
         }
     }
 }

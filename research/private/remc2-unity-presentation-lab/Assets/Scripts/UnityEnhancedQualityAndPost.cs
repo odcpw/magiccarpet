@@ -141,9 +141,15 @@ namespace MagicCarpet.PresentationLab
         public bool AmbientOcclusionRequested { get; private set; }
         public bool TemporalUpscalingEnabled { get; private set; }
         public bool UsesSpatialUpscaling { get; private set; }
+        public float AppliedPostExposure { get; private set; }
         public Volume PostVolume { get { return volume; } }
 
         public bool Apply(UnityEnhancedQualitySettings settings, Camera camera)
+        {
+            return Apply(settings, camera, 0f);
+        }
+
+        public bool Apply(UnityEnhancedQualitySettings settings, Camera camera, float sceneExposure)
         {
             if (settings == null || camera == null)
             {
@@ -185,7 +191,11 @@ namespace MagicCarpet.PresentationLab
             toneMapping.active = settings.ToneMapping;
             toneMapping.mode.value = TonemappingMode.ACES;
             colorGrading.active = settings.ColorGrading;
-            colorGrading.postExposure.value = settings.Tier == UnityEnhancedQualityTier.Low ? -0.15f : 0f;
+            AppliedPostExposure = Mathf.Clamp(
+                sceneExposure + (settings.Tier == UnityEnhancedQualityTier.Low ? -0.15f : 0f),
+                -4f,
+                4f);
+            colorGrading.postExposure.value = AppliedPostExposure;
             return true;
         }
 
@@ -198,6 +208,7 @@ namespace MagicCarpet.PresentationLab
             RestorePipelineScale();
             Settings = null;
             AppliedRenderScale = 0f;
+            AppliedPostExposure = 0f;
             TemporalUpscalingEnabled = false;
             UsesSpatialUpscaling = false;
         }

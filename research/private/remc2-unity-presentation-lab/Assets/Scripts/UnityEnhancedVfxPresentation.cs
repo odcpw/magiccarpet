@@ -266,8 +266,10 @@ namespace MagicCarpet.PresentationLab
             if (material != null)
             {
                 material.enableInstancing = true;
-                material.SetFloat("_AmbientBoost", 0.3f);
+                material.SetFloat("_AmbientBoost", 0.42f);
                 material.SetFloat("_SpecularStrength", 0.06f);
+                material.SetColor("_RimColor", new Color(0.08f, 0.16f, 0.52f, 1f));
+                material.SetFloat("_RimStrength", 0.08f);
                 material.SetColor("_EmissionColor", VfxColor(kind));
                 material.SetFloat("_EmissionStrength", kind == UnityEnhancedVfxKind.Weather ? 0.05f : 0.18f);
             }

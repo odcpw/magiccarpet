@@ -188,8 +188,14 @@ namespace MagicCarpet.PresentationLab
             if (material != null)
             {
                 material.enableInstancing = true;
-                material.SetFloat("_AmbientBoost", 0.24f);
+                material.SetFloat("_AmbientBoost", 0.42f);
                 material.SetFloat("_SpecularStrength", 0.12f);
+                material.SetColor("_RimColor", new Color(0.08f, 0.16f, 0.52f, 1f));
+                material.SetFloat("_RimStrength", 0.18f);
+                material.SetColor("_EmissionColor", FamilyColor((UnityEnhancedPresentationFamily)family));
+                material.SetFloat(
+                    "_EmissionStrength",
+                    EmissionStrength((UnityEnhancedPresentationFamily)family));
             }
             materials.Add(family, material);
             return material;
@@ -307,6 +313,30 @@ namespace MagicCarpet.PresentationLab
                 case UnityEnhancedPresentationFamily.Castle: return new Color(0.68f, 0.52f, 0.38f);
                 case UnityEnhancedPresentationFamily.Possession: return new Color(0.84f, 0.2f, 0.36f);
                 default: return Color.white;
+            }
+        }
+
+        private static float EmissionStrength(UnityEnhancedPresentationFamily family)
+        {
+            switch (family)
+            {
+                case UnityEnhancedPresentationFamily.Town:
+                case UnityEnhancedPresentationFamily.Castle:
+                    return 0.14f;
+                case UnityEnhancedPresentationFamily.Firefly:
+                    return 0.28f;
+                case UnityEnhancedPresentationFamily.Mana:
+                    return 0.32f;
+                case UnityEnhancedPresentationFamily.SpellJar:
+                case UnityEnhancedPresentationFamily.Checkpoint:
+                case UnityEnhancedPresentationFamily.Exit:
+                    return 0.22f;
+                case UnityEnhancedPresentationFamily.Projectile:
+                case UnityEnhancedPresentationFamily.Impact:
+                case UnityEnhancedPresentationFamily.Fire:
+                    return 0.30f;
+                default:
+                    return 0f;
             }
         }
 

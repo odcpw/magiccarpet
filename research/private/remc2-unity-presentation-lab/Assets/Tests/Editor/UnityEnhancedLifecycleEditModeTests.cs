@@ -1,6 +1,9 @@
 #if UNITY_EDITOR
+using System;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.Rendering;
+using Object = UnityEngine.Object;
 
 namespace MagicCarpet.PresentationLab.Tests
 {
@@ -417,6 +420,42 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void NightLightingAppliesReadableDescriptorAndRestoresSceneState()
+        {
+            GameObject root = new GameObject("enhanced-readable-night-test");
+            GameObject cameraObject = new GameObject("enhanced-readable-night-camera");
+            cameraObject.transform.SetParent(root.transform, false);
+            Camera camera = cameraObject.AddComponent<Camera>();
+            camera.clearFlags = CameraClearFlags.Depth;
+            camera.backgroundColor = Color.magenta;
+            UnityEnhancedNightLighting lighting = root.AddComponent<UnityEnhancedNightLighting>();
+            AmbientMode ambientModeBefore = RenderSettings.ambientMode;
+            FogMode fogModeBefore = RenderSettings.fogMode;
+            Color backgroundBefore = camera.backgroundColor;
+
+            lighting.ApplyDescriptor(
+                7,
+                UnityEnhancedNightLightingDescriptor.Level1Night(),
+                Array.Empty<UnityEnhancedLocalLightRequest>(),
+                true,
+                camera);
+
+            Assert.AreEqual(0.35f, lighting.AppliedExposure, 0.0001f);
+            Assert.AreEqual(AmbientMode.Trilight, RenderSettings.ambientMode);
+            Assert.AreEqual(FogMode.ExponentialSquared, RenderSettings.fogMode);
+            Assert.AreEqual(CameraClearFlags.SolidColor, camera.clearFlags);
+            Assert.AreNotEqual(backgroundBefore, camera.backgroundColor);
+
+            lighting.ResetForSession();
+            Assert.AreEqual(ambientModeBefore, RenderSettings.ambientMode);
+            Assert.AreEqual(fogModeBefore, RenderSettings.fogMode);
+            Assert.AreEqual(CameraClearFlags.Depth, camera.clearFlags);
+            Assert.AreEqual(backgroundBefore, camera.backgroundColor);
+
+            Object.DestroyImmediate(root);
+        }
+
+        [Test]
         public void WaterBuildsReflectionSurfaceAndShorelineMesh()
         {
             GameObject gameObject = new GameObject("enhanced-water-test");
@@ -477,8 +516,14 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsFalse(invalid.TryValidate(out reason));
             Assert.IsTrue(quality.Apply(UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog), camera));
             Assert.AreEqual(1f, quality.AppliedRenderScale);
+            Assert.AreEqual(0f, quality.AppliedPostExposure);
             Assert.IsFalse(quality.TemporalUpscalingEnabled);
             Assert.IsNotNull(quality.PostVolume);
+            Assert.IsTrue(quality.Apply(
+                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog),
+                camera,
+                0.35f));
+            Assert.AreEqual(0.35f, quality.AppliedPostExposure, 0.0001f);
             quality.ResetForSession();
 
             Object.DestroyImmediate(gameObject);

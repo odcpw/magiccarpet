@@ -249,8 +249,12 @@ namespace MagicCarpet.PresentationLab
                         color = Color.white
                     };
                     terrainMaterial.enableInstancing = true;
-                    terrainMaterial.SetFloat("_AmbientBoost", 0.28f);
+                    terrainMaterial.SetFloat("_AmbientBoost", 0.48f);
                     terrainMaterial.SetFloat("_SpecularStrength", 0.08f);
+                    terrainMaterial.SetColor("_RimColor", new Color(0.08f, 0.16f, 0.52f, 1f));
+                    terrainMaterial.SetFloat("_RimStrength", 0.22f);
+                    terrainMaterial.SetColor("_EmissionColor", new Color(0.035f, 0.08f, 0.22f, 1f));
+                    terrainMaterial.SetFloat("_EmissionStrength", 0.9f);
                     meshRenderer.sharedMaterial = terrainMaterial;
                 }
             }

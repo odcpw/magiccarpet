@@ -217,8 +217,10 @@ namespace MagicCarpet.PresentationLab
                 color = color
             };
             material.enableInstancing = true;
-            material.SetFloat("_AmbientBoost", 0.22f);
+            material.SetFloat("_AmbientBoost", 0.40f);
             material.SetFloat("_SpecularStrength", 0.32f);
+            material.SetColor("_RimColor", new Color(0.12f, 0.28f, 0.72f, 1f));
+            material.SetFloat("_RimStrength", 0.12f);
             material.SetColor("_EmissionColor", color * 0.2f);
             material.SetFloat("_EmissionStrength", 0.18f);
             return material;
