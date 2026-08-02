@@ -3507,6 +3507,24 @@ pub struct Level2DeathBurst {
     pub active: bool,
 }
 
+/// The class-15 row created by remc2 `sub_69250` through the family
+/// `arsub_2a881e`/`AddSpellXX_XX_51120` constructor.  It deliberately lives
+/// in the economy arena so it consumes and returns the same source slots as
+/// Castle, sphere, carrier, and death-burst allocations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2SpellReplacement {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub parent_entity_index: u16,
+    pub position: Position,
+    pub family: u8,
+    pub action: u8,
+    /// Source `byte_0x3E_62`, initialized from the allocated source slot.
+    pub phase: u8,
+    pub control_flags: u32,
+    pub active: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Level2EconomyEvent {
     ManaSphereSpawned {
@@ -3627,6 +3645,8 @@ pub struct Level2EconomyState {
     spheres: Vec<ManaSphere>,
     baseline_death_bursts: Vec<Level2DeathBurst>,
     death_bursts: Vec<Level2DeathBurst>,
+    baseline_spell_replacements: Vec<Level2SpellReplacement>,
+    spell_replacements: Vec<Level2SpellReplacement>,
     baseline_carriers: Vec<ManaCarrier>,
     carriers: Vec<ManaCarrier>,
     baseline_castle: Option<Level2CastleState>,
@@ -3788,6 +3808,8 @@ impl Level2EconomyState {
             spheres: static_spheres,
             baseline_death_bursts: Vec::new(),
             death_bursts: Vec::new(),
+            baseline_spell_replacements: Vec::new(),
+            spell_replacements: Vec::new(),
             baseline_carriers: Vec::new(),
             carriers: Vec::new(),
             baseline_castle: None,
@@ -3875,6 +3897,74 @@ impl Level2EconomyState {
     }
 
     #[must_use]
+    pub fn spell_replacements(&self) -> &[Level2SpellReplacement] {
+        &self.spell_replacements
+    }
+
+    /// Allocate the source class-15 row created by `sub_69250`. This uses the
+    /// same free stack, constructor RNG, map chain, and failure transaction as
+    /// every other Level 2 `NewEvent_4A050` allocation.
+    pub fn allocate_spell_replacement(
+        &mut self,
+        family: u8,
+        parent_entity_index: u16,
+        position: Position,
+    ) -> Option<Level2SpellReplacement> {
+        if family >= 26 {
+            return None;
+        }
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let replacement = Level2SpellReplacement {
+            source_entity_index,
+            entity_rng,
+            parent_entity_index,
+            position,
+            family,
+            action: family.saturating_mul(3).saturating_add(2),
+            phase: source_entity_index as u8,
+            control_flags: 0,
+            active: true,
+        };
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.spell_replacements.push(replacement);
+        Some(replacement)
+    }
+
+    /// The family callback remains outside this bounded allocator slice. The
+    /// source cursor still visits the live row and preserves source phase/map
+    /// state; no invented spell effect is emitted here.
+    pub fn step_spell_replacement_slot(&mut self, source_slot: u16) -> bool {
+        let Some(replacement) = self.spell_replacements.iter_mut().find(|replacement| {
+            replacement.active && replacement.source_entity_index == source_slot
+        }) else {
+            return false;
+        };
+        replacement.phase = replacement.phase.wrapping_add(1);
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: replacement.position.x,
+                y: replacement.position.y,
+            })
+            .is_ok()
+    }
+
+    #[must_use]
     pub fn carrier(&self) -> Option<&ManaCarrier> {
         self.carriers.iter().find(|carrier| carrier.active)
     }
@@ -3939,6 +4029,16 @@ impl Level2EconomyState {
             slots.insert(
                 carrier.source_entity_index,
                 Level2DynamicArenaKind::ManaCarrier,
+            );
+        }
+        for replacement in self
+            .spell_replacements
+            .iter()
+            .filter(|replacement| replacement.active)
+        {
+            slots.insert(
+                replacement.source_entity_index,
+                Level2DynamicArenaKind::SpellReplacement,
             );
         }
         slots.into_iter().collect()
@@ -6830,6 +6930,23 @@ impl Level2EconomyState {
         for (slot, entity_rng) in reclaimed_bursts {
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_spell_replacements = self
+            .spell_replacements
+            .iter()
+            .filter(|replacement| !replacement.active)
+            .map(|replacement| (replacement.source_entity_index, replacement.entity_rng))
+            .collect::<Vec<_>>();
+        self.spell_replacements
+            .retain(|replacement| replacement.active);
+        for (slot, entity_rng) in reclaimed_spell_replacements {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_children = self
             .castle_children
             .iter()
@@ -6937,6 +7054,17 @@ impl Level2EconomyState {
             hasher.update(burst.subspell_index.to_le_bytes());
             hasher.update(burst.control_flags.to_le_bytes());
             hasher.update([u8::from(burst.active)]);
+        }
+        for replacement in &self.spell_replacements {
+            hasher.update(replacement.source_entity_index.to_le_bytes());
+            hasher.update(replacement.entity_rng.to_le_bytes());
+            hasher.update(replacement.parent_entity_index.to_le_bytes());
+            hasher.update(replacement.position.x.to_le_bytes());
+            hasher.update(replacement.position.y.to_le_bytes());
+            hasher.update(replacement.position.z.to_le_bytes());
+            hasher.update([replacement.family, replacement.action, replacement.phase]);
+            hasher.update(replacement.control_flags.to_le_bytes());
+            hasher.update([u8::from(replacement.active)]);
         }
         if self.carriers.is_empty() {
             hasher.update([0]);
@@ -7143,6 +7271,7 @@ impl Level2EconomyState {
         self.owner_mana_global = self.baseline_owner_mana_global;
         self.spheres = self.baseline_spheres.clone();
         self.death_bursts = self.baseline_death_bursts.clone();
+        self.spell_replacements = self.baseline_spell_replacements.clone();
         self.carriers = self.baseline_carriers.clone();
         self.castle = self.baseline_castle;
         self.castle_children = self.baseline_castle_children.clone();
@@ -8571,6 +8700,7 @@ pub enum Level2DynamicArenaKind {
     ManaSphere,
     ManaCarrier,
     DeathBurst,
+    SpellReplacement,
 }
 
 impl Level2DispatchEvent {
@@ -8666,6 +8796,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::ManaSphere => 6,
         Level2DynamicArenaKind::ManaCarrier => 7,
         Level2DynamicArenaKind::DeathBurst => 8,
+        Level2DynamicArenaKind::SpellReplacement => 9,
     }
 }
 
@@ -8860,6 +8991,19 @@ impl Level2ResetSession {
     #[must_use]
     pub fn economy_mut(&mut self) -> &mut Level2EconomyState {
         &mut self.economy
+    }
+
+    /// Production seam for a rooted `sub_69250` replacement constructor. The
+    /// allocator is intentionally owned by the Level 2 economy so callers
+    /// cannot create a second free-slot pool beside the source arena.
+    pub fn allocate_level2_spell_replacement(
+        &mut self,
+        family: u8,
+        parent_entity_index: u16,
+        position: Position,
+    ) -> Option<Level2SpellReplacement> {
+        self.economy
+            .allocate_spell_replacement(family, parent_entity_index, position)
     }
 
     #[must_use]
@@ -9373,6 +9517,9 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::ManaSphere => self.economy.step_mana_sphere_slot(source_slot),
             Level2DynamicArenaKind::ManaCarrier => self.economy.step_mana_carrier_slot(source_slot),
             Level2DynamicArenaKind::DeathBurst => self.economy.step_death_burst_slot(source_slot),
+            Level2DynamicArenaKind::SpellReplacement => {
+                self.economy.step_spell_replacement_slot(source_slot)
+            }
             Level2DynamicArenaKind::CastleAuxiliary
             | Level2DynamicArenaKind::CastleChild
             | Level2DynamicArenaKind::CastleController => {
@@ -20645,6 +20792,119 @@ mod tests {
                 .assigned_carrier_id,
             0
         );
+    }
+
+    #[test]
+    fn level_two_spell_replacement_uses_shared_arena_and_outer_cursor() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 spell-replacement session");
+        let baseline_hash = session.economy().reset_hash();
+        let first_free = *session
+            .economy()
+            .free_slots
+            .last()
+            .expect("source free slot");
+        let consumed_slot = session
+            .economy_mut()
+            .spawn_mana_carrier(Position::default(), 111, 0)
+            .expect("shared arena carrier allocation");
+        assert_eq!(consumed_slot, first_free);
+        let expected_slot = *session
+            .economy()
+            .free_slots
+            .last()
+            .expect("next source free slot");
+        let global_rng = session.economy().global_rng;
+        let position = Position {
+            x: 2_048,
+            y: 4_096,
+            z: 128,
+        };
+        let replacement = session
+            .allocate_level2_spell_replacement(11, 38, position)
+            .expect("family-11 replacement allocation");
+        assert_eq!(replacement.source_entity_index, expected_slot);
+        assert_eq!(
+            replacement.entity_rng,
+            expected_slot.wrapping_add(global_rng as u16)
+        );
+        assert_eq!(replacement.parent_entity_index, 38);
+        assert_eq!(replacement.position, position);
+        assert_eq!(replacement.family, 11);
+        assert_eq!(replacement.action, 35);
+        assert_eq!(replacement.phase, expected_slot as u8);
+        assert_eq!(replacement.control_flags, 0);
+        assert!(replacement.active);
+        assert!(
+            session
+                .economy()
+                .map_chains()
+                .linked_entity_indices()
+                .contains(&expected_slot)
+        );
+        assert!(
+            session
+                .economy()
+                .live_arena_slots()
+                .contains(&(expected_slot, Level2DynamicArenaKind::SpellReplacement))
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                source_slot,
+                kind: Level2DynamicArenaKind::SpellReplacement,
+                ..
+            } if *source_slot == expected_slot
+        )));
+        assert_eq!(
+            session
+                .economy()
+                .spell_replacements()
+                .iter()
+                .find(|row| row.source_entity_index == expected_slot)
+                .expect("live replacement")
+                .phase,
+            replacement.phase.wrapping_add(1)
+        );
+
+        session
+            .economy_mut()
+            .spell_replacements
+            .iter_mut()
+            .find(|row| row.source_entity_index == expected_slot)
+            .expect("replacement to reclaim")
+            .active = false;
+        session.economy_mut().reclaim_inactive_slots();
+        assert!(session.economy().spell_replacements().is_empty());
+        assert!(session.economy().free_slots.contains(&expected_slot));
+        assert!(
+            !session
+                .economy()
+                .map_chains()
+                .linked_entity_indices()
+                .contains(&expected_slot)
+        );
+
+        session.economy_mut().free_slots.clear();
+        let rows_before_failure = session.economy().spell_replacements().len();
+        assert!(
+            session
+                .allocate_level2_spell_replacement(6, 155, position)
+                .is_none()
+        );
+        assert_eq!(
+            session.economy().spell_replacements().len(),
+            rows_before_failure
+        );
+        session.reset();
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
+        assert!(session.economy().spell_replacements().is_empty());
+        assert!(session.economy().carriers().is_empty());
     }
 
     #[test]

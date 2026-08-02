@@ -15635,7 +15635,10 @@ mod tests {
                 sound_id: 22,
             },
         );
-        assert_eq!(snapshot.code, MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_CAVE_SOUND);
+        assert_eq!(
+            snapshot.code,
+            MC_CAMPAIGN_ECONOMY_CASTLE_DEFENDER_CAVE_SOUND
+        );
         assert_eq!(snapshot.family, 3);
         assert_eq!(snapshot.source_slot, 157);
         assert_eq!(snapshot.primary_id, 157);
