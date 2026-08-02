@@ -36,6 +36,14 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     validator_path = project_root / "Assets" / "Scripts" / "OwnerInputValidator.cs"
     lease_path = project_root / "Assets" / "Scripts" / "PresentationSessionLease.cs"
     test_path = project_root / "Assets" / "Tests" / "Editor" / "PresentationLabEditModeTests.cs"
+    classic_settings_path = project_root / "Assets" / "Scripts" / "ClassicHdPresentationSettings.cs"
+    classic_abi_path = project_root / "Assets" / "Scripts" / "ClassicHdAbiContract.cs"
+    classic_surface_path = project_root / "Assets" / "Scripts" / "ClassicHdR8Surface.cs"
+    classic_presentation_path = project_root / "Assets" / "Scripts" / "ClassicHdPresentation.cs"
+    classic_display_path = project_root / "Assets" / "Scripts" / "ClassicHdDisplayComposition.cs"
+    classic_shader_path = project_root / "Assets" / "Resources" / "ClassicHdIndexedUnlit.shader"
+    launcher_path = project_root / "launcher" / "presentation_launcher.py"
+    launcher_config_path = project_root / "launcher" / "presentation-config.json"
     boot_scene = project_root / "Assets" / "Scenes" / "Boot.unity"
     graphics_settings = project_root / "ProjectSettings" / "GraphicsSettings.asset"
     global_settings = project_root / "Assets" / "UniversalRenderPipelineGlobalSettings.asset"
@@ -59,6 +67,17 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
 
     required_files = [router_path, validator_path, lease_path, test_path, boot_scene]
     _check(checks, "mode shell files exist", all(path.is_file() for path in required_files), ", ".join(str(path) for path in required_files))
+    classic_files = [
+        classic_settings_path,
+        classic_abi_path,
+        classic_surface_path,
+        classic_presentation_path,
+        classic_display_path,
+        classic_shader_path,
+        launcher_path,
+        launcher_config_path,
+    ]
+    _check(checks, "Classic HD integration files exist", all(path.is_file() for path in classic_files), ", ".join(str(path) for path in classic_files))
     _check(checks, "Boot scene is in build settings", build_settings.is_file() and "Assets/Scenes/Boot.unity" in build_settings.read_text(encoding="utf-8"), str(build_settings))
 
     graphics_text = graphics_settings.read_text(encoding="utf-8") if graphics_settings.is_file() else ""
@@ -69,18 +88,30 @@ def verify(project_root: Path = PROJECT_ROOT) -> dict[str, Any]:
     router_text = router_path.read_text(encoding="utf-8") if router_path.is_file() else ""
     validator_text = validator_path.read_text(encoding="utf-8") if validator_path.is_file() else ""
     lease_text = lease_path.read_text(encoding="utf-8") if lease_path.is_file() else ""
+    classic_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (classic_settings_path, classic_abi_path, classic_surface_path, classic_presentation_path, classic_display_path)
+        if path.is_file()
+    )
+    launcher_text = launcher_path.read_text(encoding="utf-8") if launcher_path.is_file() else ""
+    launcher_config_text = launcher_config_path.read_text(encoding="utf-8") if launcher_config_path.is_file() else ""
     _check(checks, "router selects before opening", "PresentationSessionLease.Open" in router_text and "ownerValidation" in router_text, str(router_path))
     _check(checks, "missing inputs fail closed diagnostically", "NO OWNER INPUTS" in router_text and "return;" in router_text, str(router_path))
     _check(checks, "owner inputs stay external", "IsInside(projectRoot" in validator_text and "must remain outside" in validator_text, str(validator_path))
     _check(checks, "session lease is presentation-only", "does not load owner data" in lease_text and "IsOpen" in lease_text, str(lease_path))
+    _check(checks, "Classic HD binds the additive C ABI", "mc_classic_hd_frame_copy_fixture" in classic_text and "NativeLibrary = \"sim_capi\"" in classic_text, str(classic_abi_path))
+    _check(checks, "Classic HD uses a persistent R8 surface", "TextureFormat.R8" in classic_text and "UploadTopRowFirst" in classic_text and "new Texture2D" in classic_text, str(classic_surface_path))
+    _check(checks, "launcher defaults to Exact", '"default_mode": "exact"' in launcher_config_text and '"default_mode"' in launcher_text, str(launcher_config_path))
+    _check(checks, "launcher exposes all three modes", all(token in launcher_config_text for token in ('"exact"', '"classic-hd"', '"unity-enhanced"')), str(launcher_config_path))
 
     forbidden_tokens = ("remc2-unity-native", "MagicCarpet.Native", "NativeSession", "VoxelMode")
-    all_text = "\n".join(text for text in (router_text, validator_text, lease_text))
+    all_text = "\n".join(text for text in (router_text, validator_text, lease_text, classic_text, launcher_text))
     _check(checks, "lab scripts do not reference Exact/native gameplay", not any(token in all_text for token in forbidden_tokens), str(project_root / "Assets"))
 
     forbidden_payload_extensions = {".dll", ".so", ".dylib", ".a", ".png", ".jpg", ".jpeg", ".wav", ".ogg", ".mp3", ".bundle", ".assetbundle"}
     payloads = [path for path in (project_root / "Assets").rglob("*") if path.is_file() and path.suffix.lower() in forbidden_payload_extensions]
     _check(checks, "no owner payload is embedded", not payloads, ", ".join(str(path) for path in payloads) or "none")
+    _check(checks, "no VoxelMode dependency is embedded", "VoxelMode" not in all_text, str(project_root / "Assets"))
 
     status = "PASS" if all(check["passed"] for check in checks) else "FAIL"
     return {"status": status, "project": str(project_root), "checks": checks, "failure_count": sum(not check["passed"] for check in checks)}

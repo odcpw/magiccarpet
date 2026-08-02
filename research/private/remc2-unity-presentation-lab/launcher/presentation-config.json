@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "default_mode": "exact",
+  "unity_executable": "Unity",
+  "modes": {
+    "exact": {
+      "project": "../remc2-unity-native",
+      "arguments": []
+    },
+    "classic-hd": {
+      "project": ".",
+      "arguments": [
+        "-mc-presentation-mode",
+        "classic-hd"
+      ]
+    },
+    "unity-enhanced": {
+      "project": ".",
+      "arguments": [
+        "-mc-presentation-mode",
+        "unity-enhanced"
+      ]
+    }
+  },
+  "classic_hd_defaults": {
+    "profile": "hd-640x480",
+    "asset_tier": "original-indexed",
+    "view_distance": 1.0,
+    "reflections": true,
+    "dynamic_lighting": true,
+    "blur": "tablesn",
+    "ui_scale": 1.0,
+    "fullscreen": false,
+    "window_width": 1280,
+    "window_height": 960,
+    "output_filter": "point"
+  }
+}

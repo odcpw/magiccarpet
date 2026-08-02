@@ -24,6 +24,8 @@ namespace MagicCarpet.PresentationLab
 
         private PresentationSessionLease sessionLease;
         private OwnerInputValidation ownerValidation;
+        private ClassicHdSettingsLoadResult classicHdSettingsResult;
+        private ClassicHdPresentation classicHdPresentation;
         private string statusLine;
         private GUIStyle badgeStyle;
         private GUIStyle detailStyle;
@@ -32,6 +34,15 @@ namespace MagicCarpet.PresentationLab
         public bool SessionIsOpen { get { return sessionLease != null && sessionLease.IsOpen; } }
         public string StatusLine { get { return statusLine ?? string.Empty; } }
         public OwnerInputValidation OwnerValidation { get { return ownerValidation; } }
+        public ClassicHdPresentationSettings ClassicHdSettings
+        {
+            get { return classicHdSettingsResult == null ? null : classicHdSettingsResult.Settings; }
+        }
+        public ClassicHdPresentation ClassicHdRenderer { get { return classicHdPresentation; } }
+        public string SettingsPath
+        {
+            get { return classicHdSettingsResult == null ? string.Empty : classicHdSettingsResult.SettingsPath; }
+        }
 
         private void Awake()
         {
@@ -55,6 +66,16 @@ namespace MagicCarpet.PresentationLab
 
             SelectedMode = parsedMode;
 
+            if (SelectedMode == PresentationModeId.ClassicHd)
+            {
+                classicHdSettingsResult = ClassicHdSettingsStore.LoadFromArguments(arguments);
+                if (!classicHdSettingsResult.IsValid)
+                {
+                    statusLine = "INVALID CLASSIC HD SETTINGS: " + classicHdSettingsResult.Reason;
+                    return;
+                }
+            }
+
             string projectRoot = Directory.GetParent(Application.dataPath).FullName;
             string packagePath = CommandLineValue(arguments, PackageArgument);
             string closurePath = CommandLineValue(arguments, ClosureArgument);
@@ -67,7 +88,23 @@ namespace MagicCarpet.PresentationLab
             }
 
             sessionLease = PresentationSessionLease.Open(SelectedMode, ownerValidation);
+            if (SelectedMode == PresentationModeId.ClassicHd)
+            {
+                ApplyClassicHdOutputSettings(ClassicHdSettings);
+                classicHdPresentation = gameObject.AddComponent<ClassicHdPresentation>();
+                string presentationError;
+                if (!classicHdPresentation.Configure(ClassicHdSettings, out presentationError))
+                {
+                    classicHdPresentation = null;
+                    sessionLease.Dispose();
+                    sessionLease = null;
+                    statusLine = "CLASSIC HD PRESENTATION FAILED CLOSED: " + presentationError;
+                    return;
+                }
+            }
+
             statusLine = "PRESENTATION SESSION OPEN: " + ModeName(SelectedMode) +
+                         " / " + PresentationDetail() +
                          " / gameplay authority remains Rust / visual history is presentation-only";
         }
 
@@ -102,7 +139,9 @@ namespace MagicCarpet.PresentationLab
                 SessionIsOpen ? "PRESENTATION LAB" : "PRESENTATION LAB / DIAGNOSTIC", badgeStyle);
             GUI.Label(new Rect(36f, 65f, width - 48f, 44f), StatusLine, detailStyle);
             GUI.Label(new Rect(36f, 112f, width - 48f, 24f),
-                "No Exact claim. No mode switching after session open. No owner payload is embedded.", detailStyle);
+                "No Exact claim. No mode switching after session open. No owner payload is embedded." +
+                (ClassicHdSettings == null ? string.Empty : " " + ClassicHdSettings.profile + " / " + ClassicHdSettings.outputFilter),
+                detailStyle);
         }
 
         private static string CommandLineValue(string[] arguments, string name)
@@ -153,6 +192,28 @@ namespace MagicCarpet.PresentationLab
                 default:
                     return "unknown";
             }
+        }
+
+        private string PresentationDetail()
+        {
+            if (SelectedMode != PresentationModeId.ClassicHd || ClassicHdSettings == null)
+            {
+                return "Unity Enhanced lab placeholder";
+            }
+
+            return ClassicHdSettings.profile + " / " + ClassicHdSettings.assetTier +
+                   " / persistent R8 surface / " + (classicHdSettingsResult.UsedDefaults ? "defaults" : "settings file");
+        }
+
+        private static void ApplyClassicHdOutputSettings(ClassicHdPresentationSettings settings)
+        {
+            if (settings == null || Application.isBatchMode)
+            {
+                return;
+            }
+
+            Screen.fullScreen = settings.fullscreen;
+            Screen.SetResolution(settings.windowWidth, settings.windowHeight, settings.fullscreen);
         }
     }
 }
