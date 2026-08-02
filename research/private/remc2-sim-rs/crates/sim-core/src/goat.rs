@@ -1,7 +1,7 @@
-//! Source-ordered Level 1 Goat-family simulation.
+//! Source-ordered Goat-family simulation for the Level 1 and Level 2 pools.
 //!
-//! This module is deliberately bounded to the class-5/model-1 action-9,
-//! action-14, and action-15 paths proven by the private remc2 source and
+//! The implemented class-5/model-1 paths are action 9, action 11, action 14,
+//! and the action-15 patrol branch proven by the private remc2 source and
 //! exact-build captures. Unsupported action and `StageVar` branches remain
 //! explicit.
 
@@ -21,6 +21,13 @@ use crate::{
 pub const LEVEL_ONE_GOAT_INDICES: [u16; 33] = [
     50, 79, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101,
     102, 103, 104, 105, 106, 107, 108, 109, 110, 111,
+];
+/// The Level 2 Day reset binds the same class-5/model-1 family to the
+/// contiguous source pool 39..=74.  Slots 39 and 71 are the two action-11
+/// partner rows; the remaining rows retain their authored action-9/15 paths.
+pub const LEVEL_TWO_GOAT_INDICES: [u16; 36] = [
+    39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62,
+    63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74,
 ];
 
 pub const GOAT_CLASS: u8 = 5;
@@ -72,6 +79,21 @@ impl GoatBehaviorConfig {
         behavior_flags: 9,
     };
 
+    /// Level 2 Day parameter row 99 consumed by the action-11 Goat band.
+    /// The row keeps the Level 1 material/vertical fields but widens the
+    /// turn/perception settings and clears the player-engagement flag.
+    pub const LEVEL_TWO: Self = Self {
+        turn_clamp: 91,
+        ground_clearance: 0,
+        vertical_relaxation: -256,
+        terrain_threshold: 20,
+        allowed_material_mask: 0xfff0_80fe,
+        perception_cadence: 40,
+        perception_radius: 3_584,
+        perception_half_angle: 1_991,
+        behavior_flags: 1,
+    };
+
     /// Decode the consumed fields of exact entity-parameter row 98.
     ///
     /// # Errors
@@ -93,6 +115,28 @@ impl GoatBehaviorConfig {
         if config != Self::LEVEL_ONE {
             return Err(format!(
                 "Level 1 Goat parameter row 98 mismatch: {config:?}"
+            ));
+        }
+        Ok(config)
+    }
+
+    /// Decode the Level 2 Day Goat parameter row 99 without weakening the
+    /// Level 1 row-98 validator above.
+    pub fn from_level_two_parameter_record(bytes: &[u8; 34]) -> Result<Self, String> {
+        let config = Self {
+            turn_clamp: read_i16(bytes, 2),
+            ground_clearance: read_i16(bytes, 12),
+            vertical_relaxation: read_i16(bytes, 14),
+            terrain_threshold: read_i16(bytes, 16),
+            allowed_material_mask: read_u32(bytes, 20),
+            perception_cadence: read_u16(bytes, 26),
+            perception_radius: read_u16(bytes, 28),
+            perception_half_angle: read_i16(bytes, 30),
+            behavior_flags: bytes[32],
+        };
+        if config != Self::LEVEL_TWO {
+            return Err(format!(
+                "Level 2 Goat parameter row 99 mismatch: {config:?}"
             ));
         }
         Ok(config)
@@ -167,6 +211,9 @@ pub struct GoatState {
     pub minimum_speed: i16,
     pub maximum_speed: i16,
     pub mana: i32,
+    /// Source `word_0x32_50` partner relation used by action 11.  This is
+    /// distinct from the target mailbox at `word_0x96_150`.
+    pub partner_entity_index: Option<u16>,
     pub target_entity_index: Option<u16>,
 }
 
@@ -225,6 +272,7 @@ impl GoatState {
             minimum_speed: read_i16(bytes, 0x0084),
             maximum_speed: read_i16(bytes, 0x0086),
             mana: read_i32(bytes, 0x0090),
+            partner_entity_index: relation_index(read_u16(bytes, 0x0032)),
             target_entity_index: relation_index(read_u16(bytes, 0x0096)),
         };
         if state.render_parameter_index != GOAT_RENDER_PARAMETER_INDEX {
@@ -287,6 +335,7 @@ impl GoatState {
             minimum_speed: read_i16(bytes, 0x0088),
             maximum_speed: read_i16(bytes, 0x008a),
             mana: snapshot.mana,
+            partner_entity_index: relation_index(read_u16(bytes, 0x0036)),
             target_entity_index: relation_index(read_u16(bytes, 0x009a)),
         };
         if state.render_parameter_index != GOAT_RENDER_PARAMETER_INDEX {
@@ -327,6 +376,35 @@ impl GoatFamily {
             if snapshot.index != expected_index {
                 return Err(format!(
                     "Goat pool order mismatch: expected {expected_index}, got {}",
+                    snapshot.index
+                ));
+            }
+            goats.push(GoatState::from_snapshot(snapshot)?);
+        }
+        Ok(Self {
+            goats: goats.into_boxed_slice(),
+            stage_point,
+            config,
+            outer_tick: 0,
+        })
+    }
+
+    /// Construct the complete Level 2 class-5/model-1 family in authored
+    /// source-pool order.  Level 2 keeps a separate pool from Level 1; in
+    /// particular, reset slots 39 and 71 are the two action-11 rows.
+    pub fn from_level_two_entities(
+        entities: &[EntitySnapshot],
+        stage_point: Position,
+        config: GoatBehaviorConfig,
+    ) -> Result<Self, String> {
+        let mut goats = Vec::with_capacity(LEVEL_TWO_GOAT_INDICES.len());
+        for expected_index in LEVEL_TWO_GOAT_INDICES {
+            let snapshot = entities
+                .get(usize::from(expected_index))
+                .ok_or_else(|| format!("missing Level 2 Goat entity {expected_index}"))?;
+            if snapshot.index != expected_index {
+                return Err(format!(
+                    "Level 2 Goat pool order mismatch: expected {expected_index}, got {}",
                     snapshot.index
                 ));
             }
@@ -426,6 +504,20 @@ impl GoatFamily {
         events
     }
 
+    /// Advance one Level 2 source turn over its authored Goat pool.
+    pub fn step_level_two_with_players<W: FlightWorld>(
+        &mut self,
+        world: &W,
+        players: &[GoatPlayerTarget],
+    ) -> Vec<GoatStepEvent> {
+        let mut events = self.begin_source_turn(players);
+        for source_slot in LEVEL_TWO_GOAT_INDICES {
+            events.extend(self.step_source_slot(source_slot, world, players));
+        }
+        self.finish_source_turn();
+        events
+    }
+
     fn begin_source_turn(&mut self, players: &[GoatPlayerTarget]) -> Vec<GoatStepEvent> {
         let mut events = Vec::new();
         // `UpdateEntities_57730` reclaims drawing-disabled slots before list
@@ -497,6 +589,7 @@ impl GoatFamily {
         };
         match self.goats[family_index].action {
             9 => self.step_roam(family_index, world, players, &mut events),
+            11 => self.step_action_11(family_index, world, &mut events),
             GOAT_PATROL_ACTION
                 if self.goats[family_index].stage_var_2 == GOAT_PATROL_STAGE_MODE =>
             {
@@ -598,6 +691,162 @@ impl GoatFamily {
 
         self.acquire_player_boundary(family_index, players, events);
         self.advance_action_15_tail(family_index, events);
+    }
+
+    /// Port the pinned remc2 `sub_1F470` / `sub_1C560(a1, 8)` action-11 path.
+    ///
+    /// The relation field is deliberately handled before damage and movement:
+    /// a zero relation is the source's immediate action-9 transition, while
+    /// an invalid non-zero relation still consumes pending damage and then
+    /// falls back through the movement/cleanup path.
+    fn step_action_11<W: FlightWorld>(
+        &mut self,
+        family_index: usize,
+        world: &W,
+        events: &mut Vec<GoatStepEvent>,
+    ) {
+        let Some(partner_entity_index) = self.goats[family_index].partner_entity_index else {
+            self.goats[family_index].action = 9;
+            self.advance_action_11_tail(family_index, events);
+            return;
+        };
+
+        let partner_index = self
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == partner_entity_index);
+        let partner_valid = partner_index.is_some_and(|index| {
+            let partner = &self.goats[index];
+            partner.active && partner.life >= 0 && partner.control_flags & 0x0000_0400 == 0
+        });
+
+        match self.apply_pending_damage(family_index) {
+            DamageResult::Dead => {
+                let attacker = self.goats[family_index].current_attacker;
+                if partner_valid {
+                    let partner_index = partner_index.expect("valid partner index");
+                    let partner_action = if self.config.behavior_flags & 8 != 0 {
+                        14
+                    } else {
+                        10
+                    };
+                    let partner = &mut self.goats[partner_index];
+                    partner.target_entity_index = relation_index(attacker.cast_unsigned());
+                    partner.partner_entity_index = None;
+                    partner.action = partner_action;
+                }
+                let goat = &mut self.goats[family_index];
+                goat.partner_entity_index = None;
+                goat.action = 12;
+            }
+            DamageResult::Hit(attacker) => {
+                let action = if self.config.behavior_flags & 8 != 0 {
+                    14
+                } else {
+                    10
+                };
+                if partner_valid {
+                    let partner_index = partner_index.expect("valid partner index");
+                    let partner = &mut self.goats[partner_index];
+                    partner.target_entity_index = relation_index(attacker.cast_unsigned());
+                    partner.partner_entity_index = None;
+                    partner.action = action;
+                }
+                let goat = &mut self.goats[family_index];
+                goat.target_entity_index = relation_index(attacker.cast_unsigned());
+                goat.partner_entity_index = None;
+                goat.action = action;
+                relax_to_terrain(
+                    &mut goat.position,
+                    world,
+                    self.config.ground_clearance,
+                    self.config.vertical_relaxation,
+                );
+            }
+            DamageResult::None => {
+                self.move_patrol(family_index, world);
+                if !partner_valid {
+                    let goat = &mut self.goats[family_index];
+                    goat.partner_entity_index = None;
+                    goat.action = 9;
+                } else if u16::from(self.goats[family_index].phase)
+                    .is_multiple_of(self.config.perception_cadence)
+                {
+                    let partner_index = partner_index.expect("valid partner index");
+                    let partner_action = self.goats[partner_index].action;
+                    match i16::from(partner_action) - 8 {
+                        // Partner action 8/9: face the current partner and
+                        // copy `partner.maxSpeed + partner.actSpeed` into
+                        // the primary Goat's current speed.
+                        0 | 1 => {
+                            let partner_position = self.goats[partner_index].position;
+                            let partner_maximum_speed = self.goats[partner_index].maximum_speed;
+                            let partner_actual_speed = self.goats[partner_index].actual_speed;
+                            let heading = heading_for_positions(
+                                self.goats[family_index].position,
+                                partner_position,
+                            );
+                            let goat = &mut self.goats[family_index];
+                            goat.roll = i16::try_from(heading)
+                                .expect("11-bit action-11 partner heading fits i16");
+                            goat.actual_speed =
+                                partner_maximum_speed.wrapping_add(partner_actual_speed);
+                            self.apply_peer_separation(family_index);
+                        }
+                        // Partner action 10/11: inherit its target; action 11
+                        // also follows the partner's relation chain.
+                        2 => {
+                            let partner_target = self.goats[partner_index].target_entity_index;
+                            let goat = &mut self.goats[family_index];
+                            goat.target_entity_index = partner_target;
+                            goat.partner_entity_index = None;
+                            goat.action = 10;
+                        }
+                        3 => {
+                            let partner_partner = self.goats[partner_index].partner_entity_index;
+                            let partner_maximum_speed = self.goats[partner_index].maximum_speed;
+                            let partner_actual_speed = self.goats[partner_index].actual_speed;
+                            let goat_position = self.goats[family_index].position;
+                            // The source immediately dereferences the copied
+                            // relation. Entity zero is its null sentinel; an
+                            // unknown non-zero relation is kept fail-closed at
+                            // that same zero position, never the old partner.
+                            let next_position = partner_partner
+                                .and_then(|next_partner_entity_index| {
+                                    self.goats.iter().find(|candidate| {
+                                        candidate.entity_index == next_partner_entity_index
+                                    })
+                                })
+                                .map_or(Position::default(), |partner| partner.position);
+                            let goat = &mut self.goats[family_index];
+                            goat.partner_entity_index = partner_partner;
+                            goat.roll =
+                                i16::try_from(heading_for_positions(goat_position, next_position))
+                                    .expect("11-bit action-11 chain heading fits i16");
+                            goat.actual_speed =
+                                partner_maximum_speed.wrapping_add(partner_actual_speed);
+                            self.apply_peer_separation(family_index);
+                        }
+                        // Partner action 14: inherit its target and enter our
+                        // own action-14 branch.
+                        6 => {
+                            let partner_target = self.goats[partner_index].target_entity_index;
+                            let goat = &mut self.goats[family_index];
+                            goat.target_entity_index = partner_target;
+                            goat.partner_entity_index = None;
+                            goat.action = 14;
+                        }
+                        _ => {
+                            let goat = &mut self.goats[family_index];
+                            goat.partner_entity_index = None;
+                            goat.action = 9;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.advance_action_11_tail(family_index, events);
     }
 
     fn step_roam<W: FlightWorld>(
@@ -844,6 +1093,29 @@ impl GoatFamily {
         goat.rng = next_rng(goat.rng);
         if goat.rng.is_multiple_of(77) {
             mark_source_audio_call(goat_bleat_source_call(9));
+            events.push(GoatStepEvent::Bleat {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::GoatBleat,
+                entity_index: goat.entity_index,
+                sound_id: 46,
+                position: goat.position,
+                action: goat.action,
+            });
+        }
+        if goat.action == 14 {
+            goat.actual_speed = goat.minimum_speed;
+        }
+    }
+
+    /// The action-11 wrapper consumes exactly one LCG draw after
+    /// `sub_1C560`, emits sound 46 on modulo-77, then applies the action-14
+    /// minimum-speed override.  Keep this ordering distinct from action 9/15
+    /// tails because it is part of the reset-visible Level 2 contract.
+    fn advance_action_11_tail(&mut self, family_index: usize, events: &mut Vec<GoatStepEvent>) {
+        let goat = &mut self.goats[family_index];
+        goat.rng = next_rng(goat.rng);
+        if goat.rng.is_multiple_of(77) {
+            mark_source_audio_call(goat_bleat_source_call(11));
             events.push(GoatStepEvent::Bleat {
                 #[cfg(test)]
                 audio_site: crate::MissionAudioSite::GoatBleat,
@@ -1650,6 +1922,31 @@ mod tests {
         )
     }
 
+    fn level_two_fixture_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("generated/l2-debug3.fJ3PaM/level2")
+    }
+
+    fn level_two_family() -> GoatFamily {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_root())
+            .expect("qualified Level 2 owner package");
+        let config = GoatBehaviorConfig::from_level_two_parameter_record(
+            inspection
+                .presentation()
+                .entity_parameters
+                .get(99)
+                .expect("Level 2 Goat parameter row 99"),
+        )
+        .expect("exact Level 2 Goat parameter row 99");
+        GoatFamily::from_level_two_entities(
+            inspection.entities(),
+            Position { x: 0, y: 0, z: 0 },
+            config,
+        )
+        .expect("complete Level 2 Goat family")
+    }
+
     fn assert_goat_matches(actual: &GoatState, expected: RegressionEntity<'_>, frame_index: usize) {
         assert_eq!(actual.entity_index, expected.entity_index(), "entity index");
         assert_eq!(actual.source_id, expected.source_id(), "source id");
@@ -2435,5 +2732,384 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn level_two_reset_has_action11_only_at_source_slots_39_and_71() {
+        let row99 = [
+            0x28, 0x00, 0x5b, 0x00, 0x05, 0x00, 0x16, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0xff, 0x14, 0x00, 0x00, 0x02, 0xfe, 0x80, 0xf0, 0xff, 0x00, 0x09, 0x28, 0x00,
+            0x00, 0x0e, 0xc7, 0x07, 0x01, 0x00,
+        ];
+        assert_eq!(
+            GoatBehaviorConfig::from_level_two_parameter_record(&row99)
+                .expect("exact denominator row 99"),
+            GoatBehaviorConfig::LEVEL_TWO
+        );
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_root())
+            .expect("qualified Level 2 owner package");
+        let action11_slots: Vec<_> = inspection
+            .entities()
+            .iter()
+            .filter(|entity| {
+                entity.class == GOAT_CLASS && entity.model == GOAT_MODEL && entity.action == 11
+            })
+            .map(|entity| entity.index)
+            .collect();
+        assert_eq!(action11_slots, [39, 71]);
+        assert_eq!(LEVEL_TWO_GOAT_INDICES.len(), 36);
+        assert_eq!(LEVEL_TWO_GOAT_INDICES[0], 39);
+        assert_eq!(LEVEL_TWO_GOAT_INDICES[35], 74);
+
+        let config = GoatBehaviorConfig::from_level_two_parameter_record(
+            inspection
+                .presentation()
+                .entity_parameters
+                .get(99)
+                .expect("Level 2 Goat parameter row 99"),
+        )
+        .expect("exact Level 2 Goat parameter row 99");
+        assert_eq!(config, GoatBehaviorConfig::LEVEL_TWO);
+        for slot in action11_slots {
+            let goat = inspection
+                .entities()
+                .get(usize::from(slot))
+                .expect("action-11 source slot");
+            assert_eq!(goat.parameter_relation, Some(98));
+            assert_eq!(
+                read_u16(goat.record_bytes(), 0x0036),
+                66,
+                "reset action-11 partner relation"
+            );
+            assert_eq!(
+                inspection.entities()[66].action,
+                9,
+                "action-11 partner is the authored action-9 Goat at slot 66"
+            );
+        }
+    }
+
+    #[test]
+    fn action11_no_relation_is_no_call_damage_guard_but_rng_and_phase_still_advance() {
+        let mut family = level_two_family();
+        let goat = family
+            .goats
+            .iter_mut()
+            .find(|goat| goat.entity_index == 39)
+            .expect("reset action-11 Goat");
+        let seed = (0..=u16::MAX)
+            .find(|seed| next_rng(*seed).is_multiple_of(77))
+            .expect("an action-11 bleat seed exists");
+        goat.action = 11;
+        goat.partner_entity_index = None;
+        goat.pending_damage = 100;
+        goat.pending_attacker = 7;
+        goat.rng = seed;
+        goat.phase = 0;
+        let life = goat.life;
+
+        let events = family.step_source_slot(39, &MaterialBoundaryWorld { all_water: false }, &[]);
+        let goat = family
+            .goats
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .expect("action-11 Goat");
+        assert_eq!(goat.life, life, "source returns before pending damage");
+        assert_eq!(goat.pending_damage, 100);
+        assert_eq!(goat.pending_attacker, 7);
+        assert_eq!(goat.action, 9);
+        assert_eq!(goat.phase, 1);
+        assert_eq!(goat.rng, next_rng(seed));
+        assert!(matches!(
+            events.as_slice(),
+            [GoatStepEvent::Bleat {
+                entity_index: 39,
+                sound_id: 46,
+                action: 9,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn action11_partner_actions_preserve_source_transition_and_speed_order() {
+        let world = MaterialBoundaryWorld { all_water: false };
+        for (partner_action, expected_action, expected_relation, expected_target, min_speed) in [
+            (8, 11, Some(40), None, false),
+            (9, 11, Some(40), None, false),
+            (10, 10, None, Some(152), false),
+            (11, 11, Some(41), None, false),
+            (14, 14, None, Some(152), true),
+            (12, 9, None, None, false),
+        ] {
+            let mut family = level_two_family();
+            let primary_index = family
+                .goats
+                .iter()
+                .position(|goat| goat.entity_index == 39)
+                .expect("primary action-11 Goat");
+            let partner_index = family
+                .goats
+                .iter()
+                .position(|goat| goat.entity_index == 40)
+                .expect("partner Goat");
+            let next_index = family
+                .goats
+                .iter()
+                .position(|goat| goat.entity_index == 41)
+                .expect("action-11 chain target");
+            family.goats[primary_index].action = 11;
+            family.goats[primary_index].phase = 0;
+            family.goats[primary_index].partner_entity_index = Some(40);
+            family.goats[primary_index].position = Position {
+                x: 1_000,
+                y: 1_000,
+                z: 0,
+            };
+            family.goats[primary_index].actual_speed = 3;
+            family.goats[primary_index].target_entity_index = None;
+            family.goats[partner_index].action = partner_action;
+            family.goats[partner_index].position = Position {
+                x: 10_000,
+                y: 1_000,
+                z: 0,
+            };
+            family.goats[partner_index].maximum_speed = 17;
+            family.goats[partner_index].actual_speed = 23;
+            family.goats[partner_index].target_entity_index = Some(152);
+            family.goats[partner_index].partner_entity_index = (partner_action == 11).then_some(41);
+            family.goats[next_index].position = Position {
+                x: 10_000,
+                y: 10_000,
+                z: 0,
+            };
+
+            family.step_source_slot(39, &world, &[]);
+            let primary = &family.goats[primary_index];
+            assert_eq!(
+                primary.action, expected_action,
+                "partner action {partner_action}"
+            );
+            assert_eq!(
+                primary.partner_entity_index, expected_relation,
+                "partner relation for action {partner_action}"
+            );
+            assert_eq!(
+                primary.target_entity_index, expected_target,
+                "partner target for action {partner_action}"
+            );
+            if partner_action == 8 || partner_action == 9 || partner_action == 11 {
+                assert_eq!(
+                    primary.actual_speed, 40,
+                    "partner speed for action {partner_action}"
+                );
+            }
+            if min_speed {
+                assert_eq!(primary.actual_speed, primary.minimum_speed);
+            }
+        }
+    }
+
+    #[test]
+    fn action11_action11_partner_uses_null_sentinel_for_missing_chain() {
+        let world = MaterialBoundaryWorld { all_water: false };
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        let partner_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 40)
+            .expect("partner Goat");
+        family.goats[primary_index].action = 11;
+        family.goats[primary_index].phase = 0;
+        family.goats[primary_index].partner_entity_index = Some(40);
+        family.goats[primary_index].position = Position {
+            x: 10_000,
+            y: 10_000,
+            z: 0,
+        };
+        family.goats[primary_index].actual_speed = 3;
+        family.goats[partner_index].action = 11;
+        family.goats[partner_index].partner_entity_index = None;
+        family.goats[partner_index].maximum_speed = 17;
+        family.goats[partner_index].actual_speed = 23;
+        family.goats[partner_index].position = Position {
+            x: 10_000,
+            y: 11_000,
+            z: 0,
+        };
+
+        family.step_source_slot(39, &world, &[]);
+        let primary = &family.goats[primary_index];
+        assert_eq!(primary.action, 11);
+        assert_eq!(primary.partner_entity_index, None);
+        assert_eq!(primary.actual_speed, 40);
+        assert_eq!(
+            primary.roll,
+            i16::try_from(heading_for_positions(primary.position, Position::default()))
+                .expect("11-bit null-sentinel heading fits i16")
+        );
+    }
+
+    #[test]
+    fn action11_invalid_partner_consumes_damage_before_falling_back_to_roam() {
+        let mut family = level_two_family();
+        let primary = family
+            .goats
+            .iter_mut()
+            .find(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        primary.action = 11;
+        primary.phase = 0;
+        primary.partner_entity_index = Some(999);
+        primary.pending_damage = 100;
+        primary.pending_attacker = 7;
+        let events = family.step_source_slot(39, &MaterialBoundaryWorld { all_water: false }, &[]);
+        let primary = family
+            .goats
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        assert_eq!(primary.life, 500);
+        assert_eq!(primary.current_attacker, 7);
+        assert_eq!(primary.pending_damage, 0);
+        assert_eq!(primary.pending_attacker, 0);
+        // A non-zero but invalid relation still takes the damage branch. The
+        // Level 2 row-99 behavior flag is clear, so source `sub_1C560(a2=8)`
+        // selects `a2 + 2` (action 10), not the no-relation action-9 fast
+        // path.
+        assert_eq!(primary.action, 10);
+        assert_eq!(primary.partner_entity_index, None);
+        assert_eq!(primary.phase, 1);
+        assert!(events.is_empty(), "no sound chosen by this seed");
+    }
+
+    #[test]
+    fn action11_damage_transitions_update_partner_before_wrapper_tail() {
+        let world = MaterialBoundaryWorld { all_water: false };
+        let mut hit = level_two_family();
+        {
+            let primary = hit
+                .goats
+                .iter_mut()
+                .find(|goat| goat.entity_index == 39)
+                .expect("primary action-11 Goat");
+            primary.action = 11;
+            primary.partner_entity_index = Some(40);
+            primary.phase = 0;
+        }
+        hit.inject_damage(39, 100, 152)
+            .expect("nonlethal action-11 hit");
+        hit.step_source_slot(39, &world, &[]);
+        let primary = hit
+            .goats
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .unwrap();
+        let partner = hit
+            .goats
+            .iter()
+            .find(|goat| goat.entity_index == 40)
+            .unwrap();
+        assert_eq!(primary.life, 500);
+        assert_eq!(primary.action, 10);
+        assert_eq!(primary.target_entity_index, Some(152));
+        assert_eq!(primary.partner_entity_index, None);
+        assert_eq!(partner.action, 10);
+        assert_eq!(partner.target_entity_index, Some(152));
+        assert_eq!(partner.partner_entity_index, None);
+
+        let mut dead = level_two_family();
+        {
+            let primary = dead
+                .goats
+                .iter_mut()
+                .find(|goat| goat.entity_index == 39)
+                .expect("primary action-11 Goat");
+            primary.action = 11;
+            primary.partner_entity_index = Some(40);
+            primary.phase = 0;
+        }
+        // The source kill check is strict (`life < 0`), so 601 damage is the
+        // first lethal value for the reset life 600 row.
+        dead.inject_damage(39, 601, 152)
+            .expect("lethal action-11 hit");
+        dead.step_source_slot(39, &world, &[]);
+        let primary = dead
+            .goats
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .unwrap();
+        let partner = dead
+            .goats
+            .iter()
+            .find(|goat| goat.entity_index == 40)
+            .unwrap();
+        assert_eq!(primary.life, -1);
+        assert_eq!(primary.action, 12);
+        assert_eq!(primary.partner_entity_index, None);
+        assert_eq!(partner.action, 10);
+        assert_eq!(partner.target_entity_index, Some(152));
+        assert_eq!(partner.partner_entity_index, None);
+    }
+
+    #[test]
+    fn level_two_action11_source_order_replays_and_reset_restores_both_rows() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_root())
+            .expect("qualified Level 2 owner package");
+        let config = GoatBehaviorConfig::from_level_two_parameter_record(
+            inspection
+                .presentation()
+                .entity_parameters
+                .get(99)
+                .expect("Level 2 Goat parameter row 99"),
+        )
+        .expect("exact Level 2 Goat parameter row 99");
+        let baseline = GoatFamily::from_level_two_entities(
+            inspection.entities(),
+            Position { x: 0, y: 0, z: 0 },
+            config,
+        )
+        .expect("complete Level 2 Goat family");
+        let mut first = baseline.clone();
+        let mut replay = baseline.clone();
+        first.step_level_two_with_players(inspection.terrain(), &[]);
+        replay.step_level_two_with_players(inspection.terrain(), &[]);
+        assert_eq!(first, replay);
+        assert_eq!(first.outer_tick(), 1);
+        for slot in [39_u16, 71] {
+            let goat = first
+                .goats
+                .iter()
+                .find(|goat| goat.entity_index == slot)
+                .unwrap();
+            assert_eq!(
+                goat.action, 11,
+                "reset action-11 slot {slot} follows action-9 partner"
+            );
+            assert_eq!(goat.partner_entity_index, Some(66));
+            let reset_phase = baseline
+                .goats
+                .iter()
+                .find(|candidate| candidate.entity_index == slot)
+                .unwrap()
+                .phase;
+            assert_eq!(
+                goat.phase,
+                reset_phase.wrapping_add(1),
+                "source pass advances reset phase"
+            );
+        }
+        let reset = GoatFamily::from_level_two_entities(
+            inspection.entities(),
+            Position { x: 0, y: 0, z: 0 },
+            config,
+        )
+        .expect("reset Level 2 Goat family");
+        assert_eq!(reset, baseline);
     }
 }

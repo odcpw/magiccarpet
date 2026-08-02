@@ -227,6 +227,7 @@ mod tests {
             minimum_speed: 0,
             maximum_speed: 0,
             mana: 0,
+            partner_entity_index: None,
             target_entity_index: None,
         }
     }
