@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 use crate::MissionAudioSite;
-use crate::{mark_source_audio_call, FlightEvent, SourceAudioCallTag};
+use crate::{FlightEvent, SourceAudioCallTag, mark_source_audio_call};
 
 const DIRECTION_BITS: u32 = 0x0300;
 const POINTER_ACTION_BIT: u32 = 0x0020;
@@ -563,6 +563,292 @@ pub struct ShieldDamage {
     pub status_after: u32,
 }
 
+/// Source family-11 (Invisible) tier data from the pinned `Spells.cpp` table.
+///
+/// The three records are the family-11 rows at `Spells.cpp:15`: the holder
+/// consumes 2,000/2,500/3,000 mana, its source countdown is 181/183/183
+/// ticks, and `life_0x1A` writes 1/2/3 to the owner's visibility byte.  The
+/// `mana_regen_requirement` is the source `maxManaLimit_A` value checked by
+/// `sub_68D50` while an Invisible entity is active.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvisibleTierProfile {
+    pub mana_cost: i32,
+    pub mana_regen_requirement: i32,
+    pub activation_ticks: i16,
+    pub owner_visibility_mode: u8,
+    pub experience_award: i32,
+}
+
+const INVISIBLE_TIERS: [InvisibleTierProfile; 3] = [
+    InvisibleTierProfile {
+        mana_cost: 2_000,
+        mana_regen_requirement: 2_000,
+        activation_ticks: 181,
+        owner_visibility_mode: 1,
+        experience_award: 1,
+    },
+    InvisibleTierProfile {
+        mana_cost: 2_500,
+        mana_regen_requirement: 3_000,
+        activation_ticks: 183,
+        owner_visibility_mode: 2,
+        experience_award: 1,
+    },
+    InvisibleTierProfile {
+        mana_cost: 3_000,
+        mana_regen_requirement: 4_000,
+        activation_ticks: 183,
+        owner_visibility_mode: 3,
+        experience_award: 1,
+    },
+];
+
+pub const INVISIBLE_FAMILY: u8 = 11;
+pub const INVISIBLE_ACTIVE_ACTION: u8 = 33;
+/// `struct_byte_0xc_12_15.byte[0]` bit set on the spell entity at first
+/// activation.  The source clears this bit on the parent at termination,
+/// which is intentionally represented separately below.
+pub const INVISIBLE_STATUS_BIT: u32 = 0x20;
+
+#[must_use]
+pub const fn invisible_tier_profile(tier: u8) -> Option<InvisibleTierProfile> {
+    match tier {
+        0..=2 => Some(INVISIBLE_TIERS[tier as usize]),
+        _ => None,
+    }
+}
+
+/// Renderer-free state for source family-11/model-11 action 33
+/// (`sub_6B1C0`, `AddSpell11_33_51300`).
+///
+/// The state deliberately keeps owner and spell-entity flags separate.  The
+/// pinned source sets the spell entity's bit 0x20 when the first pulse starts,
+/// but clears bit 0x20 on the owner when the pulse countdown terminates.  This
+/// asymmetry is observable and must not be normalized away by a presentation
+/// layer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvisibleState {
+    pub holder_entity_index: u16,
+    pub parent_entity_index: u16,
+    pub tier: u8,
+    pub action: u8,
+    pub active_value: i16,
+    pub activation_value: i16,
+    pub mana_cost: i32,
+    pub mana_regen_requirement: i32,
+    pub parent_mana: i32,
+    pub parent_life: i32,
+    pub parent_mana_regen: i32,
+    pub parent_status_flags: u32,
+    pub spell_status_flags: u32,
+    pub parent_visibility_mode: u8,
+    pub countdown: i16,
+    pub experience_awarded: i32,
+    pub cleanup_requested: bool,
+}
+
+impl InvisibleState {
+    /// Construct an uncast family-11 holder after `SetSpell_6D5E0`.
+    #[must_use]
+    pub fn new(
+        tier: u8,
+        holder_entity_index: u16,
+        parent_entity_index: u16,
+        parent_mana: i32,
+        parent_life: i32,
+    ) -> Option<Self> {
+        let profile = invisible_tier_profile(tier)?;
+        Some(Self {
+            holder_entity_index,
+            parent_entity_index,
+            tier,
+            action: INVISIBLE_ACTIVE_ACTION,
+            active_value: 0,
+            activation_value: profile.activation_ticks,
+            mana_cost: profile.mana_cost,
+            mana_regen_requirement: profile.mana_regen_requirement,
+            parent_mana,
+            parent_life,
+            parent_mana_regen: 0,
+            parent_status_flags: 0,
+            spell_status_flags: 0,
+            parent_visibility_mode: 0,
+            // `sub_68FF0` installs the post-acquisition presentation cadence.
+            countdown: 64,
+            experience_awarded: 0,
+            cleanup_requested: false,
+        })
+    }
+
+    /// Activate through the shared `sub_5F660` reconstruction.
+    pub fn activate(
+        &mut self,
+        direction_mask: u16,
+        help_enabled: bool,
+        events: &mut Vec<FlightEvent>,
+    ) -> bool {
+        let mut caster = SpellCasterState {
+            entity_index: self.parent_entity_index,
+            mana: self.parent_mana,
+            control_flags: self.parent_status_flags,
+            ..SpellCasterState::default()
+        };
+        let mut holder = SpellActivationHolder {
+            entity_index: self.holder_entity_index,
+            model: INVISIBLE_FAMILY,
+            level_gate: self.tier as i8,
+            active_value: self.active_value,
+            activation_value: self.activation_value as u16,
+            mana_cost: self.mana_cost,
+            ..SpellActivationHolder::default()
+        };
+        let accepted = activate_spell(
+            &mut caster,
+            Some(&mut holder),
+            direction_mask,
+            help_enabled,
+            events,
+        );
+        self.parent_mana = caster.mana;
+        self.parent_status_flags = caster.control_flags & !0x3;
+        self.active_value = holder.active_value;
+        if accepted {
+            self.action = INVISIBLE_ACTIVE_ACTION;
+            self.cleanup_requested = false;
+        }
+        accepted
+    }
+
+    /// The source `sub_68D50` predicate.  `None` means that the parent has no
+    /// valid castle entity; a non-zero `maxManaLimit_A` then fails closed just
+    /// as the original `!CastleEntityIndex` branch does.
+    #[must_use]
+    pub fn authoritative_predicate(&self, parent_castle_mana: Option<i32>) -> bool {
+        if self.parent_mana < 0 || self.parent_life < 0 {
+            return false;
+        }
+        if self.mana_regen_requirement != 0 {
+            let Some(castle_mana) = parent_castle_mana else {
+                return false;
+            };
+            if self.mana_regen_requirement > castle_mana {
+                return false;
+            }
+        }
+        self.active_value != self.activation_value || self.parent_mana >= self.mana_cost
+    }
+
+    /// Advance one source `sub_6B1C0` pulse.  The caller supplies the current
+    /// castle mana because the source predicate follows the parent's castle
+    /// relation rather than reading a global wallet.
+    pub fn step(&mut self, parent_castle_mana: Option<i32>) -> InvisibleStep {
+        let active_before = self.active_value;
+        let owner_flags_before = self.parent_status_flags;
+        let spell_flags_before = self.spell_status_flags;
+        let visibility_before = self.parent_visibility_mode;
+        let countdown_before = self.countdown;
+        let mut sustained = false;
+        let mut experience_awarded = 0;
+
+        if self.active_value > 0 {
+            if self.parent_entity_index != 0 {
+                if self.authoritative_predicate(parent_castle_mana) {
+                    sustained = true;
+                    if self.active_value == self.activation_value {
+                        // `sub_6D8B0(parent, 0xB, 1)` awards Invisible
+                        // experience exactly once per fresh activation.
+                        let profile =
+                            invisible_tier_profile(self.tier).expect("validated Invisible tier");
+                        self.experience_awarded = self
+                            .experience_awarded
+                            .wrapping_add(profile.experience_award);
+                        experience_awarded = profile.experience_award;
+                        self.parent_visibility_mode = profile.owner_visibility_mode;
+                        self.spell_status_flags |= INVISIBLE_STATUS_BIT;
+                    } else if self.spell_status_flags & INVISIBLE_STATUS_BIT == 0 {
+                        // Source forces a one-tick cooldown if the spell entity
+                        // never reached its initial visibility transition.
+                        self.active_value = 1;
+                    }
+                    // `sub_68DE0`: charge the owner through its regen field;
+                    // the source does not immediately subtract parent mana.
+                    if self.active_value == self.activation_value {
+                        self.parent_mana_regen = self
+                            .parent_mana_regen
+                            .checked_sub(self.mana_cost)
+                            .unwrap_or(i32::MIN);
+                    } else if self.active_value != 0 && self.parent_mana_regen > 0 {
+                        self.parent_mana_regen = 0;
+                    }
+                } else {
+                    self.active_value = 1;
+                }
+            }
+
+            self.active_value -= 1;
+            if self.active_value == 0 {
+                // Preserve the source asymmetry: termination clears the owner
+                // bit and owner life mode; the spell entity bit is left as-is
+                // until the entity is removed by `sub_6D880`.
+                if self.parent_entity_index != 0 {
+                    self.parent_status_flags &= !INVISIBLE_STATUS_BIT;
+                }
+                self.parent_visibility_mode = 0;
+                self.cleanup_requested = true;
+            }
+        }
+
+        if self.countdown > 0 {
+            self.countdown -= 1;
+        }
+        InvisibleStep {
+            active_before,
+            active_after: self.active_value,
+            owner_flags_before,
+            owner_flags_after: self.parent_status_flags,
+            spell_flags_before,
+            spell_flags_after: self.spell_status_flags,
+            visibility_before,
+            visibility_after: self.parent_visibility_mode,
+            countdown_before,
+            countdown_after: self.countdown,
+            experience_awarded,
+            sustained,
+            cleanup_requested: self.cleanup_requested,
+        }
+    }
+
+    /// Reset active state after a source-level entity removal/rebuild.
+    pub fn reset(&mut self) {
+        self.action = INVISIBLE_ACTIVE_ACTION;
+        self.active_value = 0;
+        self.parent_mana_regen = 0;
+        self.parent_status_flags = 0;
+        self.spell_status_flags = 0;
+        self.parent_visibility_mode = 0;
+        self.countdown = 64;
+        self.experience_awarded = 0;
+        self.cleanup_requested = false;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvisibleStep {
+    pub active_before: i16,
+    pub active_after: i16,
+    pub owner_flags_before: u32,
+    pub owner_flags_after: u32,
+    pub spell_flags_before: u32,
+    pub spell_flags_after: u32,
+    pub visibility_before: u8,
+    pub visibility_after: u8,
+    pub countdown_before: i16,
+    pub countdown_after: i16,
+    pub experience_awarded: i32,
+    pub sustained: bool,
+    pub cleanup_requested: bool,
+}
+
 fn set_cast_direction(caster: &mut SpellCasterState, direction_mask: u16) {
     caster.control_flags = (caster.control_flags & !DIRECTION_BITS) | u32::from(direction_mask);
 }
@@ -1096,5 +1382,156 @@ mod tests {
             )
         );
         assert_eq!(state, before);
+    }
+
+    #[test]
+    fn invisible_family11_source_tiers_pin_cost_timer_life_and_experience() {
+        assert_eq!(
+            [0, 1, 2].map(|tier| invisible_tier_profile(tier).expect("source Invisible tier")),
+            [
+                InvisibleTierProfile {
+                    mana_cost: 2_000,
+                    mana_regen_requirement: 2_000,
+                    activation_ticks: 181,
+                    owner_visibility_mode: 1,
+                    experience_award: 1,
+                },
+                InvisibleTierProfile {
+                    mana_cost: 2_500,
+                    mana_regen_requirement: 3_000,
+                    activation_ticks: 183,
+                    owner_visibility_mode: 2,
+                    experience_award: 1,
+                },
+                InvisibleTierProfile {
+                    mana_cost: 3_000,
+                    mana_regen_requirement: 4_000,
+                    activation_ticks: 183,
+                    owner_visibility_mode: 3,
+                    experience_award: 1,
+                },
+            ]
+        );
+        assert!(invisible_tier_profile(3).is_none());
+    }
+
+    #[test]
+    fn invisible_authoritative_predicate_matches_source_mana_life_castle_branches() {
+        let mut invisible = InvisibleState::new(0, 513, 7, 2_000, 100).expect("tier");
+        invisible.active_value = invisible.activation_value;
+        assert!(invisible.authoritative_predicate(Some(2_000)));
+        assert!(!invisible.authoritative_predicate(Some(1_999)));
+        assert!(!invisible.authoritative_predicate(None));
+
+        // The source only checks the parent's mana against maxMana on the
+        // first pulse; subsequent pulses remain authoritative with less mana.
+        invisible.active_value -= 1;
+        invisible.parent_mana = 0;
+        assert!(invisible.authoritative_predicate(Some(2_000)));
+
+        invisible.parent_life = -1;
+        assert!(!invisible.authoritative_predicate(Some(2_000)));
+    }
+
+    #[test]
+    fn invisible_activation_obeys_family11_mana_gate_and_repeated_termination() {
+        let mut invisible = InvisibleState::new(1, 513, 7, 2_499, 100).expect("tier");
+        let mut events = Vec::new();
+        assert!(!invisible.activate(256, true, &mut events));
+        assert_eq!(invisible.active_value, 0);
+        assert_eq!(
+            events,
+            vec![
+                FlightEvent::ShowHelpHint {
+                    hint_index: 41,
+                    state: 6,
+                },
+                FlightEvent::PrepareSound {
+                    audio_site: MissionAudioSite::NotEnoughMana,
+                    entity_index: 0,
+                    player_index: 0,
+                    sound_id: 29,
+                },
+            ]
+        );
+
+        invisible.parent_mana = 2_500;
+        events.clear();
+        assert!(invisible.activate(256, true, &mut events));
+        assert_eq!(invisible.active_value, 183);
+        assert!(events.is_empty());
+
+        // A missing castle makes sub_68D50 fail at the authoritative first
+        // pulse, forcing a one-tick cooldown and immediate cleanup.
+        let expired = invisible.step(None);
+        assert_eq!(expired.active_before, 183);
+        assert_eq!(expired.active_after, 0);
+        assert!(!expired.sustained);
+        assert!(expired.cleanup_requested);
+        assert_eq!(invisible.countdown, 63);
+
+        // Repeated termination is idempotent: no second experience award or
+        // status mutation is emitted while the removed entity is still inert.
+        let repeated = invisible.step(None);
+        assert_eq!(repeated.active_before, 0);
+        assert_eq!(repeated.active_after, 0);
+        assert_eq!(repeated.experience_awarded, 0);
+        assert!(repeated.cleanup_requested);
+        assert_eq!(invisible.countdown, 62);
+    }
+
+    #[test]
+    fn invisible_first_pulse_sets_spell_flag_awards_experience_and_charges_regen() {
+        let mut invisible = InvisibleState::new(2, 513, 7, 3_000, 100).expect("tier");
+        invisible.active_value = invisible.activation_value;
+        invisible.parent_status_flags = INVISIBLE_STATUS_BIT | 0x400;
+
+        let first = invisible.step(Some(4_000));
+        assert!(first.sustained);
+        assert_eq!(first.active_after, 182);
+        assert_eq!(first.experience_awarded, 1);
+        assert_eq!(invisible.experience_awarded, 1);
+        assert_eq!(
+            first.spell_flags_after & INVISIBLE_STATUS_BIT,
+            INVISIBLE_STATUS_BIT
+        );
+        assert_eq!(first.visibility_after, 3);
+        assert_eq!(invisible.parent_mana_regen, -3_000);
+        assert_eq!(invisible.countdown, 63);
+
+        // Exhausting the short countdown clears only the owner bit.  The
+        // spell-entity bit remains set until source `sub_6D880` removes it.
+        invisible.active_value = 1;
+        let end = invisible.step(Some(4_000));
+        assert_eq!(end.active_after, 0);
+        assert_eq!(end.owner_flags_after & INVISIBLE_STATUS_BIT, 0);
+        assert_eq!(end.owner_flags_after & 0x400, 0x400);
+        assert_eq!(
+            end.spell_flags_after & INVISIBLE_STATUS_BIT,
+            INVISIBLE_STATUS_BIT
+        );
+        assert_eq!(end.visibility_after, 0);
+    }
+
+    #[test]
+    fn invisible_reset_restores_cold_holder_without_touching_identity_or_tier() {
+        let mut invisible = InvisibleState::new(0, 513, 7, 2_000, 100).expect("tier");
+        invisible.active_value = invisible.activation_value;
+        let _ = invisible.step(Some(2_000));
+        invisible.parent_status_flags |= 0x400;
+        invisible.reset();
+
+        assert_eq!(invisible.holder_entity_index, 513);
+        assert_eq!(invisible.parent_entity_index, 7);
+        assert_eq!(invisible.tier, 0);
+        assert_eq!(invisible.action, INVISIBLE_ACTIVE_ACTION);
+        assert_eq!(invisible.active_value, 0);
+        assert_eq!(invisible.parent_mana_regen, 0);
+        assert_eq!(invisible.parent_status_flags, 0);
+        assert_eq!(invisible.spell_status_flags, 0);
+        assert_eq!(invisible.parent_visibility_mode, 0);
+        assert_eq!(invisible.countdown, 64);
+        assert_eq!(invisible.experience_awarded, 0);
+        assert!(!invisible.cleanup_requested);
     }
 }
