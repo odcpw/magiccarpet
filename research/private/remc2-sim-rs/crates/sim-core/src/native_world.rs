@@ -4575,7 +4575,12 @@ impl Level2EconomyState {
             } else {
                 1_024
             };
-            if sphere.player_entity_index == child_snapshot.id_entity_index {
+            // `AddBallon_60AB0` jumps directly to LABEL_20 when the sphere's
+            // raw player relation does not match the holder id.  That path
+            // still runs the shared settle tail, but it does not perform the
+            // target-distance snap or `MoveEntity` step.
+            let relation_matches = sphere.player_entity_index == child_snapshot.id_entity_index;
+            if relation_matches {
                 if distance > attraction_limit {
                     // The source clears byte-0 bit 0x40 when the target is
                     // outside the Day/Cave attraction range, then continues
@@ -17984,9 +17989,9 @@ mod tests {
             .economy_mut()
             .castle_children
             .iter_mut()
-                .find(|child| child.source_entity_index == defender_slot)
-                .expect("wrong-owner holder")
-                .target_sphere_slot = sphere_slot;
+            .find(|child| child.source_entity_index == defender_slot)
+            .expect("wrong-owner holder")
+            .target_sphere_slot = sphere_slot;
         let wrong_owner_before = session
             .economy()
             .castle_children()
