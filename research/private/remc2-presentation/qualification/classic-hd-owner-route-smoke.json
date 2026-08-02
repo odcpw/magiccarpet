@@ -3,7 +3,7 @@
   "kind": "classic-hd-owner-route-smoke/v1",
   "captured_at_utc": "2026-08-02T01:32:21Z",
   "machine": "T14",
-  "source_commit": "639ae47f77fcc9c634d8b18c09f14cf488e2cdfa",
+  "source_commit": "07b7643eafbe78b6e1309cf6b757c830838920b8",
   "unity_version": "6000.3.20f1",
   "graphics_api": "OpenGLCore",
   "graphics_device": "Mesa Intel(R) Graphics (LNL)",
