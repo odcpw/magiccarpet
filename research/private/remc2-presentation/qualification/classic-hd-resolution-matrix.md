@@ -77,6 +77,13 @@ focus/pause and exit-sidecar receipts separately prove pause-safe authoritative
 state and reset-safe exit observability, while real OS window/alt-tab capture
 and full authored completion/postgame remain open.
 
+The effects-settings receipt is recorded in
+`qualification/classic-hd-owner-effects-matrix.json`. The owner-bound 640x480
+route accepts `off`, `spatial-2x2`, and `tablesn` with reflections and dynamic
+lighting enabled, and rejects disabled reflections or dynamic lighting before
+opening the native session. This qualifies the settings contract; it does not
+replace the missing visual corpus or automatic high-speed postprocess proof.
+
 Remaining GFX-O evidence is intentionally explicit in the JSON matrix:
 completion/fullscreen/alt-tab, 20-minute allocation growth,
 960x720 owner/GPU promotion, visual corpus review, and the complete

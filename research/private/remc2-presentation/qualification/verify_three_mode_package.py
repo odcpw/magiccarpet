@@ -56,6 +56,9 @@ CLASSIC_HD_OWNER_FOCUS_PAUSE_ARTIFACT = Path(__file__).with_name(
 CLASSIC_HD_OWNER_EXIT_SIDECAR_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-exit-sidecar.json"
 )
+CLASSIC_HD_OWNER_EFFECTS_MATRIX_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-effects-matrix.json"
+)
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -468,6 +471,72 @@ def validate_classic_hd_owner_exit_sidecar_artifact(
     return errors
 
 
+def validate_classic_hd_owner_effects_matrix_artifact(
+    path: Path = CLASSIC_HD_OWNER_EFFECTS_MATRIX_ARTIFACT,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"Classic HD owner effects matrix artifact read failed: {error}"]
+
+    if artifact.get("schema_version") != 1:
+        errors.append("Classic HD owner effects matrix schema_version must be 1")
+    if artifact.get("kind") != "classic-hd-owner-effects-matrix-probe/v1":
+        errors.append("Classic HD owner effects matrix artifact kind is wrong")
+    if artifact.get("mode") != "classic-hd" or artifact.get("profile") != "hd-640x480":
+        errors.append("Classic HD owner effects matrix must target the 640x480 route")
+    if artifact.get("internal_width") != 640 or artifact.get("internal_height") != 480:
+        errors.append("Classic HD owner effects matrix extent must be 640x480")
+    if artifact.get("native_abi") != "sim-capi-v2":
+        errors.append("Classic HD owner effects matrix must identify sim-capi-v2")
+    if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
+        errors.append("Classic HD owner effects matrix must keep owner inputs external")
+    expected_cases = {
+        "off": ("6655b64aacd9c0dd", "2fc796aaa4ec61f8"),
+        "spatial-2x2": ("97919bd7405795c1", "a7efb522f195a094"),
+        "tablesn": ("6655b64aacd9c0dd", "2fc796aaa4ec61f8"),
+    }
+    cases = artifact.get("blur_cases")
+    if not isinstance(cases, list) or len(cases) != len(expected_cases):
+        errors.append("Classic HD owner effects matrix must contain all three blur cases")
+    else:
+        seen: set[str] = set()
+        for case in cases:
+            name = case.get("blur") if isinstance(case, dict) else None
+            if name not in expected_cases:
+                errors.append(f"Classic HD owner effects matrix has unexpected blur case {name!r}")
+                continue
+            seen.add(name)
+            index_hash, provenance_hash = expected_cases[name]
+            if case.get("reflections") is not True or case.get("dynamic_lighting") is not True:
+                errors.append(f"Classic HD owner effects case {name} must keep reflections and lighting enabled")
+            if case.get("status") != "pass" or case.get("uploads") != 1 or case.get("allocation_epoch") != 1:
+                errors.append(f"Classic HD owner effects case {name} upload/allocation contract is wrong")
+            if case.get("effective_postprocess_mode") != 0:
+                errors.append(f"Classic HD owner effects case {name} effective postprocess mode is wrong")
+            if case.get("index_hash") != index_hash or case.get("provenance_hash") != provenance_hash:
+                errors.append(f"Classic HD owner effects case {name} hashes do not match the receipt")
+        if seen != set(expected_cases):
+            errors.append("Classic HD owner effects matrix must include exactly off, spatial-2x2, and tablesn")
+    for field in ("reflection_off", "dynamic_lighting_off"):
+        rejection = artifact.get(field)
+        if not isinstance(rejection, dict) or rejection.get("status") != "rejected":
+            errors.append(f"Classic HD owner effects matrix must reject {field}")
+        elif "requires reflections" not in str(rejection.get("reason", "")):
+            errors.append(f"Classic HD owner effects matrix {field} reason is not explicit")
+    if artifact.get("visual_capture_status") != "open-corpus-capture-required":
+        errors.append("Classic HD owner effects matrix must keep visual capture open")
+    if artifact.get("status") != "effects-settings-pass":
+        errors.append("Classic HD owner effects matrix status must be effects-settings-pass")
+    for field in ("source_revision", "native_plugin_sha256", "log_sha256", "log_path", "qualification_status"):
+        if not isinstance(artifact.get(field), str) or not artifact[field]:
+            errors.append(f"Classic HD owner effects matrix is missing {field}")
+    if "remain open" not in str(artifact.get("qualification_status", "")):
+        errors.append("Classic HD owner effects matrix must keep visual/high-speed gates explicit")
+    return errors
+
+
 def validate_classic_hd_owner_high_speed_artifact(
     path: Path = CLASSIC_HD_OWNER_HIGH_SPEED_ARTIFACT,
 ) -> list[str]:
@@ -807,6 +876,11 @@ def verify() -> dict[str, Any]:
     _validator_result(
         "owner-bound Classic HD exit-sidecar artifact",
         validate_classic_hd_owner_exit_sidecar_artifact,
+        checks,
+    )
+    _validator_result(
+        "owner-bound Classic HD effects matrix artifact",
+        validate_classic_hd_owner_effects_matrix_artifact,
         checks,
     )
     _validator_result(

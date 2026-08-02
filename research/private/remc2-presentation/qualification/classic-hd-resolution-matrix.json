@@ -158,6 +158,16 @@
     "status": "sidecar-pass; full authored completion/postgame route remains open",
     "owner_payload_embedded": false
   },
+  "owner_effects_matrix_probe": {
+    "artifact": "qualification/classic-hd-owner-effects-matrix.json",
+    "profile": "hd-640x480",
+    "blur_modes": ["off", "spatial-2x2", "tablesn"],
+    "reflections_enabled": true,
+    "dynamic_lighting_enabled": true,
+    "disabled_reflections_and_lighting": "rejected-before-native-session",
+    "status": "effects-settings-pass; visual capture and automatic high-speed postprocess remain open",
+    "owner_payload_embedded": false
+  },
   "route_cases": {
     "idle": "owner-hd-640x480-scenario-pass",
     "town": "owner-hd-640x480-scenario-pass",
@@ -167,7 +177,7 @@
     "completion_postgame": "pending-owner-lab-capture",
     "fullscreen_window_alt_tab": "pending-owner-lab-capture",
     "asset_tier_fallback": "owner-hd-960x720-optional-tier-fallback-pass",
-    "reflection_lighting_blur": "pending-owner-lab-capture",
+    "reflection_lighting_blur": "owner-hd-640x480-effects-settings-matrix-pass",
     "invalid_config": "covered-by-launcher-and-settings-tests"
   },
   "reproduce": {

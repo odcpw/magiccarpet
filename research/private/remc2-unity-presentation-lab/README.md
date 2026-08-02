@@ -202,6 +202,12 @@ The current owner ABI reaches target/actual speed 80 and remains at effective
 postprocess mode 0 in both runs, so this gate stays open until a legitimate
 Speed-jar activation path and GPU readback fence are qualified.
 
+The owner effects matrix probe separately exercises the three accepted blur
+tokens and proves that the owner route rejects disabled reflections or dynamic
+lighting before opening the native session. Its receipt is
+`research/private/remc2-presentation/qualification/classic-hd-owner-effects-matrix.json`;
+this is settings-contract evidence, not a visual screenshot corpus.
+
 Owner performance and GPU-consumption probes are separate from route evidence.
 `RunOwnerClassicHdPerformanceSmoke` records an 8-frame warm-up plus 64 measured
 frames, native frame time, Unity upload-submission time, allocations, hashes,
