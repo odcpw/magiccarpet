@@ -202,7 +202,9 @@ namespace MagicCarpet.PresentationLab
 
         private static Material CreateMaterial(string name, Color color)
         {
-            Shader shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+            Shader shader = Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
+                            Shader.Find("Universal Render Pipeline/Lit") ??
+                            Shader.Find("Standard");
             if (shader == null)
             {
                 return null;
@@ -215,6 +217,10 @@ namespace MagicCarpet.PresentationLab
                 color = color
             };
             material.enableInstancing = true;
+            material.SetFloat("_AmbientBoost", 0.22f);
+            material.SetFloat("_SpecularStrength", 0.32f);
+            material.SetColor("_EmissionColor", color * 0.2f);
+            material.SetFloat("_EmissionStrength", 0.18f);
             return material;
         }
 

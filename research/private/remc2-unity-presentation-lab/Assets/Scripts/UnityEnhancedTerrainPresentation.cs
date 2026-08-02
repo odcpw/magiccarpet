@@ -237,7 +237,9 @@ namespace MagicCarpet.PresentationLab
 
             if (terrainMaterial == null)
             {
-                Shader shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+                Shader shader = Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
+                                Shader.Find("Universal Render Pipeline/Lit") ??
+                                Shader.Find("Standard");
                 if (shader != null)
                 {
                     terrainMaterial = new Material(shader)
@@ -247,6 +249,8 @@ namespace MagicCarpet.PresentationLab
                         color = Color.white
                     };
                     terrainMaterial.enableInstancing = true;
+                    terrainMaterial.SetFloat("_AmbientBoost", 0.28f);
+                    terrainMaterial.SetFloat("_SpecularStrength", 0.08f);
                     meshRenderer.sharedMaterial = terrainMaterial;
                 }
             }

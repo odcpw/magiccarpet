@@ -454,6 +454,12 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void EnhancedVertexColorShaderIsAvailableForGeneratedPresentation()
+        {
+            Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/VertexColorLit"));
+        }
+
+        [Test]
         public void DiagnosticsReportContainsMetricsWithoutMachinePaths()
         {
             GameObject gameObject = new GameObject("enhanced-diagnostics-test");

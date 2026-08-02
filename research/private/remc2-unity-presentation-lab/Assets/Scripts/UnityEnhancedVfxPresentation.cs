@@ -254,14 +254,23 @@ namespace MagicCarpet.PresentationLab
                 return material;
             }
 
-            Shader shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+            Shader shader = Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
+                            Shader.Find("Universal Render Pipeline/Lit") ??
+                            Shader.Find("Standard");
             material = shader == null ? null : new Material(shader)
             {
                 name = "EnhancedVfxMaterial_" + kind,
                 hideFlags = HideFlags.DontSave,
                 color = VfxColor(kind)
             };
-            if (material != null) material.enableInstancing = true;
+            if (material != null)
+            {
+                material.enableInstancing = true;
+                material.SetFloat("_AmbientBoost", 0.3f);
+                material.SetFloat("_SpecularStrength", 0.06f);
+                material.SetColor("_EmissionColor", VfxColor(kind));
+                material.SetFloat("_EmissionStrength", kind == UnityEnhancedVfxKind.Weather ? 0.05f : 0.18f);
+            }
             materials.Add(kind, material);
             return material;
         }

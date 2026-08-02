@@ -176,7 +176,9 @@ namespace MagicCarpet.PresentationLab
                 return material;
             }
 
-            Shader shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+            Shader shader = Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
+                            Shader.Find("Universal Render Pipeline/Lit") ??
+                            Shader.Find("Standard");
             material = shader == null ? null : new Material(shader)
             {
                 name = "EnhancedGeneratedMaterial_" + (UnityEnhancedPresentationFamily)family,
@@ -186,6 +188,8 @@ namespace MagicCarpet.PresentationLab
             if (material != null)
             {
                 material.enableInstancing = true;
+                material.SetFloat("_AmbientBoost", 0.24f);
+                material.SetFloat("_SpecularStrength", 0.12f);
             }
             materials.Add(family, material);
             return material;
