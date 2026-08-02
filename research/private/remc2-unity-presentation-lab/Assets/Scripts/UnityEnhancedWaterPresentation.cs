@@ -124,7 +124,7 @@ namespace MagicCarpet.PresentationLab
                 shorelineRenderer = shoreline.AddComponent<MeshRenderer>();
                 shorelineMesh = new Mesh { name = "EnhancedShorelineMesh", hideFlags = HideFlags.DontSave };
                 shorelineFilter.sharedMesh = shorelineMesh;
-                shorelineMaterial = CreateMaterial("EnhancedShorelineMaterial", new Color(0.22f, 0.45f, 0.52f, 0.8f));
+                shorelineMaterial = CreateMaterial("EnhancedShorelineMaterial", new Color(0.055f, 0.16f, 0.23f, 1f));
                 shorelineRenderer.sharedMaterial = shorelineMaterial;
             }
         }
@@ -217,12 +217,12 @@ namespace MagicCarpet.PresentationLab
                 color = color
             };
             material.enableInstancing = true;
-            material.SetFloat("_AmbientBoost", 0.40f);
-            material.SetFloat("_SpecularStrength", 0.32f);
-            material.SetColor("_RimColor", new Color(0.12f, 0.28f, 0.72f, 1f));
-            material.SetFloat("_RimStrength", 0.12f);
+            material.SetFloat("_AmbientBoost", 0.55f);
+            material.SetFloat("_SpecularStrength", 0.20f);
+            material.SetColor("_RimColor", new Color(0.08f, 0.20f, 0.48f, 1f));
+            material.SetFloat("_RimStrength", 0.06f);
             material.SetColor("_EmissionColor", color * 0.2f);
-            material.SetFloat("_EmissionStrength", 0.18f);
+            material.SetFloat("_EmissionStrength", 0.08f);
             return material;
         }
 

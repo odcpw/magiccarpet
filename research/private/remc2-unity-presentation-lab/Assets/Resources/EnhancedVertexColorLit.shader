@@ -9,6 +9,8 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
         _SpecularStrength ("Specular Strength", Range(0, 1)) = 0.12
         _RimColor ("Night Rim Color", Color) = (0.08, 0.16, 0.52, 1)
         _RimStrength ("Night Rim Strength", Range(0, 1)) = 0
+        _DetailScale ("Procedural Detail Scale", Float) = 0.08
+        _DetailStrength ("Procedural Detail Strength", Range(0, 1)) = 0
     }
 
     SubShader
@@ -44,6 +46,8 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
                 half _SpecularStrength;
                 half4 _RimColor;
                 half _RimStrength;
+                half _DetailScale;
+                half _DetailStrength;
             CBUFFER_END
 
             struct Attributes
@@ -82,11 +86,31 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
                 return (diffuse.xxx + specular.xxx) * light.color * attenuation;
             }
 
+            float Hash12(float2 position)
+            {
+                position = frac(position * float2(123.34, 456.21));
+                position += dot(position, position + 45.32);
+                return frac(position.x * position.y);
+            }
+
+            float ValueNoise(float2 position)
+            {
+                float2 cell = floor(position);
+                float2 fraction = frac(position);
+                fraction = fraction * fraction * (3.0 - 2.0 * fraction);
+                float lower = lerp(Hash12(cell), Hash12(cell + float2(1.0, 0.0)), fraction.x);
+                float upper = lerp(Hash12(cell + float2(0.0, 1.0)), Hash12(cell + 1.0), fraction.x);
+                return lerp(lower, upper, fraction.y);
+            }
+
             half4 Frag(Varyings input) : SV_Target
             {
                 half3 normalWS = NormalizeNormalPerPixel(input.normalWS);
                 half3 viewDirectionWS = GetWorldSpaceNormalizeViewDir(input.positionWS);
                 half3 baseColor = saturate(input.color.rgb * _BaseColor.rgb);
+                float detail = ValueNoise(input.positionWS.xz * _DetailScale);
+                half detailFactor = lerp(0.88h, 1.12h, detail);
+                baseColor *= lerp(1.0h, detailFactor, _DetailStrength);
                 half3 lighting = max(SampleSH(normalWS), _AmbientBoost.xxx);
 
                 Light mainLight = GetMainLight(TransformWorldToShadowCoord(input.positionWS));

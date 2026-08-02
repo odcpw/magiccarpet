@@ -34,15 +34,15 @@ namespace MagicCarpet.PresentationLab
             {
                 MoonDirection = new Vector3(-0.35f, -0.8f, -0.25f).normalized,
                 MoonColor = new Color(0.42f, 0.56f, 1f, 1f),
-                MoonIntensity = 0.65f,
+                MoonIntensity = 0.80f,
                 FogColor = new Color(0.018f, 0.028f, 0.09f, 1f),
                 FogDensity = 0.006f,
-                AmbientColor = new Color(0.065f, 0.095f, 0.22f, 1f),
-                Exposure = 0.35f,
+                AmbientColor = new Color(0.10f, 0.14f, 0.30f, 1f),
+                Exposure = 0.65f,
                 SkyColor = new Color(0.035f, 0.075f, 0.24f, 1f),
                 HorizonColor = new Color(0.02f, 0.045f, 0.14f, 1f),
-                GroundColor = new Color(0.008f, 0.016f, 0.045f, 1f),
-                AmbientIntensity = 1.15f
+                GroundColor = new Color(0.012f, 0.025f, 0.07f, 1f),
+                AmbientIntensity = 1.40f
             };
         }
     }

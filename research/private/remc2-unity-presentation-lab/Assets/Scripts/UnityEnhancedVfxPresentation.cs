@@ -230,7 +230,23 @@ namespace MagicCarpet.PresentationLab
             }
 
             mesh = new Mesh { name = "EnhancedVfxMesh_" + kind, hideFlags = HideFlags.DontSave };
-            float radius = kind == UnityEnhancedVfxKind.Smoke ? 0.7f : 0.25f;
+            float radius;
+            switch (kind)
+            {
+                case UnityEnhancedVfxKind.Fire:
+                case UnityEnhancedVfxKind.Destruction:
+                    radius = 0.85f;
+                    break;
+                case UnityEnhancedVfxKind.SpellCast:
+                    radius = 0.65f;
+                    break;
+                case UnityEnhancedVfxKind.Smoke:
+                    radius = 0.9f;
+                    break;
+                default:
+                    radius = 0.45f;
+                    break;
+            }
             mesh.vertices = new[]
             {
                 new Vector3(-radius, 0f, -radius), new Vector3(radius, 0f, -radius),
@@ -266,12 +282,12 @@ namespace MagicCarpet.PresentationLab
             if (material != null)
             {
                 material.enableInstancing = true;
-                material.SetFloat("_AmbientBoost", 0.42f);
+                material.SetFloat("_AmbientBoost", 0.58f);
                 material.SetFloat("_SpecularStrength", 0.06f);
                 material.SetColor("_RimColor", new Color(0.08f, 0.16f, 0.52f, 1f));
                 material.SetFloat("_RimStrength", 0.08f);
                 material.SetColor("_EmissionColor", VfxColor(kind));
-                material.SetFloat("_EmissionStrength", kind == UnityEnhancedVfxKind.Weather ? 0.05f : 0.18f);
+                material.SetFloat("_EmissionStrength", kind == UnityEnhancedVfxKind.Weather ? 0.05f : 0.38f);
             }
             materials.Add(kind, material);
             return material;

@@ -249,12 +249,14 @@ namespace MagicCarpet.PresentationLab
                         color = Color.white
                     };
                     terrainMaterial.enableInstancing = true;
-                    terrainMaterial.SetFloat("_AmbientBoost", 0.48f);
+                    terrainMaterial.SetFloat("_AmbientBoost", 0.65f);
+                    terrainMaterial.SetFloat("_DetailScale", 0.075f);
+                    terrainMaterial.SetFloat("_DetailStrength", 0.24f);
                     terrainMaterial.SetFloat("_SpecularStrength", 0.08f);
                     terrainMaterial.SetColor("_RimColor", new Color(0.08f, 0.16f, 0.52f, 1f));
-                    terrainMaterial.SetFloat("_RimStrength", 0.22f);
-                    terrainMaterial.SetColor("_EmissionColor", new Color(0.035f, 0.08f, 0.22f, 1f));
-                    terrainMaterial.SetFloat("_EmissionStrength", 0.9f);
+                    terrainMaterial.SetFloat("_RimStrength", 0.18f);
+                    terrainMaterial.SetColor("_EmissionColor", new Color(0.02f, 0.04f, 0.12f, 1f));
+                    terrainMaterial.SetFloat("_EmissionStrength", 0.25f);
                     meshRenderer.sharedMaterial = terrainMaterial;
                 }
             }
@@ -322,38 +324,101 @@ namespace MagicCarpet.PresentationLab
         private static Color VertexColor(UnityEnhancedTerrainSnapshot snapshot, int index)
         {
             byte terrainType = snapshot.TerrainTypes[index];
-            byte shade = snapshot.Shade[index];
-            byte angle = snapshot.Angles[index];
+            Color baseColor = NightPaletteForSelector(terrainType);
+
+            // The owner shade/angle planes remain in the snapshot for
+            // Classic HD and diagnostics. Enhanced derives smooth lighting
+            // from mesh normals instead of exposing their indexed raster
+            // quantization as a checkerboard over the procedural mesh.
+            float shadeFactor = Mathf.Lerp(0.95f, 1.08f, Mathf.Clamp01(snapshot.Heights[index] / 8f));
+            float angleFactor = 1f;
+            float heightFactor = Mathf.Lerp(
+                0.94f,
+                1.10f,
+                Mathf.Clamp01(snapshot.Heights[index] / 4f));
+            return new Color(
+                Mathf.Clamp01(baseColor.r * shadeFactor * angleFactor * heightFactor),
+                Mathf.Clamp01(baseColor.g * shadeFactor * angleFactor * heightFactor),
+                Mathf.Clamp01(baseColor.b * shadeFactor * angleFactor * heightFactor),
+                1f);
+        }
+
+        /// <summary>
+        /// Selectors are direct owner texture indices, not a repeating biome
+        /// number.  Keep the Enhanced pass coherent until its optional HD
+        /// material atlas is bound: related selectors share a cool Level 1
+        /// night family and only receive a small deterministic variation.
+        /// </summary>
+        internal static Color NightPaletteForSelector(byte terrainType)
+        {
             Color baseColor;
-            switch (terrainType % 6)
+            if (terrainType == 0)
             {
-                case 1:
-                    baseColor = new Color(0.28f, 0.46f, 0.22f, 1f);
-                    break;
-                case 2:
-                    baseColor = new Color(0.42f, 0.31f, 0.19f, 1f);
-                    break;
-                case 3:
-                    baseColor = new Color(0.34f, 0.39f, 0.46f, 1f);
-                    break;
-                case 4:
-                    baseColor = new Color(0.22f, 0.34f, 0.43f, 1f);
-                    break;
-                case 5:
-                    baseColor = new Color(0.48f, 0.27f, 0.18f, 1f);
-                    break;
-                default:
-                    baseColor = new Color(0.25f, 0.29f, 0.24f, 1f);
-                    break;
+                baseColor = new Color(0.028f, 0.115f, 0.20f, 1f);
+            }
+            else if (IsReflectiveSelector(terrainType))
+            {
+                baseColor = new Color(0.10f, 0.30f, 0.42f, 1f);
+            }
+            else if (terrainType <= 7)
+            {
+                baseColor = new Color(0.24f, 0.42f, 0.32f, 1f);
+            }
+            else
+            {
+                baseColor = new Color(0.20f, 0.36f, 0.34f, 1f);
             }
 
-            float shadeFactor = Mathf.Lerp(0.35f, 1.15f, shade / 255f);
-            float angleFactor = Mathf.Lerp(0.82f, 1.08f, angle / 255f);
+            float variation = 0.97f + ((terrainType * 17) & 7) * 0.008f;
             return new Color(
-                Mathf.Clamp01(baseColor.r * shadeFactor * angleFactor),
-                Mathf.Clamp01(baseColor.g * shadeFactor * angleFactor),
-                Mathf.Clamp01(baseColor.b * shadeFactor * angleFactor),
+                Mathf.Clamp01(baseColor.r * variation),
+                Mathf.Clamp01(baseColor.g * variation),
+                Mathf.Clamp01(baseColor.b * variation),
                 1f);
+        }
+
+        private static bool IsReflectiveSelector(byte terrainType)
+        {
+            switch (terrainType)
+            {
+                case 0:
+                case 35:
+                case 36:
+                case 37:
+                case 38:
+                case 39:
+                case 44:
+                case 45:
+                case 46:
+                case 47:
+                case 80:
+                case 81:
+                case 82:
+                case 83:
+                case 102:
+                case 103:
+                case 104:
+                case 105:
+                case 106:
+                case 107:
+                case 108:
+                case 109:
+                case 110:
+                case 111:
+                case 112:
+                case 113:
+                case 114:
+                case 115:
+                case 116:
+                case 117:
+                case 118:
+                case 119:
+                case 126:
+                case 127:
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         private static bool IsFinite(Vector3 value)

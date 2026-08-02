@@ -40,6 +40,11 @@ namespace MagicCarpet.PresentationLab
         private const float SourceUnitsPerUnityUnit = 64f;
         private const float TerrainSourceStep = 256f;
         private const float TerrainCellSize = TerrainSourceStep / SourceUnitsPerUnityUnit;
+        // Enhanced keeps the Rust camera as its source, then gives the
+        // modern presentation a readable cinematic eye height. This never
+        // feeds back into gameplay or the Exact/Classic HD routes.
+        private const float EnhancedCameraLift = 24f;
+        private const float EnhancedCameraPitchBias = 16f;
         private const uint TerrainTypes = 0;
         private const uint TerrainHeightPlane = 1;
         private const uint TerrainShade = 2;
@@ -156,6 +161,17 @@ namespace MagicCarpet.PresentationLab
         }
         public int EntityCount { get { return entities == null ? 0 : entities.Length; } }
         public bool HasPendingResetSnapshot { get { return pendingResetSnapshot != null; } }
+
+        /// <summary>
+        /// Converts the owner terrain height plane into Unity world units.
+        /// The terrain plane stores one byte per 32 source-height units;
+        /// camera and entity Z values are already in source-height units.
+        /// </summary>
+        public static float SourceHeightToUnity(byte sourceHeight)
+        {
+            return sourceHeight * 32f / SourceUnitsPerUnityUnit;
+        }
+
         public int ActiveEntityCount
         {
             get
@@ -1065,10 +1081,10 @@ namespace MagicCarpet.PresentationLab
         private UnityEnhancedCameraPose BuildCameraPose()
         {
             float x = (float)(unwrappedCameraX + renderCamera.renderOffsetX) / SourceUnitsPerUnityUnit;
-            float y = presentation.cameraZ / SourceUnitsPerUnityUnit;
+            float y = presentation.cameraZ / SourceUnitsPerUnityUnit + EnhancedCameraLift;
             float z = (float)(unwrappedCameraY + renderCamera.renderOffsetY) / SourceUnitsPerUnityUnit;
             float yaw = 180f - renderCamera.yaw * (360f / 2048f);
-            float pitch = -SignedAngle11(presentation.cameraPitch) * (360f / 2048f);
+            float pitch = -SignedAngle11(presentation.cameraPitch) * (360f / 2048f) + EnhancedCameraPitchBias;
             float roll = -SignedAngle11(presentation.cameraRoll) * (360f / 2048f);
             float fov = Mathf.Clamp(VerticalFov(presentation.cameraFov), 30f, 120f);
             return new UnityEnhancedCameraPose(
@@ -1085,7 +1101,7 @@ namespace MagicCarpet.PresentationLab
             float[] heights = new float[TerrainCellCount];
             for (int index = 0; index < heights.Length; index++)
             {
-                heights[index] = terrainHeights[index] * 32f / SourceUnitsPerUnityUnit;
+                heights[index] = SourceHeightToUnity(terrainHeights[index]);
             }
 
             return new UnityEnhancedTerrainSnapshot
@@ -1116,8 +1132,13 @@ namespace MagicCarpet.PresentationLab
             {
                 if (terrainTypes[index] == 0)
                 {
-                    shoreline[index] = 1;
                     hasWater = true;
+                    int x = index % TerrainWidth;
+                    int y = index / TerrainWidth;
+                    if (IsShorelineCell(terrainTypes, TerrainWidth, TerrainHeight, x, y))
+                    {
+                        shoreline[index] = 1;
+                    }
                 }
             }
 
@@ -1135,6 +1156,42 @@ namespace MagicCarpet.PresentationLab
                 ShorelineHeight = TerrainHeight,
                 ShorelineCellSize = TerrainCellSize
             };
+        }
+
+        /// <summary>
+        /// Selects only water cells touching a non-water cell for the
+        /// presentation shoreline pass. The authoritative terrain remains a
+        /// full Rust-owned plane; a shoreline is a boundary accent, not a
+        /// second textured copy of every water cell.
+        /// </summary>
+        public static bool IsShorelineCell(
+            byte[] terrainTypes,
+            int width,
+            int height,
+            int x,
+            int y)
+        {
+            if (terrainTypes == null || width <= 0 || height <= 0 ||
+                terrainTypes.Length != width * height ||
+                x < 0 || x >= width || y < 0 || y >= height)
+            {
+                return false;
+            }
+
+            int index = y * width + x;
+            if (terrainTypes[index] != 0)
+            {
+                return false;
+            }
+
+            int left = x == 0 ? width - 1 : x - 1;
+            int right = x == width - 1 ? 0 : x + 1;
+            int below = y == 0 ? height - 1 : y - 1;
+            int above = y == height - 1 ? 0 : y + 1;
+            return terrainTypes[y * width + left] != 0 ||
+                   terrainTypes[y * width + right] != 0 ||
+                   terrainTypes[below * width + x] != 0 ||
+                   terrainTypes[above * width + x] != 0;
         }
 
         private UnityEnhancedEntitySnapshot[] BuildEntities()
@@ -1322,7 +1379,7 @@ namespace MagicCarpet.PresentationLab
                     kind = UnityEnhancedVfxKind.SpellCast;
                     position = EntityPosition(FindEntity(snapshot.entityIndex));
                     intensity = 1.2f;
-                    duration = 12;
+                    duration = 20;
                     stableIdentity = SourceStableIdentity(snapshot.entityIndex);
                 }
                 else if (IsProjectileSpawnEvent(source.kind))
@@ -1339,7 +1396,7 @@ namespace MagicCarpet.PresentationLab
                     kind = UnityEnhancedVfxKind.SpellCast;
                     position = ProjectedPosition(projectile.x, projectile.y, projectile.z);
                     intensity = projectile.projectileKind == 2 ? 0.8f : 1f;
-                    duration = 8;
+                    duration = 16;
                     stableIdentity = ((ulong)snapshot.generation << 32) |
                                       (0x20000000UL | projectile.projectileId);
                 }
@@ -1360,7 +1417,7 @@ namespace MagicCarpet.PresentationLab
                         : ImpactKind(impact.model);
                     position = ProjectedPosition(impact.x, impact.y, impact.z);
                     intensity = kind == UnityEnhancedVfxKind.Fire ? 1.3f : 1f;
-                    duration = kind == UnityEnhancedVfxKind.Smoke ? 24u : 10u;
+                    duration = kind == UnityEnhancedVfxKind.Smoke ? 28u : 18u;
                     stableIdentity = ((ulong)snapshot.generation << 32) |
                                       (0x40000000UL | impact.impactId);
                 }
@@ -1525,9 +1582,23 @@ namespace MagicCarpet.PresentationLab
 
             if (source.classId == 10)
             {
-                return source.model == 5
-                    ? (int)UnityEnhancedPresentationFamily.Impact
-                    : (int)UnityEnhancedPresentationFamily.Smoke;
+                switch (source.model)
+                {
+                    // Level 1's forty-seven imported houses are the real
+                    // town landmarks, not transient smoke rows.
+                    case 45: return (int)UnityEnhancedPresentationFamily.Town;
+                    case 42:
+                    case 43:
+                    case 79: return (int)UnityEnhancedPresentationFamily.Castle;
+                    case 1:
+                    case 3:
+                    case 39: return (int)UnityEnhancedPresentationFamily.Mana;
+                    case 6: return (int)UnityEnhancedPresentationFamily.Fire;
+                    case 13:
+                    case 59: return (int)UnityEnhancedPresentationFamily.Smoke;
+                    case 40: return (int)UnityEnhancedPresentationFamily.Impact;
+                    default: return (int)UnityEnhancedPresentationFamily.Generic;
+                }
             }
 
             if (source.classId == 15)
