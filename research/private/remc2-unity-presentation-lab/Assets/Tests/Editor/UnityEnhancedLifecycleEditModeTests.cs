@@ -432,6 +432,7 @@ namespace MagicCarpet.PresentationLab.Tests
             AmbientMode ambientModeBefore = RenderSettings.ambientMode;
             FogMode fogModeBefore = RenderSettings.fogMode;
             Color backgroundBefore = camera.backgroundColor;
+            Material skyboxBefore = RenderSettings.skybox;
 
             lighting.ApplyDescriptor(
                 7,
@@ -440,15 +441,27 @@ namespace MagicCarpet.PresentationLab.Tests
                 true,
                 camera);
 
-            Assert.AreEqual(0.35f, lighting.AppliedExposure, 0.0001f);
+            Assert.AreEqual(0.65f, lighting.AppliedExposure, 0.0001f);
             Assert.AreEqual(AmbientMode.Trilight, RenderSettings.ambientMode);
             Assert.AreEqual(FogMode.ExponentialSquared, RenderSettings.fogMode);
-            Assert.AreEqual(CameraClearFlags.SolidColor, camera.clearFlags);
-            Assert.AreNotEqual(backgroundBefore, camera.backgroundColor);
+            Shader proceduralSky = Shader.Find("Skybox/Procedural");
+            Assert.AreEqual(
+                proceduralSky == null ? CameraClearFlags.SolidColor : CameraClearFlags.Skybox,
+                camera.clearFlags);
+            if (proceduralSky == null)
+            {
+                Assert.AreNotEqual(backgroundBefore, camera.backgroundColor);
+            }
+            else
+            {
+                Assert.IsNotNull(RenderSettings.skybox);
+                Assert.AreNotSame(skyboxBefore, RenderSettings.skybox);
+            }
 
             lighting.ResetForSession();
             Assert.AreEqual(ambientModeBefore, RenderSettings.ambientMode);
             Assert.AreEqual(fogModeBefore, RenderSettings.fogMode);
+            Assert.AreSame(skyboxBefore, RenderSettings.skybox);
             Assert.AreEqual(CameraClearFlags.Depth, camera.clearFlags);
             Assert.AreEqual(backgroundBefore, camera.backgroundColor);
 

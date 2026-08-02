@@ -161,7 +161,7 @@ namespace MagicCarpet.PresentationLab
             }
 
             UnityEnhancedPresentationFamily familyId = (UnityEnhancedPresentationFamily)family;
-            mesh = IsBillboard(familyId) ? CreateBillboardMesh(familyId) : CreateBoxMesh(familyId);
+            mesh = IsBillboard(familyId) ? CreateBillboardMesh(familyId) : CreateMesh(familyId);
             mesh.name = "EnhancedGeneratedMesh_" + familyId;
             mesh.hideFlags = HideFlags.DontSave;
             meshes.Add(family, mesh);
@@ -247,6 +247,196 @@ namespace MagicCarpet.PresentationLab
             return mesh;
         }
 
+        private static Mesh CreateMesh(UnityEnhancedPresentationFamily family)
+        {
+            switch (family)
+            {
+                case UnityEnhancedPresentationFamily.Town:
+                    return CreateTownMesh();
+                case UnityEnhancedPresentationFamily.Castle:
+                    return CreateCastleMesh();
+                case UnityEnhancedPresentationFamily.Tree:
+                    return CreateTreeMesh();
+                case UnityEnhancedPresentationFamily.Stone:
+                case UnityEnhancedPresentationFamily.Dolmen:
+                    return CreateRockMesh(family);
+                case UnityEnhancedPresentationFamily.Player:
+                case UnityEnhancedPresentationFamily.Goat:
+                case UnityEnhancedPresentationFamily.Villager:
+                case UnityEnhancedPresentationFamily.Archer:
+                case UnityEnhancedPresentationFamily.Possession:
+                case UnityEnhancedPresentationFamily.Generic:
+                    return CreateCreatureMesh(family);
+                default:
+                    return CreateBoxMesh(family);
+            }
+        }
+
+        private static Mesh CreateTownMesh()
+        {
+            var vertices = new List<Vector3>();
+            var triangles = new List<int>();
+            var colors = new List<Color>();
+            Color wall = new Color(0.96f, 0.72f, 0.48f, 1f);
+            Color roof = new Color(0.72f, 0.34f, 0.20f, 1f);
+            Color trim = new Color(1f, 0.86f, 0.54f, 1f);
+
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(-1.05f, 0f, -0.75f),
+                new Vector3(1.05f, 1.45f, 0.75f),
+                wall);
+            AppendPyramid(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(-1.18f, 1.45f, -0.86f),
+                new Vector3(1.18f, 1.45f, 0.86f),
+                0.85f,
+                roof);
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(-0.22f, 0f, -0.79f),
+                new Vector3(0.22f, 0.72f, -0.70f),
+                trim);
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(-0.68f, 0.65f, -0.80f),
+                new Vector3(-0.38f, 0.98f, -0.70f),
+                trim);
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(0.38f, 0.65f, -0.80f),
+                new Vector3(0.68f, 0.98f, -0.70f),
+                trim);
+            return BuildMesh(vertices, triangles, colors);
+        }
+
+        private static Mesh CreateCastleMesh()
+        {
+            var vertices = new List<Vector3>();
+            var triangles = new List<int>();
+            var colors = new List<Color>();
+            Color stone = new Color(0.78f, 0.84f, 0.98f, 1f);
+            Color tower = new Color(0.62f, 0.70f, 0.92f, 1f);
+            Color roof = new Color(0.42f, 0.34f, 0.70f, 1f);
+
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(-0.75f, 0f, -0.62f),
+                new Vector3(0.75f, 2.15f, 0.62f),
+                stone);
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(-1.35f, 0f, -0.78f),
+                new Vector3(-0.72f, 2.75f, -0.15f),
+                tower);
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(0.72f, 0f, -0.78f),
+                new Vector3(1.35f, 2.75f, -0.15f),
+                tower);
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(-1.35f, 0f, 0.15f),
+                new Vector3(-0.72f, 2.55f, 0.78f),
+                tower);
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(0.72f, 0f, 0.15f),
+                new Vector3(1.35f, 2.55f, 0.78f),
+                tower);
+            AppendPyramid(vertices, triangles, colors,
+                new Vector3(-1.46f, 2.75f, -0.88f),
+                new Vector3(-0.61f, 2.75f, 0.02f), 0.62f, roof);
+            AppendPyramid(vertices, triangles, colors,
+                new Vector3(0.61f, 2.75f, -0.88f),
+                new Vector3(1.46f, 2.75f, 0.02f), 0.62f, roof);
+            AppendPyramid(vertices, triangles, colors,
+                new Vector3(-1.46f, 2.55f, 0.02f),
+                new Vector3(-0.61f, 2.55f, 0.88f), 0.58f, roof);
+            AppendPyramid(vertices, triangles, colors,
+                new Vector3(0.61f, 2.55f, 0.02f),
+                new Vector3(1.46f, 2.55f, 0.88f), 0.58f, roof);
+            return BuildMesh(vertices, triangles, colors);
+        }
+
+        private static Mesh CreateTreeMesh()
+        {
+            var vertices = new List<Vector3>();
+            var triangles = new List<int>();
+            var colors = new List<Color>();
+            AppendBox(vertices, triangles, colors,
+                new Vector3(-0.20f, 0f, -0.20f),
+                new Vector3(0.20f, 1.45f, 0.20f),
+                new Color(0.72f, 0.48f, 0.28f, 1f));
+            AppendOctahedron(vertices, triangles, colors,
+                new Vector3(0f, 2.05f, 0f), 1.05f,
+                new Color(0.48f, 0.86f, 0.38f, 1f));
+            AppendOctahedron(vertices, triangles, colors,
+                new Vector3(-0.35f, 2.75f, 0.12f), 0.72f,
+                new Color(0.36f, 0.72f, 0.34f, 1f));
+            return BuildMesh(vertices, triangles, colors);
+        }
+
+        private static Mesh CreateRockMesh(UnityEnhancedPresentationFamily family)
+        {
+            var vertices = new List<Vector3>();
+            var triangles = new List<int>();
+            var colors = new List<Color>();
+            float radius = family == UnityEnhancedPresentationFamily.Dolmen ? 0.9f : 0.65f;
+            float height = family == UnityEnhancedPresentationFamily.Dolmen ? 1.75f : 1.15f;
+            AppendOctahedron(vertices, triangles, colors,
+                new Vector3(0f, height * 0.55f, 0f), radius,
+                family == UnityEnhancedPresentationFamily.Dolmen
+                    ? new Color(0.70f, 0.74f, 0.88f, 1f)
+                    : new Color(0.82f, 0.86f, 0.90f, 1f));
+            return BuildMesh(vertices, triangles, colors);
+        }
+
+        private static Mesh CreateCreatureMesh(UnityEnhancedPresentationFamily family)
+        {
+            var vertices = new List<Vector3>();
+            var triangles = new List<int>();
+            var colors = new List<Color>();
+            float width = family == UnityEnhancedPresentationFamily.Player ? 0.34f : 0.27f;
+            float bodyHeight = family == UnityEnhancedPresentationFamily.Player ? 0.95f : 0.72f;
+            Color body = new Color(0.94f, 0.96f, 1f, 1f);
+            Color head = new Color(1f, 0.88f, 0.70f, 1f);
+            AppendBox(vertices, triangles, colors,
+                new Vector3(-width, 0.05f, -width * 0.60f),
+                new Vector3(width, bodyHeight, width * 0.60f),
+                body);
+            AppendOctahedron(vertices, triangles, colors,
+                new Vector3(0f, bodyHeight + 0.28f, 0f), width * 0.78f, head);
+            if (family == UnityEnhancedPresentationFamily.Archer)
+            {
+                AppendBox(vertices, triangles, colors,
+                    new Vector3(width * 0.75f, 0.40f, -0.06f),
+                    new Vector3(width * 1.65f, 0.48f, 0.06f),
+                    new Color(0.64f, 0.42f, 0.20f, 1f));
+            }
+            return BuildMesh(vertices, triangles, colors);
+        }
+
         private static Mesh CreateBoxMesh(UnityEnhancedPresentationFamily family)
         {
             Vector3 halfExtents;
@@ -267,26 +457,160 @@ namespace MagicCarpet.PresentationLab
                     break;
             }
 
-            Vector3[] vertices =
-            {
-                new Vector3(-halfExtents.x, 0f, -halfExtents.z), new Vector3(halfExtents.x, 0f, -halfExtents.z),
-                new Vector3(halfExtents.x, halfExtents.y * 2f, -halfExtents.z), new Vector3(-halfExtents.x, halfExtents.y * 2f, -halfExtents.z),
-                new Vector3(-halfExtents.x, 0f, halfExtents.z), new Vector3(halfExtents.x, 0f, halfExtents.z),
-                new Vector3(halfExtents.x, halfExtents.y * 2f, halfExtents.z), new Vector3(-halfExtents.x, halfExtents.y * 2f, halfExtents.z)
-            };
+            var vertices = new List<Vector3>();
+            var triangles = new List<int>();
+            var colors = new List<Color>();
+            AppendBox(vertices, triangles, colors,
+                new Vector3(-halfExtents.x, 0f, -halfExtents.z),
+                new Vector3(halfExtents.x, halfExtents.y * 2f, halfExtents.z),
+                Color.white);
+            return BuildMesh(vertices, triangles, colors);
+        }
+
+        private static Mesh BuildMesh(
+            List<Vector3> vertices,
+            List<int> triangles,
+            List<Color> colors)
+        {
             Mesh mesh = new Mesh();
-            mesh.vertices = vertices;
-            mesh.triangles = new[]
-            {
-                0, 2, 1, 0, 3, 2,
-                1, 2, 6, 1, 6, 5,
-                5, 6, 7, 5, 7, 4,
-                4, 7, 3, 4, 3, 0,
-                3, 7, 6, 3, 6, 2,
-                4, 0, 1, 4, 1, 5
-            };
+            mesh.SetVertices(vertices);
+            mesh.SetTriangles(triangles, 0);
+            mesh.SetColors(colors);
             mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
             return mesh;
+        }
+
+        private static void AppendBox(
+            List<Vector3> vertices,
+            List<int> triangles,
+            List<Color> colors,
+            Vector3 min,
+            Vector3 max,
+            Color color)
+        {
+            AppendQuad(vertices, triangles, colors,
+                new Vector3(min.x, min.y, min.z),
+                new Vector3(min.x, max.y, min.z),
+                new Vector3(max.x, max.y, min.z),
+                new Vector3(max.x, min.y, min.z), color);
+            AppendQuad(vertices, triangles, colors,
+                new Vector3(min.x, min.y, max.z),
+                new Vector3(max.x, min.y, max.z),
+                new Vector3(max.x, max.y, max.z),
+                new Vector3(min.x, max.y, max.z), color);
+            AppendQuad(vertices, triangles, colors,
+                new Vector3(min.x, min.y, min.z),
+                new Vector3(min.x, min.y, max.z),
+                new Vector3(min.x, max.y, max.z),
+                new Vector3(min.x, max.y, min.z), color);
+            AppendQuad(vertices, triangles, colors,
+                new Vector3(max.x, min.y, min.z),
+                new Vector3(max.x, max.y, min.z),
+                new Vector3(max.x, max.y, max.z),
+                new Vector3(max.x, min.y, max.z), color);
+            AppendQuad(vertices, triangles, colors,
+                new Vector3(min.x, max.y, min.z),
+                new Vector3(min.x, max.y, max.z),
+                new Vector3(max.x, max.y, max.z),
+                new Vector3(max.x, max.y, min.z), color);
+            AppendQuad(vertices, triangles, colors,
+                new Vector3(min.x, min.y, min.z),
+                new Vector3(max.x, min.y, min.z),
+                new Vector3(max.x, min.y, max.z),
+                new Vector3(min.x, min.y, max.z), color);
+        }
+
+        private static void AppendPyramid(
+            List<Vector3> vertices,
+            List<int> triangles,
+            List<Color> colors,
+            Vector3 min,
+            Vector3 max,
+            float height,
+            Color color)
+        {
+            Vector3 p0 = new Vector3(min.x, min.y, min.z);
+            Vector3 p1 = new Vector3(max.x, min.y, min.z);
+            Vector3 p2 = new Vector3(max.x, min.y, max.z);
+            Vector3 p3 = new Vector3(min.x, min.y, max.z);
+            Vector3 apex = new Vector3((min.x + max.x) * 0.5f, min.y + height, (min.z + max.z) * 0.5f);
+            AppendTriangle(vertices, triangles, colors, p1, p0, apex, color);
+            AppendTriangle(vertices, triangles, colors, p3, p2, apex, color);
+            AppendTriangle(vertices, triangles, colors, p0, p3, apex, color);
+            AppendTriangle(vertices, triangles, colors, p2, p1, apex, color);
+        }
+
+        private static void AppendOctahedron(
+            List<Vector3> vertices,
+            List<int> triangles,
+            List<Color> colors,
+            Vector3 center,
+            float radius,
+            Color color)
+        {
+            Vector3 top = center + Vector3.up * radius;
+            Vector3 bottom = center - Vector3.up * radius;
+            Vector3 left = center + Vector3.left * radius;
+            Vector3 right = center + Vector3.right * radius;
+            Vector3 front = center + Vector3.forward * radius;
+            Vector3 back = center + Vector3.back * radius;
+            AppendTriangle(vertices, triangles, colors, top, front, right, color);
+            AppendTriangle(vertices, triangles, colors, top, right, back, color);
+            AppendTriangle(vertices, triangles, colors, top, back, left, color);
+            AppendTriangle(vertices, triangles, colors, top, left, front, color);
+            AppendTriangle(vertices, triangles, colors, bottom, right, front, color);
+            AppendTriangle(vertices, triangles, colors, bottom, back, right, color);
+            AppendTriangle(vertices, triangles, colors, bottom, left, back, color);
+            AppendTriangle(vertices, triangles, colors, bottom, front, left, color);
+        }
+
+        private static void AppendQuad(
+            List<Vector3> vertices,
+            List<int> triangles,
+            List<Color> colors,
+            Vector3 a,
+            Vector3 b,
+            Vector3 c,
+            Vector3 d,
+            Color color)
+        {
+            int start = vertices.Count;
+            vertices.Add(a);
+            vertices.Add(b);
+            vertices.Add(c);
+            vertices.Add(d);
+            colors.Add(color);
+            colors.Add(color);
+            colors.Add(color);
+            colors.Add(color);
+            triangles.Add(start);
+            triangles.Add(start + 1);
+            triangles.Add(start + 2);
+            triangles.Add(start);
+            triangles.Add(start + 2);
+            triangles.Add(start + 3);
+        }
+
+        private static void AppendTriangle(
+            List<Vector3> vertices,
+            List<int> triangles,
+            List<Color> colors,
+            Vector3 a,
+            Vector3 b,
+            Vector3 c,
+            Color color)
+        {
+            int start = vertices.Count;
+            vertices.Add(a);
+            vertices.Add(b);
+            vertices.Add(c);
+            colors.Add(color);
+            colors.Add(color);
+            colors.Add(color);
+            triangles.Add(start);
+            triangles.Add(start + 1);
+            triangles.Add(start + 2);
         }
 
         private static Color FamilyColor(UnityEnhancedPresentationFamily family)

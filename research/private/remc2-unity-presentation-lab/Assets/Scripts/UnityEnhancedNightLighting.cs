@@ -99,6 +99,7 @@ namespace MagicCarpet.PresentationLab
         private float priorFogStartDistance;
         private float priorFogEndDistance;
         private Material priorSkybox;
+        private Material generatedSkybox;
         private Light priorSun;
         private Camera presentationCamera;
         private CameraClearFlags priorCameraClearFlags;
@@ -182,8 +183,15 @@ namespace MagicCarpet.PresentationLab
             AppliedExposure = Mathf.Clamp(descriptor.Exposure, -4f, 4f);
             if (presentationCamera != null)
             {
-                presentationCamera.clearFlags = CameraClearFlags.SolidColor;
-                presentationCamera.backgroundColor = descriptor.HorizonColor;
+                if (ApplyProceduralSkybox(descriptor))
+                {
+                    presentationCamera.clearFlags = CameraClearFlags.Skybox;
+                }
+                else
+                {
+                    presentationCamera.clearFlags = CameraClearFlags.SolidColor;
+                    presentationCamera.backgroundColor = descriptor.HorizonColor;
+                }
             }
             sortedRequests.Clear();
             if (requests != null)
@@ -372,9 +380,65 @@ namespace MagicCarpet.PresentationLab
             presentationCamera = null;
         }
 
+        private bool ApplyProceduralSkybox(UnityEnhancedNightLightingDescriptor descriptor)
+        {
+            Shader shader = Shader.Find("Skybox/Procedural");
+            if (shader == null)
+            {
+                return false;
+            }
+
+            if (generatedSkybox == null || generatedSkybox.shader != shader)
+            {
+                if (generatedSkybox != null)
+                {
+                    DestroyImmediate(generatedSkybox);
+                }
+
+                generatedSkybox = new Material(shader)
+                {
+                    name = "EnhancedLevel1NightProceduralSky",
+                    hideFlags = HideFlags.DontSave
+                };
+            }
+
+            if (generatedSkybox.HasProperty("_SkyTint"))
+            {
+                generatedSkybox.SetColor("_SkyTint", descriptor.SkyColor);
+            }
+            if (generatedSkybox.HasProperty("_GroundColor"))
+            {
+                generatedSkybox.SetColor("_GroundColor", descriptor.GroundColor);
+            }
+            if (generatedSkybox.HasProperty("_SunSize"))
+            {
+                generatedSkybox.SetFloat("_SunSize", 0.015f);
+            }
+            if (generatedSkybox.HasProperty("_SunSizeConvergence"))
+            {
+                generatedSkybox.SetFloat("_SunSizeConvergence", 5f);
+            }
+            if (generatedSkybox.HasProperty("_AtmosphereThickness"))
+            {
+                generatedSkybox.SetFloat("_AtmosphereThickness", 0.55f);
+            }
+            if (generatedSkybox.HasProperty("_Exposure"))
+            {
+                generatedSkybox.SetFloat("_Exposure", Mathf.Clamp(0.45f + descriptor.Exposure * 0.45f, 0f, 8f));
+            }
+
+            RenderSettings.skybox = generatedSkybox;
+            return true;
+        }
+
         private void OnDestroy()
         {
             RestoreRenderSettings();
+            if (generatedSkybox != null)
+            {
+                DestroyImmediate(generatedSkybox);
+                generatedSkybox = null;
+            }
         }
     }
 }
