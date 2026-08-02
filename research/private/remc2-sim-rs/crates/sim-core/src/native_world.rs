@@ -3311,8 +3311,8 @@ pub struct Level2EconomyState {
     spheres: Vec<ManaSphere>,
     baseline_death_bursts: Vec<Level2DeathBurst>,
     death_bursts: Vec<Level2DeathBurst>,
-    baseline_carrier: Option<ManaCarrier>,
-    carrier: Option<ManaCarrier>,
+    baseline_carriers: Vec<ManaCarrier>,
+    carriers: Vec<ManaCarrier>,
     baseline_castle: Option<Level2CastleState>,
     castle: Option<Level2CastleState>,
     baseline_castle_children: Vec<Level2CastleChild>,
@@ -3460,8 +3460,8 @@ impl Level2EconomyState {
             spheres: Vec::new(),
             baseline_death_bursts: Vec::new(),
             death_bursts: Vec::new(),
-            baseline_carrier: None,
-            carrier: None,
+            baseline_carriers: Vec::new(),
+            carriers: Vec::new(),
             baseline_castle: None,
             castle: None,
             baseline_castle_children: Vec::new(),
@@ -3542,7 +3542,16 @@ impl Level2EconomyState {
 
     #[must_use]
     pub fn carrier(&self) -> Option<&ManaCarrier> {
-        self.carrier.as_ref().filter(|carrier| carrier.active)
+        self.carriers.iter().find(|carrier| carrier.active)
+    }
+
+    /// Return source-carrier rows in allocation order, including inactive
+    /// rows that remain until the source reclaim pass. The legacy `carrier()`
+    /// accessor remains as a single-row active compatibility view for callers
+    /// that only render the first live carrier.
+    #[must_use]
+    pub fn carriers(&self) -> &[ManaCarrier] {
+        &self.carriers
     }
 
     #[must_use]
@@ -3592,7 +3601,7 @@ impl Level2EconomyState {
                 Level2DynamicArenaKind::DeathBurst,
             );
         }
-        if let Some(carrier) = self.carrier.filter(|carrier| carrier.active) {
+        for carrier in self.carriers.iter().filter(|carrier| carrier.active) {
             slots.insert(
                 carrier.source_entity_index,
                 Level2DynamicArenaKind::ManaCarrier,
@@ -4060,8 +4069,10 @@ impl Level2EconomyState {
     /// same production state that the dispatcher hashes and exports.
     pub fn step_mana_carrier_slot(&mut self, carrier_slot: u16) -> bool {
         let Some(original) = self
-            .carrier
-            .filter(|carrier| carrier.active && carrier.source_entity_index == carrier_slot)
+            .carriers
+            .iter()
+            .find(|carrier| carrier.active && carrier.source_entity_index == carrier_slot)
+            .copied()
         else {
             return false;
         };
@@ -4174,7 +4185,11 @@ impl Level2EconomyState {
             }
         }
 
-        let carrier = self.carrier.as_mut().expect("carrier remains installed");
+        let carrier = self
+            .carriers
+            .iter_mut()
+            .find(|carrier| carrier.active && carrier.source_entity_index == carrier_slot)
+            .expect("carrier remains installed");
         carrier.position = position;
         carrier.yaw = yaw;
         carrier.carried_mana = carried_mana;
@@ -4279,10 +4294,10 @@ impl Level2EconomyState {
     /// next reclaim pass; no allocation is attempted on this path.
     pub fn absorb_sphere_into_carrier(&mut self, sphere_slot: u16, carrier_slot: u16) -> bool {
         let Some(carrier) = self
-            .carrier
-            .as_ref()
+            .carriers
+            .iter()
             .copied()
-            .filter(|carrier| carrier.active && carrier.source_entity_index == carrier_slot)
+            .find(|carrier| carrier.active && carrier.source_entity_index == carrier_slot)
         else {
             return false;
         };
@@ -4303,7 +4318,11 @@ impl Level2EconomyState {
             return false;
         }
         let mana = sphere.mana;
-        let carrier_state = self.carrier.as_mut().expect("carrier remains installed");
+        let carrier_state = self
+            .carriers
+            .iter_mut()
+            .find(|carrier| carrier.active && carrier.source_entity_index == carrier_slot)
+            .expect("carrier remains installed");
         carrier_state.carried_mana = carrier_state.carried_mana.wrapping_add(mana);
         carrier_state.target_sphere_id = 0;
         carrier_state.owner_entity_index = sphere.owner_entity_index;
@@ -4359,7 +4378,7 @@ impl Level2EconomyState {
             pending_attacker_entity_index: 0,
             active: true,
         };
-        self.carrier = Some(carrier);
+        self.carriers.push(carrier);
         self.events.push(Level2EconomyEvent::ManaCarrierSpawned {
             source_entity_index,
             owner_entity_index,
@@ -5804,9 +5823,9 @@ impl Level2EconomyState {
             return false;
         };
         let Some(carrier) = self
-            .carrier
-            .as_mut()
-            .filter(|carrier| carrier.active && carrier.source_entity_index == carrier_slot)
+            .carriers
+            .iter_mut()
+            .find(|carrier| carrier.active && carrier.source_entity_index == carrier_slot)
         else {
             return false;
         };
@@ -5830,9 +5849,9 @@ impl Level2EconomyState {
         let raw_position = position;
         let ground = self.terrain.ground_height(raw_position);
         let Some(carrier) = self
-            .carrier
-            .as_mut()
-            .filter(|carrier| carrier.active && carrier.source_entity_index == carrier_slot)
+            .carriers
+            .iter_mut()
+            .find(|carrier| carrier.active && carrier.source_entity_index == carrier_slot)
         else {
             return false;
         };
@@ -5873,7 +5892,7 @@ impl Level2EconomyState {
         if damage <= 0 || attacker == 0 {
             return false;
         }
-        if let Some(carrier) = self.carrier.as_mut().filter(|carrier| {
+        if let Some(carrier) = self.carriers.iter_mut().find(|carrier| {
             carrier.active && carrier.life >= 0 && carrier.source_entity_index == target_slot
         }) {
             carrier.pending_damage = if carrier.pending_attacker_entity_index == 0 {
@@ -5900,9 +5919,9 @@ impl Level2EconomyState {
 
     pub fn resolve_damage(&mut self, target_slot: u16) -> Option<bool> {
         if let Some(carrier) = self
-            .carrier
-            .as_mut()
-            .filter(|carrier| carrier.active && carrier.source_entity_index == target_slot)
+            .carriers
+            .iter_mut()
+            .find(|carrier| carrier.active && carrier.source_entity_index == target_slot)
         {
             let damage = carrier.pending_damage;
             let attacker = carrier.pending_attacker_entity_index;
@@ -5958,11 +5977,15 @@ impl Level2EconomyState {
     }
 
     pub fn reclaim_inactive_slots(&mut self) {
-        if let Some(carrier) = self.carrier
-            && !carrier.active
-        {
-            self.release_slot(carrier.source_entity_index, Some(carrier.entity_rng));
-            self.carrier = None;
+        let reclaimed_carriers = self
+            .carriers
+            .iter()
+            .filter(|carrier| !carrier.active)
+            .map(|carrier| (carrier.source_entity_index, carrier.entity_rng))
+            .collect::<Vec<_>>();
+        self.carriers.retain(|carrier| carrier.active);
+        for (slot, entity_rng) in reclaimed_carriers {
+            self.release_slot(slot, Some(entity_rng));
         }
         let reclaimed = self
             .spheres
@@ -6076,7 +6099,10 @@ impl Level2EconomyState {
             hasher.update(burst.control_flags.to_le_bytes());
             hasher.update([u8::from(burst.active)]);
         }
-        if let Some(carrier) = self.carrier {
+        if self.carriers.is_empty() {
+            hasher.update([0]);
+        }
+        for carrier in &self.carriers {
             hasher.update([1]);
             hasher.update(carrier.id.to_le_bytes());
             hasher.update(carrier.source_entity_index.to_le_bytes());
@@ -6099,8 +6125,6 @@ impl Level2EconomyState {
                 u8::from(carrier.returning_to_castle),
                 u8::from(carrier.active),
             ]);
-        } else {
-            hasher.update([0]);
         }
         if let Some(castle) = self.castle {
             hasher.update([1]);
@@ -6273,7 +6297,7 @@ impl Level2EconomyState {
         self.owner_max_mana = self.baseline_owner_max_mana.clone();
         self.spheres = self.baseline_spheres.clone();
         self.death_bursts = self.baseline_death_bursts.clone();
-        self.carrier = self.baseline_carrier;
+        self.carriers = self.baseline_carriers.clone();
         self.castle = self.baseline_castle;
         self.castle_children = self.baseline_castle_children.clone();
         self.castle_footprint = self.baseline_castle_footprint.clone();
@@ -17789,16 +17813,13 @@ mod tests {
         // The raw AddBallon target relation is the carrier's owner field;
         // `ManaCarrier::id` is the presentation/source slot and differs.
         assert_ne!(session.economy().carrier().expect("live carrier").id, 111);
-        assert!(
-            session
-                .economy_mut()
-                .carrier
-                .as_mut()
-                .is_some_and(|carrier| {
-                    carrier.target_sphere_id = sphere_id;
-                    true
-                })
-        );
+        session
+            .economy_mut()
+            .carriers
+            .iter_mut()
+            .find(|carrier| carrier.source_entity_index == carrier_slot)
+            .expect("live carrier")
+            .target_sphere_id = sphere_id;
         session.step_outer_turn(PlayerCommand::default(), 0);
         let carrier = session.economy().carrier().expect("live carrier");
         assert_eq!(carrier.source_entity_index, carrier_slot);
@@ -17858,8 +17879,9 @@ mod tests {
         {
             let carrier = session
                 .economy_mut()
-                .carrier
-                .as_mut()
+                .carriers
+                .iter_mut()
+                .find(|carrier| carrier.source_entity_index == carrier_slot)
                 .expect("live carrier");
             carrier.returning_to_castle = true;
             carrier.target_sphere_id = u32::from(castle_slot);
@@ -17886,6 +17908,71 @@ mod tests {
         session.economy_mut().begin_turn();
         assert!(session.economy_mut().step_mana_carrier_slot(carrier_slot));
         assert!(session.economy().events().is_empty());
+    }
+
+    #[test]
+    fn level_two_mana_carrier_bank_keeps_multiple_source_rows_isolated() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 carrier-bank session");
+        let baseline_hash = session.economy().reset_hash();
+        let first_slot = session
+            .economy_mut()
+            .spawn_mana_carrier(Position::default(), 111, 0)
+            .expect("first carrier allocation");
+        let second_slot = session
+            .economy_mut()
+            .spawn_mana_carrier(Position::default(), 112, 0)
+            .expect("second carrier allocation");
+        assert_eq!(session.economy().carriers().len(), 2);
+        assert!(
+            session
+                .economy()
+                .live_arena_slots()
+                .contains(&(first_slot, Level2DynamicArenaKind::ManaCarrier))
+        );
+        assert!(
+            session
+                .economy()
+                .live_arena_slots()
+                .contains(&(second_slot, Level2DynamicArenaKind::ManaCarrier))
+        );
+
+        assert!(session.economy_mut().step_mana_carrier_slot(first_slot));
+        assert!(session.economy_mut().step_mana_carrier_slot(second_slot));
+        assert!(
+            session
+                .economy_mut()
+                .submit_damage(first_slot, MANA_CARRIER_MAX_LIFE + 1, 77)
+        );
+        assert_eq!(session.economy_mut().resolve_damage(first_slot), Some(true));
+        session.economy_mut().reclaim_inactive_slots();
+        assert!(
+            session
+                .economy()
+                .carriers()
+                .iter()
+                .all(|carrier| carrier.source_entity_index != first_slot)
+        );
+        assert!(
+            session
+                .economy()
+                .carriers()
+                .iter()
+                .any(|carrier| carrier.source_entity_index == second_slot)
+        );
+        assert!(
+            session
+                .economy()
+                .live_arena_slots()
+                .contains(&(second_slot, Level2DynamicArenaKind::ManaCarrier))
+        );
+
+        session.reset();
+        assert!(session.economy().carriers().is_empty());
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
     }
 
     #[test]
@@ -17916,8 +18003,9 @@ mod tests {
             .expect("sphere allocation");
         session
             .economy_mut()
-            .carrier
-            .as_mut()
+            .carriers
+            .iter_mut()
+            .find(|carrier| carrier.source_entity_index == carrier_slot)
             .expect("live carrier")
             .target_sphere_id = sphere_slot;
         session
