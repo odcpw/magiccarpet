@@ -698,17 +698,30 @@ def validate_classic_hd_owner_performance_artifact(
                 errors.append(f"Classic HD owner performance profile {name} upload/allocation contract is wrong")
             if profile.get("steady_allocations") is not True or profile.get("route_contract") is not True:
                 errors.append(f"Classic HD owner performance profile {name} steady route contract is not proven")
-            if profile.get("budget_pass") is not False:
-                errors.append(f"Classic HD owner performance profile {name} must remain over-budget/open")
-            if not isinstance(profile.get("p95_total_ns"), int) or profile["p95_total_ns"] <= artifact["presentation_budget_ns"]:
-                errors.append(f"Classic HD owner performance profile {name} must record p95 total over budget")
+            budget_pass = profile.get("budget_pass")
+            p95_total_ns = profile.get("p95_total_ns")
+            if not isinstance(budget_pass, bool):
+                errors.append(f"Classic HD owner performance profile {name} must state budget_pass")
+            if not isinstance(p95_total_ns, int) or p95_total_ns <= 0:
+                errors.append(f"Classic HD owner performance profile {name} must record a positive p95 total")
+            elif budget_pass is True and p95_total_ns > artifact["presentation_budget_ns"]:
+                errors.append(f"Classic HD owner performance profile {name} claims budget pass above the presentation budget")
+            elif budget_pass is False and p95_total_ns <= artifact["presentation_budget_ns"]:
+                errors.append(f"Classic HD owner performance profile {name} rejects a p95 total within the presentation budget")
             if profile.get("p95_allocation_bytes") != 0 or profile.get("max_allocation_bytes") != 0:
                 errors.append(f"Classic HD owner performance profile {name} must prove zero measured steady allocations")
             for field in ("index_route_hash", "provenance_route_hash", "log_path", "log_sha256"):
                 if not isinstance(profile.get(field), str) or not profile[field]:
                     errors.append(f"Classic HD owner performance profile {name} is missing {field}")
-            if profile.get("status") != "open":
-                errors.append(f"Classic HD owner performance profile {name} must remain open")
+            expected_status = (
+                "supported-owner-real-time-budget"
+                if budget_pass is True
+                else "rejected-by-owner-real-time-budget"
+            )
+            if profile.get("status") != expected_status:
+                errors.append(
+                    f"Classic HD owner performance profile {name} status must be {expected_status}"
+                )
         if seen != set(expected_profiles):
             errors.append("Classic HD owner performance must include exactly 640x480 and 960x720")
     return errors
@@ -1368,10 +1381,11 @@ def verify() -> dict[str, Any]:
             for profile in performance_probe.get("profiles", [])
             if profile.get("budget_pass") is False
         ]
-        open_gates.append(
-            "Classic HD owner-bound performance remains over the 30 Hz presentation budget at: " +
-            ", ".join(over_budget)
-        )
+        if over_budget:
+            open_gates.append(
+                "Classic HD owner-bound performance remains over the 30 Hz presentation budget at: " +
+                ", ".join(over_budget)
+            )
     gpu_fence_probe = json.loads(CLASSIC_HD_OWNER_GPU_FENCE_ARTIFACT.read_text(encoding="utf-8"))
     if gpu_fence_probe.get("status") == "open":
         open_gates.append(

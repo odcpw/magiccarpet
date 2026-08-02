@@ -20,8 +20,8 @@ T14 run produced:
 
 | Internal profile | Frame bytes | Graph memory | p95 CPU | Reset deterministic | Current status |
 | --- | ---: | ---: | ---: | --- | --- |
-| 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; owner route is deterministic with zero measured steady allocation, but owner p95 total is 487.7 ms, so real-time/GPU promotion remains open |
-| 960x720 | 691,200 | 2,768,896 | 26.11 ms | yes | candidate; owner route is deterministic with zero measured steady allocation, but owner p95 total is 4.62 s, so real-time/GPU promotion remains open |
+| 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; optimized owner route is deterministic with zero measured steady allocation and p95 total 31.65 ms, clearing the 30 Hz owner budget while GPU/window/corpus promotion remains open |
+| 960x720 | 691,200 | 2,768,896 | 26.11 ms | yes | rejected for the current owner route; deterministic and zero-allocation, but p95 total is 56.52 ms, over the 30 Hz budget |
 | 1280x960 | 1,228,800 | 4,919,296 | 45.64 ms | yes | rejected by current CPU budget |
 
 The window is independent of the internal render profile. For example,
@@ -42,16 +42,19 @@ or visual-corpus claim. The 960x720 candidate has a one-frame owner profile
 smoke in `qualification/classic-hd-owner-route-960x720-smoke.json` and a
 64-frame two-pass reset replay in
 `qualification/classic-hd-owner-route-960x720-sequence-smoke.json`. The
-The owner-bound 8+64 performance smoke is recorded in
-`qualification/classic-hd-owner-performance-smoke.json`. It measures the
-private owner rerender plus persistent Unity R8 upload and reports p95 native /
-total times of 487.0 / 487.7 ms at 640x480 and 4.6008 / 4.6166 s at 960x720.
+owner-bound 8+64 performance smoke is recorded in
+`qualification/classic-hd-owner-performance-smoke.json`. After streaming the
+large mode-26 terrain pass and reusing the generation-bound owner asset digest,
+the private owner rerender plus persistent Unity R8 upload reports p95 native /
+total times of 30.96 / 31.65 ms at 640x480 and 55.27 / 56.52 ms at 960x720.
 Both routes preserve one allocation epoch, zero measured steady managed
-allocation, monotonic generation/ticks, and nonzero indexed/provenance hashes;
-neither meets the 33.3 ms 30 Hz owner presentation budget. The earlier bounded
-1.52-second terrain trace remains historical and is superseded for promotion
-decisions by this full-route receipt. The earlier bounded failure record remains
-at `qualification/classic-hd-owner-route-960x720-sequence-failure.json` as a
+allocation, monotonic generation/ticks, and nonzero indexed/provenance hashes.
+640x480 now clears the 33.3 ms 30 Hz owner presentation budget; 960x720 is an
+explicit measured rejection at the current profile. The GPU timing and final
+player-facing promotion gates remain open. The earlier bounded 1.52-second
+terrain trace remains historical and is superseded for promotion decisions by
+this full-route receipt. The earlier bounded failure record remains at
+`qualification/classic-hd-owner-route-960x720-sequence-failure.json` as a
 historical finding and is explicitly superseded by the passing rerun.
 
 The GPU consumption probe is recorded in
@@ -85,8 +88,8 @@ opening the native session. This qualifies the settings contract; it does not
 replace the missing visual corpus or automatic high-speed postprocess proof.
 
 Remaining GFX-O evidence is intentionally explicit in the JSON matrix:
-completion/fullscreen/alt-tab, 20-minute allocation growth,
-960x720 owner/GPU promotion, visual corpus review, and the complete
-owner-bound reflection/lighting/blur matrix still require the private
-owner-data Unity capture and preserved qualification artifacts. The
+completion/fullscreen/alt-tab, 20-minute allocation growth, GPU timing and
+window presentation, the rejected 960x720 alternative, visual corpus review,
+and the complete owner-bound reflection/lighting/blur matrix still require the
+private owner-data Unity capture and preserved qualification artifacts. The
 invalid-config case is covered by the launcher/settings focused tests.

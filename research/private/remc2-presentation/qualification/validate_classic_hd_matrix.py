@@ -39,6 +39,7 @@ def validate(path: Path = DEFAULT_MATRIX) -> list[str]:
         if profile["profile"] != REQUIRED[0] and profile["p95_cpu_ns"] <= BUDGET_NS and profile.get("status") not in {
             "candidate-awaiting-unity-gpu-and-owner-route-capture",
             "supported-cpu-and-deterministic",
+            "rejected-by-owner-real-time-budget",
         }:
             errors.append(f"{profile['profile']} status contradicts its measured p95")
         if profile["profile"] != REQUIRED[0] and profile["p95_cpu_ns"] > BUDGET_NS and not str(profile.get("status", "")).startswith("rejected"):

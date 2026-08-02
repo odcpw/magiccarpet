@@ -6,7 +6,7 @@
   "sample_count": 32,
   "owner_payload_embedded": false,
   "unity_gpu_and_owner_route": "pending-owner-lab-capture",
-  "owner_route_binding_status": "640x480 and 960x720 profile-sized source compositor rerender and Unity upload proven across 32-frame reset/replay sequences, with 49-frame owner route smokes at both profiles; the flight route reaches the observed speed limit but automatic high-speed postprocess remains open; broader owner/GPU matrix remains pending",
+  "owner_route_binding_status": "640x480 and 960x720 profile-sized source compositor rerender and Unity upload proven across 32-frame reset/replay sequences, with 49-frame owner route smokes at both profiles; the optimized owner performance route passes the 30 Hz budget at 640x480 and rejects 960x720 at the measured owner cost; automatic high-speed postprocess, GPU timing, window, and visual-corpus promotion remain pending",
   "owner_route_scenario": {
     "artifact": "qualification/classic-hd-owner-route-scenarios.json",
     "profile": "hd-640x480",
@@ -71,7 +71,7 @@
       "p95_cpu_ns": 10949142,
       "deterministic_reset": true,
       "status": "supported-cpu-and-deterministic",
-      "unity_gpu_copy_status": "640x480 profile rerender, persistent Unity upload, and owner idle/town/combat/flight/death-restart route smoke pass; sustained GPU/window/corpus qualification remains pending"
+      "unity_gpu_copy_status": "640x480 profile rerender, persistent Unity upload, owner idle/town/combat/flight/death-restart route smoke, and 8+64 performance sample pass the 30 Hz owner budget with zero measured steady allocation; sustained GPU/window/corpus qualification remains pending"
     },
     {
       "profile": "classic-hd-960x720",
@@ -81,8 +81,8 @@
       "graph_memory_bytes": 2768896,
       "p95_cpu_ns": 26112476,
       "deterministic_reset": true,
-      "status": "candidate-awaiting-unity-gpu-and-owner-route-capture",
-      "unity_gpu_copy_status": "single owner profile rerender, 64-frame two-pass reset replay, and 49-frame idle/town/combat/flight/death-restart route smoke with persistent Unity uploads passed; real-time/GPU promotion remains pending"
+      "status": "rejected-by-owner-real-time-budget",
+      "unity_gpu_copy_status": "single owner profile rerender, 64-frame two-pass reset replay, and 49-frame idle/town/combat/flight/death-restart route smoke with persistent Unity uploads passed; the optimized 8+64 owner sample is deterministic and zero-allocation but measures 56.5 ms p95, so 30 Hz real-time promotion is rejected"
     },
     {
       "profile": "classic-hd-1280x960",
@@ -114,11 +114,11 @@
   "owner_performance_smoke": {
     "artifact": "qualification/classic-hd-owner-performance-smoke.json",
     "profiles": ["hd-640x480", "hd-960x720"],
-    "status": "open-owner-p95-over-budget",
+    "status": "open-final-promotion; 640x480-pass; 960x720-rejected-owner-real-time-budget",
     "presentation_budget_ns": 33333333,
     "p95_total_ns": {
-      "hd-640x480": 487693800,
-      "hd-960x720": 4616598500
+      "hd-640x480": 31652900,
+      "hd-960x720": 56518500
     },
     "steady_allocations": true,
     "gpu_timing": "not-captured",
