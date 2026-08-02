@@ -26,8 +26,8 @@ use crate::{
     frozen_actor_tmap::{FrozenActorTmapBank, VillagerTmapClocks},
     goat::{
         GOAT_BASE_TMAP, GOAT_CLASS, GOAT_MODEL, GOAT_PATROL_ACTION, GOAT_RENDER_PARAMETER_INDEX,
-        GOAT_STAGE_POINT, GoatBehaviorConfig, GoatPlayerTarget, GoatState, GoatStepEvent,
-        LEVEL_ONE_GOAT_INDICES, LiveWorldState,
+        GOAT_STAGE_POINT, GoatBehaviorConfig, GoatFamily, GoatPlayerTarget, GoatState,
+        GoatStepEvent, LEVEL_ONE_GOAT_INDICES, LEVEL_TWO_GOAT_INDICES, LiveWorldState,
     },
     goat_tmap::{
         GOAT_TMAP_SELECTORS, GOAT_TMAP_STATE_COUNT, GoatTmapBank, GoatTmapClocks, GoatTmapFrame,
@@ -2801,6 +2801,16 @@ impl NativeWorldInspection {
             self.players.clone(),
             self.presentation.clone(),
         )?;
+        let goat_config = GoatBehaviorConfig::from_level_two_parameter_record(
+            self.presentation
+                .entity_parameters
+                .get(99)
+                .ok_or_else(|| NativeWorldError::new("Level 2 Goat parameter row 99 is absent"))?,
+        )
+        .map_err(NativeWorldError::new)?;
+        let goats =
+            GoatFamily::from_level_two_entities(&self.entities, GOAT_STAGE_POINT, goat_config)
+                .map_err(NativeWorldError::new)?;
         let economy = Level2EconomyState::from_parts(
             SessionTerrain::from_inspection(self),
             &self.entities,
@@ -2822,6 +2832,7 @@ impl NativeWorldInspection {
             shared_spells,
             economy,
             ordinary,
+            goats,
             mission,
         ))
     }
@@ -6562,6 +6573,8 @@ pub struct Level2ResetSession {
     shared_spells: Level2SharedSpellResetSession,
     economy: Level2EconomyState,
     ordinary: Level2OrdinaryResetSession,
+    baseline_goats: GoatFamily,
+    goats: GoatFamily,
     mission: MissionContentSession,
     dispatch_events: Vec<Level2DispatchEvent>,
 }
@@ -6612,6 +6625,11 @@ pub enum Level2DispatchEvent {
         source_slot: u16,
         kind: Level2DynamicArenaKind,
     },
+    Goat {
+        pass: u8,
+        source_slot: u16,
+        events: Box<[GoatStepEvent]>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -6638,6 +6656,7 @@ impl Level2ResetSession {
         shared_spells: Level2SharedSpellResetSession,
         economy: Level2EconomyState,
         ordinary: Level2OrdinaryResetSession,
+        goats: GoatFamily,
         mission: MissionContentSession,
     ) -> Self {
         // Pinned `sub_56D60` reset order (6806c7204d17):
@@ -6673,6 +6692,8 @@ impl Level2ResetSession {
             shared_spells,
             economy,
             ordinary,
+            baseline_goats: goats.clone(),
+            goats,
             mission,
             dispatch_events: Vec::new(),
         }
@@ -6731,6 +6752,55 @@ impl Level2ResetSession {
     #[must_use]
     pub fn ordinary_mut(&mut self) -> &mut Level2OrdinaryResetSession {
         &mut self.ordinary
+    }
+
+    #[must_use]
+    pub fn goats(&self) -> &[GoatState] {
+        self.goats.goats()
+    }
+
+    #[must_use]
+    pub fn goat_hash(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(REMC2_SPEC_COMMIT.as_bytes());
+        hasher.update(self.goats.outer_tick().to_le_bytes());
+        for goat in self.goats.goats() {
+            hasher.update(goat.entity_index.to_le_bytes());
+            hasher.update(goat.source_id.to_le_bytes());
+            hasher.update(u8::from(goat.active).to_le_bytes());
+            hasher.update(goat.control_flags.to_le_bytes());
+            hasher.update(goat.max_life.to_le_bytes());
+            hasher.update(goat.life.to_le_bytes());
+            hasher.update(goat.pending_damage.to_le_bytes());
+            hasher.update(goat.pending_attacker.to_le_bytes());
+            hasher.update(goat.kill_credit_entity.to_le_bytes());
+            hasher.update(goat.current_attacker.to_le_bytes());
+            hasher.update(goat.rng.to_le_bytes());
+            hasher.update(goat.yaw.to_le_bytes());
+            hasher.update(goat.pitch.to_le_bytes());
+            hasher.update(goat.roll.to_le_bytes());
+            hasher.update(goat.position.x.to_le_bytes());
+            hasher.update(goat.position.y.to_le_bytes());
+            hasher.update(goat.position.z.to_le_bytes());
+            hasher.update(goat.collision_half_width.to_le_bytes());
+            hasher.update(goat.collision_vertical_offset.to_le_bytes());
+            hasher.update(goat.collision_half_height.to_le_bytes());
+            hasher.update(goat.render_parameter_index.to_le_bytes());
+            hasher.update(goat.animation_frame.to_le_bytes());
+            hasher.update(goat.action.to_le_bytes());
+            hasher.update(goat.phase.to_le_bytes());
+            hasher.update(goat.proximity_countdown.to_le_bytes());
+            hasher.update(goat.proximity_subcounter.to_le_bytes());
+            hasher.update(goat.stage_var_1.to_le_bytes());
+            hasher.update(goat.stage_var_2.to_le_bytes());
+            hasher.update(goat.actual_speed.to_le_bytes());
+            hasher.update(goat.minimum_speed.to_le_bytes());
+            hasher.update(goat.maximum_speed.to_le_bytes());
+            hasher.update(goat.mana.to_le_bytes());
+            hasher.update(goat.partner_entity_index.unwrap_or(u16::MAX).to_le_bytes());
+            hasher.update(goat.target_entity_index.unwrap_or(u16::MAX).to_le_bytes());
+        }
+        format!("{:x}", hasher.finalize())
     }
 
     #[must_use]
@@ -6824,8 +6894,28 @@ impl Level2ResetSession {
     fn step_level2_source_pass(&mut self, pass: u8) {
         let player_entity_index = self.state.entity_index;
         let player_position = self.state.position;
+        let player_control_flags = self
+            .entities
+            .get(usize::from(player_entity_index))
+            .map_or(0, |entity| entity.control_flags);
+        let goat_players = [GoatPlayerTarget {
+            entity_index: player_entity_index,
+            position: player_position,
+            control_flags: player_control_flags,
+        }];
         self.economy.advance_global_rng();
         self.synchronize_level2_terrain();
+        let mut goat_begin_events = BTreeMap::<u16, Vec<GoatStepEvent>>::new();
+        for event in self.goats.begin_source_turn(&goat_players) {
+            let source_slot = match event {
+                GoatStepEvent::Reclaimed { entity_index } => entity_index,
+                _ => 0,
+            };
+            goat_begin_events
+                .entry(source_slot)
+                .or_default()
+                .push(event);
+        }
         let mut routes = LEVEL2_SHARED_SPELL_PICKUP_SLOTS
             .into_iter()
             .map(|slot| (slot, 0_u8))
@@ -6852,6 +6942,7 @@ impl Level2ResetSession {
                     .iter()
                     .map(|dolmen| (dolmen.entity.index, 4_u8)),
             )
+            .chain(LEVEL_TWO_GOAT_INDICES.into_iter().map(|slot| (slot, 7_u8)))
             .collect::<Vec<_>>();
         if let Some(castle) = self.economy.castle().filter(|castle| castle.active) {
             routes.push((castle.source_entity_index, 5_u8));
@@ -6956,9 +7047,23 @@ impl Level2ResetSession {
                             kind,
                         });
                 }
+                7 => {
+                    let mut events = goat_begin_events.remove(&source_slot).unwrap_or_default();
+                    events.extend(self.goats.step_source_slot(
+                        source_slot,
+                        &self.terrain,
+                        &goat_players,
+                    ));
+                    self.dispatch_events.push(Level2DispatchEvent::Goat {
+                        pass,
+                        source_slot,
+                        events: events.into_boxed_slice(),
+                    });
+                }
                 _ => unreachable!("bounded Level 2 source route"),
             }
         }
+        self.goats.finish_source_turn();
     }
 
     #[must_use]
@@ -7025,6 +7130,7 @@ impl Level2ResetSession {
         self.shared_spells = self.baseline_shared_spells.clone();
         self.economy.reset();
         self.ordinary.reset();
+        self.goats = self.baseline_goats.clone();
         self.mission.reset();
         self.dispatch_events.clear();
     }
@@ -15276,6 +15382,95 @@ mod tests {
     }
 
     #[test]
+    fn level_two_goat_pool_is_production_wired_and_reset_isolated() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut first = inspection
+            .level2_reset_session()
+            .expect("Level 2 Goat production session");
+        let mut second = inspection
+            .level2_reset_session()
+            .expect("isolated Level 2 Goat production session");
+        assert_eq!(first.goats().len(), LEVEL_TWO_GOAT_INDICES.len());
+        for (source_slot, expected_action) in [(39_u16, 11_u8), (71, 11)] {
+            let goat = first
+                .goats()
+                .iter()
+                .find(|goat| goat.entity_index == source_slot)
+                .expect("authored Level 2 Goat row");
+            assert_eq!(goat.action, expected_action);
+            assert_eq!(goat.partner_entity_index, Some(66));
+        }
+        let baseline_hash = first.goat_hash();
+        let baseline_phase = first
+            .goats()
+            .iter()
+            .filter(|goat| matches!(goat.entity_index, 39 | 71))
+            .map(|goat| (goat.entity_index, goat.phase))
+            .collect::<BTreeMap<_, _>>();
+
+        first.step_outer_turn(PlayerCommand::default(), 0);
+        second.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(first.goat_hash(), second.goat_hash());
+        assert_ne!(first.goat_hash(), baseline_hash);
+        for (source_slot, previous_phase) in baseline_phase {
+            let phase = first
+                .goats()
+                .iter()
+                .find(|goat| goat.entity_index == source_slot)
+                .expect("stepped Level 2 Goat row")
+                .phase;
+            assert_eq!(phase, previous_phase.wrapping_add(1));
+        }
+
+        let goat_slots = first
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2DispatchEvent::Goat { source_slot, .. } => Some(*source_slot),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(goat_slots.windows(2).all(|window| window[0] <= window[1]));
+        assert!(goat_slots.contains(&39));
+        assert!(goat_slots.contains(&71));
+        let all_slots = first
+            .dispatch_events()
+            .iter()
+            .map(|event| match event {
+                Level2DispatchEvent::SharedPickup { source_slot, .. }
+                | Level2DispatchEvent::House { source_slot, .. }
+                | Level2DispatchEvent::Villager { source_slot, .. }
+                | Level2DispatchEvent::Castle { source_slot, .. }
+                | Level2DispatchEvent::Error { source_slot, .. }
+                | Level2DispatchEvent::DynamicArena { source_slot, .. }
+                | Level2DispatchEvent::Goat { source_slot, .. } => *source_slot,
+                Level2DispatchEvent::BadStone { step, .. } => step.source_slot,
+                Level2DispatchEvent::Dolmen { step, .. } => step.source_slot,
+            })
+            .collect::<Vec<_>>();
+        assert!(all_slots.windows(2).all(|window| window[0] <= window[1]));
+
+        first.reset();
+        assert_eq!(first.goat_hash(), baseline_hash);
+        second.reset();
+        assert_eq!(first.goats(), second.goats());
+        assert!(first.dispatch_events().is_empty());
+    }
+
+    #[test]
+    fn level_two_goat_production_rejects_tampered_parameter_row() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut tampered = inspection.clone();
+        tampered.presentation.entity_parameters[99][2] ^= 1;
+        let error = tampered
+            .level2_reset_session()
+            .expect_err("row 99 tamper must fail closed");
+        assert!(error.to_string().contains("row 99 mismatch"));
+    }
+
+    #[test]
     fn level_two_outer_turn_dispatches_each_source_pass_in_order() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -15302,6 +15497,7 @@ mod tests {
                     | Level2DispatchEvent::Dolmen { pass, .. }
                     | Level2DispatchEvent::Castle { pass, .. }
                     | Level2DispatchEvent::DynamicArena { pass, .. }
+                    | Level2DispatchEvent::Goat { pass, .. }
                     | Level2DispatchEvent::Error { pass, .. } => *pass,
                 })
                 .collect::<Vec<_>>();

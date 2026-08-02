@@ -518,7 +518,7 @@ impl GoatFamily {
         events
     }
 
-    fn begin_source_turn(&mut self, players: &[GoatPlayerTarget]) -> Vec<GoatStepEvent> {
+    pub(crate) fn begin_source_turn(&mut self, players: &[GoatPlayerTarget]) -> Vec<GoatStepEvent> {
         let mut events = Vec::new();
         // `UpdateEntities_57730` reclaims drawing-disabled slots before list
         // construction, countdown processing, and entity dispatch.
@@ -573,7 +573,7 @@ impl GoatFamily {
         })
     }
 
-    fn step_source_slot<W: FlightWorld>(
+    pub(crate) fn step_source_slot<W: FlightWorld>(
         &mut self,
         source_slot: u16,
         world: &W,
@@ -607,7 +607,7 @@ impl GoatFamily {
         events
     }
 
-    fn finish_source_turn(&mut self) {
+    pub(crate) fn finish_source_turn(&mut self) {
         self.outer_tick = self.outer_tick.wrapping_add(1);
     }
 
