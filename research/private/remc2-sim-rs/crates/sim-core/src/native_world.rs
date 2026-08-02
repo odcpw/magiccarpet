@@ -4030,21 +4030,24 @@ impl Level2EconomyState {
     /// disable bit and immediately calls `sub_57F20`, which unlinks the map
     /// row and returns the entity to the `NewEvent_4A050` free stack. Runtime
     /// Castle creation (`sub_5FF50`/`sub_613D0`) remains a separate path.
-    pub fn applyevents_terminal_reclaim_castle_child(&mut self, source_slot: u16) -> bool {
+    pub fn applyevents_terminal_reclaim_castle_child(
+        &mut self,
+        source_slot: u16,
+    ) -> Option<Level2CastleChild> {
         let Some(child_index) = self.castle_children.iter().position(|child| {
             child.active
                 && child.source_entity_index == source_slot
-                && matches!(child.model, 15 | 41 | 42 | 79)
+                && ((child.source_class == 5 && child.model == 15)
+                    || (child.source_class == 10 && matches!(child.model, 41 | 42 | 79)))
         }) else {
-            return false;
+            return None;
         };
-        let child = self.castle_children[child_index];
-        self.castle_children[child_index].active = false;
-        self.sync_castle_child_map(Level2CastleChild {
-            active: false,
-            ..child
-        });
-        true
+        let mut child = self.castle_children.remove(child_index);
+        child.control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        child.active = false;
+        self.sync_castle_child_map(child);
+        self.release_slot(child.source_entity_index, Some(child.entity_rng));
+        Some(child)
     }
 
     pub fn claim_mana_sphere(&mut self, sphere_slot: u16, owner_entity_index: u16) -> bool {
@@ -16109,19 +16112,40 @@ mod tests {
             }
             (slots, economy.free_slots.len())
         };
-        for slot in &slots {
-            assert!(
-                session
-                    .economy_mut()
-                    .applyevents_terminal_reclaim_castle_child(*slot)
-            );
+        session
+            .economy_mut()
+            .castle_children
+            .iter_mut()
+            .find(|child| child.source_entity_index == slots[0])
+            .expect("wrong class/model guard child")
+            .source_class = 10;
+        assert!(
+            session
+                .economy_mut()
+                .applyevents_terminal_reclaim_castle_child(slots[0])
+                .is_none()
+        );
+        session
+            .economy_mut()
+            .castle_children
+            .iter_mut()
+            .find(|child| child.source_entity_index == slots[0])
+            .expect("restore class/model guard child")
+            .source_class = 5;
+        for (index, slot) in slots.iter().enumerate() {
+            let reclaimed = session
+                .economy_mut()
+                .applyevents_terminal_reclaim_castle_child(*slot)
+                .expect("ApplyEvents terminal child reclaim");
+            assert_eq!(reclaimed.source_entity_index, *slot);
+            assert!(!reclaimed.active);
+            assert_ne!(reclaimed.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
             assert!(
                 session
                     .economy()
                     .castle_children()
                     .iter()
-                    .find(|child| child.source_entity_index == *slot)
-                    .is_some_and(|child| !child.active)
+                    .all(|child| child.source_entity_index != *slot)
             );
             assert!(
                 !session
@@ -16130,21 +16154,19 @@ mod tests {
                     .linked_entity_indices()
                     .contains(slot)
             );
+            assert_eq!(session.economy().free_slots.len(), free_before + index + 1);
         }
         assert!(
-            !session
+            session
                 .economy_mut()
                 .applyevents_terminal_reclaim_castle_child(slots[0])
+                .is_none()
         );
-        session.economy_mut().reclaim_inactive_slots();
         assert!(session.economy().castle_children().is_empty());
-        assert_eq!(
-            session.economy().free_slots.len(),
-            free_before + expected_count
-        );
         for slot in &slots {
-            assert!(session.economy().source_rng.get(slot).is_none());
+            assert_eq!(session.economy_mut().allocate_slot(), Some(*slot));
         }
+        assert_eq!(session.economy().free_slots.len(), free_before);
         assert_ne!(session.economy().reset_hash(), baseline_hash);
         session.reset();
         assert_eq!(session.economy().reset_hash(), baseline_hash);
