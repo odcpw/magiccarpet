@@ -474,6 +474,7 @@ namespace MagicCarpet.PresentationLab.Tests
         [Test]
         public void WaterBuildsReflectionSurfaceAndShorelineMesh()
         {
+            Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/Water"));
             GameObject gameObject = new GameObject("enhanced-water-test");
             UnityEnhancedWaterPresentation water = gameObject.AddComponent<UnityEnhancedWaterPresentation>();
             UnityEnhancedWaterSnapshot snapshot = new UnityEnhancedWaterSnapshot

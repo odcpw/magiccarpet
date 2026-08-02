@@ -202,7 +202,9 @@ namespace MagicCarpet.PresentationLab
 
         private static Material CreateMaterial(string name, Color color)
         {
-            Shader shader = Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
+            Shader customWaterShader = Shader.Find("MagicCarpet/Enhanced/Water");
+            Shader shader = customWaterShader ??
+                            Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
                             Shader.Find("Universal Render Pipeline/Lit") ??
                             Shader.Find("Standard");
             if (shader == null)
@@ -217,12 +219,27 @@ namespace MagicCarpet.PresentationLab
                 color = color
             };
             material.enableInstancing = true;
-            material.SetFloat("_AmbientBoost", 0.55f);
-            material.SetFloat("_SpecularStrength", 0.20f);
-            material.SetColor("_RimColor", new Color(0.08f, 0.20f, 0.48f, 1f));
-            material.SetFloat("_RimStrength", 0.06f);
-            material.SetColor("_EmissionColor", color * 0.2f);
-            material.SetFloat("_EmissionStrength", 0.08f);
+            if (shader == customWaterShader)
+            {
+                material.SetColor("_BaseColor", new Color(0.008f, 0.04f, 0.12f, 1f));
+                material.SetColor("_ReflectionColor", new Color(0.025f, 0.15f, 0.42f, 1f));
+                material.SetColor("_FoamColor", new Color(0.08f, 0.25f, 0.60f, 1f));
+                material.SetFloat("_WaveScale", 0.055f);
+                material.SetFloat("_WaveSpeed", 0.22f);
+                material.SetFloat("_WaveStrength", 0.10f);
+                material.SetFloat("_FresnelStrength", 0.55f);
+                material.SetFloat("_SpecularStrength", 0.8f);
+                material.SetFloat("_Alpha", 0.84f);
+            }
+            else
+            {
+                material.SetFloat("_AmbientBoost", 0.55f);
+                material.SetFloat("_SpecularStrength", 0.20f);
+                material.SetColor("_RimColor", new Color(0.08f, 0.20f, 0.48f, 1f));
+                material.SetFloat("_RimStrength", 0.06f);
+                material.SetColor("_EmissionColor", color * 0.2f);
+                material.SetFloat("_EmissionStrength", 0.08f);
+            }
             return material;
         }
 
