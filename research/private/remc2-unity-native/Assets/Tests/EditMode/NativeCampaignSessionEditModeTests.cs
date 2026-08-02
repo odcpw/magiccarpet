@@ -83,5 +83,26 @@ namespace MagicCarpet.Native.Tests
                     eventRow.generation == stepped.snapshot.generation),
                 Is.True);
         }
+
+        [Test]
+        public void Level2CampaignGoatSnapshotsAreReachableFromManagedSession()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+
+            var goats = session.Goats();
+
+            Assert.That(goats, Has.Length.EqualTo(36));
+            Assert.That(goats.Select(goat => goat.entityIndex), Does.Contain(39));
+            Assert.That(goats.Select(goat => goat.entityIndex), Does.Contain(71));
+            Assert.That(
+                goats.Where(goat => goat.entityIndex == 39 || goat.entityIndex == 71)
+                    .All(goat =>
+                        goat.abiVersion == NativeSim.AbiVersion &&
+                        goat.structSize == 84 &&
+                        goat.classId == 5 &&
+                        goat.model == 1 &&
+                        goat.action == 11),
+                Is.True);
+        }
     }
 }

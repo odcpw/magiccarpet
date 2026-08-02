@@ -118,6 +118,33 @@ namespace MagicCarpet.Native
             return entities;
         }
 
+        internal NativeSim.GoatSnapshot[] Goats()
+        {
+            var goats = new NativeSim.GoatSnapshot[36];
+            var status = NativeSim.mc_native_campaign_goats_copy(
+                Handle,
+                generation,
+                0,
+                goats,
+                checked((uint)goats.Length),
+                84,
+                out var batch,
+                64);
+            NativeSession.Check(status, "read Level 2 Goats");
+            if (
+                batch.abiVersion != NativeSim.AbiVersion ||
+                batch.structSize != 64 ||
+                batch.generation != generation ||
+                batch.startOrdinal != 0 ||
+                batch.written != goats.Length ||
+                batch.totalCount != goats.Length ||
+                batch.hasMore != 0)
+            {
+                throw new InvalidOperationException("Level 2 Goat batch metadata is inconsistent");
+            }
+            return goats;
+        }
+
         internal (NativeSim.CampaignStepSnapshot snapshot, NativeSim.CampaignEvent[] events)
             Step(
                 ushort playerX,

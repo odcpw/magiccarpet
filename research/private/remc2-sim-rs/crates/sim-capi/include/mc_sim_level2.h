@@ -235,6 +235,12 @@ int32_t mc_native_campaign_objectives_copy(
 int32_t mc_native_campaign_entities_copy(
     uint64_t handle, uint32_t start_index, McCampaignEntitySnapshotV2 *buffer,
     uint32_t capacity, uint32_t element_size, uint32_t *out_written);
+/* Additive typed Level 2 Goat rows.  This does not alter the legacy
+ * mc_native_goats_copy Level 1 contract. */
+int32_t mc_native_campaign_goats_copy(
+    uint64_t handle, uint64_t generation, uint32_t start_ordinal,
+    McGoatSnapshotV2 *buffer, uint32_t capacity, uint32_t element_size,
+    McGoatBatchV2 *out_batch, uint32_t out_batch_size);
 
 int32_t mc_native_campaign_economy_events(
     uint64_t handle, McCampaignEconomyEventV2 *events,

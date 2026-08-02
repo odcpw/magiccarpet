@@ -9805,6 +9805,11 @@ impl Level2ResetSession {
     }
 
     #[must_use]
+    pub const fn goat_outer_tick(&self) -> u32 {
+        self.goats.outer_tick()
+    }
+
+    #[must_use]
     pub fn goat_hash(&self) -> String {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());

@@ -42,7 +42,7 @@ use sim_core::{
     },
     goat::{
         GOAT_BASE_TMAP, GOAT_CLASS, GOAT_MODEL, GOAT_PATROL_ACTION, GoatPlayerTarget, GoatState,
-        GoatStepEvent, LEVEL_ONE_GOAT_INDICES, LiveWorldState,
+        GoatStepEvent, LEVEL_ONE_GOAT_INDICES, LEVEL_TWO_GOAT_INDICES, LiveWorldState,
     },
     goat_draw_admission::{
         GoatDrawAdmission, GoatDrawCamera, evaluate_goat_draw_admission,
@@ -7397,6 +7397,81 @@ pub extern "C" fn mc_native_campaign_entities_copy(
                 u32::try_from(count).expect("entity count fits u32"),
             );
             Ok(())
+        })
+    })
+}
+
+/// Copy the live Level 2 Goat family from the campaign reset session.  The
+/// legacy `mc_native_goats_copy` remains Level 1-only; this additive route
+/// exposes the authored Level 2 rows after each production campaign step.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_goats_copy(
+    handle: u64,
+    generation: u64,
+    start_ordinal: u32,
+    buffer: *mut McGoatSnapshotV2,
+    capacity: u32,
+    element_size: u32,
+    out_batch: *mut McGoatBatchV2,
+    out_batch_size: u32,
+) -> i32 {
+    boundary_value(out_batch, out_batch_size, || {
+        require_element_size::<McGoatSnapshotV2>(element_size, "campaign Goat element")?;
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign Goat snapshots require a Level 2 campaign session",
+                ));
+            };
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign Goat generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            let goats = reset.goats();
+            let start = usize::try_from(start_ordinal).map_err(|_| {
+                AbiError::new(MC_STATUS_BOUNDS, "campaign Goat start exceeds usize")
+            })?;
+            if start > goats.len() {
+                return Err(AbiError::new(
+                    MC_STATUS_BOUNDS,
+                    "campaign Goat start is beyond family count",
+                ));
+            }
+            let capacity = usize::try_from(capacity).map_err(|_| {
+                AbiError::new(MC_STATUS_BOUNDS, "campaign Goat capacity exceeds usize")
+            })?;
+            let count = (goats.len() - start).min(capacity);
+            if count > 0 && buffer.is_null() {
+                return Err(AbiError::new(
+                    MC_STATUS_NULL_POINTER,
+                    "campaign Goat output buffer is null",
+                ));
+            }
+            for (offset, goat) in goats.iter().skip(start).take(count).enumerate() {
+                unsafe {
+                    buffer.add(offset).write_unaligned(goat_snapshot(goat));
+                }
+            }
+            Ok(McGoatBatchV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McGoatBatchV2>(),
+                generation: session.generation,
+                tick: u64::from(reset.goat_outer_tick()),
+                live_world_hash: reset.campaign_state_hash(),
+                start_ordinal,
+                written: u32::try_from(count).expect("Level 2 Goat count fits u32"),
+                total_count: u32::try_from(LEVEL_TWO_GOAT_INDICES.len())
+                    .expect("Level 2 Goat count fits u32"),
+                has_more: u8::from(start + count < goats.len()),
+                reserved_0: [0; 3],
+                reserved: [0; 4],
+            })
         })
     })
 }
@@ -15983,6 +16058,30 @@ mod tests {
             ),
             MC_STATUS_OK
         );
+        let mut initial_goats = [McGoatSnapshotV2::default(); 36];
+        let mut initial_goat_batch = McGoatBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_goats_copy(
+                handle,
+                0,
+                0,
+                initial_goats.as_mut_ptr(),
+                initial_goats.len() as u32,
+                struct_size::<McGoatSnapshotV2>(),
+                &raw mut initial_goat_batch,
+                struct_size::<McGoatBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(initial_goat_batch.written, 36);
+        assert_eq!(initial_goat_batch.total_count, 36);
+        assert_eq!(initial_goat_batch.has_more, 0);
+        let initial_action11_slots = initial_goats
+            .iter()
+            .filter(|goat| goat.action == 11)
+            .map(|goat| goat.entity_index)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(initial_action11_slots, BTreeSet::from([39, 71]));
         let input_command = McCommandV2 {
             abi_version: MC_NATIVE_ABI_VERSION,
             struct_size: struct_size::<McCommandV2>(),
@@ -16123,6 +16222,20 @@ mod tests {
             MC_STATUS_OK
         );
         assert_eq!(reset_info.reset_state_hash, initial_info.reset_state_hash);
+        let mut stale_goat_batch = McGoatBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_goats_copy(
+                handle,
+                0,
+                0,
+                initial_goats.as_mut_ptr(),
+                initial_goats.len() as u32,
+                struct_size::<McGoatSnapshotV2>(),
+                &raw mut stale_goat_batch,
+                struct_size::<McGoatBatchV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
         input.generation = 0;
         event_count = 0;
         assert_eq!(
