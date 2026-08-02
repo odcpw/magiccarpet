@@ -60,6 +60,9 @@ CLASSIC_HD_OWNER_EXIT_SIDECAR_ARTIFACT = Path(__file__).with_name(
 CLASSIC_HD_OWNER_EFFECTS_MATRIX_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-effects-matrix.json"
 )
+CLASSIC_HD_OWNER_OS_WINDOW_LIFECYCLE_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-os-window-lifecycle.json"
+)
 CLASSIC_HD_OWNER_VISUAL_CAPTURE_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-visual-capture.json"
 )
@@ -889,6 +892,54 @@ def validate_classic_hd_owner_visual_capture_artifact(
     )
 
 
+def validate_classic_hd_owner_os_window_lifecycle_artifact(
+    path: Path = CLASSIC_HD_OWNER_OS_WINDOW_LIFECYCLE_ARTIFACT,
+) -> list[str]:
+    """Validate the fail-closed OS-window receipt contract.
+
+    The checked-in artifact is intentionally a placeholder until an actual
+    standalone player is driven by an external window-manager action.
+    """
+    errors: list[str] = []
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"Classic HD OS window lifecycle artifact read failed: {error}"]
+
+    if artifact.get("schema_version") != 1:
+        errors.append("Classic HD OS window lifecycle schema_version must be 1")
+    if artifact.get("kind") != "classic-hd-owner-os-window-lifecycle/v1":
+        errors.append("Classic HD OS window lifecycle artifact kind is wrong")
+    if artifact.get("mode") != "classic-hd" or artifact.get("profile") != "hd-640x480":
+        errors.append("Classic HD OS window lifecycle artifact must target hd-640x480")
+    if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
+        errors.append("Classic HD OS window lifecycle must keep owner inputs external")
+    if artifact.get("required_consecutive_stable_frames") != 2:
+        errors.append("Classic HD OS window lifecycle must require two stable rendered frames")
+    status = str(artifact.get("qualification_status", ""))
+    if "open" not in status and "pending" not in status:
+        errors.append("Classic HD OS window lifecycle must remain open until external capture")
+    if artifact.get("initial_output_stable") is True or artifact.get("post_regain_output_stable") is True:
+        if artifact.get("actual_focus_callback_count", 0) <= 0:
+            errors.append("stable OS-window evidence requires an actual focus callback")
+
+    events = artifact.get("events")
+    if not isinstance(events, list):
+        errors.append("Classic HD OS window lifecycle events must be a list")
+    else:
+        for event in events:
+            if not isinstance(event, dict):
+                errors.append("Classic HD OS window lifecycle contains a non-object event")
+                continue
+            if event.get("synthetic_qualification") is True:
+                errors.append("Classic HD OS window lifecycle must reject synthetic events")
+            if event.get("actual_os_callback") is True and not str(event.get("observation", "")).startswith(
+                "unity-on-application-"
+            ):
+                errors.append("actual OS callbacks must be named Unity application callbacks")
+    return errors
+
+
 def validate_unity_enhanced_owner_visual_capture_artifact(
     path: Path = UNITY_ENHANCED_OWNER_VISUAL_CAPTURE_ARTIFACT,
     capture_dir: Path = UNITY_ENHANCED_OWNER_VISUAL_CAPTURE_DIR,
@@ -970,6 +1021,45 @@ def validate_unity_enhanced_visual_capture_tooling() -> list[str]:
         for snippet in snippets:
             if snippet not in content:
                 errors.append(f"Unity Enhanced visual capture tooling is missing {snippet!r} in {path.name}")
+    return errors
+
+
+def validate_classic_hd_os_window_lifecycle_tooling() -> list[str]:
+    """Ensure runtime OS callbacks have a distinct, review-gated trace path."""
+    errors: list[str] = []
+    router_path = LAB_ROOT / "Assets" / "Scripts" / "PresentationModeRouter.cs"
+    recorder_path = LAB_ROOT / "Assets" / "Scripts" / "ClassicHdWindowLifecycleRecorder.cs"
+    readme_path = LAB_ROOT / "README.md"
+    required_snippets = {
+        router_path: (
+            "OnApplicationFocus",
+            "RecordUnityLifecycleCallback",
+            "-mc-lifecycle-receipt",
+            "FullScreenMode.FullScreenWindow",
+        ),
+        recorder_path: (
+            "actual_os_callback",
+            "synthetic_qualification",
+            "ObserveRenderedFrame",
+            "RequiredStableFrames = 2",
+            "File.WriteAllText",
+            "classic-hd-owner-os-window-lifecycle/v1",
+        ),
+        readme_path: (
+            "-mc-lifecycle-receipt",
+            "classic-hd-owner-os-window-lifecycle.json",
+            "external window-manager action",
+        ),
+    }
+    for path, snippets in required_snippets.items():
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as error:
+            errors.append(f"OS window lifecycle tooling file read failed: {error}")
+            continue
+        for snippet in snippets:
+            if snippet not in content:
+                errors.append(f"OS window lifecycle tooling is missing {snippet!r} in {path.name}")
     return errors
 
 
@@ -1101,6 +1191,11 @@ def verify() -> dict[str, Any]:
         checks,
     )
     _validator_result(
+        "owner-bound Classic HD OS window lifecycle artifact",
+        validate_classic_hd_owner_os_window_lifecycle_artifact,
+        checks,
+    )
+    _validator_result(
         "owner-bound Classic HD exit-sidecar artifact",
         validate_classic_hd_owner_exit_sidecar_artifact,
         checks,
@@ -1123,6 +1218,11 @@ def verify() -> dict[str, Any]:
     _validator_result(
         "Unity Enhanced visual capture tooling",
         validate_unity_enhanced_visual_capture_tooling,
+        checks,
+    )
+    _validator_result(
+        "Classic HD OS window lifecycle tooling",
+        validate_classic_hd_os_window_lifecycle_tooling,
         checks,
     )
     _validator_result(

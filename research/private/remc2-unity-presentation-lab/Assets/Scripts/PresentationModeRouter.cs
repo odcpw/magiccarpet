@@ -28,6 +28,7 @@ namespace MagicCarpet.PresentationLab
         private OwnerInputValidation ownerValidation;
         private ClassicHdSettingsLoadResult classicHdSettingsResult;
         private ClassicHdPresentation classicHdPresentation;
+        private ClassicHdWindowLifecycleRecorder windowLifecycleRecorder;
         private UnityEnhancedOwnerSessionSource enhancedOwnerSession;
         private ClassicHdAssetTierResolution classicHdAssetTierResolution;
         private ulong inputSequence;
@@ -54,7 +55,10 @@ namespace MagicCarpet.PresentationLab
         public UnityEnhancedWorldRoot EnhancedRoot { get { return enhancedRoot; } }
         public UnityEnhancedOwnerSessionSource EnhancedOwnerSession { get { return enhancedOwnerSession; } }
         public bool IsApplicationSuspended { get { return !applicationFocused || applicationPaused; } }
+        public bool ApplicationFocused { get { return applicationFocused; } }
+        public bool ApplicationPaused { get { return applicationPaused; } }
         public int OutputRestoreRequests { get { return outputRestoreRequests; } }
+        public ClassicHdWindowLifecycleRecorder WindowLifecycleRecorder { get { return windowLifecycleRecorder; } }
         public ClassicHdAssetTierResolution ClassicHdAssetTierResolution
         {
             get { return classicHdAssetTierResolution; }
@@ -136,6 +140,30 @@ namespace MagicCarpet.PresentationLab
                     statusLine = "CLASSIC HD PRESENTATION FAILED CLOSED: " + presentationError;
                     return;
                 }
+
+                string lifecycleReceiptPath = CommandLineValue(arguments, "-mc-lifecycle-receipt");
+                if (!string.IsNullOrWhiteSpace(lifecycleReceiptPath))
+                {
+                    windowLifecycleRecorder = gameObject.AddComponent<ClassicHdWindowLifecycleRecorder>();
+                    string lifecycleReason;
+                    if (!windowLifecycleRecorder.Configure(
+                            this,
+                            classicHdPresentation,
+                            ClassicHdSettings,
+                            lifecycleReceiptPath,
+                            CommandLineValue(arguments, "-mc-desktop-session"),
+                            CommandLineValue(arguments, "-mc-window-driver"),
+                            CommandLineValue(arguments, "-mc-window-case"),
+                            out lifecycleReason))
+                    {
+                        DestroyImmediate(windowLifecycleRecorder);
+                        windowLifecycleRecorder = null;
+                        statusLine = "CLASSIC HD OS WINDOW RECORDER FAILED CLOSED: " + lifecycleReason;
+                        sessionLease.Dispose();
+                        sessionLease = null;
+                        return;
+                    }
+                }
             }
 
             if (SelectedMode == PresentationModeId.UnityEnhanced)
@@ -187,14 +215,22 @@ namespace MagicCarpet.PresentationLab
         {
             applicationFocused = hasFocus;
             string reason;
-            ApplyApplicationLifecycleState(out reason);
+            bool applied = ApplyApplicationLifecycleState(out reason);
+            if (windowLifecycleRecorder != null)
+            {
+                windowLifecycleRecorder.RecordUnityLifecycleCallback("focus", applied, reason);
+            }
         }
 
         private void OnApplicationPause(bool paused)
         {
             applicationPaused = paused;
             string reason;
-            ApplyApplicationLifecycleState(out reason);
+            bool applied = ApplyApplicationLifecycleState(out reason);
+            if (windowLifecycleRecorder != null)
+            {
+                windowLifecycleRecorder.RecordUnityLifecycleCallback("pause", applied, reason);
+            }
         }
 
         /// <summary>
@@ -239,6 +275,11 @@ namespace MagicCarpet.PresentationLab
 
         private void OnDestroy()
         {
+            if (windowLifecycleRecorder != null)
+            {
+                windowLifecycleRecorder.Flush();
+            }
+
             if (enhancedOwnerSession != null)
             {
                 enhancedOwnerSession.Dispose();
@@ -266,6 +307,11 @@ namespace MagicCarpet.PresentationLab
 
         private void Update()
         {
+            if (windowLifecycleRecorder != null)
+            {
+                windowLifecycleRecorder.ObserveRenderedFrame();
+            }
+
             if (SelectedMode != PresentationModeId.UnityEnhanced ||
                 enhancedOwnerSession == null ||
                 enhancedRoot == null ||
@@ -554,8 +600,10 @@ namespace MagicCarpet.PresentationLab
                 return;
             }
 
-            Screen.fullScreen = settings.fullscreen;
-            Screen.SetResolution(settings.windowWidth, settings.windowHeight, settings.fullscreen);
+            FullScreenMode mode = settings.fullscreen
+                ? FullScreenMode.FullScreenWindow
+                : FullScreenMode.Windowed;
+            Screen.SetResolution(settings.windowWidth, settings.windowHeight, mode);
         }
     }
 }

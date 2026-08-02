@@ -203,6 +203,42 @@ suspended, and that the exit presentation sidecar is clear and reset-safe at
 the tick-0 boundary. Real OS window/alt-tab capture and a full authored
 completion/postgame route remain open.
 
+The runtime has a separate OS-window recorder for the remaining lifecycle
+gate. It is activated only when a real player is launched with
+`-mc-lifecycle-receipt`; the existing editor focus/pause probe deliberately
+does not enter this trace. The recorder captures actual Unity
+`OnApplicationFocus`/`OnApplicationPause` callbacks, screen mode/dimensions,
+the 4:3 viewport, internal surface dimensions, allocation epoch, Rust
+generation/tick, and upload count. It requires two consecutive stable rendered
+frames after startup and after focus regain. It never advances Rust and it
+keeps the receipt open until an external window-manager action proves the
+transition.
+
+Run a standalone, non-batch player once in windowed mode and once in
+`FullScreenWindow` mode. Focus a separate real OS window, restore the player,
+then exit so the recorder flushes the requested sidecar:
+
+```text
+MagicCarpetPresentationLab \
+  -mc-presentation-mode classic-hd \
+  -mc-classic-profile hd-640x480 \
+  -mc-fullscreen false \
+  -mc-window-width 1280 \
+  -mc-window-height 960 \
+  -mc-window-case windowed \
+  -mc-desktop-session x11-or-wayland \
+  -mc-window-driver external-wm-focus \
+  -mc-lifecycle-receipt /tmp/magiccarpet-classic-hd-windowed-lifecycle.json \
+  -mc-package /absolute/path/to/level1-export-m \
+  -mc-closure /absolute/path/to/level1-asset-closure.json \
+  -mc-asset-cache /absolute/path/to/level1-unity-asset-cache
+```
+
+Repeat with `-mc-fullscreen true`, `-mc-window-case fullscreen-window`, and a
+separate receipt path. The checked-in
+`qualification/classic-hd-owner-os-window-lifecycle.json` remains an honest
+open placeholder until both external cases are captured and reviewed.
+
 The same route is qualified separately at the 960x720 candidate profile with
 `-mc-classic-profile hd-960x720`. Its receipt is
 `research/private/remc2-presentation/qualification/classic-hd-owner-route-960x720-scenarios.json`.

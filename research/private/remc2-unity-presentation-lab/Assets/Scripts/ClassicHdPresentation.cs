@@ -34,6 +34,9 @@ namespace MagicCarpet.PresentationLab
         public int UploadCount { get { return surface == null ? 0 : surface.UploadCount; } }
         public ulong ResetEpoch { get { return resetEpoch; } }
         public ClassicHdPresentationSettings Settings { get { return settings; } }
+        public int InternalWidth { get { return surface == null ? 0 : surface.Width; } }
+        public int InternalHeight { get { return surface == null ? 0 : surface.Height; } }
+        public Rect Viewport { get { return lastViewport; } }
         public Texture2D IndexTexture { get { return surface == null ? null : surface.IndexTexture; } }
         public Material IndexedMaterial { get { return surface == null ? null : surface.Material; } }
         public long LastNativeFrameNanoseconds
