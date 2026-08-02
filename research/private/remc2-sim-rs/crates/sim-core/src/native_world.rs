@@ -780,15 +780,17 @@ fn level2_castle_controller_points(level: u8) -> &'static [(i8, i8)] {
     }
 }
 
-/// BUILD00DATTAB dimensions implied by the source controller point table.
-/// The validated Level 2 footprint already supplies the effective dimensions
-/// used by the fixed-resolution source path; controller offsets are applied
-/// relative to those dimensions without another VGA-halving pass.
+/// BUILD00DATTAB dimensions consumed by `sub_613D0` on the fixed 320x200
+/// path.  The source TAB bytes are `[8, 21, 21, 35, 35, 48, 48]`; the
+/// runtime loader doubles them and the Castle controller halves them again
+/// under VGA selector 1, yielding the same effective values.  Keep the
+/// asymmetrical 21/35 entries even though integer centring shares coordinates
+/// with 20/34.
 fn level2_castle_controller_dimensions(level: u8) -> (u8, u8) {
     match level {
         1 => (8, 8),
-        2 | 3 => (20, 20),
-        4 | 5 => (34, 34),
+        2 | 3 => (21, 21),
+        4 | 5 => (35, 35),
         6 | 7 => (48, 48),
         _ => (0, 0),
     }
@@ -2913,6 +2915,13 @@ pub struct Level2CastleChild {
     /// that predecessor when the next child is committed.
     pub chain_previous_slot: u16,
     pub chain_next_slot: u16,
+    /// Raw model-79 fields written by `sub_613D0`: byte `0x43` carries the
+    /// selected player stage coefficient and word `0x4A` carries the BUILD
+    /// stage index.  The fixed profile binds byte `0x43` to the imported
+    /// player `array_0x24E[9 + level]` coefficient; it defaults to the
+    /// explicit identity value `1` when that nested player export is absent.
+    pub source_byte_43: u8,
+    pub source_word_4a: u16,
     pub active: bool,
 }
 
@@ -3005,6 +3014,8 @@ pub struct Level2EconomyState {
     castle: Option<Level2CastleState>,
     baseline_castle_children: Vec<Level2CastleChild>,
     castle_children: Vec<Level2CastleChild>,
+    baseline_castle_footprint: Option<CastleBuildFootprint>,
+    castle_footprint: Option<CastleBuildFootprint>,
     baseline_map_chains: RenderableMapChains,
     map_chains: RenderableMapChains,
     baseline_player_mana: i32,
@@ -3021,12 +3032,20 @@ pub struct Level2EconomyState {
     player_terrain_flags: u8,
     baseline_player_spell_slot_2: u16,
     player_spell_slot_2: u16,
+    baseline_player_spell_holder_action: u8,
+    player_spell_holder_action: u8,
     /// Imported `sub_60810` life coefficient per Castle stage. The owner
     /// export does not expose the nested player-state array, so fixed-profile
     /// sessions default to the source identity coefficient (256); callers
     /// preserving those bytes can bind each stage explicitly.
     baseline_castle_stage_coefficients: [u16; 8],
     castle_stage_coefficients: [u16; 8],
+    /// Imported `sub_613D0` controller coefficient from the player's
+    /// `array_0x24E[9 + level]`. The owner export does not expose this
+    /// nested byte array, so fixed-profile sessions bind the explicit source
+    /// identity value `1` unless a caller provides the preserved byte.
+    baseline_castle_controller_coefficients: [u8; 8],
+    castle_controller_coefficients: [u8; 8],
     events: Vec<Level2EconomyEvent>,
 }
 
@@ -3126,6 +3145,8 @@ impl Level2EconomyState {
             castle: None,
             baseline_castle_children: Vec::new(),
             castle_children: Vec::new(),
+            baseline_castle_footprint: None,
+            castle_footprint: None,
             baseline_map_chains: map_chains.clone(),
             map_chains,
             baseline_player_mana: player_mana,
@@ -3142,8 +3163,12 @@ impl Level2EconomyState {
             player_terrain_flags,
             baseline_player_spell_slot_2: player_spell_slot_2,
             player_spell_slot_2,
+            baseline_player_spell_holder_action: 0,
+            player_spell_holder_action: 0,
             baseline_castle_stage_coefficients: [256; 8],
             castle_stage_coefficients: [256; 8],
+            baseline_castle_controller_coefficients: [1; 8],
+            castle_controller_coefficients: [1; 8],
             events: Vec::new(),
         })
     }
@@ -3214,6 +3239,11 @@ impl Level2EconomyState {
         self.player_spell_slot_2
     }
 
+    #[must_use]
+    pub const fn player_spell_holder_action(&self) -> u8 {
+        self.player_spell_holder_action
+    }
+
     /// Bind the source conditions used by `sub_605E0` when the final Castle
     /// stage is removed. The reset package normally leaves this disabled; the
     /// setter lets an imported player/terrain projection opt into the exact
@@ -3228,6 +3258,7 @@ impl Level2EconomyState {
         self.player_model = player_model;
         self.player_terrain_flags = terrain_flags;
         self.player_spell_slot_2 = holder_slot;
+        self.player_spell_holder_action = 0;
     }
 
     #[must_use]
@@ -3257,6 +3288,19 @@ impl Level2EconomyState {
     /// bytes can provide the exact value for each stage.
     pub fn set_castle_stage_coefficient(&mut self, level: u8, coefficient: u16) -> bool {
         let Some(value) = self.castle_stage_coefficients.get_mut(usize::from(level)) else {
+            return false;
+        };
+        *value = coefficient;
+        true
+    }
+
+    /// Bind the raw player `array_0x24E[9 + level]` byte copied to each
+    /// model-79 controller by source `sub_613D0`.
+    pub fn set_castle_controller_coefficient(&mut self, level: u8, coefficient: u8) -> bool {
+        let Some(value) = self
+            .castle_controller_coefficients
+            .get_mut(usize::from(level))
+        else {
             return false;
         };
         *value = coefficient;
@@ -3575,7 +3619,12 @@ impl Level2EconomyState {
         }
         let (root_position, construction_anchor) =
             level2_castle_root_positions(&self.terrain, footprint, projectile_position);
-        self.build_castle_at(root_position, construction_anchor, owner_entity_index, true)
+        let castle_slot =
+            self.build_castle_at(root_position, construction_anchor, owner_entity_index, true);
+        if castle_slot.is_some() {
+            self.castle_footprint = Some(footprint.clone());
+        }
+        castle_slot
     }
 
     fn build_castle_at(
@@ -3936,6 +3985,79 @@ impl Level2EconomyState {
             });
     }
 
+    /// Rebuild the downgraded model-79 chain from `sub_613D0` immediately
+    /// after `sub_605E0` removes a stage. This is independent of model-42
+    /// construction and therefore remains observable even when the source
+    /// arena could not allocate every optional child.
+    fn spawn_castle_controller_chain(&mut self, snapshot: Level2CastleState, level: u8) {
+        if level == 0 {
+            return;
+        }
+        let (controller_width, controller_height) = level2_castle_controller_dimensions(level);
+        let center_x = snapshot.position.x.wrapping_add(128).to_be_bytes()[0];
+        let center_y = snapshot.position.y.wrapping_add(128).to_be_bytes()[0];
+        let start_x = center_x.wrapping_sub(controller_width / 2);
+        let start_y = center_y.wrapping_sub(controller_height / 2);
+        let mut controller_slots = [0_u16; 8];
+        let mut controller_count = 0_u8;
+        let mut previous_child_index: Option<usize> = None;
+        let mut previous_slot = snapshot.source_entity_index;
+        for &(offset_x, offset_y) in level2_castle_controller_points(level) {
+            let Some(stage_slot) = self.allocate_slot() else {
+                break;
+            };
+            let source_byte_43 = self
+                .castle_controller_coefficients
+                .get(usize::from(level))
+                .copied()
+                .unwrap_or(1);
+            let stage_position = Position {
+                x: u16::from(start_x.wrapping_add_signed(offset_x)) << 8,
+                y: u16::from(start_y.wrapping_add_signed(offset_y)) << 8,
+                z: 0,
+            };
+            let ground = self.terrain.ground_height(stage_position);
+            let stage_child = Level2CastleChild {
+                source_entity_index: stage_slot,
+                id_entity_index: snapshot.source_id_entity_index,
+                parent_entity_index: snapshot.source_entity_index,
+                owner_entity_index: snapshot.owner_entity_index,
+                position: Position {
+                    z: ground.saturating_add(if level <= 1 { 384 } else { 224 }),
+                    ..stage_position
+                },
+                model: 79,
+                action: 0,
+                control_flags: 0,
+                chain_previous_slot: previous_slot,
+                chain_next_slot: 0,
+                source_byte_43,
+                source_word_4a: u16::from(level),
+                active: true,
+            };
+            self.sync_castle_child_map(stage_child);
+            self.castle_children.push(stage_child);
+            let child_index = self.castle_children.len() - 1;
+            if let Some(previous_index) = previous_child_index {
+                self.castle_children[previous_index].chain_next_slot = stage_slot;
+            }
+            previous_child_index = Some(child_index);
+            previous_slot = stage_slot;
+            controller_slots[usize::from(controller_count)] = stage_slot;
+            controller_count = controller_count.saturating_add(1);
+        }
+        if let Some(castle) = self.castle.as_mut() {
+            castle.controller_chain_slots = controller_slots;
+            castle.controller_chain_count = controller_count;
+            castle.controller_chain_head = controller_slots[0];
+            castle.controller_chain_tail = if controller_count == 0 {
+                0
+            } else {
+                controller_slots[usize::from(controller_count - 1)]
+            };
+        }
+    }
+
     /// Advance the bounded Castle root action. This follows the source state
     /// table in `BeginOfCastleCreation_5FA70`: states 0/3 allocate a class-10
     /// model-42 child, state 4 scans for that child, and state 5 allocates the
@@ -4002,6 +4124,8 @@ impl Level2EconomyState {
                     control_flags: 1,
                     chain_previous_slot: 0,
                     chain_next_slot: 0,
+                    source_byte_43: 0,
+                    source_word_4a: 0,
                     active: true,
                 };
                 self.sync_castle_child_map(construction_child);
@@ -4025,6 +4149,11 @@ impl Level2EconomyState {
                     let Some(stage_slot) = self.allocate_slot() else {
                         break;
                     };
+                    let source_byte_43 = self
+                        .castle_controller_coefficients
+                        .get(usize::from(next_level))
+                        .copied()
+                        .unwrap_or(1);
                     let stage_position = Position {
                         x: u16::from(start_x.wrapping_add_signed(offset_x)) << 8,
                         y: u16::from(start_y.wrapping_add_signed(offset_y)) << 8,
@@ -4048,6 +4177,8 @@ impl Level2EconomyState {
                         control_flags: 0,
                         chain_previous_slot: previous_slot,
                         chain_next_slot: 0,
+                        source_byte_43,
+                        source_word_4a: u16::from(next_level),
                         active: true,
                     };
                     self.sync_castle_child_map(stage_child);
@@ -4148,6 +4279,8 @@ impl Level2EconomyState {
                     control_flags: 0,
                     chain_previous_slot: 0,
                     chain_next_slot: 0,
+                    source_byte_43: 0,
+                    source_word_4a: 0,
                     active: true,
                 };
                 self.sync_castle_child_map(defense_child);
@@ -4274,7 +4407,32 @@ impl Level2EconomyState {
                 // `sub_5FCA0` does not gate stage destruction on a free
                 // arena slot. `sub_605E0`/`sub_5FD00` may fail their optional
                 // sphere allocations, but the Castle state still advances.
+                // Keep the source order: reduce capacity and release
+                // overflow before the destruction sound and stage terrain
+                // removal (`sub_605E0` -> `sub_5FD00` -> `RemoveCastleStage`).
                 self.prepare_castle_stage_destruction(castle_slot);
+                if snapshot.level > 0 {
+                    if let Some(footprint) = self.castle_footprint.clone() {
+                        let center_x = snapshot.position.x.wrapping_add(128).to_be_bytes()[0];
+                        let center_y = snapshot.position.y.wrapping_add(128).to_be_bytes()[0];
+                        let start_x = center_x.wrapping_sub(footprint.width / 2);
+                        let start_y = center_y.wrapping_sub(footprint.height / 2);
+                        let entity_rng = self
+                            .slot_rng
+                            .get(&snapshot.source_entity_index)
+                            .copied()
+                            .unwrap_or_default();
+                        remove_castle_stage(
+                            &mut self.terrain.planes,
+                            start_x,
+                            start_y,
+                            &footprint,
+                            self.terrain.map_type,
+                            &mut self.terrain.terrain_rng,
+                            entity_rng,
+                        );
+                    }
+                }
                 let construction_slot = snapshot.construction_slot;
                 let defense_slot = snapshot.defense_slot;
                 if construction_slot != 0 {
@@ -4386,6 +4544,13 @@ impl Level2EconomyState {
                 } else {
                     self.player_castle_stage = castle.level;
                     self.player_castle_aux_flags = 0;
+                }
+                if self.player_spell_slot_2 != 0 {
+                    self.player_spell_holder_action = next_level.saturating_sub(1);
+                }
+                if next_level > 0 {
+                    let downgraded = self.castle.expect("Castle remains installed");
+                    self.spawn_castle_controller_chain(downgraded, next_level);
                 }
                 if let Some(castle) = self.castle.filter(|castle| !castle.active) {
                     self.map_chains
@@ -4602,9 +4767,11 @@ impl Level2EconomyState {
         hasher.update([self.player_castle_stage, self.player_castle_aux_flags]);
         hasher.update([self.player_model, self.player_terrain_flags]);
         hasher.update(self.player_spell_slot_2.to_le_bytes());
+        hasher.update([self.player_spell_holder_action]);
         for coefficient in self.castle_stage_coefficients {
             hasher.update(coefficient.to_le_bytes());
         }
+        hasher.update(self.castle_controller_coefficients);
         for slot in &self.free_slots {
             hasher.update(slot.to_le_bytes());
         }
@@ -4757,6 +4924,16 @@ impl Level2EconomyState {
             hasher.update(child.control_flags.to_le_bytes());
             hasher.update(child.chain_previous_slot.to_le_bytes());
             hasher.update(child.chain_next_slot.to_le_bytes());
+            hasher.update([child.source_byte_43]);
+            hasher.update(child.source_word_4a.to_le_bytes());
+        }
+        if let Some(footprint) = &self.castle_footprint {
+            hasher.update([1, footprint.index, footprint.width, footprint.height]);
+            for cell in footprint.cells() {
+                hasher.update(cell);
+            }
+        } else {
+            hasher.update([0]);
         }
         for source_entity_index in self.map_chains.linked_entity_indices() {
             hasher.update(source_entity_index.to_le_bytes());
@@ -4787,6 +4964,7 @@ impl Level2EconomyState {
         self.carrier = self.baseline_carrier;
         self.castle = self.baseline_castle;
         self.castle_children = self.baseline_castle_children.clone();
+        self.castle_footprint = self.baseline_castle_footprint.clone();
         self.map_chains = self.baseline_map_chains.clone();
         self.player_mana = self.baseline_player_mana;
         self.player_castle_entity_index = self.baseline_player_castle_entity_index;
@@ -4795,7 +4973,9 @@ impl Level2EconomyState {
         self.player_model = self.baseline_player_model;
         self.player_terrain_flags = self.baseline_player_terrain_flags;
         self.player_spell_slot_2 = self.baseline_player_spell_slot_2;
+        self.player_spell_holder_action = self.baseline_player_spell_holder_action;
         self.castle_stage_coefficients = self.baseline_castle_stage_coefficients;
+        self.castle_controller_coefficients = self.baseline_castle_controller_coefficients;
         self.events.clear();
     }
 }
@@ -11759,6 +11939,8 @@ mod tests {
                 control_flags: 1,
                 chain_previous_slot: 0,
                 chain_next_slot: 0,
+                source_byte_43: 0,
+                source_word_4a: 0,
                 active: true,
             }
         );
@@ -11802,6 +11984,10 @@ mod tests {
         );
         assert_eq!(stage_child.chain_previous_slot, lifecycle_slot);
         assert_eq!(stage_child.chain_next_slot, 0);
+        assert_eq!(
+            (stage_child.source_byte_43, stage_child.source_word_4a),
+            (1, 1)
+        );
         assert_eq!(lifecycle_castle.source_class, 3);
         assert_eq!(lifecycle_castle.source_model, 2);
         assert_eq!(lifecycle_castle.source_byte_38, 33);
@@ -11841,6 +12027,7 @@ mod tests {
         assert!(stage_two.economy_mut().step_castle_action(stage_two_slot));
         {
             let economy = stage_two.economy_mut();
+            assert!(economy.set_castle_controller_coefficient(2, 0x2a));
             let castle = economy.castle.as_mut().expect("stage-two Castle");
             castle.action = 5;
             castle.build_state = 3;
@@ -11869,6 +12056,8 @@ mod tests {
             .find(|child| child.active && child.model == 79)
             .expect("stage-two controller");
         assert_eq!(stage_two_child.position.z, 224);
+        assert_eq!(stage_two_child.source_byte_43, 0x2a);
+        assert_eq!(stage_two_child.source_word_4a, 2);
         let stage_two_castle = stage_two.economy().castle().expect("stage-two Castle");
         assert_eq!(stage_two_castle.controller_chain_count, 4);
         assert_eq!(
@@ -11897,6 +12086,7 @@ mod tests {
                 .map_or(0, |next| next.source_entity_index);
             assert_eq!(child.chain_previous_slot, expected_previous);
             assert_eq!(child.chain_next_slot, expected_next);
+            assert_eq!((child.source_byte_43, child.source_word_4a), (0x2a, 2));
         }
 
         let mut defense_lifecycle = inspection
@@ -12208,7 +12398,17 @@ mod tests {
                 .economy()
                 .castle_children()
                 .iter()
-                .all(|child| !child.active)
+                .filter(|child| child.active)
+                .all(|child| child.model == 79)
+        );
+        assert_eq!(
+            teardown
+                .economy()
+                .castle_children()
+                .iter()
+                .filter(|child| child.active)
+                .count(),
+            1
         );
 
         // A final-stage teardown also completes with an exhausted arena and
@@ -12266,6 +12466,41 @@ mod tests {
             y: 0x56_78,
             z: 1_234,
         };
+        // Make the selector error observable: every candidate 4x4 and 8x8
+        // perimeter cell is high, except `(16,82)`, which belongs only to
+        // the consumer-effective 8x8 boundary. A second VGA-halving pass
+        // therefore reports 200*32 instead of the source 0*32 anchor.
+        let mut boundary_terrain = terrain.clone();
+        for (width, height) in [(8_u8, 8_u8), (4, 4)] {
+            let center_x = 20_u8;
+            let center_y = 86_u8;
+            let start_x = center_x - width / 2;
+            let start_y = center_y - height / 2;
+            for offset in 0..width {
+                boundary_terrain.planes.ground_heights[terrain_index(start_x + offset, start_y)] =
+                    200;
+                boundary_terrain.planes.ground_heights
+                    [terrain_index(start_x + offset, start_y + height)] = 200;
+            }
+            for offset in 0..height {
+                boundary_terrain.planes.ground_heights[terrain_index(start_x, start_y + offset)] =
+                    200;
+                boundary_terrain.planes.ground_heights
+                    [terrain_index(start_x + width, start_y + offset)] = 200;
+            }
+        }
+        boundary_terrain.planes.ground_heights[terrain_index(16, 82)] = 0;
+        let (boundary_root, boundary_anchor) =
+            level2_castle_root_positions(&boundary_terrain, &footprint, projectile);
+        assert_eq!((boundary_root.x, boundary_root.y), (0x14_00, 0x56_00));
+        assert_eq!(boundary_anchor.z, 0);
+        let (_, halved_anchor) = level2_castle_root_positions_with_resolution(
+            &boundary_terrain,
+            &footprint,
+            projectile,
+            true,
+        );
+        assert_eq!(halved_anchor.z, 200 * 32);
         let (root, anchor) = level2_castle_root_positions(&terrain, &footprint, projectile);
         assert_eq!((root.x, root.y), (0x14_00, 0x56_00));
         assert_eq!((anchor.x, anchor.y), (root.x, root.y));
@@ -12342,6 +12577,96 @@ mod tests {
             (root.x, root.y)
         );
         assert_eq!(stage_controller.chain_previous_slot, castle_slot);
+    }
+
+    #[test]
+    fn level_two_castle_controller_points_pin_stage_corner_vectors() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let vectors: &[(u8, &[(i8, i8)])] = &[
+            (1, &[(0, 0)]),
+            (2, &[(-7, -7), (7, -7), (-7, 7), (7, 7)]),
+            (4, &[(-14, -14), (14, -14), (-14, 14), (14, 14)]),
+            (
+                6,
+                &[
+                    (-21, -21),
+                    (0, -21),
+                    (21, -21),
+                    (-21, 0),
+                    (21, 0),
+                    (-21, 21),
+                    (0, 21),
+                    (21, 21),
+                ],
+            ),
+        ];
+        for &(level, expected_offsets) in vectors {
+            let mut session = inspection
+                .level2_reset_session()
+                .expect("controller vector session");
+            let root_position = Position {
+                x: 0x20_00,
+                y: 0x30_00,
+                z: 0,
+            };
+            let castle_slot = session
+                .economy_mut()
+                .build_castle(root_position, 111)
+                .expect("controller vector Castle");
+            {
+                let castle = session
+                    .economy_mut()
+                    .castle
+                    .as_mut()
+                    .expect("controller vector Castle");
+                castle.action = 5;
+                castle.build_state = 3;
+                castle.level = level.saturating_sub(1);
+            }
+            assert!(session.economy_mut().step_castle_action(castle_slot));
+            let castle = session
+                .economy()
+                .castle()
+                .expect("controller vector Castle");
+            assert_eq!(
+                castle.controller_chain_count as usize,
+                expected_offsets.len()
+            );
+            let slots = &castle.controller_chain_slots[..expected_offsets.len()];
+            for (ordinal, (&slot, &(offset_x, offset_y))) in
+                slots.iter().zip(expected_offsets).enumerate()
+            {
+                let child = session
+                    .economy()
+                    .castle_children()
+                    .iter()
+                    .find(|child| child.source_entity_index == slot)
+                    .expect("controller child slot");
+                let expected_x = root_position
+                    .x
+                    .wrapping_add_signed(i16::from(offset_x) * 256);
+                let expected_y = root_position
+                    .y
+                    .wrapping_add_signed(i16::from(offset_y) * 256);
+                assert_eq!(
+                    (child.position.x, child.position.y),
+                    (expected_x, expected_y)
+                );
+                assert_eq!(
+                    child.chain_previous_slot,
+                    if ordinal == 0 {
+                        castle_slot
+                    } else {
+                        slots[ordinal - 1]
+                    }
+                );
+                assert_eq!(
+                    child.chain_next_slot,
+                    slots.get(ordinal + 1).copied().unwrap_or_default()
+                );
+            }
+        }
     }
 
     #[test]
