@@ -3,8 +3,9 @@
 This is the current measured matrix for the owner-free Classic HD render
 graph plus the separate owner-bound Unity profile-rerender binding smoke. It
 keeps the Rust presentation workload distinct from sustained Unity GPU,
-copy/upload, owner-route, and preserved corpus qualification. A row is not a
-player-facing production claim until those later measurements are attached.
+copy/upload, owner-route, and preserved corpus qualification. The owner-bound
+performance receipt is attached separately below; a row is not a player-facing
+production claim until all later measurements are attached.
 
 The reproducible command is:
 
@@ -19,8 +20,8 @@ T14 run produced:
 
 | Internal profile | Frame bytes | Graph memory | p95 CPU | Reset deterministic | Current status |
 | --- | ---: | ---: | ---: | --- | --- |
-| 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; owner profile rerender, persistent Unity upload, and owner idle/town/combat/flight/death-restart route smoke pass |
-| 960x720 | 691,200 | 2,768,896 | 26.11 ms | yes | candidate; owner profile rerender/upload and 64-frame two-pass reset replay now pass; traced owner terrain raster was ~1.52 s/frame, so real-time/GPU/scenario promotion remains pending |
+| 640x480 | 307,200 | 1,232,896 | 10.95 ms | yes | CPU-supported; owner route is deterministic with zero measured steady allocation, but owner p95 total is 487.7 ms, so real-time/GPU promotion remains open |
+| 960x720 | 691,200 | 2,768,896 | 26.11 ms | yes | candidate; owner route is deterministic with zero measured steady allocation, but owner p95 total is 4.62 s, so real-time/GPU promotion remains open |
 | 1280x960 | 1,228,800 | 4,919,296 | 45.64 ms | yes | rejected by current CPU budget |
 
 The window is independent of the internal render profile. For example,
@@ -41,12 +42,24 @@ or visual-corpus claim. The 960x720 candidate has a one-frame owner profile
 smoke in `qualification/classic-hd-owner-route-960x720-smoke.json` and a
 64-frame two-pass reset replay in
 `qualification/classic-hd-owner-route-960x720-sequence-smoke.json`. The
-streaming mode-5 terrain path reduced the traced owner terrain stage to about
-1.52 seconds per 960x720 frame on T14; therefore the sequence is promoted as
-deterministic owner-route evidence, but the profile is not promoted as
-real-time or player-facing GPU/scenario support. The earlier bounded failure
-record remains at `qualification/classic-hd-owner-route-960x720-sequence-failure.json`
-as a historical finding and is explicitly superseded by the passing rerun.
+The owner-bound 8+64 performance smoke is recorded in
+`qualification/classic-hd-owner-performance-smoke.json`. It measures the
+private owner rerender plus persistent Unity R8 upload and reports p95 native /
+total times of 487.0 / 487.7 ms at 640x480 and 4.6008 / 4.6166 s at 960x720.
+Both routes preserve one allocation epoch, zero measured steady managed
+allocation, monotonic generation/ticks, and nonzero indexed/provenance hashes;
+neither meets the 33.3 ms 30 Hz owner presentation budget. The earlier bounded
+1.52-second terrain trace remains historical and is superseded for promotion
+decisions by this full-route receipt. The earlier bounded failure record remains
+at `qualification/classic-hd-owner-route-960x720-sequence-failure.json` as a
+historical finding and is explicitly superseded by the passing rerun.
+
+The GPU consumption probe is recorded in
+`qualification/classic-hd-owner-gpu-fence.json`. Both profiles produce
+changing raw indexed and palette-resolved readbacks without readback errors,
+but the T14 OpenGLCore device cannot report the requested async graphics-fence
+status because async compute is unavailable. Unity GPU timing and real-time
+promotion therefore remain open.
 
 The mandatory 640x480 owner scenario receipt is recorded in
 `qualification/classic-hd-owner-route-scenarios.json`. It proves 49 persistent
