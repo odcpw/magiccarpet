@@ -2699,6 +2699,9 @@ pub struct Level2SpeedPickupStep {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2CastleState {
     pub source_entity_index: u16,
+    /// Source `id_0x1A_26` copied into Castle child records. This is kept
+    /// separate from the player/owner relation used by economy arbitration.
+    pub source_id_entity_index: u16,
     pub owner_entity_index: u16,
     pub position: Position,
     pub life: i32,
@@ -2710,6 +2713,7 @@ pub struct Level2CastleState {
     pub killer_entity_index: u16,
     pub control_flags: u32,
     pub timer: u8,
+    pub phase: u8,
     /// Root action (`4` stable, `5` construction, `6` destruction) and the
     /// source construction substate used by `BeginOfCastleCreation_5FA70`.
     pub action: u8,
@@ -2731,8 +2735,27 @@ pub struct Level2CastleState {
     pub defense_owner_entity_index: u16,
     pub defense_id: u16,
     pub defense_position: Position,
+    pub child_chain_slots: [u16; 2],
+    pub child_chain_models: [u8; 2],
+    pub child_chain_active: [bool; 2],
     pub construction_child_active: bool,
     pub defense_child_active: bool,
+    pub active: bool,
+}
+
+/// One source-linked construction/defense child record. The root keeps the
+/// current slots for quick dispatch, while this ordered chain mirrors the
+/// source `next_0` walk used by state 4's model-42 scan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2CastleChild {
+    pub source_entity_index: u16,
+    pub id_entity_index: u16,
+    pub parent_entity_index: u16,
+    pub owner_entity_index: u16,
+    pub position: Position,
+    pub model: u8,
+    pub action: u8,
+    pub control_flags: u32,
     pub active: bool,
 }
 
@@ -2775,6 +2798,10 @@ pub enum Level2EconomyEvent {
         source_entity_index: u16,
         killer_entity_index: u16,
     },
+    CastleConstructionSound {
+        source_entity_index: u16,
+        sound_id: u16,
+    },
     DamageApplied {
         target_entity_index: u16,
         attacker_entity_index: u16,
@@ -2810,8 +2837,12 @@ pub struct Level2EconomyState {
     carrier: Option<ManaCarrier>,
     baseline_castle: Option<Level2CastleState>,
     castle: Option<Level2CastleState>,
+    baseline_castle_children: Vec<Level2CastleChild>,
+    castle_children: Vec<Level2CastleChild>,
     baseline_player_mana: i32,
     player_mana: i32,
+    baseline_player_castle_entity_index: u16,
+    player_castle_entity_index: u16,
     events: Vec<Level2EconomyEvent>,
 }
 
@@ -2868,8 +2899,12 @@ impl Level2EconomyState {
             carrier: None,
             baseline_castle: None,
             castle: None,
+            baseline_castle_children: Vec::new(),
+            castle_children: Vec::new(),
             baseline_player_mana: player_mana,
             player_mana,
+            baseline_player_castle_entity_index: 0,
+            player_castle_entity_index: 0,
             events: Vec::new(),
         }
     }
@@ -2906,8 +2941,18 @@ impl Level2EconomyState {
     }
 
     #[must_use]
+    pub fn castle_children(&self) -> &[Level2CastleChild] {
+        &self.castle_children
+    }
+
+    #[must_use]
     pub const fn player_mana(&self) -> i32 {
         self.player_mana
+    }
+
+    #[must_use]
+    pub const fn player_castle_entity_index(&self) -> u16 {
+        self.player_castle_entity_index
     }
 
     #[must_use]
@@ -3232,6 +3277,7 @@ impl Level2EconomyState {
         let source_entity_index = self.allocate_slot()?;
         self.castle = Some(Level2CastleState {
             source_entity_index,
+            source_id_entity_index: source_entity_index,
             owner_entity_index,
             position,
             life: CASTLE_STAGE_ONE_LIFE,
@@ -3243,6 +3289,7 @@ impl Level2EconomyState {
             killer_entity_index: 0,
             control_flags: 0,
             timer: 0,
+            phase: source_entity_index as u8,
             action: 4,
             build_state: 4,
             level: 1,
@@ -3262,10 +3309,14 @@ impl Level2EconomyState {
             defense_owner_entity_index: 0,
             defense_id: 0,
             defense_position: Position::default(),
+            child_chain_slots: [0; 2],
+            child_chain_models: [0; 2],
+            child_chain_active: [false; 2],
             construction_child_active: false,
             defense_child_active: false,
             active: true,
         });
+        self.player_castle_entity_index = source_entity_index;
         self.events.push(Level2EconomyEvent::CastleBuilt {
             source_entity_index,
             owner_entity_index,
@@ -3308,6 +3359,9 @@ impl Level2EconomyState {
         castle.defense_owner_entity_index = 0;
         castle.defense_id = 0;
         castle.defense_position = Position::default();
+        castle.child_chain_slots = [0; 2];
+        castle.child_chain_models = [0; 2];
+        castle.child_chain_active = [false; 2];
         castle.construction_child_active = false;
         castle.defense_child_active = false;
         castle.life = 0;
@@ -3319,18 +3373,30 @@ impl Level2EconomyState {
     /// Commit the construction child completion callback (`state 2`) after
     /// the model-42 child has finished its own action stream.
     pub fn complete_castle_construction(&mut self, castle_slot: u16) -> bool {
-        let Some(castle) = self
-            .castle
-            .as_mut()
-            .filter(|castle| castle.active && castle.source_entity_index == castle_slot)
-        else {
-            return false;
+        let construction_slot = {
+            let Some(castle) = self
+                .castle
+                .as_mut()
+                .filter(|castle| castle.active && castle.source_entity_index == castle_slot)
+            else {
+                return false;
+            };
+            if castle.action != 5 || castle.build_state != 4 || !castle.construction_child_active {
+                return false;
+            }
+            let construction_slot = castle.construction_slot;
+            castle.construction_child_active = false;
+            castle.child_chain_active[0] = false;
+            castle.build_state = 2;
+            construction_slot
         };
-        if castle.action != 5 || castle.build_state != 4 || !castle.construction_child_active {
-            return false;
+        if let Some(child) = self
+            .castle_children
+            .iter_mut()
+            .find(|child| child.source_entity_index == construction_slot)
+        {
+            child.active = false;
         }
-        castle.construction_child_active = false;
-        castle.build_state = 2;
         true
     }
 
@@ -3350,6 +3416,16 @@ impl Level2EconomyState {
         true
     }
 
+    fn advance_castle_phase(&mut self, castle_slot: u16) {
+        if let Some(castle) = self
+            .castle
+            .as_mut()
+            .filter(|castle| castle.source_entity_index == castle_slot)
+        {
+            castle.phase = castle.phase.wrapping_add(1);
+        }
+    }
+
     /// Advance the bounded Castle root action. This follows the source state
     /// table in `BeginOfCastleCreation_5FA70`: states 0/3 allocate a class-10
     /// model-42 child, state 4 scans for that child, state 5 allocates the
@@ -3364,8 +3440,20 @@ impl Level2EconomyState {
         match snapshot.action {
             5 if snapshot.build_state == 0 || snapshot.build_state == 3 => {
                 let Some(child_slot) = self.allocate_slot() else {
+                    self.advance_castle_phase(castle_slot);
                     return false;
                 };
+                self.castle_children.push(Level2CastleChild {
+                    source_entity_index: child_slot,
+                    id_entity_index: snapshot.source_id_entity_index,
+                    parent_entity_index: snapshot.source_entity_index,
+                    owner_entity_index: snapshot.owner_entity_index,
+                    position: snapshot.position,
+                    model: 42,
+                    action: 44,
+                    control_flags: 1,
+                    active: true,
+                });
                 let castle = self.castle.as_mut().expect("Castle remains installed");
                 castle.construction_slot = child_slot;
                 castle.construction_model = 42;
@@ -3375,12 +3463,22 @@ impl Level2EconomyState {
                 castle.construction_owner_entity_index = castle.owner_entity_index;
                 castle.construction_id = castle.owner_entity_index;
                 castle.construction_position = castle.position;
+                castle.child_chain_slots[0] = child_slot;
+                castle.child_chain_models[0] = 42;
+                castle.child_chain_active[0] = true;
                 castle.construction_child_active = true;
                 castle.build_state = 4;
                 castle.level = 1;
                 castle.life = CASTLE_STAGE_ONE_LIFE;
                 castle.max_life = CASTLE_STAGE_ONE_LIFE;
                 castle.mana_capacity = CASTLE_STAGE_ONE_MANA_CAPACITY;
+                castle.control_flags &= !0x40;
+                self.events
+                    .push(Level2EconomyEvent::CastleConstructionSound {
+                        source_entity_index: castle.source_entity_index,
+                        sound_id: 10,
+                    });
+                self.advance_castle_phase(castle_slot);
                 true
             }
             5 if snapshot.build_state == 2 => {
@@ -3391,24 +3489,47 @@ impl Level2EconomyState {
                     source_entity_index: castle.source_entity_index,
                     owner_entity_index: castle.owner_entity_index,
                 });
+                self.advance_castle_phase(castle_slot);
                 true
             }
             5 if snapshot.build_state == 1 => {
                 let castle = self.castle.as_mut().expect("Castle remains installed");
                 castle.position.z = self.terrain.ground_height(castle.position);
+                self.advance_castle_phase(castle_slot);
                 true
             }
-            5 if snapshot.build_state == 4 && !snapshot.construction_child_active => {
+            5 if snapshot.build_state == 4 => {
+                if self
+                    .castle_children
+                    .iter()
+                    .any(|child| child.active && child.model == 42)
+                {
+                    self.advance_castle_phase(castle_slot);
+                    return true;
+                }
                 self.castle
                     .as_mut()
                     .expect("Castle remains installed")
                     .build_state = 3;
+                self.advance_castle_phase(castle_slot);
                 true
             }
             5 if snapshot.build_state == 5 => {
                 let Some(child_slot) = self.allocate_slot() else {
+                    self.advance_castle_phase(castle_slot);
                     return false;
                 };
+                self.castle_children.push(Level2CastleChild {
+                    source_entity_index: child_slot,
+                    id_entity_index: snapshot.source_id_entity_index,
+                    parent_entity_index: snapshot.source_entity_index,
+                    owner_entity_index: snapshot.owner_entity_index,
+                    position: snapshot.position,
+                    model: 41,
+                    action: 43,
+                    control_flags: 0,
+                    active: true,
+                });
                 let castle = self.castle.as_mut().expect("Castle remains installed");
                 castle.defense_slot = child_slot;
                 castle.defense_model = 41;
@@ -3418,8 +3539,12 @@ impl Level2EconomyState {
                 castle.defense_owner_entity_index = castle.owner_entity_index;
                 castle.defense_id = castle.owner_entity_index;
                 castle.defense_position = castle.position;
+                castle.child_chain_slots[1] = child_slot;
+                castle.child_chain_models[1] = 41;
+                castle.child_chain_active[1] = true;
                 castle.defense_child_active = true;
                 castle.build_state = 6;
+                self.advance_castle_phase(castle_slot);
                 true
             }
             5 if snapshot.build_state == 6 => {
@@ -3428,6 +3553,7 @@ impl Level2EconomyState {
                     .expect("Castle remains installed")
                     .position
                     .z = self.terrain.ground_height(snapshot.position);
+                self.advance_castle_phase(castle_slot);
                 true
             }
             4 if snapshot.timer > 0 => {
@@ -3442,6 +3568,7 @@ impl Level2EconomyState {
                     castle.timer = castle.timer.wrapping_sub(1);
                 }
                 castle.position.z = self.terrain.ground_height(castle.position);
+                self.advance_castle_phase(castle_slot);
                 true
             }
             4 if snapshot.life < 0 => {
@@ -3449,6 +3576,7 @@ impl Level2EconomyState {
                     .as_mut()
                     .expect("Castle remains installed")
                     .action = 6;
+                self.advance_castle_phase(castle_slot);
                 true
             }
             4 if snapshot.control_flags & 0x40 != 0 => {
@@ -3456,9 +3584,11 @@ impl Level2EconomyState {
                 castle.control_flags &= !0x40;
                 castle.build_state = 3;
                 castle.action = 5;
+                self.advance_castle_phase(castle_slot);
                 true
             }
             4 => {
+                let source_phase = snapshot.phase;
                 if snapshot.pending_attacker_entity_index != 0 {
                     let _ = self.resolve_damage(castle_slot);
                     if self.castle.is_some_and(|castle| castle.life < 0) {
@@ -3466,13 +3596,20 @@ impl Level2EconomyState {
                             .as_mut()
                             .expect("Castle remains installed")
                             .action = 6;
+                        self.advance_castle_phase(castle_slot);
                         return true;
                     }
                 }
+                if source_phase & 1 != 0 {
+                    self.advance_castle_phase(castle_slot);
+                    return true;
+                }
                 let Some(castle) = self.castle else {
+                    self.advance_castle_phase(castle_slot);
                     return false;
                 };
                 if castle.mana >= castle.mana_capacity {
+                    self.advance_castle_phase(castle_slot);
                     return true;
                 }
                 let Some(sphere_index) = self.spheres.iter().position(|sphere| {
@@ -3480,6 +3617,7 @@ impl Level2EconomyState {
                         && sphere.owner_entity_index == castle.owner_entity_index
                         && level2_castle_sphere_overlap(castle.position, sphere)
                 }) else {
+                    self.advance_castle_phase(castle_slot);
                     return true;
                 };
                 let sphere = self.spheres[sphere_index];
@@ -3492,10 +3630,12 @@ impl Level2EconomyState {
                     carrier_id: u32::from(castle.source_entity_index),
                     mana: sphere.mana,
                 });
+                self.advance_castle_phase(castle_slot);
                 true
             }
             6 => {
                 if self.free_slots.is_empty() {
+                    self.advance_castle_phase(castle_slot);
                     return false;
                 }
                 let construction_slot = snapshot.construction_slot;
@@ -3530,19 +3670,34 @@ impl Level2EconomyState {
                 castle.defense_owner_entity_index = 0;
                 castle.defense_id = 0;
                 castle.defense_position = Position::default();
+                castle.child_chain_slots = [0; 2];
+                castle.child_chain_models = [0; 2];
+                castle.child_chain_active = [false; 2];
+                for child in &mut self.castle_children {
+                    if child.parent_entity_index == snapshot.source_entity_index {
+                        child.active = false;
+                    }
+                }
                 castle.construction_child_active = false;
                 castle.defense_child_active = false;
                 castle.timer = 5;
                 if castle.level == 0 {
                     castle.active = false;
+                    self.player_castle_entity_index = 0;
                     self.events.push(Level2EconomyEvent::CastleDestroyed {
                         source_entity_index: castle.source_entity_index,
                         killer_entity_index: castle.killer_entity_index,
                     });
                 }
+                self.advance_castle_phase(castle_slot);
                 true
             }
-            _ => false,
+            _ => {
+                // The outer source entity dispatcher advances byte 0x3E
+                // after every action call, including unhandled actions.
+                self.advance_castle_phase(castle_slot);
+                false
+            }
         }
     }
 
@@ -3727,6 +3882,7 @@ impl Level2EconomyState {
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
         hasher.update(self.terrain.deterministic_hash().to_le_bytes());
         hasher.update(self.player_mana.to_le_bytes());
+        hasher.update(self.player_castle_entity_index.to_le_bytes());
         for slot in &self.free_slots {
             hasher.update(slot.to_le_bytes());
         }
@@ -3798,6 +3954,7 @@ impl Level2EconomyState {
         if let Some(castle) = self.castle {
             hasher.update([1]);
             hasher.update(castle.source_entity_index.to_le_bytes());
+            hasher.update(castle.source_id_entity_index.to_le_bytes());
             hasher.update(castle.owner_entity_index.to_le_bytes());
             hasher.update(castle.position.x.to_le_bytes());
             hasher.update(castle.position.y.to_le_bytes());
@@ -3811,6 +3968,7 @@ impl Level2EconomyState {
             hasher.update(castle.killer_entity_index.to_le_bytes());
             hasher.update(castle.control_flags.to_le_bytes());
             hasher.update([castle.timer]);
+            hasher.update([castle.phase]);
             hasher.update(castle.construction_slot.to_le_bytes());
             hasher.update(castle.defense_slot.to_le_bytes());
             hasher.update([
@@ -3839,8 +3997,27 @@ impl Level2EconomyState {
             hasher.update(castle.defense_position.x.to_le_bytes());
             hasher.update(castle.defense_position.y.to_le_bytes());
             hasher.update(castle.defense_position.z.to_le_bytes());
+            for slot in castle.child_chain_slots {
+                hasher.update(slot.to_le_bytes());
+            }
+            hasher.update(castle.child_chain_models);
+            hasher.update([
+                u8::from(castle.child_chain_active[0]),
+                u8::from(castle.child_chain_active[1]),
+            ]);
         } else {
             hasher.update([0]);
+        }
+        for child in &self.castle_children {
+            hasher.update(child.source_entity_index.to_le_bytes());
+            hasher.update(child.id_entity_index.to_le_bytes());
+            hasher.update(child.parent_entity_index.to_le_bytes());
+            hasher.update(child.owner_entity_index.to_le_bytes());
+            hasher.update(child.position.x.to_le_bytes());
+            hasher.update(child.position.y.to_le_bytes());
+            hasher.update(child.position.z.to_le_bytes());
+            hasher.update([child.model, child.action, u8::from(child.active)]);
+            hasher.update(child.control_flags.to_le_bytes());
         }
         format!("{:x}", hasher.finalize())
     }
@@ -3856,7 +4033,9 @@ impl Level2EconomyState {
         self.spheres = self.baseline_spheres.clone();
         self.carrier = self.baseline_carrier;
         self.castle = self.baseline_castle;
+        self.castle_children = self.baseline_castle_children.clone();
         self.player_mana = self.baseline_player_mana;
+        self.player_castle_entity_index = self.baseline_player_castle_entity_index;
         self.events.clear();
     }
 }
@@ -10749,6 +10928,21 @@ mod tests {
             ),
             (42, 44, 1)
         );
+        assert_eq!(castle_lifecycle.economy().castle_children().len(), 1);
+        assert_eq!(
+            castle_lifecycle.economy().castle_children()[0],
+            Level2CastleChild {
+                source_entity_index: construction.construction_slot,
+                id_entity_index: lifecycle_slot,
+                parent_entity_index: lifecycle_slot,
+                owner_entity_index: 111,
+                position: construction.position,
+                model: 42,
+                action: 44,
+                control_flags: 1,
+                active: true,
+            }
+        );
         assert!(
             castle_lifecycle
                 .economy_mut()
@@ -10798,6 +10992,16 @@ mod tests {
             ),
             (41, 43, 0)
         );
+        assert_eq!(defense_lifecycle.economy().castle_children().len(), 2);
+        assert_eq!(
+            defense_lifecycle
+                .economy()
+                .castle_children()
+                .iter()
+                .filter(|child| child.active && child.model == 41)
+                .count(),
+            1
+        );
 
         let mut action4_session = inspection
             .level2_reset_session()
@@ -10812,6 +11016,16 @@ mod tests {
             .spawn_mana_sphere_from_death(51, action4_position, 0, 0x7777, 100, 111)
             .expect("Castle absorption sphere");
         action4_session.economy_mut().begin_turn();
+        assert!(
+            action4_session
+                .economy_mut()
+                .step_castle_action(action4_slot)
+        );
+        assert_eq!(action4_session.economy().castle().expect("Castle").mana, 0);
+        assert_eq!(
+            action4_session.economy().castle().expect("Castle").phase,
+            (action4_slot as u8).wrapping_add(1)
+        );
         assert!(
             action4_session
                 .economy_mut()
