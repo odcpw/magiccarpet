@@ -4230,10 +4230,10 @@ impl Level2EconomyState {
             let stage_child = Level2CastleChild {
                 source_entity_index: stage_slot,
                 id_entity_index: snapshot.source_id_entity_index,
-                source_class: 0,
+                source_class: 10,
                 parent_entity_index: snapshot.source_entity_index,
                 owner_entity_index: snapshot.owner_entity_index,
-                player_entity_index: snapshot.owner_entity_index,
+                player_entity_index: 0,
                 position: Position {
                     z: ground.saturating_add(if selected_level <= 1 { 384 } else { 224 }),
                     ..stage_position
@@ -4277,8 +4277,8 @@ impl Level2EconomyState {
     /// or excess holders are returned to the free arena, and missing slots
     /// are replaced until the `sub_60400` stage count is met. This keeps
     /// allocator fallback deterministic without importing the full combat
-    /// targeting walk. The parallel model-15 `array_0x5C` auxiliary walk and
-    /// player aggregate mana counters remain an explicit bounded gap.
+    /// targeting arbitration; model-15 auxiliary relation creation and fixed
+    /// tail bounds are represented below.
     fn maintain_castle_defenders(&mut self, castle_slot: u16) {
         let Some(snapshot) = self
             .castle
@@ -4318,10 +4318,10 @@ impl Level2EconomyState {
             let child = Level2CastleChild {
                 source_entity_index: slot,
                 id_entity_index: snapshot.source_id_entity_index,
-                source_class: 0,
+                source_class: 3,
                 parent_entity_index: castle_slot,
                 owner_entity_index: snapshot.owner_entity_index,
-                player_entity_index: snapshot.owner_entity_index,
+                player_entity_index: snapshot.source_id_entity_index,
                 position: snapshot.position,
                 model: 3,
                 action: 9,
@@ -4349,6 +4349,113 @@ impl Level2EconomyState {
                 defenders.get(2).copied().unwrap_or_default(),
             ];
             castle.defender_count = defenders.len() as u8;
+        }
+
+        // The source then walks `array_0x5C_92`, first decrementing the root
+        // word-0x2C cooldown once per call.  Existing relations are valid
+        // only for class 5/model 15 rows whose action is not the delete
+        // sentinel 125; an invalid relation clears only the root slot and
+        // restarts the 16-frame creation cooldown.
+        if let Some(castle) = self
+            .castle
+            .as_mut()
+            .filter(|castle| castle.source_entity_index == castle_slot)
+        {
+            castle.auxiliary_cooldown = castle.auxiliary_cooldown.saturating_sub(1);
+        }
+        // `sub_60400` supplies the loop bound for `array_0x5C_92`; it is the
+        // authored stage tail count, not the number of currently valid rows.
+        // This matters when downgrading from a larger stage: source leaves
+        // tail entries beyond the new bound untouched.
+        let auxiliary_target = usize::from(level2_castle_auxiliary_count(snapshot.level));
+        let mut auxiliary_slots = snapshot.auxiliary_slots;
+        let mut auxiliary_positions = snapshot.auxiliary_positions;
+        let mut auxiliary_yaws = snapshot.auxiliary_yaws;
+        let mut auxiliary_rolls = snapshot.auxiliary_rolls;
+        let mut auxiliary_players = snapshot.auxiliary_player_entity_indices;
+        let mut cooldown = self
+            .castle
+            .filter(|castle| castle.source_entity_index == castle_slot)
+            .map(|castle| castle.auxiliary_cooldown)
+            .unwrap_or_default();
+        for index in 0..auxiliary_target {
+            let slot = auxiliary_slots[index];
+            if slot == 0 {
+                if cooldown == 0 {
+                    let child_position = Position {
+                        x: snapshot.position.x.wrapping_add(128),
+                        y: snapshot.position.y.wrapping_add(640),
+                        z: 0,
+                    };
+                    let child_position = Position {
+                        z: self.terrain.ground_height(child_position),
+                        ..child_position
+                    };
+                    if let Some(slot) = self.allocate_slot() {
+                        let child = Level2CastleChild {
+                            source_entity_index: slot,
+                            id_entity_index: snapshot.source_id_entity_index,
+                            source_class: 5,
+                            parent_entity_index: castle_slot,
+                            owner_entity_index: snapshot.owner_entity_index,
+                            player_entity_index: snapshot.source_id_entity_index,
+                            position: child_position,
+                            model: 15,
+                            action: 121,
+                            yaw: 512,
+                            roll: 512,
+                            control_flags: 0,
+                            chain_previous_slot: 0,
+                            chain_next_slot: 0,
+                            source_byte_43: 0,
+                            source_word_4a: 0,
+                            active: true,
+                        };
+                        self.sync_castle_child_map(child);
+                        self.castle_children.push(child);
+                        auxiliary_slots[index] = slot;
+                        auxiliary_positions[index] = child.position;
+                        auxiliary_yaws[index] = child.yaw;
+                        auxiliary_rolls[index] = child.roll;
+                        auxiliary_players[index] = child.player_entity_index;
+                        cooldown = 16;
+                    }
+                }
+                continue;
+            }
+            let valid = self.castle_children.iter().any(|child| {
+                child.active
+                    && child.source_entity_index == slot
+                    && child.parent_entity_index == castle_slot
+                    && child.source_class == 5
+                    && child.model == 15
+                    && child.action != 125
+            });
+            if valid {
+                continue;
+            }
+
+            auxiliary_slots[index] = 0;
+            auxiliary_positions[index] = Position::default();
+            auxiliary_yaws[index] = 0;
+            auxiliary_rolls[index] = 0;
+            auxiliary_players[index] = 0;
+
+            cooldown = 16;
+        }
+        let auxiliary_count = auxiliary_target as u8;
+        if let Some(castle) = self
+            .castle
+            .as_mut()
+            .filter(|castle| castle.source_entity_index == castle_slot)
+        {
+            castle.auxiliary_slots = auxiliary_slots;
+            castle.auxiliary_count = auxiliary_count;
+            castle.auxiliary_cooldown = cooldown;
+            castle.auxiliary_positions = auxiliary_positions;
+            castle.auxiliary_yaws = auxiliary_yaws;
+            castle.auxiliary_rolls = auxiliary_rolls;
+            castle.auxiliary_player_entity_indices = auxiliary_players;
         }
     }
 
@@ -4411,11 +4518,15 @@ impl Level2EconomyState {
                 let construction_child = Level2CastleChild {
                     source_entity_index: child_slot,
                     id_entity_index: snapshot.source_id_entity_index,
+                    source_class: 10,
                     parent_entity_index: snapshot.source_entity_index,
                     owner_entity_index: snapshot.owner_entity_index,
+                    player_entity_index: 0,
                     position: snapshot.anchor_position,
                     model: 42,
                     action: 44,
+                    yaw: 0,
+                    roll: 0,
                     control_flags: 1,
                     chain_previous_slot: 0,
                     chain_next_slot: 0,
@@ -4457,11 +4568,13 @@ impl Level2EconomyState {
                         let stage_child = Level2CastleChild {
                             source_entity_index: stage_slot,
                             id_entity_index: snapshot.source_id_entity_index,
+                            source_class: 10,
                             // Retain the root relation as the typed owner of
                             // the chain; exact source word32/word34 links are
                             // exposed separately below.
                             parent_entity_index: snapshot.source_entity_index,
                             owner_entity_index: snapshot.owner_entity_index,
+                            player_entity_index: 0,
                             position: Position {
                                 z: ground.saturating_add(if selected_level <= 1 {
                                     384
@@ -4472,6 +4585,8 @@ impl Level2EconomyState {
                             },
                             model: 79,
                             action: 0,
+                            yaw: 0,
+                            roll: 0,
                             control_flags: 0,
                             chain_previous_slot: previous_slot,
                             chain_next_slot: 0,
@@ -4574,11 +4689,15 @@ impl Level2EconomyState {
                 let defense_child = Level2CastleChild {
                     source_entity_index: child_slot,
                     id_entity_index: snapshot.source_id_entity_index,
+                    source_class: 10,
                     parent_entity_index: snapshot.source_entity_index,
                     owner_entity_index: snapshot.owner_entity_index,
+                    player_entity_index: 0,
                     position: snapshot.anchor_position,
                     model: 41,
                     action: 43,
+                    yaw: 0,
+                    roll: 0,
                     control_flags: 0,
                     chain_previous_slot: 0,
                     chain_next_slot: 0,
@@ -4856,15 +4975,6 @@ impl Level2EconomyState {
                 castle.shift_fov = 0x4000;
                 castle.source_word_2e = 0;
                 castle.source_word_30 = 0;
-                castle.defender_slots = [0; 3];
-                castle.defender_count = 0;
-                castle.auxiliary_slots = [0; 34];
-                castle.auxiliary_count = 0;
-                castle.auxiliary_cooldown = 0;
-                castle.auxiliary_positions = [Position::default(); 34];
-                castle.auxiliary_yaws = [0; 34];
-                castle.auxiliary_rolls = [0; 34];
-                castle.auxiliary_player_entity_indices = [0; 34];
                 castle.construction_child_active = false;
                 castle.defense_child_active = false;
                 castle.timer = 5;
@@ -4913,6 +5023,16 @@ impl Level2EconomyState {
                 // already-committed stage transition.
                 self.release_castle_excess_mana(castle_slot);
                 self.maintain_castle_defenders(castle_slot);
+                if let Some(castle) = self
+                    .castle
+                    .as_mut()
+                    .filter(|castle| castle.source_entity_index == castle_slot)
+                {
+                    // `sub_5FCA0` clears word-0x2E and leaves word-0x30 at
+                    // the post-downgrade timer sentinel 5.
+                    castle.source_word_2e = 0;
+                    castle.source_word_30 = 5;
+                }
                 if let Some(castle) = self.castle.filter(|castle| !castle.active) {
                     self.map_chains
                         .sync_entity(RenderableMapSeed {
@@ -5271,6 +5391,12 @@ impl Level2EconomyState {
             hasher.update(castle.controller_chain_count.to_le_bytes());
             hasher.update(castle.controller_chain_head.to_le_bytes());
             hasher.update(castle.controller_chain_tail.to_le_bytes());
+            hasher.update(castle.shift_pitch.to_le_bytes());
+            hasher.update(castle.shift_roll.to_le_bytes());
+            hasher.update(castle.shift_yaw.to_le_bytes());
+            hasher.update(castle.shift_fov.to_le_bytes());
+            hasher.update(castle.source_word_2e.to_le_bytes());
+            hasher.update(castle.source_word_30.to_le_bytes());
             for slot in castle.defender_slots {
                 hasher.update(slot.to_le_bytes());
             }
@@ -5278,30 +5404,42 @@ impl Level2EconomyState {
             for slot in castle.auxiliary_slots {
                 hasher.update(slot.to_le_bytes());
             }
-            hasher.update([castle.auxiliary_count]);
+            hasher.update([castle.auxiliary_count, castle.auxiliary_cooldown]);
+            for position in castle.auxiliary_positions {
+                hasher.update(position.x.to_le_bytes());
+                hasher.update(position.y.to_le_bytes());
+                hasher.update(position.z.to_le_bytes());
+            }
+            for yaw in castle.auxiliary_yaws {
+                hasher.update(yaw.to_le_bytes());
+            }
+            for roll in castle.auxiliary_rolls {
+                hasher.update(roll.to_le_bytes());
+            }
+            for player in castle.auxiliary_player_entity_indices {
+                hasher.update(player.to_le_bytes());
+            }
         } else {
             hasher.update([0]);
         }
         for child in &self.castle_children {
             hasher.update(child.source_entity_index.to_le_bytes());
             hasher.update(child.id_entity_index.to_le_bytes());
+            hasher.update([child.source_class]);
             hasher.update(child.parent_entity_index.to_le_bytes());
             hasher.update(child.owner_entity_index.to_le_bytes());
+            hasher.update(child.player_entity_index.to_le_bytes());
             hasher.update(child.position.x.to_le_bytes());
             hasher.update(child.position.y.to_le_bytes());
             hasher.update(child.position.z.to_le_bytes());
             hasher.update([child.model, child.action, u8::from(child.active)]);
+            hasher.update(child.yaw.to_le_bytes());
+            hasher.update(child.roll.to_le_bytes());
             hasher.update(child.control_flags.to_le_bytes());
             hasher.update(child.chain_previous_slot.to_le_bytes());
             hasher.update(child.chain_next_slot.to_le_bytes());
             hasher.update([child.source_byte_43]);
             hasher.update(child.source_word_4a.to_le_bytes());
-        }
-        if let Some(castle) = self.castle {
-            hasher.update(castle.shift_pitch.to_le_bytes());
-            hasher.update(castle.shift_roll.to_le_bytes());
-            hasher.update(castle.shift_yaw.to_le_bytes());
-            hasher.update(castle.shift_fov.to_le_bytes());
         }
         if let Some(footprint) = &self.castle_footprint {
             hasher.update([1, footprint.index, footprint.width, footprint.height]);
@@ -11879,7 +12017,7 @@ mod tests {
                 0x120,
                 0x4321,
                 321,
-                0,
+                121,
             )
             .expect("sphere allocation");
         assert_eq!(sphere_id, u32::from(sphere_slot));
@@ -11888,7 +12026,7 @@ mod tests {
         assert_eq!(sphere.entity_rng, level2_next_rng16(sphere_rng));
         assert_eq!(sphere.yaw, expected_yaw);
         assert_eq!(sphere.mana, 321);
-        assert_eq!(sphere.owner_entity_index, 0);
+        assert_eq!(sphere.owner_entity_index, 121);
         assert_eq!(first.economy().source_owner(42), 0);
         assert_eq!(
             first.economy().events()[0],
@@ -12321,11 +12459,15 @@ mod tests {
             Level2CastleChild {
                 source_entity_index: construction.construction_slot,
                 id_entity_index: lifecycle_slot,
+                source_class: 10,
                 parent_entity_index: lifecycle_slot,
                 owner_entity_index: 111,
+                player_entity_index: 0,
                 position: construction_anchor,
                 model: 42,
                 action: 44,
+                yaw: 0,
+                roll: 0,
                 control_flags: 1,
                 chain_previous_slot: 0,
                 chain_next_slot: 0,
@@ -12737,7 +12879,6 @@ mod tests {
             let economy = teardown.economy_mut();
             economy.set_player_spell_cleanup_context(1, 4, 777);
             economy.set_player_spell_holder_counters(17, 9);
-            economy.free_slots.clear();
             let castle = economy.castle.as_mut().expect("teardown Castle");
             castle.action = 6;
             castle.level = 2;
@@ -12778,6 +12919,10 @@ mod tests {
         assert_eq!(teardown.economy().player_castle_stage(), 1);
         assert_eq!(teardown.economy().player_spell_slot_2(), 777);
         assert_eq!(teardown.economy().player_spell_holder_action(), 8);
+        assert_eq!(
+            (downgraded.source_word_2e, downgraded.source_word_30),
+            (0, 5)
+        );
         assert!(teardown.economy().events().contains(
             &Level2EconomyEvent::CastleDestructionSound {
                 source_entity_index: teardown_slot,
@@ -12800,7 +12945,7 @@ mod tests {
                 .castle_children()
                 .iter()
                 .filter(|child| child.active)
-                .all(|child| child.model == 79)
+                .all(|child| child.model == 79 || (child.source_class == 3 && child.model == 3))
         );
         assert_eq!(
             teardown
@@ -12809,7 +12954,7 @@ mod tests {
                 .iter()
                 .filter(|child| child.active)
                 .count(),
-            1
+            2
         );
 
         // A final-stage teardown also completes with an exhausted arena and
@@ -12825,7 +12970,6 @@ mod tests {
         {
             let economy = final_teardown.economy_mut();
             economy.set_player_spell_cleanup_context(1, 4, 888);
-            economy.free_slots.clear();
             let castle = economy.castle.as_mut().expect("final Castle");
             castle.action = 6;
             castle.level = 1;
@@ -12835,6 +12979,7 @@ mod tests {
         assert!(final_teardown.economy_mut().step_castle_action(final_slot));
         let destroyed = final_teardown.economy().castle().expect("destroyed Castle");
         assert!(!destroyed.active);
+        assert_eq!((destroyed.source_word_2e, destroyed.source_word_30), (0, 5));
         assert_eq!(final_teardown.economy().player_castle_entity_index(), 0);
         assert_eq!(final_teardown.economy().player_castle_stage(), 0);
         assert_eq!(final_teardown.economy().player_spell_slot_2(), 0);
@@ -13201,8 +13346,7 @@ mod tests {
             .expect("live Castle source RNG");
         {
             let economy = session.economy_mut();
-            economy.free_slots.clear();
-            economy.terrain.planes.ground_heights[terrain_index(251, 251)] = 100;
+            economy.terrain.planes.ground_heights[terrain_index(246, 246)] = 100;
             let castle = economy.castle.as_mut().expect("stage removal Castle");
             castle.action = 6;
             castle.level = 2;
@@ -13218,6 +13362,202 @@ mod tests {
         assert_eq!(
             session.economy().castle().expect("downgraded Castle").level,
             1
+        );
+    }
+
+    #[test]
+    fn level_two_castle_auxiliary_creation_sets_source_relation_and_cooldown() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("auxiliary creation session");
+        let root_position = Position {
+            x: 0x20_00,
+            y: 0x30_00,
+            z: 0,
+        };
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(root_position, 111)
+            .expect("auxiliary creation Castle");
+        session
+            .economy_mut()
+            .castle
+            .as_mut()
+            .expect("auxiliary creation Castle")
+            .level = 3;
+        session.economy_mut().maintain_castle_defenders(castle_slot);
+
+        let castle = session.economy().castle().expect("auxiliary Castle");
+        assert_eq!(castle.auxiliary_count, 4);
+        assert_eq!(castle.auxiliary_cooldown, 16);
+        let auxiliary_slot = castle.auxiliary_slots[0];
+        assert_ne!(auxiliary_slot, 0);
+        assert_eq!(&castle.auxiliary_slots[1..4], &[0, 0, 0]);
+        let child = session
+            .economy()
+            .castle_children()
+            .iter()
+            .find(|child| child.source_entity_index == auxiliary_slot)
+            .expect("created model-15 auxiliary child");
+        assert_eq!(
+            (
+                child.source_class,
+                child.model,
+                child.action,
+                child.id_entity_index,
+                child.player_entity_index,
+                child.yaw,
+                child.roll
+            ),
+            (
+                5,
+                15,
+                121,
+                castle.source_id_entity_index,
+                castle.source_id_entity_index,
+                512,
+                512
+            )
+        );
+        assert_eq!(
+            child.position,
+            Position {
+                x: root_position.x.wrapping_add(128),
+                y: root_position.y.wrapping_add(640),
+                z: session.economy().terrain.ground_height(Position {
+                    x: root_position.x.wrapping_add(128),
+                    y: root_position.y.wrapping_add(640),
+                    z: 0,
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn level_two_castle_auxiliary_invalid_relation_clears_slot_and_restarts_cooldown() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("auxiliary invalidation session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("auxiliary invalidation Castle");
+        let invalid_slot;
+        {
+            let economy = session.economy_mut();
+            economy
+                .castle
+                .as_mut()
+                .expect("auxiliary invalidation Castle")
+                .level = 3;
+            economy.maintain_castle_defenders(castle_slot);
+            invalid_slot = economy
+                .castle
+                .as_ref()
+                .expect("created auxiliary Castle")
+                .auxiliary_slots[0];
+            economy
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == invalid_slot)
+                .expect("created auxiliary child")
+                .action = 125;
+            economy
+                .castle
+                .as_mut()
+                .expect("auxiliary invalidation Castle")
+                .auxiliary_cooldown = 0;
+            economy.maintain_castle_defenders(castle_slot);
+        }
+        let castle = session.economy().castle().expect("invalidated Castle");
+        assert_eq!(castle.auxiliary_slots[0], 0);
+        assert_eq!(castle.auxiliary_count, 4);
+        assert_eq!(castle.auxiliary_cooldown, 16);
+        assert!(
+            session
+                .economy()
+                .castle_children()
+                .iter()
+                .find(|child| child.source_entity_index == invalid_slot)
+                .expect("invalidated auxiliary child")
+                .active
+        );
+    }
+
+    #[test]
+    fn level_two_castle_auxiliary_walk_respects_authored_tail_bound() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("auxiliary tail-bound session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("auxiliary tail-bound Castle");
+        {
+            let economy = session.economy_mut();
+            let castle = economy
+                .castle
+                .as_mut()
+                .expect("auxiliary tail-bound Castle");
+            castle.level = 3;
+            castle.auxiliary_slots[4] = 0xbeef;
+            castle.auxiliary_count = 0;
+            castle.auxiliary_cooldown = 16;
+            economy.maintain_castle_defenders(castle_slot);
+        }
+        let castle = session.economy().castle().expect("tail-bound Castle");
+        assert_eq!(castle.auxiliary_cooldown, 15);
+        assert_eq!(castle.auxiliary_slots[4], 0xbeef);
+    }
+
+    #[test]
+    fn level_two_castle_teardown_without_free_arena_only_restores_action() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("no-free teardown session");
+        let castle_slot = session
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("no-free teardown Castle");
+        let before_ground = session.economy().terrain.planes.ground_heights.clone();
+        let before_rng = session
+            .economy()
+            .source_rng
+            .get(&castle_slot)
+            .copied()
+            .expect("live Castle source RNG");
+        {
+            let economy = session.economy_mut();
+            economy.free_slots.clear();
+            let castle = economy.castle.as_mut().expect("no-free teardown Castle");
+            castle.action = 6;
+            castle.level = 2;
+        }
+        assert!(session.economy_mut().step_castle_action(castle_slot));
+        let castle = session.economy().castle().expect("gated Castle");
+        assert_eq!((castle.action, castle.level), (4, 2));
+        assert_eq!(
+            session.economy().source_rng.get(&castle_slot).copied(),
+            Some(before_rng)
+        );
+        assert_eq!(
+            session.economy().terrain.planes.ground_heights,
+            before_ground
+        );
+        assert!(
+            !session
+                .economy()
+                .events()
+                .iter()
+                .any(|event| matches!(event, Level2EconomyEvent::CastleStageDestroyed { .. }))
         );
     }
 
