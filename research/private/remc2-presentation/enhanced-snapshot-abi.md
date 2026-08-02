@@ -47,7 +47,8 @@ rows are copied at the same generation/tick cursor and are used only to place
 presentation VFX; the event journal remains Rust-owned and gameplay events are
 never synthesized by Unity. The owner sequence qualification currently proves
 one projectile row, one impact row, up to two ordered VFX rows per step, and
-reset-replay equality for those observations.
+generation-bound projectile/impact presentation identities with pooled actor
+views and local lights, plus reset-replay equality for those observations.
 
 Focused gates:
 

@@ -55,8 +55,10 @@ qualification:
   selection/cast, 32-frame reset replay, terrain/water/night lighting, native
   hash correspondence, and the Rust-owned event/mission-effect seam: the
   existing event journal and Level 1 projectile/impact rows are validated at
-  their generation/tick boundary and drive pooled Enhanced VFX without
-  embedding owner payloads.
+  their generation/tick boundary, drive generation-bound pooled actor views and
+  capped local lights, and drive pooled Enhanced VFX without embedding owner
+  payloads. Inactive dynamic rows recycle through the same Unity presentation
+  pool, while Rust remains the source of identity, position, kind, and lifetime.
 - No copied owner assets, native libraries, Exact scripts, or Exact corpus.
 
 Run the editor setup once after opening the project:

@@ -150,6 +150,16 @@ namespace MagicCarpet.PresentationLab
                     if (entities[index].active != 0) count++;
                 }
 
+                for (int index = 0; index < projectiles.Length; index++)
+                {
+                    if (projectiles[index].active != 0) count++;
+                }
+
+                for (int index = 0; index < impacts.Length; index++)
+                {
+                    if (impacts[index].active != 0) count++;
+                }
+
                 return count;
             }
         }
@@ -618,7 +628,7 @@ namespace MagicCarpet.PresentationLab
                 return false;
             }
 
-            LastWorldHash = HashEntities(entities);
+            LastWorldHash = HashEntities(entities, projectiles, impacts);
             return UpdateCameraHistory();
         }
 
@@ -1014,7 +1024,8 @@ namespace MagicCarpet.PresentationLab
 
         private UnityEnhancedEntitySnapshot[] BuildEntities()
         {
-            var result = new List<UnityEnhancedEntitySnapshot>(entities.Length);
+            var result = new List<UnityEnhancedEntitySnapshot>(
+                entities.Length + projectiles.Length + impacts.Length);
             for (int index = 0; index < entities.Length; index++)
             {
                 EntitySnapshot source = entities[index];
@@ -1042,6 +1053,65 @@ namespace MagicCarpet.PresentationLab
                     AnimationPhase = source.phase / 255f,
                     Scale = family == (int)UnityEnhancedPresentationFamily.Player ? 1.25f : 1f,
                     RenderLayer = source.entityIndex
+                });
+            }
+
+            for (int index = 0; index < projectiles.Length; index++)
+            {
+                ProjectileSnapshot source = projectiles[index];
+                if (source.projectileId == 0)
+                {
+                    continue;
+                }
+
+                int family = source.projectileKind == 5
+                    ? (int)UnityEnhancedPresentationFamily.Possession
+                    : (int)UnityEnhancedPresentationFamily.Projectile;
+                Vector3 position = ProjectedPosition(source.x, source.y, source.z);
+                result.Add(new UnityEnhancedEntitySnapshot
+                {
+                    StableIdentity = DynamicStableIdentity(0x20000000U, source.projectileId),
+                    Generation = snapshot.generation,
+                    Position = position,
+                    Rotation = Quaternion.Euler(
+                        -source.pitch * (360f / 2048f),
+                        180f - source.yaw * (360f / 2048f),
+                        0f),
+                    Visible = source.active != 0,
+                    PresentationFamily = family,
+                    FacingDegrees = 180f - source.yaw * (360f / 2048f),
+                    AnimationPhase = Mathf.Clamp01(Mathf.Max(0, source.animationFrame) / 255f),
+                    Scale = source.projectileKind == 2 ? 0.8f : 1f,
+                    RenderLayer = 2000 + (int)(source.projectileId % 1000U)
+                });
+            }
+
+            for (int index = 0; index < impacts.Length; index++)
+            {
+                ImpactSnapshot source = impacts[index];
+                if (source.impactId == 0)
+                {
+                    continue;
+                }
+
+                int family = source.model == 6
+                    ? (int)UnityEnhancedPresentationFamily.Fire
+                    : source.model == 13
+                        ? (int)UnityEnhancedPresentationFamily.Smoke
+                        : (int)UnityEnhancedPresentationFamily.Impact;
+                Vector3 position = ProjectedPosition(source.x, source.y, source.z);
+                result.Add(new UnityEnhancedEntitySnapshot
+                {
+                    StableIdentity = DynamicStableIdentity(0x40000000U, source.impactId),
+                    Generation = snapshot.generation,
+                    Position = position,
+                    Rotation = Quaternion.identity,
+                    Visible = source.active != 0,
+                    PresentationFamily = family,
+                    FacingDegrees = 0f,
+                    AnimationPhase = Mathf.Clamp01(Mathf.Max(0, source.animationFrame) / 255f),
+                    Scale = source.model == 13 ? 1.15f : 1f,
+                    RenderLayer = 3000 + (int)(source.impactId % 1000U)
                 });
             }
 
@@ -1074,6 +1144,42 @@ namespace MagicCarpet.PresentationLab
                     family == (int)UnityEnhancedPresentationFamily.Impact ? 2.5f : 1.5f,
                     family == (int)UnityEnhancedPresentationFamily.Impact ? 8f : 5f,
                     source.entityIndex));
+            }
+
+            for (int index = 0; index < projectiles.Length && result.Count < 24; index++)
+            {
+                ProjectileSnapshot source = projectiles[index];
+                if (source.active == 0 || source.projectileId == 0)
+                {
+                    continue;
+                }
+
+                result.Add(new UnityEnhancedLocalLightRequest(
+                    DynamicStableIdentity(0x20000000U, source.projectileId),
+                    ProjectedPosition(source.x, source.y, source.z),
+                    new Color(1f, 0.32f, 0.08f, 1f),
+                    1.8f,
+                    6f,
+                    (ushort)(2000 + (source.projectileId % 1000U))));
+            }
+
+            for (int index = 0; index < impacts.Length && result.Count < 24; index++)
+            {
+                ImpactSnapshot source = impacts[index];
+                if (source.active == 0 || source.impactId == 0)
+                {
+                    continue;
+                }
+
+                result.Add(new UnityEnhancedLocalLightRequest(
+                    DynamicStableIdentity(0x40000000U, source.impactId),
+                    ProjectedPosition(source.x, source.y, source.z),
+                    source.model == 6
+                        ? new Color(1f, 0.18f, 0.03f, 1f)
+                        : new Color(1f, 0.72f, 0.18f, 1f),
+                    source.model == 6 ? 2.6f : 1.8f,
+                    source.model == 6 ? 8f : 6f,
+                    (ushort)(3000 + (source.impactId % 1000U))));
             }
 
             return result.ToArray();
@@ -1357,7 +1463,10 @@ namespace MagicCarpet.PresentationLab
             return 2f * Mathf.Atan(120f / sourceScale) * Mathf.Rad2Deg;
         }
 
-        private static ulong HashEntities(EntitySnapshot[] values)
+        private static ulong HashEntities(
+            EntitySnapshot[] values,
+            ProjectileSnapshot[] projectiles,
+            ImpactSnapshot[] impacts)
         {
             unchecked
             {
@@ -1376,8 +1485,46 @@ namespace MagicCarpet.PresentationLab
                     hash *= 0x100000001b3UL;
                 }
 
+                for (int index = 0; index < projectiles.Length; index++)
+                {
+                    hash ^= 0x20000000U | projectiles[index].projectileId;
+                    hash *= 0x100000001b3UL;
+                    hash ^= projectiles[index].x;
+                    hash *= 0x100000001b3UL;
+                    hash ^= projectiles[index].y;
+                    hash *= 0x100000001b3UL;
+                    hash ^= (uint)projectiles[index].z;
+                    hash *= 0x100000001b3UL;
+                    hash ^= projectiles[index].active;
+                    hash *= 0x100000001b3UL;
+                    hash ^= projectiles[index].projectileKind;
+                    hash *= 0x100000001b3UL;
+                }
+
+                for (int index = 0; index < impacts.Length; index++)
+                {
+                    hash ^= 0x40000000U | impacts[index].impactId;
+                    hash *= 0x100000001b3UL;
+                    hash ^= impacts[index].x;
+                    hash *= 0x100000001b3UL;
+                    hash ^= impacts[index].y;
+                    hash *= 0x100000001b3UL;
+                    hash ^= (uint)impacts[index].z;
+                    hash *= 0x100000001b3UL;
+                    hash ^= impacts[index].active;
+                    hash *= 0x100000001b3UL;
+                    hash ^= impacts[index].model;
+                    hash *= 0x100000001b3UL;
+                }
+
                 return hash;
             }
+        }
+
+        private ulong DynamicStableIdentity(uint namespaceId, uint sourceId)
+        {
+            return ((ulong)snapshot.generation << 32) |
+                   (namespaceId | (sourceId & 0x1fffffffU));
         }
 
         private static bool AllZero(uint[] values)

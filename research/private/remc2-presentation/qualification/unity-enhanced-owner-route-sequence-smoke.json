@@ -20,6 +20,8 @@
   "max_event_rows_per_step": 22,
   "max_vfx_rows_per_step": 2,
   "max_active_vfx": 2,
+  "max_presentation_visuals": 183,
+  "max_pooled_visuals": 48,
   "max_projectile_rows": 1,
   "max_impact_rows": 1,
   "terrain_vertex_count": 65536,
@@ -28,7 +30,7 @@
   "reflection": true,
   "state_sequence_hash": "4d4613c4a0d7f89c",
   "terrain_sequence_hash": "154e4911e2b96a85",
-  "world_sequence_hash": "60279930da0fde63",
-  "log_sha256": "d461a3a493dbd6757455a3f3172ca0ffa2aafe4ec04315e70d5c883a85406511",
-  "qualification_status": "live owner snapshot application, explicit tick-0 reset, fixed-tick 32-frame replay, native event-journal consumption, one projectile and one impact row, pooled VFX, and deterministic reset replay proven; broader GFX-O scenario/GPU and visual-corpus gates remain open"
+  "world_sequence_hash": "c3d4a038b9641362",
+  "log_sha256": "01f608fc662fbe13118de75dd291dec1c2334da70eef77ea83175b402a5067ae",
+  "qualification_status": "live owner snapshot application, explicit tick-0 reset, fixed-tick 32-frame replay, native event-journal consumption, one projectile and one impact row, dynamic pooled actor identities and local lights, pooled VFX, and deterministic reset replay proven; broader GFX-O scenario/GPU and visual-corpus gates remain open"
 }
