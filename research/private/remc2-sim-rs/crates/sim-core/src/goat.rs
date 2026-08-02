@@ -1348,6 +1348,10 @@ impl GoatFamily {
                     >= i32::from(self.config.terrain_threshold));
             if blocked {
                 self.goats[family_index].control_flags |= 0x0004_0000;
+                // `sub_1B8C0` commits each failed retry heading before it
+                // attempts the next one; the final blocked state therefore
+                // retains the fourth (byte-preserving) heading.
+                self.goats[family_index].yaw = heading;
                 continue;
             }
 
@@ -3634,5 +3638,30 @@ mod tests {
             .expect("source model-list heading fits i16"),
             "source-pool order wins over typed-family storage order"
         );
+    }
+
+    #[test]
+    fn action11_blocked_retries_retain_source_final_heading() {
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        family.goats[primary_index].position = Position {
+            x: 512,
+            y: 512,
+            z: 0,
+        };
+        family.goats[primary_index].yaw = 512;
+        family.goats[primary_index].actual_speed = 1_000;
+        family.move_action11_source(primary_index, &MaterialBoundaryWorld { all_water: true });
+        assert_eq!(
+            family.goats[primary_index].yaw,
+            source_retry_headings(512)[3],
+            "sub_1B8C0 leaves the fourth failed retry heading in yaw"
+        );
+        assert_eq!(family.goats[primary_index].life, -1);
+        assert_ne!(family.goats[primary_index].control_flags & 0x0004_0000, 0);
     }
 }
