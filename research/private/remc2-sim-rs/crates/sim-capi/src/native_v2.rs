@@ -15381,7 +15381,7 @@ mod tests {
         );
         assert_eq!(level2_info.active_entity_count, 114);
         assert_eq!(level2_info.player_count, 8);
-        assert_eq!(level2_info.reset_state_hash, 0x6041_fe3d_3b6d_1473);
+        assert_eq!(level2_info.reset_state_hash, 0xb4aa_5dbe_57f5_cf46);
         let mut level2_players = [McCampaignPlayerSnapshotV2::default(); 8];
         assert_eq!(
             mc_native_campaign_players_copy(
