@@ -3137,6 +3137,12 @@ impl Level2EconomyState {
             player_castle_stage: 0,
             baseline_player_castle_aux_flags: 0,
             player_castle_aux_flags: 0,
+            baseline_player_model: player_model,
+            player_model,
+            baseline_player_terrain_flags: player_terrain_flags,
+            player_terrain_flags,
+            baseline_player_spell_slot_2: player_spell_slot_2,
+            player_spell_slot_2,
             baseline_castle_stage_coefficients: [256; 8],
             castle_stage_coefficients: [256; 8],
             events: Vec::new(),
@@ -3202,6 +3208,27 @@ impl Level2EconomyState {
     #[must_use]
     pub const fn player_castle_aux_flags(&self) -> u8 {
         self.player_castle_aux_flags
+    }
+
+    #[must_use]
+    pub const fn player_spell_slot_2(&self) -> u16 {
+        self.player_spell_slot_2
+    }
+
+    /// Bind the source conditions used by `sub_605E0` when the final Castle
+    /// stage is removed. The reset package normally leaves this disabled; the
+    /// setter lets an imported player/terrain projection opt into the exact
+    /// model-1, terrain-bit-4 holder cleanup without conflating it with the
+    /// economy owner relation.
+    pub fn set_player_spell_cleanup_context(
+        &mut self,
+        player_model: u8,
+        terrain_flags: u8,
+        holder_slot: u16,
+    ) {
+        self.player_model = player_model;
+        self.player_terrain_flags = terrain_flags;
+        self.player_spell_slot_2 = holder_slot;
     }
 
     #[must_use]
@@ -3878,6 +3905,38 @@ impl Level2EconomyState {
         }
     }
 
+    /// Port the allocation-independent part of `sub_605E0`: reducing the
+    /// current stage capacity by ten percent before `sub_5FD00` releases any
+    /// overflow, then restoring the old capacity for the following stage
+    /// table. No-free arenas still complete this state transition; only the
+    /// optional mana-sphere allocations are allowed to fail.
+    fn prepare_castle_stage_destruction(&mut self, castle_slot: u16) {
+        let Some(snapshot) = self
+            .castle
+            .filter(|castle| castle.active && castle.source_entity_index == castle_slot)
+        else {
+            return;
+        };
+        if snapshot.level == 0 {
+            return;
+        }
+        let reduced_capacity = snapshot
+            .mana_capacity
+            .saturating_sub(snapshot.mana_capacity / 10);
+        if let Some(castle) = self.castle.as_mut() {
+            castle.mana_capacity = reduced_capacity;
+        }
+        self.release_castle_excess_mana(castle_slot);
+        if let Some(castle) = self.castle.as_mut() {
+            castle.mana_capacity = snapshot.mana_capacity;
+        }
+        self.events
+            .push(Level2EconomyEvent::CastleDestructionSound {
+                source_entity_index: castle_slot,
+                sound_id: 30,
+            });
+    }
+
     /// Advance the bounded Castle root action. This follows the source state
     /// table in `BeginOfCastleCreation_5FA70`: states 0/3 allocate a class-10
     /// model-42 child, state 4 scans for that child, and state 5 allocates the
@@ -4213,10 +4272,10 @@ impl Level2EconomyState {
                 true
             }
             6 => {
-                if self.free_slots.is_empty() {
-                    self.advance_castle_phase(castle_slot);
-                    return false;
-                }
+                // `sub_5FCA0` does not gate stage destruction on a free
+                // arena slot. `sub_605E0`/`sub_5FD00` may fail their optional
+                // sphere allocations, but the Castle state still advances.
+                self.prepare_castle_stage_destruction(castle_slot);
                 let construction_slot = snapshot.construction_slot;
                 let defense_slot = snapshot.defense_slot;
                 if construction_slot != 0 {
@@ -4253,14 +4312,31 @@ impl Level2EconomyState {
                         ..child
                     });
                 }
+                let next_level = snapshot.level.saturating_sub(1);
+                let (base_life, stage_mana_capacity) = level2_castle_stage_stats(next_level);
+                let stage_coefficient = self
+                    .castle_stage_coefficients
+                    .get(usize::from(next_level))
+                    .copied()
+                    .unwrap_or(256);
+                let stage_life =
+                    i32::try_from((i64::from(base_life) * i64::from(stage_coefficient)) >> 8)
+                        .unwrap_or(if base_life >= 0 { i32::MAX } else { i32::MIN });
+                let recovered_life = if next_level == 0 {
+                    0
+                } else {
+                    let deficit = snapshot.life.saturating_neg().min(stage_life / 2);
+                    stage_life.saturating_sub(deficit)
+                };
+                let remaining_mana = self.castle.map(|castle| castle.mana).unwrap_or_default();
                 let castle = self.castle.as_mut().expect("Castle remains installed");
                 castle.action = 4;
                 castle.build_state = 0;
-                castle.level = snapshot.level.saturating_sub(1);
-                castle.life = 0;
-                castle.max_life = 0;
-                castle.mana = 0;
-                castle.mana_capacity = 5_000;
+                castle.level = next_level;
+                castle.life = recovered_life;
+                castle.max_life = stage_life;
+                castle.mana = remaining_mana;
+                castle.mana_capacity = stage_mana_capacity;
                 castle.construction_slot = 0;
                 castle.defense_slot = 0;
                 castle.construction_model = 0;
@@ -4287,11 +4363,19 @@ impl Level2EconomyState {
                 castle.construction_child_active = false;
                 castle.defense_child_active = false;
                 castle.timer = 5;
+                self.events.push(Level2EconomyEvent::CastleStageDestroyed {
+                    source_entity_index: castle.source_entity_index,
+                    previous_level: snapshot.level,
+                    next_level,
+                });
                 if castle.level == 0 {
                     castle.active = false;
                     self.player_castle_entity_index = 0;
                     self.player_castle_stage = 0;
                     self.player_castle_aux_flags = 0;
+                    if self.player_model == 1 && self.player_terrain_flags & 4 != 0 {
+                        self.player_spell_slot_2 = 0;
+                    }
                     self.events.push(Level2EconomyEvent::CastleDestroyed {
                         source_entity_index: castle.source_entity_index,
                         killer_entity_index: castle.killer_entity_index,
@@ -4513,6 +4597,8 @@ impl Level2EconomyState {
         hasher.update(self.player_mana.to_le_bytes());
         hasher.update(self.player_castle_entity_index.to_le_bytes());
         hasher.update([self.player_castle_stage, self.player_castle_aux_flags]);
+        hasher.update([self.player_model, self.player_terrain_flags]);
+        hasher.update(self.player_spell_slot_2.to_le_bytes());
         for coefficient in self.castle_stage_coefficients {
             hasher.update(coefficient.to_le_bytes());
         }
@@ -4703,6 +4789,9 @@ impl Level2EconomyState {
         self.player_castle_entity_index = self.baseline_player_castle_entity_index;
         self.player_castle_stage = self.baseline_player_castle_stage;
         self.player_castle_aux_flags = self.baseline_player_castle_aux_flags;
+        self.player_model = self.baseline_player_model;
+        self.player_terrain_flags = self.baseline_player_terrain_flags;
+        self.player_spell_slot_2 = self.baseline_player_spell_slot_2;
         self.castle_stage_coefficients = self.baseline_castle_stage_coefficients;
         self.events.clear();
     }
