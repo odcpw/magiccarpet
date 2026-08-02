@@ -68,6 +68,11 @@ class ThreeModePackageTests(unittest.TestCase):
         self.assertEqual([], PACKAGE.validate_classic_hd_owner_visual_capture_artifact())
         self.assertEqual([], PACKAGE.validate_unity_enhanced_owner_visual_capture_artifact())
 
+    def test_resolution_matrix_records_rejection_without_leaving_budget_gate_open(self):
+        self.assertEqual([], PACKAGE.validate_classic_hd_owner_performance_artifact())
+        summary = PACKAGE.verify()
+        self.assertFalse(any("performance remains over" in gate for gate in summary["open_gates"]))
+
     def test_os_window_lifecycle_records_both_real_player_cases_and_stays_open_for_review(self):
         self.assertEqual([], PACKAGE.validate_classic_hd_owner_os_window_lifecycle_artifact())
         self.assertEqual([], PACKAGE.validate_classic_hd_os_window_lifecycle_tooling())

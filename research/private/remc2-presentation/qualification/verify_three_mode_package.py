@@ -815,10 +815,19 @@ def validate_classic_hd_owner_performance_artifact(
         errors.append("Classic HD owner performance must prove 72 uploads and one allocation epoch")
     if artifact.get("presentation_budget_ns") != 33333333:
         errors.append("Classic HD owner performance must identify the 33.3 ms budget")
-    if artifact.get("gpu_timing") != "not-captured" or artifact.get("status") != "open":
-        errors.append("Classic HD owner performance must keep GPU timing and promotion open")
-    if not isinstance(artifact.get("failure_reason"), str) or not artifact["failure_reason"]:
-        errors.append("Classic HD owner performance must record its open reason")
+    if artifact.get("gpu_timing") != "not-captured":
+        errors.append("Classic HD owner performance must keep GPU timing explicitly not-captured")
+    status = artifact.get("status")
+    if status not in {"open", "qualified-resolution-matrix"}:
+        errors.append("Classic HD owner performance status must be open or qualified-resolution-matrix")
+    if status == "open":
+        reason = artifact.get("failure_reason")
+        if not isinstance(reason, str) or not reason:
+            errors.append("Classic HD owner performance must record its open reason")
+    else:
+        reason = artifact.get("decision_reason")
+        if not isinstance(reason, str) or not reason:
+            errors.append("Classic HD qualified performance must record its matrix decision")
     for field in ("source_revision", "native_plugin_sha256", "captured_at_utc"):
         if not isinstance(artifact.get(field), str) or not artifact[field]:
             errors.append(f"Classic HD owner performance is missing {field}")

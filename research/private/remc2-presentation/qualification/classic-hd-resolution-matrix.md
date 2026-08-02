@@ -50,7 +50,8 @@ total times of 30.96 / 31.65 ms at 640x480 and 55.27 / 56.52 ms at 960x720.
 Both routes preserve one allocation epoch, zero measured steady managed
 allocation, monotonic generation/ticks, and nonzero indexed/provenance hashes.
 640x480 now clears the 33.3 ms 30 Hz owner presentation budget; 960x720 is an
-explicit measured rejection at the current profile. The GPU timing and final
+explicit measured rejection at the current profile. The performance receipt
+therefore records a qualified resolution decision, while GPU timing and final
 player-facing promotion gates remain open. The earlier bounded 1.52-second
 terrain trace remains historical and is superseded for promotion decisions by
 this full-route receipt. The earlier bounded failure record remains at

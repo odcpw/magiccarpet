@@ -114,7 +114,7 @@
   "owner_performance_smoke": {
     "artifact": "qualification/classic-hd-owner-performance-smoke.json",
     "profiles": ["hd-640x480", "hd-960x720"],
-    "status": "open-final-promotion; 640x480-pass; 960x720-rejected-owner-real-time-budget",
+    "status": "resolution-matrix-qualified; 640x480-pass; 960x720-rejected-owner-real-time-budget; GPU timing remains open",
     "presentation_budget_ns": 33333333,
     "p95_total_ns": {
       "hd-640x480": 31652900,

@@ -12,12 +12,12 @@
   "warmup_frames": 8,
   "measurement_frames": 64,
   "presentation_budget_ns": 33333333,
-  "status": "open",
+  "status": "qualified-resolution-matrix",
   "upload_count_including_warmup": 72,
   "allocation_epoch": 1,
   "gpu_timing": "not-captured",
-  "failure_reason": "The 640x480 owner route clears the 33.3 ms presentation budget, while 960x720 remains over budget at 56.5 ms p95; Unity GPU timing and final promotion are not captured.",
-  "qualification_status": "640x480-owner-real-time-budget-pass; 960x720-owner-real-time-budget-rejection; zero-allocation-and-route-contract-pass; Unity GPU timing remains not-captured",
+  "decision_reason": "The 640x480 owner route clears the 33.3 ms presentation budget and is the supported matrix row; 960x720 remains over budget at 56.5 ms p95 and is explicitly rejected. This receipt does not promote Unity GPU timing.",
+  "qualification_status": "resolution-matrix-qualified; 640x480-owner-real-time-budget-pass; 960x720-owner-real-time-budget-rejection; zero-allocation-and-route-contract-pass; Unity GPU timing remains not-captured",
   "native_plugin_sha256": "ed2d940ece28ae2b833cc182cebf43941ff02328a7193ce32087cbf9f4673a47",
   "profiles": [
     {
