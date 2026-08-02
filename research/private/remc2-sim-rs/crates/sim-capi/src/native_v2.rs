@@ -273,6 +273,7 @@ pub const MC_EVENT_LEVEL1_ABILITY_IMPROVED: u32 = 38;
 
 /// Additive Level 2 campaign event kinds (`mc_sim_level2.h`).
 pub const MC_CAMPAIGN_EVENT_SPELL_ACQUISITION: u8 = 2;
+pub const MC_CAMPAIGN_EVENT_GOAT: u8 = 9;
 /// Additive Level 2 campaign economy events (`mc_sim_level2.h`, kind 10).
 pub const MC_CAMPAIGN_EVENT_ECONOMY: u8 = 10;
 
@@ -16055,6 +16056,15 @@ mod tests {
             events[..event_count as usize]
                 .iter()
                 .all(|event| event.abi_version == MC_NATIVE_ABI_VERSION)
+        );
+        let goat_slots = events[..event_count as usize]
+            .iter()
+            .filter(|event| event.kind == MC_CAMPAIGN_EVENT_GOAT)
+            .map(|event| event.source_slot)
+            .collect::<BTreeSet<_>>();
+        assert!(
+            goat_slots.contains(&39) && goat_slots.contains(&71),
+            "public Level 2 C ABI must expose Goat source slots 39 and 71"
         );
         let mut economy_events = [McCampaignEconomyEventV2::default(); 1024];
         let mut economy_event_count = 0;
