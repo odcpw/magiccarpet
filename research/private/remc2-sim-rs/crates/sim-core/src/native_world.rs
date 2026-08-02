@@ -3663,6 +3663,8 @@ pub struct Level2EconomyState {
     terrain: SessionTerrain,
     baseline_free_slots: Box<[u16]>,
     free_slots: Vec<u16>,
+    baseline_slot_generations: BTreeMap<u16, u32>,
+    slot_generations: BTreeMap<u16, u32>,
     baseline_slot_rng: BTreeMap<u16, u16>,
     slot_rng: BTreeMap<u16, u16>,
     baseline_global_rng: u32,
@@ -3830,6 +3832,8 @@ impl Level2EconomyState {
             terrain,
             baseline_free_slots: free_slots.clone().into_boxed_slice(),
             free_slots,
+            baseline_slot_generations: BTreeMap::new(),
+            slot_generations: BTreeMap::new(),
             baseline_slot_rng: slot_rng.clone(),
             slot_rng,
             baseline_global_rng: global_rng,
@@ -3903,7 +3907,10 @@ impl Level2EconomyState {
     }
 
     fn allocate_slot(&mut self) -> Option<u16> {
-        self.free_slots.pop()
+        let slot = self.free_slots.pop()?;
+        let generation = self.slot_generations.entry(slot).or_default();
+        *generation = generation.wrapping_add(1);
+        Some(slot)
     }
 
     #[must_use]
@@ -4181,21 +4188,23 @@ impl Level2EconomyState {
         &self.castle_children
     }
 
-    /// Return the currently live dynamic source rows in ascending source-slot
-    /// order. This is the bounded arena-cursor seam: allocations and releases
-    /// are observed from live projections on every pass rather than captured
-    /// once at reset. Per-object movement remains owned by the economy bead.
     #[must_use]
-    pub fn live_arena_slots(&self) -> Vec<(u16, Level2DynamicArenaKind)> {
-        let mut slots = BTreeMap::new();
+    fn slot_generation(&self, slot: u16) -> u32 {
+        self.slot_generations
+            .get(&slot)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn for_each_live_arena_slot(&self, mut visit: impl FnMut(u16, Level2DynamicArenaKind)) {
         if let Some(castle) = self.castle.filter(|castle| castle.active) {
-            slots.insert(
+            visit(
                 castle.source_entity_index,
                 Level2DynamicArenaKind::CastleRoot,
             );
         }
         for child in self.castle_children.iter().filter(|child| child.active) {
-            slots.insert(
+            visit(
                 child.source_entity_index,
                 match child.model {
                     15 => Level2DynamicArenaKind::CastleAuxiliary,
@@ -4207,19 +4216,19 @@ impl Level2EconomyState {
             );
         }
         for sphere in self.spheres.iter().filter(|sphere| sphere.active) {
-            slots.insert(
+            visit(
                 sphere.source_entity_index,
                 Level2DynamicArenaKind::ManaSphere,
             );
         }
         for burst in self.death_bursts.iter().filter(|burst| burst.active) {
-            slots.insert(
+            visit(
                 burst.source_entity_index,
                 Level2DynamicArenaKind::DeathBurst,
             );
         }
         for carrier in self.carriers.iter().filter(|carrier| carrier.active) {
-            slots.insert(
+            visit(
                 carrier.source_entity_index,
                 Level2DynamicArenaKind::ManaCarrier,
             );
@@ -4229,24 +4238,52 @@ impl Level2EconomyState {
             .iter()
             .filter(|replacement| replacement.active)
         {
-            slots.insert(
+            visit(
                 replacement.source_entity_index,
                 Level2DynamicArenaKind::SpellReplacement,
             );
         }
         for source in self.spell_pickups.iter().filter(|source| source.active) {
-            slots.insert(
+            visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::SpellPickup,
             );
         }
         for source in self.authored_model45.iter().filter(|source| source.active) {
-            slots.insert(
+            visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::AuthoredModel45,
             );
         }
+    }
+
+    /// Return the currently live dynamic source rows in ascending source-slot
+    /// order. This is the bounded arena-cursor seam: allocations and releases
+    /// are observed from live projections on every pass rather than captured
+    /// once at reset. Per-object movement remains owned by the economy bead.
+    #[must_use]
+    pub fn live_arena_slots(&self) -> Vec<(u16, Level2DynamicArenaKind)> {
+        let mut slots = BTreeMap::new();
+        self.for_each_live_arena_slot(|slot, kind| {
+            slots.insert(slot, kind);
+        });
         slots.into_iter().collect()
+    }
+
+    #[must_use]
+    fn live_arena_cursor_rows(&self) -> Vec<Level2DynamicArenaCursorRow> {
+        let mut rows = BTreeMap::new();
+        self.for_each_live_arena_slot(|slot, kind| {
+            rows.insert(
+                slot,
+                Level2DynamicArenaCursorRow {
+                    source_slot: slot,
+                    generation: self.slot_generation(slot),
+                    kind,
+                },
+            );
+        });
+        rows.into_values().collect()
     }
 
     #[must_use]
@@ -7519,6 +7556,7 @@ impl Level2EconomyState {
     pub fn reset(&mut self) {
         self.terrain = self.baseline_terrain.clone();
         self.free_slots = self.baseline_free_slots.to_vec();
+        self.slot_generations = self.baseline_slot_generations.clone();
         self.slot_rng = self.baseline_slot_rng.clone();
         self.global_rng = self.baseline_global_rng;
         self.source_rng = self.baseline_source_rng.clone();
@@ -9396,6 +9434,13 @@ pub enum Level2DynamicArenaKind {
     AuthoredModel45,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct Level2DynamicArenaCursorRow {
+    pub source_slot: u16,
+    pub generation: u32,
+    pub kind: Level2DynamicArenaKind,
+}
+
 impl Level2DispatchEvent {
     /// The lossless scalar projection used by the additive campaign C ABI.
     /// Keeping this mapping in sim-core makes the Rust digest and exported
@@ -10158,13 +10203,14 @@ impl Level2ResetSession {
         if let Some(castle) = self.economy.castle().filter(|castle| castle.active) {
             routes.push((castle.source_entity_index, 5_u8));
         }
-        let dynamic_kinds = self
+        let dynamic_rows = self
             .economy
-            .live_arena_slots()
+            .live_arena_cursor_rows()
             .into_iter()
-            .filter(|(slot, _)| !routes.iter().any(|(known, _)| known == slot))
+            .filter(|row| !routes.iter().any(|(known, _)| known == &row.source_slot))
+            .map(|row| (row.source_slot, row))
             .collect::<BTreeMap<_, _>>();
-        routes.extend(dynamic_kinds.keys().copied().map(|slot| (slot, 6_u8)));
+        routes.extend(dynamic_rows.keys().copied().map(|slot| (slot, 6_u8)));
         routes.sort_unstable_by_key(|(slot, _)| *slot);
         // `ApplyEvents_498A0` keeps a source cursor and repeats the arena
         // walk when a handler allocates or retires a row.  The typed routes
@@ -10327,12 +10373,12 @@ impl Level2ResetSession {
                     });
                 }
                 6 => {
-                    let kind = dynamic_kinds
+                    let row = dynamic_rows
                         .get(&source_slot)
                         .copied()
-                        .expect("dynamic source route has a live kind");
-                    dispatched_dynamic_slots.insert(source_slot);
-                    if kind == Level2DynamicArenaKind::AuthoredModel45 {
+                        .expect("dynamic source route has a live row");
+                    dispatched_dynamic_slots.insert((source_slot, row.generation));
+                    if row.kind == Level2DynamicArenaKind::AuthoredModel45 {
                         if let Some(target_group) = self
                             .economy
                             .authored_model45()
@@ -10347,14 +10393,14 @@ impl Level2ResetSession {
                             );
                         }
                     }
-                    let live = if kind == Level2DynamicArenaKind::SpellPickup {
+                    let live = if row.kind == Level2DynamicArenaKind::SpellPickup {
                         self.step_level2_dynamic_spell_pickup(
                             pass,
                             source_slot,
                             player_entity_index,
                             player_position,
                         )
-                    } else if kind == Level2DynamicArenaKind::SpellReplacement {
+                    } else if row.kind == Level2DynamicArenaKind::SpellReplacement {
                         self.step_level2_dynamic_spell_replacement(
                             pass,
                             source_slot,
@@ -10362,7 +10408,7 @@ impl Level2ResetSession {
                             player_position,
                         )
                     } else {
-                        self.step_level2_dynamic_arena(source_slot, kind)
+                        self.step_level2_dynamic_arena(source_slot, row.kind)
                     };
                     self.append_new_economy_events(pass, source_slot);
                     if live {
@@ -10370,7 +10416,7 @@ impl Level2ResetSession {
                             .push(Level2DispatchEvent::DynamicArena {
                                 pass,
                                 source_slot,
-                                kind,
+                                kind: row.kind,
                             });
                     }
                 }
@@ -10402,16 +10448,19 @@ impl Level2ResetSession {
         for _ in 0..1_000 {
             let unseen = self
                 .economy
-                .live_arena_slots()
+                .live_arena_cursor_rows()
                 .into_iter()
-                .filter(|(slot, _)| !dispatched_dynamic_slots.contains(slot))
+                .filter(|row| {
+                    !dispatched_dynamic_slots.contains(&(row.source_slot, row.generation))
+                })
                 .collect::<Vec<_>>();
             if unseen.is_empty() {
                 break;
             }
-            for (source_slot, kind) in unseen {
-                dispatched_dynamic_slots.insert(source_slot);
-                if kind == Level2DynamicArenaKind::AuthoredModel45 {
+            for row in unseen {
+                let source_slot = row.source_slot;
+                dispatched_dynamic_slots.insert((source_slot, row.generation));
+                if row.kind == Level2DynamicArenaKind::AuthoredModel45 {
                     if let Some(target_group) = self
                         .economy
                         .authored_model45()
@@ -10422,14 +10471,14 @@ impl Level2ResetSession {
                         self.activate_level2_authored_spell_group(pass, source_slot, target_group);
                     }
                 }
-                let live = if kind == Level2DynamicArenaKind::SpellPickup {
+                let live = if row.kind == Level2DynamicArenaKind::SpellPickup {
                     self.step_level2_dynamic_spell_pickup(
                         pass,
                         source_slot,
                         player_entity_index,
                         player_position,
                     )
-                } else if kind == Level2DynamicArenaKind::SpellReplacement {
+                } else if row.kind == Level2DynamicArenaKind::SpellReplacement {
                     self.step_level2_dynamic_spell_replacement(
                         pass,
                         source_slot,
@@ -10437,7 +10486,7 @@ impl Level2ResetSession {
                         player_position,
                     )
                 } else {
-                    self.step_level2_dynamic_arena(source_slot, kind)
+                    self.step_level2_dynamic_arena(source_slot, row.kind)
                 };
                 self.append_new_economy_events(pass, source_slot);
                 if live {
@@ -10445,7 +10494,7 @@ impl Level2ResetSession {
                         .push(Level2DispatchEvent::DynamicArena {
                             pass,
                             source_slot,
-                            kind,
+                            kind: row.kind,
                         });
                 }
             }
@@ -10453,9 +10502,9 @@ impl Level2ResetSession {
         }
         let remaining_dynamic = self
             .economy
-            .live_arena_slots()
+            .live_arena_cursor_rows()
             .into_iter()
-            .filter(|(slot, _)| !dispatched_dynamic_slots.contains(slot))
+            .filter(|row| !dispatched_dynamic_slots.contains(&(row.source_slot, row.generation)))
             .collect::<Vec<_>>();
         if !remaining_dynamic.is_empty() {
             self.dispatch_events.push(Level2DispatchEvent::Error {
@@ -22399,6 +22448,193 @@ mod tests {
                 .source_slot,
             replacement.source_entity_index
         );
+    }
+
+    #[test]
+    fn level_two_runagain_dispatches_reclaimed_slot_reuse_with_new_generation() {
+        // Two overlapping live spheres make the first source handler retire
+        // one arena occupant; the later persistent pickup then reuses that
+        // numeric slot in the same outer turn. This is the source-order case
+        // that a slot-only dispatched set silently drops.
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 runagain slot-reuse session");
+        let baseline_campaign_hash = session.campaign_state_hash();
+        let free_slots = session
+            .economy()
+            .free_slots
+            .iter()
+            .rev()
+            .copied()
+            .collect::<Vec<_>>();
+        let prefix_allocations = free_slots
+            .iter()
+            .enumerate()
+            .find_map(|(index, _)| {
+                (index + 2 < free_slots.len() && free_slots[index + 2] % 4 == 0).then_some(index)
+            })
+            .expect(
+                "free slot whose later persistent replacement cadence is immediately collectable",
+            );
+        for _ in 0..prefix_allocations {
+            let _ = session
+                .economy_mut()
+                .spawn_mana_carrier(Position::default(), 111, 0)
+                .expect("prefix carrier allocation");
+        }
+        let target_slot = u16::try_from(
+            session
+                .economy_mut()
+                .spawn_mana_sphere_from_death(901, Position::default(), 0, 0x1111, 100, 111)
+                .expect("target sphere allocation"),
+        )
+        .expect("target sphere slot fits");
+        let second_sphere_slot = u16::try_from(
+            session
+                .economy_mut()
+                .spawn_mana_sphere_from_death(902, Position::default(), 0, 0x2222, 50, 111)
+                .expect("source sphere allocation"),
+        )
+        .expect("source sphere slot fits");
+        let persistent = session
+            .allocate_level2_spell_replacement(11, 38, Position::default())
+            .expect("persistent replacement allocation");
+        session.state.position = persistent.position;
+        assert_eq!(target_slot, free_slots[prefix_allocations]);
+        assert_eq!(second_sphere_slot, free_slots[prefix_allocations + 1]);
+        assert_eq!(
+            persistent.source_entity_index,
+            free_slots[prefix_allocations + 2]
+        );
+        let reused_slot = target_slot;
+        assert_eq!(
+            session.economy().free_slot_count(),
+            free_slots.len() - prefix_allocations - 3
+        );
+        for slot in [target_slot, second_sphere_slot] {
+            let sphere = session
+                .economy_mut()
+                .spheres
+                .iter_mut()
+                .find(|sphere| sphere.source_entity_index == slot)
+                .expect("test sphere remains live before source dispatch");
+            sphere.position = Position::default();
+            sphere.velocity_x = 0;
+            sphere.velocity_y = 0;
+            sphere.vertical_velocity = 0;
+        }
+        assert_eq!(
+            session
+                .economy()
+                .spell_replacements()
+                .iter()
+                .find(
+                    |replacement| replacement.source_entity_index == persistent.source_entity_index
+                )
+                .expect("initial persistent source")
+                .action,
+            35
+        );
+        assert_eq!(
+            session
+                .economy()
+                .live_arena_cursor_rows()
+                .into_iter()
+                .find(|row| row.source_slot == reused_slot)
+                .expect("initial cursor row")
+                .generation,
+            1
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                source_slot,
+                kind: Level2DynamicArenaKind::ManaSphere,
+                ..
+            } if *source_slot == target_slot
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::SpellAcquisition {
+                family: 11,
+                source_slot,
+                result: Some(_),
+                ..
+            } if *source_slot == persistent.source_entity_index
+        )));
+        let first_target_visit = session
+            .dispatch_events()
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::DynamicArena {
+                        source_slot,
+                        kind: Level2DynamicArenaKind::ManaSphere,
+                        ..
+                    } if *source_slot == target_slot
+                )
+            })
+            .expect("target sphere is visited before its slot is reused");
+        let reused_slot_visit = session
+            .dispatch_events()
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::DynamicArena {
+                        source_slot,
+                        kind: Level2DynamicArenaKind::SpellReplacement,
+                        ..
+                    } if *source_slot == reused_slot
+                )
+            })
+            .expect("reused slot is revisited as a replacement");
+        assert!(
+            first_target_visit < reused_slot_visit,
+            "reused slot must be revisited after its original source visit"
+        );
+        assert_eq!(
+            session
+                .dispatch_events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Level2DispatchEvent::DynamicArena {
+                        source_slot,
+                        kind: Level2DynamicArenaKind::SpellReplacement,
+                        ..
+                    } if *source_slot == reused_slot
+                ))
+                .count(),
+            1,
+            "runagain must revisit a reclaimed slot after a new allocation reuses it"
+        );
+        let replacement = session
+            .economy()
+            .spell_replacements()
+            .iter()
+            .find(|replacement| replacement.source_entity_index == reused_slot)
+            .expect("replacement reused reclaimed slot");
+        assert_eq!(replacement.family, 11);
+        assert_eq!(replacement.action, 35);
+        assert_eq!(
+            session
+                .economy()
+                .live_arena_cursor_rows()
+                .into_iter()
+                .find(|row| row.source_slot == reused_slot)
+                .expect("replacement cursor row")
+                .generation,
+            2
+        );
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
     }
 
     #[test]
