@@ -16737,6 +16737,52 @@ mod tests {
         assert_eq!(session.economy().reset_hash(), baseline_hash);
         assert_eq!(session.economy().owner_mana_aggregate(111), 0);
         assert_eq!(session.economy().owner_mana_global(), 12_835);
+
+        // A model-45 owner row reaches the Castle capacity branch even when
+        // the local model-3 defender vector is empty of mana.
+        let mut gate = inspection
+            .level2_reset_session()
+            .expect("owner aggregate capacity session");
+        gate.economy_mut()
+            .baseline_owner_mana_rows
+            .push(Level2OwnerManaRow {
+                source_entity_index: 900,
+                source_class: 10,
+                source_model: 45,
+                player_entity_index: 111,
+                mana: 900,
+                active: true,
+            });
+        let castle_slot = gate
+            .economy_mut()
+            .build_castle(Position::default(), 111)
+            .expect("owner aggregate Castle");
+        {
+            let castle = gate
+                .economy_mut()
+                .castle
+                .as_mut()
+                .expect("owner aggregate Castle");
+            castle.level = 1;
+            castle.mana = 0;
+            castle.mana_capacity = 500;
+        }
+        gate.economy_mut().maintain_castle_defenders(castle_slot);
+        assert_eq!(gate.economy().owner_mana_aggregate(111), 900);
+        let defender_slot = gate
+            .economy()
+            .castle
+            .expect("owner aggregate Castle")
+            .defender_slots[0];
+        assert_eq!(
+            gate.economy()
+                .castle_children()
+                .iter()
+                .find(|child| child.source_entity_index == defender_slot)
+                .expect("owner aggregate defender")
+                .target_sphere_slot,
+            castle_slot
+        );
     }
 
     #[test]
