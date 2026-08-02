@@ -9599,6 +9599,24 @@ fn level2_economy_event_source_slot(event: Level2EconomyEvent, fallback: u16) ->
 }
 
 impl Level2ResetSession {
+    fn level2_goat_player_targets(&self) -> Vec<GoatPlayerTarget> {
+        self.entities
+            .iter()
+            .filter(|entity| {
+                entity.index != 0 && entity.active && entity.class == 3 && entity.life >= 0
+            })
+            .map(|entity| GoatPlayerTarget {
+                entity_index: entity.index,
+                position: if entity.index == self.state.entity_index {
+                    self.state.position
+                } else {
+                    entity.position
+                },
+                control_flags: entity.control_flags,
+            })
+            .collect()
+    }
+
     fn new(
         profile: FlightProfile,
         state: FlightState,
@@ -10086,15 +10104,7 @@ impl Level2ResetSession {
         // Retain event chronology across all source slots in this pass;
         // individual handlers must not erase an earlier pickup row.
         self.shared_spells.pickup_events.clear();
-        let player_control_flags = self
-            .entities
-            .get(usize::from(player_entity_index))
-            .map_or(0, |entity| entity.control_flags);
-        let goat_players = [GoatPlayerTarget {
-            entity_index: player_entity_index,
-            position: player_position,
-            control_flags: player_control_flags,
-        }];
+        let goat_players = self.level2_goat_player_targets();
         self.economy.advance_global_rng();
         // Pinned `UpdateEntities_57730` invokes `sub_60F00` once at the
         // owning-pass boundary (EventsFunctions.cpp:40123), before any
@@ -21060,6 +21070,191 @@ mod tests {
         second.reset();
         assert_eq!(first.goats(), second.goats());
         assert!(first.dispatch_events().is_empty());
+    }
+
+    #[test]
+    fn level_two_goat_dispatch_uses_live_class3_player_feed_in_source_order() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Goat player-feed session");
+        let local_player_index = usize::from(session.state.entity_index);
+        let injected_index = session
+            .entities
+            .iter()
+            .position(|entity| entity.index != 0 && !entity.active)
+            .expect("inactive source row for synthetic class-3 candidate");
+        let mut primary = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .cloned()
+            .expect("authored Goat slot 39");
+        primary.action = 10;
+        primary.phase = 0;
+        primary.position = Position {
+            x: 10_000,
+            y: 10_000,
+            z: 0,
+        };
+        primary.yaw = 0;
+        primary.roll = 0;
+        primary.actual_speed = 0;
+        primary.proximity_countdown = 2;
+        primary.target_entity_index = None;
+        primary.partner_entity_index = None;
+        assert!(session.goats.replace_goat_for_test(primary));
+
+        session.state.position = Position {
+            x: 10_000,
+            y: 9_100,
+            z: 0,
+        };
+        session.entities[local_player_index].control_flags = 0x20;
+        session.entities[local_player_index].position = Position {
+            x: 40_000,
+            y: 40_000,
+            z: 0,
+        };
+        session.entities[injected_index].active = true;
+        session.entities[injected_index].class = 3;
+        session.entities[injected_index].model = 0;
+        session.entities[injected_index].life = 100;
+        session.entities[injected_index].position = Position {
+            x: 10_000,
+            y: 9_400,
+            z: 0,
+        };
+        session.entities[injected_index].control_flags = 0;
+        let expected_player_slots = session
+            .entities
+            .iter()
+            .filter(|entity| {
+                entity.index != 0 && entity.active && entity.class == 3 && entity.life >= 0
+            })
+            .map(|entity| entity.index)
+            .collect::<Vec<_>>();
+        let goat_player_targets = session.level2_goat_player_targets();
+        assert_eq!(
+            goat_player_targets
+                .iter()
+                .map(|player| player.entity_index)
+                .collect::<Vec<_>>(),
+            expected_player_slots
+        );
+        assert_eq!(
+            goat_player_targets
+                .iter()
+                .find(|player| player.entity_index == session.state.entity_index)
+                .expect("local class-3 row")
+                .position,
+            session.state.position
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let goat = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .expect("stepped Goat slot 39");
+        assert_eq!(goat.action, 14);
+        assert_eq!(
+            goat.target_entity_index,
+            Some(session.entities[injected_index].index)
+        );
+        assert_eq!(goat.partner_entity_index, None);
+    }
+
+    #[test]
+    fn level_two_goat_dispatch_falls_back_to_peer_when_all_live_players_are_ineligible() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Goat peer-fallback session");
+        let local_player_index = usize::from(session.state.entity_index);
+        let injected_index = session
+            .entities
+            .iter()
+            .position(|entity| entity.index != 0 && !entity.active)
+            .expect("inactive source row for synthetic class-3 candidate");
+
+        let mut primary = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .cloned()
+            .expect("authored Goat slot 39");
+        primary.action = 10;
+        primary.phase = 0;
+        primary.position = Position {
+            x: 10_000,
+            y: 10_000,
+            z: 0,
+        };
+        primary.yaw = 0;
+        primary.roll = 0;
+        primary.actual_speed = 0;
+        primary.proximity_countdown = 1;
+        primary.target_entity_index = None;
+        primary.partner_entity_index = None;
+        assert!(session.goats.replace_goat_for_test(primary));
+
+        let mut peer40 = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 40)
+            .cloned()
+            .expect("peer Goat slot 40");
+        let mut peer41 = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 41)
+            .cloned()
+            .expect("peer Goat slot 41");
+        peer40.position = Position {
+            x: 10_000,
+            y: 9_400,
+            z: 0,
+        };
+        peer41.position = Position {
+            x: 10_000,
+            y: 9_200,
+            z: 0,
+        };
+        peer40.partner_entity_index = None;
+        peer41.partner_entity_index = Some(66);
+        assert!(session.goats.replace_goat_for_test(peer40));
+        assert!(session.goats.replace_goat_for_test(peer41));
+
+        session.state.position = Position {
+            x: 10_000,
+            y: 9_100,
+            z: 0,
+        };
+        session.entities[local_player_index].control_flags = 0x20;
+        session.entities[local_player_index].position = session.state.position;
+        session.entities[injected_index].active = true;
+        session.entities[injected_index].class = 3;
+        session.entities[injected_index].model = 0;
+        session.entities[injected_index].life = 100;
+        session.entities[injected_index].position = Position {
+            x: 10_000,
+            y: 9_300,
+            z: 0,
+        };
+        session.entities[injected_index].control_flags = 0x20;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let goat = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .expect("stepped Goat slot 39");
+        assert_eq!(goat.action, 11);
+        assert_eq!(goat.target_entity_index, None);
+        assert_eq!(goat.partner_entity_index, Some(40));
     }
 
     #[test]

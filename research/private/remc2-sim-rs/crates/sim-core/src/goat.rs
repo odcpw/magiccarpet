@@ -1701,6 +1701,19 @@ impl GoatFamily {
         true
     }
 
+    #[cfg(test)]
+    pub fn replace_goat_for_test(&mut self, updated: GoatState) -> bool {
+        let Some(index) = self
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == updated.entity_index)
+        else {
+            return false;
+        };
+        self.goats[index] = updated;
+        true
+    }
+
     /// Inject the source pending-damage fields for private qualification.
     ///
     /// # Errors
