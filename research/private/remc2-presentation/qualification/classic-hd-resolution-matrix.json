@@ -133,6 +133,31 @@
     "gpu_timing": "not-captured",
     "owner_payload_embedded": false
   },
+  "owner_asset_tier_fallback": {
+    "artifact": "qualification/classic-hd-owner-asset-fallback.json",
+    "profile": "hd-960x720",
+    "requested_asset_tier": "optional-high-resolution",
+    "resolved_asset_tier": "original-indexed",
+    "fallback_applied": true,
+    "optional_pack_present": false,
+    "scenario_frame_count": 49,
+    "upload_count": 49,
+    "status": "fallback-pass; optional native-tier consumption remains open",
+    "owner_payload_embedded": false
+  },
+  "owner_focus_pause_probe": {
+    "artifact": "qualification/classic-hd-owner-focus-pause.json",
+    "profile": "hd-640x480",
+    "status": "lifecycle-pass; OS fullscreen/window/alt-tab capture remains open",
+    "native_pause_contract": true,
+    "owner_payload_embedded": false
+  },
+  "owner_exit_sidecar_probe": {
+    "artifact": "qualification/classic-hd-owner-exit-sidecar.json",
+    "profile": "hd-640x480",
+    "status": "sidecar-pass; full authored completion/postgame route remains open",
+    "owner_payload_embedded": false
+  },
   "route_cases": {
     "idle": "owner-hd-640x480-scenario-pass",
     "town": "owner-hd-640x480-scenario-pass",
@@ -141,7 +166,7 @@
     "death_restart": "owner-hd-640x480-scenario-pass",
     "completion_postgame": "pending-owner-lab-capture",
     "fullscreen_window_alt_tab": "pending-owner-lab-capture",
-    "asset_tier_fallback": "pending-owner-lab-capture",
+    "asset_tier_fallback": "owner-hd-960x720-optional-tier-fallback-pass",
     "reflection_lighting_blur": "pending-owner-lab-capture",
     "invalid_config": "covered-by-launcher-and-settings-tests"
   },

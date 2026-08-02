@@ -524,11 +524,16 @@ namespace MagicCarpet.PresentationLab.Editor
                     " provenance_route_hash=" + SequenceHash(provenanceRouteHashes).ToString("x16") +
                     " last_receipt_hash=" + classic.LastNativeReceiptHash.ToString("x16") +
                     " owner_inputs_external=true");
+                UnityEngine.Object.DestroyImmediate(root);
+                root = null;
                 EditorApplication.Exit(0);
             }
             finally
             {
-                UnityEngine.Object.DestroyImmediate(root);
+                if (root != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(root);
+                }
             }
         }
 

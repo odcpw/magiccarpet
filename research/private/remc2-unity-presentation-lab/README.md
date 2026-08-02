@@ -131,9 +131,10 @@ Unity -batchmode -force-glcore \
 ```
 
 It records renderer-binding evidence only. Town, combat, death/restart,
-completion, window/alt-tab, asset-fallback, and sustained GPU cases remain
-separate owner-lab gates until their actual states and visual review artifacts
-are captured.
+completion, window/alt-tab, and sustained GPU cases remain separate owner-lab
+gates until their actual states and visual review artifacts are captured. The
+optional-tier fallback route is recorded separately because it must prove the
+requested tier is not silently mixed into the mandatory original cache.
 
 The owner-bound Classic HD scenario smoke adds authoritative route observations
 at the mandatory 640x480 profile:
@@ -155,6 +156,21 @@ It proves 49 persistent indexed uploads across idle, moving town, combat with
 projectile/impact rows, high-speed flight, lethal player state, and tick-0
 restart. This is route and Rust-observation evidence only; it does not promote
 the profile to sustained GPU support or capture a visual corpus.
+
+The optional-tier fallback receipt is
+`research/private/remc2-presentation/qualification/classic-hd-owner-asset-fallback.json`.
+At 960x720, requesting `optional-high-resolution` with no optional pack present
+resolves explicitly to `original-indexed` and still completes the 49-frame
+owner route. The native graph is not yet qualified to consume an optional pack,
+so this is a fail-closed fallback proof rather than an enhanced-asset claim.
+
+The bounded focus/pause and exit-sidecar probes are recorded in
+`qualification/classic-hd-owner-focus-pause.json` and
+`qualification/classic-hd-owner-exit-sidecar.json`. They prove that Unity
+focus/application pause does not advance authoritative Rust state while
+suspended, and that the exit presentation sidecar is clear and reset-safe at
+the tick-0 boundary. Real OS window/alt-tab capture and a full authored
+completion/postgame route remain open.
 
 The same route is qualified separately at the 960x720 candidate profile with
 `-mc-classic-profile hd-960x720`. Its receipt is

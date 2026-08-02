@@ -68,8 +68,17 @@ high-speed flight, lethal player state, and tick-0 restart. It is still a
 route-observation receipt rather than a visual-corpus, sustained-GPU, or
 completion/window qualification.
 
+The optional-tier fallback receipt is recorded in
+`qualification/classic-hd-owner-asset-fallback.json`. At 960x720, an explicit
+`optional-high-resolution` request with no optional pack present resolves to
+`original-indexed` before the owner session renders; the full 49-frame route
+still passes. Optional native-tier consumption remains open. The bounded
+focus/pause and exit-sidecar receipts separately prove pause-safe authoritative
+state and reset-safe exit observability, while real OS window/alt-tab capture
+and full authored completion/postgame remain open.
+
 Remaining GFX-O evidence is intentionally explicit in the JSON matrix:
-completion/fullscreen/alt-tab/asset-fallback, 20-minute allocation growth,
+completion/fullscreen/alt-tab, 20-minute allocation growth,
 960x720 owner/GPU promotion, visual corpus review, and the complete
 owner-bound reflection/lighting/blur matrix still require the private
 owner-data Unity capture and preserved qualification artifacts. The

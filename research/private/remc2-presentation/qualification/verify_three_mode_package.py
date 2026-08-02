@@ -47,6 +47,15 @@ CLASSIC_HD_OWNER_PERFORMANCE_ARTIFACT = Path(__file__).with_name(
 CLASSIC_HD_OWNER_GPU_FENCE_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-gpu-fence.json"
 )
+CLASSIC_HD_OWNER_ASSET_FALLBACK_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-asset-fallback.json"
+)
+CLASSIC_HD_OWNER_FOCUS_PAUSE_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-focus-pause.json"
+)
+CLASSIC_HD_OWNER_EXIT_SIDECAR_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-exit-sidecar.json"
+)
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -298,6 +307,158 @@ def validate_classic_hd_owner_scenario_artifact(
     status = str(artifact.get("qualification_status", ""))
     if "remain open" not in status:
         errors.append("Classic HD owner scenario must keep unqualified gates explicit")
+    return errors
+
+
+def validate_classic_hd_owner_asset_fallback_artifact(
+    path: Path = CLASSIC_HD_OWNER_ASSET_FALLBACK_ARTIFACT,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"Classic HD owner asset fallback artifact read failed: {error}"]
+
+    if artifact.get("schema_version") != 1:
+        errors.append("Classic HD owner asset fallback schema_version must be 1")
+    if artifact.get("kind") != "classic-hd-owner-asset-fallback-probe/v1":
+        errors.append("Classic HD owner asset fallback artifact kind is wrong")
+    if artifact.get("mode") != "classic-hd" or artifact.get("native_abi") != "sim-capi-v2":
+        errors.append("Classic HD owner asset fallback must identify the sim-capi-v2 route")
+    if artifact.get("profile") != "hd-960x720":
+        errors.append("Classic HD owner asset fallback must target hd-960x720")
+    if artifact.get("internal_width") != 960 or artifact.get("internal_height") != 720:
+        errors.append("Classic HD owner asset fallback extent must be 960x720")
+    if artifact.get("requested_asset_tier") != "optional-high-resolution":
+        errors.append("Classic HD owner asset fallback must request the optional tier")
+    if artifact.get("resolved_asset_tier") != "original-indexed":
+        errors.append("Classic HD owner asset fallback must resolve to original-indexed")
+    if artifact.get("fallback_applied") is not True or artifact.get("optional_pack_present") is not False:
+        errors.append("Classic HD owner asset fallback must prove an absent-pack fallback")
+    if "absent" not in str(artifact.get("fallback_reason", "")):
+        errors.append("Classic HD owner asset fallback must record the absent-pack reason")
+    if artifact.get("status") != "fallback-pass":
+        errors.append("Classic HD owner asset fallback status must be fallback-pass")
+    if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
+        errors.append("Classic HD owner asset fallback must keep owner inputs external")
+    if artifact.get("scenario_frame_count") != 49 or artifact.get("upload_count") != 49:
+        errors.append("Classic HD owner asset fallback must retain 49 frame/upload receipts")
+    routes = artifact.get("routes")
+    required_routes = {"idle", "town", "combat", "high_speed_flight", "death_restart"}
+    if not isinstance(routes, dict) or set(routes) != required_routes:
+        errors.append("Classic HD owner asset fallback must retain exactly the five bounded route cases")
+    elif any(routes[name] != "pass" for name in required_routes):
+        errors.append("Classic HD owner asset fallback contains a non-pass route case")
+    for field in (
+        "source_revision",
+        "index_route_hash",
+        "provenance_route_hash",
+        "last_receipt_hash",
+        "native_plugin_sha256",
+        "log_sha256",
+        "log_path",
+        "fallback_reason",
+    ):
+        if not isinstance(artifact.get(field), str) or not artifact[field]:
+            errors.append(f"Classic HD owner asset fallback is missing {field}")
+    qualification_status = str(artifact.get("qualification_status", ""))
+    if "remain open" not in qualification_status:
+        errors.append("Classic HD owner asset fallback must keep optional consumption and broader gates open")
+    return errors
+
+
+def validate_classic_hd_owner_focus_pause_artifact(
+    path: Path = CLASSIC_HD_OWNER_FOCUS_PAUSE_ARTIFACT,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"Classic HD owner focus/pause artifact read failed: {error}"]
+
+    if artifact.get("schema_version") != 1:
+        errors.append("Classic HD owner focus/pause schema_version must be 1")
+    if artifact.get("kind") != "classic-hd-owner-focus-pause-probe/v1":
+        errors.append("Classic HD owner focus/pause artifact kind is wrong")
+    if artifact.get("mode") != "classic-hd" or artifact.get("profile") != "hd-640x480":
+        errors.append("Classic HD owner focus/pause must target the 640x480 Classic HD route")
+    if artifact.get("internal_width") != 640 or artifact.get("internal_height") != 480:
+        errors.append("Classic HD owner focus/pause extent must be 640x480")
+    if artifact.get("native_abi") != "sim-capi-v2":
+        errors.append("Classic HD owner focus/pause must identify sim-capi-v2")
+    if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
+        errors.append("Classic HD owner focus/pause must keep owner inputs external")
+    expected = {
+        "baseline_generation": 2,
+        "baseline_authoritative_tick": 1,
+        "baseline_presentation_tick": 0,
+        "resumed_authoritative_tick": 2,
+        "resumed_presentation_tick": 1,
+        "baseline_uploads": 1,
+        "uploads_after_resume": 2,
+        "lifecycle_transitions": 4,
+        "output_restore_requests": 2,
+    }
+    for field, value in expected.items():
+        if artifact.get(field) != value:
+            errors.append(f"Classic HD owner focus/pause field {field} must be {value}")
+    if artifact.get("native_pause_contract") is not True or artifact.get("status") != "lifecycle-pass":
+        errors.append("Classic HD owner focus/pause must prove the native pause lifecycle")
+    if artifact.get("fullscreen_alt_tab_status") != "open-os-window-capture-required":
+        errors.append("Classic HD owner focus/pause must keep OS window capture open")
+    for field in ("source_revision", "log_sha256", "log_path", "qualification_status"):
+        if not isinstance(artifact.get(field), str) or not artifact[field]:
+            errors.append(f"Classic HD owner focus/pause is missing {field}")
+    if "remains open" not in str(artifact.get("qualification_status", "")):
+        errors.append("Classic HD owner focus/pause must keep the OS capture gate explicit")
+    return errors
+
+
+def validate_classic_hd_owner_exit_sidecar_artifact(
+    path: Path = CLASSIC_HD_OWNER_EXIT_SIDECAR_ARTIFACT,
+) -> list[str]:
+    errors: list[str] = []
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"Classic HD owner exit sidecar artifact read failed: {error}"]
+
+    if artifact.get("schema_version") != 1:
+        errors.append("Classic HD owner exit sidecar schema_version must be 1")
+    if artifact.get("kind") != "classic-hd-owner-exit-sidecar-probe/v1":
+        errors.append("Classic HD owner exit sidecar artifact kind is wrong")
+    if artifact.get("mode") != "classic-hd" or artifact.get("profile") != "hd-640x480":
+        errors.append("Classic HD owner exit sidecar must target the 640x480 Classic HD route")
+    if artifact.get("internal_width") != 640 or artifact.get("internal_height") != 480:
+        errors.append("Classic HD owner exit sidecar extent must be 640x480")
+    if artifact.get("native_abi") != "sim-capi-v2":
+        errors.append("Classic HD owner exit sidecar must identify sim-capi-v2")
+    if artifact.get("owner_payload_embedded") is not False or artifact.get("owner_inputs_external") is not True:
+        errors.append("Classic HD owner exit sidecar must keep owner inputs external")
+    expected = {
+        "initial_generation": 2,
+        "initial_tick": 0,
+        "reset_generation": 3,
+        "reset_tick": 0,
+        "reset_authoritative_generation": 3,
+        "reset_authoritative_tick": 1,
+        "tasks_completed": 0,
+        "exit_active": 0,
+        "exit_complete": 0,
+        "exit_result": 0,
+    }
+    for field, value in expected.items():
+        if artifact.get(field) != value:
+            errors.append(f"Classic HD owner exit sidecar field {field} must be {value}")
+    if artifact.get("status") != "sidecar-pass":
+        errors.append("Classic HD owner exit sidecar status must be sidecar-pass")
+    if "open" not in str(artifact.get("authoritative_completion_status", "")):
+        errors.append("Classic HD owner exit sidecar must keep full completion open")
+    for field in ("source_revision", "log_sha256", "log_path", "qualification_status"):
+        if not isinstance(artifact.get(field), str) or not artifact[field]:
+            errors.append(f"Classic HD owner exit sidecar is missing {field}")
+    if "remains open" not in str(artifact.get("qualification_status", "")):
+        errors.append("Classic HD owner exit sidecar must keep the completion gate explicit")
     return errors
 
 
@@ -625,6 +786,21 @@ def verify() -> dict[str, Any]:
     _validator_result(
         "owner-bound Classic HD scenario artifact",
         validate_classic_hd_owner_scenario_artifact,
+        checks,
+    )
+    _validator_result(
+        "owner-bound Classic HD asset-tier fallback artifact",
+        validate_classic_hd_owner_asset_fallback_artifact,
+        checks,
+    )
+    _validator_result(
+        "owner-bound Classic HD focus/pause artifact",
+        validate_classic_hd_owner_focus_pause_artifact,
+        checks,
+    )
+    _validator_result(
+        "owner-bound Classic HD exit-sidecar artifact",
+        validate_classic_hd_owner_exit_sidecar_artifact,
         checks,
     )
     _validator_result(
