@@ -82,6 +82,7 @@ namespace MagicCarpet.PresentationLab
         public UnityEnhancedCameraPose CameraPose;
         public UnityEnhancedEntitySnapshot[] Entities = Array.Empty<UnityEnhancedEntitySnapshot>();
         public UnityEnhancedHudSnapshot Hud;
+        public UnityEnhancedMinimapSnapshot Minimap;
         public UnityEnhancedTerrainSnapshot Terrain;
         public UnityEnhancedWaterSnapshot Water;
         public UnityEnhancedNightLightingDescriptor? NightLighting;
@@ -125,6 +126,7 @@ namespace MagicCarpet.PresentationLab
         private UnityEnhancedVfxPresentation vfxPresentation;
         private UnityEnhancedQualityAndPost qualityAndPost;
         private UnityEnhancedHudPresentation hudPresentation;
+        private UnityEnhancedMinimapPresentation minimapPresentation;
         private UnityEnhancedDiagnostics diagnostics;
         private ulong generation;
         private ulong lastTick;
@@ -146,6 +148,7 @@ namespace MagicCarpet.PresentationLab
         public UnityEnhancedVfxPresentation VfxPresentation { get { return vfxPresentation; } }
         public UnityEnhancedQualityAndPost QualityAndPost { get { return qualityAndPost; } }
         public UnityEnhancedHudPresentation HudPresentation { get { return hudPresentation; } }
+        public UnityEnhancedMinimapPresentation MinimapPresentation { get { return minimapPresentation; } }
         public UnityEnhancedDiagnostics Diagnostics { get { return diagnostics; } }
 
         private void Awake()
@@ -223,6 +226,7 @@ namespace MagicCarpet.PresentationLab
             if (actorPresentation != null) actorPresentation.ResetForSession();
             if (qualityAndPost != null) qualityAndPost.ResetForSession();
             if (hudPresentation != null) hudPresentation.ResetForSession();
+            if (minimapPresentation != null) minimapPresentation.ResetForSession();
             if (diagnostics != null) diagnostics.ResetForSession();
 
             hasSnapshot = false;
@@ -325,6 +329,20 @@ namespace MagicCarpet.PresentationLab
             if (snapshot.Hud == null)
             {
                 hudPresentation.HideForSnapshot();
+            }
+
+            if (snapshot.Minimap != null && !minimapPresentation.ApplySnapshot(
+                    snapshot.Minimap,
+                    cameraRig.PresentationCamera))
+            {
+                LastRejectReason = "minimap presentation rejected snapshot";
+                if (diagnostics != null) diagnostics.RecordRejectedSnapshot();
+                State = UnityEnhancedLifecycleState.Faulted;
+                return false;
+            }
+            if (snapshot.Minimap == null)
+            {
+                minimapPresentation.HideForSnapshot();
             }
 
             seenIdentities.Clear();
@@ -453,6 +471,7 @@ namespace MagicCarpet.PresentationLab
             vfxPresentation.ResetForGeneration(nextGeneration);
             actorPresentation.ResetForSession();
             hudPresentation.ResetForGeneration(nextGeneration);
+            minimapPresentation.ResetForGeneration(nextGeneration);
         }
 
         /// <summary>
@@ -653,6 +672,14 @@ namespace MagicCarpet.PresentationLab
                 hudPresentation = hud.AddComponent<UnityEnhancedHudPresentation>();
             }
 
+            if (minimapPresentation == null)
+            {
+                GameObject minimap = new GameObject("EnhancedMinimap");
+                minimap.transform.SetParent(transform, false);
+                minimap.hideFlags = HideFlags.DontSave;
+                minimapPresentation = minimap.AddComponent<UnityEnhancedMinimapPresentation>();
+            }
+
             if (qualityAndPost == null)
             {
                 qualityAndPost = GetComponent<UnityEnhancedQualityAndPost>();
@@ -713,6 +740,15 @@ namespace MagicCarpet.PresentationLab
                  snapshot.Hud.SecuredManaPercent > 100))
             {
                 return false;
+            }
+
+            if (snapshot.Minimap != null)
+            {
+                string minimapReason;
+                if (!snapshot.Minimap.TryValidate(snapshot.Generation, snapshot.Tick, out minimapReason))
+                {
+                    return false;
+                }
             }
 
             if (snapshot.Terrain != null)

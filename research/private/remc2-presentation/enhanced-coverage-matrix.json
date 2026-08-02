@@ -89,7 +89,7 @@
       "domain": "hud",
       "source_owner": "crates/sim-capi/src/native_v2.rs::McLevel1HudSnapshotV2, McLevel1MinimapMarksV2, McPresentationFrameQueryV2",
       "current_rust_surface": "typed HUD, minimap, objective, menu, cursor, and presentation-input snapshots exist",
-      "unity_consumer": "UnityEnhancedHudPresentation consumes generation/tick-bound life, mana, spell, objective, speed, death, and completion state; minimap marks and audio remain separate consumers",
+      "unity_consumer": "UnityEnhancedHudPresentation consumes generation/tick-bound life, mana, spell, objective, speed, death, and completion state; UnityEnhancedMinimapPresentation consumes the native-v2 marks, arrow, and source-ordered entity-command stream; audio remains separate",
       "route": "new-gfx-q",
       "state_fields": ["life/mana", "spell slots", "minimap marks/entities", "objective", "pause/options/help", "cursor", "death/restart/completion"]
     },

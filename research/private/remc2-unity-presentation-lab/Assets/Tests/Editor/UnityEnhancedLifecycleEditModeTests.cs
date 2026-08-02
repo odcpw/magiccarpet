@@ -35,6 +35,7 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual(1, gameObject.GetComponents<UnityEnhancedPresentationAdapters>().Length);
             Assert.AreEqual(1, gameObject.GetComponentsInChildren<UnityEnhancedCameraRig>().Length);
             Assert.AreEqual(1, gameObject.GetComponentsInChildren<UnityEnhancedHudPresentation>().Length);
+            Assert.AreEqual(1, gameObject.GetComponentsInChildren<UnityEnhancedMinimapPresentation>().Length);
             Assert.IsNotNull(gameObject.transform.Find("EnhancedWorldObjects"));
 
             Object.DestroyImmediate(gameObject);
@@ -133,6 +134,45 @@ namespace MagicCarpet.PresentationLab.Tests
 
             root.Close();
             Assert.IsFalse(root.HudPresentation.IsVisible);
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void MinimapConsumesSourceOrderedMarksAndCommands()
+        {
+            GameObject gameObject = new GameObject("enhanced-minimap-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+
+            UnityEnhancedMinimapSnapshot minimap = MinimapSnapshot(2, 7, 0);
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 2,
+                Tick = 7,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Entities = new UnityEnhancedEntitySnapshot[0],
+                Minimap = minimap
+            }));
+
+            Assert.IsTrue(root.MinimapPresentation.IsVisible);
+            Assert.AreEqual(2UL, root.MinimapPresentation.Generation);
+            Assert.AreEqual(7UL, root.MinimapPresentation.LastTick);
+            Assert.AreEqual(1, root.MinimapPresentation.RenderedMarkCount);
+            Assert.AreEqual(1, root.MinimapPresentation.RenderedCommandCount);
+            Assert.AreEqual(0x1234UL, root.MinimapPresentation.CommandHash);
+            Assert.Greater(root.MinimapPresentation.Texture.GetPixel(40, 83).r, 0.1f);
+
+            UnityEnhancedMinimapSnapshot invalid = MinimapSnapshot(2, 8, 1);
+            Assert.IsFalse(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 2,
+                Tick = 8,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Entities = new UnityEnhancedEntitySnapshot[0],
+                Minimap = invalid
+            }));
+            Assert.AreEqual(UnityEnhancedLifecycleState.Faulted, root.State);
+
             Object.DestroyImmediate(gameObject);
         }
 
@@ -639,6 +679,56 @@ namespace MagicCarpet.PresentationLab.Tests
                 Angles = new byte[9],
                 DirtyRegions = dirtyRegions,
                 WrapMode = UnityEnhancedTerrainWrapMode.Repeat
+            };
+        }
+
+        private static UnityEnhancedMinimapSnapshot MinimapSnapshot(
+            ulong generation,
+            ulong tick,
+            ushort order)
+        {
+            short[] markX = new short[UnityEnhancedMinimapSnapshot.MaxMarks];
+            short[] markY = new short[UnityEnhancedMinimapSnapshot.MaxMarks];
+            byte[] markColour = new byte[UnityEnhancedMinimapSnapshot.MaxMarks];
+            byte[] markHelpSelector = new byte[UnityEnhancedMinimapSnapshot.MaxMarks];
+            markX[0] = 32;
+            markY[0] = 28;
+            markColour[0] = 184;
+            markHelpSelector[0] = 0x51;
+            return new UnityEnhancedMinimapSnapshot
+            {
+                Generation = generation,
+                Tick = tick,
+                MarkCount = 1,
+                MarkPulse = true,
+                ArrowValid = true,
+                ArrowVisible = true,
+                MarkX = markX,
+                MarkY = markY,
+                MarkColour = markColour,
+                MarkHelpSelector = markHelpSelector,
+                ArrowXY = new short[UnityEnhancedMinimapSnapshot.ArrowCoordinateCount],
+                TotalEntityCount = 1,
+                CrossX = 63,
+                CrossY = 64,
+                CrossColour = 176,
+                CrossArmLength = 6,
+                Authority = UnityEnhancedMinimapSnapshot.Level1MissionAuthority,
+                CommandHash = 0x1234UL,
+                EntityCommands = new[]
+                {
+                    new UnityEnhancedMinimapEntityCommand
+                    {
+                        SourceSlot = 4,
+                        X = 40,
+                        Y = 44,
+                        Kind = UnityEnhancedMinimapSnapshot.DotCommand,
+                        PaletteIndex = 23,
+                        Size = 1,
+                        Anchor = 1,
+                        Order = order
+                    }
+                }
             };
         }
 

@@ -29,11 +29,16 @@ namespace MagicCarpet.PresentationLab
         private const uint MissionSnapshotSize = 96;
         private const uint ProjectileElementSize = 56;
         private const uint ImpactElementSize = 52;
+        private const uint MinimapMarksSize = 168;
+        private const uint MinimapEntityElementSize = 24;
+        private const uint MinimapEntitiesInfoSize = 64;
         private const uint EventQuerySize = 40;
         private const uint EventBatchSize = 56;
         private const uint EventElementSize = 72;
         private const byte Level1MissionLive = 6;
         private const int EventBatchCapacity = 128;
+        private const int MinimapMaxMarks = 16;
+        private const int MinimapMaxEntityCommands = 1152;
         private const int TerrainWidth = 256;
         private const int TerrainHeight = 256;
         private const int TerrainCellCount = TerrainWidth * TerrainHeight;
@@ -83,6 +88,9 @@ namespace MagicCarpet.PresentationLab
         private MissionSnapshot mission;
         private ProjectileSnapshot[] projectiles = Array.Empty<ProjectileSnapshot>();
         private ImpactSnapshot[] impacts = Array.Empty<ImpactSnapshot>();
+        private MinimapMarks minimapMarks;
+        private MinimapEntitiesInfo minimapEntitiesInfo;
+        private MinimapEntityCommand[] minimapCommands = Array.Empty<MinimapEntityCommand>();
         private EventSnapshot[] pendingEvents = Array.Empty<EventSnapshot>();
         private ulong eventCursor;
         private ulong eventHead;
@@ -121,6 +129,7 @@ namespace MagicCarpet.PresentationLab
         public int LastVfxEventCount { get { return lastVfxEventCount; } }
         public int MissionProjectileCount { get { return checked((int)mission.projectileCount); } }
         public int MissionImpactCount { get { return checked((int)mission.impactCount); } }
+        public int MinimapCommandCount { get { return minimapCommands == null ? 0 : minimapCommands.Length; } }
         public byte MissionStage { get { return mission.currentStage; } }
         public byte TasksCompleted { get { return mission.tasksCompleted; } }
         public bool PlayerDead { get { return mission.playerDead != 0; } }
@@ -831,6 +840,11 @@ namespace MagicCarpet.PresentationLab
                 return false;
             }
 
+            if (!ReadMinimapObservations(out reason))
+            {
+                return false;
+            }
+
             if (!ReadEvents(out reason))
             {
                 return false;
@@ -878,6 +892,86 @@ namespace MagicCarpet.PresentationLab
 
             impacts = ReadImpacts(mission.impactCount, out reason);
             return impacts != null;
+        }
+
+        private bool ReadMinimapObservations(out string reason)
+        {
+            reason = string.Empty;
+            int status = mc_native_level1_minimap_marks(
+                handle,
+                out minimapMarks,
+                MinimapMarksSize);
+            if (status != 0)
+            {
+                reason = StatusReason("Unity Enhanced owner Level 1 minimap marks", status);
+                return false;
+            }
+
+            if (minimapMarks.abiVersion != AbiVersion ||
+                minimapMarks.structSize != MinimapMarksSize ||
+                minimapMarks.generation != snapshot.generation ||
+                minimapMarks.tick != snapshot.tick ||
+                minimapMarks.markCount > MinimapMaxMarks ||
+                minimapMarks.markX == null || minimapMarks.markX.Length != MinimapMaxMarks ||
+                minimapMarks.markY == null || minimapMarks.markY.Length != MinimapMaxMarks ||
+                minimapMarks.markColour == null || minimapMarks.markColour.Length != MinimapMaxMarks ||
+                minimapMarks.markHelpSelector == null ||
+                minimapMarks.markHelpSelector.Length != MinimapMaxMarks ||
+                minimapMarks.arrowXY == null || minimapMarks.arrowXY.Length != 14 ||
+                !AllZero(minimapMarks.reserved))
+            {
+                reason = "Unity Enhanced owner Level 1 minimap marks failed its ABI/layout contract";
+                return false;
+            }
+
+            MinimapEntityCommand[] values = new MinimapEntityCommand[MinimapMaxEntityCommands];
+            status = mc_native_level1_minimap_entities_copy(
+                handle,
+                snapshot.generation,
+                snapshot.tick,
+                values,
+                (uint)values.Length,
+                MinimapEntityElementSize,
+                out minimapEntitiesInfo,
+                MinimapEntitiesInfoSize);
+            if (status != 0)
+            {
+                reason = StatusReason("Unity Enhanced owner Level 1 minimap entity commands", status);
+                return false;
+            }
+
+            if (minimapEntitiesInfo.abiVersion != AbiVersion ||
+                minimapEntitiesInfo.structSize != MinimapEntitiesInfoSize ||
+                minimapEntitiesInfo.generation != snapshot.generation ||
+                minimapEntitiesInfo.tick != snapshot.tick ||
+                minimapEntitiesInfo.totalCount > (uint)MinimapMaxEntityCommands ||
+                minimapEntitiesInfo.authority != Level1MissionLive ||
+                !AllZero(minimapEntitiesInfo.reserved0) ||
+                !AllZero(minimapEntitiesInfo.reserved))
+            {
+                reason = "Unity Enhanced owner Level 1 minimap entity header failed its ABI/layout contract";
+                return false;
+            }
+
+            int commandCount = checked((int)minimapEntitiesInfo.totalCount);
+            MinimapEntityCommand[] observed = new MinimapEntityCommand[commandCount];
+            Array.Copy(values, observed, commandCount);
+            for (int index = 0; index < observed.Length; index++)
+            {
+                MinimapEntityCommand command = observed[index];
+                if (command.sourceSlot == 0 ||
+                    command.kind < UnityEnhancedMinimapSnapshot.DotCommand ||
+                    command.kind > UnityEnhancedMinimapSnapshot.BlendPixelCommand ||
+                    command.order != index ||
+                    !AllZero(command.reserved))
+                {
+                    reason = "Unity Enhanced owner Level 1 minimap entity command failed its source-order contract";
+                    return false;
+                }
+            }
+
+            minimapCommands = observed;
+            return true;
         }
 
         private ProjectileSnapshot[] ReadProjectiles(uint count, out string reason)
@@ -1124,6 +1218,7 @@ namespace MagicCarpet.PresentationLab
                 CameraPose = BuildCameraPose(),
                 Entities = BuildEntities(),
                 Hud = BuildHudSnapshot(),
+                Minimap = BuildMinimapSnapshot(),
                 Terrain = publishTerrain
                     ? BuildTerrainSnapshot(reset, terrainOrigin, terrainChangedSinceLastObservation || originChanged)
                     : null,
@@ -1173,6 +1268,53 @@ namespace MagicCarpet.PresentationLab
                 ExitSequenceActive = mission.exitSequenceActive != 0,
                 ExitSequenceComplete = mission.exitSequenceComplete != 0,
                 ExitResultCode = mission.exitResultCode
+            };
+        }
+
+        private UnityEnhancedMinimapSnapshot BuildMinimapSnapshot()
+        {
+            var commands = new UnityEnhancedMinimapEntityCommand[minimapCommands.Length];
+            for (int index = 0; index < minimapCommands.Length; index++)
+            {
+                MinimapEntityCommand source = minimapCommands[index];
+                commands[index] = new UnityEnhancedMinimapEntityCommand
+                {
+                    SourceSlot = source.sourceSlot,
+                    X = source.x,
+                    Y = source.y,
+                    Selector = source.selector,
+                    Kind = source.kind,
+                    PaletteIndex = source.paletteIndex,
+                    Size = source.size,
+                    Anchor = source.anchor,
+                    HelpSelector = source.helpSelector,
+                    Flags = source.flags,
+                    Order = source.order
+                };
+            }
+
+            return new UnityEnhancedMinimapSnapshot
+            {
+                Generation = minimapMarks.generation,
+                Tick = minimapMarks.tick,
+                MarkCount = minimapMarks.markCount,
+                MarkPulse = minimapMarks.markPulse != 0,
+                ArrowValid = minimapMarks.arrowValid != 0,
+                ArrowVisible = minimapMarks.arrowVisible != 0,
+                MarkX = (short[])minimapMarks.markX.Clone(),
+                MarkY = (short[])minimapMarks.markY.Clone(),
+                MarkColour = (byte[])minimapMarks.markColour.Clone(),
+                MarkHelpSelector = (byte[])minimapMarks.markHelpSelector.Clone(),
+                ArrowXY = (short[])minimapMarks.arrowXY.Clone(),
+                TotalEntityCount = minimapEntitiesInfo.totalCount,
+                CrossX = minimapEntitiesInfo.crossX,
+                CrossY = minimapEntitiesInfo.crossY,
+                CrossColour = minimapEntitiesInfo.crossColour,
+                CrossArmLength = minimapEntitiesInfo.crossArmLength,
+                RevealActive = minimapEntitiesInfo.revealActive != 0,
+                Authority = minimapEntitiesInfo.authority,
+                CommandHash = minimapEntitiesInfo.commandHash,
+                EntityCommands = commands
             };
         }
 
@@ -2164,6 +2306,70 @@ namespace MagicCarpet.PresentationLab
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        private struct MinimapMarks
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public ulong generation;
+            public ulong tick;
+            public byte markCount;
+            public byte markPulse;
+            public byte arrowValid;
+            public byte arrowVisible;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
+            public short[] markX;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
+            public short[] markY;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
+            public byte[] markColour;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
+            public byte[] markHelpSelector;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 14)]
+            public short[] arrowXY;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MinimapEntityCommand
+        {
+            public ushort sourceSlot;
+            public short x;
+            public short y;
+            public ushort selector;
+            public byte kind;
+            public byte paletteIndex;
+            public byte size;
+            public byte anchor;
+            public byte helpSelector;
+            public byte flags;
+            public ushort order;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
+            public uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MinimapEntitiesInfo
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public ulong generation;
+            public ulong tick;
+            public uint totalCount;
+            public ushort crossX;
+            public ushort crossY;
+            public byte crossColour;
+            public byte crossArmLength;
+            public byte revealActive;
+            public byte authority;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public byte[] reserved0;
+            public ulong commandHash;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            public uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         private struct EventQuery
         {
             public uint abiVersion;
@@ -2298,6 +2504,23 @@ namespace MagicCarpet.PresentationLab
             ulong handle,
             out MissionSnapshot snapshot,
             uint snapshotSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_level1_minimap_marks(
+            ulong handle,
+            out MinimapMarks state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_level1_minimap_entities_copy(
+            ulong handle,
+            ulong generation,
+            ulong expectedTick,
+            [Out] MinimapEntityCommand[] buffer,
+            uint capacity,
+            uint elementSize,
+            out MinimapEntitiesInfo info,
+            uint infoSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         private static extern int mc_native_fireball_projectiles_copy(
