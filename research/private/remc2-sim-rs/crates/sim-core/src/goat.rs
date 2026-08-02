@@ -2205,10 +2205,10 @@ mod tests {
             inspection
                 .presentation()
                 .entity_parameters
-                .get(99)
-                .expect("Level 2 Goat parameter row 99"),
+                .get(98)
+                .expect("Level 2 Goat parameter row 98"),
         )
-        .expect("exact Level 2 Goat parameter row 99");
+        .expect("exact Level 2 Goat parameter row 98");
         GoatFamily::from_level_two_entities(
             inspection.entities(),
             Position { x: 0, y: 0, z: 0 },
@@ -3006,14 +3006,14 @@ mod tests {
 
     #[test]
     fn level_two_reset_has_action11_only_at_source_slots_39_and_71() {
-        let row99 = [
-            0x28, 0x00, 0x5b, 0x00, 0x05, 0x00, 0x16, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0xff, 0x14, 0x00, 0x00, 0x02, 0xfe, 0x80, 0xf0, 0xff, 0x00, 0x09, 0x28, 0x00,
-            0x00, 0x0e, 0xc7, 0x07, 0x01, 0x00,
+        let row98 = [
+            0x27, 0x00, 0x2d, 0x00, 0x05, 0x00, 0x16, 0x00, 0x05, 0x00, 0x00, 0x01, 0x00, 0x00,
+            0x00, 0xff, 0x14, 0x00, 0x00, 0x02, 0xfe, 0x80, 0xf0, 0xff, 0x00, 0x09, 0x20, 0x00,
+            0x00, 0x06, 0x55, 0x03, 0x09, 0x00,
         ];
         assert_eq!(
-            GoatBehaviorConfig::from_level_two_parameter_record(&row99)
-                .expect("exact denominator row 99"),
+            GoatBehaviorConfig::from_level_two_parameter_record(&row98)
+                .expect("exact Goat parameter row 98"),
             GoatBehaviorConfig::LEVEL_TWO
         );
         let inspection = NativeWorld::inspect_level2(level_two_fixture_root())
@@ -3035,10 +3035,10 @@ mod tests {
             inspection
                 .presentation()
                 .entity_parameters
-                .get(99)
-                .expect("Level 2 Goat parameter row 99"),
+                .get(98)
+                .expect("Level 2 Goat parameter row 98"),
         )
-        .expect("exact Level 2 Goat parameter row 99");
+        .expect("exact Level 2 Goat parameter row 98");
         assert_eq!(config, GoatBehaviorConfig::LEVEL_TWO);
         for slot in action11_slots {
             let goat = inspection
@@ -3345,10 +3345,10 @@ mod tests {
             inspection
                 .presentation()
                 .entity_parameters
-                .get(99)
-                .expect("Level 2 Goat parameter row 99"),
+                .get(98)
+                .expect("Level 2 Goat parameter row 98"),
         )
-        .expect("exact Level 2 Goat parameter row 99");
+        .expect("exact Level 2 Goat parameter row 98");
         let baseline = GoatFamily::from_level_two_entities(
             inspection.entities(),
             Position { x: 0, y: 0, z: 0 },
