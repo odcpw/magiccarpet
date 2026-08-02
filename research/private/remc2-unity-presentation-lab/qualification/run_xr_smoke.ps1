@@ -49,7 +49,10 @@ function Invoke-CheckedProcess {
 
     Write-Host "[VR-B] $Name"
     & $Executable @Arguments
-    $exitCode = $LASTEXITCODE
+    # Some SSH-hosted Windows shells do not populate LASTEXITCODE when the
+    # child process terminates during a redirected Unity batch run. Preserve a
+    # deterministic harness failure instead of emitting a blank exit code.
+    $exitCode = if ($null -eq $LASTEXITCODE) { 1 } else { [int]$LASTEXITCODE }
     if ($exitCode -ne 0) {
         throw "$Name failed with exit code $exitCode"
     }
