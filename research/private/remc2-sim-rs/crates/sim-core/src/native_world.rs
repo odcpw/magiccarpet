@@ -4593,6 +4593,7 @@ impl Level2EconomyState {
                 } else {
                     if let Some(target) = self.spheres.get_mut(sphere_index) {
                         target.control_flags |= 0x40;
+                        target.assigned_defender_slot = source_slot;
                     }
                     if level2_castle_defender_sphere_overlap(predicted, &sphere) {
                         collected_sphere = Some((sphere_index, sphere));
@@ -4603,6 +4604,21 @@ impl Level2EconomyState {
                     predicted.y = sphere.position.y;
                 } else {
                     crate::move_entity(&mut predicted, yaw, 0, child_snapshot.speed);
+                }
+            }
+        } else if child_snapshot.target_sphere_slot != 0 {
+            // Clear a holder relation once its source row has disappeared;
+            // the source does this on the next AddBallon call before settle.
+            if let Some(target) = self
+                .castle_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == source_slot)
+            {
+                target.target_sphere_slot = 0;
+            }
+            for sphere in &mut self.spheres {
+                if sphere.assigned_defender_slot == source_slot {
+                    sphere.assigned_defender_slot = 0;
                 }
             }
         }
@@ -4638,6 +4654,7 @@ impl Level2EconomyState {
             child.target_sphere_slot = 0;
             let sphere_state = &mut self.spheres[sphere_index];
             sphere_state.assigned_carrier_id = 0;
+            sphere_state.assigned_defender_slot = 0;
             sphere_state.pending_delete = true;
             sphere_state.active = false;
             self.map_chains
@@ -4881,6 +4898,7 @@ impl Level2EconomyState {
         self.spheres[target_index].mana = self.spheres[target_index].mana.wrapping_add(source_mana);
         self.spheres[target_index].owner_entity_index = owner;
         self.spheres[source_index].assigned_carrier_id = 0;
+        self.spheres[source_index].assigned_defender_slot = 0;
         self.map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
@@ -4947,6 +4965,7 @@ impl Level2EconomyState {
             .find(|candidate| candidate.active && candidate.source_entity_index == sphere_slot)
             .expect("sphere remains installed");
         sphere_state.assigned_carrier_id = 0;
+        sphere_state.assigned_defender_slot = 0;
         sphere_state.pending_delete = true;
         sphere_state.active = false;
         self.map_chains
@@ -6805,6 +6824,7 @@ impl Level2EconomyState {
             hasher.update(sphere.incoming_owner_entity_index.to_le_bytes());
             hasher.update(sphere.incoming_possession_payload.to_le_bytes());
             hasher.update(sphere.assigned_carrier_id.to_le_bytes());
+            hasher.update(sphere.assigned_defender_slot.to_le_bytes());
             hasher.update(sphere.control_flags.to_le_bytes());
             hasher.update([sphere.phase]);
             hasher.update([u8::from(sphere.active), u8::from(sphere.pending_delete)]);
