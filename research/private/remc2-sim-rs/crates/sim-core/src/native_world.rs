@@ -782,6 +782,20 @@ const fn level2_castle_defender_count(level: u8) -> u8 {
     }
 }
 
+/// `sub_60400`'s `array_0x5C_92` model-15 tail count consumed by
+/// `sub_5FF50`.  The source has no tail entries for stages 1/2, then grows
+/// the authored rows as 4/6/14/18/34 through stage 7.
+const fn level2_castle_auxiliary_count(level: u8) -> u8 {
+    match level {
+        3 => 4,
+        4 => 6,
+        5 => 14,
+        6 => 18,
+        7 => 34,
+        _ => 0,
+    }
+}
+
 /// `sub_60400`'s stage-controller counts and the corresponding model-79
 /// placement points from `x_BYTE_DB038` (pinned `EventsFunctions.cpp`).  The
 /// source stores this as one compact count/offset table; spelling it out here
@@ -823,15 +837,15 @@ fn level2_castle_controller_dimensions(level: u8) -> (u8, u8) {
 }
 
 /// Effective BUILD dimensions after the source VGA selector-1 half-size
-/// conversion used by `RemoveCastleStage_385C0`.  The caller-injected stage
-/// payloads are therefore 8, 10, 17, and 24 cells wide, not the raw TAB
-/// dimensions used by the controller-offset table.
+/// conversion used by `RemoveCastleStage_385C0`.  The pinned runtime records
+/// are 16/42/42/70/70/96/96, yielding the same effective values as the
+/// controller-offset table after the single source half-size conversion.
 const fn level2_castle_removal_dimensions(level: u8) -> (u8, u8) {
     match level {
         1 => (8, 8),
-        2 | 3 => (10, 10),
-        4 | 5 => (17, 17),
-        6 | 7 => (24, 24),
+        2 | 3 => (21, 21),
+        4 | 5 => (35, 35),
+        6 | 7 => (48, 48),
         _ => (0, 0),
     }
 }
@@ -2969,6 +2983,10 @@ pub struct Level2CastleState {
     pub shift_roll: i16,
     pub shift_yaw: i16,
     pub shift_fov: i16,
+    /// Source root words touched by `sub_5FCA0_destroy_castle_level` after
+    /// the post-downgrade economy/defender walk.
+    pub source_word_2e: u16,
+    pub source_word_30: u16,
     /// Source `sub_5FF50` model-3 holder slots. The pinned stage table
     /// requires at most three defenders; inactive/dead slots are replaced in
     /// source order after a stage transition.
@@ -2977,6 +2995,11 @@ pub struct Level2CastleState {
     /// Source `sub_5FF50` model-15 tail slots (`array_0x5C_92`).
     pub auxiliary_slots: [u16; 34],
     pub auxiliary_count: u8,
+    pub auxiliary_cooldown: u8,
+    pub auxiliary_positions: [Position; 34],
+    pub auxiliary_yaws: [u16; 34],
+    pub auxiliary_rolls: [u16; 34],
+    pub auxiliary_player_entity_indices: [u16; 34],
     pub construction_child_active: bool,
     pub defense_child_active: bool,
     pub active: bool,
@@ -2989,11 +3012,20 @@ pub struct Level2CastleState {
 pub struct Level2CastleChild {
     pub source_entity_index: u16,
     pub id_entity_index: u16,
+    /// Source allocation class.  The model-15 auxiliary tail is class 5;
+    /// older construction/defense projections leave this at zero because
+    /// their class words were not previously part of the typed seam.
+    pub source_class: u8,
     pub parent_entity_index: u16,
     pub owner_entity_index: u16,
+    /// Source playerEntityIndex relation.  For model-15 auxiliary rows this
+    /// is copied from the Castle root id.
+    pub player_entity_index: u16,
     pub position: Position,
     pub model: u8,
     pub action: u8,
+    pub yaw: u16,
+    pub roll: u16,
     pub control_flags: u32,
     /// Source `word_0x32_50` / `word_0x34_52` links.  `chain_previous_slot`
     /// is the root or prior model-79 child; `chain_next_slot` is updated on
@@ -3754,7 +3786,11 @@ impl Level2EconomyState {
         stage: u8,
         footprint: CastleBuildFootprint,
     ) -> bool {
-        if !(1..=7).contains(&stage) || footprint.index != stage {
+        let (expected_width, expected_height) = level2_castle_removal_dimensions(stage);
+        if !(1..=7).contains(&stage)
+            || footprint.index != stage
+            || (footprint.width, footprint.height) != (expected_width, expected_height)
+        {
             return false;
         }
         self.baseline_castle_stage_footprints
@@ -3847,10 +3883,17 @@ impl Level2EconomyState {
             shift_roll: level2_castle_shift_axes(if source_constructor { 0 } else { 1 }).1,
             shift_yaw: 0,
             shift_fov: 256,
+            source_word_2e: 0,
+            source_word_30: 0,
             defender_slots: [0; 3],
             defender_count: 0,
             auxiliary_slots: [0; 34],
             auxiliary_count: 0,
+            auxiliary_cooldown: 0,
+            auxiliary_positions: [Position::default(); 34],
+            auxiliary_yaws: [0; 34],
+            auxiliary_rolls: [0; 34],
+            auxiliary_player_entity_indices: [0; 34],
             construction_child_active: false,
             defense_child_active: false,
             active: true,
@@ -3933,10 +3976,17 @@ impl Level2EconomyState {
         castle.controller_chain_count = 0;
         castle.controller_chain_head = 0;
         castle.controller_chain_tail = 0;
+        castle.source_word_2e = 0;
+        castle.source_word_30 = 0;
         castle.defender_slots = [0; 3];
         castle.defender_count = 0;
         castle.auxiliary_slots = [0; 34];
         castle.auxiliary_count = 0;
+        castle.auxiliary_cooldown = 0;
+        castle.auxiliary_positions = [Position::default(); 34];
+        castle.auxiliary_yaws = [0; 34];
+        castle.auxiliary_rolls = [0; 34];
+        castle.auxiliary_player_entity_indices = [0; 34];
         castle.construction_child_active = false;
         castle.defense_child_active = false;
         castle.life = 0;
@@ -4180,14 +4230,18 @@ impl Level2EconomyState {
             let stage_child = Level2CastleChild {
                 source_entity_index: stage_slot,
                 id_entity_index: snapshot.source_id_entity_index,
+                source_class: 0,
                 parent_entity_index: snapshot.source_entity_index,
                 owner_entity_index: snapshot.owner_entity_index,
+                player_entity_index: snapshot.owner_entity_index,
                 position: Position {
                     z: ground.saturating_add(if selected_level <= 1 { 384 } else { 224 }),
                     ..stage_position
                 },
                 model: 79,
                 action: 0,
+                yaw: 0,
+                roll: 0,
                 control_flags: 0,
                 chain_previous_slot: previous_slot,
                 chain_next_slot: 0,
@@ -4264,11 +4318,15 @@ impl Level2EconomyState {
             let child = Level2CastleChild {
                 source_entity_index: slot,
                 id_entity_index: snapshot.source_id_entity_index,
+                source_class: 0,
                 parent_entity_index: castle_slot,
                 owner_entity_index: snapshot.owner_entity_index,
+                player_entity_index: snapshot.owner_entity_index,
                 position: snapshot.position,
                 model: 3,
                 action: 9,
+                yaw: 0,
+                roll: 0,
                 control_flags: 0,
                 chain_previous_slot: 0,
                 chain_next_slot: 0,
@@ -4649,9 +4707,20 @@ impl Level2EconomyState {
                 true
             }
             6 => {
-                // `sub_5FCA0` does not gate stage destruction on a free
-                // arena slot. `sub_605E0`/`sub_5FD00` may fail their optional
-                // sphere allocations, but the Castle state still advances.
+                // `sub_5FCA0` gates the whole teardown on
+                // `sub_4A810_get_0x35plus()`: with no free arena slot the
+                // source only changes action back to 4, leaving stage,
+                // terrain, and economy state untouched.
+                if self.free_slots.is_empty() {
+                    if let Some(castle) = self
+                        .castle
+                        .as_mut()
+                        .filter(|castle| castle.source_entity_index == castle_slot)
+                    {
+                        castle.action = 4;
+                    }
+                    return true;
+                }
                 // Keep the source order: reduce capacity and release
                 // overflow before the destruction sound and stage terrain
                 // removal (`sub_605E0` -> `sub_5FD00` -> `RemoveCastleStage`).
@@ -4785,10 +4854,17 @@ impl Level2EconomyState {
                 castle.shift_roll = shift_roll;
                 castle.shift_yaw = -8_192;
                 castle.shift_fov = 0x4000;
+                castle.source_word_2e = 0;
+                castle.source_word_30 = 0;
                 castle.defender_slots = [0; 3];
                 castle.defender_count = 0;
                 castle.auxiliary_slots = [0; 34];
                 castle.auxiliary_count = 0;
+                castle.auxiliary_cooldown = 0;
+                castle.auxiliary_positions = [Position::default(); 34];
+                castle.auxiliary_yaws = [0; 34];
+                castle.auxiliary_rolls = [0; 34];
+                castle.auxiliary_player_entity_indices = [0; 34];
                 castle.construction_child_active = false;
                 castle.defense_child_active = false;
                 castle.timer = 5;
@@ -13108,7 +13184,9 @@ mod tests {
             .economy_mut()
             .build_castle(Position::default(), 111)
             .expect("stage removal Castle");
-        let footprint = CastleBuildFootprint::from_owner_cells(2, 1, 1, &[0, 10])
+        let mut stage_two_payload = vec![0xff; 21 * 21 * 2];
+        stage_two_payload[..2].copy_from_slice(&[0, 21]);
+        let footprint = CastleBuildFootprint::from_owner_cells(2, 21, 21, &stage_two_payload)
             .expect("stage-two BUILD record");
         assert!(
             session
@@ -13124,7 +13202,7 @@ mod tests {
         {
             let economy = session.economy_mut();
             economy.free_slots.clear();
-            economy.terrain.planes.ground_heights[terrain_index(0, 0)] = 100;
+            economy.terrain.planes.ground_heights[terrain_index(251, 251)] = 100;
             let castle = economy.castle.as_mut().expect("stage removal Castle");
             castle.action = 6;
             castle.level = 2;
