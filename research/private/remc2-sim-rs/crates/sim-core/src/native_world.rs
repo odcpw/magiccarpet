@@ -6977,7 +6977,7 @@ impl Level2ResetSession {
         let mut hasher = Sha256::new();
         hasher.update(REMC2_SPEC_COMMIT.as_bytes());
         hasher.update(self.goats.outer_tick().to_le_bytes());
-        for goat in self.goats.goats() {
+        for (family_index, goat) in self.goats.goats().iter().enumerate() {
             hasher.update(goat.entity_index.to_le_bytes());
             hasher.update(goat.source_id.to_le_bytes());
             hasher.update(u8::from(goat.active).to_le_bytes());
@@ -7012,6 +7012,18 @@ impl Level2ResetSession {
             hasher.update(goat.mana.to_le_bytes());
             hasher.update(goat.partner_entity_index.unwrap_or(u16::MAX).to_le_bytes());
             hasher.update(goat.target_entity_index.unwrap_or(u16::MAX).to_le_bytes());
+            // `word_0x34_52` is outside GoatState but affects the source
+            // action-11 child-chain damage propagation.  Hash its null
+            // sentinel explicitly so reset/replay detects link mutations.
+            hasher.update(
+                self.goats
+                    .child_links()
+                    .get(family_index)
+                    .copied()
+                    .flatten()
+                    .unwrap_or(u16::MAX)
+                    .to_le_bytes(),
+            );
         }
         format!("{:x}", hasher.finalize())
     }

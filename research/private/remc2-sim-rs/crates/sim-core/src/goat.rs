@@ -1179,9 +1179,11 @@ impl GoatFamily {
 
             let goat = &mut self.goats[family_index];
             goat.position = candidate;
-            goat.yaw = heading
-                .wrapping_add(turn_toward(heading, goat.roll, self.config.turn_clamp))
-                & 0x07ff;
+            goat.yaw = heading.wrapping_add(source_turn_delta(
+                heading,
+                goat.roll,
+                self.config.turn_clamp,
+            )) & 0x07ff;
             if attempt == 0 {
                 goat.control_flags &= !0x0004_0000;
             }
@@ -1239,9 +1241,9 @@ impl GoatFamily {
 
             let goat = &mut self.goats[family_index];
             goat.position = candidate;
-            goat.yaw =
-                heading.wrapping_add(turn_toward(heading, goat.roll, self.config.turn_clamp))
-                    & 0x07ff;
+            goat.yaw = heading
+                .wrapping_add(turn_toward(heading, goat.roll, self.config.turn_clamp))
+                & 0x07ff;
             return;
         }
 
@@ -2044,6 +2046,24 @@ fn source_retry_headings(yaw: i16) -> [i16; 4] {
         i16::try_from(third).expect("source retry heading fits i16"),
         i16::try_from(fourth).expect("source retry heading fits i16"),
     ]
+}
+
+/// Exact `sub_58350` / (`sub_582B0`, `sub_582F0`) signed shortest-angle
+/// delta used after each successful source movement attempt. Angles are
+/// eleven-bit values; the source clamps the signed shortest delta to the
+/// parameter-row turn limit before adding it to the attempted heading.
+fn source_turn_delta(from: i16, to: i16, maximum: i16) -> i16 {
+    let from = i32::from(from) & 0x07ff;
+    let to = i32::from(to) & 0x07ff;
+    let mut delta = to - from;
+    if delta.abs() > 1024 {
+        delta += if delta >= 0 { -2048 } else { 2048 };
+    }
+    if delta == 0 {
+        return 0;
+    }
+    let magnitude = delta.abs().min(i32::from(maximum.max(0)));
+    i16::try_from(magnitude * delta.signum()).expect("source turn delta fits i16")
 }
 
 fn material_probe_blocked<W: FlightWorld>(
@@ -3255,9 +3275,8 @@ mod tests {
         assert_eq!(primary.pending_damage, 0);
         assert_eq!(primary.pending_attacker, 0);
         // A non-zero but invalid relation still takes the damage branch. The
-        // Level 2 row-99 behavior flag is clear, so source `sub_1C560(a2=8)`
-        // selects `a2 + 2` (action 10), not the no-relation action-9 fast
-        // path.
+        // Level 2 row-99 behavior flag clears the player-engagement bit, so
+        // source `sub_1C560(a2=8)` selects action 10 before the wrapper tail.
         assert_eq!(primary.action, 10);
         assert_eq!(primary.partner_entity_index, None);
         assert_eq!(primary.phase, 1);
