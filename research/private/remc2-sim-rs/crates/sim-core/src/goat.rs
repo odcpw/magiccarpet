@@ -341,6 +341,10 @@ struct SourceEntityState {
     action: u8,
     position: Position,
     child_relation: Option<u16>,
+    actual_speed: i16,
+    maximum_speed: i16,
+    partner_entity_index: Option<u16>,
+    target_entity_index: Option<u16>,
 }
 
 impl SourceEntityState {
@@ -358,6 +362,10 @@ impl SourceEntityState {
             action: snapshot.action,
             position: snapshot.position,
             child_relation: snapshot_child_relation(snapshot),
+            actual_speed: snapshot.actual_speed,
+            maximum_speed: read_i16(bytes, 0x008a),
+            partner_entity_index: relation_index(read_u16(bytes, 0x0036)),
+            target_entity_index: relation_index(read_u16(bytes, 0x009a)),
         }
     }
 }
@@ -383,6 +391,10 @@ struct SourceEntityView {
     action: u8,
     position: Position,
     child_relation: Option<u16>,
+    actual_speed: i16,
+    maximum_speed: i16,
+    partner_entity_index: Option<u16>,
+    target_entity_index: Option<u16>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -590,6 +602,10 @@ impl GoatFamily {
                 action: goat.action,
                 position: goat.position,
                 child_relation: self.child_links[goat_index],
+                actual_speed: goat.actual_speed,
+                maximum_speed: goat.maximum_speed,
+                partner_entity_index: goat.partner_entity_index,
+                target_entity_index: goat.target_entity_index,
             });
         }
         self.source_entities
@@ -607,7 +623,45 @@ impl GoatFamily {
                 action: entity.action,
                 position: entity.position,
                 child_relation: entity.child_relation,
+                actual_speed: entity.actual_speed,
+                maximum_speed: entity.maximum_speed,
+                partner_entity_index: entity.partner_entity_index,
+                target_entity_index: entity.target_entity_index,
             })
+    }
+
+    /// Mutate the source relation/action fields for either a typed Goat or a
+    /// global source row. The remc2 action-11 routine writes the global entity
+    /// table, so a relation is not invalid merely because its row is outside
+    /// the typed Goat slice.
+    fn update_source_action11_relation(
+        &mut self,
+        entity_index: u16,
+        target_entity_index: Option<u16>,
+        partner_entity_index: Option<u16>,
+        action: u8,
+    ) -> bool {
+        if let Some(goat) = self
+            .goats
+            .iter_mut()
+            .find(|goat| goat.entity_index == entity_index)
+        {
+            goat.target_entity_index = target_entity_index;
+            goat.partner_entity_index = partner_entity_index;
+            goat.action = action;
+            return true;
+        }
+        if let Some(entity) = self
+            .source_entities
+            .iter_mut()
+            .find(|entity| entity.entity_index == entity_index)
+        {
+            entity.target_entity_index = target_entity_index;
+            entity.partner_entity_index = partner_entity_index;
+            entity.action = action;
+            return true;
+        }
+        false
     }
 
     /// Return the class-5/model linked-list order rebuilt by the native outer
@@ -969,35 +1023,30 @@ impl GoatFamily {
             return;
         };
 
-        let partner_index = self
-            .goats
-            .iter()
-            .position(|goat| goat.entity_index == partner_entity_index);
-        let partner_valid = self
-            .source_entity_view(partner_entity_index)
-            .is_some_and(|partner| {
-                partner.class == GOAT_CLASS
-                    && partner.model == GOAT_MODEL
-                    && partner.active
-                    && partner.life >= 0
-                    && partner.control_flags & 0x0000_0400 == 0
-                    && partner_index.is_some()
-            });
+        let partner_view = self.source_entity_view(partner_entity_index);
+        let partner_valid = partner_view.is_some_and(|partner| {
+            partner.class == GOAT_CLASS
+                && partner.model == GOAT_MODEL
+                && partner.active
+                && partner.life >= 0
+                && partner.control_flags & 0x0000_0400 == 0
+        });
 
         match self.apply_action11_damage(family_index) {
             DamageResult::Dead => {
                 let attacker = self.goats[family_index].current_attacker;
                 if partner_valid {
-                    let partner_index = partner_index.expect("valid partner index");
                     let partner_action = if self.config.behavior_flags & 8 != 0 {
                         14
                     } else {
                         10
                     };
-                    let partner = &mut self.goats[partner_index];
-                    partner.target_entity_index = relation_index(attacker.cast_unsigned());
-                    partner.partner_entity_index = None;
-                    partner.action = partner_action;
+                    self.update_source_action11_relation(
+                        partner_entity_index,
+                        relation_index(attacker.cast_unsigned()),
+                        None,
+                        partner_action,
+                    );
                 }
                 let goat = &mut self.goats[family_index];
                 goat.partner_entity_index = None;
@@ -1010,11 +1059,12 @@ impl GoatFamily {
                     10
                 };
                 if partner_valid {
-                    let partner_index = partner_index.expect("valid partner index");
-                    let partner = &mut self.goats[partner_index];
-                    partner.target_entity_index = relation_index(attacker.cast_unsigned());
-                    partner.partner_entity_index = None;
-                    partner.action = action;
+                    self.update_source_action11_relation(
+                        partner_entity_index,
+                        relation_index(attacker.cast_unsigned()),
+                        None,
+                        action,
+                    );
                 }
                 let goat = &mut self.goats[family_index];
                 goat.target_entity_index = relation_index(attacker.cast_unsigned());
@@ -1036,65 +1086,58 @@ impl GoatFamily {
                 } else if u16::from(self.goats[family_index].phase)
                     .is_multiple_of(self.config.perception_cadence)
                 {
-                    let partner_index = partner_index.expect("valid partner index");
-                    let partner_action = self.goats[partner_index].action;
+                    let partner = partner_view.expect("valid partner view");
+                    let partner_action = partner.action;
                     match i16::from(partner_action) - 8 {
                         // Partner action 8/9: face the current partner and
                         // copy `partner.maxSpeed + partner.actSpeed` into
                         // the primary Goat's current speed.
                         0 | 1 => {
-                            let partner_position = self.goats[partner_index].position;
-                            let partner_maximum_speed = self.goats[partner_index].maximum_speed;
-                            let partner_actual_speed = self.goats[partner_index].actual_speed;
                             let heading = heading_for_positions(
                                 self.goats[family_index].position,
-                                partner_position,
+                                partner.position,
                             );
                             let goat = &mut self.goats[family_index];
                             goat.roll = i16::try_from(heading)
                                 .expect("11-bit action-11 partner heading fits i16");
                             goat.actual_speed =
-                                partner_maximum_speed.wrapping_add(partner_actual_speed);
+                                partner.maximum_speed.wrapping_add(partner.actual_speed);
                             self.apply_partner_linked_scan(family_index);
                         }
                         // Partner action 10/11: inherit its target; action 11
                         // also follows the partner's relation chain.
                         2 => {
-                            let partner_target = self.goats[partner_index].target_entity_index;
                             let goat = &mut self.goats[family_index];
-                            goat.target_entity_index = partner_target;
+                            goat.target_entity_index = partner.target_entity_index;
                             goat.partner_entity_index = None;
                             goat.action = 10;
                         }
                         3 => {
-                            let partner_partner = self.goats[partner_index].partner_entity_index;
-                            let partner_maximum_speed = self.goats[partner_index].maximum_speed;
-                            let partner_actual_speed = self.goats[partner_index].actual_speed;
                             let goat_position = self.goats[family_index].position;
                             // The source immediately dereferences the copied
                             // relation. Entity zero is its null sentinel; an
                             // unknown non-zero relation is kept fail-closed at
                             // that same zero position, never the old partner.
-                            let next_position = partner_partner
+                            let next_position = partner
+                                .partner_entity_index
                                 .and_then(|next_partner_entity_index| {
                                     self.source_entity_view(next_partner_entity_index)
                                 })
                                 .map_or(Position::default(), |partner| partner.position);
                             let goat = &mut self.goats[family_index];
-                            goat.partner_entity_index = partner_partner;
+                            goat.partner_entity_index = partner.partner_entity_index;
                             goat.roll =
                                 i16::try_from(heading_for_positions(goat_position, next_position))
                                     .expect("11-bit action-11 chain heading fits i16");
                             goat.actual_speed =
-                                partner_maximum_speed.wrapping_add(partner_actual_speed);
+                                partner.maximum_speed.wrapping_add(partner.actual_speed);
                             self.apply_partner_linked_scan(family_index);
                         }
                         // Partner action 14: inherit its target and enter our
                         // own action-14 branch.
                         6 => {
-                            let partner_target = self.goats[partner_index].target_entity_index;
                             let goat = &mut self.goats[family_index];
-                            goat.target_entity_index = partner_target;
+                            goat.target_entity_index = partner.target_entity_index;
                             goat.partner_entity_index = None;
                             goat.action = 14;
                         }
@@ -3653,6 +3696,129 @@ mod tests {
         assert_eq!(primary.action, 9);
         assert_eq!(primary.phase, 2);
         assert_eq!(primary.rng, next_rng(rng_after_transition));
+    }
+
+    #[test]
+    fn action11_global_partner_row_is_valid_and_mutated_on_hit() {
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        let primary = &mut family.goats[primary_index];
+        primary.action = 11;
+        primary.phase = 0;
+        primary.partner_entity_index = Some(80);
+        primary.pending_damage = 1;
+        primary.pending_attacker = 7;
+        primary.current_attacker = 0;
+        family.set_child_link_for(39, None);
+
+        let partner = family
+            .source_entities
+            .iter_mut()
+            .find(|entity| entity.entity_index == 80)
+            .expect("global partner source row");
+        partner.class = GOAT_CLASS;
+        partner.model = GOAT_MODEL;
+        partner.active = true;
+        partner.control_flags = 0;
+        partner.life = 10_000;
+        partner.action = 9;
+        partner.partner_entity_index = Some(66);
+        partner.target_entity_index = None;
+
+        family.step_source_slot(39, &MaterialBoundaryWorld { all_water: false }, &[]);
+
+        let primary = &family.goats[primary_index];
+        assert_eq!(primary.action, 14);
+        assert_eq!(primary.target_entity_index, Some(7));
+        let partner = family
+            .source_entities
+            .iter()
+            .find(|entity| entity.entity_index == 80)
+            .expect("global partner source row");
+        assert_eq!(partner.action, 14);
+        assert_eq!(partner.target_entity_index, Some(7));
+        assert_eq!(partner.partner_entity_index, None);
+    }
+
+    #[test]
+    fn action11_global_partner_row_uses_source_action_and_target() {
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        let primary = &mut family.goats[primary_index];
+        primary.action = 11;
+        primary.phase = 0;
+        primary.partner_entity_index = Some(80);
+        primary.pending_damage = 0;
+        primary.pending_attacker = 0;
+        primary.target_entity_index = None;
+        family.set_child_link_for(39, None);
+
+        let partner = family
+            .source_entities
+            .iter_mut()
+            .find(|entity| entity.entity_index == 80)
+            .expect("global partner source row");
+        partner.class = GOAT_CLASS;
+        partner.model = GOAT_MODEL;
+        partner.active = true;
+        partner.control_flags = 0;
+        partner.life = 10_000;
+        partner.action = 10;
+        partner.target_entity_index = Some(152);
+
+        family.step_source_slot(39, &MaterialBoundaryWorld { all_water: false }, &[]);
+
+        let primary = &family.goats[primary_index];
+        assert_eq!(primary.action, 10);
+        assert_eq!(primary.target_entity_index, Some(152));
+        assert_eq!(primary.partner_entity_index, None);
+    }
+
+    #[test]
+    fn action11_global_partner_row_rejects_wrong_class_without_typed_fallback() {
+        let mut family = level_two_family();
+        let primary = family
+            .goats
+            .iter_mut()
+            .find(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        primary.action = 11;
+        primary.phase = 0;
+        primary.partner_entity_index = Some(80);
+        primary.pending_damage = 0;
+        primary.pending_attacker = 0;
+        family.set_child_link_for(39, None);
+
+        let partner = family
+            .source_entities
+            .iter_mut()
+            .find(|entity| entity.entity_index == 80)
+            .expect("global partner source row");
+        partner.class = GOAT_CLASS.wrapping_add(1);
+        partner.model = GOAT_MODEL;
+        partner.active = true;
+        partner.life = 10_000;
+        partner.action = 10;
+        partner.target_entity_index = Some(152);
+
+        family.step_source_slot(39, &MaterialBoundaryWorld { all_water: false }, &[]);
+
+        let primary = family
+            .goats
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        assert_eq!(primary.action, 9);
+        assert_eq!(primary.partner_entity_index, None);
+        assert_eq!(primary.target_entity_index, None);
     }
 
     #[test]
