@@ -189,6 +189,11 @@ provenance. The receipt intentionally remains `captured-for-human-review` /
 acceptance claim. Review the PNGs for crushed blacks, over-bloom, fog washout,
 HUD readability, exposure stability, temporal artifacts, and whether the result
 still looks like the game rather than concept art before promoting a corpus.
+The captured owner receipt is preserved at
+`research/private/remc2-presentation/qualification/classic-hd-owner-visual-capture.json`
+with its seven PNGs under
+`qualification/captures/classic-hd-owner-640x480/`; the package verifier checks
+the receipt hashes while keeping visual review open.
 
 The bounded focus/pause and exit-sidecar probes are recorded in
 `qualification/classic-hd-owner-focus-pause.json` and
@@ -314,6 +319,11 @@ active-entity/visual counts, PNG hashes, GPU metadata, and external-owner
 provenance. The receipt remains `captured-for-human-review` /
 `not-reviewed`; it does not promote the placeholder corpus or claim that the
 whole-hog look has passed the Night quality target.
+The current owner receipt is preserved at
+`research/private/remc2-presentation/qualification/unity-enhanced-owner-visual-capture.json`
+with its seven PNGs under
+`qualification/captures/unity-enhanced-owner-1280x720/`; the package verifier
+checks those hashes without turning human review into a release claim.
 
 The owner smoke requires a temporary owner-local native plugin. Build and copy
 it only for the probe, then remove the library and Unity-generated metadata

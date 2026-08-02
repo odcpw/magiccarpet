@@ -61,6 +61,10 @@ class ThreeModePackageTests(unittest.TestCase):
         self.assertEqual([], PACKAGE.validate_classic_hd_visual_capture_tooling())
         self.assertEqual([], PACKAGE.validate_unity_enhanced_visual_capture_tooling())
 
+    def test_owner_visual_captures_match_receipts_without_promoting_review(self):
+        self.assertEqual([], PACKAGE.validate_classic_hd_owner_visual_capture_artifact())
+        self.assertEqual([], PACKAGE.validate_unity_enhanced_owner_visual_capture_artifact())
+
 
 if __name__ == "__main__":
     unittest.main()

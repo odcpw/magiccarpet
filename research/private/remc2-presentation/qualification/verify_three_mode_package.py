@@ -11,6 +11,7 @@ routes remain reported as open qualification state.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -59,6 +60,28 @@ CLASSIC_HD_OWNER_EXIT_SIDECAR_ARTIFACT = Path(__file__).with_name(
 CLASSIC_HD_OWNER_EFFECTS_MATRIX_ARTIFACT = Path(__file__).with_name(
     "classic-hd-owner-effects-matrix.json"
 )
+CLASSIC_HD_OWNER_VISUAL_CAPTURE_ARTIFACT = Path(__file__).with_name(
+    "classic-hd-owner-visual-capture.json"
+)
+UNITY_ENHANCED_OWNER_VISUAL_CAPTURE_ARTIFACT = Path(__file__).with_name(
+    "unity-enhanced-owner-visual-capture.json"
+)
+CLASSIC_HD_OWNER_VISUAL_CAPTURE_DIR = (
+    Path(__file__).parent / "captures" / "classic-hd-owner-640x480"
+)
+UNITY_ENHANCED_OWNER_VISUAL_CAPTURE_DIR = (
+    Path(__file__).parent / "captures" / "unity-enhanced-owner-1280x720"
+)
+
+OWNER_VISUAL_CAPTURE_ROUTES = {
+    "town-approach": ("l1-night-town-approach.png", False),
+    "town-overflight": ("l1-night-town-overflight.png", False),
+    "fireball-fight": ("l1-night-fireball-fight.png", True),
+    "mana-castle": ("l1-night-mana-castle.png", False),
+    "reflective-water": ("l1-night-reflective-water.png", False),
+    "fog-depth": ("l1-night-fog-depth.png", False),
+    "high-speed-flight": ("l1-night-high-speed-flight.png", False),
+}
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -746,6 +769,135 @@ def validate_classic_hd_owner_gpu_fence_artifact(
     return errors
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_owner_visual_capture_artifact(
+    path: Path,
+    capture_dir: Path,
+    mode: str,
+    profile: str,
+    width: int,
+    height: int,
+) -> list[str]:
+    """Validate review-gated owner PNGs without promoting a presentation corpus."""
+    errors: list[str] = []
+    try:
+        artifact = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [f"owner visual capture artifact read failed: {error}"]
+
+    if artifact.get("schema_version") != 1:
+        errors.append("owner visual capture schema_version must be 1")
+    if artifact.get("mode") != mode:
+        errors.append(f"owner visual capture mode must be {mode}")
+    if artifact.get("profile") != profile:
+        errors.append(f"owner visual capture profile must be {profile}")
+    if artifact.get("capture_status") != "captured-for-human-review":
+        errors.append("owner visual capture must remain captured-for-human-review")
+    if artifact.get("visual_review_status") != "not-reviewed":
+        errors.append("owner visual capture must remain not-reviewed")
+    if artifact.get("owner_payload_embedded") is not False:
+        errors.append("owner visual capture must not embed owner payload")
+    if artifact.get("owner_inputs_external") is not True:
+        errors.append("owner visual capture must identify owner inputs as external")
+    for field in ("unity_editor", "graphics_api", "graphics_device", "graphics_driver"):
+        if not isinstance(artifact.get(field), str) or not artifact[field]:
+            errors.append(f"owner visual capture is missing {field}")
+
+    captures = artifact.get("captures")
+    if not isinstance(captures, list) or len(captures) != len(OWNER_VISUAL_CAPTURE_ROUTES):
+        errors.append("owner visual capture must contain exactly seven Night routes")
+        return errors
+
+    seen_routes: set[str] = set()
+    seen_files: set[str] = set()
+    for entry in captures:
+        if not isinstance(entry, dict):
+            errors.append("owner visual capture contains a non-object route entry")
+            continue
+        route_id = entry.get("route_id")
+        if route_id not in OWNER_VISUAL_CAPTURE_ROUTES:
+            errors.append(f"owner visual capture has unexpected route {route_id!r}")
+            continue
+        if route_id in seen_routes:
+            errors.append(f"owner visual capture repeats route {route_id}")
+        seen_routes.add(route_id)
+        expected_file, expected_cast = OWNER_VISUAL_CAPTURE_ROUTES[route_id]
+        file_name = entry.get("file_name")
+        if file_name != expected_file:
+            errors.append(f"owner visual capture route {route_id} file name is wrong")
+            continue
+        if file_name in seen_files:
+            errors.append(f"owner visual capture repeats file {file_name}")
+        seen_files.add(file_name)
+        if entry.get("capture_name") != Path(file_name).stem:
+            errors.append(f"owner visual capture route {route_id} capture name is wrong")
+        if entry.get("cast_observed") is not expected_cast:
+            errors.append(f"owner visual capture route {route_id} cast observation is wrong")
+        if entry.get("width") != width or entry.get("height") != height:
+            errors.append(f"owner visual capture route {route_id} extent is wrong")
+        if not isinstance(entry.get("frame_count"), int) or entry["frame_count"] <= 0:
+            errors.append(f"owner visual capture route {route_id} frame count must be positive")
+        for field in ("source_generation", "source_tick", "resolved_png_hash", "file_sha256"):
+            if not isinstance(entry.get(field), str) or not entry[field]:
+                errors.append(f"owner visual capture route {route_id} is missing {field}")
+        resolved_hash = entry.get("resolved_png_hash")
+        if (
+            not isinstance(resolved_hash, str)
+            or len(resolved_hash) != 16
+            or any(character not in "0123456789abcdefABCDEF" for character in resolved_hash)
+        ):
+            errors.append(f"owner visual capture route {route_id} resolved hash is invalid")
+
+        if mode == "classic-hd":
+            if not isinstance(entry.get("upload_count"), int) or entry["upload_count"] < entry.get("frame_count", 0):
+                errors.append(f"owner visual capture route {route_id} upload count is invalid")
+        else:
+            for field in ("active_entity_count", "active_visual_count"):
+                if not isinstance(entry.get(field), int) or entry[field] <= 0:
+                    errors.append(f"owner visual capture route {route_id} {field} must be positive")
+
+        file_path = capture_dir / file_name
+        if file_path.parent != capture_dir or not file_path.is_file():
+            errors.append(f"owner visual capture route {route_id} PNG is missing")
+            continue
+        try:
+            if file_path.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+                errors.append(f"owner visual capture route {route_id} is not a PNG")
+            if _sha256_file(file_path) != entry.get("file_sha256", "").lower():
+                errors.append(f"owner visual capture route {route_id} PNG SHA-256 does not match receipt")
+        except OSError as error:
+            errors.append(f"owner visual capture route {route_id} PNG read failed: {error}")
+
+    if seen_routes != set(OWNER_VISUAL_CAPTURE_ROUTES):
+        errors.append("owner visual capture must include every expected Night route")
+    return errors
+
+
+def validate_classic_hd_owner_visual_capture_artifact(
+    path: Path = CLASSIC_HD_OWNER_VISUAL_CAPTURE_ARTIFACT,
+    capture_dir: Path = CLASSIC_HD_OWNER_VISUAL_CAPTURE_DIR,
+) -> list[str]:
+    return validate_owner_visual_capture_artifact(
+        path, capture_dir, "classic-hd", "hd-640x480", 640, 480
+    )
+
+
+def validate_unity_enhanced_owner_visual_capture_artifact(
+    path: Path = UNITY_ENHANCED_OWNER_VISUAL_CAPTURE_ARTIFACT,
+    capture_dir: Path = UNITY_ENHANCED_OWNER_VISUAL_CAPTURE_DIR,
+) -> list[str]:
+    return validate_owner_visual_capture_artifact(
+        path, capture_dir, "unity-enhanced", "level1-night-unity-enhanced", 1280, 720
+    )
+
+
 def validate_classic_hd_visual_capture_tooling() -> list[str]:
     """Keep the owner capture path present without promoting visual evidence."""
     errors: list[str] = []
@@ -964,8 +1116,18 @@ def verify() -> dict[str, Any]:
         checks,
     )
     _validator_result(
+        "owner-bound Classic HD visual capture artifact",
+        validate_classic_hd_owner_visual_capture_artifact,
+        checks,
+    )
+    _validator_result(
         "Unity Enhanced visual capture tooling",
         validate_unity_enhanced_visual_capture_tooling,
+        checks,
+    )
+    _validator_result(
+        "owner-bound Unity Enhanced visual capture artifact",
+        validate_unity_enhanced_owner_visual_capture_artifact,
         checks,
     )
     _validator_result(
