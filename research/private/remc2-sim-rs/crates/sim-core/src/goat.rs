@@ -1286,7 +1286,6 @@ impl GoatFamily {
         let source_id = self.goats[family_index].source_id;
         for candidate in self.goats.iter() {
             if candidate.entity_index == self.goats[family_index].entity_index
-                || candidate.partner_entity_index.is_some()
                 || candidate.source_id == source_id
                 || signed_axis_distance(position.x, candidate.position.x) >= 256
                 || signed_axis_distance(position.y, candidate.position.y) >= 256
