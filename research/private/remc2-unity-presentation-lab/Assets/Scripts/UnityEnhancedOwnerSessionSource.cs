@@ -35,6 +35,19 @@ namespace MagicCarpet.PresentationLab
         private const uint EventQuerySize = 40;
         private const uint EventBatchSize = 56;
         private const uint EventElementSize = 72;
+        private const uint OwnerHudProfileId = 2;
+        private const int OwnerHudWidth = 960;
+        private const int OwnerHudHeight = 720;
+        private const int OwnerHudStride = OwnerHudWidth;
+        private const uint OwnerHudQuerySize = 64;
+        private const uint OwnerHudInfoSize = 128;
+        private const int OwnerPaletteBytes = 256 * 3;
+        private const uint RequiredOwnerHudFlags =
+            0x4000u | // provenance present
+            0x10000u | // postprocess complete
+            0x20000u | // lighting complete
+            0x40000u; // profile-sized Rust rerender
+        private const string OwnerPaletteRelativePath = "palette/paln.rgb8";
         private const byte Level1MissionLive = 6;
         private const int EventBatchCapacity = 128;
         private const int MinimapMaxMarks = 16;
@@ -82,6 +95,16 @@ namespace MagicCarpet.PresentationLab
         private byte[] terrainHeights;
         private byte[] terrainShade;
         private byte[] terrainAngles;
+        private byte[] ownerHudIndexBytes;
+        private byte[] ownerHudProvenanceBytes;
+        private byte[] ownerPaletteRgb8;
+        private GCHandle ownerHudIndexHandle;
+        private GCHandle ownerHudProvenanceHandle;
+        private bool ownerHudIndexPinned;
+        private bool ownerHudProvenancePinned;
+        private McPresentationFrameQueryV2 ownerHudFrameQuery;
+        private ulong ownerHudPresentationRevision;
+        private McPresentationFrameInfoV2 ownerHudFrameInfo;
         private EntitySnapshot[] entities = Array.Empty<EntitySnapshot>();
         private ulong terrainMutationSequence;
         private bool terrainChangedSinceLastObservation;
@@ -130,6 +153,10 @@ namespace MagicCarpet.PresentationLab
         public int MissionProjectileCount { get { return checked((int)mission.projectileCount); } }
         public int MissionImpactCount { get { return checked((int)mission.impactCount); } }
         public int MinimapCommandCount { get { return minimapCommands == null ? 0 : minimapCommands.Length; } }
+        public ulong OwnerHudFrameGeneration { get { return ownerHudFrameInfo.generation; } }
+        public ulong OwnerHudFrameTick { get { return ownerHudFrameInfo.tick; } }
+        public int OwnerHudFrameWidth { get { return OwnerHudWidth; } }
+        public int OwnerHudFrameHeight { get { return OwnerHudHeight; } }
         public byte MissionStage { get { return mission.currentStage; } }
         public byte TasksCompleted { get { return mission.tasksCompleted; } }
         public bool PlayerDead { get { return mission.playerDead != 0; } }
@@ -233,8 +260,31 @@ namespace MagicCarpet.PresentationLab
                 return false;
             }
 
+            string palettePath = Path.Combine(assetCachePath, OwnerPaletteRelativePath);
+            if (!File.Exists(palettePath))
+            {
+                reason = "Unity Enhanced owner palette is missing: " + palettePath;
+                return false;
+            }
+
             try
             {
+                ownerPaletteRgb8 = File.ReadAllBytes(palettePath);
+                if (ownerPaletteRgb8.Length != OwnerPaletteBytes)
+                {
+                    reason = "Unity Enhanced owner palette must contain exactly 768 RGB8 bytes: " +
+                             palettePath;
+                    Dispose();
+                    return false;
+                }
+
+                ownerHudIndexBytes = new byte[OwnerHudWidth * OwnerHudHeight];
+                ownerHudProvenanceBytes = new byte[OwnerHudWidth * OwnerHudHeight];
+                ownerHudIndexHandle = GCHandle.Alloc(ownerHudIndexBytes, GCHandleType.Pinned);
+                ownerHudIndexPinned = true;
+                ownerHudProvenanceHandle = GCHandle.Alloc(ownerHudProvenanceBytes, GCHandleType.Pinned);
+                ownerHudProvenancePinned = true;
+                ownerHudPresentationRevision = 1;
                 packageBytes = Encoding.UTF8.GetBytes(packagePath);
                 closureBytes = Encoding.UTF8.GetBytes(closurePath);
                 priorAssetCacheEnvironment = Environment.GetEnvironmentVariable(AssetCacheEnvironment);
@@ -570,6 +620,24 @@ namespace MagicCarpet.PresentationLab
             terrainHeights = null;
             terrainShade = null;
             terrainAngles = null;
+            if (ownerHudProvenancePinned)
+            {
+                ownerHudProvenanceHandle.Free();
+                ownerHudProvenancePinned = false;
+            }
+
+            if (ownerHudIndexPinned)
+            {
+                ownerHudIndexHandle.Free();
+                ownerHudIndexPinned = false;
+            }
+
+            ownerHudIndexBytes = null;
+            ownerHudProvenanceBytes = null;
+            ownerPaletteRgb8 = null;
+            ownerHudFrameQuery = default(McPresentationFrameQueryV2);
+            ownerHudFrameInfo = default(McPresentationFrameInfoV2);
+            ownerHudPresentationRevision = 0;
             entities = Array.Empty<EntitySnapshot>();
             mission = default(MissionSnapshot);
             projectiles = Array.Empty<ProjectileSnapshot>();
@@ -851,7 +919,95 @@ namespace MagicCarpet.PresentationLab
             }
 
             LastWorldHash = HashEntities(entities, projectiles, impacts);
+            if (!ReadOwnerHudFrame(out reason))
+            {
+                return false;
+            }
+
             return UpdateCameraHistory();
+        }
+
+        private bool ReadOwnerHudFrame(out string reason)
+        {
+            reason = string.Empty;
+            if (!ownerHudIndexPinned || !ownerHudProvenancePinned ||
+                ownerHudIndexBytes == null || ownerHudProvenanceBytes == null ||
+                ownerPaletteRgb8 == null)
+            {
+                reason = "Unity Enhanced owner HUD buffers are not configured";
+                return false;
+            }
+
+            ownerHudFrameQuery = new McPresentationFrameQueryV2
+            {
+                abiVersion = AbiVersion,
+                structSize = OwnerHudQuerySize,
+                generation = snapshot.generation,
+                // The native Classic HD graph is keyed to the render-camera
+                // clock. Enhanced carries that source frame with the same
+                // owner generation and authoritative snapshot that produced
+                // the camera pose.
+                tick = presentation.tick,
+                presentationRevision = ownerHudPresentationRevision,
+                viewportWidth = OwnerHudWidth,
+                viewportHeight = OwnerHudHeight,
+                screenStride = OwnerHudStride,
+                reserved0 = 0,
+                configuredBlurMode = 0,
+                blurCapability = 1,
+                highSpeedSystem = 1,
+                scratchPresent = 1,
+                vgaResolution = 1,
+                spatialSmoothing = 0,
+                minimapEnabled = 1,
+                topBarEnabled = 1,
+                menuOverlay = 0,
+                gamePaused = 0,
+                levelEnd = (byte)(mission.exitSequenceActive != 0 ||
+                                  mission.exitSequenceComplete != 0 ? 1 : 0),
+                objectiveSelector = mission.textSelector,
+                objectiveTextbox = (byte)(mission.objectiveTextboxTicks > 0 ? 1 : 0),
+                tutorialOrBriefing = 0,
+                helpPopup = 0,
+                debugText = 0,
+                reserved1 = 0,
+                reserved2 = 0
+            };
+
+            int status = mc_native_session_classic_hd_frame_copy(
+                handle,
+                OwnerHudProfileId,
+                ref ownerHudFrameQuery,
+                ownerHudIndexHandle.AddrOfPinnedObject(),
+                checked((uint)ownerHudIndexBytes.Length),
+                ownerHudProvenanceHandle.AddrOfPinnedObject(),
+                checked((uint)ownerHudProvenanceBytes.Length),
+                out ownerHudFrameInfo,
+                OwnerHudInfoSize);
+            if (status != 0)
+            {
+                reason = StatusReason("Unity Enhanced owner HUD frame copy", status);
+                return false;
+            }
+
+            if (ownerHudFrameInfo.abiVersion != AbiVersion ||
+                ownerHudFrameInfo.structSize != OwnerHudInfoSize ||
+                ownerHudFrameInfo.generation != snapshot.generation ||
+                ownerHudFrameInfo.tick != presentation.tick ||
+                ownerHudFrameInfo.presentationRevision != ownerHudPresentationRevision ||
+                ownerHudFrameInfo.width != OwnerHudWidth ||
+                ownerHudFrameInfo.height != OwnerHudHeight ||
+                ownerHudFrameInfo.stride != OwnerHudStride ||
+                ownerHudFrameInfo.viewportWidth != OwnerHudWidth ||
+                ownerHudFrameInfo.indexBytes != ownerHudIndexBytes.Length ||
+                ownerHudFrameInfo.provenanceBytes != ownerHudProvenanceBytes.Length ||
+                (ownerHudFrameInfo.flags & RequiredOwnerHudFlags) != RequiredOwnerHudFlags)
+            {
+                reason = "Unity Enhanced owner HUD frame failed its generation/extent/provenance receipt contract";
+                return false;
+            }
+
+            return true;
         }
 
         private bool ReadMissionObservations(out string reason)
@@ -1243,6 +1399,17 @@ namespace MagicCarpet.PresentationLab
             {
                 Generation = mission.generation,
                 Tick = mission.tick,
+                OwnerFrame = new UnityEnhancedOwnerHudFrame
+                {
+                    Generation = snapshot.generation,
+                    Tick = snapshot.tick,
+                    Width = OwnerHudWidth,
+                    Height = OwnerHudHeight,
+                    Stride = OwnerHudStride,
+                    IndexedPixels = (byte[])ownerHudIndexBytes.Clone(),
+                    Provenance = (byte[])ownerHudProvenanceBytes.Clone(),
+                    PaletteRgb8 = (byte[])ownerPaletteRgb8.Clone()
+                },
                 PlayerLife = mission.playerLife,
                 PlayerMaxLife = mission.playerMaxLife,
                 PlayerMana = mission.playerMana,
@@ -2164,6 +2331,73 @@ namespace MagicCarpet.PresentationLab
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        private struct McPresentationFrameQueryV2
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public ulong generation;
+            public ulong tick;
+            public ulong presentationRevision;
+            public ushort viewportWidth;
+            public ushort viewportHeight;
+            public ushort screenStride;
+            public ushort reserved0;
+            public byte configuredBlurMode;
+            public byte blurCapability;
+            public byte highSpeedSystem;
+            public byte scratchPresent;
+            public byte vgaResolution;
+            public byte spatialSmoothing;
+            public byte minimapEnabled;
+            public byte topBarEnabled;
+            public byte menuOverlay;
+            public byte gamePaused;
+            public byte levelEnd;
+            public byte objectiveSelector;
+            public byte objectiveTextbox;
+            public byte tutorialOrBriefing;
+            public byte helpPopup;
+            public byte debugText;
+            public uint reserved1;
+            public uint reserved2;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct McPresentationFrameInfoV2
+        {
+            public uint abiVersion;
+            public uint structSize;
+            public ulong generation;
+            public ulong tick;
+            public ulong presentationRevision;
+            public ulong immutableInputHash;
+            public ushort width;
+            public ushort height;
+            public ushort stride;
+            public ushort viewportWidth;
+            public uint indexBytes;
+            public uint provenanceBytes;
+            public uint flags;
+            public byte effectivePostprocessMode;
+            public byte historyState;
+            public byte newlyCommitted;
+            public byte reserved0;
+            public ulong indexHash;
+            public ulong provenanceHash;
+            public ulong lightingHash;
+            public ulong sourceArenaHash;
+            public uint overlayPixelsWritten;
+            public ushort overlayStageCount;
+            public ushort reserved1;
+            public uint reserved2;
+            public uint reserved3;
+            public uint reserved4;
+            public uint reserved5;
+            public uint reserved6;
+            public uint reserved7;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         private struct TerrainState
         {
             public uint abiVersion;
@@ -2441,6 +2675,18 @@ namespace MagicCarpet.PresentationLab
             ref CameraInput cameraInput,
             out SessionSnapshot snapshot,
             uint snapshotSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        private static extern int mc_native_session_classic_hd_frame_copy(
+            ulong handle,
+            uint profileId,
+            ref McPresentationFrameQueryV2 query,
+            IntPtr indexBuffer,
+            uint indexCapacity,
+            IntPtr provenanceBuffer,
+            uint provenanceCapacity,
+            out McPresentationFrameInfoV2 info,
+            uint infoSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         private static extern int mc_native_level1_action_51_completion_setup_for_qualification(

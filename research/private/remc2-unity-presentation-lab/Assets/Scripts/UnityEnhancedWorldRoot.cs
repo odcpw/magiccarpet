@@ -42,10 +42,42 @@ namespace MagicCarpet.PresentationLab
     }
 
     [Serializable]
+    public sealed class UnityEnhancedOwnerHudFrame
+    {
+        public ulong Generation;
+        public ulong Tick;
+        public int Width;
+        public int Height;
+        public int Stride;
+        public byte[] IndexedPixels;
+        public byte[] Provenance;
+        public byte[] PaletteRgb8;
+
+        public bool TryValidate(ulong expectedGeneration, ulong expectedTick, out string reason)
+        {
+            reason = string.Empty;
+            long pixelCount = (long)Stride * Height;
+            if (Generation != expectedGeneration || Tick != expectedTick ||
+                Width <= 0 || Height <= 0 || Stride != Width ||
+                pixelCount <= 0 || pixelCount > int.MaxValue ||
+                IndexedPixels == null || IndexedPixels.Length != pixelCount ||
+                Provenance == null || Provenance.Length != pixelCount ||
+                PaletteRgb8 == null || PaletteRgb8.Length != 256 * 3)
+            {
+                reason = "owner HUD frame identity, extent, provenance, or palette contract failed";
+                return false;
+            }
+
+            return true;
+        }
+    }
+
+    [Serializable]
     public sealed class UnityEnhancedHudSnapshot
     {
         public ulong Generation;
         public ulong Tick;
+        public UnityEnhancedOwnerHudFrame OwnerFrame;
         public int PlayerLife;
         public int PlayerMaxLife;
         public int PlayerMana;
@@ -126,7 +158,6 @@ namespace MagicCarpet.PresentationLab
         private UnityEnhancedVfxPresentation vfxPresentation;
         private UnityEnhancedQualityAndPost qualityAndPost;
         private UnityEnhancedHudPresentation hudPresentation;
-        private UnityEnhancedMinimapPresentation minimapPresentation;
         private UnityEnhancedDiagnostics diagnostics;
         private ulong generation;
         private ulong lastTick;
@@ -148,7 +179,6 @@ namespace MagicCarpet.PresentationLab
         public UnityEnhancedVfxPresentation VfxPresentation { get { return vfxPresentation; } }
         public UnityEnhancedQualityAndPost QualityAndPost { get { return qualityAndPost; } }
         public UnityEnhancedHudPresentation HudPresentation { get { return hudPresentation; } }
-        public UnityEnhancedMinimapPresentation MinimapPresentation { get { return minimapPresentation; } }
         public UnityEnhancedDiagnostics Diagnostics { get { return diagnostics; } }
 
         private void Awake()
@@ -226,7 +256,6 @@ namespace MagicCarpet.PresentationLab
             if (actorPresentation != null) actorPresentation.ResetForSession();
             if (qualityAndPost != null) qualityAndPost.ResetForSession();
             if (hudPresentation != null) hudPresentation.ResetForSession();
-            if (minimapPresentation != null) minimapPresentation.ResetForSession();
             if (diagnostics != null) diagnostics.ResetForSession();
 
             hasSnapshot = false;
@@ -329,20 +358,6 @@ namespace MagicCarpet.PresentationLab
             if (snapshot.Hud == null)
             {
                 hudPresentation.HideForSnapshot();
-            }
-
-            if (snapshot.Minimap != null && !minimapPresentation.ApplySnapshot(
-                    snapshot.Minimap,
-                    cameraRig.PresentationCamera))
-            {
-                LastRejectReason = "minimap presentation rejected snapshot";
-                if (diagnostics != null) diagnostics.RecordRejectedSnapshot();
-                State = UnityEnhancedLifecycleState.Faulted;
-                return false;
-            }
-            if (snapshot.Minimap == null)
-            {
-                minimapPresentation.HideForSnapshot();
             }
 
             seenIdentities.Clear();
@@ -471,7 +486,6 @@ namespace MagicCarpet.PresentationLab
             vfxPresentation.ResetForGeneration(nextGeneration);
             actorPresentation.ResetForSession();
             hudPresentation.ResetForGeneration(nextGeneration);
-            minimapPresentation.ResetForGeneration(nextGeneration);
         }
 
         /// <summary>
@@ -672,14 +686,6 @@ namespace MagicCarpet.PresentationLab
                 hudPresentation = hud.AddComponent<UnityEnhancedHudPresentation>();
             }
 
-            if (minimapPresentation == null)
-            {
-                GameObject minimap = new GameObject("EnhancedMinimap");
-                minimap.transform.SetParent(transform, false);
-                minimap.hideFlags = HideFlags.DontSave;
-                minimapPresentation = minimap.AddComponent<UnityEnhancedMinimapPresentation>();
-            }
-
             if (qualityAndPost == null)
             {
                 qualityAndPost = GetComponent<UnityEnhancedQualityAndPost>();
@@ -732,6 +738,11 @@ namespace MagicCarpet.PresentationLab
             if (snapshot.Hud != null &&
                 (snapshot.Hud.Generation != snapshot.Generation ||
                  snapshot.Hud.Tick != snapshot.Tick ||
+                 snapshot.Hud.OwnerFrame == null ||
+                 !snapshot.Hud.OwnerFrame.TryValidate(
+                     snapshot.Generation,
+                     snapshot.Tick,
+                     out string ownerHudFrameReason) ||
                  snapshot.Hud.PlayerLife < 0 ||
                  snapshot.Hud.PlayerMaxLife < 0 ||
                  snapshot.Hud.PlayerMana < 0 ||

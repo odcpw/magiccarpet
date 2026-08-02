@@ -35,7 +35,7 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual(1, gameObject.GetComponents<UnityEnhancedPresentationAdapters>().Length);
             Assert.AreEqual(1, gameObject.GetComponentsInChildren<UnityEnhancedCameraRig>().Length);
             Assert.AreEqual(1, gameObject.GetComponentsInChildren<UnityEnhancedHudPresentation>().Length);
-            Assert.AreEqual(1, gameObject.GetComponentsInChildren<UnityEnhancedMinimapPresentation>().Length);
+            Assert.AreEqual(0, gameObject.GetComponentsInChildren<UnityEnhancedMinimapPresentation>().Length);
             Assert.IsNotNull(gameObject.transform.Find("EnhancedWorldObjects"));
 
             Object.DestroyImmediate(gameObject);
@@ -91,46 +91,66 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
-        public void HudConsumesMissionStateAndRendersGenerationBoundBars()
+        public void HudRendersOwnerIndexedFrameAndGatesNonOverlayPixels()
         {
             GameObject gameObject = new GameObject("enhanced-hud-test");
             UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
             root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
 
-            UnityEnhancedWorldSnapshot snapshot = new UnityEnhancedWorldSnapshot
-            {
-                Generation = 3,
-                Tick = 4,
-                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 58f),
-                Entities = new UnityEnhancedEntitySnapshot[0],
-                Hud = new UnityEnhancedHudSnapshot
-                {
-                    Generation = 3,
-                    Tick = 4,
-                    PlayerLife = 80,
-                    PlayerMaxLife = 100,
-                    PlayerMana = 20,
-                    PlayerMaxMana = 50,
-                    SecuredManaPercent = 35,
-                    TargetSpeed = 80,
-                    ActualSpeed = 40,
-                    CurrentStage = 2,
-                    TasksCompleted = 1,
-                    HasFireball = true,
-                    HasSpeedSpell = true
-                }
-            };
+            UnityEnhancedWorldSnapshot snapshot = OwnerHudWorldSnapshot(3, 4);
 
             Assert.IsTrue(root.ApplySnapshot(snapshot));
             Assert.IsNotNull(root.HudPresentation);
             Assert.IsTrue(root.HudPresentation.IsVisible);
             Assert.AreEqual(3UL, root.HudPresentation.Generation);
             Assert.AreEqual(4UL, root.HudPresentation.LastTick);
-            Assert.AreEqual(0.8f, root.HudPresentation.LifeFillAmount, 0.001f);
-            Assert.AreEqual(0.4f, root.HudPresentation.ManaFillAmount, 0.001f);
-            StringAssert.Contains("FIRE", root.HudPresentation.SpellText);
-            StringAssert.Contains("SPEED", root.HudPresentation.SpellText);
-            StringAssert.Contains("CASTER READY", root.HudPresentation.StatusText);
+            Assert.AreEqual(3UL, root.HudPresentation.FrameGeneration);
+            Assert.AreEqual(4UL, root.HudPresentation.FrameTick);
+            Assert.AreEqual(2, root.HudPresentation.FrameWidth);
+            Assert.AreEqual(1, root.HudPresentation.FrameHeight);
+            Assert.IsNull(gameObject.transform.Find("EnhancedHud/EnhancedOwnerHudCanvas/EnhancedHudPanel"));
+            Assert.IsNotNull(gameObject.transform.Find("EnhancedHud/EnhancedOwnerHudCanvas/EnhancedOwnerHudFrame"));
+            Assert.IsNotNull(root.HudPresentation.OwnerHudMaterial);
+
+            RenderTexture resolved = new RenderTexture(
+                2,
+                1,
+                0,
+                RenderTextureFormat.ARGB32,
+                RenderTextureReadWrite.Linear);
+            Texture2D readback = new Texture2D(2, 1, TextureFormat.RGBA32, false, true);
+            Texture2D backgroundTexture = new Texture2D(2, 1, TextureFormat.RGBA32, false, true);
+            RenderTexture previousActive = RenderTexture.active;
+            Color background = new Color(0.2f, 0.4f, 0.7f, 1f);
+            try
+            {
+                backgroundTexture.SetPixels(new[] { background, background });
+                backgroundTexture.Apply(false, false);
+                resolved.Create();
+                Graphics.SetRenderTarget(resolved);
+                GL.Clear(true, true, background);
+                Graphics.Blit(backgroundTexture, resolved);
+                Graphics.Blit(Texture2D.whiteTexture, resolved, root.HudPresentation.OwnerHudMaterial);
+                RenderTexture.active = resolved;
+                readback.ReadPixels(new Rect(0f, 0f, 2f, 1f), 0, 0, false);
+                readback.Apply(false, false);
+                Color hiddenPixel = readback.GetPixel(0, 0);
+                Color visiblePixel = readback.GetPixel(1, 0);
+                Assert.That(hiddenPixel.r, Is.EqualTo(background.r).Within(0.03f));
+                Assert.That(hiddenPixel.g, Is.EqualTo(background.g).Within(0.03f));
+                Assert.That(hiddenPixel.b, Is.EqualTo(background.b).Within(0.03f));
+                Assert.That(visiblePixel.r, Is.EqualTo(44f / 255f).Within(0.03f));
+                Assert.That(visiblePixel.g, Is.EqualTo(55f / 255f).Within(0.03f));
+                Assert.That(visiblePixel.b, Is.EqualTo(66f / 255f).Within(0.03f));
+            }
+            finally
+            {
+                RenderTexture.active = previousActive;
+                Object.DestroyImmediate(readback);
+                Object.DestroyImmediate(backgroundTexture);
+                resolved.Release();
+                Object.DestroyImmediate(resolved);
+            }
 
             root.Close();
             Assert.IsFalse(root.HudPresentation.IsVisible);
@@ -138,40 +158,29 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
-        public void MinimapConsumesSourceOrderedMarksAndCommands()
+        public void HudRejectsStaleFrameGenerationAndTickWithoutReplacingVisibleFrame()
         {
-            GameObject gameObject = new GameObject("enhanced-minimap-test");
+            GameObject gameObject = new GameObject("enhanced-hud-stale-test");
             UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
             root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
 
-            UnityEnhancedMinimapSnapshot minimap = MinimapSnapshot(2, 7, 0);
-            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
-            {
-                Generation = 2,
-                Tick = 7,
-                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
-                Entities = new UnityEnhancedEntitySnapshot[0],
-                Minimap = minimap
-            }));
+            UnityEnhancedWorldSnapshot first = OwnerHudWorldSnapshot(5, 10);
+            Assert.IsTrue(root.ApplySnapshot(first));
+            Material material = root.HudPresentation.OwnerHudMaterial;
 
-            Assert.IsTrue(root.MinimapPresentation.IsVisible);
-            Assert.AreEqual(2UL, root.MinimapPresentation.Generation);
-            Assert.AreEqual(7UL, root.MinimapPresentation.LastTick);
-            Assert.AreEqual(1, root.MinimapPresentation.RenderedMarkCount);
-            Assert.AreEqual(1, root.MinimapPresentation.RenderedCommandCount);
-            Assert.AreEqual(0x1234UL, root.MinimapPresentation.CommandHash);
-            Assert.Greater(root.MinimapPresentation.Texture.GetPixel(40, 83).r, 0.1f);
+            UnityEnhancedHudSnapshot staleTick = OwnerHudSnapshot(5, 9);
+            Assert.IsFalse(root.HudPresentation.ApplySnapshot(
+                staleTick,
+                root.CameraRig.PresentationCamera));
+            Assert.AreSame(material, root.HudPresentation.OwnerHudMaterial);
+            Assert.AreEqual(10UL, root.HudPresentation.LastTick);
 
-            UnityEnhancedMinimapSnapshot invalid = MinimapSnapshot(2, 8, 1);
-            Assert.IsFalse(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
-            {
-                Generation = 2,
-                Tick = 8,
-                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
-                Entities = new UnityEnhancedEntitySnapshot[0],
-                Minimap = invalid
-            }));
-            Assert.AreEqual(UnityEnhancedLifecycleState.Faulted, root.State);
+            UnityEnhancedHudSnapshot staleGeneration = OwnerHudSnapshot(4, 11);
+            Assert.IsFalse(root.HudPresentation.ApplySnapshot(
+                staleGeneration,
+                root.CameraRig.PresentationCamera));
+            Assert.AreEqual(5UL, root.HudPresentation.FrameGeneration);
+            Assert.AreEqual(10UL, root.HudPresentation.FrameTick);
 
             Object.DestroyImmediate(gameObject);
         }
@@ -652,6 +661,7 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/VertexColorLit"));
             Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/Terrain"));
             Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/NightSky"));
+            Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/OwnerHudIndexed"));
         }
 
         [Test]
@@ -666,6 +676,45 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsFalse(report.Contains("/"));
 
             Object.DestroyImmediate(gameObject);
+        }
+
+        private static UnityEnhancedWorldSnapshot OwnerHudWorldSnapshot(ulong generation, ulong tick)
+        {
+            return new UnityEnhancedWorldSnapshot
+            {
+                Generation = generation,
+                Tick = tick,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Entities = new UnityEnhancedEntitySnapshot[0],
+                Hud = OwnerHudSnapshot(generation, tick)
+            };
+        }
+
+        private static UnityEnhancedHudSnapshot OwnerHudSnapshot(ulong generation, ulong tick)
+        {
+            byte[] palette = new byte[256 * 3];
+            palette[7 * 3] = 11;
+            palette[7 * 3 + 1] = 22;
+            palette[7 * 3 + 2] = 33;
+            palette[9 * 3] = 44;
+            palette[9 * 3 + 1] = 55;
+            palette[9 * 3 + 2] = 66;
+            return new UnityEnhancedHudSnapshot
+            {
+                Generation = generation,
+                Tick = tick,
+                OwnerFrame = new UnityEnhancedOwnerHudFrame
+                {
+                    Generation = generation,
+                    Tick = tick,
+                    Width = 2,
+                    Height = 1,
+                    Stride = 2,
+                    IndexedPixels = new byte[] { 7, 9 },
+                    Provenance = new byte[] { 0, 1 << 3 },
+                    PaletteRgb8 = palette
+                }
+            };
         }
 
         private static UnityEnhancedTerrainSnapshot TerrainSnapshot(
