@@ -8967,6 +8967,7 @@ impl Level2ResetSession {
                             }
                         }
                     }
+                    self.append_new_economy_events(pass, source_slot);
                     self.dispatch_events.push(Level2DispatchEvent::Villager {
                         pass,
                         source_slot,
@@ -8993,6 +8994,10 @@ impl Level2ResetSession {
                     let advanced = self.economy.step_castle_action(source_slot);
                     self.terrain = self.economy.terrain.clone();
                     self.synchronize_level2_terrain();
+                    // Publish the source handler's economy sidecars before
+                    // the coarse Castle wrapper, matching the handler-first
+                    // ApplyEvents cursor order used by dynamic rows.
+                    self.append_new_economy_events(pass, source_slot);
                     self.dispatch_events.push(Level2DispatchEvent::Castle {
                         pass,
                         source_slot,
@@ -9024,6 +9029,7 @@ impl Level2ResetSession {
                         &goat_players,
                     ));
                     self.apply_level2_goat_economy_events(&events);
+                    self.append_new_economy_events(pass, source_slot);
                     self.dispatch_events.push(Level2DispatchEvent::Goat {
                         pass,
                         source_slot,
@@ -9032,7 +9038,6 @@ impl Level2ResetSession {
                 }
                 _ => unreachable!("bounded Level 2 source route"),
             }
-            self.append_new_economy_events(pass, source_slot);
         }
         // A root/typed handler may have allocated a Castle child, carrier, or
         // sphere after the initial cursor reached its slot.  Re-scan live
