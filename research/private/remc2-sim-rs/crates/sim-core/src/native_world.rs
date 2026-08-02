@@ -4656,7 +4656,9 @@ impl Level2EconomyState {
         self.source_rng.insert(source_entity_index, root_source_rng);
         self.castle = Some(Level2CastleState {
             source_entity_index,
-            source_id_entity_index: source_entity_index,
+            // The source Castle root stores the owning player's logical
+            // entity id in id_0x1A; the arena slot remains separate.
+            source_id_entity_index: owner_entity_index,
             source_class: 3,
             source_model: 2,
             source_byte_38: 33,
@@ -14607,7 +14609,7 @@ mod tests {
                 entity_rng: construction
                     .construction_slot
                     .wrapping_add(castle_lifecycle.economy().global_rng as u16),
-                id_entity_index: lifecycle_slot,
+                id_entity_index: 111,
                 source_class: 10,
                 parent_entity_index: lifecycle_slot,
                 owner_entity_index: 111,
@@ -14651,7 +14653,7 @@ mod tests {
             .find(|child| child.active && child.model == 79)
             .expect("source sub_613D0 stage controller");
         assert_eq!(stage_child.parent_entity_index, lifecycle_slot);
-        assert_eq!(stage_child.id_entity_index, lifecycle_slot);
+        assert_eq!(stage_child.id_entity_index, 111);
         assert_eq!(
             stage_child.position.z,
             castle_lifecycle
@@ -14898,7 +14900,7 @@ mod tests {
         assert!(
             damage_session
                 .economy_mut()
-                .submit_damage(damage_slot, 1, damage_slot)
+                .submit_damage(damage_slot, 1, 111)
         );
         assert!(damage_session.economy_mut().step_castle_action(damage_slot));
         let damage_transition = damage_session.economy().castle().expect("Castle");
@@ -16392,7 +16394,7 @@ mod tests {
                 0,
                 0x1234,
                 50,
-                castle_slot,
+                111,
             )
             .expect("nearest defender sphere");
         session.economy_mut().maintain_castle_defenders(castle_slot);
