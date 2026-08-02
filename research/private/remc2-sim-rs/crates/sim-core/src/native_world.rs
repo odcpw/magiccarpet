@@ -3374,6 +3374,46 @@ impl Level2EconomyState {
         &self.castle_children
     }
 
+    /// Return the currently live dynamic source rows in ascending source-slot
+    /// order. This is the bounded arena-cursor seam: allocations and releases
+    /// are observed from live projections on every pass rather than captured
+    /// once at reset. Per-object movement remains owned by the economy bead.
+    #[must_use]
+    pub fn live_arena_slots(&self) -> Vec<(u16, Level2DynamicArenaKind)> {
+        let mut slots = BTreeMap::new();
+        if let Some(castle) = self.castle.filter(|castle| castle.active) {
+            slots.insert(
+                castle.source_entity_index,
+                Level2DynamicArenaKind::CastleRoot,
+            );
+        }
+        for child in self.castle_children.iter().filter(|child| child.active) {
+            slots.insert(
+                child.source_entity_index,
+                match child.model {
+                    15 => Level2DynamicArenaKind::CastleAuxiliary,
+                    3 => Level2DynamicArenaKind::CastleDefender,
+                    79 => Level2DynamicArenaKind::CastleController,
+                    42 | 41 => Level2DynamicArenaKind::CastleChild,
+                    _ => Level2DynamicArenaKind::CastleChild,
+                },
+            );
+        }
+        for sphere in self.spheres.iter().filter(|sphere| sphere.active) {
+            slots.insert(
+                sphere.source_entity_index,
+                Level2DynamicArenaKind::ManaSphere,
+            );
+        }
+        if let Some(carrier) = self.carrier.filter(|carrier| carrier.active) {
+            slots.insert(
+                carrier.source_entity_index,
+                Level2DynamicArenaKind::ManaCarrier,
+            );
+        }
+        slots.into_iter().collect()
+    }
+
     #[must_use]
     pub const fn map_chains(&self) -> &RenderableMapChains {
         &self.map_chains
@@ -3657,6 +3697,10 @@ impl Level2EconomyState {
         let owner = if target_owner == 0 {
             source_owner
         } else if source_owner == 0 {
+            target_owner
+        } else if self.owner_class.get(&target_owner) == Some(&10)
+            && self.owner_class.get(&source_owner) == Some(&10)
+        {
             target_owner
         } else if self.owner_class.get(&target_owner) == Some(&10)
             && self.owner_class.get(&source_owner) != Some(&10)
@@ -6532,6 +6576,22 @@ pub enum Level2DispatchEvent {
         source_slot: u16,
         message: String,
     },
+    DynamicArena {
+        pass: u8,
+        source_slot: u16,
+        kind: Level2DynamicArenaKind,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum Level2DynamicArenaKind {
+    CastleRoot,
+    CastleChild,
+    CastleAuxiliary,
+    CastleDefender,
+    CastleController,
+    ManaSphere,
+    ManaCarrier,
 }
 
 impl Level2ResetSession {
@@ -6731,7 +6791,7 @@ impl Level2ResetSession {
     /// its own mutable state; unknown mission rows are not coerced into a
     /// neighboring Level 1 handler.
     fn step_level2_source_pass(&mut self, pass: u8) {
-        let player_entity_index = self.shared_spells.player_entity.index;
+        let player_entity_index = self.state.entity_index;
         let player_position = self.state.position;
         self.synchronize_level2_terrain();
         let mut routes = LEVEL2_SHARED_SPELL_PICKUP_SLOTS
@@ -6764,6 +6824,13 @@ impl Level2ResetSession {
         if let Some(castle) = self.economy.castle().filter(|castle| castle.active) {
             routes.push((castle.source_entity_index, 5_u8));
         }
+        let dynamic_kinds = self
+            .economy
+            .live_arena_slots()
+            .into_iter()
+            .filter(|(slot, _)| !routes.iter().any(|(known, _)| known == slot))
+            .collect::<BTreeMap<_, _>>();
+        routes.extend(dynamic_kinds.keys().copied().map(|slot| (slot, 6_u8)));
         routes.sort_unstable_by_key(|(slot, _)| *slot);
         for (source_slot, kind) in routes {
             match kind {
@@ -6788,6 +6855,8 @@ impl Level2ResetSession {
                             message: error.to_string(),
                         }),
                     }
+                    self.terrain = self.shared_spells.terrain.clone();
+                    self.synchronize_level2_terrain();
                 }
                 1 => match self.step_bad_stone_action_9(source_slot) {
                     Ok(step) => self
@@ -6806,6 +6875,8 @@ impl Level2ResetSession {
                         source_slot,
                         events: events.into_boxed_slice(),
                     });
+                    self.terrain = self.ordinary.terrain.clone();
+                    self.synchronize_level2_terrain();
                 }
                 3 => {
                     let effects = self.ordinary.step_villager_action_105(source_slot);
@@ -6814,17 +6885,23 @@ impl Level2ResetSession {
                         source_slot,
                         effects: effects.into_boxed_slice(),
                     });
+                    self.terrain = self.ordinary.terrain.clone();
+                    self.synchronize_level2_terrain();
                 }
-                4 => match self.ordinary.step_dolmen_action_6(source_slot) {
-                    Ok(step) => self
-                        .dispatch_events
-                        .push(Level2DispatchEvent::Dolmen { pass, step }),
-                    Err(error) => self.dispatch_events.push(Level2DispatchEvent::Error {
-                        pass,
-                        source_slot,
-                        message: error.to_string(),
-                    }),
-                },
+                4 => {
+                    match self.ordinary.step_dolmen_action_6(source_slot) {
+                        Ok(step) => self
+                            .dispatch_events
+                            .push(Level2DispatchEvent::Dolmen { pass, step }),
+                        Err(error) => self.dispatch_events.push(Level2DispatchEvent::Error {
+                            pass,
+                            source_slot,
+                            message: error.to_string(),
+                        }),
+                    }
+                    self.terrain = self.ordinary.terrain.clone();
+                    self.synchronize_level2_terrain();
+                }
                 5 => {
                     let advanced = self.economy.step_castle_action(source_slot);
                     self.terrain = self.economy.terrain.clone();
@@ -6834,6 +6911,18 @@ impl Level2ResetSession {
                         source_slot,
                         advanced,
                     });
+                }
+                6 => {
+                    let kind = dynamic_kinds
+                        .get(&source_slot)
+                        .copied()
+                        .expect("dynamic source route has a live kind");
+                    self.dispatch_events
+                        .push(Level2DispatchEvent::DynamicArena {
+                            pass,
+                            source_slot,
+                            kind,
+                        });
                 }
                 _ => unreachable!("bounded Level 2 source route"),
             }
@@ -15159,7 +15248,14 @@ mod tests {
             let mut session = inspection
                 .level2_reset_session()
                 .expect("Level 2 source-pass session");
+            let authority_index = terrain_index(4, 4);
+            session.terrain.planes.ground_heights[authority_index] = 77;
+            let authority_hash = session.terrain_hash();
             session.step_outer_turn(PlayerCommand::default(), speed_index);
+            assert_eq!(session.terrain_hash(), authority_hash);
+            assert_eq!(session.terrain, session.shared_spells().terrain);
+            assert_eq!(session.terrain, session.ordinary().terrain);
+            assert_eq!(session.terrain, session.economy().terrain);
             let passes = session
                 .dispatch_events()
                 .iter()
@@ -15170,6 +15266,7 @@ mod tests {
                     | Level2DispatchEvent::Villager { pass, .. }
                     | Level2DispatchEvent::Dolmen { pass, .. }
                     | Level2DispatchEvent::Castle { pass, .. }
+                    | Level2DispatchEvent::DynamicArena { pass, .. }
                     | Level2DispatchEvent::Error { pass, .. } => *pass,
                 })
                 .collect::<Vec<_>>();
@@ -15182,7 +15279,104 @@ mod tests {
                 );
             }
             assert_eq!(passes.iter().max().copied(), Some(expected_passes - 1));
+            session.reset();
+            assert_eq!(session.terrain, session.shared_spells().terrain);
+            assert_eq!(session.terrain, session.ordinary().terrain);
+            assert_eq!(session.terrain, session.economy().terrain);
         }
+    }
+
+    #[test]
+    fn level_two_outer_turn_records_source_dispatch_errors_and_continues() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 error-channel session");
+        session.shared_spells_mut().player_entity.index = 112;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::Error {
+                    pass: 0,
+                    source_slot: 38,
+                    ..
+                }
+            )
+        }));
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::BadStone { pass: 0, .. }
+                    | Level2DispatchEvent::House { pass: 0, .. }
+                    | Level2DispatchEvent::Villager { pass: 0, .. }
+                    | Level2DispatchEvent::Dolmen { pass: 0, .. }
+            )
+        }));
+    }
+
+    #[test]
+    fn level_two_outer_turn_scans_live_dynamic_arena_rows() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 dynamic arena session");
+        let carrier_slot = session
+            .economy_mut()
+            .spawn_mana_carrier(Position::default(), 111, 0)
+            .expect("carrier allocation");
+        let sphere_slot = session
+            .economy_mut()
+            .spawn_mana_sphere_from_death(901, Position::default(), 0, 0x3456, 10, 111)
+            .expect("sphere allocation");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let dynamic = session
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2DispatchEvent::DynamicArena {
+                    pass: 0,
+                    source_slot,
+                    kind,
+                } => Some((*source_slot, *kind)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(dynamic.windows(2).all(|window| window[0].0 < window[1].0));
+        assert!(dynamic.contains(&(carrier_slot, Level2DynamicArenaKind::ManaCarrier)));
+        assert!(dynamic.contains(&(
+            u16::try_from(sphere_slot).expect("sphere slot"),
+            Level2DynamicArenaKind::ManaSphere,
+        )));
+
+        session.economy_mut().begin_turn();
+        assert!(session.economy_mut().absorb_sphere_into_carrier(
+            u16::try_from(sphere_slot).expect("sphere slot"),
+            carrier_slot,
+        ));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::ManaSphere,
+                    ..
+                } if *source_slot == u16::try_from(sphere_slot).expect("sphere slot")
+            )
+        }));
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::ManaCarrier,
+                    ..
+                } if *source_slot == carrier_slot
+            )
+        }));
     }
 
     #[test]
