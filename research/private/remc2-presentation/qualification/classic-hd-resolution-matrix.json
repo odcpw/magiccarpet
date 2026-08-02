@@ -172,7 +172,7 @@
     "idle": "owner-hd-640x480-scenario-pass",
     "town": "owner-hd-640x480-scenario-pass",
     "combat": "owner-hd-640x480-scenario-pass",
-    "high_speed_flight": "pending-owner-lab-capture",
+    "high_speed_flight": "owner-hd-640x480-ordinary-flight-route-pass; automatic-speed-postprocess-remains-open",
     "death_restart": "owner-hd-640x480-scenario-pass",
     "completion_postgame": "pending-owner-lab-capture",
     "fullscreen_window_alt_tab": "owner-hd-640x480-windowed-and-fullscreen-window-capture-pass-open-human-review",

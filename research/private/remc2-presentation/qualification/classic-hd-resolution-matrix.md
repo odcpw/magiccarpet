@@ -67,7 +67,9 @@ promotion therefore remain open.
 The mandatory 640x480 owner scenario receipt is recorded in
 `qualification/classic-hd-owner-route-scenarios.json`. It proves 49 persistent
 indexed uploads across idle, moving town, combat projectile/impact rows,
-high-speed flight, lethal player state, and tick-0 restart. It is still a
+ordinary high-speed flight, lethal player state, and tick-0 restart. This
+qualifies the route observation; it does not claim the separate Speed-jar
+automatic blur/postprocess path, which remains open. It is still a
 route-observation receipt rather than a visual-corpus, sustained-GPU, or
 completion/window qualification.
 
@@ -88,8 +90,9 @@ opening the native session. This qualifies the settings contract; it does not
 replace the missing visual corpus or automatic high-speed postprocess proof.
 
 Remaining GFX-O evidence is intentionally explicit in the JSON matrix:
-completion/fullscreen/alt-tab, 20-minute allocation growth, GPU timing and
-window presentation, the rejected 960x720 alternative, visual corpus review,
-and the complete owner-bound reflection/lighting/blur matrix still require the
-private owner-data Unity capture and preserved qualification artifacts. The
-invalid-config case is covered by the launcher/settings focused tests.
+Speed-jar automatic high-speed postprocess, completion/fullscreen/alt-tab,
+20-minute allocation growth, GPU timing and window presentation, the rejected
+960x720 alternative, visual corpus review, and the complete owner-bound
+reflection/lighting/blur matrix still require the private owner-data Unity
+capture and preserved qualification artifacts. The invalid-config case is
+covered by the launcher/settings focused tests.

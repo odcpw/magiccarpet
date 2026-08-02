@@ -26,6 +26,11 @@ class ThreeModePackageTests(unittest.TestCase):
         self.assertEqual("PASS", summary["status"], summary)
         self.assertEqual("open-gates", summary["qualification_state"])
         self.assertTrue(summary["open_gates"])
+        route_gates = [gate for gate in summary["open_gates"] if "remaining owner route cases" in gate]
+        self.assertEqual(
+            ["Classic HD remaining owner route cases remain pending: completion_postgame"],
+            route_gates,
+        )
 
     def test_sequence_artifact_rejects_false_replay(self):
         artifact_path = ROOT / "qualification" / "classic-hd-owner-route-sequence-smoke.json"
