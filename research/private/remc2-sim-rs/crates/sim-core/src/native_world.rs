@@ -6488,6 +6488,50 @@ pub struct Level2ResetSession {
     economy: Level2EconomyState,
     ordinary: Level2OrdinaryResetSession,
     mission: MissionContentSession,
+    dispatch_events: Vec<Level2DispatchEvent>,
+}
+
+/// One lossless, source-ordered result from the bounded Level 2 dispatcher.
+///
+/// The source dispatcher is deliberately observable: handlers may emit typed
+/// events or fail closed, and neither result is silently discarded. This is
+/// the A4.1 seam; dynamic arena scanning and shared terrain authority remain
+/// separate follow-on slices.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Level2DispatchEvent {
+    SharedPickup {
+        pass: u8,
+        source_slot: u16,
+        result: Option<Level2SpeedPickupStep>,
+    },
+    BadStone {
+        pass: u8,
+        step: Level2BadStoneStep,
+    },
+    House {
+        pass: u8,
+        source_slot: u16,
+        events: Box<[HouseStepEvent]>,
+    },
+    Villager {
+        pass: u8,
+        source_slot: u16,
+        effects: Box<[VillagerStepEffect]>,
+    },
+    Dolmen {
+        pass: u8,
+        step: Level2DolmenStep,
+    },
+    Castle {
+        pass: u8,
+        source_slot: u16,
+        advanced: bool,
+    },
+    Error {
+        pass: u8,
+        source_slot: u16,
+        message: String,
+    },
 }
 
 impl Level2ResetSession {
@@ -6539,6 +6583,7 @@ impl Level2ResetSession {
             economy,
             ordinary,
             mission,
+            dispatch_events: Vec::new(),
         }
     }
 
@@ -6675,7 +6720,7 @@ impl Level2ResetSession {
     /// generic player-flight pass. Each typed family remains authoritative for
     /// its own mutable state; unknown mission rows are not coerced into a
     /// neighboring Level 1 handler.
-    fn step_level2_source_pass(&mut self) {
+    fn step_level2_source_pass(&mut self, pass: u8) {
         let player_entity_index = self.shared_spells.player_entity.index;
         let player_position = self.state.position;
         let mut routes = LEVEL2_SHARED_SPELL_PICKUP_SLOTS
@@ -6712,26 +6757,70 @@ impl Level2ResetSession {
         for (source_slot, kind) in routes {
             match kind {
                 0 => {
-                    let _ = self.shared_spells.step_shared_pickup(
+                    let result = self.shared_spells.step_shared_pickup(
                         source_slot,
                         player_entity_index,
                         player_position,
                     );
+                    match result {
+                        Ok(result) => {
+                            self.dispatch_events
+                                .push(Level2DispatchEvent::SharedPickup {
+                                    pass,
+                                    source_slot,
+                                    result,
+                                })
+                        }
+                        Err(error) => self.dispatch_events.push(Level2DispatchEvent::Error {
+                            pass,
+                            source_slot,
+                            message: error.to_string(),
+                        }),
+                    }
                 }
-                1 => {
-                    let _ = self.step_bad_stone_action_9(source_slot);
-                }
+                1 => match self.step_bad_stone_action_9(source_slot) {
+                    Ok(step) => self
+                        .dispatch_events
+                        .push(Level2DispatchEvent::BadStone { pass, step }),
+                    Err(error) => self.dispatch_events.push(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot,
+                        message: error.to_string(),
+                    }),
+                },
                 2 => {
-                    let _ = self.ordinary.step_house_action_52(source_slot);
+                    let events = self.ordinary.step_house_action_52(source_slot);
+                    self.dispatch_events.push(Level2DispatchEvent::House {
+                        pass,
+                        source_slot,
+                        events: events.into_boxed_slice(),
+                    });
                 }
                 3 => {
-                    let _ = self.ordinary.step_villager_action_105(source_slot);
+                    let effects = self.ordinary.step_villager_action_105(source_slot);
+                    self.dispatch_events.push(Level2DispatchEvent::Villager {
+                        pass,
+                        source_slot,
+                        effects: effects.into_boxed_slice(),
+                    });
                 }
-                4 => {
-                    let _ = self.ordinary.step_dolmen_action_6(source_slot);
-                }
+                4 => match self.ordinary.step_dolmen_action_6(source_slot) {
+                    Ok(step) => self
+                        .dispatch_events
+                        .push(Level2DispatchEvent::Dolmen { pass, step }),
+                    Err(error) => self.dispatch_events.push(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot,
+                        message: error.to_string(),
+                    }),
+                },
                 5 => {
-                    let _ = self.economy.step_castle_action(source_slot);
+                    let advanced = self.economy.step_castle_action(source_slot);
+                    self.dispatch_events.push(Level2DispatchEvent::Castle {
+                        pass,
+                        source_slot,
+                        advanced,
+                    });
                 }
                 _ => unreachable!("bounded Level 2 source route"),
             }
@@ -6741,6 +6830,23 @@ impl Level2ResetSession {
     #[must_use]
     pub fn mission(&self) -> &MissionContentSession {
         &self.mission
+    }
+
+    #[must_use]
+    pub fn dispatch_events(&self) -> &[Level2DispatchEvent] {
+        &self.dispatch_events
+    }
+
+    /// Stable only as a session observability digest, not as a conformance
+    /// hash: the typed event stream is the authoritative A4.1 evidence.
+    #[must_use]
+    pub fn dispatch_observability_hash(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(REMC2_SPEC_COMMIT.as_bytes());
+        for event in &self.dispatch_events {
+            hasher.update(format!("{event:?}").as_bytes());
+        }
+        format!("{:x}", hasher.finalize())
     }
 
     #[must_use]
@@ -6759,16 +6865,19 @@ impl Level2ResetSession {
         command: PlayerCommand,
         speed_index: u8,
     ) -> Vec<crate::StepEvidence> {
-        let evidence = crate::step_outer_turn_with_context(
-            &mut self.state,
-            command,
-            speed_index,
-            self.profile,
-            &self.terrain,
-            &mut self.context,
-        );
-        for _ in 0..crate::entity_passes_for_speed_index(speed_index) {
-            self.step_level2_source_pass();
+        self.dispatch_events.clear();
+        let latched_command =
+            crate::latch_command_with_context(&mut self.state, command, &mut self.context);
+        let mut evidence = Vec::new();
+        for pass in 0..crate::entity_passes_for_speed_index(speed_index) {
+            self.step_level2_source_pass(u8::try_from(pass).unwrap_or(u8::MAX));
+            evidence.push(crate::step_entity_pass_with_context(
+                &mut self.state,
+                latched_command,
+                self.profile,
+                &self.terrain,
+                &mut self.context,
+            ));
         }
         evidence
     }
@@ -6783,6 +6892,7 @@ impl Level2ResetSession {
         self.economy.reset();
         self.ordinary.reset();
         self.mission.reset();
+        self.dispatch_events.clear();
     }
 }
 
@@ -13310,6 +13420,12 @@ mod tests {
         split.reset();
         assert_eq!(split.economy().reset_hash(), baseline_hash);
         assert!(split.economy().spheres().is_empty());
+        let mut invalid_merge = inspection
+            .level2_reset_session()
+            .expect("invalid merge session");
+        invalid_merge.economy_mut().begin_turn();
+        assert!(!invalid_merge.economy_mut().merge_mana_spheres(0, 1));
+        assert!(invalid_merge.economy().events().is_empty());
 
         // Pinned remc2 6806c72, EventsFunctions.cpp:26919-26997
         // (sub_36D50): neutral ownership adopts the other side, class-10
@@ -14992,9 +15108,59 @@ mod tests {
             session.shared_spells().activation_events(),
             [FlightEvent::PrepareSound { sound_id: 18, .. }]
         ));
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::SharedPickup {
+                    pass: 0,
+                    source_slot: 75,
+                    result: Some(Level2SpeedPickupStep {
+                        collected: true,
+                        ..
+                    }),
+                }
+            )
+        }));
+        let dispatch_hash = session.dispatch_observability_hash();
         session.reset();
         assert_eq!(session.shared_spells().reset_hash(), baseline_hash);
         assert_eq!(session.shared_spells().pickups()[1].action, 10);
+        assert!(session.dispatch_events().is_empty());
+        assert_ne!(session.dispatch_observability_hash(), dispatch_hash);
+    }
+
+    #[test]
+    fn level_two_outer_turn_dispatches_each_source_pass_in_order() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        for (speed_index, expected_passes) in [(0_u8, 1_u8), (1, 4), (2, 8)] {
+            let mut session = inspection
+                .level2_reset_session()
+                .expect("Level 2 source-pass session");
+            session.step_outer_turn(PlayerCommand::default(), speed_index);
+            let passes = session
+                .dispatch_events()
+                .iter()
+                .map(|event| match event {
+                    Level2DispatchEvent::SharedPickup { pass, .. }
+                    | Level2DispatchEvent::BadStone { pass, .. }
+                    | Level2DispatchEvent::House { pass, .. }
+                    | Level2DispatchEvent::Villager { pass, .. }
+                    | Level2DispatchEvent::Dolmen { pass, .. }
+                    | Level2DispatchEvent::Castle { pass, .. }
+                    | Level2DispatchEvent::Error { pass, .. } => *pass,
+                })
+                .collect::<Vec<_>>();
+            assert!(!passes.is_empty(), "source pass {speed_index} was empty");
+            assert!(passes.windows(2).all(|window| window[0] <= window[1]));
+            for pass in 0..expected_passes {
+                assert!(
+                    passes.contains(&pass),
+                    "speed {speed_index} omitted source pass {pass}"
+                );
+            }
+            assert_eq!(passes.iter().max().copied(), Some(expected_passes - 1));
+        }
     }
 
     #[test]
