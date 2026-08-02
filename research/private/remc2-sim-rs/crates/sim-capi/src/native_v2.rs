@@ -271,7 +271,7 @@ pub const MC_EVENT_LEVEL1_EXIT_SEQUENCE_COMPLETED: u32 = 36;
 pub const MC_EVENT_LEVEL1_WATER_SPLASHED: u32 = 37;
 pub const MC_EVENT_LEVEL1_ABILITY_IMPROVED: u32 = 38;
 
-/// Additive Level 2 campaign economy events (`mc_sim.h`, kind 10).
+/// Additive Level 2 campaign economy events (`mc_sim_level2.h`, kind 10).
 pub const MC_CAMPAIGN_EVENT_ECONOMY: u8 = 10;
 
 pub const MC_CAMPAIGN_ECONOMY_MANA_SPHERE_SPAWNED: u8 = 1;
@@ -16624,7 +16624,7 @@ mod tests {
             &source,
             r#"
 #include <stddef.h>
-#include "mc_sim.h"
+#include "mc_sim_level2.h"
 
 _Static_assert(sizeof(McWorldInfoV2) == 72, "McWorldInfoV2 size");
 _Static_assert(sizeof(McCommandV2) == 32, "McCommandV2 size");

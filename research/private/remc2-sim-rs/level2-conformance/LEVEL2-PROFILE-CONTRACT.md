@@ -26,6 +26,12 @@ fixed 320x200 VGA path in `remc2/engine/EventsFunctions.cpp`. A separate
 renderer test row records a 320x240 checkpoint for external level 2; it is not
 the shared fixed desktop contract and remains a later matrix concern.
 
+The accepted Level 1 native header at
+`crates/sim-capi/include/mc_sim.h` is sealed byte-for-byte by the historical
+header hash. Additive Level 2 campaign declarations, including economy
+sidecars, live in `crates/sim-capi/include/mc_sim_level2.h`; callers that use
+those declarations include the additive header explicitly.
+
 ## What this includes
 
 This contract makes the external-to-internal selector and runtime profile

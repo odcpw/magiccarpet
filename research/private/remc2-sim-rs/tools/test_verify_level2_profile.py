@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import subprocess
 import sys
@@ -83,6 +84,44 @@ class Level2ProfileGuardTests(unittest.TestCase):
         result = self.run_cli(profile)
         self.assertEqual(result.returncode, 1)
         self.assertIn("sealed native ABI header hash changed", result.stdout)
+
+    def test_level1_header_stays_sealed_and_level2_header_is_additive(self) -> None:
+        abi = self.profile["sealed_level1"]["historical_receipts"]["abi"]
+        level1_header = WORKSPACE / abi["header_path"]
+        self.assertEqual(
+            hashlib.sha256(level1_header.read_bytes()).hexdigest(),
+            "f822e3d343517469775ae53546ec827bd392ad37f866aec3d48bddc0504a3d6f",
+        )
+        level1_text = level1_header.read_text(encoding="utf-8")
+        level2_only = (
+            "McCampaignSelectionV2",
+            "McCampaignStepInputV2",
+            "McCampaignEventV2",
+            "McCampaignStepSnapshotV2",
+            "McCampaignWorldInfoV2",
+            "McCampaignPlayerSnapshotV2",
+            "McCampaignEntitySnapshotV2",
+            "McCampaignEconomyEventV2",
+            "mc_native_campaign_session_open",
+            "mc_native_campaign_session_destroy",
+            "mc_native_campaign_session_reset",
+            "mc_native_campaign_session_step",
+            "mc_native_campaign_world_info",
+            "mc_native_campaign_player_count",
+            "mc_native_campaign_objective_count",
+            "mc_native_campaign_entity_count",
+            "mc_native_campaign_players_copy",
+            "mc_native_campaign_objectives_copy",
+            "mc_native_campaign_entities_copy",
+            "mc_native_campaign_economy_events",
+        )
+        for symbol in level2_only:
+            self.assertNotIn(symbol, level1_text)
+
+        level2_header = level1_header.with_name("mc_sim_level2.h")
+        level2_text = level2_header.read_text(encoding="utf-8")
+        for symbol in level2_only:
+            self.assertIn(symbol, level2_text)
 
     def test_abi_event_code_witness_mutation_is_rejected(self) -> None:
         profile = copy.deepcopy(self.profile)
