@@ -307,6 +307,78 @@ typedef struct McEntitySnapshotV2 {
     uint32_t reserved[4];
 } McEntitySnapshotV2;
 
+/* Additive generic campaign selection; legacy v2 layouts are unchanged. */
+typedef struct McCampaignSelectionV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint16_t external_level;
+    uint16_t internal_level;
+    uint8_t map_type;
+    uint8_t reserved_0;
+    uint32_t reserved[4];
+} McCampaignSelectionV2;
+
+typedef struct McCampaignWorldInfoV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint16_t external_level;
+    uint16_t internal_level;
+    uint8_t map_type;
+    uint8_t profile;
+    uint16_t reserved_0;
+    uint32_t entity_count;
+    uint32_t active_entity_count;
+    uint32_t player_count;
+    uint32_t objective_count;
+    uint16_t terrain_width;
+    uint16_t terrain_height;
+    uint64_t reset_state_hash;
+    uint32_t reserved[4];
+} McCampaignWorldInfoV2;
+
+typedef struct McCampaignPlayerSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint8_t slot;
+    uint8_t is_ai;
+    uint8_t active;
+    uint8_t reserved_0;
+    uint16_t entity_index;
+    int16_t active_player_index;
+    int32_t turn;
+    int16_t left_spell_slot_raw;
+    int16_t right_spell_slot_raw;
+    int8_t left_subspell_index;
+    int8_t right_subspell_index;
+    uint8_t selected_spell_ui_index;
+    int8_t selected_subspell_index;
+    uint8_t reserved_1[2];
+    uint32_t reserved[4];
+} McCampaignPlayerSnapshotV2;
+
+typedef struct McCampaignEntitySnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint16_t entity_index;
+    uint16_t source_id;
+    uint16_t next_relation;
+    uint16_t parameter_relation;
+    uint8_t authority;
+    uint8_t active;
+    uint8_t class_id;
+    uint8_t model;
+    uint8_t action;
+    uint8_t phase;
+    uint16_t x;
+    uint16_t y;
+    int16_t z;
+    int16_t yaw;
+    int16_t pitch;
+    int16_t fov;
+    int16_t actual_speed;
+    uint32_t reserved[4];
+} McCampaignEntitySnapshotV2;
+
 typedef struct McGoatSnapshotV2 {
     uint32_t abi_version;
     uint32_t struct_size;
@@ -1319,6 +1391,26 @@ int32_t mc_native_session_open(const uint8_t *package_dir,
                                const uint8_t *closure_path,
                                uint32_t closure_path_len,
                                uint64_t *out_handle);
+int32_t mc_native_campaign_session_open(
+    const uint8_t *package_dir, uint32_t package_dir_len,
+    const uint8_t *closure_path, uint32_t closure_path_len,
+    const McCampaignSelectionV2 *selection, uint64_t *out_handle);
+int32_t mc_native_campaign_session_destroy(uint64_t handle);
+int32_t mc_native_campaign_session_reset(uint64_t handle);
+int32_t mc_native_campaign_world_info(
+    uint64_t handle, McCampaignWorldInfoV2 *out_info, uint32_t out_info_size);
+int32_t mc_native_campaign_player_count(uint64_t handle, uint32_t *out_count);
+int32_t mc_native_campaign_objective_count(uint64_t handle, uint32_t *out_count);
+int32_t mc_native_campaign_entity_count(uint64_t handle, uint32_t *out_count);
+int32_t mc_native_campaign_players_copy(
+    uint64_t handle, uint32_t start_slot, McCampaignPlayerSnapshotV2 *buffer,
+    uint32_t capacity, uint32_t element_size, uint32_t *out_written);
+int32_t mc_native_campaign_objectives_copy(
+    uint64_t handle, uint32_t start_slot, McObjectiveSnapshotV2 *buffer,
+    uint32_t capacity, uint32_t element_size, uint32_t *out_written);
+int32_t mc_native_campaign_entities_copy(
+    uint64_t handle, uint32_t start_index, McCampaignEntitySnapshotV2 *buffer,
+    uint32_t capacity, uint32_t element_size, uint32_t *out_written);
 int32_t mc_native_session_destroy(uint64_t handle);
 int32_t mc_native_session_reset(uint64_t handle,
                                 McSessionSnapshotV2 *out_snapshot,

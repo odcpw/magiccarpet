@@ -92,10 +92,11 @@ use sim_core::{
         level1_map_entity_command, level1_minimap_castle_rope_pixels,
         level1_minimap_entity_command, mana_sphere_size_ordinal,
     },
+    mission_content::MissionContentSession,
     native_world::{
-        AssetRef, EntityAuthority, EntitySnapshot, NativeWorld, ParticleParameter, SessionTerrain,
-        TerrainPlanes, apply_level1_source_effects, level1_turn_start_source_views,
-        refresh_level1_current_source_view,
+        AssetRef, EntityAuthority, EntitySnapshot, NativeWorld, NativeWorldInspection,
+        ParticleParameter, SessionTerrain, TerrainPlanes, apply_level1_source_effects,
+        level1_turn_start_source_views, refresh_level1_current_source_view,
     },
     positional_sound_should_replace, prepare_event_sound_command,
     presentation_frame::{
@@ -482,6 +483,90 @@ pub struct McEntitySnapshotV2 {
     pub phase: u8,
     pub has_parameter_record: u8,
     pub reserved_0: u8,
+    pub x: u16,
+    pub y: u16,
+    pub z: i16,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub fov: i16,
+    pub actual_speed: i16,
+    pub reserved: [u32; 4],
+}
+
+/// Generic campaign selection input. This is additive: the existing native
+/// v2 open call and every Level 1 wrapper retain their original signatures.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignSelectionV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub external_level: u16,
+    pub internal_level: u16,
+    pub map_type: u8,
+    pub reserved_0: u8,
+    pub reserved: [u32; 4],
+}
+
+/// Common campaign metadata returned by the additive campaign session path.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignWorldInfoV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub external_level: u16,
+    pub internal_level: u16,
+    pub map_type: u8,
+    pub profile: u8,
+    pub reserved_0: u16,
+    pub entity_count: u32,
+    pub active_entity_count: u32,
+    pub player_count: u32,
+    pub objective_count: u32,
+    pub terrain_width: u16,
+    pub terrain_height: u16,
+    pub reset_state_hash: u64,
+    pub reserved: [u32; 4],
+}
+
+/// Bounded common player participation and player/entity relation row.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignPlayerSnapshotV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub slot: u8,
+    pub is_ai: u8,
+    pub active: u8,
+    pub reserved_0: u8,
+    pub entity_index: u16,
+    pub active_player_index: i16,
+    pub turn: i32,
+    pub left_spell_slot_raw: i16,
+    pub right_spell_slot_raw: i16,
+    pub left_subspell_index: i8,
+    pub right_subspell_index: i8,
+    pub selected_spell_ui_index: u8,
+    pub selected_subspell_index: i8,
+    pub reserved_1: [u8; 2],
+    pub reserved: [u32; 4],
+}
+
+/// Bounded common entity relation row. Sentinel `u16::MAX` means no relation.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignEntitySnapshotV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub entity_index: u16,
+    pub source_id: u16,
+    pub next_relation: u16,
+    pub parameter_relation: u16,
+    pub authority: u8,
+    pub active: u8,
+    pub class_id: u8,
+    pub model: u8,
+    pub action: u8,
+    pub phase: u8,
     pub x: u16,
     pub y: u16,
     pub z: i16,
@@ -6497,6 +6582,116 @@ fn with_session_mut<T>(
     operation(&mut guard)
 }
 
+#[derive(Debug)]
+enum CampaignSessionKind {
+    Level1 {
+        world: Arc<NativeWorld>,
+    },
+    Level2 {
+        inspection: Arc<NativeWorldInspection>,
+        mission: MissionContentSession,
+    },
+}
+
+#[derive(Debug)]
+struct CampaignSessionRecord {
+    kind: CampaignSessionKind,
+    generation: u64,
+}
+
+#[derive(Default)]
+struct CampaignRegistry {
+    next_handle: u64,
+    sessions: BTreeMap<u64, Arc<Mutex<CampaignSessionRecord>>>,
+}
+
+impl CampaignRegistry {
+    fn insert(&mut self, session: CampaignSessionRecord) -> AbiResult<u64> {
+        for _ in 0..u16::MAX {
+            self.next_handle = next_nonzero(self.next_handle);
+            if !self.sessions.contains_key(&self.next_handle) {
+                let handle = self.next_handle;
+                self.sessions.insert(handle, Arc::new(Mutex::new(session)));
+                return Ok(handle);
+            }
+        }
+        Err(AbiError::new(
+            MC_STATUS_LOCK_FAILED,
+            "campaign session handle space is unavailable",
+        ))
+    }
+}
+
+static CAMPAIGN_REGISTRY: OnceLock<Mutex<CampaignRegistry>> = OnceLock::new();
+
+fn campaign_registry() -> &'static Mutex<CampaignRegistry> {
+    CAMPAIGN_REGISTRY.get_or_init(|| Mutex::new(CampaignRegistry::default()))
+}
+
+fn with_campaign_registry<T>(
+    operation: impl FnOnce(&CampaignRegistry) -> AbiResult<T>,
+) -> AbiResult<T> {
+    let guard = campaign_registry().lock().map_err(|_| {
+        AbiError::new(
+            MC_STATUS_LOCK_FAILED,
+            "campaign session registry lock is poisoned",
+        )
+    })?;
+    operation(&guard)
+}
+
+fn with_campaign_registry_mut<T>(
+    operation: impl FnOnce(&mut CampaignRegistry) -> AbiResult<T>,
+) -> AbiResult<T> {
+    let mut guard = campaign_registry().lock().map_err(|_| {
+        AbiError::new(
+            MC_STATUS_LOCK_FAILED,
+            "campaign session registry lock is poisoned",
+        )
+    })?;
+    operation(&mut guard)
+}
+
+fn campaign_session_arc(
+    registry: &CampaignRegistry,
+    handle: u64,
+) -> AbiResult<Arc<Mutex<CampaignSessionRecord>>> {
+    if handle == 0 {
+        return Err(AbiError::new(
+            MC_STATUS_UNKNOWN_HANDLE,
+            "campaign session handle zero is invalid",
+        ));
+    }
+    registry.sessions.get(&handle).cloned().ok_or_else(|| {
+        AbiError::new(
+            MC_STATUS_UNKNOWN_HANDLE,
+            format!("unknown campaign session handle {handle}"),
+        )
+    })
+}
+
+fn with_campaign_session<T>(
+    handle: u64,
+    operation: impl FnOnce(&CampaignSessionRecord) -> AbiResult<T>,
+) -> AbiResult<T> {
+    let entry = with_campaign_registry(|registry| campaign_session_arc(registry, handle))?;
+    let guard = entry
+        .lock()
+        .map_err(|_| AbiError::new(MC_STATUS_LOCK_FAILED, "campaign session lock is poisoned"))?;
+    operation(&guard)
+}
+
+fn with_campaign_session_mut<T>(
+    handle: u64,
+    operation: impl FnOnce(&mut CampaignSessionRecord) -> AbiResult<T>,
+) -> AbiResult<T> {
+    let entry = with_campaign_registry(|registry| campaign_session_arc(registry, handle))?;
+    let mut guard = entry
+        .lock()
+        .map_err(|_| AbiError::new(MC_STATUS_LOCK_FAILED, "campaign session lock is poisoned"))?;
+    operation(&mut guard)
+}
+
 #[unsafe(no_mangle)]
 /// Mechanically infallible constant expression: this export touches no memory,
 /// performs no allocation and invokes no panic-capable operation.
@@ -6537,6 +6732,374 @@ pub extern "C" fn mc_native_session_open(
         })?;
         let session = SessionRecord::new(world)?;
         with_registry_mut(|registry| registry.insert(session))
+    })
+}
+
+/// Open a validated common campaign session. Level 1 uses the same loader as
+/// the legacy call; Level 2 uses the typed inspection/content seam and never
+/// falls through to the Level 1 mission dispatcher.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_session_open(
+    package_dir: *const u8,
+    package_dir_len: u32,
+    closure_path: *const u8,
+    closure_path_len: u32,
+    selection: *const McCampaignSelectionV2,
+    out_handle: *mut u64,
+) -> i32 {
+    boundary(|| {
+        require_output(out_handle, "out_handle")?;
+        write_output(out_handle, 0);
+        let selection = read_versioned_input(selection, "campaign selection")?;
+        validate_reserved(&selection.reserved, "campaign selection")?;
+        if selection.reserved_0 != 0 {
+            return Err(AbiError::new(
+                MC_STATUS_RESERVED_NONZERO,
+                "campaign selection reserved_0 must be zero",
+            ));
+        }
+        let package = utf8_input(package_dir, package_dir_len, "package_dir")?;
+        if package.is_empty() {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "package_dir must be non-empty",
+            ));
+        }
+        let expected = sim_core::mission_content::MissionContentProfile::from_metadata(
+            selection.external_level,
+            selection.internal_level,
+            selection.map_type,
+        )
+        .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+        let session = if expected.is_level2() {
+            let inspection = NativeWorld::inspect_level2(&package)
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+            let mission = inspection
+                .mission_content_session()
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+            CampaignSessionRecord {
+                kind: CampaignSessionKind::Level2 {
+                    inspection: Arc::new(inspection),
+                    mission,
+                },
+                generation: 0,
+            }
+        } else {
+            let closure = utf8_input(closure_path, closure_path_len, "closure_path")?;
+            if closure.is_empty() {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "Level 1 campaign sessions require closure_path",
+                ));
+            }
+            let world = NativeWorld::load(&package, &closure)
+                .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+            CampaignSessionRecord {
+                kind: CampaignSessionKind::Level1 {
+                    world: Arc::new(world),
+                },
+                generation: 0,
+            }
+        };
+        let handle = with_campaign_registry_mut(|registry| registry.insert(session))?;
+        write_output(out_handle, handle);
+        Ok(())
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_session_destroy(handle: u64) -> i32 {
+    boundary(|| {
+        with_campaign_registry_mut(|registry| {
+            if registry.sessions.remove(&handle).is_none() {
+                return Err(AbiError::new(
+                    MC_STATUS_UNKNOWN_HANDLE,
+                    format!("unknown campaign session handle {handle}"),
+                ));
+            }
+            Ok(())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_session_reset(handle: u64) -> i32 {
+    boundary(|| {
+        with_campaign_session_mut(handle, |session| {
+            if let CampaignSessionKind::Level2 { mission, .. } = &mut session.kind {
+                mission.reset();
+                session.generation = session.generation.wrapping_add(1);
+            }
+            Ok(())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_world_info(
+    handle: u64,
+    out_info: *mut McCampaignWorldInfoV2,
+    out_info_size: u32,
+) -> i32 {
+    boundary_value(out_info, out_info_size, || {
+        with_campaign_session(handle, |session| {
+            let (metadata, entity_count, active_count, player_count, objective_count, hash) =
+                match &session.kind {
+                    CampaignSessionKind::Level1 { world } => (
+                        world.metadata(),
+                        world.entities().len(),
+                        world
+                            .entities()
+                            .iter()
+                            .filter(|entity| entity.active)
+                            .count(),
+                        world.players().len(),
+                        world.runtime().objectives.len(),
+                        state_hash(world.reset_state()),
+                    ),
+                    CampaignSessionKind::Level2 {
+                        inspection,
+                        mission,
+                    } => (
+                        inspection.metadata(),
+                        inspection.entities().len(),
+                        inspection
+                            .entities()
+                            .iter()
+                            .filter(|entity| entity.active)
+                            .count(),
+                        inspection.players().len(),
+                        inspection.runtime().objectives.len(),
+                        campaign_hash_u64(&mission.state_hash()),
+                    ),
+                };
+            Ok(McCampaignWorldInfoV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McCampaignWorldInfoV2>(),
+                external_level: metadata.external_level,
+                internal_level: metadata.internal_level,
+                map_type: metadata.map_type.id(),
+                profile: MC_PROFILE_OUTDOOR,
+                reserved_0: 0,
+                entity_count: u32::try_from(entity_count).expect("entity count fits u32"),
+                active_entity_count: u32::try_from(active_count).expect("active count fits u32"),
+                player_count: u32::try_from(player_count).expect("player count fits u32"),
+                objective_count: u32::try_from(objective_count).expect("objective count fits u32"),
+                terrain_width: 256,
+                terrain_height: 256,
+                reset_state_hash: hash,
+                reserved: [0; 4],
+            })
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_player_count(handle: u64, out_count: *mut u32) -> i32 {
+    boundary_value(out_count, struct_size::<u32>(), || {
+        with_campaign_session(handle, |session| {
+            let count = match &session.kind {
+                CampaignSessionKind::Level1 { world } => world.players().len(),
+                CampaignSessionKind::Level2 { inspection, .. } => inspection.players().len(),
+            };
+            u32::try_from(count)
+                .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "player count exceeds u32"))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_objective_count(handle: u64, out_count: *mut u32) -> i32 {
+    boundary_value(out_count, struct_size::<u32>(), || {
+        with_campaign_session(handle, |session| {
+            let count = match &session.kind {
+                CampaignSessionKind::Level1 { world } => world.runtime().objectives.len(),
+                CampaignSessionKind::Level2 { inspection, .. } => {
+                    inspection.runtime().objectives.len()
+                }
+            };
+            u32::try_from(count)
+                .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "objective count exceeds u32"))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_entity_count(handle: u64, out_count: *mut u32) -> i32 {
+    boundary_value(out_count, struct_size::<u32>(), || {
+        with_campaign_session(handle, |session| {
+            let count = match &session.kind {
+                CampaignSessionKind::Level1 { world } => world.entities().len(),
+                CampaignSessionKind::Level2 { inspection, .. } => inspection.entities().len(),
+            };
+            u32::try_from(count)
+                .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "entity count exceeds u32"))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_players_copy(
+    handle: u64,
+    start_slot: u32,
+    buffer: *mut McCampaignPlayerSnapshotV2,
+    capacity: u32,
+    element_size: u32,
+    out_written: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_written, "out_written")?;
+        require_element_size::<McCampaignPlayerSnapshotV2>(
+            element_size,
+            "campaign player element",
+        )?;
+        with_campaign_session(handle, |session| {
+            let (players, participant_count) = match &session.kind {
+                CampaignSessionKind::Level1 { world } => {
+                    (world.players(), world.runtime().player_count)
+                }
+                CampaignSessionKind::Level2 { inspection, .. } => {
+                    (inspection.players(), inspection.runtime().player_count)
+                }
+            };
+            let start = usize::try_from(start_slot).map_err(|_| {
+                AbiError::new(MC_STATUS_BOUNDS, "campaign player start exceeds usize")
+            })?;
+            if start > players.len() {
+                return Err(AbiError::new(
+                    MC_STATUS_BOUNDS,
+                    "campaign player start out of bounds",
+                ));
+            }
+            let count = (players.len() - start).min(usize::try_from(capacity).map_err(|_| {
+                AbiError::new(MC_STATUS_BOUNDS, "campaign player capacity exceeds usize")
+            })?);
+            if count > 0 && buffer.is_null() {
+                return Err(AbiError::new(
+                    MC_STATUS_NULL_POINTER,
+                    "campaign player buffer is null",
+                ));
+            }
+            for (offset, player) in players.iter().skip(start).take(count).enumerate() {
+                let value = campaign_player_snapshot(player, player.slot < participant_count);
+                unsafe { buffer.add(offset).write_unaligned(value) };
+            }
+            write_output(
+                out_written,
+                u32::try_from(count).expect("player count fits u32"),
+            );
+            Ok(())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_objectives_copy(
+    handle: u64,
+    start_slot: u32,
+    buffer: *mut McObjectiveSnapshotV2,
+    capacity: u32,
+    element_size: u32,
+    out_written: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_written, "out_written")?;
+        require_element_size::<McObjectiveSnapshotV2>(element_size, "campaign objective element")?;
+        with_campaign_session(handle, |session| {
+            let objectives = match &session.kind {
+                CampaignSessionKind::Level1 { world } => &world.runtime().objectives,
+                CampaignSessionKind::Level2 { inspection, .. } => &inspection.runtime().objectives,
+            };
+            let start = usize::try_from(start_slot).map_err(|_| {
+                AbiError::new(MC_STATUS_BOUNDS, "campaign objective start exceeds usize")
+            })?;
+            if start > objectives.len() {
+                return Err(AbiError::new(
+                    MC_STATUS_BOUNDS,
+                    "campaign objective start out of bounds",
+                ));
+            }
+            let count =
+                (objectives.len() - start).min(usize::try_from(capacity).map_err(|_| {
+                    AbiError::new(
+                        MC_STATUS_BOUNDS,
+                        "campaign objective capacity exceeds usize",
+                    )
+                })?);
+            if count > 0 && buffer.is_null() {
+                return Err(AbiError::new(
+                    MC_STATUS_NULL_POINTER,
+                    "campaign objective buffer is null",
+                ));
+            }
+            for (offset, objective) in objectives.iter().skip(start).take(count).enumerate() {
+                unsafe {
+                    buffer.add(offset).write_unaligned(objective_snapshot(
+                        u8::try_from(start + offset).expect("objective slot fits u8"),
+                        objective,
+                    ))
+                };
+            }
+            write_output(
+                out_written,
+                u32::try_from(count).expect("objective count fits u32"),
+            );
+            Ok(())
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_entities_copy(
+    handle: u64,
+    start_index: u32,
+    buffer: *mut McCampaignEntitySnapshotV2,
+    capacity: u32,
+    element_size: u32,
+    out_written: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_written, "out_written")?;
+        require_element_size::<McCampaignEntitySnapshotV2>(
+            element_size,
+            "campaign entity element",
+        )?;
+        with_campaign_session(handle, |session| {
+            let entities = match &session.kind {
+                CampaignSessionKind::Level1 { world } => world.entities(),
+                CampaignSessionKind::Level2 { inspection, .. } => inspection.entities(),
+            };
+            let start = usize::try_from(start_index).map_err(|_| {
+                AbiError::new(MC_STATUS_BOUNDS, "campaign entity start exceeds usize")
+            })?;
+            if start > entities.len() {
+                return Err(AbiError::new(
+                    MC_STATUS_BOUNDS,
+                    "campaign entity start out of bounds",
+                ));
+            }
+            let count = (entities.len() - start).min(usize::try_from(capacity).map_err(|_| {
+                AbiError::new(MC_STATUS_BOUNDS, "campaign entity capacity exceeds usize")
+            })?);
+            if count > 0 && buffer.is_null() {
+                return Err(AbiError::new(
+                    MC_STATUS_NULL_POINTER,
+                    "campaign entity buffer is null",
+                ));
+            }
+            for (offset, entity) in entities.iter().skip(start).take(count).enumerate() {
+                unsafe {
+                    buffer
+                        .add(offset)
+                        .write_unaligned(campaign_entity_snapshot(entity))
+                };
+            }
+            write_output(
+                out_written,
+                u32::try_from(count).expect("entity count fits u32"),
+            );
+            Ok(())
+        })
     })
 }
 
@@ -10431,6 +10994,70 @@ fn objective_snapshot(
     }
 }
 
+fn campaign_hash_u64(hash: &str) -> u64 {
+    let Some(prefix) = hash.get(..16) else {
+        return 0;
+    };
+    u64::from_str_radix(prefix, 16).unwrap_or(0)
+}
+
+fn campaign_player_snapshot(
+    player: &sim_core::native_world::PlayerSnapshot,
+    active: bool,
+) -> McCampaignPlayerSnapshotV2 {
+    McCampaignPlayerSnapshotV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignPlayerSnapshotV2>(),
+        slot: player.slot,
+        is_ai: u8::from(player.is_ai),
+        active: u8::from(active),
+        reserved_0: 0,
+        entity_index: player.entity_index,
+        active_player_index: player.active_player_index,
+        turn: player.turn,
+        left_spell_slot_raw: player.left_spell_slot_raw,
+        right_spell_slot_raw: player.right_spell_slot_raw,
+        left_subspell_index: player.left_subspell_index,
+        right_subspell_index: player.right_subspell_index,
+        selected_spell_ui_index: player.selected_spell_ui_index,
+        selected_subspell_index: player.selected_subspell_index,
+        reserved_1: [0; 2],
+        reserved: [0; 4],
+    }
+}
+
+fn campaign_entity_snapshot(entity: &EntitySnapshot) -> McCampaignEntitySnapshotV2 {
+    McCampaignEntitySnapshotV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignEntitySnapshotV2>(),
+        entity_index: entity.index,
+        source_id: entity.source_id,
+        next_relation: entity.next_relation.unwrap_or(u16::MAX),
+        parameter_relation: entity.parameter_relation.unwrap_or(u16::MAX),
+        authority: match entity.authority {
+            EntityAuthority::Inactive => MC_AUTHORITY_INACTIVE,
+            EntityAuthority::FrozenObserved => MC_AUTHORITY_FROZEN_OBSERVED,
+            EntityAuthority::PlayerFlightLive => MC_AUTHORITY_PLAYER_FLIGHT_LIVE,
+            EntityAuthority::SpellActivationLive => MC_AUTHORITY_SPELL_ACTIVATION_LIVE,
+            EntityAuthority::GoatLive => MC_AUTHORITY_GOAT_LIVE,
+            EntityAuthority::VillagerLive => MC_AUTHORITY_VILLAGER_LIVE,
+        },
+        active: u8::from(entity.active),
+        class_id: entity.class,
+        model: entity.model,
+        action: entity.action,
+        phase: entity.phase,
+        x: entity.position.x,
+        y: entity.position.y,
+        z: entity.position.z,
+        yaw: entity.yaw,
+        pitch: entity.pitch,
+        fov: entity.fov,
+        actual_speed: entity.actual_speed,
+        reserved: [0; 4],
+    }
+}
+
 fn asset_ref(world: &NativeWorld, index: u32) -> AbiResult<&AssetRef> {
     let index = usize::try_from(index)
         .map_err(|_| AbiError::new(MC_STATUS_BOUNDS, "asset index does not fit usize"))?;
@@ -13821,6 +14448,10 @@ mod tests {
         assert_eq!(size_of::<McSessionSnapshotV2>(), 120);
         assert_eq!(size_of::<McObjectiveSnapshotV2>(), 40);
         assert_eq!(size_of::<McEntitySnapshotV2>(), 52);
+        assert_eq!(size_of::<McCampaignSelectionV2>(), 32);
+        assert_eq!(size_of::<McCampaignWorldInfoV2>(), 64);
+        assert_eq!(size_of::<McCampaignPlayerSnapshotV2>(), 48);
+        assert_eq!(size_of::<McCampaignEntitySnapshotV2>(), 52);
         assert_eq!(size_of::<McGoatSnapshotV2>(), 84);
         assert_eq!(size_of::<McGoatBatchV2>(), 64);
         assert_eq!(size_of::<McLevel1MissionSnapshotV2>(), 96);
@@ -13890,6 +14521,20 @@ mod tests {
         );
         assert_eq!(std::mem::offset_of!(McObjectiveSnapshotV2, reserved), 24);
         assert_eq!(std::mem::offset_of!(McEntitySnapshotV2, reserved), 36);
+        assert_eq!(std::mem::offset_of!(McCampaignSelectionV2, reserved), 16);
+        assert_eq!(
+            std::mem::offset_of!(McCampaignWorldInfoV2, reset_state_hash),
+            40
+        );
+        assert_eq!(std::mem::offset_of!(McCampaignPlayerSnapshotV2, turn), 16);
+        assert_eq!(
+            std::mem::offset_of!(McCampaignPlayerSnapshotV2, reserved),
+            32
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignEntitySnapshotV2, reserved),
+            36
+        );
         assert_eq!(std::mem::offset_of!(McGoatSnapshotV2, life), 48);
         assert_eq!(std::mem::offset_of!(McGoatSnapshotV2, reserved), 68);
         assert_eq!(std::mem::offset_of!(McGoatBatchV2, reserved), 48);
@@ -14280,6 +14925,288 @@ mod tests {
             ),
             "model 54 remains in gameplay inventory with its literal row-zero tuple"
         );
+    }
+
+    #[test]
+    fn campaign_api_selects_level_profiles_and_preserves_old_level1_values() {
+        let (level1_package, level1_closure) = fixture_paths();
+        let package = level1_package.to_string_lossy();
+        let closure = level1_closure.to_string_lossy();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 1,
+            internal_level: 0,
+            map_type: 1,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut level1_handle = 0;
+        assert_eq!(
+            mc_native_campaign_session_open(
+                package.as_ptr(),
+                package.len() as u32,
+                closure.as_ptr(),
+                closure.len() as u32,
+                &raw const selection,
+                &raw mut level1_handle,
+            ),
+            MC_STATUS_OK
+        );
+        assert_ne!(level1_handle, 0);
+        let mut info = McCampaignWorldInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_world_info(
+                level1_handle,
+                &raw mut info,
+                struct_size::<McCampaignWorldInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            (info.external_level, info.internal_level, info.map_type),
+            (1, 0, 1)
+        );
+        assert_eq!(info.player_count, 8);
+        let mut players = [McCampaignPlayerSnapshotV2::default(); 8];
+        let mut written = 0;
+        assert_eq!(
+            mc_native_campaign_players_copy(
+                level1_handle,
+                0,
+                players.as_mut_ptr(),
+                players.len() as u32,
+                struct_size::<McCampaignPlayerSnapshotV2>(),
+                &raw mut written,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(written, 8);
+        assert_eq!(players[0].active, 1);
+        assert_eq!(players[1].active, 0);
+        let old_handle = open_paths(&level1_package, &level1_closure).expect("Level 1 open");
+        let mut old_info = McWorldInfoV2::default();
+        assert_eq!(
+            mc_native_world_info(
+                old_handle,
+                &raw mut old_info,
+                struct_size::<McWorldInfoV2>()
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(info.entity_count, old_info.entity_count);
+        assert_eq!(info.active_entity_count, old_info.active_entity_count);
+        assert_eq!(info.player_count, old_info.player_count);
+        assert_eq!(info.reset_state_hash, old_info.reset_state_hash);
+        let mut old_objectives = [McObjectiveSnapshotV2::default(); 8];
+        let mut old_objective_written = 0;
+        assert_eq!(
+            mc_native_objectives_copy(
+                old_handle,
+                0,
+                old_objectives.as_mut_ptr(),
+                8,
+                struct_size::<McObjectiveSnapshotV2>(),
+                &raw mut old_objective_written,
+            ),
+            MC_STATUS_OK
+        );
+        let mut generic_objectives = [McObjectiveSnapshotV2::default(); 8];
+        let mut generic_objective_written = 0;
+        assert_eq!(
+            mc_native_campaign_objectives_copy(
+                level1_handle,
+                0,
+                generic_objectives.as_mut_ptr(),
+                8,
+                struct_size::<McObjectiveSnapshotV2>(),
+                &raw mut generic_objective_written,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(old_objective_written, generic_objective_written);
+        assert_eq!(old_objectives, generic_objectives);
+        let mut old_entities = [McEntitySnapshotV2::default(); 4];
+        let mut old_entity_written = 0;
+        assert_eq!(
+            mc_native_entities_copy(
+                old_handle,
+                0,
+                old_entities.as_mut_ptr(),
+                4,
+                struct_size::<McEntitySnapshotV2>(),
+                &raw mut old_entity_written,
+            ),
+            MC_STATUS_OK
+        );
+        let mut generic_entities = [McCampaignEntitySnapshotV2::default(); 4];
+        let mut generic_entity_written = 0;
+        assert_eq!(
+            mc_native_campaign_entities_copy(
+                level1_handle,
+                0,
+                generic_entities.as_mut_ptr(),
+                4,
+                struct_size::<McCampaignEntitySnapshotV2>(),
+                &raw mut generic_entity_written,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(old_entity_written, generic_entity_written);
+        for (old, generic) in old_entities.iter().zip(generic_entities.iter()) {
+            assert_eq!(old.entity_index, generic.entity_index);
+            assert_eq!(old.class_id, generic.class_id);
+            assert_eq!(old.model, generic.model);
+            assert_eq!(old.action, generic.action);
+            assert_eq!(old.phase, generic.phase);
+            assert_eq!((old.x, old.y, old.z), (generic.x, generic.y, generic.z));
+        }
+        assert_eq!(mc_native_session_destroy(old_handle), MC_STATUS_OK);
+        assert_eq!(
+            mc_native_campaign_session_destroy(level1_handle),
+            MC_STATUS_OK
+        );
+
+        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        let package = level2_package.to_string_lossy();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 2,
+            internal_level: 1,
+            map_type: 0,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut level2_handle = 0;
+        assert_eq!(
+            mc_native_campaign_session_open(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                &raw const selection,
+                &raw mut level2_handle,
+            ),
+            MC_STATUS_OK
+        );
+        let mut level2_info = McCampaignWorldInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_world_info(
+                level2_handle,
+                &raw mut level2_info,
+                struct_size::<McCampaignWorldInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            (
+                level2_info.external_level,
+                level2_info.internal_level,
+                level2_info.map_type
+            ),
+            (2, 1, 0)
+        );
+        assert_eq!(level2_info.active_entity_count, 114);
+        assert_eq!(level2_info.player_count, 8);
+        let mut level2_players = [McCampaignPlayerSnapshotV2::default(); 8];
+        assert_eq!(
+            mc_native_campaign_players_copy(
+                level2_handle,
+                0,
+                level2_players.as_mut_ptr(),
+                8,
+                struct_size::<McCampaignPlayerSnapshotV2>(),
+                &raw mut written,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(level2_players[0].active + level2_players[1].active, 2);
+        let mut entities = [McCampaignEntitySnapshotV2::default(); 4];
+        assert_eq!(
+            mc_native_campaign_entities_copy(
+                level2_handle,
+                0,
+                entities.as_mut_ptr(),
+                4,
+                struct_size::<McCampaignEntitySnapshotV2>(),
+                &raw mut written,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(written, 4);
+        assert!(
+            entities
+                .iter()
+                .any(|entity| entity.next_relation != u16::MAX)
+        );
+        assert_eq!(
+            mc_native_campaign_session_reset(level2_handle),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_native_campaign_session_destroy(level2_handle),
+            MC_STATUS_OK
+        );
+    }
+
+    #[test]
+    fn campaign_api_rejects_unknown_profile_and_short_or_reserved_selection_without_handle() {
+        let (package, closure) = fixture_paths();
+        let package = package.to_string_lossy();
+        let closure = closure.to_string_lossy();
+        let mut selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 9,
+            internal_level: 9,
+            map_type: 9,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut handle = 42;
+        assert_eq!(
+            mc_native_campaign_session_open(
+                package.as_ptr(),
+                package.len() as u32,
+                closure.as_ptr(),
+                closure.len() as u32,
+                &raw const selection,
+                &raw mut handle,
+            ),
+            MC_STATUS_VALIDATION_FAILED
+        );
+        assert_eq!(handle, 0);
+        selection.external_level = 1;
+        selection.internal_level = 0;
+        selection.map_type = 1;
+        selection.reserved_0 = 1;
+        handle = 42;
+        assert_eq!(
+            mc_native_campaign_session_open(
+                package.as_ptr(),
+                package.len() as u32,
+                closure.as_ptr(),
+                closure.len() as u32,
+                &raw const selection,
+                &raw mut handle,
+            ),
+            MC_STATUS_RESERVED_NONZERO
+        );
+        assert_eq!(handle, 0);
+        selection.reserved_0 = 0;
+        selection.struct_size = 8;
+        handle = 42;
+        assert_eq!(
+            mc_native_campaign_session_open(
+                package.as_ptr(),
+                package.len() as u32,
+                closure.as_ptr(),
+                closure.len() as u32,
+                &raw const selection,
+                &raw mut handle,
+            ),
+            MC_STATUS_STRUCT_TOO_SMALL
+        );
+        assert_eq!(handle, 0);
     }
 
     #[test]
@@ -14713,6 +15640,10 @@ _Static_assert(sizeof(McCameraInputV2) == 28, "McCameraInputV2 size");
 _Static_assert(sizeof(McSessionSnapshotV2) == 120, "McSessionSnapshotV2 size");
 _Static_assert(sizeof(McObjectiveSnapshotV2) == 40, "McObjectiveSnapshotV2 size");
 _Static_assert(sizeof(McEntitySnapshotV2) == 52, "McEntitySnapshotV2 size");
+_Static_assert(sizeof(McCampaignSelectionV2) == 32, "McCampaignSelectionV2 size");
+_Static_assert(sizeof(McCampaignWorldInfoV2) == 64, "McCampaignWorldInfoV2 size");
+_Static_assert(sizeof(McCampaignPlayerSnapshotV2) == 48, "McCampaignPlayerSnapshotV2 size");
+_Static_assert(sizeof(McCampaignEntitySnapshotV2) == 52, "McCampaignEntitySnapshotV2 size");
 _Static_assert(sizeof(McGoatSnapshotV2) == 84, "McGoatSnapshotV2 size");
 _Static_assert(sizeof(McGoatBatchV2) == 64, "McGoatBatchV2 size");
 _Static_assert(sizeof(McLevel1MissionSnapshotV2) == 96, "McLevel1MissionSnapshotV2 size");
@@ -14767,6 +15698,11 @@ _Static_assert(offsetof(McSessionSnapshotV2, reserved) == 104, "snapshot reserve
 _Static_assert(offsetof(McObjectiveSnapshotV2, stage_selectors) == 13, "objective stages offset");
 _Static_assert(offsetof(McObjectiveSnapshotV2, reserved) == 24, "objective reserved offset");
 _Static_assert(offsetof(McEntitySnapshotV2, reserved) == 36, "entity reserved offset");
+_Static_assert(offsetof(McCampaignSelectionV2, reserved) == 16, "campaign selection reserved offset");
+_Static_assert(offsetof(McCampaignWorldInfoV2, reset_state_hash) == 40, "campaign world hash offset");
+_Static_assert(offsetof(McCampaignPlayerSnapshotV2, turn) == 16, "campaign player turn offset");
+_Static_assert(offsetof(McCampaignPlayerSnapshotV2, reserved) == 32, "campaign player reserved offset");
+_Static_assert(offsetof(McCampaignEntitySnapshotV2, reserved) == 36, "campaign entity reserved offset");
 _Static_assert(offsetof(McGoatSnapshotV2, life) == 48, "Goat life offset");
 _Static_assert(offsetof(McGoatSnapshotV2, reserved) == 68, "Goat reserved offset");
 _Static_assert(offsetof(McGoatBatchV2, reserved) == 48, "Goat batch reserved offset");

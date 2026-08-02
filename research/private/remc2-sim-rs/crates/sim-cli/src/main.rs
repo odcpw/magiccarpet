@@ -84,14 +84,90 @@ fn main() -> ExitCode {
         Some("inspect-idle-diff") => inspect_idle_diff(),
         Some("find-castle-site") => find_castle_site(),
         Some("reset-from-authored") => reset_from_authored(),
+        Some("inspect-level2") => inspect_level2(),
         Some("trace") => trace(),
         _ => {
             eprintln!(
-                "usage: sim-cli <atlas-check|conformance-validate|find-castle-site|inspect-forward|inspect-idle-diff|inspect-recording|inspect-regression|reset-from-authored|trace> ..."
+                "usage: sim-cli <atlas-check|conformance-validate|find-castle-site|inspect-forward|inspect-idle-diff|inspect-level2|inspect-recording|inspect-regression|reset-from-authored|trace> ..."
             );
             ExitCode::from(2)
         }
     }
+}
+
+fn inspect_level2() -> ExitCode {
+    let arguments = std::env::args().collect::<Vec<_>>();
+    if arguments.len() != 3 {
+        eprintln!("usage: sim-cli inspect-level2 <package>");
+        return ExitCode::from(2);
+    }
+    let inspection = match NativeWorld::inspect_level2(&arguments[2]) {
+        Ok(inspection) => inspection,
+        Err(error) => {
+            eprintln!(
+                "{{\"ok\":false,\"error\":\"{}\"}}",
+                json_escape(&error.to_string())
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let profile = match inspection.mission_content_profile() {
+        Ok(profile) => profile,
+        Err(error) => {
+            eprintln!(
+                "{{\"ok\":false,\"error\":\"{}\"}}",
+                json_escape(&error.to_string())
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let active_entities = inspection
+        .entities()
+        .iter()
+        .filter(|entity| entity.active)
+        .count();
+    let players = inspection
+        .players()
+        .iter()
+        .map(|player| {
+            format!(
+                "{{\"slot\":{},\"is_ai\":{},\"entity_index\":{},\"active_player_index\":{},\"left_spell_slot_raw\":{},\"right_spell_slot_raw\":{}}}",
+                player.slot,
+                player.is_ai,
+                player.entity_index,
+                player.active_player_index,
+                player.left_spell_slot_raw,
+                player.right_spell_slot_raw
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let objectives = inspection
+        .runtime()
+        .objectives
+        .iter()
+        .enumerate()
+        .map(|(slot, objective)| {
+            format!(
+                "{{\"slot\":{},\"is_level_end\":{},\"text_selector\":{},\"done\":{},\"stage_selectors\":{:?}}}",
+                slot, objective.is_level_end, objective.text_selector, objective.done, objective.stage_selectors
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    println!(
+        "{{\"ok\":true,\"external_level\":{},\"internal_level\":{},\"map_type\":{},\"profile\":\"level2\",\"entity_count\":{},\"active_entity_count\":{},\"player_count\":{},\"objective_count\":{},\"players\":[{}],\"objectives\":[{}]}}",
+        profile.external_level,
+        profile.internal_level,
+        profile.map_type_id,
+        inspection.entities().len(),
+        active_entities,
+        inspection.players().len(),
+        inspection.runtime().objectives.len(),
+        players,
+        objectives
+    );
+    ExitCode::SUCCESS
 }
 
 fn conformance_validate() -> ExitCode {
