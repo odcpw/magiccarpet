@@ -1677,18 +1677,11 @@ impl GoatFamily {
         let goat = &self.goats[family_index];
         let mut nearest: Option<(u32, u16)> = None;
         for candidate_entity_index in self.source_model_linked_list(GOAT_MODEL) {
-            let Some(candidate_goat) = self
-                .goats
-                .iter()
-                .find(|peer| peer.entity_index == candidate_entity_index)
-            else {
-                continue;
-            };
             let Some(candidate) = self.source_entity_view(candidate_entity_index) else {
                 continue;
             };
             if candidate.entity_index == goat.entity_index
-                || candidate_goat.partner_entity_index.is_some()
+                || candidate.partner_entity_index.is_some()
             {
                 continue;
             }
@@ -4008,6 +4001,65 @@ mod tests {
         family.step_source_slot(39, &world, &[]);
         let primary = &family.goats[primary_index];
         assert_eq!(primary.partner_entity_index, Some(41));
+    }
+
+    #[test]
+    fn action10_peer_fallback_accepts_global_unpaired_source_row() {
+        let world = MaterialBoundaryWorld { all_water: false };
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 39)
+            .expect("primary Goat");
+        let primary_source_id = family.goats[primary_index].source_id;
+        for goat in &mut family.goats {
+            if goat.entity_index != 39 {
+                goat.position = Position {
+                    x: 30_000,
+                    y: 30_000,
+                    z: 0,
+                };
+                goat.partner_entity_index = Some(66);
+            }
+        }
+        let primary = &mut family.goats[primary_index];
+        primary.action = 10;
+        primary.phase = 0;
+        primary.position = Position {
+            x: 10_000,
+            y: 10_000,
+            z: 0,
+        };
+        primary.yaw = 0;
+        primary.actual_speed = 0;
+        primary.proximity_countdown = 0;
+        primary.target_entity_index = None;
+        primary.partner_entity_index = None;
+
+        let global_peer = family
+            .source_entities
+            .iter_mut()
+            .find(|entity| entity.entity_index == 80)
+            .expect("global source peer row");
+        global_peer.source_id = primary_source_id.wrapping_add(1);
+        global_peer.class = GOAT_CLASS;
+        global_peer.model = GOAT_MODEL;
+        global_peer.active = true;
+        global_peer.control_flags = 0;
+        global_peer.life = 10_000;
+        global_peer.action = 9;
+        global_peer.position = Position {
+            x: 10_000,
+            y: 9_400,
+            z: 0,
+        };
+        global_peer.partner_entity_index = None;
+
+        family.step_source_slot(39, &world, &[]);
+        let primary = &family.goats[primary_index];
+        assert_eq!(primary.action, 11);
+        assert_eq!(primary.partner_entity_index, Some(80));
     }
 
     #[test]
