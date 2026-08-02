@@ -92,11 +92,11 @@ use sim_core::{
         level1_map_entity_command, level1_minimap_castle_rope_pixels,
         level1_minimap_entity_command, mana_sphere_size_ordinal,
     },
-    mission_content::MissionContentSession,
     native_world::{
-        AssetRef, EntityAuthority, EntitySnapshot, NativeWorld, NativeWorldInspection,
-        ParticleParameter, SessionTerrain, TerrainPlanes, apply_level1_source_effects,
-        level1_turn_start_source_views, refresh_level1_current_source_view,
+        AssetRef, EntityAuthority, EntitySnapshot, Level2ResetSession, NativeWorld,
+        NativeWorldInspection, ParticleParameter, SessionTerrain, TerrainPlanes,
+        apply_level1_source_effects, level1_turn_start_source_views,
+        refresh_level1_current_source_view,
     },
     positional_sound_should_replace, prepare_event_sound_command,
     presentation_frame::{
@@ -6589,7 +6589,7 @@ enum CampaignSessionKind {
     },
     Level2 {
         inspection: Arc<NativeWorldInspection>,
-        mission: MissionContentSession,
+        reset: Level2ResetSession,
     },
 }
 
@@ -6774,13 +6774,13 @@ pub extern "C" fn mc_native_campaign_session_open(
         let session = if expected.is_level2() {
             let inspection = NativeWorld::inspect_level2(&package)
                 .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
-            let mission = inspection
-                .mission_content_session()
+            let reset = inspection
+                .level2_reset_session()
                 .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
             CampaignSessionRecord {
                 kind: CampaignSessionKind::Level2 {
                     inspection: Arc::new(inspection),
-                    mission,
+                    reset,
                 },
                 generation: 0,
             }
@@ -6826,8 +6826,8 @@ pub extern "C" fn mc_native_campaign_session_destroy(handle: u64) -> i32 {
 pub extern "C" fn mc_native_campaign_session_reset(handle: u64) -> i32 {
     boundary(|| {
         with_campaign_session_mut(handle, |session| {
-            if let CampaignSessionKind::Level2 { mission, .. } = &mut session.kind {
-                mission.reset();
+            if let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind {
+                reset.reset();
                 session.generation = session.generation.wrapping_add(1);
             }
             Ok(())
@@ -6857,10 +6857,7 @@ pub extern "C" fn mc_native_campaign_world_info(
                         world.runtime().objectives.len(),
                         state_hash(world.reset_state()),
                     ),
-                    CampaignSessionKind::Level2 {
-                        inspection,
-                        mission,
-                    } => (
+                    CampaignSessionKind::Level2 { inspection, reset } => (
                         inspection.metadata(),
                         inspection.entities().len(),
                         inspection
@@ -6870,7 +6867,7 @@ pub extern "C" fn mc_native_campaign_world_info(
                             .count(),
                         inspection.players().len(),
                         inspection.runtime().objectives.len(),
-                        campaign_hash_u64(&mission.state_hash()),
+                        reset.state_hash(),
                     ),
                 };
             Ok(McCampaignWorldInfoV2 {
@@ -10994,13 +10991,6 @@ fn objective_snapshot(
     }
 }
 
-fn campaign_hash_u64(hash: &str) -> u64 {
-    let Some(prefix) = hash.get(..16) else {
-        return 0;
-    };
-    u64::from_str_radix(prefix, 16).unwrap_or(0)
-}
-
 fn campaign_player_snapshot(
     player: &sim_core::native_world::PlayerSnapshot,
     active: bool,
@@ -15108,6 +15098,7 @@ mod tests {
         );
         assert_eq!(level2_info.active_entity_count, 114);
         assert_eq!(level2_info.player_count, 8);
+        assert_eq!(level2_info.reset_state_hash, 0x57c3_7985_e90c_696c);
         let mut level2_players = [McCampaignPlayerSnapshotV2::default(); 8];
         assert_eq!(
             mc_native_campaign_players_copy(
@@ -15142,6 +15133,19 @@ mod tests {
         assert_eq!(
             mc_native_campaign_session_reset(level2_handle),
             MC_STATUS_OK
+        );
+        let mut level2_reset_info = McCampaignWorldInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_world_info(
+                level2_handle,
+                &raw mut level2_reset_info,
+                struct_size::<McCampaignWorldInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            level2_reset_info.reset_state_hash,
+            level2_info.reset_state_hash
         );
         assert_eq!(
             mc_native_campaign_session_destroy(level2_handle),

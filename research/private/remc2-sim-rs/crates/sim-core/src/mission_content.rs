@@ -52,6 +52,32 @@ pub struct MissionWizardSettings {
     pub initial_mana: i32,
 }
 
+/// One source `Type_WizardMapSettings_0x360D2` record from the authored
+/// Level 2 map. These records are reset data, not Rust tuning defaults.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MissionWizardMapSettings {
+    pub aggression: i16,
+    pub reflexes: i16,
+    pub perception: i16,
+    pub starting_spells: [u8; 26],
+    pub spell_levels: [u8; 26],
+    pub blocked_spells: [u8; 26],
+    /// Source `Life_0x3612F`; remc2 applies this Q8 value at wizard creation.
+    pub life: i16,
+    record: Box<[u8]>,
+}
+
+impl MissionWizardMapSettings {
+    #[must_use]
+    pub fn record_bytes(&self) -> &[u8] {
+        &self.record
+    }
+}
+
+pub const LEVEL2_WIZARD_MAP_SETTINGS_COUNT: usize = 8;
+pub const LEVEL2_WIZARD_MAP_SETTINGS_BYTES: usize = 110;
+pub const LEVEL2_WIZARD_MAP_SETTINGS_OFFSET: usize = 25_092;
+
 /// Explicit authored/index/objective mappings selected by the validated level
 /// metadata.  These are intentionally data, rather than a trait hierarchy or
 /// a level-specific branch spread through the 45k-line mission kernel.
@@ -216,6 +242,7 @@ pub struct MissionContentTemplate {
     profile: MissionContentProfile,
     authored_features: Box<[AuthoredFeature]>,
     reset_source_slots: Box<[Level1ResetSourceSlot]>,
+    wizard_map_settings: Box<[MissionWizardMapSettings]>,
     initial_global_rng: u32,
 }
 
@@ -269,10 +296,16 @@ impl MissionContentTemplate {
                 profile.authored_record_count
             )));
         }
+        let wizard_map_settings = if profile.is_level2() {
+            parse_level2_wizard_map_settings(authored).map_err(MissionContentError::Decode)?
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             profile,
             authored_features: features.into_boxed_slice(),
             reset_source_slots: reset_source_slots.to_vec().into_boxed_slice(),
+            wizard_map_settings: wizard_map_settings.into_boxed_slice(),
             initial_global_rng,
         })
     }
@@ -293,6 +326,11 @@ impl MissionContentTemplate {
     }
 
     #[must_use]
+    pub fn wizard_map_settings(&self) -> &[MissionWizardMapSettings] {
+        &self.wizard_map_settings
+    }
+
+    #[must_use]
     pub const fn initial_global_rng(&self) -> u32 {
         self.initial_global_rng
     }
@@ -303,6 +341,41 @@ impl MissionContentTemplate {
     }
 }
 
+fn parse_level2_wizard_map_settings(
+    authored: &[u8],
+) -> Result<Vec<MissionWizardMapSettings>, String> {
+    let required = LEVEL2_WIZARD_MAP_SETTINGS_OFFSET
+        + LEVEL2_WIZARD_MAP_SETTINGS_COUNT * LEVEL2_WIZARD_MAP_SETTINGS_BYTES;
+    if authored.len() < required {
+        return Err(format!(
+            "authored level too short for Level 2 wizard settings: {} < {required}",
+            authored.len()
+        ));
+    }
+    let mut settings = Vec::with_capacity(LEVEL2_WIZARD_MAP_SETTINGS_COUNT);
+    for index in 0..LEVEL2_WIZARD_MAP_SETTINGS_COUNT {
+        let offset = LEVEL2_WIZARD_MAP_SETTINGS_OFFSET + index * LEVEL2_WIZARD_MAP_SETTINGS_BYTES;
+        let record = authored[offset..offset + LEVEL2_WIZARD_MAP_SETTINGS_BYTES].to_vec();
+        let mut starting_spells = [0_u8; 26];
+        starting_spells.copy_from_slice(&record[15..41]);
+        let mut spell_levels = [0_u8; 26];
+        spell_levels.copy_from_slice(&record[41..67]);
+        let mut blocked_spells = [0_u8; 26];
+        blocked_spells.copy_from_slice(&record[67..93]);
+        settings.push(MissionWizardMapSettings {
+            aggression: i16::from_le_bytes([record[3], record[4]]),
+            reflexes: i16::from_le_bytes([record[7], record[8]]),
+            perception: i16::from_le_bytes([record[11], record[12]]),
+            starting_spells,
+            spell_levels,
+            blocked_spells,
+            life: i16::from_le_bytes([record[93], record[94]]),
+            record: record.into_boxed_slice(),
+        });
+    }
+    Ok(settings)
+}
+
 /// The deterministic reset/session state for the generic seam.  Level 2
 /// source dispatch is intentionally not approximated here.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -311,6 +384,7 @@ pub struct MissionContentSession {
     authored_features: Box<[AuthoredFeature]>,
     baseline_slots: Box<[Level1ResetSourceSlot]>,
     source_slots: Box<[Level1ResetSourceSlot]>,
+    wizard_map_settings: Box<[MissionWizardMapSettings]>,
     initial_global_rng: u32,
     global_rng: u32,
 }
@@ -396,6 +470,7 @@ impl MissionContentSession {
             authored_features: template.authored_features.clone(),
             baseline_slots: template.reset_source_slots.clone(),
             source_slots: template.reset_source_slots.clone(),
+            wizard_map_settings: template.wizard_map_settings.clone(),
             initial_global_rng: template.initial_global_rng,
             global_rng: template.initial_global_rng,
         }
@@ -414,6 +489,11 @@ impl MissionContentSession {
     #[must_use]
     pub fn source_slots(&self) -> &[Level1ResetSourceSlot] {
         &self.source_slots
+    }
+
+    #[must_use]
+    pub fn wizard_map_settings(&self) -> &[MissionWizardMapSettings] {
+        &self.wizard_map_settings
     }
 
     #[must_use]
@@ -470,6 +550,9 @@ impl MissionContentSession {
         }
         for slot in &self.source_slots {
             hasher.update(slot.lossless_source_bytes());
+        }
+        for settings in &self.wizard_map_settings {
+            hasher.update(settings.record_bytes());
         }
         format!("{:x}", hasher.finalize())
     }

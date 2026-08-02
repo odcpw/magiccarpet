@@ -522,6 +522,17 @@ pub struct HouseRemovalOutcome {
 
 impl SessionTerrain {
     #[must_use]
+    pub fn from_inspection(inspection: &NativeWorldInspection) -> Self {
+        Self {
+            map_type: inspection.metadata.map_type,
+            planes: inspection.terrain_planes.clone(),
+            // Level 2 preserves the post-feature terrain RNG boundary.
+            terrain_rng: inspection.terrain_rng,
+            mutation_sequence: 0,
+        }
+    }
+
+    #[must_use]
     pub fn from_world(world: &NativeWorld) -> Self {
         Self {
             map_type: world.metadata.map_type,
@@ -2033,6 +2044,7 @@ pub struct NativeWorldInspection {
     players: Box<[PlayerSnapshot]>,
     runtime: RuntimeSnapshot,
     presentation: PresentationSelectors,
+    terrain_rng: u16,
     reset_state: Option<FlightState>,
     authored_level: Box<[u8]>,
 }
@@ -2089,6 +2101,11 @@ impl NativeWorldInspection {
     }
 
     #[must_use]
+    pub const fn terrain_rng(&self) -> u16 {
+        self.terrain_rng
+    }
+
+    #[must_use]
     pub const fn reset_state(&self) -> Option<&FlightState> {
         self.reset_state.as_ref()
     }
@@ -2137,6 +2154,30 @@ impl NativeWorldInspection {
         Ok(self.mission_content_template()?.session())
     }
 
+    /// Build the profile-specific Level 2 frame-zero session. All mutable
+    /// state is cloned from this validated inspection; no implementation
+    /// fixture or stale Level 1 reset projection is consulted.
+    pub fn level2_reset_session(&self) -> Result<Level2ResetSession> {
+        if self.profile != OwnerPackageProfile::Level2 {
+            return Err(NativeWorldError::new(
+                "Level 2 reset session requested for a non-Level 2 package",
+            ));
+        }
+        let state = self
+            .reset_state
+            .ok_or_else(|| NativeWorldError::new("validated Level 2 package has no reset state"))?;
+        let mission = self.mission_content_template()?.session();
+        Ok(Level2ResetSession::new(
+            self.metadata.map_type.profile(),
+            state,
+            SessionTerrain::from_inspection(self),
+            self.entities.clone(),
+            self.players.clone(),
+            self.runtime.clone(),
+            mission,
+        ))
+    }
+
     /// Mission construction is intentionally fail-closed until the Level 2
     /// content profile is implemented by the later mission beads.
     pub fn mission_unimplemented(&self) -> Result<()> {
@@ -2144,6 +2185,123 @@ impl NativeWorldInspection {
             "mission behavior is unsupported for {:?} owner profile",
             self.profile
         )))
+    }
+}
+
+/// Mutable Level 2 frame-zero state used by the generic flight machinery.
+/// The owner package remains immutable; each call returns an isolated clone.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Level2ResetSession {
+    profile: FlightProfile,
+    baseline_state: FlightState,
+    pub state: FlightState,
+    baseline_terrain: SessionTerrain,
+    pub terrain: SessionTerrain,
+    baseline_context: FlightContext,
+    pub context: FlightContext,
+    entities: Box<[EntitySnapshot]>,
+    players: Box<[PlayerSnapshot]>,
+    runtime: RuntimeSnapshot,
+    mission: MissionContentSession,
+}
+
+impl Level2ResetSession {
+    fn new(
+        profile: FlightProfile,
+        state: FlightState,
+        terrain: SessionTerrain,
+        entities: Box<[EntitySnapshot]>,
+        players: Box<[PlayerSnapshot]>,
+        runtime: RuntimeSnapshot,
+        mission: MissionContentSession,
+    ) -> Self {
+        // Pinned `sub_56D60` reset order (6806c7204d17):
+        // ClearSettings -> LevelDecompress -> GenerateLevelMap /
+        // GenerateFeatures -> InitStages -> InitStageVars -> Init0x3664C /
+        // sub_4A1E0(0,1) -> sub_53160 -> sub_60F00. The package export has
+        // already captured the resulting six terrain planes, arenas, runtime
+        // stages, and player rows; this constructor only projects that
+        // qualified frame zero into the generic flight session.
+        let context = FlightContext {
+            effects: Some(FlightEffectsContext {
+                global_rng: runtime.random_state,
+                local_player_index: runtime.local_player_slot,
+                ..FlightEffectsContext::default()
+            }),
+            ..FlightContext::default()
+        };
+        Self {
+            profile,
+            baseline_state: state,
+            state,
+            baseline_terrain: terrain.clone(),
+            terrain,
+            baseline_context: context.clone(),
+            context,
+            entities,
+            players,
+            runtime,
+            mission,
+        }
+    }
+
+    #[must_use]
+    pub const fn profile(&self) -> FlightProfile {
+        self.profile
+    }
+
+    #[must_use]
+    pub fn entities(&self) -> &[EntitySnapshot] {
+        &self.entities
+    }
+
+    #[must_use]
+    pub fn players(&self) -> &[PlayerSnapshot] {
+        &self.players
+    }
+
+    #[must_use]
+    pub const fn runtime(&self) -> &RuntimeSnapshot {
+        &self.runtime
+    }
+
+    #[must_use]
+    pub fn mission(&self) -> &MissionContentSession {
+        &self.mission
+    }
+
+    #[must_use]
+    pub fn state_hash(&self) -> u64 {
+        state_hash(&self.state)
+    }
+
+    #[must_use]
+    pub fn terrain_hash(&self) -> u64 {
+        self.terrain.deterministic_hash()
+    }
+
+    /// Execute one source outer turn against the Day terrain and reset state.
+    pub fn step_outer_turn(
+        &mut self,
+        command: PlayerCommand,
+        speed_index: u8,
+    ) -> Vec<crate::StepEvidence> {
+        crate::step_outer_turn_with_context(
+            &mut self.state,
+            command,
+            speed_index,
+            self.profile,
+            &self.terrain,
+            &mut self.context,
+        )
+    }
+
+    /// Restore every mutable session projection to the decoded frame zero.
+    pub fn reset(&mut self) {
+        self.state = self.baseline_state;
+        self.terrain = self.baseline_terrain.clone();
+        self.context = self.baseline_context.clone();
+        self.mission.reset();
     }
 }
 
@@ -2156,6 +2314,7 @@ struct CommonPackage {
     players: Vec<PlayerSnapshot>,
     runtime: RuntimeSnapshot,
     presentation: PresentationSelectors,
+    terrain_rng: u16,
     reset_state: Option<FlightState>,
     authored: Vec<u8>,
 }
@@ -2238,6 +2397,7 @@ impl NativeWorld {
             players: common.players.into_boxed_slice(),
             runtime: common.runtime,
             presentation: common.presentation,
+            terrain_rng: common.terrain_rng,
             reset_state: common.reset_state,
             authored_level: common.authored.into_boxed_slice(),
         })
@@ -2263,6 +2423,7 @@ impl NativeWorld {
             players,
             runtime,
             presentation,
+            terrain_rng: _,
             reset_state,
             authored: _,
         } = common;
@@ -4661,6 +4822,14 @@ fn parse_common_package(
     }
 
     let terrain_planes = parse_terrain(member(&package.members, "terrain.bin")?)?;
+    let terrain_rng = match profile {
+        OwnerPackageProfile::Level1 => 39_663,
+        OwnerPackageProfile::Level2 => read_u16(
+            member(&package.members, "feature-end.bin")?,
+            8,
+            "Level 2 feature-end terrain RNG",
+        )?,
+    };
     let terrain = LegacyTerrain::new(
         terrain_planes.terrain_types.to_vec(),
         terrain_planes.ground_heights.to_vec(),
@@ -4680,10 +4849,9 @@ fn parse_common_package(
     }
     validate_manifest_relations(counts, &entities, &players, &runtime, &presentation)?;
     let reset_state = match (profile, manifest.get("reset_projection")) {
-        // Existing Level 2 captures may carry a copied Level 1 seal. Parse
-        // its mapping shape for tamper detection, but do not expose the stale
-        // state as Level 2 mission data; the generic reset bead owns that
-        // profile-specific projection.
+        // Level 2 captures may carry a copied Level 1 projection for package
+        // provenance. Validate its shape when present, but always construct
+        // the actual Level 2 reset from the profile's own player/entity rows.
         (OwnerPackageProfile::Level2, Some(reset)) => {
             let reset = as_object(reset, "reset_projection")?;
             let _ = parse_reset_state(
@@ -4692,7 +4860,11 @@ fn parse_common_package(
                 member(&package.members, "players.bin")?,
                 member(&package.members, "runtime.bin")?,
             )?;
-            None
+            Some(parse_level_two_reset_state(
+                member(&package.members, "entities.bin")?,
+                member(&package.members, "players.bin")?,
+                member(&package.members, "runtime.bin")?,
+            )?)
         }
         (OwnerPackageProfile::Level1, Some(reset)) => {
             let reset = as_object(reset, "reset_projection")?;
@@ -4704,7 +4876,11 @@ fn parse_common_package(
             )?;
             Some(state)
         }
-        (OwnerPackageProfile::Level2, None) => None,
+        (OwnerPackageProfile::Level2, None) => Some(parse_level_two_reset_state(
+            member(&package.members, "entities.bin")?,
+            member(&package.members, "players.bin")?,
+            member(&package.members, "runtime.bin")?,
+        )?),
         (OwnerPackageProfile::Level1, None) => {
             return Err(NativeWorldError::new(
                 "manifest is missing reset_projection",
@@ -4720,6 +4896,7 @@ fn parse_common_package(
         players,
         runtime,
         presentation,
+        terrain_rng,
         reset_state,
         authored,
     })
@@ -5296,6 +5473,86 @@ fn validate_manifest_relations(
         ));
     }
     Ok(())
+}
+
+/// Decode the Level 2 frame-zero flight projection directly from the typed
+/// owner rows. The package's optional `reset_projection` is a copied Level 1
+/// seal, so it cannot identify the Level 2 player (slot 111).
+fn parse_level_two_reset_state(
+    entities: &[u8],
+    players: &[u8],
+    runtime: &[u8],
+) -> Result<FlightState> {
+    let slot = read_i16(runtime, 16, "Level 2 local player slot")?;
+    if slot != 0 {
+        return Err(NativeWorldError::new(format!(
+            "Level 2 reset requires local player slot 0, got {slot}"
+        )));
+    }
+    let player = record(players, 12, PLAYER_RECORD_BYTES, 0, "players.bin")?;
+    let entity_index = read_u16(player, 4, "Level 2 local player entity relation")?;
+    if entity_index != 111 {
+        return Err(NativeWorldError::new(format!(
+            "Level 2 reset requires local wizard entity 111, got {entity_index}"
+        )));
+    }
+    let entity = record(
+        entities,
+        12,
+        ENTITY_RECORD_BYTES,
+        usize::from(entity_index),
+        "entities.bin",
+    )?;
+    let active = read_u8(entity, 2, "Level 2 local wizard active flag")?;
+    if active != 1 {
+        return Err(NativeWorldError::new(
+            "Level 2 local wizard reset entity is inactive",
+        ));
+    }
+    let state = FlightState {
+        entity_index,
+        position: Position {
+            x: read_u16(entity, 80, "Level 2 position.x")?,
+            y: read_u16(entity, 82, "Level 2 position.y")?,
+            z: read_i16(entity, 84, "Level 2 position.z")?,
+        },
+        yaw: read_i16(entity, 32, "Level 2 yaw")?,
+        display_pitch: read_i16(entity, 34, "Level 2 display pitch")?,
+        effective_pitch: read_i16(player, 38, "Level 2 effective pitch")?,
+        roll_accumulator: read_i16(player, 46, "Level 2 roll accumulator")?,
+        pitch_accumulator: read_i16(player, 48, "Level 2 pitch accumulator")?,
+        target_speed: read_i16(player, 20, "Level 2 target speed")?,
+        speed_changed_flag: 0,
+        actual_speed: read_i16(entity, 134, "Level 2 actual speed")?,
+        strafe_speed: read_i16(player, 22, "Level 2 strafe speed")?,
+        roll_delta: read_i16(player, 16, "Level 2 roll delta")?,
+        pitch_delta: read_i16(player, 18, "Level 2 pitch delta")?,
+        recoil_speed: read_i16(player, 32, "Level 2 recoil speed")?,
+        recoil_yaw: read_i16(player, 34, "Level 2 recoil yaw")?,
+        impulse_x: read_i16(player, 54, "Level 2 impulse x")?,
+        impulse_y: read_i16(player, 56, "Level 2 impulse y")?,
+        impulse_z: read_i16(player, 58, "Level 2 impulse z")?,
+        entity_fov: read_i16(entity, 38, "Level 2 entity fov")?,
+        water_counter: 0,
+        speed_modifier: read_u8(player, 44, "Level 2 speed modifier")?,
+        speed_modifier_counter: read_i8(player, 45, "Level 2 speed modifier counter")?,
+        immobilize_counter: 0,
+        immobilize_subcounter: 0,
+        tether_prior_distance: 0,
+        tether_target_index: 0,
+        tether_holder_index: 0,
+        tether_tier: 0,
+        speed_spell_holder_index: 0,
+        entity_phase: read_u8(entity, 66, "Level 2 entity phase")?,
+        ambient_loop_5_distance: read_i32(player, 565, "Level 2 ambient loop 5 distance")?,
+        ambient_loop_31_distance: read_i32(player, 569, "Level 2 ambient loop 31 distance")?,
+        player_color_index: read_u8(player, 40, "Level 2 player color")?,
+        music_countdown: 0,
+        recovery_latch: false,
+        skip_flight_once: read_u8(entity, 17, "Level 2 entity control flags")? & 8 != 0,
+        tick: 0,
+    };
+    Ok(state)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -7233,7 +7490,17 @@ mod tests {
         assert_eq!(inspection.players()[7].slot, 7);
         assert_eq!(inspection.players()[0].left_spell_slot_raw, -1);
         assert_eq!(inspection.players()[0].right_spell_slot_raw, -1);
-        assert!(inspection.reset_state().is_none());
+        let reset = inspection.reset_state().expect("Level 2 frame-zero reset");
+        assert_eq!(reset.entity_index, 111);
+        assert_eq!(
+            reset.position,
+            Position {
+                x: 384,
+                y: 62_080,
+                z: 256
+            }
+        );
+        assert_eq!(inspection.terrain_rng(), 9_858);
         assert!(inspection.mission_unimplemented().is_err());
     }
 
@@ -7260,7 +7527,13 @@ mod tests {
         .unwrap();
         let inspection = NativeWorld::inspect_level2(&root).expect("fresh Level 2 package");
         assert_eq!(inspection.metadata().external_level, 2);
-        assert!(inspection.reset_state().is_none());
+        assert_eq!(
+            inspection
+                .reset_state()
+                .expect("Level 2 frame-zero reset")
+                .entity_index,
+            111
+        );
         let error = inspection.mission_unimplemented().unwrap_err();
         assert!(
             error
@@ -7268,6 +7541,184 @@ mod tests {
                 .contains("mission behavior is unsupported")
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn level_two_reset_session_matches_authoritative_order_and_isolation() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let template = inspection
+            .mission_content_template()
+            .expect("Level 2 content template");
+        let wizard = template.wizard_map_settings();
+        assert_eq!(wizard.len(), 8);
+        assert_eq!(
+            (
+                wizard[0].aggression,
+                wizard[0].reflexes,
+                wizard[0].perception,
+                wizard[0].life
+            ),
+            (203, 15, 28, 4)
+        );
+        assert_eq!(
+            (
+                wizard[1].aggression,
+                wizard[1].reflexes,
+                wizard[1].perception,
+                wizard[1].life
+            ),
+            (243, 39, 90, 79)
+        );
+        assert_eq!(&wizard[0].starting_spells[..4], &[1, 1, 1, 1]);
+        assert_eq!(&wizard[1].starting_spells[..4], &[1, 1, 0, 1]);
+        assert_eq!(&wizard[1].blocked_spells[..5], &[0, 0, 1, 1, 1]);
+        assert_eq!(wizard[0].record_bytes().len(), 110);
+        let expected_wizard_hashes = [
+            "922ab4bf6c34f644190a441cee4a187c37b8732cc5ba89997c8b241d950e7a84",
+            "569d4f28bd524b619dfc9eb665f20b4817895cf53d14fe4efe8b4caf7abd250c",
+            "a4921745a0b53cc469ea7040da8a3fbad53a04d5493c24f2ebd4dabf9071bc1b",
+            "e1fb0004db6b25ec87db76ccbb5771c41864dfbcfd08f802832043d6676172e1",
+            "e1fb0004db6b25ec87db76ccbb5771c41864dfbcfd08f802832043d6676172e1",
+            "e1fb0004db6b25ec87db76ccbb5771c41864dfbcfd08f802832043d6676172e1",
+            "e1fb0004db6b25ec87db76ccbb5771c41864dfbcfd08f802832043d6676172e1",
+            "a7a8b0d420d86ff48e6b99a869b7eb0690947089f79e6e9944aecb1bb2a0ba6a",
+        ];
+        for (settings, expected_hash) in wizard.iter().zip(expected_wizard_hashes) {
+            assert_eq!(
+                format!("{:x}", Sha256::digest(settings.record_bytes())),
+                expected_hash
+            );
+        }
+
+        let active: Vec<u16> = inspection
+            .entities()
+            .iter()
+            .filter(|entity| entity.active)
+            .map(|entity| entity.index)
+            .collect();
+        assert_eq!(active, (1_u16..=114).collect::<Vec<_>>());
+        assert_eq!(
+            (
+                inspection.entities()[111].class,
+                inspection.entities()[111].model
+            ),
+            (3, 0)
+        );
+        assert_eq!(
+            (
+                inspection.entities()[112].class,
+                inspection.entities()[112].model
+            ),
+            (3, 1)
+        );
+        assert_eq!(
+            (
+                inspection.entities()[113].class,
+                inspection.entities()[113].model,
+                inspection.entities()[113].action
+            ),
+            (15, 0, 0)
+        );
+        assert_eq!(
+            (
+                inspection.entities()[114].class,
+                inspection.entities()[114].model,
+                inspection.entities()[114].action
+            ),
+            (15, 1, 3)
+        );
+        assert_eq!(inspection.players()[0].entity_index, 111);
+        assert_eq!(inspection.players()[1].entity_index, 112);
+        assert_eq!(
+            &inspection.players()[1].enabled_spell_holders[..2],
+            &[113, 114]
+        );
+
+        let mut first = inspection
+            .level2_reset_session()
+            .expect("Level 2 reset session");
+        let mut second = inspection
+            .level2_reset_session()
+            .expect("independent reset session");
+        let state_hash = first.state_hash();
+        let terrain_hash = first.terrain_hash();
+        let mission_hash = first.mission().state_hash();
+        assert_eq!(state_hash, 0x57c3_7985_e90c_696c);
+        assert_eq!(terrain_hash, 0xe32f_0658_6f8f_2f8b);
+        for _ in 0..19 {
+            first.step_outer_turn(PlayerCommand::default(), 0);
+            second.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert_eq!(first.state_hash(), second.state_hash());
+        assert_eq!(first.terrain_hash(), second.terrain_hash());
+        let stepped_state_hash = second.state_hash();
+        let stepped_terrain_hash = second.terrain_hash();
+        let stepped_mission_hash = second.mission().state_hash();
+        first.state.position.x = first.state.position.x.wrapping_add(1);
+        first
+            .mission
+            .set_source_slot_active(1, false)
+            .expect("source slot mutation");
+        assert_eq!(second.state_hash(), stepped_state_hash);
+        assert_eq!(second.terrain_hash(), stepped_terrain_hash);
+        assert_eq!(second.mission().state_hash(), stepped_mission_hash);
+        first.reset();
+        assert_eq!(first.state_hash(), state_hash);
+        assert_eq!(first.terrain_hash(), terrain_hash);
+        assert_eq!(first.mission().state_hash(), mission_hash);
+    }
+
+    #[test]
+    fn level_two_reset_state_matches_preserved_frame_zero_projection() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../../../upstream/magic-carpet-2-hd/remc2-regression-test/memimages/regressions",
+        );
+        let bytes = fs::read(root.join("level2/sequence-002285FF-00356038.bin"))
+            .expect("preserved Level 2 regression state");
+        let sequence = RegressionStateSequence::new(&bytes).expect("Level 2 regression sequence");
+        let frame = sequence.frame(0).expect("Level 2 frame zero");
+        let expected = frame.project_player_flight(frame.local_player_slot());
+        assert_eq!(inspection.reset_state(), Some(&expected));
+    }
+
+    #[test]
+    fn level_two_reset_session_matches_all_nineteen_preserved_idle_frames() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../../../../upstream/magic-carpet-2-hd/remc2-regression-test/memimages/regressions",
+        );
+        let bytes = fs::read(root.join("level2/sequence-002285FF-00356038.bin"))
+            .expect("preserved Level 2 regression state");
+        let sequence = RegressionStateSequence::new(&bytes).expect("Level 2 regression sequence");
+        let player_slot = sequence
+            .frame(0)
+            .expect("Level 2 frame zero")
+            .local_player_slot();
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 reset session");
+        for target_frame in 1..sequence.frame_count() {
+            let after = sequence
+                .frame(target_frame)
+                .expect("preserved Level 2 frame");
+            let decoded = after.decoded_flight_input(player_slot);
+            decoded.apply(&mut session.state);
+            let profile = session.profile();
+            crate::step_entity_pass_with_context(
+                &mut session.state,
+                decoded.command,
+                profile,
+                &session.terrain,
+                &mut session.context,
+            );
+            let mut expected = after.project_player_flight(player_slot);
+            expected.tick = session.state.tick;
+            assert_eq!(session.state, expected, "Level 2 frame {target_frame}");
+        }
     }
 
     #[test]
