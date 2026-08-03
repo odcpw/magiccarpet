@@ -864,6 +864,10 @@ pub struct InvisibleState {
     pub parent_status_flags: u32,
     pub spell_status_flags: u32,
     pub parent_visibility_mode: u8,
+    /// One-shot source write for `word_0x159_345` on the first sustained
+    /// Invisible pulse. The native projection consumes and clears this flag
+    /// after applying the raw player-record write.
+    pub owner_word_clear_pending: bool,
     pub countdown: i16,
     pub experience_awarded: i32,
     pub cleanup_requested: bool,
@@ -895,6 +899,7 @@ impl InvisibleState {
             parent_status_flags: 0,
             spell_status_flags: 0,
             parent_visibility_mode: 0,
+            owner_word_clear_pending: false,
             // `sub_68FF0` installs the post-acquisition presentation cadence.
             countdown: 64,
             experience_awarded: 0,
@@ -987,6 +992,7 @@ impl InvisibleState {
                         experience_awarded = profile.experience_award;
                         self.parent_visibility_mode = profile.owner_visibility_mode;
                         self.spell_status_flags |= INVISIBLE_STATUS_BIT;
+                        self.owner_word_clear_pending = true;
                     } else if self.spell_status_flags & INVISIBLE_STATUS_BIT == 0 {
                         // Source forces a one-tick cooldown if the spell entity
                         // never reached its initial visibility transition.
@@ -1049,6 +1055,7 @@ impl InvisibleState {
         self.parent_status_flags = 0;
         self.spell_status_flags = 0;
         self.parent_visibility_mode = 0;
+        self.owner_word_clear_pending = false;
         self.countdown = 64;
         self.experience_awarded = 0;
         self.cleanup_requested = false;

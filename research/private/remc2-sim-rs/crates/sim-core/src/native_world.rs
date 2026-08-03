@@ -11525,6 +11525,7 @@ impl Level2SharedSpellResetSession {
         let Some(invisible) = self.invisible else {
             return;
         };
+        let owner_word_clear_pending = invisible.owner_word_clear_pending;
 
         if let Some(holder) = self.pickup_mut(invisible.holder_entity_index) {
             holder.action = invisible.action;
@@ -11559,6 +11560,13 @@ impl Level2SharedSpellResetSession {
         let mut local_player_projection = None;
         for player in &mut self.players {
             if player.entity_index == invisible.parent_entity_index {
+                // `sub_6B1C0` clears the owner state word at offset 345 on
+                // the first sustained pulse before publishing the tier's
+                // visibility byte at offset 447. Keep the raw player record
+                // write separate from the status-bit asymmetry above.
+                if owner_word_clear_pending {
+                    player.record[345..347].fill(0);
+                }
                 player.record[447] = invisible.parent_visibility_mode;
                 if player.slot == 0 {
                     local_player_projection = Some(player.clone());
@@ -11567,6 +11575,11 @@ impl Level2SharedSpellResetSession {
         }
         if let Some(player) = local_player_projection {
             self.local_player = player;
+        }
+        if owner_word_clear_pending {
+            if let Some(invisible) = self.invisible.as_mut() {
+                invisible.owner_word_clear_pending = false;
+            }
         }
         if invisible.parent_entity_index == self.player_entity.index {
             self.player_mana = invisible.parent_mana;
@@ -13216,6 +13229,7 @@ impl Level2SharedSpellResetSession {
             hasher.update(invisible.parent_status_flags.to_le_bytes());
             hasher.update(invisible.spell_status_flags.to_le_bytes());
             hasher.update([invisible.parent_visibility_mode]);
+            hasher.update([u8::from(invisible.owner_word_clear_pending)]);
             hasher.update(invisible.countdown.to_le_bytes());
             hasher.update(invisible.experience_awarded.to_le_bytes());
             hasher.update([u8::from(invisible.cleanup_requested)]);
@@ -28418,6 +28432,9 @@ mod tests {
             shared.player_entity.record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
             shared.player_entities[0].mana = 5_000;
             shared.player_entities[0].record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
+            // Distinguish the source first-pulse write from the qualified
+            // frame-zero value, which is already zero in the owner package.
+            shared.players[0].record[345..347].copy_from_slice(&0x1234_u16.to_le_bytes());
             shared
                 .invisible
                 .as_mut()
@@ -28441,12 +28458,26 @@ mod tests {
         assert_eq!(stepped.parent_visibility_mode, 1);
         assert_eq!(stepped.experience_awarded, 1);
         assert_ne!(stepped.spell_status_flags & INVISIBLE_STATUS_BIT, 0);
+        assert_eq!(
+            session.shared_spells().players[0].record_bytes()[345..347],
+            [0, 0]
+        );
         assert_eq!(stepped.countdown, active.countdown - 1);
         assert!(
             session
                 .economy()
                 .castle()
                 .is_some_and(|castle| castle.source_entity_index == castle_slot)
+        );
+
+        // The source write is one-shot. A later writer to word 0x159 must not
+        // be erased by every subsequent Invisible projection sync.
+        session.shared_spells_mut().players[0].record[345..347]
+            .copy_from_slice(&0x5678_u16.to_le_bytes());
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session.shared_spells().players[0].record_bytes()[345..347],
+            0x5678_u16.to_le_bytes()
         );
 
         session.reset();
