@@ -14726,6 +14726,8 @@ pub struct Level2ResetSession {
     level2_model39_activated: BTreeSet<u16>,
     baseline_level2_model59_activated: BTreeSet<u16>,
     level2_model59_activated: BTreeSet<u16>,
+    baseline_level2_model17_activated: BTreeSet<u16>,
+    level2_model17_activated: BTreeSet<u16>,
     baseline_level2_imported_switch_roots: Box<[Level2ImportedSwitchRootState]>,
     level2_imported_switch_roots: Box<[Level2ImportedSwitchRootState]>,
     baseline_level2_group10_switch25: Option<Level2Group10Switch25State>,
@@ -15284,6 +15286,8 @@ impl Level2ResetSession {
             level2_model39_activated: BTreeSet::new(),
             baseline_level2_model59_activated: BTreeSet::new(),
             level2_model59_activated: BTreeSet::new(),
+            baseline_level2_model17_activated: BTreeSet::new(),
+            level2_model17_activated: BTreeSet::new(),
             baseline_level2_imported_switch_roots: initial_level2_imported_switch_roots.clone(),
             level2_imported_switch_roots: initial_level2_imported_switch_roots,
             baseline_level2_group10_switch25: initial_level2_group10_switch25,
@@ -17028,12 +17032,49 @@ impl Level2ResetSession {
                 return;
             }
         };
+        let companion = if target_group == 27 {
+            self.mission
+                .authored_features()
+                .iter()
+                .copied()
+                .find(|candidate| {
+                    candidate.activation_group == 27
+                        && candidate.kind == 10
+                        && candidate.subtype == 17
+                        && !self.level2_model17_activated.contains(&candidate.index)
+                })
+        } else {
+            None
+        };
+        if let Some(companion) = companion {
+            if self
+                .allocate_level2_authored_model17(companion.index)
+                .is_none()
+            {
+                self.economy = economy_before;
+                self.shared_spells = shared_before;
+                self.dispatch_events.push(Level2DispatchEvent::Error {
+                    pass,
+                    source_slot: producer_slot,
+                    message: format!(
+                        "Level 2 producer group {target_group} model17 row {} could not allocate",
+                        companion.index
+                    ),
+                });
+                return;
+            }
+            self.level2_model17_activated.insert(companion.index);
+        }
+        let mut activated_indices = vec![feature.index];
+        if let Some(companion) = companion {
+            activated_indices.push(companion.index);
+        }
         self.dispatch_events
             .push(Level2DispatchEvent::AuthoredGroupActivated {
                 pass,
                 source_slot: producer_slot,
                 group: target_group,
-                authored_indices: vec![feature.index].into_boxed_slice(),
+                authored_indices: activated_indices.into_boxed_slice(),
             });
         debug_assert!(
             self.economy
@@ -17041,6 +17082,14 @@ impl Level2ResetSession {
                 .iter()
                 .any(|source| source.source_entity_index == source_slot)
         );
+        if target_group == 27 {
+            debug_assert!(
+                self.economy
+                    .authored_model17()
+                    .iter()
+                    .any(|source| source.authored_index == 157)
+            );
+        }
     }
 
     /// Dispatch the authored Level 2 rows in source-slot order alongside the
@@ -18111,6 +18160,10 @@ impl Level2ResetSession {
         for authored_index in &self.level2_model59_activated {
             hasher.update(authored_index.to_le_bytes());
         }
+        hasher.update(b"level2-model17-activation-v1");
+        for authored_index in &self.level2_model17_activated {
+            hasher.update(authored_index.to_le_bytes());
+        }
         hasher.update(b"level2-group10-switch25-v1");
         match self.level2_group10_switch25 {
             Some(switch) => {
@@ -18237,6 +18290,7 @@ impl Level2ResetSession {
         self.level2_model22_activated = self.baseline_level2_model22_activated.clone();
         self.level2_model39_activated = self.baseline_level2_model39_activated.clone();
         self.level2_model59_activated = self.baseline_level2_model59_activated.clone();
+        self.level2_model17_activated = self.baseline_level2_model17_activated.clone();
         self.level2_imported_switch_roots = self.baseline_level2_imported_switch_roots.clone();
         self.level2_group10_switch25 = self.baseline_level2_group10_switch25;
         self.level2_class11_model0_constructor_phase =
@@ -28564,6 +28618,86 @@ mod tests {
         assert!(!session.entities()[32].drawing_disabled());
         assert_eq!(session.runtime().objectives[0].stage_selectors[3], 1);
         assert_eq!(session.runtime().objectives[0].done, 0);
+    }
+
+    #[test]
+    fn level_two_group27_model17_companion_activates_from_objective_production_route() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-27 model-17 session");
+        let baseline_hash = session.campaign_state_hash();
+        let authored_features = session.mission().authored_features().to_vec();
+        let feature_position = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("authored group-27 feature")
+                .world_position(0)
+        };
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
+
+        // The real row-154 model-45 source selects group 27 during the
+        // same source pass that materializes group 8. The group-27 spell row
+        // remains the first event payload item; row 157 is its model-17
+        // companion and must be allocated transactionally beside it.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    group,
+                    authored_indices,
+                    ..
+                } if *group == 27 && authored_indices.as_ref() == [156, 157]
+            )
+        }));
+        let meteor = session
+            .economy()
+            .authored_model17()
+            .iter()
+            .find(|source| source.authored_index == 157)
+            .copied()
+            .expect("group-27 model-17 companion");
+        assert_eq!(
+            (
+                meteor.source_class,
+                meteor.model,
+                meteor.action,
+                meteor.subspell_index,
+                meteor.max_life,
+            ),
+            (10, 17, 17, 3000, 10)
+        );
+        let meteor_position = feature_position(157);
+        assert_eq!(
+            (meteor.position.x, meteor.position.y),
+            (meteor_position.x, meteor_position.y)
+        );
+        assert_eq!(
+            meteor.position.z,
+            session.terrain.ground_height(meteor_position)
+        );
+        assert_eq!(meteor.life, 9);
+        assert_eq!(session.economy().model17_spawned_children().len(), 3);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::AuthoredModel17,
+                source_slot,
+                ..
+            } if *source_slot == meteor.source_entity_index
+        )));
+
+        session.reset();
+        assert!(session.economy().authored_model17().is_empty());
+        assert!(session.economy().model17_spawned_children().is_empty());
+        assert!(session.economy().spell_pickups().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
     #[test]
