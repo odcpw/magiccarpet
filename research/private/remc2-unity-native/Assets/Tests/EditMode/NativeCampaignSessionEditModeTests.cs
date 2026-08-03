@@ -655,6 +655,11 @@ namespace MagicCarpet.Native.Tests
             Assert.That(activated.generation, Is.EqualTo(session.Generation));
 
             session.Step(source.x, source.y, source.z);
+            var afterPulse = session.ShieldState();
+            Assert.That(afterPulse.active, Is.EqualTo(1));
+            Assert.That(afterPulse.activeValue, Is.EqualTo(activated.activeValue - 1));
+            Assert.That(afterPulse.countdown, Is.EqualTo(activated.countdown - 1));
+
             var beforeDamage = session.ShieldState();
             session.SubmitShieldDamage(beforeDamage.parentEntityIndex, 100, 152);
             session.Step(source.x, source.y, source.z);
