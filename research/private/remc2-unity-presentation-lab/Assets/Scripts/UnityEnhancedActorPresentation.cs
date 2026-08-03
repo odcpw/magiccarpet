@@ -267,6 +267,10 @@ namespace MagicCarpet.PresentationLab
             float baseScale = entity.Scale <= 0f ? 1f : entity.Scale;
             float scale = baseScale;
             float haloScale = baseScale;
+            if (entity.PresentationFamily == (int)UnityEnhancedPresentationFamily.Town)
+            {
+                scale *= StructureScale(entity.StableIdentity);
+            }
             if (fireballProjectile)
             {
                 scale *= FireballCoreVisualScale;
@@ -777,6 +781,12 @@ namespace MagicCarpet.PresentationLab
                    family == (int)UnityEnhancedPresentationFamily.Dolmen;
         }
 
+        private static float StructureScale(ulong stableIdentity)
+        {
+            int variant = (int)((stableIdentity ^ (stableIdentity >> 17)) & 3UL);
+            return 0.86f + variant * 0.08f;
+        }
+
         private Quaternion OwnerBillboardRotation()
         {
             if (presentationCamera == null)
@@ -922,6 +932,34 @@ namespace MagicCarpet.PresentationLab
                 new Vector3(0.52f, 0.75f, 0.70f),
                 new Vector3(0.86f, 1.05f, 0.80f),
                 window);
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(-1.16f, -0.10f, -0.88f),
+                new Vector3(1.16f, 0.16f, 0.88f),
+                new Color(0.28f, 0.34f, 0.46f, 1f));
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(-1.25f, 1.34f, -0.92f),
+                new Vector3(1.25f, 1.53f, 0.92f),
+                new Color(0.48f, 0.22f, 0.16f, 1f));
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(-0.72f, 1.44f, 0.22f),
+                new Vector3(-0.42f, 2.02f, 0.48f),
+                new Color(0.44f, 0.27f, 0.23f, 1f));
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(0.42f, 1.44f, 0.22f),
+                new Vector3(0.72f, 2.02f, 0.48f),
+                new Color(0.44f, 0.27f, 0.23f, 1f));
             AppendBox(
                 vertices,
                 triangles,
