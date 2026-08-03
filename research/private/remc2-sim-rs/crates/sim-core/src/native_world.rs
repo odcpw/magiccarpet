@@ -6509,19 +6509,23 @@ impl Level2EconomyState {
             .is_ok()
     }
 
-    /// Class-14 model 3/5 has no generic per-turn callback in the pinned
-    /// `sub_4A310` path.  Keep the row live and source-visible while leaving
-    /// its constructor payload untouched; mission-specific callbacks are a
-    /// separate follow-up.
-    pub fn step_authored_class14_slot(&mut self, source_slot: u16) -> bool {
-        let Some(source) = self
+    /// Dispatch the source callbacks selected by the class-14 constructor.
+    /// `sub_59C40_getTerrtoZ` (model 3/action 8) and the non-collecting branch
+    /// of `UpdateScroll_59C80` (model 5/action 10) both snap the row to the
+    /// current terrain height before their mission-specific work.  The
+    /// Level-2 economy owns that shared source write; scroll collection and
+    /// experience presentation remain a separate mission/UI seam.
+    pub fn step_authored_class14_slot(&mut self, source_slot: u16, ground_height: i16) -> bool {
+        let Some(source_index) = self
             .authored_class14
             .iter()
-            .find(|source| source.active && source.source_entity_index == source_slot)
-            .copied()
+            .position(|source| source.active && source.source_entity_index == source_slot)
         else {
             return false;
         };
+        let mut source = self.authored_class14[source_index];
+        source.position.z = ground_height;
+        self.authored_class14[source_index] = source;
         self.map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
@@ -15505,7 +15509,14 @@ impl Level2ResetSession {
                 self.economy.step_model76_tail_spawn_slot(source_slot)
             }
             Level2DynamicArenaKind::AuthoredClass14 => {
-                self.economy.step_authored_class14_slot(source_slot)
+                let ground_height = self
+                    .economy
+                    .authored_class14()
+                    .iter()
+                    .find(|source| source.active && source.source_entity_index == source_slot)
+                    .map_or(0, |source| self.terrain.ground_height(source.position));
+                self.economy
+                    .step_authored_class14_slot(source_slot, ground_height)
             }
             Level2DynamicArenaKind::BeyondSightPulseEffect => self
                 .economy
@@ -26284,7 +26295,7 @@ mod tests {
     }
 
     #[test]
-    fn level_two_authored_class14_rows_allocate_and_remain_inert_in_cursor() {
+    fn level_two_authored_class14_rows_dispatch_source_terrain_callbacks() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
         let mut session = inspection
@@ -26343,12 +26354,28 @@ mod tests {
                 .contains(&model5.source_entity_index)
         );
 
-        let before_turn = session
-            .economy()
-            .authored_class14()
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
+        // Deliberately perturb the live rows after their source-backed
+        // allocation. A cursor implementation that only resynchronizes the
+        // map, but does not dispatch the pinned model-3/model-5 callbacks,
+        // would retain these incorrect heights.
+        let model3_ground = session.terrain.ground_height(model3.position);
+        let model5_ground = session.terrain.ground_height(model5.position);
+        session
+            .economy_mut()
+            .authored_class14
+            .iter_mut()
+            .find(|source| source.source_entity_index == model3.source_entity_index)
+            .expect("model-3 row remains allocated")
+            .position
+            .z = model3_ground.wrapping_add(512);
+        session
+            .economy_mut()
+            .authored_class14
+            .iter_mut()
+            .find(|source| source.source_entity_index == model5.source_entity_index)
+            .expect("model-5 row remains allocated")
+            .position
+            .z = model5_ground.wrapping_add(512);
         session.step_outer_turn(PlayerCommand::default(), 0);
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
@@ -26366,7 +26393,19 @@ mod tests {
                 ..
             } if *source_slot == model5.source_entity_index
         )));
-        assert_eq!(session.economy().authored_class14(), before_turn.as_slice());
+        let after_turn = session.economy().authored_class14();
+        let model3_after = after_turn
+            .iter()
+            .find(|source| source.source_entity_index == model3.source_entity_index)
+            .expect("model-3 row remains live after terrain callback");
+        let model5_after = after_turn
+            .iter()
+            .find(|source| source.source_entity_index == model5.source_entity_index)
+            .expect("model-5 row remains live after terrain callback");
+        assert_eq!(model3_after.position.z, model3_ground);
+        assert_eq!(model5_after.position.z, model5_ground);
+        assert!(model3_after.active);
+        assert!(model5_after.active);
 
         session.reset();
         assert!(session.economy().authored_class14().is_empty());
