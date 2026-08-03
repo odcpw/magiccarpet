@@ -15709,28 +15709,33 @@ impl Level2ResetSession {
     }
 
     /// Run the bounded Level 2 model-4 exit-switch trigger for group 31.
-    /// Pinned `AddSwitch0B_04_6F150` consumes the switch only when a live
-    /// model-0 player has `IsLevelEnd != 0`; the resulting group contains one
-    /// class-14/model-3 row whose constructor and callback already exist in
-    /// the typed class-14 seam.
+    /// Pinned `AddSwitch0B_04_6F150` scans the live player list and consumes
+    /// the switch when any live model-0 player owns an `IsLevelEnd != 0`
+    /// objective. The resulting group contains one class-14/model-3 row and
+    /// the model-0 row-274 switch whose constructors already exist in the
+    /// typed class-14/class-11 seams.
     fn activate_level2_authored_group31(&mut self, pass: u8) {
         if self.level2_class14_activated.contains(&244) {
             return;
         }
-        if self
-            .runtime
-            .objectives
-            .first()
-            .map_or(0, |objective| objective.is_level_end)
-            == 0
-        {
-            return;
-        }
-        let local_player_is_level_end_candidate = self
-            .entities
-            .get(usize::from(self.state.entity_index))
-            .is_some_and(|entity| entity.active && entity.model == 0);
-        if !local_player_is_level_end_candidate {
+        let any_player_is_level_end_candidate = self.players.iter().any(|player| {
+            if player.active_player_index < 0 {
+                return false;
+            }
+            let Some(entity) = self.entities.get(usize::from(player.entity_index)) else {
+                return false;
+            };
+            entity.active
+                && entity.class == 3
+                && entity.model == 0
+                && entity.life >= 0
+                && self
+                    .runtime
+                    .objectives
+                    .get(usize::from(player.player_color_index()))
+                    .is_some_and(|objective| objective.is_level_end != 0)
+        });
+        if !any_player_is_level_end_candidate {
             return;
         }
         let Some(root_slot) = self
@@ -28106,6 +28111,82 @@ mod tests {
         session.step_outer_turn(PlayerCommand::default(), 0);
 
         assert!(session.economy().authored_class14().is_empty());
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
+        )));
+        let switch = session
+            .entities()
+            .iter()
+            .find(|entity| {
+                entity.active
+                    && entity.class == 11
+                    && entity.model == 4
+                    && entity.action == 4
+                    && entity.source_id == 31
+            })
+            .expect("live model-4 group-31 switch");
+        assert!(!switch.drawing_disabled());
+    }
+
+    #[test]
+    fn level_two_model4_group31_scans_each_live_player_objective() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-4 exit-switch session");
+        let local_index = usize::from(session.state.entity_index);
+        session.entities[local_index].model = 1;
+
+        let remote_player = session
+            .players
+            .iter()
+            .find(|player| player.slot != 0 && player.active_player_index >= 0)
+            .map(|player| (player.entity_index, player.player_color_index()))
+            .expect("fixture has a non-local live player row");
+        let remote_index = usize::from(remote_player.0);
+        let remote = session
+            .entities
+            .get_mut(remote_index)
+            .expect("remote player entity is in the entity arena");
+        assert!(remote.active && remote.class == 3 && remote.life >= 0);
+        remote.model = 0;
+        session.runtime.objectives[usize::from(remote_player.1)].is_level_end = 1;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 31,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [244, 274]
+        )));
+        assert!(session.level2_group31_switch28.is_some());
+    }
+
+    #[test]
+    fn level_two_model4_group31_ignores_dead_player_objective() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-4 exit-switch session");
+        session.runtime.set_level2_is_level_end(1);
+        let local_index = usize::from(session.state.entity_index);
+        let local = session
+            .entities
+            .get_mut(local_index)
+            .expect("local player entity is in the entity arena");
+        assert!(local.active && local.class == 3 && local.model == 0);
+        local.life = -1;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(session.economy().authored_class14().is_empty());
+        assert!(session.level2_group31_switch28.is_none());
         assert!(!session.dispatch_events().iter().any(|event| matches!(
             event,
             Level2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
