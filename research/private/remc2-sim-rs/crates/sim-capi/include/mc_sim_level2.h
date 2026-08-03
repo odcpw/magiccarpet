@@ -157,6 +157,48 @@ typedef struct McCampaignEntitySnapshotV2 {
     uint32_t reserved[4];
 } McCampaignEntitySnapshotV2;
 
+/* Additive Level 2 Goat row.  The sealed McGoatSnapshotV2 remains the
+ * Level-1 contract; this same-size campaign row exposes the authored
+ * action-11 partner relation in the first reserved slot. */
+typedef struct McCampaignGoatSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint16_t entity_index;
+    uint16_t target_entity_index;
+    uint16_t render_parameter_index;
+    uint16_t base_tmap;
+    uint8_t authority;
+    uint8_t active;
+    uint8_t class_id;
+    uint8_t model;
+    uint8_t action;
+    uint8_t phase;
+    int8_t stage_var_1;
+    int8_t stage_var_2;
+    int8_t proximity_countdown;
+    int8_t proximity_subcounter;
+    int8_t animation_frame;
+    uint8_t reserved_0;
+    uint16_t x;
+    uint16_t y;
+    int16_t z;
+    int16_t yaw;
+    int16_t pitch;
+    int16_t roll;
+    int16_t actual_speed;
+    int16_t minimum_speed;
+    int16_t maximum_speed;
+    uint16_t rng;
+    int32_t life;
+    int32_t max_life;
+    int32_t mana;
+    int32_t pending_damage;
+    uint32_t control_flags;
+    uint16_t partner_entity_index;
+    uint16_t reserved_1;
+    uint32_t reserved_2[3];
+} McCampaignGoatSnapshotV2;
+
 /* Additive family-6 Shield state projection.  `active == 0` is the reset
  * state; the row remains generation-bound even when no holder exists. */
 typedef struct McCampaignShieldSnapshotV2 {
@@ -274,7 +316,7 @@ int32_t mc_native_campaign_entities_copy(
  * mc_native_goats_copy Level 1 contract. */
 int32_t mc_native_campaign_goats_copy(
     uint64_t handle, uint64_t generation, uint32_t start_ordinal,
-    McGoatSnapshotV2 *buffer, uint32_t capacity, uint32_t element_size,
+    McCampaignGoatSnapshotV2 *buffer, uint32_t capacity, uint32_t element_size,
     McGoatBatchV2 *out_batch, uint32_t out_batch_size);
 
 /* Additive typed Level 2 mana-sphere/carrier rows.  The existing snapshot

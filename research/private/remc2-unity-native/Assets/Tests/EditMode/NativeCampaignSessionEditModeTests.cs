@@ -101,7 +101,8 @@ namespace MagicCarpet.Native.Tests
                         goat.structSize == 84 &&
                         goat.classId == 5 &&
                         goat.model == 1 &&
-                        goat.action == 11),
+                        goat.action == 11 &&
+                        goat.partnerEntityIndex == 66),
                 Is.True);
         }
 

@@ -159,9 +159,9 @@ namespace MagicCarpet.Native
             return entities;
         }
 
-        internal NativeSim.GoatSnapshot[] Goats()
+        internal NativeSim.CampaignGoatSnapshot[] Goats()
         {
-            var goats = new NativeSim.GoatSnapshot[36];
+            var goats = new NativeSim.CampaignGoatSnapshot[36];
             var status = NativeSim.mc_native_campaign_goats_copy(
                 Handle,
                 generation,

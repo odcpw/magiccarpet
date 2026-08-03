@@ -591,6 +591,48 @@ namespace MagicCarpet.Native
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignGoatSnapshot
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ushort entityIndex;
+            internal ushort targetEntityIndex;
+            internal ushort renderParameterIndex;
+            internal ushort baseTmap;
+            internal byte authority;
+            internal byte active;
+            internal byte classId;
+            internal byte model;
+            internal byte action;
+            internal byte phase;
+            internal sbyte stageVar1;
+            internal sbyte stageVar2;
+            internal sbyte proximityCountdown;
+            internal sbyte proximitySubcounter;
+            internal sbyte animationFrame;
+            internal byte reserved0;
+            internal ushort x;
+            internal ushort y;
+            internal short z;
+            internal short yaw;
+            internal short pitch;
+            internal short roll;
+            internal short actualSpeed;
+            internal short minimumSpeed;
+            internal short maximumSpeed;
+            internal ushort rng;
+            internal int life;
+            internal int maxLife;
+            internal int mana;
+            internal int pendingDamage;
+            internal uint controlFlags;
+            internal ushort partnerEntityIndex;
+            internal ushort reserved1;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
+            internal uint[] reserved2;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct GoatBatch
         {
             internal uint abiVersion;
@@ -1787,7 +1829,7 @@ namespace MagicCarpet.Native
             ulong handle,
             ulong generation,
             uint startOrdinal,
-            [Out] GoatSnapshot[] buffer,
+            [Out] CampaignGoatSnapshot[] buffer,
             uint capacity,
             uint elementSize,
             out GoatBatch batch,
@@ -2272,6 +2314,7 @@ namespace MagicCarpet.Native
             RequireSize<ObjectiveSnapshot>(40);
             RequireSize<EntitySnapshot>(52);
             RequireSize<GoatSnapshot>(84);
+            RequireSize<CampaignGoatSnapshot>(84);
             RequireSize<GoatBatch>(64);
             RequireSize<Level1MissionSnapshot>(96);
             RequireSize<Level1PlayerLifecycleSnapshot>(144);
@@ -2334,6 +2377,7 @@ namespace MagicCarpet.Native
             RequireOffset<EntitySnapshot>(nameof(EntitySnapshot.reserved), 36);
             RequireOffset<GoatSnapshot>(nameof(GoatSnapshot.life), 48);
             RequireOffset<GoatSnapshot>(nameof(GoatSnapshot.reserved), 68);
+            RequireOffset<CampaignGoatSnapshot>(nameof(CampaignGoatSnapshot.partnerEntityIndex), 68);
             RequireOffset<GoatBatch>(nameof(GoatBatch.reserved), 48);
             RequireOffset<Level1MissionSnapshot>(
                 nameof(Level1MissionSnapshot.playerLife), 40);

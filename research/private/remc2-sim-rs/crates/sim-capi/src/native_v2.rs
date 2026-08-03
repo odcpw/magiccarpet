@@ -765,6 +765,50 @@ pub struct McGoatSnapshotV2 {
     pub reserved: [u32; 4],
 }
 
+/// Additive Level 2 campaign Goat row. This preserves the sealed 84-byte Goat
+/// ABI while reusing the first reserved slot for the authored action-11
+/// partner link.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignGoatSnapshotV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub entity_index: u16,
+    pub target_entity_index: u16,
+    pub render_parameter_index: u16,
+    pub base_tmap: u16,
+    pub authority: u8,
+    pub active: u8,
+    pub class_id: u8,
+    pub model: u8,
+    pub action: u8,
+    pub phase: u8,
+    pub stage_var_1: i8,
+    pub stage_var_2: i8,
+    pub proximity_countdown: i8,
+    pub proximity_subcounter: i8,
+    pub animation_frame: i8,
+    pub reserved_0: u8,
+    pub x: u16,
+    pub y: u16,
+    pub z: i16,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub roll: i16,
+    pub actual_speed: i16,
+    pub minimum_speed: i16,
+    pub maximum_speed: i16,
+    pub rng: u16,
+    pub life: i32,
+    pub max_life: i32,
+    pub mana: i32,
+    pub pending_damage: i32,
+    pub control_flags: u32,
+    pub partner_entity_index: u16,
+    pub reserved_1: u16,
+    pub reserved_2: [u32; 3],
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct McGoatBatchV2 {
@@ -7564,14 +7608,14 @@ pub extern "C" fn mc_native_campaign_goats_copy(
     handle: u64,
     generation: u64,
     start_ordinal: u32,
-    buffer: *mut McGoatSnapshotV2,
+    buffer: *mut McCampaignGoatSnapshotV2,
     capacity: u32,
     element_size: u32,
     out_batch: *mut McGoatBatchV2,
     out_batch_size: u32,
 ) -> i32 {
     boundary_value(out_batch, out_batch_size, || {
-        require_element_size::<McGoatSnapshotV2>(element_size, "campaign Goat element")?;
+        require_element_size::<McCampaignGoatSnapshotV2>(element_size, "campaign Goat element")?;
         with_campaign_session(handle, |session| {
             let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
                 return Err(AbiError::new(
@@ -7610,7 +7654,9 @@ pub extern "C" fn mc_native_campaign_goats_copy(
             }
             for (offset, goat) in goats.iter().skip(start).take(count).enumerate() {
                 unsafe {
-                    buffer.add(offset).write_unaligned(goat_snapshot(goat));
+                    buffer
+                        .add(offset)
+                        .write_unaligned(campaign_goat_snapshot(goat));
                 }
             }
             Ok(McGoatBatchV2 {
@@ -10704,6 +10750,47 @@ fn goat_snapshot(goat: &GoatState) -> McGoatSnapshotV2 {
         pending_damage: goat.pending_damage,
         control_flags: goat.control_flags,
         reserved: [0; 4],
+    }
+}
+
+fn campaign_goat_snapshot(goat: &GoatState) -> McCampaignGoatSnapshotV2 {
+    McCampaignGoatSnapshotV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignGoatSnapshotV2>(),
+        entity_index: goat.entity_index,
+        target_entity_index: goat.target_entity_index.unwrap_or(MC_ENTITY_INDEX_NONE),
+        render_parameter_index: goat.render_parameter_index,
+        base_tmap: GOAT_BASE_TMAP,
+        authority: MC_AUTHORITY_GOAT_LIVE,
+        active: u8::from(goat.active),
+        class_id: GOAT_CLASS,
+        model: GOAT_MODEL,
+        action: goat.action,
+        phase: goat.phase,
+        stage_var_1: goat.stage_var_1,
+        stage_var_2: goat.stage_var_2,
+        proximity_countdown: goat.proximity_countdown,
+        proximity_subcounter: goat.proximity_subcounter,
+        animation_frame: goat.animation_frame,
+        reserved_0: 0,
+        x: goat.position.x,
+        y: goat.position.y,
+        z: goat.position.z,
+        yaw: goat.yaw,
+        pitch: goat.pitch,
+        roll: goat.roll,
+        actual_speed: goat.actual_speed,
+        minimum_speed: goat.minimum_speed,
+        maximum_speed: goat.maximum_speed,
+        rng: goat.rng,
+        life: goat.life,
+        max_life: goat.max_life,
+        mana: goat.mana,
+        pending_damage: goat.pending_damage,
+        control_flags: goat.control_flags,
+        partner_entity_index: goat.partner_entity_index.unwrap_or(MC_ENTITY_INDEX_NONE),
+        reserved_1: 0,
+        reserved_2: [0; 3],
     }
 }
 
@@ -15553,6 +15640,7 @@ mod tests {
         assert_eq!(size_of::<McCampaignEntitySnapshotV2>(), 52);
         assert_eq!(size_of::<McCampaignShieldSnapshotV2>(), 72);
         assert_eq!(size_of::<McGoatSnapshotV2>(), 84);
+        assert_eq!(size_of::<McCampaignGoatSnapshotV2>(), 84);
         assert_eq!(size_of::<McGoatBatchV2>(), 64);
         assert_eq!(size_of::<McCampaignManaBatchV2>(), 64);
         assert_eq!(size_of::<McLevel1MissionSnapshotV2>(), 96);
@@ -15642,6 +15730,11 @@ mod tests {
         );
         assert_eq!(std::mem::offset_of!(McGoatSnapshotV2, life), 48);
         assert_eq!(std::mem::offset_of!(McGoatSnapshotV2, reserved), 68);
+        assert_eq!(std::mem::offset_of!(McCampaignGoatSnapshotV2, life), 48);
+        assert_eq!(
+            std::mem::offset_of!(McCampaignGoatSnapshotV2, partner_entity_index),
+            68
+        );
         assert_eq!(std::mem::offset_of!(McGoatBatchV2, reserved), 48);
         assert_eq!(
             std::mem::offset_of!(McLevel1MissionSnapshotV2, player_life),
@@ -16485,7 +16578,7 @@ mod tests {
             ),
             MC_STATUS_OK
         );
-        let mut initial_goats = [McGoatSnapshotV2::default(); 36];
+        let mut initial_goats = [McCampaignGoatSnapshotV2::default(); 36];
         let mut initial_goat_batch = McGoatBatchV2::default();
         assert_eq!(
             mc_native_campaign_goats_copy(
@@ -16494,7 +16587,7 @@ mod tests {
                 0,
                 initial_goats.as_mut_ptr(),
                 initial_goats.len() as u32,
-                struct_size::<McGoatSnapshotV2>(),
+                struct_size::<McCampaignGoatSnapshotV2>(),
                 &raw mut initial_goat_batch,
                 struct_size::<McGoatBatchV2>(),
             ),
@@ -16522,6 +16615,13 @@ mod tests {
             .map(|goat| goat.entity_index)
             .collect::<BTreeSet<_>>();
         assert_eq!(initial_action11_slots, BTreeSet::from([39, 71]));
+        assert!(
+            initial_goats
+                .iter()
+                .filter(|goat| goat.action == 11)
+                .all(|goat| goat.partner_entity_index == 66),
+            "Level 2 action-11 reset rows expose authored partner 66"
+        );
         let mut initial_spheres = [McManaSphereSnapshotV2::default(); 64];
         let mut initial_sphere_batch = McCampaignManaBatchV2::default();
         assert_eq!(
@@ -16825,7 +16925,7 @@ mod tests {
                 0,
                 initial_goats.as_mut_ptr(),
                 initial_goats.len() as u32,
-                struct_size::<McGoatSnapshotV2>(),
+                struct_size::<McCampaignGoatSnapshotV2>(),
                 &raw mut stale_goat_batch,
                 struct_size::<McGoatBatchV2>(),
             ),
@@ -18101,6 +18201,7 @@ _Static_assert(sizeof(McCampaignPlayerSnapshotV2) == 48, "McCampaignPlayerSnapsh
 _Static_assert(sizeof(McCampaignEntitySnapshotV2) == 52, "McCampaignEntitySnapshotV2 size");
 _Static_assert(sizeof(McCampaignShieldSnapshotV2) == 72, "McCampaignShieldSnapshotV2 size");
 _Static_assert(sizeof(McGoatSnapshotV2) == 84, "McGoatSnapshotV2 size");
+_Static_assert(sizeof(McCampaignGoatSnapshotV2) == 84, "McCampaignGoatSnapshotV2 size");
 _Static_assert(sizeof(McGoatBatchV2) == 64, "McGoatBatchV2 size");
 _Static_assert(sizeof(McCampaignManaBatchV2) == 64, "McCampaignManaBatchV2 size");
 _Static_assert(sizeof(McLevel1MissionSnapshotV2) == 96, "McLevel1MissionSnapshotV2 size");
@@ -18163,6 +18264,7 @@ _Static_assert(offsetof(McCampaignEntitySnapshotV2, reserved) == 36, "campaign e
 _Static_assert(offsetof(McCampaignShieldSnapshotV2, parent_status_flags) == 48, "campaign Shield flags offset");
 _Static_assert(offsetof(McGoatSnapshotV2, life) == 48, "Goat life offset");
 _Static_assert(offsetof(McGoatSnapshotV2, reserved) == 68, "Goat reserved offset");
+_Static_assert(offsetof(McCampaignGoatSnapshotV2, partner_entity_index) == 68, "campaign Goat partner offset");
 _Static_assert(offsetof(McGoatBatchV2, reserved) == 48, "Goat batch reserved offset");
 _Static_assert(offsetof(McLevel1MissionSnapshotV2, player_life) == 40, "Level 1 mission life offset");
 _Static_assert(offsetof(McLevel1PlayerLifecycleSnapshotV2, player_action) == 41, "player lifecycle action offset");
