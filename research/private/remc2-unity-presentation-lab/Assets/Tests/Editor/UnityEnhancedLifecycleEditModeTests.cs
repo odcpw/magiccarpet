@@ -749,6 +749,17 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsTrue(trailRenderer.enabled);
             Assert.IsFalse(trailRenderer.emitting);
             Assert.AreEqual(1, trailRenderer.positionCount);
+            Transform plume = gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000820000001/EnhancedFireballPlume");
+            Assert.IsNotNull(plume);
+            MeshRenderer plumeRenderer = plume.GetComponent<MeshRenderer>();
+            Assert.AreEqual("MagicCarpet/Enhanced/FireballTrail", plumeRenderer.sharedMaterial.shader.name);
+            Assert.IsTrue(plume.gameObject.activeSelf);
+            Assert.AreEqual(6, plume.GetComponent<MeshFilter>().sharedMesh.vertexCount);
+            Assert.Greater(plume.localScale.y, plume.localScale.x * 2f);
+            Assert.That(plume.position.x, Is.EqualTo(visual.position.x).Within(0.001f));
+            Assert.That(plume.position.y, Is.EqualTo(visual.position.y).Within(0.001f));
+            Assert.That(plume.position.z, Is.EqualTo(visual.position.z).Within(0.001f));
             Transform halo = gameObject.transform.Find(
                 "EnhancedWorldObjects/EnhancedEntity_0000000820000001/EnhancedFireballHalo");
             Assert.IsNotNull(halo);
@@ -779,6 +790,8 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsNull(gameObject.transform.Find(
                 "EnhancedWorldObjects/EnhancedEntity_0000000840000002/EnhancedFireballHalo"));
             Assert.IsNull(impactVisual.GetComponentInChildren<TrailRenderer>(true));
+            Assert.IsNull(gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000840000002/EnhancedFireballPlume"));
 
             Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
             {
@@ -812,6 +825,12 @@ namespace MagicCarpet.PresentationLab.Tests
             TrailRenderer movedTrailRenderer = movedTrail.GetComponent<TrailRenderer>();
             Assert.Greater(movedTrailRenderer.positionCount, 1);
             Assert.IsFalse(movedTrailRenderer.emitting);
+            Transform movedPlume = gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000820000001/EnhancedFireballPlume");
+            Assert.IsTrue(movedPlume.gameObject.activeSelf);
+            Assert.That(movedPlume.position.x, Is.EqualTo(visual.position.x).Within(0.001f));
+            Assert.That(movedPlume.position.y, Is.EqualTo(visual.position.y).Within(0.001f));
+            Assert.That(movedPlume.position.z, Is.EqualTo(visual.position.z).Within(0.001f));
 
             Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
             {
@@ -874,6 +893,52 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsFalse(reusedTrailRenderer.enabled);
             Assert.IsFalse(reusedTrailRenderer.emitting);
             Assert.AreEqual(0, reusedTrailRenderer.positionCount);
+            Assert.IsFalse(movedPlume.gameObject.activeSelf);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void ReducedMotionSuppressesFireballPlumeButKeepsAuthoritativeProjectile()
+        {
+            GameObject gameObject = new GameObject("enhanced-fireball-reduced-motion-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+            UnityEnhancedQualitySettings quality =
+                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog);
+            quality.ReducedMotion = true;
+            quality.CameraShake = false;
+            quality.SpeedStreaks = false;
+            quality.MotionBlur = false;
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 9,
+                Tick = 1,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Entities = new[]
+                {
+                    new UnityEnhancedEntitySnapshot
+                    {
+                        StableIdentity = 0x0000000920000001UL,
+                        Generation = 9,
+                        Position = new Vector3(0f, 0f, 5f),
+                        Rotation = Quaternion.identity,
+                        Visible = true,
+                        PresentationFamily = (int)UnityEnhancedPresentationFamily.Fire
+                    }
+                },
+                Quality = quality
+            }));
+
+            Transform core = gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000920000001/EnhancedActorVisual");
+            Transform plume = gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000920000001/EnhancedFireballPlume");
+            Assert.IsTrue(core.gameObject.activeSelf);
+            Assert.IsFalse(plume.gameObject.activeSelf);
+            Assert.IsTrue(root.VfxPresentation.ReducedMotion);
+            Assert.IsTrue(root.ActorPresentation != null);
 
             Object.DestroyImmediate(gameObject);
         }

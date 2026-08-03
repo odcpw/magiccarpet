@@ -43,9 +43,15 @@ namespace MagicCarpet.PresentationLab
         public MeshRenderer HaloRenderer;
         public GameObject TrailObject;
         public TrailRenderer TrailRenderer;
+        public GameObject PlumeObject;
+        public MeshFilter PlumeFilter;
+        public MeshRenderer PlumeRenderer;
         public bool FireballTrailVisible;
         public bool HasFireballTrailPosition;
         public Vector3 LastFireballTrailPosition;
+        public bool FireballPlumeVisible;
+        public bool HasFireballPlumePosition;
+        public Vector3 LastFireballPlumePosition;
         public int Family = -1;
         public bool FireballProjectileMaterial;
 
@@ -65,8 +71,14 @@ namespace MagicCarpet.PresentationLab
             {
                 TrailObject.SetActive(false);
             }
+            if (PlumeObject != null)
+            {
+                PlumeObject.SetActive(false);
+            }
             FireballTrailVisible = false;
             HasFireballTrailPosition = false;
+            FireballPlumeVisible = false;
+            HasFireballPlumePosition = false;
         }
     }
 
@@ -86,14 +98,41 @@ namespace MagicCarpet.PresentationLab
         private const float FireballTrailEndWidth = 0.025f;
         private const float FireballTrailMinimumMovement = 0.035f;
         private const int FireballTrailMaterialKey = -1000;
+        private const float FireballPlumeLength = 2.8f;
+        private const float FireballPlumeWidth = 1.15f;
+        private const float FireballPlumeMinimumMovement = 0.01f;
+        private const int FireballPlumeMeshKey = -1001;
+        private const int FireballPlumeMaterialKey = -1002;
         private readonly Dictionary<int, Mesh> meshes = new Dictionary<int, Mesh>();
         private readonly Dictionary<int, Material> materials = new Dictionary<int, Material>();
         private readonly HashSet<GameObject> configuredViews = new HashSet<GameObject>();
+        private Camera presentationCamera;
+        private bool reducedMotion;
 
         public int ActiveVisualCount { get; private set; }
         public int PooledVisualCount { get; private set; }
         public int LastConfiguredFamily { get; private set; } = -1;
         public int LastSortingOrder { get; private set; }
+
+        public void SetPresentationCamera(Camera camera)
+        {
+            presentationCamera = camera;
+        }
+
+        public void SetReducedMotion(bool value)
+        {
+            reducedMotion = value;
+            foreach (GameObject view in configuredViews)
+            {
+                UnityEnhancedActorVisualState state = view == null
+                    ? null
+                    : view.GetComponent<UnityEnhancedActorVisualState>();
+                if (state != null && state.PlumeObject != null)
+                {
+                    state.PlumeObject.SetActive(!value && state.FireballPlumeVisible);
+                }
+            }
+        }
 
         public static bool HasCoverage(int family)
         {
@@ -157,6 +196,7 @@ namespace MagicCarpet.PresentationLab
                     true);
                 EnsureFireballTrail(state);
                 ConfigureFireballTrail(state, entity);
+                EnsureFireballPlume(state);
             }
             else if (state.HaloObject != null)
             {
@@ -192,6 +232,7 @@ namespace MagicCarpet.PresentationLab
                     0f);
                 state.HaloObject.transform.localRotation = localRotation;
                 state.HaloObject.transform.localScale = Vector3.one * haloScale;
+                ConfigureFireballPlume(state, entity);
             }
             state.Renderer.sortingOrder = entity.RenderLayer;
             if (state.HaloRenderer != null)
@@ -237,6 +278,7 @@ namespace MagicCarpet.PresentationLab
             PooledVisualCount = 0;
             LastConfiguredFamily = -1;
             LastSortingOrder = 0;
+            reducedMotion = false;
         }
 
         private Mesh GetMesh(int family)
@@ -326,6 +368,180 @@ namespace MagicCarpet.PresentationLab
             state.LastFireballTrailPosition = entity.Position;
             state.HasFireballTrailPosition = true;
             state.FireballTrailVisible = true;
+        }
+
+        private void EnsureFireballPlume(UnityEnhancedActorVisualState state)
+        {
+            if (state.PlumeObject != null)
+            {
+                return;
+            }
+
+            state.PlumeObject = new GameObject("EnhancedFireballPlume");
+            state.PlumeObject.transform.SetParent(state.VisualObject.transform.parent, false);
+            state.PlumeObject.hideFlags = HideFlags.DontSave;
+            state.PlumeFilter = state.PlumeObject.AddComponent<MeshFilter>();
+            state.PlumeRenderer = state.PlumeObject.AddComponent<MeshRenderer>();
+            state.PlumeFilter.sharedMesh = GetFireballPlumeMesh();
+            state.PlumeRenderer.sharedMaterial = GetFireballPlumeMaterial();
+            state.PlumeRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            state.PlumeRenderer.receiveShadows = false;
+            state.PlumeRenderer.enabled = true;
+            state.PlumeObject.SetActive(false);
+        }
+
+        private void ConfigureFireballPlume(
+            UnityEnhancedActorVisualState state,
+            UnityEnhancedEntitySnapshot entity)
+        {
+            if (!entity.Visible)
+            {
+                DisableFireballPlume(state);
+                return;
+            }
+
+            Vector3 direction = ResolveFireballPlumeDirection(state, entity);
+            // Match the core's finalized world center. The core billboard uses
+            // a family-specific local pivot, so raw entity.Position can be a
+            // visible offset from the authoritative projectile center.
+            state.PlumeObject.transform.position = state.VisualObject.transform.position;
+            state.PlumeObject.transform.rotation = PlumeRotation(direction);
+            float baseScale = entity.Scale <= 0f ? 1f : entity.Scale;
+            state.PlumeObject.transform.localScale = new Vector3(
+                FireballPlumeWidth * baseScale,
+                FireballPlumeLength * baseScale,
+                baseScale);
+            state.PlumeObject.SetActive(!reducedMotion);
+            state.FireballPlumeVisible = true;
+        }
+
+        private Vector3 ResolveFireballPlumeDirection(
+            UnityEnhancedActorVisualState state,
+            UnityEnhancedEntitySnapshot entity)
+        {
+            Vector3 direction = Vector3.zero;
+            if (state.HasFireballPlumePosition)
+            {
+                direction = CameraPlaneDirection(
+                    entity.Position - state.LastFireballPlumePosition);
+            }
+
+            if (direction.sqrMagnitude < FireballPlumeMinimumMovement * FireballPlumeMinimumMovement)
+            {
+                direction = CameraPlaneDirection(entity.Rotation * Vector3.forward);
+            }
+
+            if (direction.sqrMagnitude < FireballPlumeMinimumMovement * FireballPlumeMinimumMovement)
+            {
+                direction = presentationCamera == null
+                    ? entity.Rotation * Vector3.up
+                    : presentationCamera.transform.up;
+            }
+
+            state.LastFireballPlumePosition = entity.Position;
+            state.HasFireballPlumePosition = true;
+            return direction.normalized;
+        }
+
+        private Vector3 CameraPlaneDirection(Vector3 worldDirection)
+        {
+            if (presentationCamera == null)
+            {
+                return worldDirection.normalized;
+            }
+
+            return Vector3.ProjectOnPlane(
+                worldDirection,
+                presentationCamera.transform.forward).normalized;
+        }
+
+        private Quaternion PlumeRotation(Vector3 direction)
+        {
+            Vector3 normal = presentationCamera == null
+                ? Vector3.forward
+                : presentationCamera.transform.forward;
+            return Quaternion.LookRotation(normal, direction);
+        }
+
+        private static void DisableFireballPlume(UnityEnhancedActorVisualState state)
+        {
+            if (state == null || state.PlumeObject == null)
+            {
+                return;
+            }
+
+            state.PlumeObject.SetActive(false);
+            state.FireballPlumeVisible = false;
+            state.HasFireballPlumePosition = false;
+        }
+
+        private Mesh GetFireballPlumeMesh()
+        {
+            Mesh mesh;
+            if (meshes.TryGetValue(FireballPlumeMeshKey, out mesh))
+            {
+                return mesh;
+            }
+
+            mesh = new Mesh
+            {
+                name = "EnhancedGeneratedMesh_FireballPlume",
+                hideFlags = HideFlags.DontSave
+            };
+            mesh.vertices = new[]
+            {
+                new Vector3(-0.50f, 0f, 0f), new Vector3(0.50f, 0f, 0f),
+                new Vector3(-0.34f, -0.44f, 0f), new Vector3(0.34f, -0.44f, 0f),
+                new Vector3(-0.055f, -1f, 0f), new Vector3(0.055f, -1f, 0f)
+            };
+            mesh.uv = new[]
+            {
+                new Vector2(0f, 0f), new Vector2(0f, 1f),
+                new Vector2(0.44f, 0f), new Vector2(0.44f, 1f),
+                new Vector2(1f, 0f), new Vector2(1f, 1f)
+            };
+            mesh.colors = new[]
+            {
+                new Color(1f, 0.78f, 0.20f, 1f), new Color(1f, 0.18f, 0.025f, 1f),
+                new Color(1f, 0.36f, 0.04f, 0.70f), new Color(1f, 0.08f, 0.01f, 0.70f),
+                new Color(1f, 0.12f, 0.01f, 0f), new Color(0.35f, 0.01f, 0f, 0f)
+            };
+            mesh.triangles = new[] { 0, 2, 1, 1, 2, 3, 2, 4, 3, 3, 4, 5 };
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            meshes.Add(FireballPlumeMeshKey, mesh);
+            return mesh;
+        }
+
+        private Material GetFireballPlumeMaterial()
+        {
+            Material material;
+            if (materials.TryGetValue(FireballPlumeMaterialKey, out material))
+            {
+                return material;
+            }
+
+            Shader shader = Shader.Find("MagicCarpet/Enhanced/FireballTrail") ??
+                            Shader.Find("MagicCarpet/Enhanced/Vfx");
+            material = shader == null ? null : new Material(shader)
+            {
+                name = "EnhancedGeneratedMaterial_FireballPlume",
+                hideFlags = HideFlags.DontSave
+            };
+            if (material != null)
+            {
+                material.enableInstancing = true;
+                if (shader.name == "MagicCarpet/Enhanced/FireballTrail")
+                {
+                    material.SetColor("_TrailColor", new Color(1f, 0.12f, 0.015f, 1f));
+                    material.SetFloat("_Intensity", 5.4f);
+                    material.SetFloat("_PulseSpeed", 4.6f);
+                    material.SetFloat("_ShimmerStrength", 0.18f);
+                    material.SetFloat("_Opacity", 0.96f);
+                }
+            }
+            materials.Add(FireballPlumeMaterialKey, material);
+            return material;
         }
 
         private Material GetFireballTrailMaterial()

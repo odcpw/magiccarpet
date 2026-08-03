@@ -363,6 +363,7 @@ namespace MagicCarpet.PresentationLab
             if (snapshot.Quality != null)
             {
                 vfxPresentation.SetReducedMotion(snapshot.Quality.ReducedMotion);
+                actorPresentation.SetReducedMotion(snapshot.Quality.ReducedMotion);
                 vfxPresentation.SetCameraComfort(snapshot.Quality.CameraShake);
                 diagnostics.SetAccessibility(snapshot.Quality.ReducedMotion, false);
             }
@@ -745,6 +746,7 @@ namespace MagicCarpet.PresentationLab
                 actorPresentation = GetComponent<UnityEnhancedActorPresentation>();
                 if (actorPresentation == null) actorPresentation = gameObject.AddComponent<UnityEnhancedActorPresentation>();
             }
+            actorPresentation.SetPresentationCamera(cameraRig.PresentationCamera);
 
             if (nightLighting == null)
             {
