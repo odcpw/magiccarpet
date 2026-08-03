@@ -28201,6 +28201,56 @@ mod tests {
     }
 
     #[test]
+    fn level_two_root_switches_materialize_all_authored_wind_groups() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        for (root_index, target_group, wind_index) in [
+            (109, 9, 110),
+            (113, 11, 114),
+            (117, 13, 118),
+            (121, 15, 122),
+        ] {
+            let mut session = inspection
+                .level2_reset_session()
+                .expect("Level 2 rooted wind-switch session");
+            let root = session
+                .level2_imported_switch_roots
+                .iter()
+                .find(|root| root.authored_index == root_index && root.target_group == target_group)
+                .copied()
+                .expect("authored rooted wind switch");
+            session.state.position = root.position;
+            for _ in 0..16 {
+                session.step_outer_turn(PlayerCommand::default(), 0);
+                if session
+                    .economy()
+                    .authored_model22()
+                    .iter()
+                    .any(|source| source.authored_index == wind_index)
+                {
+                    break;
+                }
+            }
+            assert!(
+                session
+                    .economy()
+                    .authored_model22()
+                    .iter()
+                    .any(|source| source.authored_index == wind_index)
+            );
+            assert_eq!(session.economy().model22_spawned_children().len(), 11);
+            assert!(session.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    group,
+                    authored_indices,
+                    ..
+                } if *group == target_group && authored_indices.as_ref() == [wind_index]
+            )));
+        }
+    }
+
+    #[test]
     fn level_two_authored_subtype45_runs_action51_and_reclaims_immediately() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
