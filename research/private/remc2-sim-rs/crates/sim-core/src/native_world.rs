@@ -5817,6 +5817,14 @@ impl Level2EconomyState {
         let target_group = if source.cooldown == 0 && source.phase & 7 == 0 && overlap {
             source.cooldown = 10;
             source.fired = true;
+            // `AddSwitch0B_00_6F030`/`CheckpointArrived_6F070` hide
+            // model-0 sources after the stage-tag group scan succeeds.
+            // Model-1's `sub_6F0B0` reloads its cooldown but leaves the
+            // source visible. Keep the arena row active for source-order /
+            // replay identity in both cases.
+            if source.model == 0 {
+                source.drawing_enabled = false;
+            }
             Some(source.stage_tag)
         } else {
             None
@@ -17470,7 +17478,11 @@ impl Level2ResetSession {
             self.economy
                 .authored_switch_producers()
                 .iter()
-                .filter(|source| source.active && source.fired && source.drawing_enabled)
+                // A fired switch has already run its stage-tag scan but stays
+                // in the source arena. Its drawing bit is hidden by the
+                // source callback; retain the fired row for downstream
+                // source-order bookkeeping just as model-32 does below.
+                .filter(|source| source.active && source.fired)
                 .map(|source| (source.source_entity_index, source.stage_tag)),
         );
         // Model-32 disables drawing as part of its successful objective
@@ -32890,6 +32902,103 @@ mod tests {
         assert!(row42.active);
         assert!(row42.drawing_enabled);
         assert!(!row42.fired);
+
+        session.reset();
+        assert!(session.economy().authored_switch_producers().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_group6_row84_materializes_from_row83_production_route() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-6 production session");
+        let baseline_hash = session.campaign_state_hash();
+        let authored_features = session.mission().authored_features().to_vec();
+        let feature = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("authored group-6 feature")
+        };
+
+        // Follow the real source walk into row 83: row 11 -> row 41 -> row
+        // 42 -> row 64 -> row 65 -> row 83.  The player remains on row 65 so
+        // the model-1 inverse-overlap callback can select group 6.
+        session.state.position = feature(11).world_position(0);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        session.state.position = feature(42).world_position(0);
+        for _ in 0..8 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        session.state.position = feature(65).world_position(0);
+        let mut group6_activated = false;
+        for _ in 0..8 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            group6_activated |= session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group: 6,
+                        authored_indices,
+                        ..
+                    } if authored_indices.as_ref() == [84]
+                )
+            });
+        }
+        assert!(
+            group6_activated,
+            "row 83 must activate group 6 in production"
+        );
+        let row83 = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 83)
+            .copied()
+            .expect("group 5 must materialize row 83");
+        assert!(row83.fired);
+        assert!(row83.drawing_enabled);
+
+        let row84 = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 84)
+            .copied()
+            .expect("group 6 must materialize row 84");
+        assert_eq!(
+            (
+                row84.source_class,
+                row84.model,
+                row84.action,
+                row84.stage_tag,
+                row84.word_10,
+                row84.dword_0x10,
+            ),
+            (11, 0, 0, 7, 16, 0)
+        );
+        let authored_row84 = feature(84);
+        assert_eq!(
+            (row84.position.x, row84.position.y, row84.position.z),
+            (
+                authored_row84.world_position(0).x,
+                authored_row84.world_position(0).y,
+                session
+                    .terrain
+                    .ground_height(authored_row84.world_position(0))
+            )
+        );
+        assert!(row84.active);
+        // The source runagain cursor visits the newly allocated row 84 in
+        // this same pass.  Because the player is still on row 65's authored
+        // tile (which is row 84's tile), the downstream group-7 callback
+        // consumes it immediately and hides the source drawing bit.
+        assert!(!row84.drawing_enabled);
+        assert!(row84.fired);
 
         session.reset();
         assert!(session.economy().authored_switch_producers().is_empty());
