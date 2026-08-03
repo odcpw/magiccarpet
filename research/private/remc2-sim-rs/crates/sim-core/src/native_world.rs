@@ -13668,6 +13668,74 @@ impl Level2ResetSession {
             });
     }
 
+    fn live_level2_class11_producers<F>(&self, mut producer_matches: F) -> Vec<(u16, u16)>
+    where
+        F: FnMut(&EntitySnapshot) -> bool,
+    {
+        self.entities
+            .iter()
+            .filter(|entity| {
+                entity.active
+                    && entity.class == 11
+                    && entity.source_id != 0
+                    && producer_matches(entity)
+            })
+            .map(|entity| (entity.index, entity.source_id))
+            .collect::<Vec<_>>()
+    }
+
+    fn activate_level2_rows_from_live_class11_producers<FProducer, FMatch, FSeen, FAllocate>(
+        &mut self,
+        pass: u8,
+        allocation_label: &str,
+        producer_matches: FProducer,
+        mut matches_feature: FMatch,
+        mut already_seen: FSeen,
+        mut allocate: FAllocate,
+    ) where
+        FProducer: FnMut(&EntitySnapshot) -> bool,
+        FMatch: FnMut(AuthoredFeature) -> bool,
+        FSeen: FnMut(&Self, u16) -> bool,
+        FAllocate: FnMut(&mut Self, u16) -> Option<u16>,
+    {
+        let producer_groups = self.live_level2_class11_producers(producer_matches);
+        for (producer_slot, producer_group) in producer_groups {
+            let rows = self
+                .mission
+                .authored_features()
+                .iter()
+                .copied()
+                .filter(|feature| {
+                    feature.activation_group == producer_group.cast_signed()
+                        && matches_feature(*feature)
+                        && !already_seen(self, feature.index)
+                })
+                .collect::<Vec<_>>();
+            for feature in rows {
+                let Some(source_slot) = allocate(self, feature.index) else {
+                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot: producer_slot,
+                        message: format!(
+                            "Level 2 authored {allocation_label} row {} could not allocate",
+                            feature.index
+                        ),
+                    });
+                    continue;
+                };
+                self.dispatch_events
+                    .push(Level2DispatchEvent::AuthoredGroupActivated {
+                        pass,
+                        source_slot: producer_slot,
+                        group: producer_group,
+                        authored_indices: vec![feature.index].into_boxed_slice(),
+                    });
+                debug_assert!(already_seen(self, feature.index));
+                debug_assert!(source_slot != 0);
+            }
+        }
+    }
+
     /// Consume authored model-54 rows when their retained class-11
     /// stage-tag producer is live.  This is the smallest production bridge
     /// for the source `sub_4A1E0` group filter: the class-11 constructor
@@ -13676,65 +13744,40 @@ impl Level2ResetSession {
     /// state machine remains separate; this hook does not invent a trigger
     /// for a group whose class-11 producer is not live.
     fn activate_level2_authored_mana_attraction_fields(&mut self, pass: u8) {
-        let producer_groups = self
-            .entities
-            .iter()
-            .filter(|entity| {
-                entity.active
-                    && entity.class == 11
-                    && matches!(entity.model, 0 | 1 | 12 | 32)
-                    && entity.source_id != 0
-            })
-            .map(|entity| (entity.index, entity.source_id))
-            .collect::<Vec<_>>();
-        for (producer_slot, producer_group) in producer_groups {
-            let rows = self
-                .mission
-                .authored_features()
-                .iter()
-                .copied()
-                .filter(|feature| {
-                    feature.kind == u16::from(MANA_ATTRACTION_CLASS)
-                        && feature.subtype == i16::from(MANA_ATTRACTION_MODEL)
-                        && feature.activation_group == producer_group.cast_signed()
-                        && !self
-                            .level2_mana_attraction_activated
-                            .contains(&feature.index)
-                })
-                .collect::<Vec<_>>();
-            for feature in rows {
-                let Some(source_slot) = self
-                    .allocate_level2_mana_attraction_field(feature.index, MANA_ATTRACTION_ACTION)
-                else {
-                    self.dispatch_events.push(Level2DispatchEvent::Error {
-                        pass,
-                        source_slot: producer_slot,
-                        message: format!(
-                            "Level 2 authored model-54 row {} could not allocate",
-                            feature.index
-                        ),
-                    });
-                    continue;
-                };
-                self.level2_mana_attraction_activated.insert(feature.index);
-                self.dispatch_events
-                    .push(Level2DispatchEvent::AuthoredGroupActivated {
-                        pass,
-                        source_slot: producer_slot,
-                        group: producer_group,
-                        authored_indices: vec![feature.index].into_boxed_slice(),
-                    });
+        self.activate_level2_rows_from_live_class11_producers(
+            pass,
+            "model-54",
+            |entity| matches!(entity.model, 0 | 1 | 12 | 32),
+            |feature| {
+                feature.kind == u16::from(MANA_ATTRACTION_CLASS)
+                    && feature.subtype == i16::from(MANA_ATTRACTION_MODEL)
+            },
+            |session, authored_index| {
+                session
+                    .level2_mana_attraction_activated
+                    .contains(&authored_index)
+            },
+            |session, authored_index| {
+                let source_slot = session.allocate_level2_mana_attraction_field(
+                    authored_index,
+                    MANA_ATTRACTION_ACTION,
+                )?;
+                session
+                    .level2_mana_attraction_activated
+                    .insert(authored_index);
                 // The source cursor will see this newly allocated row in the
                 // same pass. Keep the local binding explicit so a future
                 // extension cannot accidentally discard the source identity.
                 debug_assert!(
-                    self.economy
+                    session
+                        .economy
                         .mana_attraction_fields()
                         .iter()
                         .any(|field| field.source_entity_index == source_slot)
                 );
-            }
-        }
+                Some(source_slot)
+            },
+        );
     }
 
     /// Consume authored class-10/model-13 rows when the source class-11
@@ -13742,56 +13785,27 @@ impl Level2ResetSession {
     /// `sub_4A1E0` group filter without pretending to implement the broader
     /// objective/switch state machine.
     fn activate_level2_authored_model13(&mut self, pass: u8) {
-        let producer_groups = self
-            .entities
-            .iter()
-            .filter(|entity| entity.active && entity.class == 11 && entity.source_id != 0)
-            .map(|entity| (entity.index, entity.source_id))
-            .collect::<Vec<_>>();
-        for (producer_slot, producer_group) in producer_groups {
-            let rows = self
-                .mission
-                .authored_features()
-                .iter()
-                .copied()
-                .filter(|feature| {
-                    feature.kind == 10
-                        && feature.subtype == 13
-                        && feature.activation_group == producer_group.cast_signed()
-                        && !self.level2_model13_activated.contains(&feature.index)
-                })
-                .collect::<Vec<_>>();
-            for feature in rows {
-                let Some(source_slot) = self
-                    .allocate_level2_authored_model13(feature.index)
-                    .map(|source| source.source_entity_index)
-                else {
-                    self.dispatch_events.push(Level2DispatchEvent::Error {
-                        pass,
-                        source_slot: producer_slot,
-                        message: format!(
-                            "Level 2 authored model13 row {} could not allocate",
-                            feature.index
-                        ),
-                    });
-                    continue;
-                };
-                self.level2_model13_activated.insert(feature.index);
-                self.dispatch_events
-                    .push(Level2DispatchEvent::AuthoredGroupActivated {
-                        pass,
-                        source_slot: producer_slot,
-                        group: producer_group,
-                        authored_indices: vec![feature.index].into_boxed_slice(),
-                    });
+        self.activate_level2_rows_from_live_class11_producers(
+            pass,
+            "model13",
+            |_| true,
+            |feature| feature.kind == 10 && feature.subtype == 13,
+            |session, authored_index| session.level2_model13_activated.contains(&authored_index),
+            |session, authored_index| {
+                let source_slot = session
+                    .allocate_level2_authored_model13(authored_index)
+                    .map(|source| source.source_entity_index)?;
+                session.level2_model13_activated.insert(authored_index);
                 debug_assert!(
-                    self.economy
+                    session
+                        .economy
                         .authored_model13()
                         .iter()
-                        .any(|source| { source.source_entity_index == source_slot })
+                        .any(|source| source.source_entity_index == source_slot)
                 );
-            }
-        }
+                Some(source_slot)
+            },
+        );
     }
 
     /// Consume authored class-14 subtype-3/5 rows when an active class-11
@@ -13800,58 +13814,34 @@ impl Level2ResetSession {
     /// existing class-14 constructor owns the exact model payload and map
     /// linkage, while this hook supplies the missing source-pass reachability.
     fn activate_level2_authored_class14(&mut self, pass: u8) {
-        let producer_groups = self
-            .entities
-            .iter()
-            .filter(|entity| entity.active && entity.class == 11 && entity.source_id != 0)
-            .map(|entity| (entity.index, entity.source_id))
-            .collect::<Vec<_>>();
-        for (producer_slot, producer_group) in producer_groups {
-            let rows = self
-                .mission
-                .authored_features()
-                .iter()
-                .copied()
-                .filter(|feature| {
-                    feature.kind == 14
-                        && matches!(feature.subtype, 3 | 5)
-                        && feature.activation_group == producer_group.cast_signed()
-                        && !self.level2_class14_activated.contains(&feature.index)
-                        && !self
-                            .economy
-                            .authored_class14()
-                            .iter()
-                            .any(|source| source.authored_index == feature.index)
-                })
-                .collect::<Vec<_>>();
-            for feature in rows {
-                let Some(source) = self.allocate_level2_authored_class14(feature.index) else {
-                    self.dispatch_events.push(Level2DispatchEvent::Error {
-                        pass,
-                        source_slot: producer_slot,
-                        message: format!(
-                            "Level 2 authored class14 row {} could not allocate",
-                            feature.index
-                        ),
-                    });
-                    continue;
-                };
-                self.level2_class14_activated.insert(feature.index);
-                self.dispatch_events
-                    .push(Level2DispatchEvent::AuthoredGroupActivated {
-                        pass,
-                        source_slot: producer_slot,
-                        group: producer_group,
-                        authored_indices: vec![feature.index].into_boxed_slice(),
-                    });
-                debug_assert!(
-                    self.economy
+        self.activate_level2_rows_from_live_class11_producers(
+            pass,
+            "class14",
+            |_| true,
+            |feature| feature.kind == 14 && matches!(feature.subtype, 3 | 5),
+            |session, authored_index| {
+                session.level2_class14_activated.contains(&authored_index)
+                    || session
+                        .economy
                         .authored_class14()
                         .iter()
-                        .any(|row| { row.source_entity_index == source.source_entity_index })
+                        .any(|source| source.authored_index == authored_index)
+            },
+            |session, authored_index| {
+                let source_slot = session
+                    .allocate_level2_authored_class14(authored_index)
+                    .map(|source| source.source_entity_index)?;
+                session.level2_class14_activated.insert(authored_index);
+                debug_assert!(
+                    session
+                        .economy
+                        .authored_class14()
+                        .iter()
+                        .any(|row| row.source_entity_index == source_slot)
                 );
-            }
-        }
+                Some(source_slot)
+            },
+        );
     }
 
     fn activate_level2_authored_spell_group(
@@ -25062,6 +25052,40 @@ mod tests {
         session.reset();
         assert!(session.economy().authored_class14().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_class14_group31_reports_allocation_failure_without_partial_activation() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 class-14 producer-failure session");
+
+        let saved_free_slots = session.economy().free_slots.clone();
+        session.economy_mut().free_slots.clear();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(session.economy().authored_class14().is_empty());
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 31,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [244]
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Error {
+                source_slot,
+                message,
+                ..
+            } if *source_slot != 0
+                && message == "Level 2 authored class14 row 244 could not allocate"
+        )));
+
+        session.economy_mut().free_slots = saved_free_slots;
     }
 
     #[test]
