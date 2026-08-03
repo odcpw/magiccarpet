@@ -4078,6 +4078,33 @@ pub struct Level2AuthoredSwitchProducerSource {
     pub active: bool,
 }
 
+/// Authored class-10/model-59 checkpoint row constructed by remc2
+/// `ArriveCheckpoint_4EB50`. The constructor is source-backed here: action
+/// 64/model 59, two entity-local RNG draws for the 800..899 lifetime and
+/// 0..16 speed, the NewEvent byte-0x3E seed, and the direct authored position
+/// write. The broader action-64 visual callback remains outside this bounded
+/// activation slice, but the row is live in the shared arena so source
+/// ordering, map linkage, reset, and reclaim are real.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredModel59Source {
+    pub source_entity_index: u16,
+    pub entity_id: u16,
+    pub entity_rng: u16,
+    pub authored_index: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub max_life: i16,
+    pub life: i16,
+    pub actual_speed: i16,
+    pub control_flags: u32,
+    pub source_byte_3e: u8,
+    pub position: Position,
+    pub phase: u8,
+    pub drawing_enabled: bool,
+    pub active: bool,
+}
+
 /// The authored class-10/model-6 event constructed by remc2's
 /// `NewAdd0A06_4E5F0` and dispatched through `sub_31760`.  The fields mirror
 /// the callback's mutable words rather than collapsing them into a generic
@@ -4591,6 +4618,8 @@ pub struct Level2EconomyState {
     bee_model2_constructor_phase: u8,
     baseline_authored_switch_producers: Vec<Level2AuthoredSwitchProducerSource>,
     authored_switch_producers: Vec<Level2AuthoredSwitchProducerSource>,
+    baseline_authored_model59: Vec<Level2AuthoredModel59Source>,
+    authored_model59: Vec<Level2AuthoredModel59Source>,
     baseline_model13_spawned_children: Vec<Level2Model13SpawnedChild>,
     model13_spawned_children: Vec<Level2Model13SpawnedChild>,
     baseline_authored_model6: Vec<Level2AuthoredModel6Source>,
@@ -4798,6 +4827,8 @@ impl Level2EconomyState {
             bee_model2_constructor_phase: 0,
             baseline_authored_switch_producers: Vec::new(),
             authored_switch_producers: Vec::new(),
+            baseline_authored_model59: Vec::new(),
+            authored_model59: Vec::new(),
             baseline_model13_spawned_children: Vec::new(),
             model13_spawned_children: Vec::new(),
             baseline_authored_model6: Vec::new(),
@@ -4943,6 +4974,11 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_switch_producers(&self) -> &[Level2AuthoredSwitchProducerSource] {
         &self.authored_switch_producers
+    }
+
+    #[must_use]
+    pub fn authored_model59(&self) -> &[Level2AuthoredModel59Source] {
+        &self.authored_model59
     }
 
     #[must_use]
@@ -5366,6 +5402,83 @@ impl Level2EconomyState {
         self.source_rng.insert(source_entity_index, entity_rng);
         self.authored_switch_producers.push(source);
         Some(source)
+    }
+
+    /// Allocate the authored class-10/model-59 checkpoint row from the
+    /// generic `sub_4A310` path. The pinned `ArriveCheckpoint_4EB50`
+    /// constructor performs two entity-local RNG draws: max-life in
+    /// `800..899`, then actual speed in `0..16`; it writes action 64/model 59
+    /// and preserves the direct authored position.
+    pub fn allocate_authored_model59(
+        &mut self,
+        authored_index: u16,
+        position: Position,
+    ) -> Option<Level2AuthoredModel59Source> {
+        let source_entity_index = self.allocate_slot()?;
+        let initial_rng = self.new_event_rng(source_entity_index);
+        let life_rng = level2_next_rng16(initial_rng);
+        let max_life = i16::try_from(life_rng % 0x64).expect("checkpoint life fits i16") + 800;
+        let speed_rng = level2_next_rng16(life_rng);
+        let actual_speed = i16::try_from(speed_rng % 0x11).expect("checkpoint speed fits i16");
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let source = Level2AuthoredModel59Source {
+            source_entity_index,
+            entity_id: source_entity_index,
+            entity_rng: speed_rng,
+            authored_index,
+            source_class: 10,
+            model: 59,
+            action: 64,
+            max_life,
+            life: max_life,
+            actual_speed,
+            // NewEvent starts with dword 8; ArriveCheckpoint applies
+            // `(byte0 & 0xf6) | 1`, yielding the little-endian dword 9.
+            control_flags: 9,
+            source_byte_3e: source_entity_index as u8,
+            position,
+            phase: source_entity_index as u8,
+            drawing_enabled: true,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, speed_rng);
+        self.authored_model59.push(source);
+        Some(source)
+    }
+
+    /// The full action-64 visual callback is a later presentation slice. Keep
+    /// the live source cursor observable now: advance byte 0x3E/phase and
+    /// retain the map row without inventing effects not yet source-backed.
+    pub fn step_authored_model59_slot(&mut self, source_slot: u16) -> bool {
+        let Some(source) = self
+            .authored_model59
+            .iter_mut()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
+        source.phase = source.phase.wrapping_add(1);
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .is_ok()
     }
 
     /// Allocate the authored class-10/subtype-39 consumer from the generic
@@ -7570,6 +7683,12 @@ impl Level2EconomyState {
             visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::AuthoredSwitchProducer,
+            );
+        }
+        for source in self.authored_model59.iter().filter(|source| source.active) {
+            visit(
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredModel59,
             );
         }
         for child in self
@@ -10740,6 +10859,22 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_model59 = self
+            .authored_model59
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_model59.retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_model59 {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_model13_children = self
             .model13_spawned_children
             .iter()
@@ -11193,6 +11328,29 @@ impl Level2EconomyState {
             ]);
             hasher.update(source.stage_tag.to_le_bytes());
             hasher.update(source.word_10.to_le_bytes());
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+        }
+        hasher.update(b"level2-authored-model59-v1");
+        for source in &self.authored_model59 {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_id.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.authored_index.to_le_bytes());
+            hasher.update([
+                source.source_class,
+                source.model,
+                source.action,
+                source.source_byte_3e,
+                source.phase,
+                u8::from(source.drawing_enabled),
+                u8::from(source.active),
+            ]);
+            hasher.update(source.max_life.to_le_bytes());
+            hasher.update(source.life.to_le_bytes());
+            hasher.update(source.actual_speed.to_le_bytes());
+            hasher.update(source.control_flags.to_le_bytes());
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
@@ -11711,6 +11869,7 @@ impl Level2EconomyState {
         self.authored_bees = self.baseline_authored_bees.clone();
         self.bee_model2_constructor_phase = self.baseline_bee_model2_constructor_phase;
         self.authored_switch_producers = self.baseline_authored_switch_producers.clone();
+        self.authored_model59 = self.baseline_authored_model59.clone();
         self.model13_spawned_children = self.baseline_model13_spawned_children.clone();
         self.authored_model6 = self.baseline_authored_model6.clone();
         self.model6_spawned_children = self.baseline_model6_spawned_children.clone();
@@ -14565,6 +14724,8 @@ pub struct Level2ResetSession {
     /// identity even though the typed consumers live in the sphere arena.
     baseline_level2_model39_activated: BTreeSet<u16>,
     level2_model39_activated: BTreeSet<u16>,
+    baseline_level2_model59_activated: BTreeSet<u16>,
+    level2_model59_activated: BTreeSet<u16>,
     baseline_level2_imported_switch_roots: Box<[Level2ImportedSwitchRootState]>,
     level2_imported_switch_roots: Box<[Level2ImportedSwitchRootState]>,
     baseline_level2_group10_switch25: Option<Level2Group10Switch25State>,
@@ -14678,6 +14839,7 @@ pub enum Level2DynamicArenaKind {
     Model76TailSpawn,
     AuthoredClass14,
     AuthoredSwitchProducer,
+    AuthoredModel59,
     BeyondSightPulseEffect,
     ManaAttraction,
 }
@@ -14811,6 +14973,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::Model76TailSpawn => 25,
         Level2DynamicArenaKind::AuthoredClass14 => 13,
         Level2DynamicArenaKind::AuthoredSwitchProducer => 27,
+        Level2DynamicArenaKind::AuthoredModel59 => 28,
         Level2DynamicArenaKind::BeyondSightPulseEffect => 14,
         Level2DynamicArenaKind::ManaAttraction => 12,
     }
@@ -15119,6 +15282,8 @@ impl Level2ResetSession {
             level2_model22_activated: BTreeSet::new(),
             baseline_level2_model39_activated: BTreeSet::new(),
             level2_model39_activated: BTreeSet::new(),
+            baseline_level2_model59_activated: BTreeSet::new(),
+            level2_model59_activated: BTreeSet::new(),
             baseline_level2_imported_switch_roots: initial_level2_imported_switch_roots.clone(),
             level2_imported_switch_roots: initial_level2_imported_switch_roots,
             baseline_level2_group10_switch25: initial_level2_group10_switch25,
@@ -15510,6 +15675,26 @@ impl Level2ResetSession {
             feature.world_position(self.terrain.ground_height(feature.world_position(0)));
         self.economy
             .allocate_authored_model6(authored_index, position)
+    }
+
+    /// Materialize one authored class-10/model-59 checkpoint row through the
+    /// pinned `ArriveCheckpoint_4EB50` constructor.
+    pub fn allocate_level2_authored_model59(
+        &mut self,
+        authored_index: u16,
+    ) -> Option<Level2AuthoredModel59Source> {
+        let feature = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .find(|feature| {
+                feature.index == authored_index && feature.kind == 10 && feature.subtype == 59
+            })?;
+        let position =
+            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        self.economy
+            .allocate_authored_model59(authored_index, position)
     }
 
     /// Materialize one authored class-10/model-17 Meteor row through the
@@ -16337,11 +16522,12 @@ impl Level2ResetSession {
                 let is_switch =
                     feature.kind == 11 && matches!(feature.subtype, 0 | 1) && feature.index != 274;
                 let is_model22 = feature.kind == 10 && feature.subtype == 22;
+                let is_model59 = feature.kind == 10 && feature.subtype == 59 && target_group == 23;
                 let is_model39 = feature.kind == 10
                     && feature.subtype == 39
                     && matches!(target_group, 1 | 5 | 7 | 26);
                 feature.activation_group == i16::try_from(target_group).unwrap_or(-1)
-                    && (is_switch || is_model22 || is_model39)
+                    && (is_switch || is_model22 || is_model39 || is_model59)
             })
             .collect::<Vec<_>>();
         let mut activated = Vec::new();
@@ -16387,6 +16573,25 @@ impl Level2ResetSession {
                     continue;
                 };
                 self.level2_model39_activated.insert(feature.index);
+                activated.push((feature.index, source.source_entity_index));
+                continue;
+            }
+            if feature.kind == 10 && feature.subtype == 59 && target_group == 23 {
+                if self.level2_model59_activated.contains(&feature.index) {
+                    continue;
+                }
+                let Some(source) = self.allocate_level2_authored_model59(feature.index) else {
+                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot: producer_slot,
+                        message: format!(
+                            "Level 2 authored checkpoint group {target_group} row {} could not allocate",
+                            feature.index
+                        ),
+                    });
+                    continue;
+                };
+                self.level2_model59_activated.insert(feature.index);
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
@@ -17734,6 +17939,9 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::AuthoredSwitchProducer => {
                 self.step_level2_authored_switch_producer(pass, source_slot)
             }
+            Level2DynamicArenaKind::AuthoredModel59 => {
+                self.economy.step_authored_model59_slot(source_slot)
+            }
             Level2DynamicArenaKind::BeyondSightPulseEffect => self
                 .economy
                 .step_beyond_sight_pulse_effect_slot(source_slot),
@@ -17899,6 +18107,10 @@ impl Level2ResetSession {
         for authored_index in &self.level2_model39_activated {
             hasher.update(authored_index.to_le_bytes());
         }
+        hasher.update(b"level2-model59-activation-v1");
+        for authored_index in &self.level2_model59_activated {
+            hasher.update(authored_index.to_le_bytes());
+        }
         hasher.update(b"level2-group10-switch25-v1");
         match self.level2_group10_switch25 {
             Some(switch) => {
@@ -18024,6 +18236,7 @@ impl Level2ResetSession {
         self.level2_model76_activated = self.baseline_level2_model76_activated.clone();
         self.level2_model22_activated = self.baseline_level2_model22_activated.clone();
         self.level2_model39_activated = self.baseline_level2_model39_activated.clone();
+        self.level2_model59_activated = self.baseline_level2_model59_activated.clone();
         self.level2_imported_switch_roots = self.baseline_level2_imported_switch_roots.clone();
         self.level2_group10_switch25 = self.baseline_level2_group10_switch25;
         self.level2_class11_model0_constructor_phase =
@@ -31681,6 +31894,108 @@ mod tests {
         assert_eq!(
             session.economy().owner_mana_global(),
             baseline_owner_mana_global
+        );
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_group23_model59_materializes_from_rooted_production_turns() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-23 model-59 session");
+        let baseline_hash = session.campaign_state_hash();
+        let baseline_model59_count = session.economy().authored_model59().len();
+        let authored_features = session.mission().authored_features().to_vec();
+        let feature_position = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("authored group-23 feature")
+                .world_position(0)
+        };
+        let expected_group23_indices = [343_u16, 344];
+        let root = session
+            .level2_imported_switch_roots
+            .iter()
+            .find(|root| root.authored_index == 342)
+            .expect("imported row-342 group-23 root");
+        assert_eq!(root.target_group, 23);
+        let root_source_slot = root.source_slot;
+
+        // This is the real imported root overlap path. No allocator or
+        // authored-row helper is called directly; the source pass owns the
+        // group activation and the same-pass dynamic cursor visit.
+        session.state.position = feature_position(342);
+        let mut activated = false;
+        for _ in 0..8 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            activated |= session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        source_slot,
+                        group,
+                        authored_indices,
+                        ..
+                    } if *source_slot == root_source_slot
+                        && *group == 23
+                        && authored_indices.as_ref() == expected_group23_indices.as_slice()
+                )
+            });
+            if activated {
+                break;
+            }
+        }
+        assert!(activated, "row 342 must activate group 23 in production");
+
+        let checkpoint = session
+            .economy()
+            .authored_model59()
+            .iter()
+            .find(|source| source.authored_index == 343)
+            .copied()
+            .expect("group 23 model-59 checkpoint source");
+        assert_eq!(
+            (checkpoint.source_class, checkpoint.model, checkpoint.action),
+            (10, 59, 64)
+        );
+        let checkpoint_position = feature_position(343);
+        assert_eq!(
+            (checkpoint.position.x, checkpoint.position.y),
+            (checkpoint_position.x, checkpoint_position.y)
+        );
+        assert_eq!(
+            checkpoint.position.z,
+            session.terrain.ground_height(checkpoint_position)
+        );
+        assert_eq!(checkpoint.life, checkpoint.max_life);
+        assert!((800..=899).contains(&checkpoint.max_life));
+        assert!((0..=16).contains(&checkpoint.actual_speed));
+        assert_eq!(checkpoint.control_flags, 9);
+        // The newly allocated row is visited by the same source runagain
+        // sweep once, so the constructor seed has advanced by one callback.
+        assert_eq!(
+            checkpoint.source_byte_3e,
+            (checkpoint.source_entity_index as u8).wrapping_add(1)
+        );
+        assert!(checkpoint.drawing_enabled);
+        assert!(checkpoint.active);
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .any(|source| source.authored_index == 344)
+        );
+        assert_eq!(session.economy().authored_model59().len(), 1);
+
+        session.reset();
+        assert_eq!(
+            session.economy().authored_model59().len(),
+            baseline_model59_count
         );
         assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
