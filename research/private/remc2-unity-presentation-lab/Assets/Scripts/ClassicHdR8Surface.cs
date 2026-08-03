@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using UnityEngine;
 
 namespace MagicCarpet.PresentationLab
@@ -13,6 +14,8 @@ namespace MagicCarpet.PresentationLab
         private Texture2D paletteTexture;
         private Material material;
         private byte[] rowOrientedBytes;
+        private byte[] paletteRgbaBytes;
+        private string externalPalettePath;
 
         public int Width { get; private set; }
         public int Height { get; private set; }
@@ -73,7 +76,9 @@ namespace MagicCarpet.PresentationLab
             paletteTexture.wrapMode = TextureWrapMode.Clamp;
             Color32[] palette = BuildNightPalette();
             paletteTexture.SetPixels32(palette);
-            paletteTexture.Apply(false, true);
+            paletteTexture.Apply(false, false);
+            paletteRgbaBytes = new byte[256 * 4];
+            externalPalettePath = string.Empty;
 
             Shader shader = Resources.Load<Shader>("ClassicHdIndexedUnlit");
             if (shader == null)
@@ -111,6 +116,11 @@ namespace MagicCarpet.PresentationLab
                 return false;
             }
 
+            if (!TryApplyExternalOwnerPalette(out reason))
+            {
+                return false;
+            }
+
             for (int sourceRow = 0; sourceRow < Height; sourceRow++)
             {
                 int destinationRow = Height - sourceRow - 1;
@@ -120,6 +130,60 @@ namespace MagicCarpet.PresentationLab
             indexTexture.SetPixelData(rowOrientedBytes, 0);
             indexTexture.Apply(false, false);
             UploadCount++;
+            return true;
+        }
+
+        private bool TryApplyExternalOwnerPalette(out string reason)
+        {
+            reason = string.Empty;
+            string assetCachePath = Environment.GetEnvironmentVariable("MC_ASSET_CACHE_PATH");
+            if (string.IsNullOrWhiteSpace(assetCachePath))
+            {
+                return true;
+            }
+
+            string palettePath = Path.Combine(assetCachePath, "palette", "paln.rgb8");
+            if (string.Equals(palettePath, externalPalettePath, StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (!File.Exists(palettePath))
+            {
+                reason = "Classic HD owner palette is missing: " + palettePath;
+                return false;
+            }
+
+            byte[] paletteRgb8;
+            try
+            {
+                paletteRgb8 = File.ReadAllBytes(palettePath);
+            }
+            catch (Exception exception)
+            {
+                reason = "Classic HD owner palette could not be read: " + exception.Message;
+                return false;
+            }
+
+            if (paletteRgb8.Length != 256 * 3)
+            {
+                reason = "Classic HD owner palette must contain exactly 768 RGB8 bytes";
+                return false;
+            }
+
+            for (int index = 0; index < 256; index++)
+            {
+                int source = index * 3;
+                int destination = index * 4;
+                paletteRgbaBytes[destination] = paletteRgb8[source];
+                paletteRgbaBytes[destination + 1] = paletteRgb8[source + 1];
+                paletteRgbaBytes[destination + 2] = paletteRgb8[source + 2];
+                paletteRgbaBytes[destination + 3] = 255;
+            }
+
+            paletteTexture.SetPixelData(paletteRgbaBytes, 0);
+            paletteTexture.Apply(false, false);
+            externalPalettePath = palettePath;
             return true;
         }
 
@@ -139,6 +203,8 @@ namespace MagicCarpet.PresentationLab
         {
             ReleaseUnityObjects();
             rowOrientedBytes = null;
+            paletteRgbaBytes = null;
+            externalPalettePath = string.Empty;
             Width = 0;
             Height = 0;
             Stride = 0;
