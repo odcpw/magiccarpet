@@ -4453,6 +4453,36 @@ pub struct Level2AuthoredClass14Source {
     pub active: bool,
 }
 
+/// Authored class-5/model-3 or model-9 source rows reached by the model-45
+/// group-22 callback.  The pinned constructors are live arena entities (not
+/// narrative markers): model 3 is the 9,000-life creature root and model 9
+/// is the 1,000-life creature root.  Their detailed action callbacks remain
+/// a later creature slice, but allocation, source ordering, map linkage,
+/// reset, and cursor visits are source-backed here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredClass5Source {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub authored_index: u16,
+    pub model: u8,
+    pub action: u8,
+    pub minimum_speed: i16,
+    pub maximum_speed: i16,
+    pub actual_speed: i16,
+    pub max_life: i32,
+    pub life: i32,
+    pub mana: i32,
+    pub max_mana: i32,
+    pub subspell_index: u16,
+    pub dword_0x10: i32,
+    pub particle_index: u16,
+    pub source_byte_3e: u8,
+    pub position: Position,
+    pub phase: u8,
+    pub drawing_enabled: bool,
+    pub active: bool,
+}
+
 /// The first-pulse class-10/model-74 effect emitted by `sub_6CD20` for
 /// Beyond Sight.  The source creates it through class-9/subtype-25, then
 /// rewrites the class/model bytes to 10/74 and binds the holder/parent,
@@ -4671,6 +4701,12 @@ pub struct Level2EconomyState {
     model76_tail_spawns: Vec<Level2Model76TailSpawn>,
     baseline_authored_class14: Vec<Level2AuthoredClass14Source>,
     authored_class14: Vec<Level2AuthoredClass14Source>,
+    baseline_authored_class5: Vec<Level2AuthoredClass5Source>,
+    authored_class5: Vec<Level2AuthoredClass5Source>,
+    baseline_class5_model3_constructor_phase: u8,
+    class5_model3_constructor_phase: u8,
+    baseline_class5_model9_constructor_phase: u8,
+    class5_model9_constructor_phase: u8,
     /// Source `word_0x36DFE`, written by `sub_51570` for the latest model-3
     /// event and left unchanged by model 5.
     baseline_class14_model3_handle: u16,
@@ -4882,6 +4918,12 @@ impl Level2EconomyState {
             model76_tail_spawns: Vec::new(),
             baseline_authored_class14: Vec::new(),
             authored_class14: Vec::new(),
+            baseline_authored_class5: Vec::new(),
+            authored_class5: Vec::new(),
+            baseline_class5_model3_constructor_phase: 0,
+            class5_model3_constructor_phase: 0,
+            baseline_class5_model9_constructor_phase: 0,
+            class5_model9_constructor_phase: 0,
             baseline_class14_model3_handle: 0,
             class14_model3_handle: 0,
             baseline_beyond_sight_effects: Vec::new(),
@@ -5070,6 +5112,11 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_class14(&self) -> &[Level2AuthoredClass14Source] {
         &self.authored_class14
+    }
+
+    #[must_use]
+    pub fn authored_class5(&self) -> &[Level2AuthoredClass5Source] {
+        &self.authored_class5
     }
 
     #[must_use]
@@ -5986,6 +6033,117 @@ impl Level2EconomyState {
             self.class14_model3_handle = source_entity_index;
         }
         Some(source)
+    }
+
+    /// Allocate an authored class-5/model-3 or model-9 row through the
+    /// pinned `sub_4B6F0`/`sub_4BBB0` constructors.  The model-3 constructor
+    /// also creates a sixteen-child particle chain in remc2; this bounded
+    /// source row owns the root allocation and leaves that presentation
+    /// child callback for the dedicated creature slice.
+    pub fn allocate_authored_class5(
+        &mut self,
+        authored_index: u16,
+        model: u8,
+        position: Position,
+    ) -> Option<Level2AuthoredClass5Source> {
+        let (
+            action,
+            minimum_speed,
+            maximum_speed,
+            actual_speed,
+            max_life,
+            mana,
+            max_mana,
+            subspell_index,
+            dword_0x10,
+            particle_index,
+        ) = match model {
+            3 => (25, 64, 16, 30, 9_000, 2_250, 4_500, 0, 0, 88),
+            9 => (72, 20, 0, 20, 1_000, 500, 0, 500, 16, 220),
+            _ => return None,
+        };
+        let source_entity_index = self.allocate_slot()?;
+        let initial_rng = self.new_event_rng(source_entity_index);
+        let entity_rng = level2_next_rng16(initial_rng);
+        let source_byte_3e = match model {
+            3 => {
+                let phase = self.class5_model3_constructor_phase;
+                self.class5_model3_constructor_phase = phase.wrapping_add(1);
+                phase
+            }
+            9 => {
+                let phase = self.class5_model9_constructor_phase;
+                self.class5_model9_constructor_phase = phase.wrapping_add(1);
+                phase
+            }
+            _ => unreachable!("validated authored class-5 model"),
+        };
+        let mut position = position;
+        position.z = self.terrain.ground_height(position);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let source = Level2AuthoredClass5Source {
+            source_entity_index,
+            entity_rng,
+            authored_index,
+            model,
+            action,
+            minimum_speed,
+            maximum_speed,
+            actual_speed,
+            max_life,
+            life: max_life,
+            mana,
+            max_mana,
+            subspell_index,
+            dword_0x10: if model == 3 {
+                i32::from(source_entity_index % 100)
+            } else {
+                dword_0x10
+            },
+            particle_index,
+            source_byte_3e,
+            position,
+            phase: 0,
+            drawing_enabled: true,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.authored_class5.push(source);
+        Some(source)
+    }
+
+    /// Advance one authored class-5 root through the live source cursor.
+    /// Creature action tables are intentionally separate; this preserves the
+    /// constructor's live row and map relation without inventing combat AI.
+    pub fn step_authored_class5_slot(&mut self, source_slot: u16) -> bool {
+        let Some(source) = self
+            .authored_class5
+            .iter_mut()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        source.phase = source.phase.wrapping_add(1);
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .is_ok()
     }
 
     pub fn step_spell_pickup_slot(&mut self, source_slot: u16) -> bool {
@@ -7889,6 +8047,12 @@ impl Level2EconomyState {
             visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::AuthoredClass14,
+            );
+        }
+        for source in self.authored_class5.iter().filter(|source| source.active) {
+            visit(
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredClass5,
             );
         }
         for effect in self
@@ -11185,6 +11349,22 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_class5 = self
+            .authored_class5
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_class5.retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_class5 {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_beyond_sight_effects = self
             .beyond_sight_effects
             .iter()
@@ -11783,6 +11963,37 @@ impl Level2EconomyState {
             hasher.update(source.position.z.to_le_bytes());
             hasher.update([u8::from(source.active)]);
         }
+        hasher.update(b"authored-class5-v1");
+        hasher.update([
+            self.class5_model3_constructor_phase,
+            self.class5_model9_constructor_phase,
+        ]);
+        for source in &self.authored_class5 {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.authored_index.to_le_bytes());
+            hasher.update([
+                source.model,
+                source.action,
+                source.source_byte_3e,
+                source.phase,
+                u8::from(source.drawing_enabled),
+                u8::from(source.active),
+            ]);
+            hasher.update(source.minimum_speed.to_le_bytes());
+            hasher.update(source.maximum_speed.to_le_bytes());
+            hasher.update(source.actual_speed.to_le_bytes());
+            hasher.update(source.max_life.to_le_bytes());
+            hasher.update(source.life.to_le_bytes());
+            hasher.update(source.mana.to_le_bytes());
+            hasher.update(source.max_mana.to_le_bytes());
+            hasher.update(source.subspell_index.to_le_bytes());
+            hasher.update(source.dword_0x10.to_le_bytes());
+            hasher.update(source.particle_index.to_le_bytes());
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+        }
         for effect in &self.beyond_sight_effects {
             hasher.update(effect.source_entity_index.to_le_bytes());
             hasher.update(effect.entity_rng.to_le_bytes());
@@ -12043,6 +12254,9 @@ impl Level2EconomyState {
         self.model76_tail_spawns = self.baseline_model76_tail_spawns.clone();
         self.authored_class14 = self.baseline_authored_class14.clone();
         self.class14_model3_handle = self.baseline_class14_model3_handle;
+        self.authored_class5 = self.baseline_authored_class5.clone();
+        self.class5_model3_constructor_phase = self.baseline_class5_model3_constructor_phase;
+        self.class5_model9_constructor_phase = self.baseline_class5_model9_constructor_phase;
         self.beyond_sight_effects = self.baseline_beyond_sight_effects.clone();
         self.mana_attraction_fields = self.baseline_mana_attraction_fields.clone();
         self.carriers = self.baseline_carriers.clone();
@@ -14910,6 +15124,10 @@ pub struct Level2ResetSession {
     /// source passes.
     baseline_level2_class14_activated: BTreeSet<u16>,
     level2_class14_activated: BTreeSet<u16>,
+    /// Authored class-5/model-3/9 rows consumed by the model-45 group-22
+    /// callback. Retain authored identity across repeatable source scans.
+    baseline_level2_class5_activated: BTreeSet<u16>,
+    level2_class5_activated: BTreeSet<u16>,
 }
 
 /// One lossless, source-ordered result from the bounded Level 2 dispatcher.
@@ -15008,6 +15226,7 @@ pub enum Level2DynamicArenaKind {
     Model76Child,
     Model76TailSpawn,
     AuthoredClass14,
+    AuthoredClass5,
     AuthoredSwitchProducer,
     AuthoredModel32,
     AuthoredModel59,
@@ -15143,6 +15362,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::Model76Child => 24,
         Level2DynamicArenaKind::Model76TailSpawn => 25,
         Level2DynamicArenaKind::AuthoredClass14 => 13,
+        Level2DynamicArenaKind::AuthoredClass5 => 30,
         Level2DynamicArenaKind::AuthoredSwitchProducer => 27,
         Level2DynamicArenaKind::AuthoredModel32 => 29,
         Level2DynamicArenaKind::AuthoredModel59 => 28,
@@ -15476,6 +15696,8 @@ impl Level2ResetSession {
             level2_group31_switch28: None,
             baseline_level2_class14_activated: BTreeSet::new(),
             level2_class14_activated: BTreeSet::new(),
+            baseline_level2_class5_activated: BTreeSet::new(),
+            level2_class5_activated: BTreeSet::new(),
         }
     }
 
@@ -17241,12 +17463,82 @@ impl Level2ResetSession {
         );
     }
 
+    /// Consume the authored class-5/model-3/9 rows behind the live
+    /// class-10/model-45 row 153.  The pinned group scan reaches all seven
+    /// rows in source order; allocation is transactional so a source-pool
+    /// failure cannot expose a partial group.
+    fn activate_level2_authored_class5_group(
+        &mut self,
+        pass: u8,
+        producer_slot: u16,
+        target_group: u16,
+    ) {
+        if target_group != 22 {
+            return;
+        }
+        let rows = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .filter(|feature| {
+                feature.activation_group == 22
+                    && feature.kind == 5
+                    && matches!(feature.subtype, 3 | 9)
+                    && !self.level2_class5_activated.contains(&feature.index)
+            })
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            return;
+        }
+        let economy_before = self.economy.clone();
+        let activated_before = self.level2_class5_activated.clone();
+        let mut activated = Vec::with_capacity(rows.len());
+        for feature in rows {
+            let position =
+                feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+            let Some(source) = self.economy.allocate_authored_class5(
+                feature.index,
+                u8::try_from(feature.subtype).unwrap_or(u8::MAX),
+                position,
+            ) else {
+                self.economy = economy_before;
+                self.level2_class5_activated = activated_before;
+                self.dispatch_events.push(Level2DispatchEvent::Error {
+                    pass,
+                    source_slot: producer_slot,
+                    message: format!(
+                        "Level 2 authored class5 group {target_group} row {} could not allocate",
+                        feature.index
+                    ),
+                });
+                return;
+            };
+            self.level2_class5_activated.insert(feature.index);
+            activated.push((feature.index, source.source_entity_index));
+        }
+        self.dispatch_events
+            .push(Level2DispatchEvent::AuthoredGroupActivated {
+                pass,
+                source_slot: producer_slot,
+                group: target_group,
+                authored_indices: activated
+                    .into_iter()
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            });
+    }
+
     fn activate_level2_authored_spell_group(
         &mut self,
         pass: u8,
         producer_slot: u16,
         target_group: u16,
     ) {
+        if target_group == 22 {
+            self.activate_level2_authored_class5_group(pass, producer_slot, target_group);
+        }
         let rows = self
             .mission
             .authored_features()
@@ -18304,6 +18596,9 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::AuthoredClass14 => {
                 self.step_level2_authored_class14(source_slot)
             }
+            Level2DynamicArenaKind::AuthoredClass5 => {
+                self.economy.step_authored_class5_slot(source_slot)
+            }
             Level2DynamicArenaKind::AuthoredSwitchProducer => {
                 self.step_level2_authored_switch_producer(pass, source_slot)
             }
@@ -18525,6 +18820,10 @@ impl Level2ResetSession {
         for authored_index in &self.level2_class14_activated {
             hasher.update(authored_index.to_le_bytes());
         }
+        hasher.update(b"level2-class5-activation-v1");
+        for authored_index in &self.level2_class5_activated {
+            hasher.update(authored_index.to_le_bytes());
+        }
         hasher.update(b"level2-objective-switch-state-v1");
         hasher.update([
             self.level2_selected_objective_stage_state,
@@ -18629,6 +18928,7 @@ impl Level2ResetSession {
             self.baseline_level2_class11_model0_constructor_phase;
         self.level2_group31_switch28 = self.baseline_level2_group31_switch28;
         self.level2_class14_activated = self.baseline_level2_class14_activated.clone();
+        self.level2_class5_activated = self.baseline_level2_class5_activated.clone();
     }
 }
 
@@ -28950,6 +29250,64 @@ mod tests {
         assert!(!session.entities()[32].drawing_disabled());
         assert_eq!(session.runtime().objectives[0].stage_selectors[3], 1);
         assert_eq!(session.runtime().objectives[0].done, 0);
+    }
+
+    #[test]
+    fn level_two_model45_group22_materializes_authored_class5_rows_in_source_order() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-22 authored class-5 session");
+        let baseline_hash = session.campaign_state_hash();
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let sources = session.economy().authored_class5();
+        assert_eq!(
+            sources
+                .iter()
+                .map(|source| source.authored_index)
+                .collect::<Vec<_>>(),
+            vec![238, 239, 240, 241, 242, 243, 245]
+        );
+        assert_eq!(
+            sources
+                .iter()
+                .map(|source| source.model)
+                .collect::<Vec<_>>(),
+            vec![3, 9, 9, 9, 9, 9, 9]
+        );
+        assert_eq!(
+            sources
+                .iter()
+                .map(|source| source.action)
+                .collect::<Vec<_>>(),
+            vec![25, 72, 72, 72, 72, 72, 72]
+        );
+        assert!(sources.iter().all(|source| source.active));
+        assert!(sources.iter().all(|source| source.drawing_enabled));
+        assert_eq!(sources[0].max_life, 9_000);
+        assert_eq!(sources[0].mana, 2_250);
+        assert_eq!(sources[0].max_mana, 4_500);
+        assert_eq!(sources[1].max_life, 1_000);
+        assert_eq!(sources[1].mana, 500);
+        assert_eq!(sources[1].max_mana, 0);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 22,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [238, 239, 240, 241, 242, 243, 245]
+        )));
+
+        session.reset();
+        assert!(session.economy().authored_class5().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
     #[test]
