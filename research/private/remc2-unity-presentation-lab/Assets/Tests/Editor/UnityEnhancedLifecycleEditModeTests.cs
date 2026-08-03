@@ -1634,6 +1634,85 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void ImpactVfxEventUsesBoundedBurstAndOwnerPosition()
+        {
+            Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/Impact"));
+            GameObject gameObject = new GameObject("enhanced-impact-vfx-test");
+            GameObject cameraObject = new GameObject("enhanced-impact-vfx-camera");
+            Camera camera = cameraObject.AddComponent<Camera>();
+            cameraObject.transform.rotation = Quaternion.Euler(17f, 23f, 0f);
+            UnityEnhancedVfxPresentation vfx = gameObject.AddComponent<UnityEnhancedVfxPresentation>();
+            vfx.SetPresentationCamera(camera);
+            vfx.ResetForGeneration(7);
+
+            UnityEnhancedVfxEvent impact = new UnityEnhancedVfxEvent(
+                1,
+                7,
+                24,
+                0x4000002aUL,
+                UnityEnhancedVfxKind.Impact,
+                new Vector3(2f, 3f, 4f),
+                1f,
+                18);
+            Assert.IsTrue(vfx.ApplyEvent(impact));
+
+            Transform visual = gameObject.transform.Find("EnhancedVfxPool/EnhancedVfx");
+            Assert.IsNotNull(visual);
+            MeshFilter filter = visual.GetComponent<MeshFilter>();
+            MeshRenderer renderer = visual.GetComponent<MeshRenderer>();
+            Assert.AreEqual("MagicCarpet/Enhanced/Impact", renderer.sharedMaterial.shader.name);
+            Assert.GreaterOrEqual(filter.sharedMesh.vertexCount, 36);
+            Assert.Greater(filter.sharedMesh.bounds.size.y, 0.40f);
+            Assert.LessOrEqual(filter.sharedMesh.bounds.size.x, 0.90f);
+            Assert.LessOrEqual(filter.sharedMesh.bounds.size.z, 0.90f);
+            Assert.That(visual.position.x, Is.EqualTo(2f).Within(0.001f));
+            Assert.That(visual.position.y, Is.EqualTo(3f).Within(0.001f));
+            Assert.That(visual.position.z, Is.EqualTo(4f).Within(0.001f));
+            Assert.Greater(
+                Vector3.Dot(visual.forward, -camera.transform.forward),
+                0.99f);
+            Assert.That(renderer.sharedMaterial.GetFloat("_GlowIntensity"), Is.EqualTo(2.8f).Within(0.001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_PulseSpeed"), Is.EqualTo(5.0f).Within(0.001f));
+            Assert.IsFalse(vfx.ApplyEvent(impact));
+            Assert.AreEqual(1, vfx.DuplicateEffectCount);
+
+            vfx.SetReducedMotion(true);
+            Assert.That(visual.localScale.x, Is.EqualTo(0.6f).Within(0.001f));
+            Object.DestroyImmediate(gameObject);
+            Object.DestroyImmediate(cameraObject);
+        }
+
+        [Test]
+        public void OwnerFireballWarmLightPulseAndImpactMappingAreBounded()
+        {
+            float first = UnityEnhancedOwnerSessionSource.FireballLightIntensityPulse(6, 1);
+            float replay = UnityEnhancedOwnerSessionSource.FireballLightIntensityPulse(6, 1);
+            float later = UnityEnhancedOwnerSessionSource.FireballLightIntensityPulse(11, 1);
+            float alternate = UnityEnhancedOwnerSessionSource.FireballLightIntensityPulse(6, 2);
+            float range = UnityEnhancedOwnerSessionSource.FireballLightRangePulse(6, 1);
+
+            Assert.That(replay, Is.EqualTo(first).Within(0.000001f));
+            Assert.That(Mathf.Abs(later - first), Is.GreaterThan(0.001f));
+            Assert.That(Mathf.Abs(alternate - first), Is.GreaterThan(0.001f));
+            Assert.That(first, Is.InRange(0.82f, 1.18f));
+            Assert.That(later, Is.InRange(0.82f, 1.18f));
+            Assert.That(alternate, Is.InRange(0.82f, 1.18f));
+            Assert.That(range, Is.InRange(0.94f, 1.06f));
+            Assert.AreEqual(
+                UnityEnhancedVfxKind.Impact,
+                UnityEnhancedOwnerSessionSource.ClassifyImpactVfxKind(16, 0));
+            Assert.AreEqual(
+                UnityEnhancedVfxKind.Impact,
+                UnityEnhancedOwnerSessionSource.ClassifyImpactVfxKind(16, 6));
+            Assert.AreEqual(
+                UnityEnhancedVfxKind.Weather,
+                UnityEnhancedOwnerSessionSource.ClassifyImpactVfxKind(37, 0));
+            Assert.AreEqual(
+                UnityEnhancedVfxKind.Smoke,
+                UnityEnhancedOwnerSessionSource.ClassifyImpactVfxKind(99, 13));
+        }
+
+        [Test]
         public void QualityRejectsUngatedTemporalAndAppliesSpatialWholeHogDefaults()
         {
             GameObject gameObject = new GameObject("enhanced-quality-test");

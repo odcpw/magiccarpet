@@ -95,6 +95,9 @@ namespace MagicCarpet.PresentationLab
         private const uint EventLevel1PossessionSpawned = 31;
         private const uint EventLevel1ManaSphereSpawned = 32;
         private const uint EventLevel1WaterSplashed = 37;
+        private const float FireballLightPulsePrimary = 0.12f;
+        private const float FireballLightPulseSecondary = 0.06f;
+        private const float FireballLightRangePulseAmount = 0.04f;
 
         private byte[] packageBytes;
         private byte[] closureBytes;
@@ -276,6 +279,28 @@ namespace MagicCarpet.PresentationLab
         public static float SourceVerticalToUnity(float sourceZ)
         {
             return sourceZ / SourceUnitsPerUnityUnit * EnhancedVerticalPresentationScale;
+        }
+
+        /// <summary>
+        /// Keeps an owner fireball's warm-light field alive as a small,
+        /// deterministic flame shimmer. The tick and projectile identity are
+        /// authoritative inputs; Unity time never changes gameplay state.
+        /// </summary>
+        public static float FireballLightIntensityPulse(ulong tick, uint projectileId)
+        {
+            float phase = (tick % 1024UL) * 0.47f + (projectileId % 17U) * 0.37f;
+            float pulse = 1f + FireballLightPulsePrimary * Mathf.Sin(phase) +
+                          FireballLightPulseSecondary * Mathf.Sin(phase * 0.53f + 1.7f);
+            return Mathf.Clamp(pulse, 0.82f, 1.18f);
+        }
+
+        public static float FireballLightRangePulse(ulong tick, uint projectileId)
+        {
+            float phase = (tick % 1024UL) * 0.31f + (projectileId % 23U) * 0.23f;
+            return Mathf.Clamp(
+                1f + FireballLightRangePulseAmount * Mathf.Sin(phase),
+                0.94f,
+                1.06f);
         }
 
         public int ActiveEntityCount
@@ -1885,8 +1910,12 @@ namespace MagicCarpet.PresentationLab
                     DynamicStableIdentity(0x20000000U, source.projectileId),
                     ProjectedPosition(source.x, source.y, source.z),
                     fireball ? new Color(1f, 0.2f, 0.04f, 1f) : new Color(1f, 0.32f, 0.08f, 1f),
-                    fireball ? 5.5f : 1.8f,
-                    fireball ? 11f : 6f,
+                    fireball
+                        ? 5.5f * FireballLightIntensityPulse(snapshot.tick, source.projectileId)
+                        : 1.8f,
+                    fireball
+                        ? 11f * FireballLightRangePulse(snapshot.tick, source.projectileId)
+                        : 6f,
                     (ushort)(2000 + (source.projectileId % 1000U))));
             }
 
@@ -1898,14 +1927,19 @@ namespace MagicCarpet.PresentationLab
                     continue;
                 }
 
+                bool fireballImpact = source.model == 0 || source.model == 6;
                 result.Add(new UnityEnhancedLocalLightRequest(
                     DynamicStableIdentity(0x40000000U, source.impactId),
                     ProjectedPosition(source.x, source.y, source.z),
-                    source.model == 6
+                    fireballImpact
                         ? new Color(1f, 0.18f, 0.03f, 1f)
                         : new Color(1f, 0.72f, 0.18f, 1f),
-                    source.model == 6 ? 2.6f : 1.8f,
-                    source.model == 6 ? 8f : 6f,
+                    fireballImpact
+                        ? 2.6f * FireballLightIntensityPulse(snapshot.tick, source.impactId)
+                        : 1.8f,
+                    fireballImpact
+                        ? 8f * FireballLightRangePulse(snapshot.tick, source.impactId)
+                        : 6f,
                     (ushort)(3000 + (source.impactId % 1000U))));
             }
 
@@ -1969,11 +2003,10 @@ namespace MagicCarpet.PresentationLab
                         continue;
                     }
 
-                    kind = source.kind == EventLevel1WaterSplashed
-                        ? UnityEnhancedVfxKind.Weather
-                        : ImpactKind(impact.model);
+                    kind = ClassifyImpactVfxKind(source.kind, impact.model);
                     position = ProjectedPosition(impact.x, impact.y, impact.z);
-                    intensity = kind == UnityEnhancedVfxKind.Fire ? 1.3f : 1f;
+                    intensity = kind == UnityEnhancedVfxKind.Fire ? 1.3f :
+                                kind == UnityEnhancedVfxKind.Impact ? 1.1f : 1f;
                     duration = kind == UnityEnhancedVfxKind.Smoke ? 28u : 18u;
                     stableIdentity = ((ulong)snapshot.generation << 32) |
                                       (0x40000000UL | impact.impactId);
@@ -2022,6 +2055,21 @@ namespace MagicCarpet.PresentationLab
                    kind == EventLevel1FireflyFireballSpawned ||
                    kind == EventLevel1CastleProjectileSpawned ||
                    kind == EventLevel1PossessionSpawned;
+        }
+
+        public static UnityEnhancedVfxKind ClassifyImpactVfxKind(uint eventKind, byte model)
+        {
+            if (eventKind == EventLevel1WaterSplashed)
+            {
+                return UnityEnhancedVfxKind.Weather;
+            }
+
+            if (eventKind == EventLevel1FireballImpacted)
+            {
+                return UnityEnhancedVfxKind.Impact;
+            }
+
+            return ImpactKind(model);
         }
 
         private static UnityEnhancedVfxKind ImpactKind(byte model)

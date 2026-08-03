@@ -66,6 +66,10 @@ namespace MagicCarpet.PresentationLab
     public sealed class UnityEnhancedVfxPresentation : MonoBehaviour
     {
         private const float FireballEventVisualScale = 1.8f;
+        // Owner impacts can occur at the far edge of the flight camera. Keep
+        // the authoritative position, but give the transient additive cue a
+        // fixed readability scale comparable to the existing fireball halo.
+        private const float ImpactEventVisualScale = 5.0f;
         private const int SpeedReadabilityBaseCount = 8;
         private const int SpeedReadabilityMaximumCount = 12;
         private const int SpeedReadabilityAuthoritativeCountCap = 4;
@@ -85,6 +89,7 @@ namespace MagicCarpet.PresentationLab
         private readonly List<UnityEnhancedVfxVisual> speedReadabilityPool = new List<UnityEnhancedVfxVisual>();
         private Transform effectRoot;
         private Transform speedReadabilityRoot;
+        private Camera presentationCamera;
         private ulong generation;
         private ulong lastEventSequence;
         private ulong lastTick;
@@ -101,6 +106,11 @@ namespace MagicCarpet.PresentationLab
         public ulong LastEventSequence { get { return lastEventSequence; } }
         public bool ReducedMotion { get { return reducedMotion; } }
         public bool CameraComfortEnabled { get; private set; } = true;
+
+        public void SetPresentationCamera(Camera camera)
+        {
+            presentationCamera = camera;
+        }
 
         public void SetCameraComfort(bool enabled)
         {
@@ -165,9 +175,17 @@ namespace MagicCarpet.PresentationLab
             ulong duration = vfxEvent.DurationTicks == 0 ? 1UL : vfxEvent.DurationTicks;
             visual.ExpireTick = vfxEvent.Tick + duration;
             visual.Object.transform.position = vfxEvent.Position;
+            visual.Object.transform.rotation = vfxEvent.Kind == UnityEnhancedVfxKind.Impact &&
+                                               presentationCamera != null
+                ? Quaternion.LookRotation(
+                    -presentationCamera.transform.forward,
+                    presentationCamera.transform.up)
+                : Quaternion.identity;
             float intensity = Mathf.Clamp(vfxEvent.Intensity <= 0f ? 1f : vfxEvent.Intensity, 0.1f, 4f);
             float eventScale = vfxEvent.Kind == UnityEnhancedVfxKind.Fire
                 ? FireballEventVisualScale
+                : vfxEvent.Kind == UnityEnhancedVfxKind.Impact
+                    ? ImpactEventVisualScale
                 : 1f;
             visual.Object.transform.localScale = Vector3.one * intensity * eventScale *
                                                   (reducedMotion ? 0.6f : 1f);
@@ -429,6 +447,13 @@ namespace MagicCarpet.PresentationLab
                 return mesh;
             }
 
+            if (kind == UnityEnhancedVfxKind.Impact)
+            {
+                mesh = CreateImpactMesh();
+                meshes.Add(kind, mesh);
+                return mesh;
+            }
+
             if (kind == UnityEnhancedVfxKind.SpeedTrail)
             {
                 mesh = CreateSpeedStreakMesh();
@@ -520,6 +545,149 @@ namespace MagicCarpet.PresentationLab
             return mesh;
         }
 
+        private static Mesh CreateImpactMesh()
+        {
+            const int ringSegments = 12;
+            const float ringInnerRadius = 0.16f;
+            const float ringOuterRadius = 0.42f;
+            const float ringHeight = 0.045f;
+            const float burstBaseRadius = 0.08f;
+            const float burstHalfWidth = 0.12f;
+            const float burstTipRadius = 0.43f;
+
+            const float billboardCenterHeight = 0.25f;
+            const float billboardInnerRadius = 0.14f;
+            const float billboardOuterRadius = 0.42f;
+            var vertices = new List<Vector3>(ringSegments * 6 + 24);
+            var triangles = new List<int>(ringSegments * 18 + 48);
+            AddImpactRing(
+                vertices,
+                triangles,
+                Vector3.up * ringHeight,
+                Vector3.right,
+                Vector3.forward,
+                ringInnerRadius,
+                ringOuterRadius,
+                ringSegments);
+            AddImpactRing(
+                vertices,
+                triangles,
+                Vector3.up * billboardCenterHeight,
+                Vector3.right,
+                Vector3.up,
+                billboardInnerRadius,
+                billboardOuterRadius,
+                ringSegments);
+            AddImpactRing(
+                vertices,
+                triangles,
+                Vector3.up * billboardCenterHeight,
+                Vector3.forward,
+                Vector3.up,
+                billboardInnerRadius,
+                billboardOuterRadius,
+                ringSegments);
+            AddImpactDisc(
+                vertices,
+                triangles,
+                Vector3.up * billboardCenterHeight,
+                Vector3.right,
+                Vector3.up,
+                0.24f,
+                ringSegments);
+
+            for (int index = 0; index < 8; index++)
+            {
+                float angle = index * Mathf.PI * 0.25f + Mathf.PI * 0.125f;
+                Vector3 direction = new Vector3(Mathf.Cos(angle), Mathf.Sin(angle), 0f);
+                Vector3 side = new Vector3(-direction.y, direction.x, 0f) * burstHalfWidth;
+                int baseIndex = vertices.Count;
+                Vector3 burstCenter = Vector3.up * billboardCenterHeight;
+                Vector3 burstBase = burstCenter + direction * burstBaseRadius;
+                Vector3 burstTip = burstCenter + direction * burstTipRadius;
+                vertices.Add(burstBase - side);
+                vertices.Add(burstBase + side);
+                vertices.Add(burstTip);
+                triangles.Add(baseIndex);
+                triangles.Add(baseIndex + 1);
+                triangles.Add(baseIndex + 2);
+            }
+
+            Mesh mesh = new Mesh
+            {
+                name = "EnhancedVfxMesh_ImpactBurst",
+                hideFlags = HideFlags.DontSave
+            };
+            mesh.SetVertices(vertices);
+            mesh.SetTriangles(triangles, 0);
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        private static void AddImpactDisc(
+            List<Vector3> vertices,
+            List<int> triangles,
+            Vector3 center,
+            Vector3 axisA,
+            Vector3 axisB,
+            float radius,
+            int segments)
+        {
+            int centerIndex = vertices.Count;
+            vertices.Add(center);
+            int perimeterStart = vertices.Count;
+            for (int index = 0; index < segments; index++)
+            {
+                float angle = index * Mathf.PI * 2f / segments;
+                Vector3 direction = axisA * Mathf.Cos(angle) + axisB * Mathf.Sin(angle);
+                vertices.Add(center + direction * radius);
+            }
+
+            for (int index = 0; index < segments; index++)
+            {
+                int next = (index + 1) % segments;
+                triangles.Add(centerIndex);
+                triangles.Add(perimeterStart + index);
+                triangles.Add(perimeterStart + next);
+            }
+        }
+
+        private static void AddImpactRing(
+            List<Vector3> vertices,
+            List<int> triangles,
+            Vector3 center,
+            Vector3 axisA,
+            Vector3 axisB,
+            float innerRadius,
+            float outerRadius,
+            int segments)
+        {
+            int start = vertices.Count;
+            for (int index = 0; index < segments; index++)
+            {
+                float angle = index * Mathf.PI * 2f / segments;
+                Vector3 direction = axisA * Mathf.Cos(angle) + axisB * Mathf.Sin(angle);
+                vertices.Add(center + direction * innerRadius);
+                vertices.Add(center + direction * outerRadius);
+            }
+
+            for (int index = 0; index < segments; index++)
+            {
+                int next = (index + 1) % segments;
+                int inner = start + index * 2;
+                int outer = inner + 1;
+                int nextInner = start + next * 2;
+                int nextOuter = nextInner + 1;
+                triangles.Add(inner);
+                triangles.Add(outer);
+                triangles.Add(nextOuter);
+                triangles.Add(inner);
+                triangles.Add(nextOuter);
+                triangles.Add(nextInner);
+            }
+        }
+
         private Material GetMaterial(UnityEnhancedVfxKind kind)
         {
             Material material;
@@ -531,8 +699,11 @@ namespace MagicCarpet.PresentationLab
             Shader customFireballShader = kind == UnityEnhancedVfxKind.Fire
                 ? Shader.Find("MagicCarpet/Enhanced/Fireball")
                 : null;
+            Shader customImpactShader = kind == UnityEnhancedVfxKind.Impact
+                ? Shader.Find("MagicCarpet/Enhanced/Impact")
+                : null;
             Shader customVfxShader = Shader.Find("MagicCarpet/Enhanced/Vfx");
-            Shader shader = customFireballShader ?? customVfxShader ??
+            Shader shader = customFireballShader ?? customImpactShader ?? customVfxShader ??
                             Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
                             Shader.Find("Universal Render Pipeline/Lit") ??
                             Shader.Find("Standard");
@@ -559,6 +730,14 @@ namespace MagicCarpet.PresentationLab
                     material.SetFloat("_PulseSpeed", 3.0f);
                     material.SetFloat("_ShimmerStrength", 0.24f);
                 }
+                else if (shader == customImpactShader)
+                {
+                    material.SetColor("_GlowColor", VfxColor(kind));
+                    material.SetFloat("_GlowIntensity", 2.8f);
+                    material.SetFloat("_Opacity", 0.92f);
+                    material.SetFloat("_PulseSpeed", 5.0f);
+                    material.SetFloat("_RimStrength", 1.8f);
+                }
                 else if (shader == customVfxShader)
                 {
                     float glow = kind == UnityEnhancedVfxKind.SpeedTrail ? 0.8f :
@@ -566,14 +745,18 @@ namespace MagicCarpet.PresentationLab
                                  kind == UnityEnhancedVfxKind.Smoke ? 0.28f :
                                  kind == UnityEnhancedVfxKind.Fire ? 1.5f :
                                  kind == UnityEnhancedVfxKind.SpellCast ? 1.15f :
-                                 kind == UnityEnhancedVfxKind.Impact ? 1.25f : 1.6f;
+                                 kind == UnityEnhancedVfxKind.Impact ? 2.0f : 1.6f;
                     float opacity = kind == UnityEnhancedVfxKind.SpeedTrail ? 0.20f :
                                     kind == UnityEnhancedVfxKind.Smoke ? 0.28f :
+                                    kind == UnityEnhancedVfxKind.Impact ? 0.80f :
                                     kind == UnityEnhancedVfxKind.SpellCast ? 0.65f : 0.72f;
                     material.SetColor("_GlowColor", VfxColor(kind));
                     material.SetFloat("_GlowIntensity", glow);
                     material.SetFloat("_Opacity", opacity);
-                    material.SetFloat("_PulseSpeed", kind == UnityEnhancedVfxKind.SpeedTrail ? 0f : 2.5f);
+                    material.SetFloat(
+                        "_PulseSpeed",
+                        kind == UnityEnhancedVfxKind.SpeedTrail ? 0f :
+                        kind == UnityEnhancedVfxKind.Impact ? 5.0f : 2.5f);
                     material.SetFloat(
                         "_RimStrength",
                         kind == UnityEnhancedVfxKind.SpeedTrail ? 0.65f :

@@ -19,6 +19,7 @@ namespace MagicCarpet.PresentationLab.Editor
         private const int CaptureWidth = 1280;
         private const int CaptureHeight = 720;
         private const int RouteFrameLimit = 12;
+        private const int ImpactRouteFrameLimit = 32;
 
         [MenuItem("Magic Carpet/Presentation Lab/Run Owner Enhanced Fireball Event Capture")]
         public static void RunOwnerUnityEnhancedFireballEventCapture()
@@ -38,10 +39,16 @@ namespace MagicCarpet.PresentationLab.Editor
 
             captureDirectory = Path.GetFullPath(captureDirectory);
             Directory.CreateDirectory(captureDirectory);
-            string outputPath = Path.Combine(captureDirectory, "l1-night-fireball-event.png");
+            bool captureImpact = HasCommandLineFlag("-mc-await-impact");
+            string captureName = captureImpact
+                ? "l1-night-fireball-impact"
+                : "l1-night-fireball-event";
+            string outputPath = Path.Combine(captureDirectory, captureName + ".png");
             string receiptPath = Path.Combine(
                 captureDirectory,
-                "unity-enhanced-owner-fireball-event-capture-receipt.json");
+                "unity-enhanced-owner-fireball-" +
+                (captureImpact ? "impact" : "event") +
+                "-capture-receipt.json");
             if (File.Exists(outputPath) || File.Exists(receiptPath))
             {
                 throw new InvalidOperationException(
@@ -85,7 +92,8 @@ namespace MagicCarpet.PresentationLab.Editor
                 UnityEnhancedFireballViewportEvidence fireballEvidence =
                     default(UnityEnhancedFireballViewportEvidence);
 
-                for (int frame = 0; frame < RouteFrameLimit; frame++)
+                int routeFrameLimit = captureImpact ? ImpactRouteFrameLimit : RouteFrameLimit;
+                for (int frame = 0; frame < routeFrameLimit; frame++)
                 {
                     // This is the same owner-facing command path as normal
                     // gameplay: select the spell one tick before the cast.
@@ -99,27 +107,42 @@ namespace MagicCarpet.PresentationLab.Editor
                     }
 
                     castSent |= cast;
-                    if (!castSent || source.ActiveProjectileCount <= 0)
+                    if (captureImpact)
                     {
-                        continue;
+                        // Wait for the same owner session to produce the
+                        // authoritative collision row and its mapped Impact
+                        // event. No synthetic event or position is injected.
+                        if (!castSent || source.ActiveImpactCount <= 0 ||
+                            source.LastVfxEventCount <= 0 ||
+                            enhanced.VfxPresentation.ActiveEffectCount <= 0)
+                        {
+                            continue;
+                        }
                     }
-
-                    // VFX events are only a spawn signal. Capture only after
-                    // the authoritative Fire-family projectile renderer itself
-                    // is active and projects into the capture viewport.
-                    UnityEnhancedFireballViewportEvidence candidate;
-                    if (!enhanced.TryGetFireballViewportEvidence(
-                            CaptureWidth,
-                            CaptureHeight,
-                            out candidate))
+                    else
                     {
-                        continue;
-                    }
+                        if (!castSent || source.ActiveProjectileCount <= 0)
+                        {
+                            continue;
+                        }
 
-                    fireballEvidence = candidate;
-                    if (!candidate.CaptureReady)
-                    {
-                        continue;
+                        // VFX events are only a spawn signal. Capture only after
+                        // the authoritative Fire-family projectile renderer itself
+                        // is active and projects into the capture viewport.
+                        UnityEnhancedFireballViewportEvidence candidate;
+                        if (!enhanced.TryGetFireballViewportEvidence(
+                                CaptureWidth,
+                                CaptureHeight,
+                                out candidate))
+                        {
+                            continue;
+                        }
+
+                        fireballEvidence = candidate;
+                        if (!candidate.CaptureReady)
+                        {
+                            continue;
+                        }
                     }
 
                     if (!enhanced.CapturePresentationFramePng(
@@ -129,7 +152,10 @@ namespace MagicCarpet.PresentationLab.Editor
                             out resolvedHash,
                             out reason))
                     {
-                        FailAndExit("resolved Fireball event capture at frame " + frame + ": " + reason);
+                        FailAndExit(
+                            "resolved Fireball " +
+                            (captureImpact ? "impact" : "event") +
+                            " capture at frame " + frame + ": " + reason);
                         return;
                     }
 
@@ -141,10 +167,15 @@ namespace MagicCarpet.PresentationLab.Editor
                 if (!captured || pngBytes == null || pngBytes.Length == 0)
                 {
                     FailAndExit(
-                        "owner Fireball route produced no live event frame" +
+                        "owner Fireball route produced no live " +
+                        (captureImpact ? "impact" : "event") +
+                        " frame" +
                         " cast_sent=" + castSent +
                         " last_event_count=" + source.LastEventCount +
+                        " last_vfx_event_count=" + source.LastVfxEventCount +
                         " active_projectiles=" + source.ActiveProjectileCount +
+                        " active_impacts=" + source.ActiveImpactCount +
+                        " active_effects=" + enhanced.VfxPresentation.ActiveEffectCount +
                         " fireball_renderer_found=" + fireballEvidence.RendererFound +
                         " fireball_renderer_active=" + fireballEvidence.RendererActive +
                         " fireball_center_in_front=" + fireballEvidence.CenterInFront +
@@ -160,8 +191,8 @@ namespace MagicCarpet.PresentationLab.Editor
                     schema_version = 1,
                     mode = "unity-enhanced",
                     profile = "level1-night-unity-enhanced",
-                    route_id = "fireball-fight",
-                    capture_name = "l1-night-fireball-event",
+                    route_id = captureImpact ? "fireball-impact" : "fireball-fight",
+                    capture_name = captureName,
                     capture_status = "captured-for-human-review",
                     visual_review_status = "not-reviewed",
                     owner_payload_embedded = false,
@@ -264,6 +295,20 @@ namespace MagicCarpet.PresentationLab.Editor
             }
 
             return string.Empty;
+        }
+
+        private static bool HasCommandLineFlag(string name)
+        {
+            string[] arguments = Environment.GetCommandLineArgs();
+            for (int index = 0; index < arguments.Length; index++)
+            {
+                if (string.Equals(arguments[index], name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         [Serializable]

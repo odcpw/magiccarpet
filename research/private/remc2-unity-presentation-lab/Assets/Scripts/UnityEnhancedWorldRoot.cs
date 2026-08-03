@@ -806,6 +806,7 @@ namespace MagicCarpet.PresentationLab
                 vfxPresentation = GetComponent<UnityEnhancedVfxPresentation>();
                 if (vfxPresentation == null) vfxPresentation = gameObject.AddComponent<UnityEnhancedVfxPresentation>();
             }
+            vfxPresentation.SetPresentationCamera(cameraRig.PresentationCamera);
 
             if (hudPresentation == null)
             {
