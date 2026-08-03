@@ -92,6 +92,11 @@ namespace MagicCarpet.PresentationLab
     public sealed class UnityEnhancedActorPresentation : MonoBehaviour
     {
         private const float BillboardHalfSize = 0.35f;
+        // The owner entity Z is authoritative, but Enhanced terrain is
+        // bilinearly subdivided between owner height cells. Keep the real
+        // indexed sprite just above that interpolated surface so it remains
+        // depth-tested without disappearing into a neighboring triangle.
+        private const float OwnerActorGroundClearance = 0.12f;
         private const float FireballCoreVisualScale = 2.8f;
         // The owner projectile remains the anchor; the halo is deliberately
         // larger so a cast reads as a light event in the world, not as a tiny
@@ -214,7 +219,10 @@ namespace MagicCarpet.PresentationLab
                 state.Renderer.receiveShadows = false;
                 state.VisualObject.SetActive(entity.Visible);
                 state.VisualObject.transform.localPosition =
-                    new Vector3(0f, ownerSprite.Height * 0.5f, 0f);
+                    new Vector3(
+                        0f,
+                        ownerSprite.Height * 0.5f + OwnerActorGroundClearance,
+                        0f);
                 state.VisualObject.transform.localScale =
                     new Vector3(ownerSprite.Width, ownerSprite.Height, 1f);
                 state.VisualObject.transform.rotation = OwnerBillboardRotation();

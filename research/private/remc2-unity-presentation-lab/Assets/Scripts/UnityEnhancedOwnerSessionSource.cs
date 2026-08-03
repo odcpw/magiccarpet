@@ -68,7 +68,10 @@ namespace MagicCarpet.PresentationLab
         // Enhanced keeps the Rust camera as its source, then gives the
         // modern presentation a readable cinematic eye height. This never
         // feeds back into gameplay or the Exact/Classic HD routes.
-        private const float EnhancedCameraLift = 16f;
+        // Keep the Enhanced eye close enough to the owner flight path that
+        // terrain relief and owner landmarks occupy the frame. This is a
+        // presentation-only offset; the Rust camera remains authoritative.
+        private const float EnhancedCameraLift = 8f;
         private const float EnhancedCameraPitchBias = 24f;
         private const uint TerrainTypes = 0;
         private const uint TerrainHeightPlane = 1;
