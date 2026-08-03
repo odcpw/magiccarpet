@@ -283,8 +283,13 @@ namespace MagicCarpet.PresentationLab
                 capturedPipelineSettings = true;
             }
             UniversalRenderPipeline.asset.renderScale = scale;
+            // Use URP's built-in FidelityFX spatial reconstruction for the
+            // scaled tiers. URP falls back to its supported filter when the
+            // current graphics device cannot run FSR; Whole Hog remains a
+            // native-resolution linear path. Temporal upscaling stays behind
+            // the separate explicit experimental gate above.
             UniversalRenderPipeline.asset.upscalingFilter = scale < 0.999f
-                ? UpscalingFilterSelection.Auto
+                ? UpscalingFilterSelection.FSR
                 : UpscalingFilterSelection.Linear;
         }
 

@@ -1528,6 +1528,23 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void SpatialQualityRequestsFsrAndRestoresPipelineSettings()
+        {
+            GameObject gameObject = new GameObject("enhanced-spatial-upscale-test");
+            Camera camera = gameObject.AddComponent<Camera>();
+            UnityEnhancedQualityAndPost quality = gameObject.AddComponent<UnityEnhancedQualityAndPost>();
+
+            Assert.IsTrue(quality.Apply(
+                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.Medium),
+                camera));
+            Assert.IsTrue(quality.UsesSpatialUpscaling);
+            Assert.AreEqual(UpscalingFilterSelection.FSR, UniversalRenderPipeline.asset.upscalingFilter);
+
+            quality.ResetForSession();
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void EnhancedVertexColorShaderIsAvailableForGeneratedPresentation()
         {
             Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/VertexColorLit"));
