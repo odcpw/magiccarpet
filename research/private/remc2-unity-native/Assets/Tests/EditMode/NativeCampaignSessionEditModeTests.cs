@@ -299,6 +299,16 @@ namespace MagicCarpet.Native.Tests
             Assert.That(activated.holderEntityIndex, Is.EqualTo(source.sourceEntityIndex));
             Assert.That(activated.generation, Is.EqualTo(session.Generation));
 
+            session.Step(source.x, source.y, source.z);
+            var beforeDamage = session.ShieldState();
+            session.SubmitShieldDamage(beforeDamage.parentEntityIndex, 100, 152);
+            session.Step(source.x, source.y, source.z);
+            var afterDamage = session.ShieldState();
+            Assert.That(afterDamage.parentLife, Is.EqualTo(beforeDamage.parentLife - 25));
+            Assert.That(afterDamage.experienceAwarded, Is.EqualTo(beforeDamage.experienceAwarded + 1));
+            Assert.That(afterDamage.holderEntityIndex, Is.EqualTo(source.sourceEntityIndex));
+            Assert.That(afterDamage.generation, Is.EqualTo(session.Generation));
+
             session.Reset();
             Assert.That(session.SpellPickups(), Is.Empty);
             Assert.That(session.ShieldState().active, Is.EqualTo(0));
