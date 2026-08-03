@@ -86,7 +86,7 @@ use crate::{
     spell_activation::{
         BEYOND_SIGHT_ACTIVE_ACTION, BEYOND_SIGHT_FAMILY, BeyondSightState, BeyondSightStep,
         INVISIBLE_ACTIVE_ACTION, INVISIBLE_STATUS_BIT, InvisibleState, InvisibleStep,
-        PhysicalSpellActionRole, SHIELD_ACTIVE_ACTION, ShieldState, ShieldStep,
+        PhysicalSpellActionRole, SHIELD_ACTIVE_ACTION, ShieldDamage, ShieldState, ShieldStep,
         SpellActivationHolder, SpellCasterState, SpellHolderAcquisitionOutcome,
         SpellHolderAcquisitionResult, SpellHolderAcquisitionState,
         acquire_level2_spell_holder_with_return_side, activate_spell, level2_set_spell_profile,
@@ -3196,6 +3196,8 @@ pub struct Level2SharedSpellResetSession {
     beyond_sight: Option<BeyondSightState>,
     baseline_beyond_sight_pulse_pending: bool,
     beyond_sight_pulse_pending: bool,
+    baseline_shield_damage_mailbox: Option<Level2ShieldDamageMailbox>,
+    shield_damage_mailbox: Option<Level2ShieldDamageMailbox>,
     /// Transient player/event state consumed by the Beyond Sight first-pulse
     /// constructor. This is deliberately separate from the serialized entity
     /// record, matching the source `dword_0xA4_164x` allocation.
@@ -3251,6 +3253,21 @@ pub enum Level2SharedSpellEvent {
         family: u8,
         holder_action: u8,
     },
+    ShieldDamageApplied {
+        target_entity_index: u16,
+        attacker_entity_index: u16,
+        damage: ShieldDamage,
+    },
+}
+
+/// One source damage mailbox entry consumed by the active family-6 holder.
+/// The attacker is retained for the typed event projection even though the
+/// Shield status branches only consume the damage amount.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2ShieldDamageMailbox {
+    pub target_entity_index: u16,
+    pub damage: i32,
+    pub attacker_entity_index: u16,
 }
 
 /// One source-turn result for the Level 2 authored Speed pickup (slot 75).
@@ -10306,6 +10323,8 @@ impl Level2SharedSpellResetSession {
             beyond_sight: None,
             baseline_beyond_sight_pulse_pending: false,
             beyond_sight_pulse_pending: false,
+            baseline_shield_damage_mailbox: None,
+            shield_damage_mailbox: None,
             baseline_beyond_sight_auxiliary: Level2PlayerEventAuxiliary {
                 entity_index: player_entity.index,
                 ..Level2PlayerEventAuxiliary::default()
@@ -10481,6 +10500,75 @@ impl Level2SharedSpellResetSession {
         activated
     }
 
+    /// Submit one source damage mailbox entry for the active family-6 holder.
+    /// The outer source pass consumes it at the holder's action-18 callback;
+    /// attacker identity is retained for the typed event projection.
+    pub fn submit_shield_damage(
+        &mut self,
+        target_entity_index: u16,
+        damage: i32,
+        attacker_entity_index: u16,
+    ) -> bool {
+        if damage <= 0 || attacker_entity_index == 0 {
+            return false;
+        }
+        let Some(shield) = self.shield else {
+            return false;
+        };
+        if shield.parent_entity_index != target_entity_index {
+            return false;
+        }
+        if let Some(pending) = self
+            .shield_damage_mailbox
+            .as_mut()
+            .filter(|pending| pending.target_entity_index == target_entity_index)
+        {
+            pending.damage = pending.damage.wrapping_add(damage);
+            pending.attacker_entity_index = attacker_entity_index;
+        } else {
+            self.shield_damage_mailbox = Some(Level2ShieldDamageMailbox {
+                target_entity_index,
+                damage,
+                attacker_entity_index,
+            });
+        }
+        true
+    }
+
+    /// Consume one source hit through the active family-6 Shield status
+    /// branches (`sub_6A480`/`sub_68DE0` consumer projection).  The typed
+    /// Shield state remains authoritative, then the holder and parent entity
+    /// records are synchronized through the same production projection used
+    /// by outer-turn expiry.  A missing Shield is a bounded no-op rather than
+    /// a fallback to a neighboring spell family.
+    pub fn absorb_shield_damage(&mut self, raw_damage: i32) -> Option<ShieldDamage> {
+        let shield = self.shield.as_mut()?;
+        let damage = shield.absorb_damage(raw_damage);
+        self.sync_shield_projection();
+        Some(damage)
+    }
+
+    fn consume_shield_damage_mailbox(&mut self) {
+        let Some(shield) = self.shield else {
+            return;
+        };
+        let Some(mailbox) = self
+            .shield_damage_mailbox
+            .filter(|mailbox| mailbox.target_entity_index == shield.parent_entity_index)
+        else {
+            return;
+        };
+        self.shield_damage_mailbox = None;
+        if let Some(damage) = self.absorb_shield_damage(mailbox.damage) {
+            self.pickup_events
+                .push(Level2SharedSpellEvent::ShieldDamageApplied {
+                    target_entity_index: mailbox.target_entity_index,
+                    attacker_entity_index: mailbox.attacker_entity_index,
+                    damage,
+                });
+        }
+    }
+
     fn step_shield_source_slot(&mut self, source_slot: u16) {
         if self
             .shield
@@ -10488,6 +10576,7 @@ impl Level2SharedSpellResetSession {
         {
             return;
         }
+        self.consume_shield_damage_mailbox();
         if let Some(shield) = self.shield.as_mut() {
             let _step: ShieldStep = shield.step();
         }
@@ -12045,6 +12134,14 @@ impl Level2SharedSpellResetSession {
         } else {
             hasher.update([0]);
         }
+        if let Some(mailbox) = self.shield_damage_mailbox {
+            hasher.update([1]);
+            hasher.update(mailbox.target_entity_index.to_le_bytes());
+            hasher.update(mailbox.damage.to_le_bytes());
+            hasher.update(mailbox.attacker_entity_index.to_le_bytes());
+        } else {
+            hasher.update([0]);
+        }
         if let Some(invisible) = self.invisible {
             hasher.update([1]);
             hasher.update(invisible.holder_entity_index.to_le_bytes());
@@ -12156,6 +12253,7 @@ impl Level2SharedSpellResetSession {
         self.possession = self.baseline_possession;
         self.speed = self.baseline_speed;
         self.shield = self.baseline_shield;
+        self.shield_damage_mailbox = self.baseline_shield_damage_mailbox;
         self.invisible = self.baseline_invisible;
         self.beyond_sight = self.baseline_beyond_sight;
         self.beyond_sight_pulse_pending = self.baseline_beyond_sight_pulse_pending;
@@ -25644,6 +25742,103 @@ mod tests {
             stepped.parent_status_flags & crate::spell_activation::SHIELD_MANA_STATUS_BIT,
             0
         );
+
+        session.reset();
+        assert!(session.shared_spells().shield_state().is_none());
+        assert_eq!(session.shared_spells().reset_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_shield_damage_consumer_updates_parent_and_holder_projection() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Shield damage session");
+        let baseline_hash = session.shared_spells().reset_hash();
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|source| source.authored_index == 155)
+            .copied()
+            .expect("authored family-6 source");
+        session.state.position = source.position;
+        let acquired = (0..4).find_map(|_| {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            session
+                .dispatch_events()
+                .iter()
+                .find_map(|event| match event {
+                    Level2DispatchEvent::SpellAcquisition {
+                        family: 6,
+                        result: Some(outcome),
+                        ..
+                    } => Some(*outcome),
+                    _ => None,
+                })
+        });
+        let outcome = acquired.expect("authored family-6 acquisition");
+        assert!(session.shared_spells_mut().activate_shield(256, false));
+
+        // The normal source route establishes the active mana-status phase
+        // before the hit consumer runs; this is not a direct ShieldState test.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let active = session
+            .shared_spells()
+            .shield_state()
+            .expect("active family-6 Shield state");
+        assert_ne!(
+            active.parent_status_flags & crate::spell_activation::SHIELD_MANA_STATUS_BIT,
+            0
+        );
+
+        assert!(session.shared_spells_mut().submit_shield_damage(
+            active.parent_entity_index,
+            100,
+            152,
+        ));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let damage = session
+            .shared_spells()
+            .pickup_events()
+            .iter()
+            .find_map(|event| match event {
+                Level2SharedSpellEvent::ShieldDamageApplied { damage, .. } => Some(*damage),
+                _ => None,
+            })
+            .expect("active source route consumes the Shield hit mailbox");
+        assert_eq!(damage.raw_damage, 100);
+        assert_eq!(damage.applied_damage, 25);
+        assert_eq!(damage.mana_drained, 25);
+        let after = session
+            .shared_spells()
+            .shield_state()
+            .expect("Shield state remains projected after hit");
+        assert_eq!(after.parent_life, active.parent_life - 25);
+        assert_eq!(after.parent_mana, active.parent_mana - 25);
+        assert_eq!(after.experience_awarded, active.experience_awarded + 1);
+        assert_eq!(
+            damage.status_after & crate::spell_activation::SHIELD_MANA_STATUS_BIT,
+            0
+        );
+        let holder = session
+            .shared_spells()
+            .dynamic_pickups()
+            .iter()
+            .find(|entity| entity.index == outcome.source_slot)
+            .expect("active Shield holder projection");
+        assert_eq!(
+            holder.record_bytes()[50..52],
+            after.active_value.to_le_bytes()
+        );
+        assert_eq!(
+            holder.record_bytes()[44..46],
+            after.parent_entity_index.to_le_bytes()
+        );
+        assert_ne!(session.shared_spells().reset_hash(), baseline_hash);
 
         session.reset();
         assert!(session.shared_spells().shield_state().is_none());
