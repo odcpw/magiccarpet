@@ -545,6 +545,14 @@ impl EntitySnapshot {
         i16::from_le_bytes([self.record[86], self.record[87]])
     }
 
+    /// Raw source `array_0x52_82.pitch` consumed by the model-76 target
+    /// follower when it retunes the root oscillation envelope from a live
+    /// target row.
+    #[must_use]
+    fn array_pitch(&self) -> i16 {
+        i16::from_le_bytes([self.record[88], self.record[89]])
+    }
+
     /// Raw source `word_0x24_36` targeted by the action-51 first pass.
     #[must_use]
     pub fn word_24(&self) -> u16 {
@@ -3939,6 +3947,105 @@ pub struct Level2Model22SpawnedChild {
     pub active: bool,
 }
 
+/// The authored class-10/model-76 Fire Spheres root constructed by the pinned
+/// `AddFireSpheres_4F2A0` path. The linked model-77 children are stored as
+/// separate rows, but the root keeps the mutable orbit/countdown words that
+/// own the whole-cluster callback and expiry semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredModel76Source {
+    pub source_entity_index: u16,
+    pub entity_id: u16,
+    pub entity_rng: u16,
+    pub authored_index: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub max_life: i16,
+    pub life: i16,
+    pub subspell_index: u16,
+    pub actual_speed: i16,
+    pub minimum_speed: i16,
+    pub maximum_speed: i16,
+    pub word_0x2c: i16,
+    pub font_type_index: i8,
+    pub state: u8,
+    pub target_entity_index: u16,
+    pub target_position: Position,
+    pub target_pitch: i16,
+    pub target_height_offset: i16,
+    pub target_control_flags: u32,
+    pub target_life: i32,
+    pub shift_rot_x: i16,
+    pub shift_rot_y: i16,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub position: Position,
+    pub phase: u8,
+    pub control_flags: u32,
+    pub drawing_enabled: bool,
+    pub active: bool,
+}
+
+/// One linked class-10/model-77 child cloned by `AddFireSpheres_4F2A0`. The
+/// root callback owns the shared orbit/update; the child row keeps the exact
+/// topology, row/column indexes, and orientation words the source mutates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2Model76Child {
+    pub source_entity_index: u16,
+    pub entity_id: u16,
+    pub entity_rng: u16,
+    pub parent_entity_index: u16,
+    pub parent_entity_id: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub max_life: i16,
+    pub life: i16,
+    pub subspell_index: u16,
+    pub actual_speed: i16,
+    pub minimum_speed: i16,
+    pub maximum_speed: i16,
+    pub word_0x2c: i16,
+    pub row_index: u8,
+    pub column_index: u8,
+    pub chain_index: u8,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub roll: i16,
+    pub fov: i16,
+    pub shift_rot_x: i16,
+    pub shift_rot_y: i16,
+    pub position: Position,
+    pub phase: u8,
+    pub control_flags: u32,
+    pub drawing_enabled: bool,
+    pub active: bool,
+}
+
+/// The model-0 tail spawned when the Fire Spheres root finishes its terminal
+/// countdown. This uses the exact `NewAdd0A00_4E320` constructor payload
+/// instead of aliasing a different model-0 source that rewrites its fields.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2Model76TailSpawn {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub parent_entity_index: u16,
+    pub parent_entity_id: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub subspell_index: u16,
+    pub max_life: i16,
+    pub life: i16,
+    pub shift_rot_x: i16,
+    pub shift_rot_y: i16,
+    pub particle_index: u16,
+    pub position: Position,
+    pub phase: u8,
+    pub control_flags: u32,
+    pub active: bool,
+}
+
 // Presentation rows 293..=304 in the qualified Level 2 package have
 // rotation speeds 70,80,90,100,110,120,130,150,180,220,280,360. The pinned
 // `sub_4F1C0` derives these fixed shifts as 550/1000 and 450/1000.
@@ -3946,6 +4053,11 @@ const LEVEL2_MODEL22_PARTICLE_INDEXES: [u16; 12] =
     [293, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304];
 const LEVEL2_MODEL22_SHIFT_X: [i16; 12] = [38, 44, 49, 55, 60, 66, 71, 82, 99, 121, 154, 198];
 const LEVEL2_MODEL22_SHIFT_Y: [i16; 12] = [31, 36, 40, 45, 49, 54, 58, 67, 81, 99, 126, 162];
+const LEVEL2_MODEL76_CHILD_COUNT: usize = 25;
+
+const fn wrap_source_angle(angle: i16) -> i16 {
+    angle & 0x07ff
+}
 
 /// A dormant authored class-14/model-3 or model-5 event materialized by the
 /// generic `sub_4A310` constructor.  The mission callbacks which decide when
@@ -4175,6 +4287,12 @@ pub struct Level2EconomyState {
     authored_model22: Vec<Level2AuthoredModel22Source>,
     baseline_model22_spawned_children: Vec<Level2Model22SpawnedChild>,
     model22_spawned_children: Vec<Level2Model22SpawnedChild>,
+    baseline_authored_model76: Vec<Level2AuthoredModel76Source>,
+    authored_model76: Vec<Level2AuthoredModel76Source>,
+    baseline_model76_children: Vec<Level2Model76Child>,
+    model76_children: Vec<Level2Model76Child>,
+    baseline_model76_tail_spawns: Vec<Level2Model76TailSpawn>,
+    model76_tail_spawns: Vec<Level2Model76TailSpawn>,
     baseline_authored_class14: Vec<Level2AuthoredClass14Source>,
     authored_class14: Vec<Level2AuthoredClass14Source>,
     /// Source `word_0x36DFE`, written by `sub_51570` for the latest model-3
@@ -4370,6 +4488,12 @@ impl Level2EconomyState {
             authored_model22: Vec::new(),
             baseline_model22_spawned_children: Vec::new(),
             model22_spawned_children: Vec::new(),
+            baseline_authored_model76: Vec::new(),
+            authored_model76: Vec::new(),
+            baseline_model76_children: Vec::new(),
+            model76_children: Vec::new(),
+            baseline_model76_tail_spawns: Vec::new(),
+            model76_tail_spawns: Vec::new(),
             baseline_authored_class14: Vec::new(),
             authored_class14: Vec::new(),
             baseline_class14_model3_handle: 0,
@@ -4520,6 +4644,21 @@ impl Level2EconomyState {
     #[must_use]
     pub fn model22_spawned_children(&self) -> &[Level2Model22SpawnedChild] {
         &self.model22_spawned_children
+    }
+
+    #[must_use]
+    pub fn authored_model76(&self) -> &[Level2AuthoredModel76Source] {
+        &self.authored_model76
+    }
+
+    #[must_use]
+    pub fn model76_children(&self) -> &[Level2Model76Child] {
+        &self.model76_children
+    }
+
+    #[must_use]
+    pub fn model76_tail_spawns(&self) -> &[Level2Model76TailSpawn] {
+        &self.model76_tail_spawns
     }
 
     #[must_use]
@@ -5834,6 +5973,459 @@ impl Level2EconomyState {
         true
     }
 
+    /// Allocate the authored class-10/model-76 Fire Spheres root plus its
+    /// exact 25 linked model-77 children. The pinned constructor is atomic:
+    /// if any row cannot be reserved or linked, the whole family is rolled
+    /// back with no partial live cluster.
+    pub fn allocate_authored_model76(
+        &mut self,
+        authored_index: u16,
+        position: Position,
+    ) -> Option<Level2AuthoredModel76Source> {
+        if self.free_slots.len() < 1 + LEVEL2_MODEL76_CHILD_COUNT {
+            return None;
+        }
+        let state_before = self.clone();
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let mut root_position = position;
+        root_position.z = self.terrain.ground_height(root_position);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: root_position.x,
+                y: root_position.y,
+            })
+            .is_err()
+        {
+            *self = state_before;
+            return None;
+        }
+        let root = Level2AuthoredModel76Source {
+            source_entity_index,
+            entity_id: source_entity_index,
+            entity_rng,
+            authored_index,
+            source_class: 10,
+            model: 76,
+            action: 83,
+            max_life: 80,
+            life: 80,
+            subspell_index: 70,
+            actual_speed: 40,
+            minimum_speed: 480,
+            maximum_speed: 192,
+            word_0x2c: 192,
+            font_type_index: 18,
+            state: 0,
+            target_entity_index: 0,
+            target_position: root_position,
+            target_pitch: 0,
+            target_height_offset: 0,
+            target_control_flags: ENTITY_DRAW_DISABLED_BIT,
+            target_life: -1,
+            shift_rot_x: 640,
+            shift_rot_y: 640,
+            yaw: 0,
+            pitch: 0,
+            position: root_position,
+            phase: source_entity_index as u8,
+            control_flags: 1,
+            drawing_enabled: true,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.authored_model76.push(root);
+        for index in 0..LEVEL2_MODEL76_CHILD_COUNT {
+            let child_slot = self.allocate_slot().unwrap_or_default();
+            if child_slot == 0 {
+                *self = state_before;
+                return None;
+            }
+            let row_index = u8::try_from(index / 5).expect("model-76 child row fits");
+            let column_index = u8::try_from(index % 5).expect("model-76 child column fits");
+            let child_rng = level2_next_rng16(entity_rng);
+            let orbit = i16::try_from((child_rng & 0x3f) + 84).expect("model-76 orbit fits");
+            let (yaw, pitch, roll, fov, control_flags) = match row_index {
+                0 => (
+                    wrap_source_angle(512 - 96 * i16::from(column_index)),
+                    0,
+                    orbit,
+                    0,
+                    if column_index == 0 {
+                        0x0000_0008
+                    } else {
+                        0x0080_0000
+                    },
+                ),
+                1 => (
+                    512,
+                    wrap_source_angle(512 - 96 * i16::from(column_index)),
+                    0,
+                    orbit,
+                    0x0080_0000,
+                ),
+                2 => (
+                    0,
+                    wrap_source_angle(-96 * i16::from(column_index)),
+                    0,
+                    orbit,
+                    if column_index == 0 {
+                        0x0000_0008
+                    } else {
+                        0x0080_0000
+                    },
+                ),
+                3 => (
+                    256,
+                    wrap_source_angle(256 - 96 * i16::from(column_index)),
+                    0,
+                    orbit,
+                    0x0080_0000,
+                ),
+                _ => (
+                    768,
+                    wrap_source_angle(768 - 96 * i16::from(column_index)),
+                    0,
+                    orbit,
+                    0x0080_0000,
+                ),
+            };
+            let mut child_position = root_position;
+            crate::move_entity(&mut child_position, yaw, pitch, root.word_0x2c);
+            let child = Level2Model76Child {
+                source_entity_index: child_slot,
+                entity_id: root.entity_id,
+                entity_rng: child_rng,
+                parent_entity_index: source_entity_index,
+                parent_entity_id: root.entity_id,
+                source_class: 10,
+                model: 77,
+                action: 84,
+                max_life: root.max_life,
+                life: root.life,
+                subspell_index: root.subspell_index,
+                actual_speed: root.actual_speed,
+                minimum_speed: root.minimum_speed,
+                maximum_speed: root.maximum_speed,
+                word_0x2c: root.word_0x2c,
+                row_index,
+                column_index,
+                chain_index: u8::try_from(index).expect("model-76 child index fits"),
+                yaw,
+                pitch,
+                roll,
+                fov,
+                shift_rot_x: root.shift_rot_x,
+                shift_rot_y: root.shift_rot_y,
+                position: child_position,
+                phase: root.phase,
+                control_flags,
+                drawing_enabled: true,
+                active: true,
+            };
+            if self
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: child_slot,
+                    active: true,
+                    x: child_position.x,
+                    y: child_position.y,
+                })
+                .is_err()
+            {
+                *self = state_before;
+                return None;
+            }
+            self.source_rng.insert(child_slot, child_rng);
+            self.model76_children.push(child);
+        }
+        self.authored_model76
+            .iter()
+            .find(|source| source.source_entity_index == source_entity_index)
+            .copied()
+    }
+
+    fn allocate_model76_tail_spawn(
+        &mut self,
+        parent_entity_index: u16,
+        parent_entity_id: u16,
+        position: Position,
+    ) -> Option<u16> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.model76_tail_spawns.push(Level2Model76TailSpawn {
+            source_entity_index,
+            entity_rng,
+            parent_entity_index,
+            parent_entity_id,
+            source_class: 10,
+            model: 0,
+            action: 0,
+            subspell_index: 400,
+            max_life: 8,
+            life: 8,
+            shift_rot_x: 128,
+            shift_rot_y: 128,
+            particle_index: 7,
+            position,
+            phase: source_entity_index as u8,
+            control_flags: 0x0002_0000,
+            active: true,
+        });
+        Some(source_entity_index)
+    }
+
+    fn disable_model76_cluster(&mut self, parent_entity_index: u16) {
+        if let Some(parent) = self
+            .authored_model76
+            .iter_mut()
+            .find(|source| source.source_entity_index == parent_entity_index)
+        {
+            parent.drawing_enabled = false;
+            parent.active = false;
+        }
+        for child in self
+            .model76_children
+            .iter_mut()
+            .filter(|child| child.parent_entity_index == parent_entity_index)
+        {
+            child.drawing_enabled = false;
+            child.active = false;
+        }
+    }
+
+    /// Advance one Fire Spheres root through the pinned `sub_339B0` root
+    /// callback: target-follow/clamp, expanding orbit, child movement order,
+    /// terminal `word_0x2c` countdown, model-0 tail spawn, and whole-cluster
+    /// disable semantics.
+    pub fn step_authored_model76_slot(&mut self, source_slot: u16) -> bool {
+        let Some(source_index) = self
+            .authored_model76
+            .iter()
+            .position(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        let mut source = self.authored_model76[source_index];
+        let target_live = source.target_entity_index != 0
+            && source.target_life >= 0
+            && source.target_control_flags & ENTITY_DRAW_DISABLED_BIT == 0;
+        if source.state == 0 {
+            if source.target_entity_index != 0 {
+                if !target_live {
+                    source.state = 2;
+                } else {
+                    source.maximum_speed = (source.target_pitch >> 1).max(128);
+                    source.minimum_speed = ((6 * source.target_pitch) >> 2).min(640);
+                    source.position = source.target_position;
+                    source.position.z = source.position.z.wrapping_add(source.target_height_offset);
+                    source.state = 1;
+                }
+            } else {
+                source.state = 1;
+            }
+        }
+        if source.state != 2 && source.target_entity_index != 0 {
+            if !target_live {
+                source.state = 2;
+            } else {
+                source.position = source.target_position;
+                source.position.z = source.position.z.wrapping_add(source.target_height_offset);
+            }
+        }
+        if source.state == 2 {
+            if source.font_type_index < 0 {
+                source.font_type_index = source.font_type_index.wrapping_neg();
+            }
+            source.word_0x2c = source
+                .word_0x2c
+                .wrapping_sub(i16::from(source.font_type_index));
+            if source.word_0x2c < 0 {
+                let _ = self.allocate_model76_tail_spawn(
+                    source_slot,
+                    source.entity_id,
+                    source.position,
+                );
+                self.disable_model76_cluster(source_slot);
+                self.map_chains
+                    .sync_entity(RenderableMapSeed {
+                        entity_index: source_slot,
+                        active: false,
+                        x: source.position.x,
+                        y: source.position.y,
+                    })
+                    .expect("Level 2 model-76 source slot fits the map chain");
+                for child in self
+                    .model76_children
+                    .iter()
+                    .filter(|child| child.parent_entity_index == source_slot)
+                {
+                    self.map_chains
+                        .sync_entity(RenderableMapSeed {
+                            entity_index: child.source_entity_index,
+                            active: false,
+                            x: child.position.x,
+                            y: child.position.y,
+                        })
+                        .expect("Level 2 model-76 child slot fits the map chain");
+                }
+                return true;
+            }
+            source.phase = source.phase.wrapping_add(1);
+            self.authored_model76[source_index] = source;
+            self.source_rng.insert(source_slot, source.entity_rng);
+            return true;
+        }
+
+        let ground = self.terrain.ground_height(source.position);
+        let minimum_z = i32::from(ground) + i32::from(source.word_0x2c);
+        if i32::from(source.position.z) < minimum_z {
+            source.position.z = minimum_z.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        }
+        if let Some(ceiling) = self.terrain.ceiling_height(source.position) {
+            let maximum_z = i32::from(ceiling) - i32::from(source.word_0x2c);
+            if i32::from(source.position.z) > maximum_z {
+                source.position.z =
+                    maximum_z.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+            }
+        }
+        let next_word_0x2c = source
+            .word_0x2c
+            .wrapping_add(i16::from(source.font_type_index));
+        if next_word_0x2c > source.minimum_speed {
+            source.word_0x2c = source.minimum_speed;
+            source.font_type_index = source.font_type_index.wrapping_neg();
+        } else if next_word_0x2c < source.maximum_speed {
+            source.word_0x2c = source.maximum_speed;
+            source.font_type_index = source.font_type_index.wrapping_neg();
+        } else {
+            source.word_0x2c = next_word_0x2c;
+        }
+
+        source.yaw = wrap_source_angle(source.yaw.wrapping_add(22));
+        source.pitch = wrap_source_angle(source.pitch.wrapping_add(16));
+        let mut child_sync_rows = Vec::new();
+        for child in self
+            .model76_children
+            .iter_mut()
+            .filter(|child| child.active && child.parent_entity_index == source_slot)
+        {
+            child.yaw = wrap_source_angle(child.yaw.wrapping_add(child.roll));
+            child.pitch = wrap_source_angle(child.pitch.wrapping_add(child.fov));
+            let mut child_position = source.position;
+            crate::move_entity(
+                &mut child_position,
+                wrap_source_angle(child.yaw.wrapping_add(source.yaw)),
+                wrap_source_angle(child.pitch.wrapping_add(source.pitch)),
+                source.word_0x2c,
+            );
+            child.position = child_position;
+            child.phase = child.phase.wrapping_add(1);
+            child_sync_rows.push((
+                child.source_entity_index,
+                child.position.x,
+                child.position.y,
+            ));
+        }
+        for (child_slot, x, y) in child_sync_rows {
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: child_slot,
+                    active: true,
+                    x,
+                    y,
+                })
+                .expect("Level 2 model-76 child slot fits the map chain");
+        }
+        // Pinned `sub_33C00` probes each column-0 child through the shared
+        // `sub_10C80` collision/effect owner.  This Level 2 slice has no
+        // generic runtime collision owner for authored model-76 rows yet, so
+        // it deliberately records only the source movement/map state here;
+        // no synthetic hit or damage event is emitted.
+        source.life = source.life.wrapping_sub(1);
+        if source.life < 1 {
+            source.state = 2;
+        }
+        source.phase = source.phase.wrapping_add(1);
+        self.source_rng.insert(source_slot, source.entity_rng);
+        self.authored_model76[source_index] = source;
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .is_ok()
+    }
+
+    /// The linked Fire Spheres children are positioned by the root callback.
+    /// Their individual cursor visits are still observable in the live arena,
+    /// but have no additional bounded behavior beyond phase retention.
+    pub fn step_model76_child_slot(&mut self, source_slot: u16) -> bool {
+        let Some(child) = self
+            .model76_children
+            .iter_mut()
+            .find(|child| child.active && child.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        child.phase = child.phase.wrapping_add(1);
+        true
+    }
+
+    /// Advance the Fire Spheres terminal model-0 tail through the same bounded
+    /// life/reclaim seam used for other model-0 rows in this Rust campaign
+    /// path. Terrain-side effects remain a separate follow-up.
+    pub fn step_model76_tail_spawn_slot(&mut self, source_slot: u16) -> bool {
+        let Some(tail) = self
+            .model76_tail_spawns
+            .iter_mut()
+            .find(|tail| tail.active && tail.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        tail.life = tail.life.wrapping_sub(1);
+        if tail.life < -1 {
+            tail.active = false;
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: false,
+                    x: tail.position.x,
+                    y: tail.position.y,
+                })
+                .expect("Level 2 model-76 tail slot fits the map chain");
+            return true;
+        }
+        tail.phase = tail.phase.wrapping_add(1);
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: tail.position.x,
+                y: tail.position.y,
+            })
+            .is_ok()
+    }
+
     /// Advance the generated class-9/model-14 child through `sub_322A0`.
     pub fn step_model6_spawned_child_slot(&mut self, source_slot: u16) -> bool {
         let Some(child_index) = self
@@ -6284,6 +6876,24 @@ impl Level2EconomyState {
             visit(
                 child.source_entity_index,
                 Level2DynamicArenaKind::Model22SpawnedChild,
+            );
+        }
+        for source in self.authored_model76.iter().filter(|source| source.active) {
+            visit(
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredModel76,
+            );
+        }
+        for child in self.model76_children.iter().filter(|child| child.active) {
+            visit(
+                child.source_entity_index,
+                Level2DynamicArenaKind::Model76Child,
+            );
+        }
+        for tail in self.model76_tail_spawns.iter().filter(|tail| tail.active) {
+            visit(
+                tail.source_entity_index,
+                Level2DynamicArenaKind::Model76TailSpawn,
             );
         }
         for source in self.authored_class14.iter().filter(|source| source.active) {
@@ -9457,6 +10067,54 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_model76 = self
+            .authored_model76
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_model76.retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_model76 {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
+        let reclaimed_model76_children = self
+            .model76_children
+            .iter()
+            .filter(|child| !child.active)
+            .map(|child| (child.source_entity_index, child.entity_rng))
+            .collect::<Vec<_>>();
+        self.model76_children.retain(|child| child.active);
+        for (slot, entity_rng) in reclaimed_model76_children {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
+        let reclaimed_model76_tails = self
+            .model76_tail_spawns
+            .iter()
+            .filter(|tail| !tail.active)
+            .map(|tail| (tail.source_entity_index, tail.entity_rng))
+            .collect::<Vec<_>>();
+        self.model76_tail_spawns.retain(|tail| tail.active);
+        for (slot, entity_rng) in reclaimed_model76_tails {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_class14 = self
             .authored_class14
             .iter()
@@ -9859,6 +10517,91 @@ impl Level2EconomyState {
                 u8::from(child.active),
             ]);
         }
+        for source in &self.authored_model76 {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_id.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.authored_index.to_le_bytes());
+            hasher.update([source.source_class, source.model, source.action]);
+            hasher.update(source.max_life.to_le_bytes());
+            hasher.update(source.life.to_le_bytes());
+            hasher.update(source.subspell_index.to_le_bytes());
+            hasher.update(source.actual_speed.to_le_bytes());
+            hasher.update(source.minimum_speed.to_le_bytes());
+            hasher.update(source.maximum_speed.to_le_bytes());
+            hasher.update(source.word_0x2c.to_le_bytes());
+            hasher.update(source.font_type_index.to_le_bytes());
+            hasher.update([source.state]);
+            hasher.update(source.target_entity_index.to_le_bytes());
+            hasher.update(source.target_position.x.to_le_bytes());
+            hasher.update(source.target_position.y.to_le_bytes());
+            hasher.update(source.target_position.z.to_le_bytes());
+            hasher.update(source.target_pitch.to_le_bytes());
+            hasher.update(source.target_height_offset.to_le_bytes());
+            hasher.update(source.target_control_flags.to_le_bytes());
+            hasher.update(source.target_life.to_le_bytes());
+            hasher.update(source.shift_rot_x.to_le_bytes());
+            hasher.update(source.shift_rot_y.to_le_bytes());
+            hasher.update(source.yaw.to_le_bytes());
+            hasher.update(source.pitch.to_le_bytes());
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+            hasher.update([
+                source.phase,
+                u8::from(source.drawing_enabled),
+                u8::from(source.active),
+            ]);
+        }
+        for child in &self.model76_children {
+            hasher.update(child.source_entity_index.to_le_bytes());
+            hasher.update(child.entity_id.to_le_bytes());
+            hasher.update(child.entity_rng.to_le_bytes());
+            hasher.update(child.parent_entity_index.to_le_bytes());
+            hasher.update(child.parent_entity_id.to_le_bytes());
+            hasher.update([child.source_class, child.model, child.action]);
+            hasher.update(child.max_life.to_le_bytes());
+            hasher.update(child.life.to_le_bytes());
+            hasher.update(child.subspell_index.to_le_bytes());
+            hasher.update(child.actual_speed.to_le_bytes());
+            hasher.update(child.minimum_speed.to_le_bytes());
+            hasher.update(child.maximum_speed.to_le_bytes());
+            hasher.update(child.word_0x2c.to_le_bytes());
+            hasher.update([child.row_index, child.column_index, child.chain_index]);
+            hasher.update(child.yaw.to_le_bytes());
+            hasher.update(child.pitch.to_le_bytes());
+            hasher.update(child.roll.to_le_bytes());
+            hasher.update(child.fov.to_le_bytes());
+            hasher.update(child.shift_rot_x.to_le_bytes());
+            hasher.update(child.shift_rot_y.to_le_bytes());
+            hasher.update(child.position.x.to_le_bytes());
+            hasher.update(child.position.y.to_le_bytes());
+            hasher.update(child.position.z.to_le_bytes());
+            hasher.update([
+                child.phase,
+                u8::from(child.drawing_enabled),
+                u8::from(child.active),
+            ]);
+        }
+        for tail in &self.model76_tail_spawns {
+            hasher.update(tail.source_entity_index.to_le_bytes());
+            hasher.update(tail.entity_rng.to_le_bytes());
+            hasher.update(tail.parent_entity_index.to_le_bytes());
+            hasher.update(tail.parent_entity_id.to_le_bytes());
+            hasher.update([tail.source_class, tail.model, tail.action]);
+            hasher.update(tail.subspell_index.to_le_bytes());
+            hasher.update(tail.max_life.to_le_bytes());
+            hasher.update(tail.life.to_le_bytes());
+            hasher.update(tail.shift_rot_x.to_le_bytes());
+            hasher.update(tail.shift_rot_y.to_le_bytes());
+            hasher.update(tail.particle_index.to_le_bytes());
+            hasher.update(tail.position.x.to_le_bytes());
+            hasher.update(tail.position.y.to_le_bytes());
+            hasher.update(tail.position.z.to_le_bytes());
+            hasher.update([tail.phase]);
+            hasher.update(tail.control_flags.to_le_bytes());
+            hasher.update([u8::from(tail.active)]);
+        }
         hasher.update(self.class14_model3_handle.to_le_bytes());
         for source in &self.authored_class14 {
             hasher.update(source.source_entity_index.to_le_bytes());
@@ -10127,6 +10870,9 @@ impl Level2EconomyState {
         self.model17_spawned_children = self.baseline_model17_spawned_children.clone();
         self.authored_model22 = self.baseline_authored_model22.clone();
         self.model22_spawned_children = self.baseline_model22_spawned_children.clone();
+        self.authored_model76 = self.baseline_authored_model76.clone();
+        self.model76_children = self.baseline_model76_children.clone();
+        self.model76_tail_spawns = self.baseline_model76_tail_spawns.clone();
         self.authored_class14 = self.baseline_authored_class14.clone();
         self.class14_model3_handle = self.baseline_class14_model3_handle;
         self.beyond_sight_effects = self.baseline_beyond_sight_effects.clone();
@@ -12746,6 +13492,8 @@ pub struct Level2ResetSession {
     level2_mana_attraction_activated: BTreeSet<u16>,
     baseline_level2_model13_activated: BTreeSet<u16>,
     level2_model13_activated: BTreeSet<u16>,
+    baseline_level2_model76_activated: BTreeSet<u16>,
+    level2_model76_activated: BTreeSet<u16>,
     /// Authored class-14 subtype-3/5 rows already consumed by an active
     /// class-11 stage-tag producer.  The source group scan is repeatable, so
     /// retain authored identity to prevent duplicate arena rows on later
@@ -12845,6 +13593,9 @@ pub enum Level2DynamicArenaKind {
     Model17SpawnedChild,
     AuthoredModel22,
     Model22SpawnedChild,
+    AuthoredModel76,
+    Model76Child,
+    Model76TailSpawn,
     AuthoredClass14,
     BeyondSightPulseEffect,
     ManaAttraction,
@@ -12973,6 +13724,9 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::Model17SpawnedChild => 18,
         Level2DynamicArenaKind::AuthoredModel22 => 19,
         Level2DynamicArenaKind::Model22SpawnedChild => 20,
+        Level2DynamicArenaKind::AuthoredModel76 => 23,
+        Level2DynamicArenaKind::Model76Child => 24,
+        Level2DynamicArenaKind::Model76TailSpawn => 25,
         Level2DynamicArenaKind::AuthoredClass14 => 13,
         Level2DynamicArenaKind::BeyondSightPulseEffect => 14,
         Level2DynamicArenaKind::ManaAttraction => 12,
@@ -13148,6 +13902,8 @@ impl Level2ResetSession {
             level2_mana_attraction_activated: BTreeSet::new(),
             baseline_level2_model13_activated: BTreeSet::new(),
             level2_model13_activated: BTreeSet::new(),
+            baseline_level2_model76_activated: BTreeSet::new(),
+            level2_model76_activated: BTreeSet::new(),
             baseline_level2_class14_activated: BTreeSet::new(),
             level2_class14_activated: BTreeSet::new(),
         }
@@ -13365,6 +14121,26 @@ impl Level2ResetSession {
             .allocate_authored_model22(authored_index, axis_position, position)
     }
 
+    /// Materialize one authored class-10/model-76 Fire Spheres row through
+    /// the pinned `AddFireSpheres_4F2A0` constructor.
+    pub fn allocate_level2_authored_model76(
+        &mut self,
+        authored_index: u16,
+    ) -> Option<Level2AuthoredModel76Source> {
+        let feature = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .find(|feature| {
+                feature.index == authored_index && feature.kind == 10 && feature.subtype == 76
+            })?;
+        let position =
+            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        self.economy
+            .allocate_authored_model76(authored_index, position)
+    }
+
     /// Materialize one authored class-10/model-13 row through the pinned
     /// `sub_4EF90` constructor. The group-26 mission trigger is deliberately
     /// kept at this production seam; no objective state is inferred here.
@@ -13563,6 +14339,25 @@ impl Level2ResetSession {
         self.shared_spells.terrain = self.terrain.clone();
         self.ordinary.terrain = self.terrain.clone();
         self.economy.terrain = self.terrain.clone();
+    }
+
+    fn sync_level2_model76_targets_from_entities(&mut self) {
+        for source in &mut self.economy.authored_model76 {
+            let Some(target) = self
+                .entities
+                .get(usize::from(source.target_entity_index))
+                .filter(|target| target.active)
+            else {
+                source.target_control_flags = ENTITY_DRAW_DISABLED_BIT;
+                source.target_life = -1;
+                continue;
+            };
+            source.target_position = target.position;
+            source.target_pitch = target.array_pitch();
+            source.target_height_offset = target.array_yaw();
+            source.target_control_flags = target.control_flags;
+            source.target_life = target.life;
+        }
     }
 
     /// Publish only economy events created since the last source-handler
@@ -13826,6 +14621,32 @@ impl Level2ResetSession {
         );
     }
 
+    /// Consume authored class-10/model-76 rows when the existing live
+    /// class-11 producer rows for groups 10/12/14/16 are active.
+    fn activate_level2_authored_model76(&mut self, pass: u8) {
+        self.activate_level2_rows_from_live_class11_producers(
+            pass,
+            "model76",
+            |entity| entity.model == 0 && matches!(entity.source_id, 10 | 12 | 14 | 16),
+            |feature| feature.kind == 10 && feature.subtype == 76,
+            |session, authored_index| session.level2_model76_activated.contains(&authored_index),
+            |session, authored_index| {
+                let source_slot = session
+                    .allocate_level2_authored_model76(authored_index)
+                    .map(|source| source.source_entity_index)?;
+                session.level2_model76_activated.insert(authored_index);
+                debug_assert!(
+                    session
+                        .economy
+                        .authored_model76()
+                        .iter()
+                        .any(|source| source.source_entity_index == source_slot)
+                );
+                Some(source_slot)
+            },
+        );
+    }
+
     /// Consume authored class-14 subtype-3/5 rows when an active class-11
     /// stage-tag producer selects their activation group.  This is the
     /// production counterpart to the rooted `sub_4A1E0` group scan: the
@@ -13958,7 +14779,9 @@ impl Level2ResetSession {
         self.synchronize_level2_terrain();
         self.activate_level2_authored_group8(pass);
         self.activate_level2_authored_model13(pass);
+        self.activate_level2_authored_model76(pass);
         self.activate_level2_authored_class14(pass);
+        self.sync_level2_model76_targets_from_entities();
         let mut goat_begin_events = BTreeMap::<u16, Vec<GoatStepEvent>>::new();
         for event in self.goats.begin_source_turn(&goat_players) {
             let source_slot = match event {
@@ -14463,6 +15286,15 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::Model22SpawnedChild => {
                 self.economy.step_model22_spawned_child_slot(source_slot)
             }
+            Level2DynamicArenaKind::AuthoredModel76 => {
+                self.economy.step_authored_model76_slot(source_slot)
+            }
+            Level2DynamicArenaKind::Model76Child => {
+                self.economy.step_model76_child_slot(source_slot)
+            }
+            Level2DynamicArenaKind::Model76TailSpawn => {
+                self.economy.step_model76_tail_spawn_slot(source_slot)
+            }
             Level2DynamicArenaKind::AuthoredClass14 => {
                 self.economy.step_authored_class14_slot(source_slot)
             }
@@ -14594,6 +15426,10 @@ impl Level2ResetSession {
         for authored_index in &self.level2_model13_activated {
             hasher.update(authored_index.to_le_bytes());
         }
+        hasher.update(b"level2-model76-activation-v1");
+        for authored_index in &self.level2_model76_activated {
+            hasher.update(authored_index.to_le_bytes());
+        }
         hasher.update(b"level2-class14-activation-v1");
         for authored_index in &self.level2_class14_activated {
             hasher.update(authored_index.to_le_bytes());
@@ -14669,6 +15505,7 @@ impl Level2ResetSession {
         self.level2_mana_attraction_activated =
             self.baseline_level2_mana_attraction_activated.clone();
         self.level2_model13_activated = self.baseline_level2_model13_activated.clone();
+        self.level2_model76_activated = self.baseline_level2_model76_activated.clone();
         self.level2_class14_activated = self.baseline_level2_class14_activated.clone();
     }
 }
@@ -25892,6 +26729,396 @@ mod tests {
         assert!(session.economy().authored_model22().is_empty());
         assert!(session.economy().model22_spawned_children().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_model76_producers_activate_rows_112_116_120_124() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-76 producer session");
+        let baseline_hash = session.campaign_state_hash();
+
+        assert!(session.economy().authored_model76().is_empty());
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let authored = session
+            .economy()
+            .authored_model76()
+            .iter()
+            .map(|source| source.authored_index)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(authored, BTreeSet::from([112_u16, 116, 120, 124]));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 10,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [112]
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 12,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [116]
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 14,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [120]
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 16,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [124]
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::AuthoredModel76,
+                ..
+            }
+        )));
+
+        session.reset();
+        assert!(session.economy().authored_model76().is_empty());
+        assert!(session.economy().model76_children().is_empty());
+        assert!(session.economy().model76_tail_spawns().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_authored_model76_builds_full_cluster_then_spawns_tail_on_expiry() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-76 constructor session");
+        let baseline_hash = session.campaign_state_hash();
+
+        let source = session
+            .allocate_level2_authored_model76(112)
+            .expect("authored model-76 row 112");
+        assert_eq!(
+            (
+                source.entity_id,
+                source.source_class,
+                source.model,
+                source.action,
+                source.max_life,
+                source.life,
+                source.subspell_index,
+                source.actual_speed,
+                source.minimum_speed,
+                source.maximum_speed,
+                source.word_0x2c,
+                source.font_type_index,
+            ),
+            (
+                source.source_entity_index,
+                10,
+                76,
+                83,
+                80,
+                80,
+                70,
+                40,
+                480,
+                192,
+                192,
+                18,
+            )
+        );
+        assert_eq!((source.shift_rot_x, source.shift_rot_y), (640, 640));
+        assert_eq!(source.target_entity_index, 0);
+        assert_eq!(session.economy().model76_children().len(), 25);
+        assert!(
+            session
+                .economy()
+                .model76_children()
+                .iter()
+                .enumerate()
+                .all(|(index, child)| {
+                    child.parent_entity_index == source.source_entity_index
+                        && child.parent_entity_id == source.entity_id
+                        && child.entity_id == source.entity_id
+                        && child.chain_index == u8::try_from(index).expect("index fits")
+                        && child.row_index == u8::try_from(index / 5).expect("row fits")
+                        && child.column_index == u8::try_from(index % 5).expect("column fits")
+                        && (child.source_class, child.model, child.action) == (10, 77, 84)
+                })
+        );
+
+        let first_child = session.economy().model76_children()[0];
+        session
+            .economy_mut()
+            .authored_model76
+            .iter_mut()
+            .find(|candidate| candidate.source_entity_index == source.source_entity_index)
+            .expect("model-76 root for callback")
+            .life = 1;
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_model76_slot(source.source_entity_index)
+        );
+        let stepped = session
+            .economy()
+            .authored_model76()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == source.source_entity_index)
+            .copied()
+            .expect("model-76 root survives first callback");
+        assert_eq!(stepped.life, 0);
+        assert_eq!(stepped.state, 2);
+        assert_eq!(stepped.phase, source.phase.wrapping_add(1));
+        assert_ne!(
+            session
+                .economy()
+                .model76_children()
+                .iter()
+                .find(|candidate| candidate.source_entity_index == first_child.source_entity_index)
+                .expect("linked child remains live")
+                .position,
+            first_child.position
+        );
+
+        let root = session
+            .economy_mut()
+            .authored_model76
+            .iter_mut()
+            .find(|candidate| candidate.source_entity_index == source.source_entity_index)
+            .expect("model-76 root for terminal countdown");
+        root.word_0x2c = 8;
+        root.font_type_index = 18;
+        root.state = 2;
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_model76_slot(source.source_entity_index)
+        );
+        assert_eq!(session.economy().model76_tail_spawns().len(), 1);
+        let tail = session.economy().model76_tail_spawns()[0];
+        assert_eq!(
+            (
+                tail.parent_entity_index,
+                tail.parent_entity_id,
+                tail.source_class,
+                tail.model,
+                tail.action,
+                tail.subspell_index,
+                tail.max_life,
+                tail.life,
+                tail.shift_rot_x,
+                tail.shift_rot_y,
+                tail.particle_index,
+            ),
+            (
+                source.source_entity_index,
+                source.entity_id,
+                10,
+                0,
+                0,
+                400,
+                8,
+                8,
+                128,
+                128,
+                7,
+            )
+        );
+        assert!(
+            session
+                .economy()
+                .authored_model76()
+                .iter()
+                .find(|candidate| candidate.source_entity_index == source.source_entity_index)
+                .is_some_and(|candidate| !candidate.active)
+        );
+        assert!(
+            session
+                .economy()
+                .model76_children()
+                .iter()
+                .all(|child| !child.active)
+        );
+        session.economy_mut().reclaim_inactive_slots();
+        assert!(
+            session
+                .economy()
+                .authored_model76()
+                .iter()
+                .all(|candidate| candidate.source_entity_index != source.source_entity_index)
+        );
+        assert!(session.economy().model76_children().is_empty());
+        assert!(session.economy().live_arena_slots().contains(&(
+            tail.source_entity_index,
+            Level2DynamicArenaKind::Model76TailSpawn
+        )));
+
+        session.reset();
+        assert!(session.economy().authored_model76().is_empty());
+        assert!(session.economy().model76_children().is_empty());
+        assert!(session.economy().model76_tail_spawns().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_model76_callback_snaps_to_live_target_cache() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-76 target session");
+        let source = session
+            .allocate_level2_authored_model76(112)
+            .expect("authored model-76 row 112");
+        let target_slot = session.state.entity_index;
+        let target_index = usize::from(target_slot);
+        let target_xy = Position {
+            x: source.position.x.wrapping_add(1_024),
+            y: source.position.y.wrapping_add(2_048),
+            z: 0,
+        };
+        let ground = session.terrain.ground_height(target_xy);
+        let target_position = Position {
+            z: ground.wrapping_add(512),
+            ..target_xy
+        };
+        let target_pitch = 300_i16;
+        let target_height_offset = 64_i16;
+        session.entities[target_index].position = target_position;
+        session.entities[target_index].control_flags = 0;
+        session.entities[target_index].life = 500;
+        session.entities[target_index].record[86..88]
+            .copy_from_slice(&target_height_offset.to_le_bytes());
+        session.entities[target_index].record[88..90].copy_from_slice(&target_pitch.to_le_bytes());
+        {
+            // `sub_4A310` leaves the authored Level 2 producer untargeted in
+            // this bounded slice; seed the callback state directly so the
+            // retained `sub_33C70` branch stays covered without claiming the
+            // producer already supplies that relation.
+            let root = session
+                .economy_mut()
+                .authored_model76
+                .iter_mut()
+                .find(|candidate| candidate.source_entity_index == source.source_entity_index)
+                .expect("model-76 root");
+            root.target_entity_index = target_slot;
+        }
+
+        session.sync_level2_model76_targets_from_entities();
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_model76_slot(source.source_entity_index)
+        );
+
+        let stepped = session
+            .economy()
+            .authored_model76()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == source.source_entity_index)
+            .copied()
+            .expect("stepped model-76 root");
+        assert_eq!(stepped.state, 1);
+        assert_eq!(stepped.target_entity_index, target_slot);
+        assert_eq!(stepped.position.x, target_position.x);
+        assert_eq!(stepped.position.y, target_position.y);
+        assert_eq!(
+            stepped.position.z,
+            target_position.z.wrapping_add(target_height_offset)
+        );
+        assert_eq!(stepped.maximum_speed, 150);
+        assert_eq!(stepped.minimum_speed, 450);
+    }
+
+    #[test]
+    fn level_two_model76_callback_enters_terminal_state_for_dead_target() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-76 dead-target session");
+        let source = session
+            .allocate_level2_authored_model76(112)
+            .expect("authored model-76 row 112");
+        let target_slot = session.state.entity_index;
+        let target_index = usize::from(target_slot);
+        let child_before = session
+            .economy()
+            .model76_children()
+            .iter()
+            .find(|child| child.parent_entity_index == source.source_entity_index)
+            .map(|child| child.position)
+            .expect("model-76 child before terminal state");
+        session.entities[target_index].life = -1;
+        {
+            let root = session
+                .economy_mut()
+                .authored_model76
+                .iter_mut()
+                .find(|candidate| candidate.source_entity_index == source.source_entity_index)
+                .expect("model-76 root");
+            root.target_entity_index = target_slot;
+        }
+
+        session.sync_level2_model76_targets_from_entities();
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_model76_slot(source.source_entity_index)
+        );
+
+        let stepped = session
+            .economy()
+            .authored_model76()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == source.source_entity_index)
+            .copied()
+            .expect("terminal model-76 root");
+        assert_eq!(stepped.state, 2);
+        assert_eq!(stepped.word_0x2c, 174);
+        let child_after = session
+            .economy()
+            .model76_children()
+            .iter()
+            .find(|child| child.parent_entity_index == source.source_entity_index)
+            .map(|child| child.position)
+            .expect("model-76 child after terminal state");
+        assert_eq!(child_after, child_before);
+    }
+
+    #[test]
+    fn level_two_model76_allocation_failure_rolls_back_partial_family() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-76 rollback session");
+        let baseline_live = session.economy().live_arena_slots();
+        let crafted_free_slots = vec![
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 0, 906, 905, 904,
+            903, 902, 901,
+        ];
+        session.economy_mut().free_slots = crafted_free_slots.clone();
+
+        assert!(session.allocate_level2_authored_model76(112).is_none());
+        assert!(session.economy().authored_model76().is_empty());
+        assert!(session.economy().model76_children().is_empty());
+        assert!(session.economy().model76_tail_spawns().is_empty());
+        assert_eq!(session.economy().free_slots, crafted_free_slots);
+        assert_eq!(session.economy().live_arena_slots(), baseline_live);
     }
 
     #[test]
