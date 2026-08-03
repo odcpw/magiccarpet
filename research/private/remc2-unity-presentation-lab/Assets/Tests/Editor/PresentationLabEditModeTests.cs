@@ -374,6 +374,63 @@ namespace MagicCarpet.PresentationLab.Tests
             }
         }
 
+        [Test]
+        public void TownStructureReadabilityScaleIsDepthAwareAndBounded()
+        {
+            GameObject root = new GameObject("enhanced-town-depth-readability-test");
+            GameObject nearView = new GameObject("near-town-view");
+            GameObject farView = new GameObject("far-town-view");
+            nearView.transform.SetParent(root.transform, false);
+            farView.transform.SetParent(root.transform, false);
+            try
+            {
+                UnityEnhancedActorPresentation actors =
+                    root.AddComponent<UnityEnhancedActorPresentation>();
+                UnityEnhancedCameraPose cameraPose =
+                    new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f);
+                UnityEnhancedEntitySnapshot nearTown = TownEntity(24f);
+                UnityEnhancedEntitySnapshot farTown = TownEntity(60f);
+
+                actors.Configure(nearView, nearTown, cameraPose);
+                actors.Configure(farView, farTown, cameraPose);
+
+                Transform nearVisual = nearView.transform.Find("EnhancedActorVisual");
+                Transform farVisual = farView.transform.Find("EnhancedActorVisual");
+                Assert.IsNotNull(nearVisual);
+                Assert.IsNotNull(farVisual);
+                Assert.Greater(farVisual.localScale.y, nearVisual.localScale.y);
+                Assert.LessOrEqual(
+                    farVisual.localScale.y,
+                    nearVisual.localScale.y * 1.5f + 0.0001f);
+
+                MeshRenderer nearRenderer = nearVisual.GetComponent<MeshRenderer>();
+                MeshRenderer farRenderer = farVisual.GetComponent<MeshRenderer>();
+                MeshFilter nearFilter = nearVisual.GetComponent<MeshFilter>();
+                MeshFilter farFilter = farVisual.GetComponent<MeshFilter>();
+                Assert.AreSame(nearFilter.sharedMesh, farFilter.sharedMesh);
+                Assert.AreSame(nearRenderer.sharedMaterial, farRenderer.sharedMaterial);
+            }
+            finally
+            {
+                Object.DestroyImmediate(root);
+            }
+        }
+
+        private static UnityEnhancedEntitySnapshot TownEntity(float forwardDepth)
+        {
+            return new UnityEnhancedEntitySnapshot
+            {
+                Generation = 1,
+                StableIdentity = 42,
+                Position = new Vector3(0f, 0f, forwardDepth),
+                Rotation = Quaternion.identity,
+                Visible = true,
+                PresentationFamily = (int)UnityEnhancedPresentationFamily.Town,
+                Scale = 1f,
+                RenderLayer = 7
+            };
+        }
+
     }
 }
 #endif

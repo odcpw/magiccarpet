@@ -106,6 +106,13 @@ namespace MagicCarpet.PresentationLab
         // Target roughly 22 vertical pixels in the 720p owner capture while
         // retaining a hard cap for near-camera actors.
         private const float OwnerActorViewportHeightFraction = 0.03f;
+        // Keep distant town silhouettes readable during owner flight without
+        // changing their authoritative positions, meshes, or gameplay scale.
+        // The depth multiplier starts only beyond the readable near field and
+        // is capped so a far structure cannot become a billboard-sized prop.
+        private const float TownReadabilityBaseHeight = 2.02f;
+        private const float TownReadabilityViewportHeightFraction = 0.045f;
+        private const float TownReadabilityMaximumScale = 1.5f;
         private const float DefaultVerticalFieldOfView = 70f;
         private const float FireballCoreVisualScale = 2.8f;
         // The owner projectile remains the anchor; the halo is deliberately
@@ -303,7 +310,8 @@ namespace MagicCarpet.PresentationLab
             float haloScale = baseScale;
             if (entity.PresentationFamily == (int)UnityEnhancedPresentationFamily.Town)
             {
-                scale *= StructureScale(entity.StableIdentity);
+                scale *= StructureScale(entity.StableIdentity) *
+                         TownDepthReadabilityScale(entity, cameraPose);
             }
             if (fireballProjectile)
             {
@@ -866,6 +874,52 @@ namespace MagicCarpet.PresentationLab
         {
             int variant = (int)((stableIdentity ^ (stableIdentity >> 17)) & 3UL);
             return 0.86f + variant * 0.08f;
+        }
+
+        private static float TownDepthReadabilityScale(
+            UnityEnhancedEntitySnapshot entity,
+            UnityEnhancedCameraPose cameraPose)
+        {
+            if (entity == null || !IsFinite(entity.Position) ||
+                !IsFinite(cameraPose.Position) || !IsFinite(cameraPose.Rotation))
+            {
+                return 1f;
+            }
+
+            Vector3 cameraForward = cameraPose.Rotation * Vector3.forward;
+            float forwardLength = cameraForward.magnitude;
+            if (!IsFinite(cameraForward) || !IsFinite(forwardLength) ||
+                forwardLength <= 0.0001f)
+            {
+                return 1f;
+            }
+
+            float forwardDepth = Vector3.Dot(
+                entity.Position - cameraPose.Position,
+                cameraForward / forwardLength);
+            if (!IsFinite(forwardDepth) || forwardDepth <= 0f)
+            {
+                return 1f;
+            }
+
+            float fieldOfView = cameraPose.FieldOfView;
+            if (!IsFinite(fieldOfView) || fieldOfView <= 1f || fieldOfView >= 179f)
+            {
+                fieldOfView = DefaultVerticalFieldOfView;
+            }
+
+            float requiredHeight = 2f * forwardDepth *
+                                   Mathf.Tan(fieldOfView * Mathf.Deg2Rad * 0.5f) *
+                                   TownReadabilityViewportHeightFraction;
+            if (!IsFinite(requiredHeight) || requiredHeight <= 0f)
+            {
+                return 1f;
+            }
+
+            return Mathf.Clamp(
+                Mathf.Max(1f, requiredHeight / TownReadabilityBaseHeight),
+                1f,
+                TownReadabilityMaximumScale);
         }
 
         private static bool IsFinite(float value)
