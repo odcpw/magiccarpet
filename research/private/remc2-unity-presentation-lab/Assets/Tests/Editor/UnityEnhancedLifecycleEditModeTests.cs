@@ -1514,6 +1514,7 @@ namespace MagicCarpet.PresentationLab.Tests
             StringAssert.Contains("_RippleLifetime", rippleShaderSource);
             StringAssert.Contains("_ShorelineMode", shaderSource);
             StringAssert.Contains("ShorelineFoam", shaderSource);
+            StringAssert.Contains("moonSheen", shaderSource);
             StringAssert.DoesNotContain(
                 "half3 reflection = lerp(_ReflectionColor.rgb, sceneReflection, _SceneReflectionStrength);",
                 shaderSource);
@@ -1547,8 +1548,8 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.Greater(water.WaterMaterial.GetFloat("_WaveStrength"), 0.20f);
             Assert.Greater(water.WaterMaterial.GetFloat("_FresnelStrength"), 1.0f);
             Assert.Greater(water.WaterMaterial.GetFloat("_SceneReflectionStrength"), 0.5f);
-            Assert.That(water.WaterMaterial.GetFloat("_PlanarReflectionMix"), Is.EqualTo(0.62f).Within(0.001f));
-            Assert.That(water.WaterMaterial.GetFloat("_CausticStrength"), Is.EqualTo(0.9f).Within(0.001f));
+            Assert.That(water.WaterMaterial.GetFloat("_PlanarReflectionMix"), Is.EqualTo(0.78f).Within(0.001f));
+            Assert.That(water.WaterMaterial.GetFloat("_CausticStrength"), Is.EqualTo(1.15f).Within(0.001f));
             MeshRenderer rippleRenderer = gameObject.transform.Find("EnhancedWaterRipple").GetComponent<MeshRenderer>();
             Assert.IsFalse(rippleRenderer.enabled);
             MeshRenderer shorelineRenderer = gameObject.transform.Find("EnhancedShoreline").GetComponent<MeshRenderer>();

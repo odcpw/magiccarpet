@@ -485,27 +485,27 @@ namespace MagicCarpet.PresentationLab
             if (shader == customWaterShader)
             {
                 material.SetColor("_BaseColor", new Color(0.008f, 0.045f, 0.14f, 1f));
-                material.SetColor("_ReflectionColor", new Color(0.035f, 0.22f, 0.62f, 1f));
-                material.SetColor("_FoamColor", new Color(0.12f, 0.42f, 0.90f, 1f));
-                material.SetColor("_MoonColor", new Color(0.34f, 0.58f, 1.0f, 1f));
+                material.SetColor("_ReflectionColor", new Color(0.06f, 0.30f, 0.76f, 1f));
+                material.SetColor("_FoamColor", new Color(0.16f, 0.52f, 1.0f, 1f));
+                material.SetColor("_MoonColor", new Color(0.44f, 0.74f, 1.0f, 1f));
                 material.SetFloat("_WaveScale", 0.085f);
                 material.SetFloat("_WaveSpeed", 0.32f);
-                material.SetFloat("_WaveStrength", 0.34f);
-                material.SetFloat("_FresnelStrength", 1.55f);
-                material.SetFloat("_SpecularStrength", 2.10f);
-                material.SetFloat("_ReflectionStrength", 1.25f);
-                material.SetFloat("_SceneReflectionStrength", 0.84f);
-                material.SetFloat("_ReflectionDistortion", 0.035f);
+                material.SetFloat("_WaveStrength", 0.42f);
+                material.SetFloat("_FresnelStrength", 1.85f);
+                material.SetFloat("_SpecularStrength", 2.80f);
+                material.SetFloat("_ReflectionStrength", 1.50f);
+                material.SetFloat("_SceneReflectionStrength", 0.94f);
+                material.SetFloat("_ReflectionDistortion", 0.045f);
                 material.SetTexture("_PlanarReflectionTexture", null);
                 material.SetFloat("_PlanarReflectionEnabled", 0f);
                 // Let the real bounded reflection camera carry more of the
                 // water read at game distance while retaining the screen-space
                 // fallback for OpenGL paths where the reflected horizon is
                 // sparse.
-                material.SetFloat("_PlanarReflectionMix", 0.62f);
+                material.SetFloat("_PlanarReflectionMix", 0.78f);
                 material.SetColor("_CausticColor", new Color(0.18f, 0.65f, 1.0f, 1f));
                 material.SetFloat("_CausticScale", 0.22f);
-                material.SetFloat("_CausticStrength", 0.9f);
+                material.SetFloat("_CausticStrength", 1.15f);
                 material.SetFloat("_RippleSpeed", 2.8f);
                 material.SetFloat("_RippleWidth", 0.65f);
                 material.SetVector("_RippleCenter", Vector4.zero);

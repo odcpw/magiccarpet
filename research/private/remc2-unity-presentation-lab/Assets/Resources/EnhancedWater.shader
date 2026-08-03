@@ -261,6 +261,11 @@ Shader "MagicCarpet/Enhanced/Water"
                 half3 halfDirection = SafeNormalize(moon.direction + viewDirectionWS);
                 half glint = pow(saturate(dot(normalWS, halfDirection)), 24.0h) *
                              moon.distanceAttenuation * _SpecularStrength;
+                // Keep the sharp moon glint, but add a broader sheen so a
+                // reflected surface remains readable between individual
+                // highlights at flight distance.
+                half moonSheen = pow(saturate(dot(normalWS, halfDirection)), 8.0h) *
+                                 moon.distanceAttenuation * _SpecularStrength * 0.16h;
                 float2 screenUV = input.screenPos.xy / max(input.screenPos.w, 0.0001);
                 float2 reflectionUV = float2(screenUV.x, 1.0 - screenUV.y);
                 reflectionUV = saturate(reflectionUV + normalWS.xz * _ReflectionDistortion);
@@ -320,10 +325,11 @@ Shader "MagicCarpet/Enhanced/Water"
                 color += warmLighting * (0.25h + fresnel * 0.45h + warmShimmer * (0.18h + crest * 0.08h));
                 color += _CausticColor.rgb * caustic * _CausticStrength *
                          (0.025h + fresnel * 0.11h);
-                color += _FoamColor.rgb * crest * (0.018h + fresnel * 0.05h);
+                color += _FoamColor.rgb * crest * (0.035h + fresnel * 0.10h);
                 color += _FoamColor.rgb * rippleBand * (0.16h + fresnel * 0.58h);
                 color += _MoonColor.rgb * rippleBand * (0.06h + crest * 0.12h);
                 color += _MoonColor.rgb * glint;
+                color += _MoonColor.rgb * moonSheen;
                 color += _MoonColor.rgb * fresnel * crest * 0.035h;
                 half shorelineFoam = ShorelineFoam(input.positionWS.xz) * _ShorelineMode;
                 color += _FoamColor.rgb * shorelineFoam * _ShorelineFoamStrength *
