@@ -525,6 +525,52 @@ namespace MagicCarpet.PresentationLab.Tests
             }
         }
 
+        [Test]
+        public void EnhancedNightSkyHorizonGlowIsBoundedAndApplied()
+        {
+            GameObject root = new GameObject("enhanced-night-sky-horizon-glow-test");
+            Camera camera = root.AddComponent<Camera>();
+            UnityEnhancedNightLighting lighting =
+                root.AddComponent<UnityEnhancedNightLighting>();
+            Material skyboxBefore = RenderSettings.skybox;
+            try
+            {
+                lighting.ApplyDescriptor(
+                    21,
+                    UnityEnhancedNightLightingDescriptor.Level1Night(),
+                    new UnityEnhancedLocalLightRequest[0],
+                    true,
+                    camera);
+
+                Shader skyShader = Shader.Find("MagicCarpet/Enhanced/NightSky");
+                Assert.IsNotNull(skyShader);
+                Assert.IsNotNull(RenderSettings.skybox);
+                Assert.AreEqual(skyShader, RenderSettings.skybox.shader);
+                float strength = RenderSettings.skybox.GetFloat("_HorizonGlowStrength");
+                Assert.Greater(strength, 0f);
+                Assert.LessOrEqual(strength, 0.18f);
+
+                string source = File.ReadAllText(Path.Combine(
+                    Application.dataPath,
+                    "Resources",
+                    "EnhancedNightSky.shader"));
+                StringAssert.Contains("HorizonGlowBand", source);
+                StringAssert.Contains("half3 color = SkyGradient(direction);", source);
+                StringAssert.Contains(
+                    "half3 glowColor = saturate(",
+                    source);
+                StringAssert.Contains(
+                    "color += glowColor * horizonBand * _HorizonGlowStrength;",
+                    source);
+            }
+            finally
+            {
+                lighting.ResetForSession();
+                Assert.AreSame(skyboxBefore, RenderSettings.skybox);
+                Object.DestroyImmediate(root);
+            }
+        }
+
         private static UnityEnhancedEntitySnapshot TownEntity(float forwardDepth)
         {
             return new UnityEnhancedEntitySnapshot

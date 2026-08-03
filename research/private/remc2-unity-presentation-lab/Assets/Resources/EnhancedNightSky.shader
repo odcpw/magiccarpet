@@ -13,6 +13,7 @@ Shader "MagicCarpet/Enhanced/NightSky"
         _MoonIntensity ("Moon Intensity", Range(0, 4)) = 0.8
         _MoonSize ("Moon Size", Range(0.005, 0.2)) = 0.035
         _MoonGlow ("Moon Glow", Range(0, 4)) = 0.45
+        _HorizonGlowStrength ("Horizon Glow Strength", Range(0, 0.18)) = 0
         _Exposure ("Exposure", Range(0, 4)) = 1
     }
 
@@ -49,6 +50,7 @@ Shader "MagicCarpet/Enhanced/NightSky"
                 half _MoonIntensity;
                 half _MoonSize;
                 half _MoonGlow;
+                half _HorizonGlowStrength;
                 half _Exposure;
             CBUFFER_END
 
@@ -110,10 +112,21 @@ Shader "MagicCarpet/Enhanced/NightSky"
                 return _MoonColor.rgb * ((disc * _MoonIntensity) + glow);
             }
 
+            half HorizonGlowBand(half3 direction)
+            {
+                half nearHorizon = smoothstep(-0.02h, 0.035h, direction.y);
+                half upperFade = 1.0h - smoothstep(0.12h, 0.34h, direction.y);
+                return saturate(nearHorizon * upperFade);
+            }
+
             half4 Frag(Varyings input) : SV_Target
             {
                 half3 direction = normalize(input.direction);
                 half3 color = SkyGradient(direction);
+                half horizonBand = HorizonGlowBand(direction);
+                half3 glowColor = saturate(
+                    _HorizonColor.rgb * 2.8h + _MoonColor.rgb * 0.15h);
+                color += glowColor * horizonBand * _HorizonGlowStrength;
                 color += _StarColor.rgb * (Stars(direction) * _StarIntensity);
                 color += Moon(direction);
                 return half4(max(color * _Exposure, 0.0h), 1.0h);

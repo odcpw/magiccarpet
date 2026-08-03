@@ -509,6 +509,7 @@ namespace MagicCarpet.PresentationLab
                 generatedSkybox.SetFloat("_MoonIntensity", descriptor.MoonIntensity);
                 generatedSkybox.SetFloat("_MoonSize", 0.035f);
                 generatedSkybox.SetFloat("_MoonGlow", 0.45f);
+                generatedSkybox.SetFloat("_HorizonGlowStrength", 0.18f);
                 generatedSkybox.SetFloat("_Exposure", Mathf.Clamp(0.85f + descriptor.Exposure * 0.25f, 0f, 4f));
             }
             else if (generatedSkybox.HasProperty("_SkyTint"))
