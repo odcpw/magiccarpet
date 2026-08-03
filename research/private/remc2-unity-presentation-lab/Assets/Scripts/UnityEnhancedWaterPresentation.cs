@@ -32,6 +32,8 @@ namespace MagicCarpet.PresentationLab
     [DisallowMultipleComponent]
     public sealed class UnityEnhancedWaterPresentation : MonoBehaviour
     {
+        private const float WaterSurfaceOffset = 0.08f;
+        private const float ShorelineSurfaceOffset = 0.012f;
         private MeshFilter waterFilter;
         private MeshRenderer waterRenderer;
         private MeshFilter shorelineFilter;
@@ -161,10 +163,10 @@ namespace MagicCarpet.PresentationLab
             waterMesh.Clear();
             waterMesh.vertices = new[]
             {
-                snapshot.Center + new Vector3(-halfX, snapshot.Level, -halfZ),
-                snapshot.Center + new Vector3(halfX, snapshot.Level, -halfZ),
-                snapshot.Center + new Vector3(halfX, snapshot.Level, halfZ),
-                snapshot.Center + new Vector3(-halfX, snapshot.Level, halfZ)
+                snapshot.Center + new Vector3(-halfX, snapshot.Level + WaterSurfaceOffset, -halfZ),
+                snapshot.Center + new Vector3(halfX, snapshot.Level + WaterSurfaceOffset, -halfZ),
+                snapshot.Center + new Vector3(halfX, snapshot.Level + WaterSurfaceOffset, halfZ),
+                snapshot.Center + new Vector3(-halfX, snapshot.Level + WaterSurfaceOffset, halfZ)
             };
             waterMesh.uv = new[]
             {
@@ -202,7 +204,9 @@ namespace MagicCarpet.PresentationLab
                 Vector3 shorelineOrigin = snapshot.Center -
                     new Vector3(snapshot.Size.x * 0.5f, 0f, snapshot.Size.y * 0.5f);
                 Vector3 center = shorelineOrigin +
-                    new Vector3((x + 0.5f) * cell, snapshot.Level + 0.012f, (z + 0.5f) * cell);
+                    new Vector3((x + 0.5f) * cell,
+                        snapshot.Level + WaterSurfaceOffset + ShorelineSurfaceOffset,
+                        (z + 0.5f) * cell);
                 float half = cell * 0.5f;
                 int baseVertex = vertexIndex;
                 vertices[vertexIndex++] = center + new Vector3(-half, 0f, -half);

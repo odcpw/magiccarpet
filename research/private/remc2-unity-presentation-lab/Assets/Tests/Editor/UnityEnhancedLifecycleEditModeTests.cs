@@ -948,7 +948,11 @@ namespace MagicCarpet.PresentationLab.Tests
             quality.ResetForSession();
             Assert.IsFalse(quality.OpaqueTextureRequired);
             Assert.IsFalse(cameraData.requiresColorTexture);
+            MeshFilter waterSurface = gameObject.transform.Find("EnhancedWaterSurface").GetComponent<MeshFilter>();
             MeshFilter shoreline = gameObject.transform.Find("EnhancedShoreline").GetComponent<MeshFilter>();
+            Assert.That(waterSurface.sharedMesh.vertices[0].y, Is.EqualTo(snapshot.Level + 0.08f).Within(0.0001f));
+            Assert.That(shoreline.sharedMesh.vertices[0].y, Is.EqualTo(snapshot.Level + 0.092f).Within(0.0001f));
+            Assert.Greater(shoreline.sharedMesh.vertices[0].y, waterSurface.sharedMesh.vertices[0].y);
             Assert.That(shoreline.sharedMesh.vertices[0].x, Is.EqualTo(-4f).Within(0.001f));
             Assert.That(shoreline.sharedMesh.vertices[0].z, Is.EqualTo(-4f).Within(0.001f));
 
