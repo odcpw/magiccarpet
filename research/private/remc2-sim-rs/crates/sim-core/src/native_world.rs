@@ -34281,6 +34281,130 @@ mod tests {
     }
 
     #[test]
+    fn level_two_group25_row356_materializes_from_row355_production_route() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-25 production session");
+        let baseline_hash = session.campaign_state_hash();
+        let authored_features = session.mission().authored_features().to_vec();
+        let feature = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("authored group-25 feature")
+        };
+
+        // Reuse the real imported row-342 -> group-23 -> row-344 route. The
+        // existing qualified root is the source authority; only its authored
+        // position/target are rebound to the production route under test.
+        let root_position = feature(342).world_position(0);
+        let root = session
+            .level2_imported_switch_roots
+            .iter_mut()
+            .find(|root| root.authored_index == 342)
+            .expect("imported row-342 group-23 root");
+        root.position = root_position;
+        root.target_group = 23;
+        root.cooldown = 0;
+        session.state.position = root_position;
+        for _ in 0..16 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            if session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .any(|source| source.authored_index == 344)
+            {
+                break;
+            }
+        }
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .any(|source| source.authored_index == 344)
+        );
+
+        // Row 344's model-0 overlap activates group 24. The newly allocated
+        // row 355 is model-1 at the adjacent authored tile, so its inverse
+        // overlap fires in the same source run and selects group 25/row 356.
+        session.state.position = feature(344).world_position(0);
+        let mut group25_activated = false;
+        for _ in 0..16 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            group25_activated |= session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group: 25,
+                        authored_indices,
+                        ..
+                    } if authored_indices.as_ref() == [356]
+                )
+            });
+            if group25_activated {
+                break;
+            }
+        }
+        assert!(
+            group25_activated,
+            "row 355 must activate group 25 in production"
+        );
+
+        let row355 = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 355)
+            .copied()
+            .expect("group 24 must materialize row 355");
+        assert_eq!((row355.model, row355.action, row355.stage_tag), (1, 1, 25));
+        assert!(row355.fired);
+        assert!(row355.drawing_enabled);
+
+        let row356 = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 356)
+            .copied()
+            .expect("group 25 must materialize row 356");
+        assert_eq!(
+            (
+                row356.source_class,
+                row356.model,
+                row356.action,
+                row356.stage_tag,
+                row356.word_10,
+                row356.dword_0x10,
+            ),
+            (11, 0, 0, 26, 12, 0)
+        );
+        let authored_row356 = feature(356);
+        assert_eq!(
+            (row356.position.x, row356.position.y, row356.position.z),
+            (
+                authored_row356.world_position(0).x,
+                authored_row356.world_position(0).y,
+                session
+                    .terrain
+                    .ground_height(authored_row356.world_position(0))
+            )
+        );
+        assert!(row356.active);
+        assert!(!row356.drawing_enabled);
+        assert!(row356.fired);
+
+        session.reset();
+        assert!(session.economy().authored_switch_producers().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
     fn level_two_authored_model76_builds_full_cluster_then_spawns_tail_on_expiry() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
