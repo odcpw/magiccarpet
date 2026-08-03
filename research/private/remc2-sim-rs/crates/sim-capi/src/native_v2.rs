@@ -907,7 +907,11 @@ pub struct McCampaignOpponentSnapshotV2 {
     pub reserved_4: [u8; 3],
     pub objective_relation_value: u16,
     pub reserved_5: u16,
-    pub reserved: [u32; 5],
+    /// Bit 0: visible to the local player. Bit 1: owner Invisible mode is
+    /// nonzero. Bit 2: a local Beyond Sight holder is present. Bit 3: that
+    /// holder is active. Bit 4: the target's family-4 holder gate is active.
+    pub visibility_flags: u32,
+    pub reserved: [u32; 4],
 }
 
 /// Additive Rust-owned Level 1 Goat row. The existing 52-byte entity snapshot
@@ -7555,7 +7559,17 @@ pub extern "C" fn mc_native_campaign_opponent_state(
                     format!("campaign opponent reset census is invalid: {error}"),
                 )
             })?;
-            Ok(campaign_opponent_snapshot(generation, participant))
+            let visibility = reset.nyphur_visibility().map_err(|error| {
+                AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    format!("campaign opponent visibility is invalid: {error}"),
+                )
+            })?;
+            Ok(campaign_opponent_snapshot(
+                generation,
+                participant,
+                visibility,
+            ))
         })
     })
 }
@@ -11022,6 +11036,7 @@ fn campaign_beyond_sight_snapshot(
 fn campaign_opponent_snapshot(
     generation: u64,
     participant: sim_core::native_world::Level2NyphurParticipant,
+    visibility: sim_core::native_world::Level2NyphurVisibility,
 ) -> McCampaignOpponentSnapshotV2 {
     let (objective_relation_domain, objective_relation_value) =
         match participant.objective_stage_relation {
@@ -11058,6 +11073,11 @@ fn campaign_opponent_snapshot(
         possession_next_entity: participant.possession_next_entity,
         objective_relation_domain,
         objective_relation_value,
+        visibility_flags: u32::from(visibility.visible_to_local_player)
+            | (u32::from(visibility.owner_visibility_mode != 0) << 1)
+            | (u32::from(visibility.beyond_sight_holder_present) << 2)
+            | (u32::from(visibility.beyond_sight_active) << 3)
+            | (u32::from(visibility.family4_gate_active) << 4),
         ..McCampaignOpponentSnapshotV2::default()
     }
 }
@@ -16856,6 +16876,10 @@ mod tests {
             std::mem::offset_of!(McCampaignOpponentSnapshotV2, objective_relation_value),
             76
         );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignOpponentSnapshotV2, visibility_flags),
+            80
+        );
         assert_eq!(std::mem::offset_of!(McGoatSnapshotV2, life), 48);
         assert_eq!(std::mem::offset_of!(McGoatSnapshotV2, reserved), 68);
         assert_eq!(std::mem::offset_of!(McCampaignGoatSnapshotV2, life), 48);
@@ -19558,6 +19582,7 @@ mod tests {
         assert_eq!(opponent.possession_action, 3);
         assert_eq!(opponent.objective_relation_domain, 2);
         assert_eq!(opponent.objective_relation_value, 112);
+        assert_eq!(opponent.visibility_flags, 2);
 
         let unchanged = opponent;
         assert_eq!(
@@ -20649,6 +20674,7 @@ _Static_assert(sizeof(McCampaignOpponentSnapshotV2) == 104, "McCampaignOpponentS
 _Static_assert(offsetof(McCampaignBeyondSightSnapshotV2, experience_awarded) == 52, "campaign Beyond Sight experience offset");
 _Static_assert(offsetof(McCampaignOpponentSnapshotV2, entity_control_flags) == 36, "campaign opponent control flags offset");
 _Static_assert(offsetof(McCampaignOpponentSnapshotV2, objective_relation_value) == 76, "campaign opponent objective relation offset");
+_Static_assert(offsetof(McCampaignOpponentSnapshotV2, visibility_flags) == 80, "campaign opponent visibility flags offset");
 _Static_assert(sizeof(McGoatSnapshotV2) == 84, "McGoatSnapshotV2 size");
 _Static_assert(sizeof(McCampaignGoatSnapshotV2) == 84, "McCampaignGoatSnapshotV2 size");
 _Static_assert(sizeof(McCampaignSpellPickupSnapshotV2) == 64, "McCampaignSpellPickupSnapshotV2 size");

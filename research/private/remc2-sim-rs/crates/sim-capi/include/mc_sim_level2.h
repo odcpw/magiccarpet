@@ -379,7 +379,11 @@ typedef struct McCampaignOpponentSnapshotV2 {
     uint8_t reserved_4[3];
     uint16_t objective_relation_value;
     uint16_t reserved_5;
-    uint32_t reserved[5];
+    /* Bit 0 visible, bit 1 owner Invisible mode, bit 2 local Beyond Sight
+     * holder present, bit 3 local Beyond Sight holder active, bit 4 target
+     * family-4 gate active. */
+    uint32_t visibility_flags;
+    uint32_t reserved[4];
 } McCampaignOpponentSnapshotV2;
 
 /* Kind 10 is additive; existing McCampaignEventV2 rows are unchanged. */

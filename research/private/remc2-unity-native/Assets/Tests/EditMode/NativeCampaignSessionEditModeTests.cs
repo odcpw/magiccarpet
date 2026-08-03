@@ -759,6 +759,7 @@ namespace MagicCarpet.Native.Tests
             Assert.That(state.possessionAction, Is.EqualTo(3));
             Assert.That(state.objectiveRelationDomain, Is.EqualTo(2));
             Assert.That(state.objectiveRelationValue, Is.EqualTo(112));
+            Assert.That(state.visibilityFlags, Is.EqualTo(2u));
 
             session.Reset();
             var reset = session.OpponentState();

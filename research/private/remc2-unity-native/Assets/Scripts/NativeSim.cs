@@ -573,7 +573,8 @@ namespace MagicCarpet.Native
             internal byte[] reserved4;
             internal ushort objectiveRelationValue;
             internal ushort reserved5;
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 5)]
+            internal uint visibilityFlags;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
             internal uint[] reserved;
         }
 
@@ -2692,6 +2693,7 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignBeyondSightSnapshot>(nameof(CampaignBeyondSightSnapshot.experienceAwarded), 52);
             RequireOffset<CampaignOpponentSnapshot>(nameof(CampaignOpponentSnapshot.entityControlFlags), 36);
             RequireOffset<CampaignOpponentSnapshot>(nameof(CampaignOpponentSnapshot.objectiveRelationValue), 76);
+            RequireOffset<CampaignOpponentSnapshot>(nameof(CampaignOpponentSnapshot.visibilityFlags), 80);
             RequireOffset<Command>(nameof(Command.requestedSpell), 14);
             RequireOffset<CameraInput>(nameof(CameraInput.lookYaw), 8);
             RequireOffset<CameraInput>(nameof(CameraInput.reserved), 12);

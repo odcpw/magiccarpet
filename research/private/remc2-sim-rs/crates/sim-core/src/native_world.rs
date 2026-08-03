@@ -3281,6 +3281,22 @@ pub struct Level2NyphurParticipant {
     pub objective_stage_relation: RuntimeRelation,
 }
 
+/// Source visibility decision for the authored Level 2 Nyphur participant.
+///
+/// `sub_63570` consumes the target owner's `byte_0x1BF_447` and the local
+/// family-12 holder tier.  Keep the raw owner mode and the local holder gate
+/// visible so presentation/AI consumers cannot silently replace the source
+/// predicate with a generic "has spell" check.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2NyphurVisibility {
+    pub owner_visibility_mode: u8,
+    pub beyond_sight_holder_present: bool,
+    pub beyond_sight_active: bool,
+    pub beyond_sight_tier: Option<u8>,
+    pub family4_gate_active: bool,
+    pub visible_to_local_player: bool,
+}
+
 /// Level 2's shared spell/economy reset projection. The two active authored
 /// pickups and the AI's Fireball/Possession holders are retained as typed,
 /// source-ordered records; generic acquisition states additionally root the
@@ -14383,6 +14399,65 @@ impl Level2ResetSession {
     /// Focused reset/replay digest for the typed Nyphur participant chain.
     pub fn nyphur_state_hash(&self) -> Result<String> {
         Ok(level2_nyphur_state_hash(&self.nyphur_participant()?))
+    }
+
+    /// Evaluate the pinned `sub_63570` visibility consumer for Nyphur.
+    ///
+    /// The owner mode is the player record byte at source offset 0x1BF.  The
+    /// local family-12 holder's selected tier is the reveal gate: tier 0 does
+    /// not reveal an Invisible owner, while tiers 1 and 2 do, subject to the
+    /// target's source family-4 active-holder gate for tier 1.
+    pub fn nyphur_visibility(&self) -> Result<Level2NyphurVisibility> {
+        let participant = self.nyphur_participant()?;
+        let owner = self
+            .shared_spells
+            .players
+            .get(usize::from(participant.player_slot))
+            .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur visibility owner is absent"))?;
+        let owner_visibility_mode = owner.record_bytes()[447];
+        let beyond_sight = self.shared_spells.beyond_sight;
+        let local_entity_index = self.shared_spells.local_player.entity_index;
+        let beyond_sight_holder_present =
+            beyond_sight.is_some_and(|state| state.parent_entity_index == local_entity_index);
+        let beyond_sight_active = beyond_sight.is_some_and(|state| {
+            state.parent_entity_index == local_entity_index && state.active_value > 0
+        });
+        let beyond_sight_tier = beyond_sight
+            .filter(|state| state.parent_entity_index == local_entity_index)
+            .map(|state| state.tier);
+        let family4_holder_index = owner.enabled_spell_holders[4];
+        let family4_gate_active = family4_holder_index != 0
+            && (self
+                .entities
+                .get(usize::from(family4_holder_index))
+                .is_some_and(|entity| entity.active_value != 0)
+                || self
+                    .shared_spells
+                    .pickup(family4_holder_index)
+                    .is_some_and(|entity| entity.active_value != 0)
+                || self
+                    .shared_spells
+                    .holders
+                    .iter()
+                    .find(|entity| entity.index == family4_holder_index)
+                    .is_some_and(|entity| entity.active_value != 0));
+        let visible_to_local_player = if owner_visibility_mode == 0 {
+            true
+        } else {
+            match beyond_sight_tier {
+                Some(1) => !family4_gate_active,
+                Some(2..) => true,
+                _ => false,
+            }
+        };
+        Ok(Level2NyphurVisibility {
+            owner_visibility_mode,
+            beyond_sight_holder_present,
+            beyond_sight_active,
+            beyond_sight_tier,
+            family4_gate_active,
+            visible_to_local_player,
+        })
     }
 
     #[must_use]
@@ -28551,6 +28626,135 @@ mod tests {
             session.shared_spells().local_player.record[447],
             local_visibility
         );
+    }
+
+    #[test]
+    fn level_two_nyphur_visibility_consumes_invisible_owner_and_beyond_sight_tier() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 visibility session");
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let invisible_source = session
+            .economy()
+            .spell_pickups()
+            .iter()
+            .find(|source| source.authored_index == 156)
+            .copied()
+            .expect("authored family-11 source");
+        let invisible_position = invisible_source.position;
+        let remote_mana = session.shared_spells().player_mana().wrapping_add(7_777);
+        {
+            let shared = session.shared_spells_mut();
+            let remote = &mut shared.player_entities[1];
+            remote.active = true;
+            remote.model = 0;
+            remote.mana = remote_mana;
+            remote.record[2] = 1;
+            remote.record[68] = 0;
+            remote.position = invisible_position;
+            remote.record[80..82].copy_from_slice(&invisible_position.x.to_le_bytes());
+            remote.record[82..84].copy_from_slice(&invisible_position.y.to_le_bytes());
+            remote.record[84..86].copy_from_slice(&invisible_position.z.to_le_bytes());
+            let source = shared
+                .dynamic_pickups
+                .iter_mut()
+                .find(|entity| entity.index == invisible_source.source_entity_index)
+                .expect("authored family-11 source row");
+            source.phase = 0;
+            source.record[66] = 0;
+        }
+        let far_position = Position {
+            x: invisible_position.x.wrapping_add(0x2000),
+            y: invisible_position.y,
+            z: invisible_position.z,
+        };
+        let acquired = (0..4).find_map(|_| {
+            session
+                .shared_spells_mut()
+                .step_level2_spell_acquisition(11, 111, far_position)
+                .expect("remote family-11 source pass")
+        });
+        let acquired = acquired.expect("remote model-0 player acquires Invisible");
+        {
+            let shared = session.shared_spells_mut();
+            shared
+                .invisible
+                .as_mut()
+                .expect("remote acquisition seeds Invisible state")
+                .parent_mana = remote_mana;
+            assert!(shared.activate_invisible(256, false));
+        }
+        {
+            session
+                .shared_spells
+                .step_invisible_source_slot(acquired.source_slot, Some(2_000));
+        }
+        let hidden = session
+            .nyphur_visibility()
+            .expect("remote Invisible visibility projection");
+        assert_eq!(hidden.owner_visibility_mode, 1);
+        assert!(!hidden.beyond_sight_holder_present);
+        assert!(!hidden.visible_to_local_player);
+
+        let beyond_position = session.shared_spells().pickups()[0].position;
+        {
+            let shared = session.shared_spells_mut();
+            shared.players[0].family_selected_tiers[12] = 1;
+            shared.pickups[0].phase = 0;
+            shared.pickups[0].record[66] = 0;
+        }
+        {
+            let shared = &mut session.shared_spells;
+            let economy = &mut session.economy;
+            shared
+                .step_level2_spell_acquisition_with_economy(economy, 12, 111, beyond_position)
+                .expect("local family-12 source pass")
+                .expect("local model-0 player acquires Beyond Sight");
+        }
+        {
+            let shared = session.shared_spells_mut();
+            shared.player_mana = 5_000;
+            shared.player_entity.mana = 5_000;
+            shared.player_entity.record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
+            shared.player_entities[0].mana = 5_000;
+            shared.player_entities[0].record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
+            shared
+                .beyond_sight
+                .as_mut()
+                .expect("local family-12 acquisition seeds Beyond Sight state")
+                .parent_mana = 5_000;
+            assert!(shared.activate_beyond_sight(256, false));
+        }
+        {
+            let shared = session.shared_spells_mut();
+            shared.players[1].enabled_spell_holders[4] = 113;
+            shared.holders[0].active_value = 1;
+        }
+        let blocked = session
+            .nyphur_visibility()
+            .expect("family-4 visibility gate projection");
+        assert!(blocked.family4_gate_active);
+        assert!(!blocked.visible_to_local_player);
+        {
+            let shared = session.shared_spells_mut();
+            shared.players[1].enabled_spell_holders[4] = 0;
+            shared.holders[0].active_value = 0;
+        }
+        let revealed = session
+            .nyphur_visibility()
+            .expect("Beyond Sight visibility projection");
+        assert_eq!(revealed.owner_visibility_mode, 1);
+        assert!(revealed.beyond_sight_holder_present);
+        assert!(revealed.beyond_sight_active);
+        assert_eq!(revealed.beyond_sight_tier, Some(1));
+        assert!(revealed.visible_to_local_player);
+        assert_eq!(acquired.parent_entity_index, 112);
     }
 
     #[test]
