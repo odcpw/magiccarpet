@@ -244,6 +244,108 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void Level2CampaignShieldPickupUsesManagedNativeSourcePosition()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+
+            Assert.That(session.SpellPickups(), Is.Empty);
+            session.Step(123, 456, 7);
+            var source = session.SpellPickups()
+                .Single(pickup => pickup.authoredIndex == 155);
+            Assert.That(source.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+            Assert.That(source.structSize, Is.EqualTo(64));
+            Assert.That(source.family, Is.EqualTo(6));
+            Assert.That(source.action, Is.EqualTo(19));
+            Assert.That(source.active, Is.EqualTo(1));
+
+            NativeSim.CampaignStepSnapshot snapshot = default;
+            NativeSim.CampaignEvent[] events = null;
+            for (var turn = 0; turn < 4; turn++)
+            {
+                (snapshot, events) = session.Step(source.x, source.y, source.z);
+                if (events.Any(eventRow =>
+                        eventRow.kind == NativeSim.CampaignEventSpellAcquisition &&
+                        eventRow.family == 6 &&
+                        eventRow.sourceSlot == source.sourceEntityIndex &&
+                        eventRow.flags == 1))
+                {
+                    break;
+                }
+            }
+
+            Assert.That(snapshot.generation, Is.EqualTo(0));
+            Assert.That(events.Any(eventRow =>
+                    eventRow.abiVersion == NativeSim.AbiVersion &&
+                    eventRow.structSize == 48 &&
+                    eventRow.generation == session.Generation &&
+                    eventRow.kind == NativeSim.CampaignEventSpellAcquisition &&
+                    eventRow.family == 6 &&
+                    eventRow.sourceSlot == source.sourceEntityIndex &&
+                    eventRow.flags == 1), Is.True);
+
+            var acquired = session.ShieldState();
+            Assert.That(acquired.active, Is.EqualTo(1));
+            Assert.That(acquired.action, Is.EqualTo(18));
+            Assert.That(acquired.holderEntityIndex, Is.EqualTo(source.sourceEntityIndex));
+            Assert.That(acquired.generation, Is.EqualTo(session.Generation));
+
+            session.Reset();
+            Assert.That(session.SpellPickups(), Is.Empty);
+            Assert.That(session.ShieldState().active, Is.EqualTo(0));
+        }
+
+        [Test]
+        public void Level2CampaignInvisiblePickupUsesManagedNativeSourcePosition()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+
+            Assert.That(session.SpellPickups(), Is.Empty);
+            session.Step(123, 456, 7);
+            var source = session.SpellPickups()
+                .Single(pickup => pickup.authoredIndex == 156);
+            Assert.That(source.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+            Assert.That(source.structSize, Is.EqualTo(64));
+            Assert.That(source.family, Is.EqualTo(11));
+            Assert.That(source.action, Is.EqualTo(34));
+            Assert.That(source.active, Is.EqualTo(1));
+
+            NativeSim.CampaignStepSnapshot snapshot = default;
+            NativeSim.CampaignEvent[] events = null;
+            for (var turn = 0; turn < 4; turn++)
+            {
+                (snapshot, events) = session.Step(source.x, source.y, source.z);
+                if (events.Any(eventRow =>
+                        eventRow.kind == NativeSim.CampaignEventSpellAcquisition &&
+                        eventRow.family == 11 &&
+                        eventRow.sourceSlot == source.sourceEntityIndex &&
+                        eventRow.flags == 1))
+                {
+                    break;
+                }
+            }
+
+            Assert.That(snapshot.generation, Is.EqualTo(0));
+            Assert.That(events.Any(eventRow =>
+                    eventRow.abiVersion == NativeSim.AbiVersion &&
+                    eventRow.structSize == 48 &&
+                    eventRow.generation == session.Generation &&
+                    eventRow.kind == NativeSim.CampaignEventSpellAcquisition &&
+                    eventRow.family == 11 &&
+                    eventRow.sourceSlot == source.sourceEntityIndex &&
+                    eventRow.flags == 1), Is.True);
+
+            var acquired = session.InvisibleState();
+            Assert.That(acquired.active, Is.EqualTo(1));
+            Assert.That(acquired.action, Is.EqualTo(33));
+            Assert.That(acquired.holderEntityIndex, Is.EqualTo(source.sourceEntityIndex));
+            Assert.That(acquired.generation, Is.EqualTo(session.Generation));
+
+            session.Reset();
+            Assert.That(session.SpellPickups(), Is.Empty);
+            Assert.That(session.InvisibleState().active, Is.EqualTo(0));
+        }
+
+        [Test]
         public void Level2CampaignOpponentSnapshotBridgeIsReachableAndResetBound()
         {
             using var session = NativeCampaignSession.OpenLevel2(Level2Package);

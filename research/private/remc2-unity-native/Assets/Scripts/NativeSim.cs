@@ -736,6 +736,26 @@ namespace MagicCarpet.Native
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignSpellPickupSnapshot
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ushort sourceEntityIndex;
+            internal ushort authoredIndex;
+            internal byte family;
+            internal byte action;
+            internal byte phase;
+            internal byte active;
+            internal ushort x;
+            internal ushort y;
+            internal short z;
+            internal ushort entityRng;
+            internal ushort reserved0;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 9)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct GoatBatch
         {
             internal uint abiVersion;
@@ -1978,6 +1998,17 @@ namespace MagicCarpet.Native
             uint batchSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_spell_pickups_copy(
+            ulong handle,
+            ulong generation,
+            uint startOrdinal,
+            [Out] CampaignSpellPickupSnapshot[] buffer,
+            uint capacity,
+            uint elementSize,
+            out GoatBatch batch,
+            uint batchSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_mana_spheres_copy(
             ulong handle,
             ulong generation,
@@ -2460,6 +2491,7 @@ namespace MagicCarpet.Native
             RequireSize<EntitySnapshot>(52);
             RequireSize<GoatSnapshot>(84);
             RequireSize<CampaignGoatSnapshot>(84);
+            RequireSize<CampaignSpellPickupSnapshot>(64);
             RequireSize<GoatBatch>(64);
             RequireSize<Level1MissionSnapshot>(96);
             RequireSize<Level1PlayerLifecycleSnapshot>(144);
@@ -2527,6 +2559,9 @@ namespace MagicCarpet.Native
             RequireOffset<GoatSnapshot>(nameof(GoatSnapshot.life), 48);
             RequireOffset<GoatSnapshot>(nameof(GoatSnapshot.reserved), 68);
             RequireOffset<CampaignGoatSnapshot>(nameof(CampaignGoatSnapshot.partnerEntityIndex), 68);
+            RequireOffset<CampaignSpellPickupSnapshot>(
+                nameof(CampaignSpellPickupSnapshot.sourceEntityIndex), 8);
+            RequireOffset<CampaignSpellPickupSnapshot>(nameof(CampaignSpellPickupSnapshot.x), 16);
             RequireOffset<GoatBatch>(nameof(GoatBatch.reserved), 48);
             RequireOffset<Level1MissionSnapshot>(
                 nameof(Level1MissionSnapshot.playerLife), 40);

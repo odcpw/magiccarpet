@@ -915,6 +915,30 @@ pub struct McCampaignGoatSnapshotV2 {
     pub reserved_2: [u32; 3],
 }
 
+/// Additive Level 2 authored spell-pickup row. The row is generation-bound
+/// by the accompanying `McCampaignManaBatchV2` header and exposes the native
+/// source position needed to drive acquisition through the real campaign
+/// step route. Active Shield/Invisible/Beyond Sight lifecycles remain
+/// separate state projections.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignSpellPickupSnapshotV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub source_entity_index: u16,
+    pub authored_index: u16,
+    pub family: u8,
+    pub action: u8,
+    pub phase: u8,
+    pub active: u8,
+    pub x: u16,
+    pub y: u16,
+    pub z: i16,
+    pub entity_rng: u16,
+    pub reserved_0: u16,
+    pub reserved: [u32; 9],
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct McGoatBatchV2 {
@@ -7980,6 +8004,93 @@ pub extern "C" fn mc_native_campaign_goats_copy(
     })
 }
 
+/// Copy the typed Level 2 authored spell-pickup arena. The rows are created
+/// by the native authored-group route and remain bound to the shared source
+/// allocator; clients use the returned positions to feed the normal campaign
+/// step rather than synthesizing a pickup or mutating simulation state.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_spell_pickups_copy(
+    handle: u64,
+    generation: u64,
+    start_ordinal: u32,
+    buffer: *mut McCampaignSpellPickupSnapshotV2,
+    capacity: u32,
+    element_size: u32,
+    out_batch: *mut McCampaignManaBatchV2,
+    out_batch_size: u32,
+) -> i32 {
+    boundary_value(out_batch, out_batch_size, || {
+        require_element_size::<McCampaignSpellPickupSnapshotV2>(
+            element_size,
+            "campaign spell pickup element",
+        )?;
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign spell pickups require a Level 2 campaign session",
+                ));
+            };
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign spell pickup generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            let pickups = reset.economy().spell_pickups();
+            let start = usize::try_from(start_ordinal).map_err(|_| {
+                AbiError::new(
+                    MC_STATUS_BOUNDS,
+                    "campaign spell pickup start exceeds usize",
+                )
+            })?;
+            if start > pickups.len() {
+                return Err(AbiError::new(
+                    MC_STATUS_BOUNDS,
+                    "campaign spell pickup start is beyond arena count",
+                ));
+            }
+            let capacity = usize::try_from(capacity).map_err(|_| {
+                AbiError::new(
+                    MC_STATUS_BOUNDS,
+                    "campaign spell pickup capacity exceeds usize",
+                )
+            })?;
+            let count = (pickups.len() - start).min(capacity);
+            if count > 0 && buffer.is_null() {
+                return Err(AbiError::new(
+                    MC_STATUS_NULL_POINTER,
+                    "campaign spell pickup output buffer is null",
+                ));
+            }
+            for (offset, pickup) in pickups.iter().skip(start).take(count).enumerate() {
+                unsafe {
+                    buffer
+                        .add(offset)
+                        .write_unaligned(campaign_spell_pickup_snapshot(pickup));
+                }
+            }
+            Ok(McCampaignManaBatchV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McCampaignManaBatchV2>(),
+                generation: session.generation,
+                tick: reset.state.tick,
+                live_world_hash: reset.campaign_state_hash(),
+                start_ordinal,
+                written: u32::try_from(count).expect("Level 2 spell pickup count fits u32"),
+                total_count: u32::try_from(pickups.len())
+                    .expect("Level 2 spell pickup count fits u32"),
+                has_more: u8::from(start + count < pickups.len()),
+                reserved_0: [0; 3],
+                reserved: [0; 4],
+            })
+        })
+    })
+}
+
 /// Copy the live Level 2 mana-sphere arena.  This is deliberately separate
 /// from the legacy Level 1 mission endpoint: the rows come from the mutable
 /// `Level2EconomyState` arena after the source `sub_5FD00`/`TransformEntityToManaSphere`
@@ -11200,6 +11311,27 @@ fn campaign_goat_snapshot(goat: &GoatState) -> McCampaignGoatSnapshotV2 {
         partner_entity_index: goat.partner_entity_index.unwrap_or(MC_ENTITY_INDEX_NONE),
         reserved_1: 0,
         reserved_2: [0; 3],
+    }
+}
+
+fn campaign_spell_pickup_snapshot(
+    pickup: &sim_core::native_world::Level2SpellPickupSource,
+) -> McCampaignSpellPickupSnapshotV2 {
+    McCampaignSpellPickupSnapshotV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignSpellPickupSnapshotV2>(),
+        source_entity_index: pickup.source_entity_index,
+        authored_index: pickup.authored_index,
+        family: pickup.family,
+        action: pickup.action,
+        phase: pickup.phase,
+        active: u8::from(pickup.active),
+        x: pickup.position.x,
+        y: pickup.position.y,
+        z: pickup.position.z,
+        entity_rng: pickup.entity_rng,
+        reserved_0: 0,
+        reserved: [0; 9],
     }
 }
 
@@ -16053,6 +16185,7 @@ mod tests {
         assert_eq!(size_of::<McCampaignOpponentSnapshotV2>(), 104);
         assert_eq!(size_of::<McGoatSnapshotV2>(), 84);
         assert_eq!(size_of::<McCampaignGoatSnapshotV2>(), 84);
+        assert_eq!(size_of::<McCampaignSpellPickupSnapshotV2>(), 64);
         assert_eq!(size_of::<McGoatBatchV2>(), 64);
         assert_eq!(size_of::<McCampaignManaBatchV2>(), 64);
         assert_eq!(size_of::<McLevel1MissionSnapshotV2>(), 96);
@@ -16163,6 +16296,11 @@ mod tests {
             std::mem::offset_of!(McCampaignGoatSnapshotV2, partner_entity_index),
             68
         );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignSpellPickupSnapshotV2, source_entity_index),
+            8
+        );
+        assert_eq!(std::mem::offset_of!(McCampaignSpellPickupSnapshotV2, x), 16);
         assert_eq!(std::mem::offset_of!(McGoatBatchV2, reserved), 48);
         assert_eq!(
             std::mem::offset_of!(McLevel1MissionSnapshotV2, player_life),
@@ -16970,6 +17108,212 @@ mod tests {
             MC_STATUS_STRUCT_TOO_SMALL
         );
         assert_eq!(handle, 0);
+    }
+
+    #[test]
+    fn level2_campaign_spell_pickups_copy_is_paged_generation_bound_and_reset_safe() {
+        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        let package = level2_package.to_string_lossy();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 2,
+            internal_level: 1,
+            map_type: 0,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut handle = 0;
+        assert_eq!(
+            mc_native_campaign_session_open(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                &raw const selection,
+                &raw mut handle,
+            ),
+            MC_STATUS_OK
+        );
+
+        let mut rows = [McCampaignSpellPickupSnapshotV2::default(); 1];
+        let mut batch = McCampaignManaBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_spell_pickups_copy(
+                handle,
+                0,
+                0,
+                rows.as_mut_ptr(),
+                1,
+                struct_size::<McCampaignSpellPickupSnapshotV2>(),
+                &raw mut batch,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            (
+                batch.generation,
+                batch.written,
+                batch.total_count,
+                batch.has_more,
+            ),
+            (0, 0, 0, 0)
+        );
+
+        let input = McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation: 0,
+            command: valid_command(),
+            player_slot: 0,
+            player_x: 123,
+            player_y: 456,
+            player_z: 7,
+            ..McCampaignStepInputV2::default()
+        };
+        let mut snapshot = McCampaignStepSnapshotV2::default();
+        let mut events = [McCampaignEventV2::default(); 1024];
+        let mut event_count = 0;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
+
+        let mut first_page = McCampaignManaBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_spell_pickups_copy(
+                handle,
+                0,
+                0,
+                rows.as_mut_ptr(),
+                1,
+                struct_size::<McCampaignSpellPickupSnapshotV2>(),
+                &raw mut first_page,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(first_page.generation, 0);
+        assert_eq!(first_page.start_ordinal, 0);
+        assert_eq!(first_page.written, 1);
+        assert_eq!(first_page.total_count, 2);
+        assert_eq!(first_page.has_more, 1);
+        assert_eq!(rows[0].abi_version, MC_NATIVE_ABI_VERSION);
+        assert_eq!(
+            rows[0].struct_size,
+            struct_size::<McCampaignSpellPickupSnapshotV2>()
+        );
+        assert_eq!(rows[0].active, 1);
+
+        let first_tick = first_page.tick;
+        let first_hash = first_page.live_world_hash;
+        let first_authored_index = rows[0].authored_index;
+        let mut second_page = McCampaignManaBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_spell_pickups_copy(
+                handle,
+                0,
+                1,
+                rows.as_mut_ptr(),
+                1,
+                struct_size::<McCampaignSpellPickupSnapshotV2>(),
+                &raw mut second_page,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(second_page.generation, 0);
+        assert_eq!(second_page.start_ordinal, 1);
+        assert_eq!(second_page.written, 1);
+        assert_eq!(second_page.total_count, 2);
+        assert_eq!(second_page.has_more, 0);
+        assert_eq!(second_page.tick, first_tick);
+        assert_eq!(second_page.live_world_hash, first_hash);
+        assert_ne!(rows[0].authored_index, first_authored_index);
+        assert_eq!(
+            BTreeSet::from([first_authored_index, rows[0].authored_index]),
+            BTreeSet::from([155, 156])
+        );
+
+        batch = second_page;
+        let unchanged_batch = batch;
+        assert_eq!(
+            mc_native_campaign_spell_pickups_copy(
+                handle,
+                0,
+                0,
+                rows.as_mut_ptr(),
+                1,
+                struct_size::<McCampaignSpellPickupSnapshotV2>() - 1,
+                &raw mut batch,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_STRUCT_TOO_SMALL
+        );
+        assert_eq!(batch, unchanged_batch);
+        assert_eq!(
+            mc_native_campaign_spell_pickups_copy(
+                handle,
+                0,
+                3,
+                rows.as_mut_ptr(),
+                1,
+                struct_size::<McCampaignSpellPickupSnapshotV2>(),
+                &raw mut batch,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_BOUNDS
+        );
+
+        assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        let mut reset_batch = McCampaignManaBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_spell_pickups_copy(
+                handle,
+                0,
+                0,
+                rows.as_mut_ptr(),
+                1,
+                struct_size::<McCampaignSpellPickupSnapshotV2>(),
+                &raw mut reset_batch,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(reset_batch, McCampaignManaBatchV2::default());
+        assert_eq!(
+            mc_native_campaign_spell_pickups_copy(
+                handle,
+                1,
+                0,
+                rows.as_mut_ptr(),
+                1,
+                struct_size::<McCampaignSpellPickupSnapshotV2>(),
+                &raw mut reset_batch,
+                struct_size::<McCampaignManaBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            (
+                reset_batch.generation,
+                reset_batch.written,
+                reset_batch.total_count,
+                reset_batch.has_more,
+            ),
+            (1, 0, 0, 0)
+        );
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
     }
 
     #[test]
@@ -19047,6 +19391,7 @@ _Static_assert(offsetof(McCampaignOpponentSnapshotV2, entity_control_flags) == 3
 _Static_assert(offsetof(McCampaignOpponentSnapshotV2, objective_relation_value) == 76, "campaign opponent objective relation offset");
 _Static_assert(sizeof(McGoatSnapshotV2) == 84, "McGoatSnapshotV2 size");
 _Static_assert(sizeof(McCampaignGoatSnapshotV2) == 84, "McCampaignGoatSnapshotV2 size");
+_Static_assert(sizeof(McCampaignSpellPickupSnapshotV2) == 64, "McCampaignSpellPickupSnapshotV2 size");
 _Static_assert(sizeof(McGoatBatchV2) == 64, "McGoatBatchV2 size");
 _Static_assert(sizeof(McCampaignManaBatchV2) == 64, "McCampaignManaBatchV2 size");
 _Static_assert(sizeof(McLevel1MissionSnapshotV2) == 96, "McLevel1MissionSnapshotV2 size");
@@ -19111,6 +19456,8 @@ _Static_assert(offsetof(McCampaignInvisibleSnapshotV2, parent_status_flags) == 5
 _Static_assert(offsetof(McGoatSnapshotV2, life) == 48, "Goat life offset");
 _Static_assert(offsetof(McGoatSnapshotV2, reserved) == 68, "Goat reserved offset");
 _Static_assert(offsetof(McCampaignGoatSnapshotV2, partner_entity_index) == 68, "campaign Goat partner offset");
+_Static_assert(offsetof(McCampaignSpellPickupSnapshotV2, source_entity_index) == 8, "campaign spell pickup source offset");
+_Static_assert(offsetof(McCampaignSpellPickupSnapshotV2, x) == 16, "campaign spell pickup position offset");
 _Static_assert(offsetof(McGoatBatchV2, reserved) == 48, "Goat batch reserved offset");
 _Static_assert(offsetof(McLevel1MissionSnapshotV2, player_life) == 40, "Level 1 mission life offset");
 _Static_assert(offsetof(McLevel1PlayerLifecycleSnapshotV2, player_action) == 41, "player lifecycle action offset");

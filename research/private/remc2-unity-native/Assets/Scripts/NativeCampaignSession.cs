@@ -249,6 +249,61 @@ namespace MagicCarpet.Native
             return goats;
         }
 
+        internal NativeSim.CampaignSpellPickupSnapshot[] SpellPickups()
+        {
+            var rows = new List<NativeSim.CampaignSpellPickupSnapshot>();
+            uint start = 0;
+            uint? total = null;
+            ulong? tick = null;
+            ulong? liveWorldHash = null;
+            while (true)
+            {
+                var page = new NativeSim.CampaignSpellPickupSnapshot[64];
+                var status = NativeSim.mc_native_campaign_spell_pickups_copy(
+                    Handle,
+                    generation,
+                    start,
+                    page,
+                    checked((uint)page.Length),
+                    64,
+                    out var batch,
+                    64);
+                NativeSession.Check(status, "read Level 2 spell pickups");
+                if (
+                    batch.abiVersion != NativeSim.AbiVersion ||
+                    batch.structSize != 64 ||
+                    batch.generation != generation ||
+                    batch.startOrdinal != start ||
+                    batch.written > (uint)page.Length ||
+                    (total.HasValue && batch.totalCount != total.Value) ||
+                    (tick.HasValue && batch.tick != tick.Value) ||
+                    (liveWorldHash.HasValue && batch.liveWorldHash != liveWorldHash.Value))
+                {
+                    throw new InvalidOperationException(
+                        "Level 2 spell-pickup batch metadata is inconsistent");
+                }
+                total ??= batch.totalCount;
+                tick ??= batch.tick;
+                liveWorldHash ??= batch.liveWorldHash;
+                rows.AddRange(page.Take(checked((int)batch.written)));
+                if (batch.hasMore == 0)
+                {
+                    if ((uint)rows.Count != batch.totalCount)
+                    {
+                        throw new InvalidOperationException(
+                            "Level 2 spell-pickup batch ended before total count");
+                    }
+                    return rows.ToArray();
+                }
+                if (batch.written == 0)
+                {
+                    throw new InvalidOperationException(
+                        "Level 2 spell-pickup batch made no progress");
+                }
+                start = checked(start + batch.written);
+            }
+        }
+
         internal NativeSim.ManaSphereSnapshot[] ManaSpheres()
         {
             var rows = new List<NativeSim.ManaSphereSnapshot>();

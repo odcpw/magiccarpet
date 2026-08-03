@@ -199,6 +199,25 @@ typedef struct McCampaignGoatSnapshotV2 {
     uint32_t reserved_2[3];
 } McCampaignGoatSnapshotV2;
 
+/* Additive Level 2 authored spell-pickup row. The accompanying batch header
+ * binds these native source positions to one campaign generation. */
+typedef struct McCampaignSpellPickupSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint16_t source_entity_index;
+    uint16_t authored_index;
+    uint8_t family;
+    uint8_t action;
+    uint8_t phase;
+    uint8_t active;
+    uint16_t x;
+    uint16_t y;
+    int16_t z;
+    uint16_t entity_rng;
+    uint16_t reserved_0;
+    uint32_t reserved[9];
+} McCampaignSpellPickupSnapshotV2;
+
 /* Additive family-6 Shield state projection.  `active == 0` is the reset
  * state; the row remains generation-bound even when no holder exists. */
 typedef struct McCampaignShieldSnapshotV2 {
@@ -433,6 +452,11 @@ int32_t mc_native_campaign_goats_copy(
     uint64_t handle, uint64_t generation, uint32_t start_ordinal,
     McCampaignGoatSnapshotV2 *buffer, uint32_t capacity, uint32_t element_size,
     McGoatBatchV2 *out_batch, uint32_t out_batch_size);
+int32_t mc_native_campaign_spell_pickups_copy(
+    uint64_t handle, uint64_t generation, uint32_t start_ordinal,
+    McCampaignSpellPickupSnapshotV2 *buffer, uint32_t capacity,
+    uint32_t element_size, McGoatBatchV2 *out_batch,
+    uint32_t out_batch_size);
 
 /* Additive typed Level 2 mana-sphere/carrier rows.  The existing snapshot
  * layouts remain sealed Level 1-compatible records; these batch headers bind
