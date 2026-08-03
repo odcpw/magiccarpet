@@ -1319,6 +1319,28 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void TownAndCastleCarryReadableNightStructureAccents()
+        {
+            GameObject gameObject = new GameObject("enhanced-structure-accent-test");
+            UnityEnhancedActorPresentation actors = gameObject.AddComponent<UnityEnhancedActorPresentation>();
+            GameObject view = new GameObject("structure-view");
+            view.transform.SetParent(gameObject.transform, false);
+
+            UnityEnhancedEntitySnapshot town = Entity(1, 42, Vector3.zero);
+            town.PresentationFamily = (int)UnityEnhancedPresentationFamily.Town;
+            actors.Configure(view, town);
+            MeshRenderer renderer = view.transform.Find("EnhancedActorVisual").GetComponent<MeshRenderer>();
+            Assert.Greater(renderer.sharedMaterial.GetFloat("_AccentStrength"), 0.9f);
+
+            UnityEnhancedEntitySnapshot castle = Entity(1, 42, Vector3.zero);
+            castle.PresentationFamily = (int)UnityEnhancedPresentationFamily.Castle;
+            actors.Configure(view, castle);
+            Assert.Greater(renderer.sharedMaterial.GetFloat("_AccentStrength"), 0.7f);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void DiagnosticsReportContainsMetricsWithoutMachinePaths()
         {
             GameObject gameObject = new GameObject("enhanced-diagnostics-test");

@@ -669,11 +669,11 @@ namespace MagicCarpet.PresentationLab
                     material.SetFloat("_RimStrength", 0.24f);
                     material.SetColor("_EmissionColor", FamilyColor(familyId));
                     material.SetFloat("_EmissionStrength", EmissionStrength(familyId));
-                    material.SetColor("_AccentColor", new Color(1f, 0.24f, 0.04f, 1f));
+                    material.SetColor("_AccentColor", new Color(1f, 0.20f, 0.025f, 1f));
                     material.SetFloat(
                         "_AccentStrength",
-                        familyId == UnityEnhancedPresentationFamily.Town ? 0.34f :
-                        familyId == UnityEnhancedPresentationFamily.Castle ? 0.24f : 0f);
+                        familyId == UnityEnhancedPresentationFamily.Town ? 1.10f :
+                        familyId == UnityEnhancedPresentationFamily.Castle ? 0.82f : 0f);
                 }
             }
             materials.Add(materialKey, material);
@@ -766,6 +766,7 @@ namespace MagicCarpet.PresentationLab
             Color wall = new Color(0.96f, 0.72f, 0.48f, 1f);
             Color roof = new Color(0.72f, 0.34f, 0.20f, 1f);
             Color trim = new Color(1f, 0.86f, 0.54f, 1f);
+            Color window = new Color(1f, 0.96f, 0.48f, 1f);
 
             AppendBox(
                 vertices,
@@ -795,14 +796,35 @@ namespace MagicCarpet.PresentationLab
                 colors,
                 new Vector3(-0.68f, 0.65f, -0.80f),
                 new Vector3(-0.38f, 0.98f, -0.70f),
-                trim);
+                window);
             AppendBox(
                 vertices,
                 triangles,
                 colors,
                 new Vector3(0.38f, 0.65f, -0.80f),
                 new Vector3(0.68f, 0.98f, -0.70f),
-                trim);
+                window);
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(-0.86f, 0.75f, 0.70f),
+                new Vector3(-0.52f, 1.05f, 0.80f),
+                window);
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(0.52f, 0.75f, 0.70f),
+                new Vector3(0.86f, 1.05f, 0.80f),
+                window);
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(-0.78f, 1.28f, -0.12f),
+                new Vector3(-0.48f, 1.46f, 0.12f),
+                roof);
             return BuildMesh(vertices, triangles, colors);
         }
 
@@ -814,6 +836,7 @@ namespace MagicCarpet.PresentationLab
             Color stone = new Color(0.78f, 0.84f, 0.98f, 1f);
             Color tower = new Color(0.62f, 0.70f, 0.92f, 1f);
             Color roof = new Color(0.42f, 0.34f, 0.70f, 1f);
+            Color window = new Color(1f, 0.90f, 0.42f, 1f);
 
             AppendBox(
                 vertices,
@@ -862,6 +885,27 @@ namespace MagicCarpet.PresentationLab
             AppendPyramid(vertices, triangles, colors,
                 new Vector3(0.61f, 2.55f, 0.02f),
                 new Vector3(1.46f, 2.55f, 0.88f), 0.58f, roof);
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(-0.30f, 0.05f, -0.84f),
+                new Vector3(0.30f, 1.05f, -0.68f),
+                window);
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(-1.08f, 1.10f, -0.84f),
+                new Vector3(-0.88f, 1.48f, -0.70f),
+                window);
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(0.88f, 1.10f, -0.84f),
+                new Vector3(1.08f, 1.48f, -0.70f),
+                window);
             return BuildMesh(vertices, triangles, colors);
         }
 
