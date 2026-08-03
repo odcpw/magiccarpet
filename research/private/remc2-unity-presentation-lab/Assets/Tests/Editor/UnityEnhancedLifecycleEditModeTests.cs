@@ -1846,7 +1846,11 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.Greater(
                 Vector3.Dot(visual.forward, -camera.transform.forward),
                 0.99f);
-            Assert.That(renderer.sharedMaterial.GetFloat("_GlowIntensity"), Is.EqualTo(1.8f).Within(0.001f));
+            Color glowColor = renderer.sharedMaterial.GetColor("_GlowColor");
+            Assert.That(glowColor.r, Is.EqualTo(1f).Within(0.001f));
+            Assert.That(glowColor.g, Is.EqualTo(0.24f).Within(0.001f));
+            Assert.That(glowColor.b, Is.EqualTo(0.03f).Within(0.001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_GlowIntensity"), Is.EqualTo(0.55f).Within(0.001f));
             Color shockwaveColor = renderer.sharedMaterial.GetColor("_ShockwaveColor");
             Assert.That(shockwaveColor.r, Is.EqualTo(1f).Within(0.001f));
             Assert.That(shockwaveColor.g, Is.EqualTo(0.50f).Within(0.001f));
@@ -1854,6 +1858,7 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.That(renderer.sharedMaterial.GetFloat("_ShockwaveStrength"), Is.EqualTo(2.6f).Within(0.001f));
             Assert.That(renderer.sharedMaterial.GetFloat("_SparkStrength"), Is.EqualTo(1.25f).Within(0.001f));
             Assert.That(renderer.sharedMaterial.GetFloat("_RimStrength"), Is.EqualTo(0.65f).Within(0.001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_Opacity"), Is.EqualTo(0.45f).Within(0.001f));
             Assert.That(renderer.sharedMaterial.GetFloat("_PulseSpeed"), Is.EqualTo(5.0f).Within(0.001f));
             Assert.IsFalse(vfx.ApplyEvent(impact));
             Assert.AreEqual(1, vfx.DuplicateEffectCount);

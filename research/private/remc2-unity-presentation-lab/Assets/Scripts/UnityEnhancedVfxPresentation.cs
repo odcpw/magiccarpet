@@ -836,12 +836,12 @@ namespace MagicCarpet.PresentationLab
                 }
                 else if (shader == customImpactShader)
                 {
-                    material.SetColor("_GlowColor", VfxColor(kind));
-                    material.SetFloat("_GlowIntensity", 1.8f);
+                    material.SetColor("_GlowColor", new Color(1f, 0.24f, 0.03f, 1f));
+                    material.SetFloat("_GlowIntensity", 0.55f);
                     material.SetColor("_ShockwaveColor", new Color(1f, 0.50f, 0.06f, 1f));
                     material.SetFloat("_ShockwaveStrength", 2.6f);
                     material.SetFloat("_SparkStrength", 1.25f);
-                    material.SetFloat("_Opacity", 0.92f);
+                    material.SetFloat("_Opacity", 0.45f);
                     material.SetFloat("_PulseSpeed", 5.0f);
                     material.SetFloat("_RimStrength", 0.65f);
                 }

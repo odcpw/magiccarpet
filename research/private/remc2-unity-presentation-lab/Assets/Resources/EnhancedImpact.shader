@@ -91,6 +91,9 @@ Shader "MagicCarpet/Enhanced/Impact"
                 half2 centered = input.uv * 2.0h - 1.0h;
                 half radius = length(centered);
                 half edgeFade = 1.0h - smoothstep(0.78h, 1.0h, radius);
+                half core = 1.0h - smoothstep(0.10h, 0.34h, radius);
+                half halo = (1.0h - smoothstep(0.22h, 0.74h, radius)) * edgeFade;
+                half baseMask = core + 0.30h * halo;
                 half progress = saturate(_ImpactProgress);
                 half waveRadius = lerp(0.28h, 0.92h, progress);
                 half waveWidth = lerp(0.065h, 0.12h, progress);
@@ -105,8 +108,8 @@ Shader "MagicCarpet/Enhanced/Impact"
                                  (1.0h - progress * 0.45h);
                 half sparks = _SparkStrength * sparkPattern * edgeFade *
                               (0.35h + rim * 0.65h) * (1.0h - progress * 0.5h);
-                alpha = saturate(alpha + shockwaveBand * 0.28h + sparks * 0.12h);
-                half3 color = _GlowColor.rgb * intensity;
+                alpha = saturate(alpha * baseMask + shockwaveBand * 0.28h + sparks * 0.12h);
+                half3 color = _GlowColor.rgb * intensity * baseMask;
                 color += _ShockwaveColor.rgb * shockwave;
                 color += _GlowColor.rgb * sparks;
                 return half4(color, alpha);
