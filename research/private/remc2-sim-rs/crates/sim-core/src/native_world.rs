@@ -32562,6 +32562,70 @@ mod tests {
     }
 
     #[test]
+    fn level_two_reset_model32_producer_reaches_group21_bees_from_production_turns() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-21 Bee session");
+        let baseline_hash = session.campaign_state_hash();
+
+        // The qualified reset contains a live class-11/model-32 producer at
+        // source slot 76 with source id/group 21. The ordinary source pass
+        // must consume that real producer and materialize the three authored
+        // group-21 Bees without a direct allocator or fixture-only route.
+        let producer_slot = session
+            .entities()
+            .iter()
+            .find(|entity| {
+                entity.index == 76
+                    && entity.active
+                    && entity.class == 11
+                    && entity.model == 32
+                    && entity.action == 32
+                    && entity.source_id == 21
+                    && !entity.drawing_disabled()
+            })
+            .expect("reset group-21 model-32 producer")
+            .index;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let expected_bees = BTreeSet::from([229_u16, 230, 231]);
+        let actual_bees = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .filter(|source| source.active && expected_bees.contains(&source.authored_index))
+            .map(|source| source.authored_index)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual_bees, expected_bees);
+        let activated_from_producer = session
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    source_slot,
+                    group: 21,
+                    authored_indices,
+                    ..
+                } if *source_slot == producer_slot => authored_indices.first().copied(),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(activated_from_producer, vec![229, 230, 231]);
+
+        session.reset();
+        assert!(
+            session
+                .economy()
+                .authored_bees()
+                .iter()
+                .all(|source| !expected_bees.contains(&source.authored_index))
+        );
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
     fn level_two_group23_model59_materializes_from_rooted_production_turns() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
