@@ -669,6 +669,16 @@ namespace MagicCarpet.Native.Tests
             Assert.That(afterDamage.holderEntityIndex, Is.EqualTo(source.sourceEntityIndex));
             Assert.That(afterDamage.generation, Is.EqualTo(session.Generation));
 
+            var expired = afterDamage;
+            for (var pulse = 0; pulse < 512 && expired.activeValue > 0; pulse++)
+            {
+                session.Step(source.x, source.y, source.z);
+                expired = session.ShieldState();
+            }
+            Assert.That(expired.activeValue, Is.EqualTo(0));
+            Assert.That(expired.countdown, Is.EqualTo(0));
+            Assert.That(expired.action, Is.EqualTo(18));
+
             session.Reset();
             Assert.That(session.SpellPickups(), Is.Empty);
             Assert.That(session.ShieldState().active, Is.EqualTo(0));
