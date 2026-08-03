@@ -1301,7 +1301,11 @@ namespace MagicCarpet.PresentationLab.Tests
 
             Assert.AreEqual(0.65f, lighting.AppliedExposure, 0.0001f);
             Assert.AreEqual(AmbientMode.Trilight, RenderSettings.ambientMode);
-            Assert.AreEqual(FogMode.ExponentialSquared, RenderSettings.fogMode);
+            Assert.AreEqual(FogMode.Linear, RenderSettings.fogMode);
+            Assert.That(lighting.AppliedFogStartDistance, Is.EqualTo(96f).Within(0.001f));
+            Assert.That(lighting.AppliedFogEndDistance, Is.EqualTo(720f).Within(0.001f));
+            Assert.That(RenderSettings.fogStartDistance, Is.EqualTo(96f).Within(0.001f));
+            Assert.That(RenderSettings.fogEndDistance, Is.EqualTo(720f).Within(0.001f));
             Shader enhancedNightSky = Shader.Find("MagicCarpet/Enhanced/NightSky");
             Shader proceduralSky = Shader.Find("Skybox/Procedural");
             Assert.AreEqual(

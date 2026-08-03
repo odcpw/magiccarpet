@@ -78,6 +78,9 @@ namespace MagicCarpet.PresentationLab
     public sealed class UnityEnhancedNightLighting : MonoBehaviour
     {
         private const int ShaderWarmLightCap = 4;
+        private const float BaseNightFogDensity = 0.006f;
+        private const float NightAerialFogStart = 96f;
+        private const float NightAerialFogEnd = 720f;
         private const string ShaderWarmLightCountName = "_EnhancedWarmLightCount";
         private const string ShaderWarmLightPositionsName = "_EnhancedWarmLightPositions";
         private const string ShaderWarmLightColorsName = "_EnhancedWarmLightColors";
@@ -121,6 +124,8 @@ namespace MagicCarpet.PresentationLab
         public ulong Generation { get { return generation; } }
         public bool HasDescriptor { get { return hasDescriptor; } }
         public float AppliedExposure { get; private set; }
+        public float AppliedFogStartDistance { get; private set; }
+        public float AppliedFogEndDistance { get; private set; }
         public int ShaderVisibleWarmLightCount { get; private set; }
 
         public int LocalLightCap
@@ -180,8 +185,19 @@ namespace MagicCarpet.PresentationLab
             moon.intensity = Mathf.Max(0f, descriptor.MoonIntensity);
             RenderSettings.fog = descriptor.FogDensity > 0f;
             RenderSettings.fogColor = descriptor.FogColor;
+            float densityScale = Mathf.Clamp(
+                descriptor.FogDensity / BaseNightFogDensity,
+                0.75f,
+                1.5f);
+            AppliedFogStartDistance = NightAerialFogStart / densityScale;
+            AppliedFogEndDistance = NightAerialFogEnd / densityScale;
+            // Keep close terrain readable and reserve the fog for the owner
+            // world horizon. This is a bounded presentation effect; the Rust
+            // camera and terrain planes remain authoritative.
+            RenderSettings.fogMode = FogMode.Linear;
+            RenderSettings.fogStartDistance = AppliedFogStartDistance;
+            RenderSettings.fogEndDistance = AppliedFogEndDistance;
             RenderSettings.fogDensity = Mathf.Max(0f, descriptor.FogDensity);
-            RenderSettings.fogMode = FogMode.ExponentialSquared;
             RenderSettings.ambientMode = AmbientMode.Trilight;
             RenderSettings.ambientSkyColor = descriptor.SkyColor;
             RenderSettings.ambientEquatorColor = descriptor.AmbientColor;
@@ -241,6 +257,8 @@ namespace MagicCarpet.PresentationLab
             hasDescriptor = false;
             DroppedLocalLightCount = 0;
             AppliedExposure = 0f;
+            AppliedFogStartDistance = 0f;
+            AppliedFogEndDistance = 0f;
             ClearShaderWarmLightField();
             while (activeLights.Count > 0)
             {
