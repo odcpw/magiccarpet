@@ -25923,6 +25923,58 @@ mod tests {
         );
         assert_ne!(session.shared_spells().pickups()[0].control_flags & 1, 0);
 
+        // The source duplicate gate is a per-candidate continue, not a
+        // terminal rejection: an overlapping local player who already owns
+        // this family is skipped and the next overlapping player can claim
+        // the same source row.
+        session.shared_spells_mut().reset();
+        session.shared_spells_mut().pickups[0].phase = 0;
+        session.shared_spells_mut().pickups[0].record[66] = 0;
+        session.shared_spells_mut().players[0].enabled_spell_holders[12] = 999;
+        session.shared_spells_mut().player_entities[0].active = true;
+        session.shared_spells_mut().player_entities[0].model = 0;
+        session.shared_spells_mut().player_entities[0].life = 1;
+        session.shared_spells_mut().player_entities[0].position = source_position;
+        session.shared_spells_mut().player_entities[0].record[80..82]
+            .copy_from_slice(&source_position.x.to_le_bytes());
+        session.shared_spells_mut().player_entities[0].record[82..84]
+            .copy_from_slice(&source_position.y.to_le_bytes());
+        session.shared_spells_mut().player_entities[0].record[84..86]
+            .copy_from_slice(&source_position.z.to_le_bytes());
+        session.shared_spells_mut().player_entities[1].active = true;
+        session.shared_spells_mut().player_entities[1].model = 0;
+        session.shared_spells_mut().player_entities[1].life = 1;
+        session.shared_spells_mut().player_entities[1].position = source_position;
+        session.shared_spells_mut().player_entities[1].record[80..82]
+            .copy_from_slice(&source_position.x.to_le_bytes());
+        session.shared_spells_mut().player_entities[1].record[82..84]
+            .copy_from_slice(&source_position.y.to_le_bytes());
+        session.shared_spells_mut().player_entities[1].record[84..86]
+            .copy_from_slice(&source_position.z.to_le_bytes());
+        let duplicate_then_remote = session
+            .shared_spells_mut()
+            .step_level2_spell_acquisition(12, 111, source_position)
+            .expect("duplicate candidate source pass")
+            .expect("next overlapping candidate acquires");
+        assert_eq!(duplicate_then_remote.parent_entity_index, 112);
+        assert_eq!(
+            session.shared_spells().players[0].enabled_spell_holders[12],
+            999
+        );
+        assert_eq!(
+            session.shared_spells().players[1].enabled_spell_holders[12],
+            38
+        );
+        assert!(matches!(
+            session.shared_spells().pickup_events(),
+            [Level2SharedSpellEvent::SpellAcquired {
+                player_entity_index: 112,
+                source_slot: 38,
+                family: 12,
+                ..
+            }]
+        ));
+
         // A second model-0 player at the source wins ownership when local
         // player 0 is far away; the event and SpellEnabled relation carry
         // that overlapping candidate instead of hard-coding entity 111.
