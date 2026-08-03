@@ -417,6 +417,64 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void TownStructureAccentsExposeBoundedNightShimmer()
+        {
+            GameObject root = new GameObject("enhanced-town-accent-shimmer-test");
+            GameObject townView = new GameObject("town-accent-view");
+            GameObject castleView = new GameObject("castle-accent-view");
+            townView.transform.SetParent(root.transform, false);
+            castleView.transform.SetParent(root.transform, false);
+            try
+            {
+                UnityEnhancedActorPresentation actors =
+                    root.AddComponent<UnityEnhancedActorPresentation>();
+                UnityEnhancedCameraPose cameraPose =
+                    new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f);
+                actors.Configure(townView, TownEntity(24f), cameraPose);
+                actors.Configure(
+                    castleView,
+                    new UnityEnhancedEntitySnapshot
+                    {
+                        Generation = 1,
+                        StableIdentity = 43,
+                        Position = new Vector3(2f, 0f, 24f),
+                        Rotation = Quaternion.identity,
+                        Visible = true,
+                        PresentationFamily = (int)UnityEnhancedPresentationFamily.Castle,
+                        Scale = 1f,
+                        RenderLayer = 7
+                    },
+                    cameraPose);
+
+                Material townMaterial = townView
+                    .transform.Find("EnhancedActorVisual")
+                    .GetComponent<MeshRenderer>()
+                    .sharedMaterial;
+                Material castleMaterial = castleView
+                    .transform.Find("EnhancedActorVisual")
+                    .GetComponent<MeshRenderer>()
+                    .sharedMaterial;
+                Assert.IsNotNull(townMaterial);
+                Assert.IsNotNull(castleMaterial);
+                Assert.AreEqual(0.12f, townMaterial.GetFloat("_AccentShimmerStrength"), 0.001f);
+                Assert.AreEqual(0f, castleMaterial.GetFloat("_AccentShimmerStrength"), 0.001f);
+                Assert.LessOrEqual(townMaterial.GetFloat("_AccentShimmerStrength"), 0.12f);
+
+                string source = File.ReadAllText(Path.Combine(
+                    Application.dataPath,
+                    "Resources",
+                    "EnhancedVertexColorLit.shader"));
+                StringAssert.Contains("_AccentShimmerStrength", source);
+                StringAssert.Contains("_Time.y * 1.7h", source);
+                StringAssert.Contains("accentMask * max(0.0h, accentShimmer)", source);
+            }
+            finally
+            {
+                Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
         public void EnhancedWorldShadersExposeBoundedAerialPerspectiveContract()
         {
             string[] shaderNames =

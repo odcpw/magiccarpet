@@ -13,6 +13,7 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
         _DetailStrength ("Procedural Detail Strength", Range(0, 1)) = 0
         [HDR] _AccentColor ("Structure Accent Color", Color) = (1, 0.24, 0.04, 1)
         _AccentStrength ("Structure Accent Strength", Range(0, 2)) = 0
+        _AccentShimmerStrength ("Structure Accent Shimmer", Range(0, 0.12)) = 0
         _EnhancedAerialStart ("Aerial Perspective Start", Float) = 48
         _EnhancedAerialEnd ("Aerial Perspective End", Float) = 240
         _EnhancedAerialMaxBlend ("Aerial Perspective Max Blend", Range(0, 1)) = 0.68
@@ -57,6 +58,7 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
                 half _DetailStrength;
                 half4 _AccentColor;
                 half _AccentStrength;
+                half _AccentShimmerStrength;
                 half _EnhancedAerialStart;
                 half _EnhancedAerialEnd;
                 half _EnhancedAerialMaxBlend;
@@ -202,7 +204,10 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
                 // small emissive cue without replacing the owner geometry.
                 half accentMask = smoothstep(0.76h, 0.94h, input.color.g) *
                                   smoothstep(0.82h, 0.99h, input.color.r);
-                color += _AccentColor.rgb * (_AccentStrength * accentMask);
+                half accentShimmer = 1.0h + _AccentShimmerStrength * sin(
+                    _Time.y * 1.7h + dot(input.positionWS.xz, float2(0.21h, -0.17h)));
+                color += _AccentColor.rgb *
+                         (_AccentStrength * accentMask * max(0.0h, accentShimmer));
                 half3 warmLighting = EvaluateWarmLight(input.positionWS, normalWS);
                 color += baseColor * warmLighting * 0.72h + warmLighting * 0.08h;
                 half rim = pow(saturate(1.0h - dot(normalWS, viewDirectionWS)), 2.0h);

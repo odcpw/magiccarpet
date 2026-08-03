@@ -113,6 +113,10 @@ namespace MagicCarpet.PresentationLab
         private const float TownReadabilityBaseHeight = 2.02f;
         private const float TownReadabilityViewportHeightFraction = 0.045f;
         private const float TownReadabilityMaximumScale = 1.5f;
+        // Keep town windows and trim alive at night without turning the
+        // generated structure into a pulsing billboard. This is a bounded
+        // material treatment; the owner mesh and accent mask remain intact.
+        private const float TownAccentShimmerStrength = 0.12f;
         private const float DefaultVerticalFieldOfView = 70f;
         private const float FireballCoreVisualScale = 2.8f;
         // The owner projectile remains the anchor; the halo is deliberately
@@ -805,6 +809,11 @@ namespace MagicCarpet.PresentationLab
                         "_AccentStrength",
                         familyId == UnityEnhancedPresentationFamily.Town ? 1.10f :
                         familyId == UnityEnhancedPresentationFamily.Castle ? 0.82f : 0f);
+                    material.SetFloat(
+                        "_AccentShimmerStrength",
+                        familyId == UnityEnhancedPresentationFamily.Town
+                            ? TownAccentShimmerStrength
+                            : 0f);
                 }
             }
             materials.Add(materialKey, material);
