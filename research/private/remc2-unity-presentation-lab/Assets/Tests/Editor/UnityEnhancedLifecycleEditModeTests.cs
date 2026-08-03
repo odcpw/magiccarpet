@@ -1315,6 +1315,8 @@ namespace MagicCarpet.PresentationLab.Tests
             StringAssert.Contains("waterPresentation.RenderReflection()", worldRootSource);
             StringAssert.Contains("_PlanarReflectionTexture", shaderSource);
             StringAssert.Contains("_PlanarReflectionEnabled", shaderSource);
+            StringAssert.Contains("_PlanarReflectionMix", shaderSource);
+            StringAssert.Contains("saturate(_PlanarReflectionEnabled) *", shaderSource);
             StringAssert.Contains("SAMPLE_TEXTURE2D", shaderSource);
             StringAssert.DoesNotContain(
                 "half3 reflection = lerp(_ReflectionColor.rgb, sceneReflection, _SceneReflectionStrength);",
@@ -1348,6 +1350,7 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.Greater(water.WaterMaterial.GetFloat("_WaveStrength"), 0.20f);
             Assert.Greater(water.WaterMaterial.GetFloat("_FresnelStrength"), 1.0f);
             Assert.Greater(water.WaterMaterial.GetFloat("_SceneReflectionStrength"), 0.5f);
+            Assert.That(water.WaterMaterial.GetFloat("_PlanarReflectionMix"), Is.EqualTo(0.46f).Within(0.001f));
 
             UnityEnhancedVfxEvent splash = new UnityEnhancedVfxEvent(
                 1, 2, 4, 0x40000001UL, UnityEnhancedVfxKind.Weather,

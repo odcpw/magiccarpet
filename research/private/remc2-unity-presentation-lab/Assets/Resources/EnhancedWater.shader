@@ -15,6 +15,7 @@ Shader "MagicCarpet/Enhanced/Water"
         _SceneReflectionStrength ("Scene Reflection", Range(0, 1)) = 0.72
         _ReflectionDistortion ("Reflection Distortion", Range(0, 0.2)) = 0.035
         _PlanarReflectionEnabled ("Planar Reflection Enabled", Float) = 0
+        _PlanarReflectionMix ("Planar Reflection Mix", Range(0, 1)) = 0.46
         _PlanarReflectionTexture ("Planar Reflection", 2D) = "black" {}
         _RippleCenter ("Ripple Center", Vector) = (0, 0, 0, 0)
         _RippleStartTime ("Ripple Start Time", Float) = 0
@@ -66,6 +67,7 @@ Shader "MagicCarpet/Enhanced/Water"
                 half _SceneReflectionStrength;
                 half _ReflectionDistortion;
                 half _PlanarReflectionEnabled;
+                half _PlanarReflectionMix;
                 float4 _RippleCenter;
                 half _RippleStartTime;
                 half _RippleStrength;
@@ -214,10 +216,18 @@ Shader "MagicCarpet/Enhanced/Water"
                     _PlanarReflectionTexture,
                     sampler_PlanarReflectionTexture,
                     planarReflectionUV).rgb;
+                // Keep the screen-space fallback as the readable base layer.
+                // On some URP/OpenGL paths the bounded reflection camera sees
+                // mostly the dark horizon; replacing the fallback wholesale
+                // makes the live water look like a black card. A controlled
+                // mix preserves the existing color while adding real mirrored
+                // terrain/light structure when the planar pass is useful.
+                half planarMix = saturate(_PlanarReflectionEnabled) *
+                                 saturate(_PlanarReflectionMix);
                 half3 resolvedSceneReflection = lerp(
                     sceneReflection,
                     planarReflection,
-                    saturate(_PlanarReflectionEnabled));
+                    planarMix);
                 half3 reflection = lerp(
                     _ReflectionColor.rgb,
                     resolvedSceneReflection,

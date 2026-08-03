@@ -425,6 +425,7 @@ namespace MagicCarpet.PresentationLab
                 material.SetFloat("_ReflectionDistortion", 0.035f);
                 material.SetTexture("_PlanarReflectionTexture", null);
                 material.SetFloat("_PlanarReflectionEnabled", 0f);
+                material.SetFloat("_PlanarReflectionMix", 0.46f);
                 material.SetFloat("_RippleSpeed", 2.8f);
                 material.SetFloat("_RippleWidth", 0.65f);
                 material.SetVector("_RippleCenter", Vector4.zero);
