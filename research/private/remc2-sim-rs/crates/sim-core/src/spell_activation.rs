@@ -74,6 +74,21 @@ pub const fn physical_spell_action(family: u8, role: PhysicalSpellActionRole) ->
     })
 }
 
+/// Apply the upper-bound clamp performed by `SetSpell_6D5E0` to the holder
+/// payload while retaining the raw non-negative player selector separately.
+/// The source only clamps the value used to index `SPELLS.DAT`; the selected
+/// hand/subspell record keeps the caller's raw selector.
+#[must_use]
+pub const fn level2_applied_tier(raw_tier: i8) -> Option<u8> {
+    if raw_tier < 0 {
+        None
+    } else if raw_tier > 2 {
+        Some(2)
+    } else {
+        Some(raw_tier as u8)
+    }
+}
+
 /// The player-visible hand selected by the source acquisition helper.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SpellHand {
@@ -366,9 +381,9 @@ pub fn acquire_level2_spell_holder_with_return_side(
             SpellHolderAcquisitionFailure::InvalidSourceSlot,
         );
     }
-    if !(0..=2).contains(&state.selected_tier) {
+    let Some(applied_tier) = level2_applied_tier(state.selected_tier) else {
         return SpellHolderAcquisitionResult::Rejected(SpellHolderAcquisitionFailure::InvalidTier);
-    }
+    };
     if state.owner_entity_index == 0 {
         return SpellHolderAcquisitionResult::Rejected(SpellHolderAcquisitionFailure::InvalidOwner);
     }
@@ -389,8 +404,7 @@ pub fn acquire_level2_spell_holder_with_return_side(
         return SpellHolderAcquisitionResult::Rejected(SpellHolderAcquisitionFailure::AlreadyOwned);
     }
 
-    let Some(profile) = level2_set_spell_profile(state.family, state.selected_tier.cast_unsigned())
-    else {
+    let Some(profile) = level2_set_spell_profile(state.family, applied_tier) else {
         return SpellHolderAcquisitionResult::Rejected(SpellHolderAcquisitionFailure::InvalidTier);
     };
     state.subspell_index = profile.subspell_index;
@@ -1846,7 +1860,7 @@ mod tests {
 
     #[test]
     fn level_two_generic_acquisition_rejects_invalid_tier_without_mutation() {
-        let mut state = SpellHolderAcquisitionState::new(12, 38, 111, 37, 3);
+        let mut state = SpellHolderAcquisitionState::new(12, 38, 111, 37, -1);
         let before = state;
         assert_eq!(
             acquire_level2_spell_holder(&mut state, PhysicalSpellActionRole::OrdinaryPickup, true,),

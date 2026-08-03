@@ -89,8 +89,8 @@ use crate::{
         PhysicalSpellActionRole, SHIELD_ACTIVE_ACTION, ShieldDamage, ShieldState, ShieldStep,
         SpellActivationHolder, SpellCasterState, SpellHolderAcquisitionOutcome,
         SpellHolderAcquisitionResult, SpellHolderAcquisitionState,
-        acquire_level2_spell_holder_with_return_side, activate_spell, level2_set_spell_profile,
-        physical_spell_action,
+        acquire_level2_spell_holder_with_return_side, activate_spell, level2_applied_tier,
+        level2_set_spell_profile, physical_spell_action,
     },
     state_hash,
     static_world_tmap::StaticWorldTmapBank,
@@ -12427,7 +12427,10 @@ impl Level2SharedSpellResetSession {
                     .expect("entity word 0x2e record extent"),
             );
             if active_word_2e != 0 {
-                let loc_spell_id = u16::from(state.selected_tier.cast_unsigned()) + 1;
+                let loc_spell_id = u16::from(
+                    level2_applied_tier(state.selected_tier)
+                        .expect("successful SetSpell keeps a non-negative tier"),
+                ) + 1;
                 pickup.record[48..50].copy_from_slice(&loc_spell_id.to_le_bytes());
             } else {
                 pickup.subspell_index = state.subspell_index;
@@ -12448,8 +12451,10 @@ impl Level2SharedSpellResetSession {
                 pickup.record[144..148].copy_from_slice(&state.max_mana.to_le_bytes());
                 pickup.mana = state.mana;
                 pickup.record[148..152].copy_from_slice(&state.mana.to_le_bytes());
-                pickup.record[74] = state.selected_tier.to_le_bytes()[0];
-                pickup.level_gate = state.selected_tier;
+                let applied_tier = level2_applied_tier(state.selected_tier)
+                    .expect("successful SetSpell keeps a non-negative tier");
+                pickup.record[74] = applied_tier;
+                pickup.level_gate = applied_tier.cast_signed();
             }
             // Successful `sub_68FF0` sets the pickup ownership bit; it does
             // not call DisableEntityDrawing. The latter is only applied by
@@ -12468,7 +12473,8 @@ impl Level2SharedSpellResetSession {
                 .cloned()
                 .unwrap_or_else(|| self.player_entity.clone());
             let mut shield = ShieldState::new(
-                state.selected_tier.cast_unsigned(),
+                level2_applied_tier(state.selected_tier)
+                    .expect("successful Shield SetSpell keeps a non-negative tier"),
                 outcome.source_slot,
                 outcome.parent_entity_index,
                 parent.mana,
@@ -12486,7 +12492,8 @@ impl Level2SharedSpellResetSession {
                 .cloned()
                 .unwrap_or_else(|| self.player_entity.clone());
             let mut invisible = InvisibleState::new(
-                state.selected_tier.cast_unsigned(),
+                level2_applied_tier(state.selected_tier)
+                    .expect("successful Invisible SetSpell keeps a non-negative tier"),
                 outcome.source_slot,
                 outcome.parent_entity_index,
                 parent.mana,
@@ -12504,7 +12511,8 @@ impl Level2SharedSpellResetSession {
                 .cloned()
                 .unwrap_or_else(|| self.player_entity.clone());
             let mut beyond_sight = BeyondSightState::new(
-                state.selected_tier.cast_unsigned(),
+                level2_applied_tier(state.selected_tier)
+                    .expect("successful Beyond Sight SetSpell keeps a non-negative tier"),
                 outcome.source_slot,
                 outcome.parent_entity_index,
                 parent.mana,
@@ -26105,8 +26113,8 @@ mod tests {
             .iter()
             .position(|state| state.family == 12)
             .expect("family-12 acquisition state");
-        session.shared_spells_mut().players[0].family_selected_tiers[12] = 1;
-        session.shared_spells_mut().players[0].record[528 + 12] = 1;
+        session.shared_spells_mut().players[0].family_selected_tiers[12] = 7;
+        session.shared_spells_mut().players[0].record[528 + 12] = 7;
         let before_state = session.shared_spells().acquisition_states()[family_index];
         let before_record = session.shared_spells().pickups()[0].record_bytes().to_vec();
         session.shared_spells_mut().pickups[0].record[50..52].copy_from_slice(&7_u16.to_le_bytes());
@@ -26125,7 +26133,7 @@ mod tests {
         assert_eq!(pickup.record_bytes()[52..54], before_record[52..54]);
         assert_eq!(pickup.record_bytes()[63..66], before_record[63..66]);
         assert_eq!(pickup.record_bytes()[140..152], before_record[140..152]);
-        assert_eq!(pickup.record_bytes()[48..50], [2, 0]);
+        assert_eq!(pickup.record_bytes()[48..50], [3, 0]);
         assert_eq!(pickup.record_bytes()[50..52], [7, 0]);
         let after_state = session.shared_spells().acquisition_states()[family_index];
         assert_eq!(after_state.subspell_index, before_state.subspell_index);
@@ -26134,7 +26142,8 @@ mod tests {
         assert_eq!(after_state.mana_regen, before_state.mana_regen);
         assert_eq!(after_state.max_mana, before_state.max_mana);
         assert_eq!(after_state.mana, before_state.mana);
-        assert_eq!(after_state.selected_tier, 1);
+        assert_eq!(after_state.selected_tier, 7);
+        assert_eq!(session.shared_spells().players[0].left_subspell_index, 7);
     }
 
     #[test]
@@ -28842,6 +28851,62 @@ mod tests {
                 }
             )
         }));
+    }
+
+    #[test]
+    fn level_two_setspell_clamps_holder_payload_but_preserves_raw_hand_tier() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 raw-tier acquisition session");
+        let pickup_position = session.shared_spells().pickups()[0].position;
+        session.shared_spells_mut().players[0].family_selected_tiers[12] = 7;
+        session.shared_spells_mut().players[0].record[528 + 12] = 7;
+        session.shared_spells_mut().pickups[0].phase = 0;
+        session.shared_spells_mut().pickups[0].record[66] = 0;
+        session.state.position = pickup_position;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::SpellAcquisition {
+                    source_slot: 38,
+                    family: 12,
+                    result: Some(_),
+                    ..
+                }
+            )
+        }));
+        let state = session
+            .shared_spells()
+            .acquisition_states()
+            .iter()
+            .find(|state| state.family == 12)
+            .expect("family-12 raw-tier state");
+        let pickup = session
+            .shared_spells()
+            .pickups()
+            .iter()
+            .find(|pickup| pickup.index == 38)
+            .expect("family-12 holder row");
+        assert_eq!(state.selected_tier, 7);
+        assert_eq!(
+            session.shared_spells().players[0].family_selected_tiers[12],
+            7
+        );
+        assert_eq!(session.shared_spells().players[0].record_bytes()[540], 7);
+        assert_eq!(session.shared_spells().players[0].left_subspell_index, 7);
+        assert_eq!(pickup.record_bytes()[74], 2);
+        assert_eq!(pickup.level_gate, 2);
+        assert_eq!(pickup.record_bytes()[52..54], 361_u16.to_le_bytes());
+        assert_eq!(pickup.record_bytes()[144..148], 5_000_i32.to_le_bytes());
+        assert_eq!(pickup.record_bytes()[148..152], 13_i32.to_le_bytes());
+
+        session.reset();
+        assert_eq!(session.shared_spells().players[0].record_bytes()[540], 0);
+        assert_eq!(session.shared_spells().pickups()[0].record_bytes()[74], 0);
     }
 
     #[test]
