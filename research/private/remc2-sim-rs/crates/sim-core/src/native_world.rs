@@ -16334,13 +16334,13 @@ impl Level2ResetSession {
             .iter()
             .copied()
             .filter(|feature| {
+                let is_switch =
+                    feature.kind == 11 && matches!(feature.subtype, 0 | 1) && feature.index != 274;
+                let is_model22 = feature.kind == 10 && feature.subtype == 22;
+                let is_model39 =
+                    feature.kind == 10 && feature.subtype == 39 && matches!(target_group, 7 | 26);
                 feature.activation_group == i16::try_from(target_group).unwrap_or(-1)
-                    && ((feature.kind == 11
-                        && matches!(feature.subtype, 0 | 1)
-                        && feature.index != 274)
-                        || (feature.kind == 10
-                            && (feature.subtype == 22
-                                || (feature.subtype == 39 && target_group == 7))))
+                    && (is_switch || is_model22 || is_model39)
             })
             .collect::<Vec<_>>();
         let mut activated = Vec::new();
@@ -16364,7 +16364,7 @@ impl Level2ResetSession {
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
-            if feature.kind == 10 && feature.subtype == 39 && target_group == 7 {
+            if feature.kind == 10 && feature.subtype == 39 && matches!(target_group, 7 | 26) {
                 if self.level2_model39_activated.contains(&feature.index) {
                     continue;
                 }
@@ -31562,6 +31562,149 @@ mod tests {
         assert!(session.economy().authored_switch_producers().is_empty());
         assert!(session.economy().mana_attraction_fields().is_empty());
         assert!(session.economy().authored_class14().is_empty());
+        assert_eq!(session.economy().spheres().len(), baseline_sphere_count);
+        assert_eq!(
+            session.economy().owner_mana_global(),
+            baseline_owner_mana_global
+        );
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_group26_model39_materializes_from_production_switch_chain() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-26 model-39 session");
+        let baseline_hash = session.campaign_state_hash();
+        let baseline_sphere_count = session.economy().spheres().len();
+        let baseline_owner_mana_global = session.economy().owner_mana_global();
+        let authored_features = session.mission().authored_features().to_vec();
+        let feature_position = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("authored group-26 feature")
+                .world_position(0)
+        };
+        let expected_group25_indices = [356_u16];
+        let expected_group26_indices = [357_u16, 358, 359, 360];
+
+        // Rebind one real imported model-0 root to the authored group-25
+        // source position. The callback, arena allocation, and downstream
+        // group-26 switch still execute through ordinary outer turns.
+        let root_position = feature_position(355);
+        let root = session
+            .level2_imported_switch_roots
+            .iter_mut()
+            .find(|root| root.authored_index == 11 && root.model == 0)
+            .expect("imported model-0 root for production chain");
+        root.position = root_position;
+        root.target_group = 25;
+        root.cooldown = 0;
+        session.state.position = root_position;
+
+        let mut group25_activated = false;
+        for _ in 0..16 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            group25_activated |= session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group,
+                        authored_indices,
+                        ..
+                    } if *group == 25 && authored_indices.as_ref() == expected_group25_indices
+                )
+            });
+            if session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .any(|source| source.authored_index == 356)
+            {
+                break;
+            }
+        }
+        assert!(group25_activated, "group 25 must allocate row 356");
+
+        let row356_position = feature_position(356);
+        session.state.position = row356_position;
+        let mut group26_activated = false;
+        let mut group26_owner_mana_global_before = None;
+        let mut group26_owner_mana_global_after = None;
+        for _ in 0..16 {
+            let owner_mana_global_before = session.economy().owner_mana_global();
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            let activated_this_turn = session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group,
+                        authored_indices,
+                        ..
+                    } if *group == 26 && authored_indices.as_ref() == expected_group26_indices
+                )
+            });
+            if activated_this_turn {
+                group26_owner_mana_global_before = Some(owner_mana_global_before);
+                group26_owner_mana_global_after = Some(session.economy().owner_mana_global());
+            }
+            group26_activated |= activated_this_turn;
+            if expected_group26_indices.iter().all(|index| {
+                session.economy().spheres().iter().any(|sphere| {
+                    sphere.active && sphere.mana == 512 && {
+                        let position = feature_position(*index);
+                        (sphere.position.x, sphere.position.y) == (position.x, position.y)
+                    }
+                })
+            }) {
+                break;
+            }
+        }
+        assert!(
+            group26_activated,
+            "row 356 must activate group 26 through production turns"
+        );
+
+        let expected_positions = expected_group26_indices
+            .iter()
+            .map(|index| {
+                let position = feature_position(*index);
+                (position.x, position.y)
+            })
+            .collect::<BTreeSet<_>>();
+        let mut actual_position_counts = BTreeMap::new();
+        for sphere in
+            session.economy().spheres().iter().filter(|sphere| {
+                expected_positions.contains(&(sphere.position.x, sphere.position.y))
+            })
+        {
+            *actual_position_counts
+                .entry((sphere.position.x, sphere.position.y))
+                .or_insert(0usize) += 1;
+            assert!(sphere.active);
+            assert_eq!(sphere.mana, 512);
+            assert_eq!(
+                (sphere.owner_entity_index, sphere.player_entity_index),
+                (0, 0)
+            );
+        }
+        let expected_position_counts = expected_positions
+            .iter()
+            .copied()
+            .map(|position| (position, 1usize))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(actual_position_counts, expected_position_counts);
+        let owner_mana_global_before =
+            group26_owner_mana_global_before.expect("group 26 owner-mana baseline captured");
+        let owner_mana_global_after =
+            group26_owner_mana_global_after.expect("group 26 owner-mana projection captured");
+        assert!(owner_mana_global_after >= owner_mana_global_before + 4 * 512);
+
+        session.reset();
         assert_eq!(session.economy().spheres().len(), baseline_sphere_count);
         assert_eq!(
             session.economy().owner_mana_global(),
