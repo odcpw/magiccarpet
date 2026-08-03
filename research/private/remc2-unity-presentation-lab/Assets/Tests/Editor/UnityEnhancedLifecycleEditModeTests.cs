@@ -1930,6 +1930,17 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void EnhancedStructureShaderAddsBoundedMoonFacingRelief()
+        {
+            string shaderSource = File.ReadAllText(
+                Path.Combine(Application.dataPath, "Resources", "EnhancedVertexColorLit.shader"));
+            StringAssert.Contains("structureMask = smoothstep(0.60h, 0.90h, _AccentStrength)", shaderSource);
+            StringAssert.Contains("moonFacing = saturate(dot(normalWS, mainLight.direction))", shaderSource);
+            StringAssert.Contains("lerp(0.82h, 1.12h, moonFacing)", shaderSource);
+            StringAssert.Contains("structureMask * 0.68h", shaderSource);
+        }
+
+        [Test]
         public void DiagnosticsReportContainsMetricsWithoutMachinePaths()
         {
             GameObject gameObject = new GameObject("enhanced-diagnostics-test");

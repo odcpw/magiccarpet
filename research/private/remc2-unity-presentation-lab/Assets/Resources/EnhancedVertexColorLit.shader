@@ -198,7 +198,18 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
                     }
                 #endif
 
-                half3 color = baseColor * lighting;
+                // Town and castle faces carry the authored structure accent
+                // selector. Give only those meshes a bounded moon-facing
+                // relief term so their walls separate in the night without
+                // changing the owner geometry or flattening the roof/window
+                // palette into a single family tint.
+                half structureMask = smoothstep(0.60h, 0.90h, _AccentStrength);
+                half moonFacing = saturate(dot(normalWS, mainLight.direction));
+                half moonRelief = lerp(
+                    1.0h,
+                    lerp(0.82h, 1.12h, moonFacing),
+                    structureMask * 0.68h);
+                half3 color = baseColor * lighting * moonRelief;
                 // Town/castle meshes mark doors and trim with a brighter
                 // vertex color. Give those authored structural accents a
                 // small emissive cue without replacing the owner geometry.
