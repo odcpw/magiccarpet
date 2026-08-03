@@ -192,6 +192,58 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void Level2CampaignBeyondSightPickupReachesManagedProductionPath()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+            var source = session.Entities()
+                .Single(entity => entity.entityIndex == 38);
+
+            Assert.That(source.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+            Assert.That(source.classId, Is.EqualTo(15));
+            Assert.That(source.model, Is.EqualTo(12));
+            Assert.That(source.action, Is.EqualTo(37));
+
+            NativeSim.CampaignStepSnapshot snapshot = default;
+            NativeSim.CampaignEvent[] events = null;
+            for (var turn = 0; turn < 4; turn++)
+            {
+                (snapshot, events) = session.Step(source.x, source.y, source.z);
+                if (events.Any(eventRow =>
+                        eventRow.kind == NativeSim.CampaignEventSpellAcquisition &&
+                        eventRow.family == 12 &&
+                        eventRow.sourceSlot == 38 &&
+                        eventRow.flags == 1))
+                {
+                    break;
+                }
+            }
+
+            Assert.That(snapshot.generation, Is.EqualTo(0));
+            var acquisitionEvents = events.Where(eventRow =>
+                eventRow.abiVersion == NativeSim.AbiVersion &&
+                eventRow.structSize == 48 &&
+                eventRow.generation == session.Generation &&
+                eventRow.kind == NativeSim.CampaignEventSpellAcquisition &&
+                eventRow.family == 12 &&
+                eventRow.sourceSlot == 38 &&
+                eventRow.flags == 1).ToArray();
+            Assert.That(acquisitionEvents, Is.Not.Empty);
+
+            var acquired = session.BeyondSightState();
+            Assert.That(acquired.active, Is.EqualTo(1));
+            Assert.That(acquired.action, Is.EqualTo(36));
+            Assert.That(acquired.holderEntityIndex, Is.EqualTo(38));
+            Assert.That(acquired.parentEntityIndex, Is.EqualTo(111));
+            Assert.That(acquired.generation, Is.EqualTo(session.Generation));
+
+            session.Reset();
+            var reset = session.BeyondSightState();
+            Assert.That(reset.generation, Is.EqualTo(1));
+            Assert.That(reset.active, Is.EqualTo(0));
+            Assert.That(reset.holderEntityIndex, Is.EqualTo(0));
+        }
+
+        [Test]
         public void Level2CampaignOpponentSnapshotBridgeIsReachableAndResetBound()
         {
             using var session = NativeCampaignSession.OpenLevel2(Level2Package);
