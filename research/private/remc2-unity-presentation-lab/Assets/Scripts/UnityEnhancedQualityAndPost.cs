@@ -131,6 +131,8 @@ namespace MagicCarpet.PresentationLab
         private float priorRenderScale = 1f;
         private UpscalingFilterSelection priorUpscalingFilter = UpscalingFilterSelection.Auto;
         private bool capturedPipelineSettings;
+        private bool priorRequiresColorTexture;
+        private bool capturedColorTextureSetting;
 
         public UnityEnhancedQualitySettings Settings { get; private set; }
         public float AppliedRenderScale { get; private set; }
@@ -143,6 +145,7 @@ namespace MagicCarpet.PresentationLab
         public bool UsesSpatialUpscaling { get; private set; }
         public float AppliedPostExposure { get; private set; }
         public Volume PostVolume { get { return volume; } }
+        public bool OpaqueTextureRequired { get; private set; }
 
         public bool Apply(UnityEnhancedQualitySettings settings, Camera camera)
         {
@@ -178,6 +181,13 @@ namespace MagicCarpet.PresentationLab
             {
                 cameraData = camera.gameObject.AddComponent<UniversalAdditionalCameraData>();
             }
+            if (!capturedColorTextureSetting)
+            {
+                priorRequiresColorTexture = cameraData.requiresColorTexture;
+                capturedColorTextureSetting = true;
+            }
+            cameraData.requiresColorTexture = true;
+            OpaqueTextureRequired = true;
             cameraData.renderPostProcessing = true;
             cameraData.antialiasing = settings.AntiAliasing
                 ? AntialiasingMode.FastApproximateAntialiasing
@@ -205,12 +215,23 @@ namespace MagicCarpet.PresentationLab
             {
                 cameraData.resetHistory = true;
             }
+            RestoreColorTextureSetting();
             RestorePipelineScale();
             Settings = null;
             AppliedRenderScale = 0f;
             AppliedPostExposure = 0f;
             TemporalUpscalingEnabled = false;
             UsesSpatialUpscaling = false;
+        }
+
+        private void RestoreColorTextureSetting()
+        {
+            if (capturedColorTextureSetting && cameraData != null)
+            {
+                cameraData.requiresColorTexture = priorRequiresColorTexture;
+            }
+            capturedColorTextureSetting = false;
+            OpaqueTextureRequired = false;
         }
 
         private void EnsureVolume()
@@ -269,6 +290,7 @@ namespace MagicCarpet.PresentationLab
 
         private void OnDestroy()
         {
+            RestoreColorTextureSetting();
             RestorePipelineScale();
             if (volumeProfile != null)
             {

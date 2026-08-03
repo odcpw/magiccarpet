@@ -451,6 +451,11 @@ namespace MagicCarpet.PresentationLab
             presentationAdapters.ApplyTick(snapshot.Generation, snapshot.Tick);
             for (int index = 0; index < snapshot.VfxEvents.Length; index++)
             {
+                if (snapshot.VfxEvents[index].Kind == UnityEnhancedVfxKind.Weather &&
+                    waterPresentation != null)
+                {
+                    waterPresentation.ApplyRipple(snapshot.VfxEvents[index]);
+                }
                 vfxPresentation.ApplyEvent(snapshot.VfxEvents[index]);
             }
             vfxPresentation.Advance(snapshot.Tick);

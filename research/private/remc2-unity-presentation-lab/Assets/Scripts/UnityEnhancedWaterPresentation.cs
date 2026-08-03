@@ -43,6 +43,7 @@ namespace MagicCarpet.PresentationLab
         private ulong generation;
         private ulong lastTick;
         private bool hasSnapshot;
+        private int activeRippleCount;
 
         public bool HasSnapshot { get { return hasSnapshot; } }
         public ulong Generation { get { return generation; } }
@@ -51,6 +52,8 @@ namespace MagicCarpet.PresentationLab
         public UnityEnhancedWaterReflectionMode ReflectionMode { get; private set; }
         public int ShorelineCellCount { get; private set; }
         public int ShorelineVertexCount { get { return shorelineMesh == null ? 0 : shorelineMesh.vertexCount; } }
+        public Material WaterMaterial { get { return waterMaterial; } }
+        public int ActiveRippleCount { get { return activeRippleCount; } }
 
         public bool ApplySnapshot(UnityEnhancedWaterSnapshot snapshot)
         {
@@ -76,6 +79,10 @@ namespace MagicCarpet.PresentationLab
                 return false;
             }
 
+            if (hasSnapshot && snapshot.Generation != generation)
+            {
+                ClearRipple();
+            }
             EnsureResources();
             BuildWater(snapshot);
             BuildShoreline(snapshot);
@@ -96,8 +103,26 @@ namespace MagicCarpet.PresentationLab
             hasSnapshot = false;
             ReflectionEnabled = false;
             ShorelineCellCount = 0;
+            ClearRipple();
             if (waterMesh != null) waterMesh.Clear();
             if (shorelineMesh != null) shorelineMesh.Clear();
+        }
+
+        public bool ApplyRipple(UnityEnhancedVfxEvent splash)
+        {
+            if (!hasSnapshot || splash.Kind != UnityEnhancedVfxKind.Weather ||
+                splash.Generation != generation || splash.Tick > lastTick || splash.Sequence == 0 ||
+                !IsFinite(splash.Position) || !IsFinite(splash.Intensity) || splash.Intensity <= 0f ||
+                waterMaterial == null)
+            {
+                return false;
+            }
+
+            waterMaterial.SetVector("_RippleCenter", splash.Position);
+            waterMaterial.SetFloat("_RippleStartTime", Time.time);
+            waterMaterial.SetFloat("_RippleStrength", Mathf.Clamp(splash.Intensity, 0.45f, 1.35f));
+            activeRippleCount = 1;
+            return true;
         }
 
         private void EnsureResources()
@@ -221,15 +246,24 @@ namespace MagicCarpet.PresentationLab
             material.enableInstancing = true;
             if (shader == customWaterShader)
             {
-                material.SetColor("_BaseColor", new Color(0.008f, 0.04f, 0.12f, 1f));
-                material.SetColor("_ReflectionColor", new Color(0.025f, 0.15f, 0.42f, 1f));
-                material.SetColor("_FoamColor", new Color(0.08f, 0.25f, 0.60f, 1f));
-                material.SetFloat("_WaveScale", 0.055f);
-                material.SetFloat("_WaveSpeed", 0.22f);
-                material.SetFloat("_WaveStrength", 0.10f);
-                material.SetFloat("_FresnelStrength", 0.55f);
-                material.SetFloat("_SpecularStrength", 0.8f);
-                material.SetFloat("_Alpha", 0.84f);
+                material.SetColor("_BaseColor", new Color(0.008f, 0.045f, 0.14f, 1f));
+                material.SetColor("_ReflectionColor", new Color(0.035f, 0.22f, 0.62f, 1f));
+                material.SetColor("_FoamColor", new Color(0.12f, 0.42f, 0.90f, 1f));
+                material.SetColor("_MoonColor", new Color(0.34f, 0.58f, 1.0f, 1f));
+                material.SetFloat("_WaveScale", 0.085f);
+                material.SetFloat("_WaveSpeed", 0.32f);
+                material.SetFloat("_WaveStrength", 0.28f);
+                material.SetFloat("_FresnelStrength", 1.30f);
+                material.SetFloat("_SpecularStrength", 1.75f);
+                material.SetFloat("_ReflectionStrength", 1.15f);
+                material.SetFloat("_SceneReflectionStrength", 0.72f);
+                material.SetFloat("_ReflectionDistortion", 0.035f);
+                material.SetFloat("_RippleSpeed", 2.8f);
+                material.SetFloat("_RippleWidth", 0.65f);
+                material.SetVector("_RippleCenter", Vector4.zero);
+                material.SetFloat("_RippleStartTime", 0f);
+                material.SetFloat("_RippleStrength", 0f);
+                material.SetFloat("_Alpha", 0.94f);
             }
             else
             {
@@ -241,6 +275,15 @@ namespace MagicCarpet.PresentationLab
                 material.SetFloat("_EmissionStrength", 0.08f);
             }
             return material;
+        }
+
+        private void ClearRipple()
+        {
+            activeRippleCount = 0;
+            if (waterMaterial != null)
+            {
+                waterMaterial.SetFloat("_RippleStrength", 0f);
+            }
         }
 
         private static bool IsFinite(float value)

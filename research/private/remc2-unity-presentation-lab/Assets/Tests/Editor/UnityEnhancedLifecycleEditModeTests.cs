@@ -3,6 +3,7 @@ using System;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 using Object = UnityEngine.Object;
 
 namespace MagicCarpet.PresentationLab.Tests
@@ -919,6 +920,34 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual(UnityEnhancedWaterReflectionMode.ScreenSpaceWhenSupported, water.ReflectionMode);
             Assert.AreEqual(2, water.ShorelineCellCount);
             Assert.AreEqual(8, water.ShorelineVertexCount);
+            Assert.IsNotNull(water.WaterMaterial);
+            Assert.AreEqual("MagicCarpet/Enhanced/Water", water.WaterMaterial.shader.name);
+            Assert.Greater(water.WaterMaterial.GetFloat("_WaveStrength"), 0.20f);
+            Assert.Greater(water.WaterMaterial.GetFloat("_FresnelStrength"), 1.0f);
+            Assert.Greater(water.WaterMaterial.GetFloat("_SceneReflectionStrength"), 0.5f);
+
+            UnityEnhancedVfxEvent splash = new UnityEnhancedVfxEvent(
+                1, 2, 4, 0x40000001UL, UnityEnhancedVfxKind.Weather,
+                new Vector3(1f, 1.5f, 1f), 1f, 18);
+            Assert.IsTrue(water.ApplyRipple(splash));
+            Assert.AreEqual(1, water.ActiveRippleCount);
+            Assert.Greater(water.WaterMaterial.GetFloat("_RippleStrength"), 0.4f);
+            UnityEnhancedVfxEvent nonWater = new UnityEnhancedVfxEvent(
+                2, 2, 4, 0x20000001UL, UnityEnhancedVfxKind.Fire,
+                Vector3.zero, 1f, 18);
+            Assert.IsFalse(water.ApplyRipple(nonWater));
+
+            Camera camera = gameObject.AddComponent<Camera>();
+            UniversalAdditionalCameraData cameraData = gameObject.AddComponent<UniversalAdditionalCameraData>();
+            cameraData.requiresColorTexture = false;
+            UnityEnhancedQualityAndPost quality = gameObject.AddComponent<UnityEnhancedQualityAndPost>();
+            Assert.IsTrue(quality.Apply(UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog), camera));
+            Assert.IsTrue(quality.OpaqueTextureRequired);
+            Assert.IsNotNull(cameraData);
+            Assert.IsTrue(cameraData.requiresColorTexture);
+            quality.ResetForSession();
+            Assert.IsFalse(quality.OpaqueTextureRequired);
+            Assert.IsFalse(cameraData.requiresColorTexture);
             MeshFilter shoreline = gameObject.transform.Find("EnhancedShoreline").GetComponent<MeshFilter>();
             Assert.That(shoreline.sharedMesh.vertices[0].x, Is.EqualTo(-4f).Within(0.001f));
             Assert.That(shoreline.sharedMesh.vertices[0].z, Is.EqualTo(-4f).Within(0.001f));
