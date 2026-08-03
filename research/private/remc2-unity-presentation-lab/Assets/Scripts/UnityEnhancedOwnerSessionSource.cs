@@ -1716,9 +1716,14 @@ namespace MagicCarpet.PresentationLab
                     continue;
                 }
 
-                int family = source.projectileKind == 5
-                    ? (int)UnityEnhancedPresentationFamily.Possession
-                    : (int)UnityEnhancedPresentationFamily.Projectile;
+                // Native projectile kind 1 is the authoritative fireball. Keep
+                // the projectile entity live and moving with the Rust snapshot;
+                // the family only selects its Enhanced visual treatment.
+                int family = source.projectileKind == 1
+                    ? (int)UnityEnhancedPresentationFamily.Fire
+                    : source.projectileKind == 5
+                        ? (int)UnityEnhancedPresentationFamily.Possession
+                        : (int)UnityEnhancedPresentationFamily.Projectile;
                 Vector3 position = ProjectedPosition(source.x, source.y, source.z);
                 result.Add(new UnityEnhancedEntitySnapshot
                 {
@@ -1806,12 +1811,13 @@ namespace MagicCarpet.PresentationLab
                     continue;
                 }
 
+                bool fireball = source.projectileKind == 1;
                 result.Add(new UnityEnhancedLocalLightRequest(
                     DynamicStableIdentity(0x20000000U, source.projectileId),
                     ProjectedPosition(source.x, source.y, source.z),
-                    new Color(1f, 0.32f, 0.08f, 1f),
-                    1.8f,
-                    6f,
+                    fireball ? new Color(1f, 0.2f, 0.04f, 1f) : new Color(1f, 0.32f, 0.08f, 1f),
+                    fireball ? 3f : 1.8f,
+                    fireball ? 8f : 6f,
                     (ushort)(2000 + (source.projectileId % 1000U))));
             }
 

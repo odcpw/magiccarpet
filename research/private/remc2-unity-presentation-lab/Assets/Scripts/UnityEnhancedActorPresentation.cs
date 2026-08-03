@@ -176,26 +176,38 @@ namespace MagicCarpet.PresentationLab
                 return material;
             }
 
-            Shader shader = Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
+            UnityEnhancedPresentationFamily familyId = (UnityEnhancedPresentationFamily)family;
+            bool fireball = familyId == UnityEnhancedPresentationFamily.Fire;
+            Shader shader = (fireball ? Shader.Find("MagicCarpet/Enhanced/Vfx") : null) ??
+                            Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
                             Shader.Find("Universal Render Pipeline/Lit") ??
                             Shader.Find("Standard");
             material = shader == null ? null : new Material(shader)
             {
-                name = "EnhancedGeneratedMaterial_" + (UnityEnhancedPresentationFamily)family,
+                name = "EnhancedGeneratedMaterial_" + familyId,
                 hideFlags = HideFlags.DontSave,
-                color = FamilyColor((UnityEnhancedPresentationFamily)family)
+                color = FamilyColor(familyId)
             };
             if (material != null)
             {
                 material.enableInstancing = true;
-                material.SetFloat("_AmbientBoost", 0.62f);
-                material.SetFloat("_SpecularStrength", 0.12f);
-                material.SetColor("_RimColor", new Color(0.08f, 0.16f, 0.52f, 1f));
-                material.SetFloat("_RimStrength", 0.24f);
-                material.SetColor("_EmissionColor", FamilyColor((UnityEnhancedPresentationFamily)family));
-                material.SetFloat(
-                    "_EmissionStrength",
-                    EmissionStrength((UnityEnhancedPresentationFamily)family));
+                if (fireball && shader.name == "MagicCarpet/Enhanced/Vfx")
+                {
+                    material.SetColor("_GlowColor", new Color(1f, 0.18f, 0.025f, 1f));
+                    material.SetFloat("_GlowIntensity", 1.35f);
+                    material.SetFloat("_Opacity", 0.78f);
+                    material.SetFloat("_PulseSpeed", 2.8f);
+                    material.SetFloat("_RimStrength", 1.45f);
+                }
+                else
+                {
+                    material.SetFloat("_AmbientBoost", 0.62f);
+                    material.SetFloat("_SpecularStrength", 0.12f);
+                    material.SetColor("_RimColor", new Color(0.08f, 0.16f, 0.52f, 1f));
+                    material.SetFloat("_RimStrength", 0.24f);
+                    material.SetColor("_EmissionColor", FamilyColor(familyId));
+                    material.SetFloat("_EmissionStrength", EmissionStrength(familyId));
+                }
             }
             materials.Add(family, material);
             return material;

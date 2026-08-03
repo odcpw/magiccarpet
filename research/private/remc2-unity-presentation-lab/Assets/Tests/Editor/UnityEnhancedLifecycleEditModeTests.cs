@@ -659,6 +659,75 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void AuthoritativeFireballUsesLuminousProjectileAndLocalLight()
+        {
+            GameObject gameObject = new GameObject("enhanced-fireball-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+            ulong fireballIdentity = 0x0000000820000001UL;
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 8,
+                Tick = 12,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Entities = new[]
+                {
+                    new UnityEnhancedEntitySnapshot
+                    {
+                        StableIdentity = fireballIdentity,
+                        Generation = 8,
+                        Position = new Vector3(1f, 2f, 3f),
+                        Rotation = Quaternion.identity,
+                        Visible = true,
+                        PresentationFamily = (int)UnityEnhancedPresentationFamily.Fire,
+                        Scale = 1f,
+                        RenderLayer = 2201
+                    }
+                },
+                NightLighting = UnityEnhancedNightLightingDescriptor.Level1Night(),
+                LocalLights = new[]
+                {
+                    new UnityEnhancedLocalLightRequest(
+                        fireballIdentity,
+                        new Vector3(1f, 2f, 3f),
+                        new Color(1f, 0.2f, 0.04f, 1f),
+                        3f,
+                        8f,
+                        2201)
+                },
+                VfxEvents = new[]
+                {
+                    new UnityEnhancedVfxEvent(
+                        1,
+                        8,
+                        12,
+                        fireballIdentity,
+                        UnityEnhancedVfxKind.Fire,
+                        new Vector3(1f, 2f, 3f),
+                        1f,
+                        64)
+                }
+            }));
+
+            Transform visual = gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000820000001/EnhancedActorVisual");
+            Assert.IsNotNull(visual);
+            MeshRenderer renderer = visual.GetComponent<MeshRenderer>();
+            Assert.AreEqual("MagicCarpet/Enhanced/Vfx", renderer.sharedMaterial.shader.name);
+            Assert.Greater(renderer.sharedMaterial.GetFloat("_GlowIntensity"), 1f);
+            Assert.AreEqual(1, root.NightLighting.ActiveLocalLightCount);
+            Light fireballLight = gameObject.transform
+                .Find("EnhancedNightLights/EnhancedLocalLight_0")
+                .GetComponent<Light>();
+            Assert.That(fireballLight.intensity, Is.EqualTo(3f).Within(0.001f));
+            Assert.That(fireballLight.range, Is.EqualTo(8f).Within(0.001f));
+            Assert.AreEqual(1, root.VfxPresentation.ActiveEffectCount);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void NightLightingUsesDeterministicQualityCaps()
         {
             GameObject gameObject = new GameObject("enhanced-lighting-test");
