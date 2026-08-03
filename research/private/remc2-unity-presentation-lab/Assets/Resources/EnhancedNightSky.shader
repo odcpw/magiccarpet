@@ -8,6 +8,7 @@ Shader "MagicCarpet/Enhanced/NightSky"
         _StarColor ("Star Color", Color) = (0.55, 0.72, 1, 1)
         _StarDensity ("Star Density", Range(0, 1)) = 0.025
         _StarIntensity ("Star Intensity", Range(0, 4)) = 0.8
+        _StarTwinkleStrength ("Star Twinkle Strength", Range(0, 0.20)) = 0
         _MoonDirection ("Moon Direction", Vector) = (0.35, 0.8, 0.25, 0)
         _MoonColor ("Moon Color", Color) = (0.45, 0.62, 1, 1)
         _MoonIntensity ("Moon Intensity", Range(0, 4)) = 0.8
@@ -45,6 +46,7 @@ Shader "MagicCarpet/Enhanced/NightSky"
                 half4 _StarColor;
                 half _StarDensity;
                 half _StarIntensity;
+                half _StarTwinkleStrength;
                 half4 _MoonDirection;
                 half4 _MoonColor;
                 half _MoonIntensity;
@@ -100,7 +102,12 @@ Shader "MagicCarpet/Enhanced/NightSky"
                 float starSeed = Hash21(cell);
                 half candidate = step(1.0h - _StarDensity, starSeed);
                 half radius = smoothstep(0.19h, 0.0h, length(local));
-                return candidate * radius * aboveHorizon;
+                half twinkle = 1.0h + _StarTwinkleStrength * sin(
+                    _Time.y * (1.1h + starSeed * 1.9h) + starSeed * 6.28318h);
+                half twinkleHalo = smoothstep(0.30h, 0.0h, length(local)) *
+                                   _StarTwinkleStrength * 0.85h;
+                return candidate * (radius + twinkleHalo) * aboveHorizon *
+                       max(0.0h, twinkle);
             }
 
             half3 Moon(half3 direction)

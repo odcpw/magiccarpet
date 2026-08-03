@@ -504,6 +504,7 @@ namespace MagicCarpet.PresentationLab
                 generatedSkybox.SetColor("_StarColor", new Color(0.55f, 0.72f, 1f, 1f));
                 generatedSkybox.SetFloat("_StarDensity", 0.025f);
                 generatedSkybox.SetFloat("_StarIntensity", 0.8f);
+                generatedSkybox.SetFloat("_StarTwinkleStrength", 0.18f);
                 generatedSkybox.SetVector("_MoonDirection", -descriptor.MoonDirection.normalized);
                 generatedSkybox.SetColor("_MoonColor", descriptor.MoonColor);
                 generatedSkybox.SetFloat("_MoonIntensity", descriptor.MoonIntensity);
