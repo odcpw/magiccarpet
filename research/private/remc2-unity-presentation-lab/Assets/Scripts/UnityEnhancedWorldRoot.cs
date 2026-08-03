@@ -666,10 +666,9 @@ namespace MagicCarpet.PresentationLab
                 camera.Render();
                 // The owner HUD Canvas is part of the camera render. Do not
                 // lay the indexed frame over the resolved target afterward:
-                // that would cover the Enhanced readable companion wherever
-                // the authentic owner pixels are opaque. CompositeOwnerHudTo
+                // that would cover the authentic owner pixels. CompositeOwnerHudTo
                 // remains available for the isolated owner-frame provenance
-                // proof; this resolved path preserves the actual layer order.
+                // proof; this resolved path preserves the actual owner HUD layer.
                 if (hudPresentation == null || !hudPresentation.IsVisible)
                 {
                     reason = "Unity Enhanced owner HUD is not visible in the resolved camera capture";

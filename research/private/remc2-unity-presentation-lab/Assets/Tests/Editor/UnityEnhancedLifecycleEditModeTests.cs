@@ -186,7 +186,7 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
-        public void HudReadableCompanionConsumesGenerationBoundMissionStateWithoutOwnerPanel()
+        public void HudUsesOwnerIndexedFrameWithoutSyntheticCompanionOverlay()
         {
             GameObject gameObject = new GameObject("enhanced-hud-readable-test");
             UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
@@ -207,17 +207,10 @@ namespace MagicCarpet.PresentationLab.Tests
             snapshot.Hud.SelectedSpellUiIndex = 2;
 
             Assert.IsTrue(root.ApplySnapshot(snapshot));
-            Assert.IsTrue(root.HudPresentation.IsReadableOverlayVisible);
-            Assert.AreEqual("37 / 100", root.HudPresentation.ReadableLifeText);
-            Assert.AreEqual("12 / 50", root.HudPresentation.ReadableManaText);
-            Assert.AreEqual("SPD 44 / 80", root.HudPresentation.ReadableSpeedText);
-            StringAssert.Contains("STAGE 2", root.HudPresentation.ReadableStatusText);
-            StringAssert.Contains("TASKS 1/3", root.HudPresentation.ReadableStatusText);
-            StringAssert.Contains("FIRE", root.HudPresentation.ReadableSpellText);
-            StringAssert.Contains("SPEED", root.HudPresentation.ReadableSpellText);
-            StringAssert.Contains("SEL 2", root.HudPresentation.ReadableSpellText);
-            Assert.IsNotNull(gameObject.transform.Find(
+            Assert.IsNull(gameObject.transform.Find(
                 "EnhancedHud/EnhancedOwnerHudCanvas/EnhancedHudReadabilityOverlay"));
+            Assert.IsNotNull(gameObject.transform.Find(
+                "EnhancedHud/EnhancedOwnerHudCanvas/EnhancedOwnerHudFrame"));
             Assert.IsNull(gameObject.transform.Find(
                 "EnhancedHud/EnhancedOwnerHudCanvas/EnhancedHudPanel"));
             Assert.IsNotNull(root.HudPresentation.OwnerHudMaterial);
@@ -1965,6 +1958,42 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void EnhancedNightLightingUsesLongRangeCascadedMoonShadows()
+        {
+            UniversalRenderPipelineAsset pipeline = UniversalRenderPipeline.asset;
+            Assert.IsNotNull(pipeline);
+            Assert.IsTrue(pipeline.supportsMainLightShadows);
+            Assert.AreEqual(128f, pipeline.shadowDistance);
+            Assert.AreEqual(2, pipeline.shadowCascadeCount);
+            Assert.That(pipeline.mainLightShadowmapResolution, Is.GreaterThanOrEqualTo(2048));
+
+            GameObject gameObject = new GameObject("enhanced-moon-shadow-test");
+            UnityEnhancedNightLighting lighting = gameObject.AddComponent<UnityEnhancedNightLighting>();
+            lighting.SetQuality(UnityEnhancedLightingQuality.WholeHog);
+            lighting.ApplyDescriptor(
+                1,
+                UnityEnhancedNightLightingDescriptor.Level1Night(),
+                Array.Empty<UnityEnhancedLocalLightRequest>(),
+                true);
+
+            Transform moonTransform = gameObject.transform.Find("EnhancedMoonLight");
+            Assert.IsNotNull(moonTransform);
+            Light moon = moonTransform.GetComponent<Light>();
+            Assert.IsNotNull(moon);
+            Assert.AreEqual(LightShadows.Soft, moon.shadows);
+            Assert.That(moon.transform.forward.y, Is.LessThan(-0.5f));
+            Assert.That(
+                Vector3.Dot(
+                    moon.transform.forward,
+                    UnityEnhancedNightLightingDescriptor.Level1Night().MoonDirection.normalized),
+                Is.GreaterThan(0.999f));
+            Assert.AreSame(moon, RenderSettings.sun);
+
+            lighting.ResetForSession();
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void SpatialQualityRequestsFsrAndRestoresPipelineSettings()
         {
             GameObject gameObject = new GameObject("enhanced-spatial-upscale-test");
@@ -2020,11 +2049,19 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.That(renderer.sharedMaterial.color.r, Is.EqualTo(1f).Within(0.001f));
             Assert.That(renderer.sharedMaterial.color.g, Is.EqualTo(1f).Within(0.001f));
             Assert.That(renderer.sharedMaterial.color.b, Is.EqualTo(1f).Within(0.001f));
+            Assert.AreEqual(ShadowCastingMode.On, renderer.shadowCastingMode);
+            Assert.IsTrue(renderer.receiveShadows);
 
+            // Simulate a pooled view that previously displayed an owner
+            // billboard, whose renderer contract is shadow-off.
+            renderer.shadowCastingMode = ShadowCastingMode.Off;
+            renderer.receiveShadows = false;
             UnityEnhancedEntitySnapshot castle = Entity(1, 42, Vector3.zero);
             castle.PresentationFamily = (int)UnityEnhancedPresentationFamily.Castle;
             actors.Configure(view, castle);
             Assert.Greater(renderer.sharedMaterial.GetFloat("_AccentStrength"), 0.7f);
+            Assert.AreEqual(ShadowCastingMode.On, renderer.shadowCastingMode);
+            Assert.IsTrue(renderer.receiveShadows);
 
             Object.DestroyImmediate(gameObject);
         }

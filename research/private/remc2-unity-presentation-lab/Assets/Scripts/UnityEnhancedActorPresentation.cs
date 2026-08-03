@@ -350,6 +350,12 @@ namespace MagicCarpet.PresentationLab
             }
             state.Renderer.SetPropertyBlock(state.PropertyBlock);
             state.Renderer.enabled = true;
+            // Views are pooled across owner billboards and generated world
+            // structures. Owner sprites deliberately disable shadows, so
+            // restore the generated-view contract here before a town, castle,
+            // or other mesh is rendered again and reaches the moon shadow map.
+            state.Renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.On;
+            state.Renderer.receiveShadows = true;
 
             if (fireballProjectile)
             {

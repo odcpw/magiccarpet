@@ -180,7 +180,14 @@ namespace MagicCarpet.PresentationLab
 
             EnsureHierarchy();
             EnsureMoon();
-            moon.transform.rotation = Quaternion.LookRotation(-descriptor.MoonDirection.normalized, Vector3.up);
+            // MoonDirection is the direction travelled by the light rays. The
+            // sky uses its inverse as the visible moon direction, while URP
+            // derives the shader light direction from the inverse of this
+            // transform. Keep the light above the terrain and the shadow map
+            // aligned with the same night descriptor.
+            moon.transform.rotation = Quaternion.LookRotation(
+                descriptor.MoonDirection.normalized,
+                Vector3.up);
             moon.color = descriptor.MoonColor;
             moon.intensity = Mathf.Max(0f, descriptor.MoonIntensity);
             RenderSettings.fog = descriptor.FogDensity > 0f;
