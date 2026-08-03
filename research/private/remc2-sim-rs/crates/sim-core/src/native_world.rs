@@ -4055,9 +4055,9 @@ pub struct Level2AuthoredBeeSource {
     pub active: bool,
 }
 
-/// Authored class-11 model-0/model-1 switch producer materialized by the
-/// source `sub_4A1E0` group scan.  The authored `stage_tag` is copied into the
-/// live entity id and is therefore the next activation group, while the
+/// Authored class-11 model-0/model-1/model-12 switch producer materialized by
+/// the source `sub_4A1E0` group scan.  The authored `stage_tag` is copied into
+/// the live entity id and is therefore the next activation group, while the
 /// source phase/cooldown words remain mutable across outer turns.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2AuthoredSwitchProducerSource {
@@ -4070,6 +4070,9 @@ pub struct Level2AuthoredSwitchProducerSource {
     pub action: u8,
     pub stage_tag: u16,
     pub word_10: i16,
+    /// `AddSwitchXX_50A90` initializes the source dword to zero before the
+    /// class-11 stage-tag constructor copies its group id.
+    pub dword_0x10: i32,
     pub position: Position,
     pub phase: u8,
     pub cooldown: u8,
@@ -5526,7 +5529,7 @@ impl Level2EconomyState {
         true
     }
 
-    /// Allocate one authored class-11 model-0/model-1 switch producer using
+    /// Allocate one authored class-11 model-0/model-1/model-12 switch producer using
     /// the shared `NewEvent_4A050` source arena.  `stage_tag` is the source
     /// entity id consumed by the next `sub_4A1E0` group scan.
     pub fn allocate_authored_switch_producer(
@@ -5537,7 +5540,7 @@ impl Level2EconomyState {
         word_10: i16,
         position: Position,
     ) -> Option<Level2AuthoredSwitchProducerSource> {
-        if !matches!(model, 0 | 1) || stage_tag == 0 {
+        if !matches!(model, 0 | 1 | 12) || stage_tag == 0 {
             return None;
         }
         let source_entity_index = self.allocate_slot()?;
@@ -5567,6 +5570,7 @@ impl Level2EconomyState {
             action: model,
             stage_tag,
             word_10,
+            dword_0x10: 0,
             position,
             phase: 0,
             cooldown: 0,
@@ -11833,6 +11837,7 @@ impl Level2EconomyState {
             ]);
             hasher.update(source.stage_tag.to_le_bytes());
             hasher.update(source.word_10.to_le_bytes());
+            hasher.update(source.dword_0x10.to_le_bytes());
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
@@ -16853,20 +16858,33 @@ impl Level2ResetSession {
             .filter(|feature| feature.activation_group == 31)
             .filter(|feature| {
                 (feature.kind == 14 && feature.subtype == 3)
+                    || (feature.kind == 11 && feature.subtype == 12 && feature.index == 209)
                     || (feature.kind == 11 && feature.subtype == 0 && feature.index == 274)
             })
             .collect::<Vec<_>>();
-        if group_rows.len() != 2 {
+        if group_rows.len() != 3 {
             self.dispatch_events.push(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: format!(
-                    "Level 2 stage-tag group 31 has {} bounded rows, expected 2",
+                    "Level 2 stage-tag group 31 has {} bounded rows, expected 3",
                     group_rows.len()
                 ),
             });
             return;
         }
+        let Some(model12_row) = group_rows
+            .iter()
+            .copied()
+            .find(|feature| feature.kind == 11 && feature.subtype == 12 && feature.index == 209)
+        else {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: root_slot,
+                message: "Level 2 stage-tag group 31 is missing model-12 row 209".to_string(),
+            });
+            return;
+        };
         let Some(feature) = group_rows
             .iter()
             .copied()
@@ -16892,10 +16910,38 @@ impl Level2ResetSession {
             });
             return;
         };
+        let economy_before = self.economy.clone();
+        let switch_producers_before = self.level2_switch_producers_activated.clone();
+        let class14_before = self.level2_class14_activated.clone();
+        let model0_phase_before = self.level2_class11_model0_constructor_phase;
+        let group31_switch_before = self.level2_group31_switch28;
+        let model12_position =
+            model12_row.world_position(self.terrain.ground_height(model12_row.world_position(0)));
+        let Some(model12_source) = self.economy.allocate_authored_switch_producer(
+            model12_row.index,
+            12,
+            u16::try_from(model12_row.stage_tag).unwrap_or_default(),
+            i16::try_from(model12_row.word_10).unwrap_or(i16::MAX),
+            model12_position,
+        ) else {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: root_slot,
+                message: "Level 2 authored model-12 row 209 could not allocate".to_string(),
+            });
+            return;
+        };
+        self.level2_switch_producers_activated
+            .insert(model12_row.index);
         let Some(source_slot) = self
             .allocate_level2_authored_class14(feature.index)
             .map(|source| source.source_entity_index)
         else {
+            self.economy = economy_before;
+            self.level2_switch_producers_activated = switch_producers_before;
+            self.level2_class14_activated = class14_before;
+            self.level2_class11_model0_constructor_phase = model0_phase_before;
+            self.level2_group31_switch28 = group31_switch_before;
             self.dispatch_events.push(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
@@ -16929,7 +16975,8 @@ impl Level2ResetSession {
                 pass,
                 source_slot: root_slot,
                 group: 31,
-                authored_indices: vec![feature.index, switch_row.index].into_boxed_slice(),
+                authored_indices: vec![model12_row.index, feature.index, switch_row.index]
+                    .into_boxed_slice(),
             });
         debug_assert!(
             self.economy()
@@ -16937,6 +16984,7 @@ impl Level2ResetSession {
                 .iter()
                 .any(|row| row.source_entity_index == source_slot)
         );
+        debug_assert_eq!(model12_source.model, 12);
     }
 
     fn activate_level2_authored_class14_group(
@@ -30840,7 +30888,7 @@ mod tests {
                 group: 31,
                 authored_indices,
                 ..
-            } if authored_indices.as_ref() == [244, 274]
+            } if authored_indices.as_ref() == [209, 244, 274]
         )));
         assert!(
             session
@@ -30862,6 +30910,113 @@ mod tests {
             })
             .expect("live model-4 group-31 switch");
         assert!(switch.drawing_disabled());
+    }
+
+    #[test]
+    fn level_two_model12_group31_materializes_row209_without_empty_group32_work() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 model-12 session");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-12 group-31 session");
+        let baseline_hash = session.campaign_state_hash();
+        session.runtime.set_level2_is_level_end(1);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let source = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 209)
+            .copied()
+            .expect("group 31 must materialize authored row 209");
+        assert_eq!(
+            (
+                source.authored_index,
+                source.model,
+                source.action,
+                source.stage_tag,
+                source.word_10,
+                source.dword_0x10,
+            ),
+            (209, 12, 12, 32, 4, 0)
+        );
+        let row209 = session
+            .mission()
+            .authored_features()
+            .iter()
+            .copied()
+            .find(|feature| feature.index == 209)
+            .expect("authored row 209");
+        assert_eq!(
+            (source.position.x, source.position.y, source.position.z),
+            (
+                row209.world_position(0).x,
+                row209.world_position(0).y,
+                session.terrain.ground_height(row209.world_position(0))
+            )
+        );
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 31,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [209, 244, 274]
+        )));
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 32, .. }
+        )));
+
+        session.reset();
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .all(|source| source.authored_index != 209)
+        );
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_model12_group31_rolls_back_when_row244_cannot_allocate() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 model-12 rollback session");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-12 rollback group-31 session");
+        let saved_free_slots = session.economy().free_slots.clone();
+        session.economy_mut().free_slots.truncate(1);
+        session.runtime.set_level2_is_level_end(1);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .all(|source| source.authored_index != 209)
+        );
+        assert!(
+            session
+                .economy()
+                .authored_class14()
+                .iter()
+                .all(|source| source.authored_index != 244)
+        );
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Error { message, .. } if message.contains("row 244")
+        )));
+
+        session.economy_mut().free_slots = saved_free_slots;
+        session.reset();
     }
 
     #[test]
@@ -30929,7 +31084,7 @@ mod tests {
                 group: 31,
                 authored_indices,
                 ..
-            } if authored_indices.as_ref() == [244, 274]
+            } if authored_indices.as_ref() == [209, 244, 274]
         )));
         assert!(session.level2_group31_switch28.is_some());
     }
