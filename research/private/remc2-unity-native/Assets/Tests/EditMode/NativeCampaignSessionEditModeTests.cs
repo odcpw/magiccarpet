@@ -527,10 +527,29 @@ namespace MagicCarpet.Native.Tests
 
             var acquired = session.BeyondSightState();
             Assert.That(acquired.active, Is.EqualTo(1));
+            Assert.That(acquired.tier, Is.EqualTo(0));
             Assert.That(acquired.action, Is.EqualTo(36));
             Assert.That(acquired.holderEntityIndex, Is.EqualTo(38));
             Assert.That(acquired.parentEntityIndex, Is.EqualTo(111));
+            Assert.That(acquired.manaCost, Is.EqualTo(1_800));
+            Assert.That(acquired.parentMana, Is.EqualTo(1_000));
+            Assert.That(acquired.activeValue, Is.EqualTo(0));
             Assert.That(acquired.generation, Is.EqualTo(session.Generation));
+
+            // The managed route reaches the real holder, but the qualified
+            // reset only supplies 1,000 mana while source tier 0 costs 1,800.
+            // Activation must reject without mutating the live holder; a
+            // positive cast requires the separate source-owned mana
+            // carrier/Castle path and is intentionally not fabricated here.
+            Assert.Throws<System.InvalidOperationException>(
+                () => session.ActivateBeyondSight());
+            var rejected = session.BeyondSightState();
+            Assert.That(rejected.active, Is.EqualTo(acquired.active));
+            Assert.That(rejected.tier, Is.EqualTo(acquired.tier));
+            Assert.That(rejected.action, Is.EqualTo(acquired.action));
+            Assert.That(rejected.activeValue, Is.EqualTo(acquired.activeValue));
+            Assert.That(rejected.parentMana, Is.EqualTo(acquired.parentMana));
+            Assert.That(rejected.generation, Is.EqualTo(acquired.generation));
 
             session.Reset();
             var reset = session.BeyondSightState();
