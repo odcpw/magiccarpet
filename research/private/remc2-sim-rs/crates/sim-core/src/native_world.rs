@@ -14887,6 +14887,11 @@ pub struct Level2ResetSession {
     /// identity even though the typed consumers live in the sphere arena.
     baseline_level2_model39_activated: BTreeSet<u16>,
     level2_model39_activated: BTreeSet<u16>,
+    /// Authored class-10/model-6 rows consumed by the rooted group-24
+    /// producer. The group scan is repeatable, so keep authored identity
+    /// separate from the live model-6 arena rows.
+    baseline_level2_model6_activated: BTreeSet<u16>,
+    level2_model6_activated: BTreeSet<u16>,
     baseline_level2_model59_activated: BTreeSet<u16>,
     level2_model59_activated: BTreeSet<u16>,
     baseline_level2_model17_activated: BTreeSet<u16>,
@@ -15451,6 +15456,8 @@ impl Level2ResetSession {
             level2_model22_activated: BTreeSet::new(),
             baseline_level2_model39_activated: BTreeSet::new(),
             level2_model39_activated: BTreeSet::new(),
+            baseline_level2_model6_activated: BTreeSet::new(),
+            level2_model6_activated: BTreeSet::new(),
             baseline_level2_model59_activated: BTreeSet::new(),
             level2_model59_activated: BTreeSet::new(),
             baseline_level2_model17_activated: BTreeSet::new(),
@@ -16723,12 +16730,18 @@ impl Level2ResetSession {
                 let is_model59 = feature.kind == 10 && feature.subtype == 59 && target_group == 23;
                 let is_model39 = feature.kind == 10
                     && feature.subtype == 39
-                    && matches!(target_group, 1 | 5 | 7 | 26);
+                    && matches!(target_group, 1 | 5 | 7 | 24 | 26);
+                let is_model6 = feature.kind == 10 && feature.subtype == 6 && target_group == 24;
                 let is_model32 = feature.kind == 11
                     && feature.subtype == 32
                     && matches!(target_group, 1 | 17 | 18);
                 feature.activation_group == i16::try_from(target_group).unwrap_or(-1)
-                    && (is_switch || is_model22 || is_model39 || is_model59 || is_model32)
+                    && (is_switch
+                        || is_model22
+                        || is_model39
+                        || is_model6
+                        || is_model59
+                        || is_model32)
             })
             .collect::<Vec<_>>();
         let mut activated = Vec::new();
@@ -16752,7 +16765,9 @@ impl Level2ResetSession {
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
-            if feature.kind == 10 && feature.subtype == 39 && matches!(target_group, 1 | 5 | 7 | 26)
+            if feature.kind == 10
+                && feature.subtype == 39
+                && matches!(target_group, 1 | 5 | 7 | 24 | 26)
             {
                 if self.level2_model39_activated.contains(&feature.index) {
                     continue;
@@ -16774,6 +16789,25 @@ impl Level2ResetSession {
                     continue;
                 };
                 self.level2_model39_activated.insert(feature.index);
+                activated.push((feature.index, source.source_entity_index));
+                continue;
+            }
+            if feature.kind == 10 && feature.subtype == 6 && target_group == 24 {
+                if self.level2_model6_activated.contains(&feature.index) {
+                    continue;
+                }
+                let Some(source) = self.allocate_level2_authored_model6(feature.index) else {
+                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot: producer_slot,
+                        message: format!(
+                            "Level 2 authored model6 group {target_group} row {} could not allocate",
+                            feature.index
+                        ),
+                    });
+                    continue;
+                };
+                self.level2_model6_activated.insert(feature.index);
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
@@ -18448,6 +18482,10 @@ impl Level2ResetSession {
         for authored_index in &self.level2_model39_activated {
             hasher.update(authored_index.to_le_bytes());
         }
+        hasher.update(b"level2-model6-activation-v1");
+        for authored_index in &self.level2_model6_activated {
+            hasher.update(authored_index.to_le_bytes());
+        }
         hasher.update(b"level2-model59-activation-v1");
         for authored_index in &self.level2_model59_activated {
             hasher.update(authored_index.to_le_bytes());
@@ -18582,6 +18620,7 @@ impl Level2ResetSession {
         self.level2_model76_activated = self.baseline_level2_model76_activated.clone();
         self.level2_model22_activated = self.baseline_level2_model22_activated.clone();
         self.level2_model39_activated = self.baseline_level2_model39_activated.clone();
+        self.level2_model6_activated = self.baseline_level2_model6_activated.clone();
         self.level2_model59_activated = self.baseline_level2_model59_activated.clone();
         self.level2_model17_activated = self.baseline_level2_model17_activated.clone();
         self.level2_imported_switch_roots = self.baseline_level2_imported_switch_roots.clone();
@@ -32437,6 +32476,92 @@ mod tests {
     }
 
     #[test]
+    fn level_two_authored_model32_chain_continues_through_group18_and_group19() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 authored model-32 continuation session");
+        let authored_features = session.mission().authored_features().to_vec();
+        let feature_position = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("authored model-32 continuation row")
+                .world_position(0)
+        };
+
+        // A single real outer turn can visit newly allocated rows through the
+        // dynamic run-again cursor. Selectors 1 and 2 therefore exercise the
+        // source row-206 -> group-17 -> row-208 -> group-18 edge without
+        // directly invoking an allocator or narrative helper.
+        session.state.position = feature_position(11);
+        session.runtime.objectives[0].stage_selectors[1] = 2;
+        session.runtime.objectives[0].stage_selectors[2] = 2;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let row208 = session
+            .economy()
+            .authored_model32()
+            .iter()
+            .find(|source| source.authored_index == 208)
+            .copied()
+            .expect("group-17 row-208 model-32 source");
+        assert!(row208.fired);
+        assert!(!row208.drawing_enabled);
+        let row213 = session
+            .economy()
+            .authored_model32()
+            .iter()
+            .find(|source| source.authored_index == 213)
+            .copied()
+            .expect("group-18 row-213 model-32 source");
+        assert_eq!((row213.stage_tag, row213.objective_stage_index), (19, 3));
+        assert!(!row213.fired);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 18,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [213]
+        )));
+
+        // The next source objective edge is independent: selecting stage 3
+        // on the following turn consumes row 213 and materializes the authored
+        // group-19 model-0 switch, while its overlap callback remains latent.
+        session.runtime.objectives[0].stage_selectors[3] = 2;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 19,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [214]
+        )));
+        let row214 = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 214)
+            .copied()
+            .expect("group-19 row-214 switch source");
+        assert_eq!((row214.model, row214.stage_tag), (0, 20));
+        assert!(row214.drawing_enabled);
+        assert!(
+            !session
+                .economy()
+                .authored_model32()
+                .iter()
+                .find(|source| source.authored_index == 213)
+                .expect("row-213 remains in the model-32 arena")
+                .drawing_enabled
+        );
+    }
+
+    #[test]
     fn level_two_group23_model59_materializes_from_rooted_production_turns() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -32679,6 +32804,172 @@ mod tests {
             baseline_owner_mana_global
         );
         assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_group24_model39_and_model6_materialize_from_row344_production_chain() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-24 model-39/model-6 session");
+        let baseline_hash = session.campaign_state_hash();
+        let authored_features = session.mission().authored_features().to_vec();
+        let feature_position = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("authored group-24 feature")
+                .world_position(0)
+        };
+        let expected_group23_indices = [343_u16, 344];
+        let expected_group24_indices = authored_features
+            .iter()
+            .filter(|feature| feature.activation_group == 24)
+            .map(|feature| feature.index)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            expected_group24_indices,
+            vec![
+                345, 346, 347, 348, 349, 350, 351, 352, 353, 354, 355, 361, 362, 363, 364
+            ]
+        );
+        let expected_model39_positions = (345_u16..=354)
+            .map(|index| {
+                let position = feature_position(index);
+                (position.x, position.y)
+            })
+            .collect::<BTreeSet<_>>();
+
+        // First take the real imported row-342 -> group-23 path. This creates
+        // row 344 as the authored model-0 switch whose stage tag is group 24.
+        let root_position = feature_position(342);
+        let root = session
+            .level2_imported_switch_roots
+            .iter_mut()
+            .find(|root| root.authored_index == 342)
+            .expect("imported row-342 group-23 root");
+        root.position = root_position;
+        root.target_group = 23;
+        root.cooldown = 0;
+        session.state.position = root_position;
+        let mut group23_activated = false;
+        for _ in 0..16 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            group23_activated |= session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group,
+                        authored_indices,
+                        ..
+                    } if *group == 23 && authored_indices.as_ref() == expected_group23_indices
+                )
+            });
+            if session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .any(|source| source.authored_index == 344)
+            {
+                break;
+            }
+        }
+        assert!(group23_activated, "row 342 must allocate group 23");
+
+        // Position the local player over the newly-created row 344 and let
+        // the normal source cursor consume its every-eighth-pass overlap.
+        session.state.position = feature_position(344);
+        let mut group24_activated = false;
+        for _ in 0..16 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            group24_activated |= session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group,
+                        authored_indices,
+                        ..
+                    } if *group == 24 && authored_indices.as_ref() == expected_group24_indices
+                )
+            });
+            if expected_model39_positions.iter().all(|position| {
+                session.economy().spheres().iter().any(|sphere| {
+                    sphere.active && (sphere.position.x, sphere.position.y) == *position
+                })
+            }) && [355_u16].iter().all(|index| {
+                session
+                    .economy()
+                    .authored_switch_producers()
+                    .iter()
+                    .any(|source| source.active && source.authored_index == *index)
+            }) && (361_u16..=364).all(|index| {
+                session
+                    .economy()
+                    .authored_model6()
+                    .iter()
+                    .any(|source| source.active && source.authored_index == index)
+            }) {
+                break;
+            }
+        }
+        assert!(group24_activated, "row 344 must allocate group 24");
+        assert!(
+            expected_group24_indices
+                .iter()
+                .all(
+                    |index| session.dispatch_events().iter().any(|event| matches!(
+                        event,
+                        Level2DispatchEvent::AuthoredGroupActivated {
+                            group: 24,
+                            authored_indices,
+                            ..
+                        } if authored_indices.as_ref().contains(index)
+                    ))
+                )
+        );
+        assert_eq!(
+            session
+                .economy()
+                .authored_model6()
+                .iter()
+                .filter(|source| source.active)
+                .map(|source| source.authored_index)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([361, 362, 363, 364])
+        );
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .any(|source| source.active && source.authored_index == 355)
+        );
+        assert!(
+            session
+                .economy()
+                .spheres()
+                .iter()
+                .filter(|sphere| {
+                    sphere.active
+                        && expected_model39_positions
+                            .contains(&(sphere.position.x, sphere.position.y))
+                })
+                .count()
+                >= 10
+        );
+
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        assert!(session.economy().authored_model6().is_empty());
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .all(|source| source.authored_index != 355)
+        );
     }
 
     #[test]
