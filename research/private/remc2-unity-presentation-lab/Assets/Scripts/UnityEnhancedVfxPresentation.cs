@@ -55,7 +55,11 @@ namespace MagicCarpet.PresentationLab
         public MeshFilter Filter;
         public MeshRenderer Renderer;
         public ulong Sequence;
+        public ulong StartTick;
         public ulong ExpireTick;
+        public uint DurationTicks;
+        public UnityEnhancedVfxKind Kind;
+        public MaterialPropertyBlock PropertyBlock;
     }
 
     /// <summary>
@@ -82,6 +86,7 @@ namespace MagicCarpet.PresentationLab
         private const float SpeedReadabilityMaximumLength = 0.14f;
         private const float SpeedReadabilityMinimumWidth = 0.010f;
         private const float SpeedReadabilityMaximumWidth = 0.018f;
+        private static readonly int ImpactProgressProperty = Shader.PropertyToID("_ImpactProgress");
         private readonly Stack<UnityEnhancedVfxVisual> pool = new Stack<UnityEnhancedVfxVisual>();
         private readonly Dictionary<ulong, UnityEnhancedVfxVisual> active = new Dictionary<ulong, UnityEnhancedVfxVisual>();
         private readonly Dictionary<UnityEnhancedVfxKind, Mesh> meshes = new Dictionary<UnityEnhancedVfxKind, Mesh>();
@@ -173,7 +178,10 @@ namespace MagicCarpet.PresentationLab
             UnityEnhancedVfxVisual visual = pool.Count > 0 ? pool.Pop() : CreateVisual();
             visual.Sequence = vfxEvent.Sequence;
             ulong duration = vfxEvent.DurationTicks == 0 ? 1UL : vfxEvent.DurationTicks;
+            visual.StartTick = vfxEvent.Tick;
             visual.ExpireTick = vfxEvent.Tick + duration;
+            visual.DurationTicks = (uint)duration;
+            visual.Kind = vfxEvent.Kind;
             visual.Object.transform.position = vfxEvent.Position;
             visual.Object.transform.rotation = vfxEvent.Kind == UnityEnhancedVfxKind.Impact &&
                                                presentationCamera != null
@@ -191,6 +199,16 @@ namespace MagicCarpet.PresentationLab
                                                   (reducedMotion ? 0.6f : 1f);
             visual.Filter.sharedMesh = GetMesh(vfxEvent.Kind);
             visual.Renderer.sharedMaterial = GetMaterial(vfxEvent.Kind);
+            if (visual.PropertyBlock == null)
+            {
+                visual.PropertyBlock = new MaterialPropertyBlock();
+            }
+            visual.PropertyBlock.Clear();
+            visual.Renderer.SetPropertyBlock(visual.PropertyBlock);
+            if (vfxEvent.Kind == UnityEnhancedVfxKind.Impact)
+            {
+                ApplyImpactProgress(visual, 0f);
+            }
             visual.Object.SetActive(true);
             active.Add(vfxEvent.Sequence, visual);
             return true;
@@ -301,7 +319,17 @@ namespace MagicCarpet.PresentationLab
             List<ulong> expired = null;
             foreach (KeyValuePair<ulong, UnityEnhancedVfxVisual> pair in active)
             {
-                if (pair.Value.ExpireTick <= tick)
+                UnityEnhancedVfxVisual visual = pair.Value;
+                if (visual.Kind == UnityEnhancedVfxKind.Impact)
+                {
+                    float progress = tick <= visual.StartTick || visual.DurationTicks == 0
+                        ? 0f
+                        : Mathf.Clamp01(
+                            (float)(tick - visual.StartTick) / visual.DurationTicks);
+                    ApplyImpactProgress(visual, progress);
+                }
+
+                if (visual.ExpireTick <= tick)
                 {
                     if (expired == null) expired = new List<ulong>();
                     expired.Add(pair.Key);
@@ -342,7 +370,29 @@ namespace MagicCarpet.PresentationLab
             effect.hideFlags = HideFlags.DontSave;
             MeshFilter filter = effect.AddComponent<MeshFilter>();
             MeshRenderer renderer = effect.AddComponent<MeshRenderer>();
-            return new UnityEnhancedVfxVisual { Object = effect, Filter = filter, Renderer = renderer };
+            return new UnityEnhancedVfxVisual
+            {
+                Object = effect,
+                Filter = filter,
+                Renderer = renderer,
+                PropertyBlock = new MaterialPropertyBlock()
+            };
+        }
+
+        private static void ApplyImpactProgress(UnityEnhancedVfxVisual visual, float progress)
+        {
+            if (visual == null || visual.Renderer == null)
+            {
+                return;
+            }
+
+            if (visual.PropertyBlock == null)
+            {
+                visual.PropertyBlock = new MaterialPropertyBlock();
+            }
+
+            visual.PropertyBlock.SetFloat(ImpactProgressProperty, Mathf.Clamp01(progress));
+            visual.Renderer.SetPropertyBlock(visual.PropertyBlock);
         }
 
         private void EnsureSpeedReadabilityHierarchy(Camera camera)

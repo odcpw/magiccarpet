@@ -1781,6 +1781,44 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void ImpactVfxProgressesShockwaveAcrossAuthoritativeTicks()
+        {
+            GameObject gameObject = new GameObject("enhanced-impact-progress-test");
+            UnityEnhancedVfxPresentation vfx = gameObject.AddComponent<UnityEnhancedVfxPresentation>();
+            vfx.ResetForGeneration(9);
+
+            UnityEnhancedVfxEvent impact = new UnityEnhancedVfxEvent(
+                1,
+                9,
+                40,
+                0x4000002bUL,
+                UnityEnhancedVfxKind.Impact,
+                Vector3.zero,
+                1f,
+                16);
+            Assert.IsTrue(vfx.ApplyEvent(impact));
+
+            Transform visual = gameObject.transform.Find("EnhancedVfxPool/EnhancedVfx");
+            Assert.IsNotNull(visual);
+            MeshRenderer renderer = visual.GetComponent<MeshRenderer>();
+            MaterialPropertyBlock properties = new MaterialPropertyBlock();
+
+            renderer.GetPropertyBlock(properties);
+            Assert.That(properties.GetFloat("_ImpactProgress"), Is.EqualTo(0f).Within(0.0001f));
+
+            vfx.Advance(48);
+            renderer.GetPropertyBlock(properties);
+            Assert.That(properties.GetFloat("_ImpactProgress"), Is.EqualTo(0.5f).Within(0.0001f));
+            Assert.AreEqual(1, vfx.ActiveEffectCount);
+
+            vfx.Advance(56);
+            Assert.AreEqual(0, vfx.ActiveEffectCount);
+            Assert.IsFalse(visual.gameObject.activeSelf);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void OwnerFireballWarmLightPulseAndImpactMappingAreBounded()
         {
             float first = UnityEnhancedOwnerSessionSource.FireballLightIntensityPulse(6, 1);
