@@ -13777,6 +13777,15 @@ struct Level2Group31Switch28State {
     countdown: u8,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Level2Group10Switch25State {
+    source_slot: u16,
+    authored_index: u16,
+    target_group: u16,
+    position: Position,
+    phase: u8,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2ResetSession {
     profile: FlightProfile,
@@ -13824,6 +13833,8 @@ pub struct Level2ResetSession {
     level2_model13_activated: BTreeSet<u16>,
     baseline_level2_model76_activated: BTreeSet<u16>,
     level2_model76_activated: BTreeSet<u16>,
+    baseline_level2_group10_switch25: Option<Level2Group10Switch25State>,
+    level2_group10_switch25: Option<Level2Group10Switch25State>,
     baseline_level2_class11_model0_constructor_phase: u8,
     level2_class11_model0_constructor_phase: u8,
     baseline_level2_group31_switch28: Option<Level2Group31Switch28State>,
@@ -14211,6 +14222,23 @@ impl Level2ResetSession {
             .objectives
             .first()
             .map_or(1, |objective| objective.stage_selectors[3]);
+        let initial_level2_group10_switch25 = entities
+            .iter()
+            .find(|entity| {
+                entity.index == 25
+                    && entity.active
+                    && entity.class == 11
+                    && entity.model == 0
+                    && entity.source_id == 10
+                    && !entity.drawing_disabled()
+            })
+            .map(|entity| Level2Group10Switch25State {
+                source_slot: entity.index,
+                authored_index: 112,
+                target_group: 10,
+                position: entity.position,
+                phase: entity.phase,
+            });
         Self {
             profile,
             baseline_state: state,
@@ -14252,6 +14280,8 @@ impl Level2ResetSession {
             level2_model13_activated: BTreeSet::new(),
             baseline_level2_model76_activated: BTreeSet::new(),
             level2_model76_activated: BTreeSet::new(),
+            baseline_level2_group10_switch25: initial_level2_group10_switch25,
+            level2_group10_switch25: initial_level2_group10_switch25,
             // Source reset clears the constructor counters before any later
             // authored group callbacks run. This bounded seam only owns the
             // residual group-31 -> row-274 model-0 constructor, so start from
@@ -14372,15 +14402,38 @@ impl Level2ResetSession {
         Ok(())
     }
 
+    fn level2_model0_overlap_matches<F>(
+        &self,
+        switch_position: Position,
+        expected_overlap: bool,
+        mut entity_position: F,
+    ) -> bool
+    where
+        F: FnMut(&EntitySnapshot) -> Position,
+    {
+        const SWITCH_HALF_WIDTH: i16 = 121;
+        let overlap = self.entities.iter().any(|entity| {
+            entity.active
+                && entity.class == 3
+                && entity.model == 0
+                && crate::level1_mission::source_entities_overlap_xy(
+                    switch_position,
+                    SWITCH_HALF_WIDTH,
+                    SWITCH_HALF_WIDTH,
+                    entity_position(entity),
+                    SWITCH_HALF_WIDTH,
+                    SWITCH_HALF_WIDTH,
+                )
+        });
+        overlap == expected_overlap
+    }
+
     /// Evaluate one authored model-0/model-1 switch against the live model-0
     /// source list using remc2's strict XY comparator. The source scan is the
     /// live class-3 model-0 arena rebuilt by the source turn pre-pass. Model 0
     /// requires an overlap; model 1 requires a strict non-overlap. No Z value
     /// participates in this source callback.
     pub fn level2_authored_switch_matches(&self, authored_index: u16) -> Result<bool> {
-        // `CompareAxisWithShift_106F0` receives the source model-0/player
-        // collision extent (121 units in the qualified corpus) on both axes.
-        const SWITCH_HALF_WIDTH: i16 = 121;
         let feature = self
             .mission
             .authored_features()
@@ -14402,20 +14455,11 @@ impl Level2ResetSession {
             }
         };
         let switch_position = feature.world_position(0);
-        let overlap = self.entities.iter().any(|entity| {
-            entity.active
-                && entity.class == 3
-                && entity.model == 0
-                && crate::level1_mission::source_entities_overlap_xy(
-                    switch_position,
-                    SWITCH_HALF_WIDTH,
-                    SWITCH_HALF_WIDTH,
-                    entity.position,
-                    SWITCH_HALF_WIDTH,
-                    SWITCH_HALF_WIDTH,
-                )
-        });
-        Ok(overlap == expected_overlap)
+        Ok(
+            self.level2_model0_overlap_matches(switch_position, expected_overlap, |entity| {
+                entity.position
+            }),
+        )
     }
 
     /// Validate and expose the authored Level 2 Nyphur participant chain for
@@ -15446,7 +15490,7 @@ impl Level2ResetSession {
         self.activate_level2_rows_from_live_class11_producers(
             pass,
             "model76",
-            |entity| entity.model == 0 && matches!(entity.source_id, 10 | 12 | 14 | 16),
+            |entity| entity.model == 0 && matches!(entity.source_id, 12 | 14 | 16),
             |feature| feature.kind == 10 && feature.subtype == 76,
             |session, authored_index| session.level2_model76_activated.contains(&authored_index),
             |session, authored_index| {
@@ -15464,6 +15508,71 @@ impl Level2ResetSession {
                 Some(source_slot)
             },
         );
+    }
+
+    fn step_level2_group10_switch25(&mut self, pass: u8) {
+        let Some(mut switch) = self.level2_group10_switch25 else {
+            return;
+        };
+        if self
+            .level2_model76_activated
+            .contains(&switch.authored_index)
+        {
+            self.level2_group10_switch25 = None;
+            return;
+        }
+        if switch.phase & 7 == 0 {
+            if self.level2_model0_overlap_matches(switch.position, true, |entity| {
+                if entity.index == self.state.entity_index {
+                    self.state.position
+                } else {
+                    entity.position
+                }
+            }) {
+                let Some(source_slot) = self
+                    .allocate_level2_authored_model76(switch.authored_index)
+                    .map(|source| source.source_entity_index)
+                else {
+                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot: switch.source_slot,
+                        message: format!(
+                            "Level 2 authored model76 row {} could not allocate",
+                            switch.authored_index
+                        ),
+                    });
+                    switch.phase = switch.phase.wrapping_add(1);
+                    self.level2_group10_switch25 = Some(switch);
+                    return;
+                };
+                self.level2_model76_activated.insert(switch.authored_index);
+                if let Some(entity) = self
+                    .entities
+                    .get_mut(usize::from(switch.source_slot))
+                    .filter(|entity| entity.index == switch.source_slot)
+                {
+                    entity.disable_drawing();
+                }
+                self.dispatch_events
+                    .push(Level2DispatchEvent::AuthoredGroupActivated {
+                        pass,
+                        source_slot: switch.source_slot,
+                        group: switch.target_group,
+                        authored_indices: vec![switch.authored_index].into_boxed_slice(),
+                    });
+                debug_assert!(
+                    self.economy()
+                        .authored_model76()
+                        .iter()
+                        .any(|source| source.source_entity_index == source_slot)
+                );
+                self.level2_group10_switch25 = None;
+                return;
+            }
+            switch.position.z = self.terrain.ground_height(switch.position);
+        }
+        switch.phase = switch.phase.wrapping_add(1);
+        self.level2_group10_switch25 = Some(switch);
     }
 
     /// Consume authored class-14 subtype-3/5 rows when an active class-11
@@ -15599,6 +15708,7 @@ impl Level2ResetSession {
         self.activate_level2_authored_group8(pass);
         self.activate_level2_authored_group31(pass);
         self.step_level2_group31_switch28(pass);
+        self.step_level2_group10_switch25(pass);
         self.activate_level2_authored_model13(pass);
         self.activate_level2_authored_model76(pass);
         self.activate_level2_authored_class14(pass);
@@ -16298,6 +16408,19 @@ impl Level2ResetSession {
         for authored_index in &self.level2_model76_activated {
             hasher.update(authored_index.to_le_bytes());
         }
+        hasher.update(b"level2-group10-switch25-v1");
+        match self.level2_group10_switch25 {
+            Some(switch) => {
+                hasher.update([1, switch.phase]);
+                hasher.update(switch.source_slot.to_le_bytes());
+                hasher.update(switch.authored_index.to_le_bytes());
+                hasher.update(switch.target_group.to_le_bytes());
+                hasher.update(switch.position.x.to_le_bytes());
+                hasher.update(switch.position.y.to_le_bytes());
+                hasher.update(switch.position.z.to_le_bytes());
+            }
+            None => hasher.update([0]),
+        }
         hasher.update(b"level2-class11-model0-constructor-phase-v1");
         hasher.update([self.level2_class11_model0_constructor_phase]);
         hasher.update(b"level2-group31-switch28-v1");
@@ -16405,6 +16528,7 @@ impl Level2ResetSession {
             self.baseline_level2_mana_attraction_activated.clone();
         self.level2_model13_activated = self.baseline_level2_model13_activated.clone();
         self.level2_model76_activated = self.baseline_level2_model76_activated.clone();
+        self.level2_group10_switch25 = self.baseline_level2_group10_switch25;
         self.level2_class11_model0_constructor_phase =
             self.baseline_level2_class11_model0_constructor_phase;
         self.level2_group31_switch28 = self.baseline_level2_group31_switch28;
@@ -28229,8 +28353,12 @@ mod tests {
         assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
+    fn level_two_model76_switch25_activation_turns(phase: u8) -> usize {
+        1 + usize::from((8_u8.wrapping_sub(phase & 7)) & 7)
+    }
+
     #[test]
-    fn level_two_model76_producers_activate_rows_112_116_120_124() {
+    fn level_two_model76_producers_activate_rows_116_120_124_only() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
         let mut session = inspection
@@ -28247,14 +28375,10 @@ mod tests {
             .iter()
             .map(|source| source.authored_index)
             .collect::<BTreeSet<_>>();
-        assert_eq!(authored, BTreeSet::from([112_u16, 116, 120, 124]));
-        assert!(session.dispatch_events().iter().any(|event| matches!(
+        assert_eq!(authored, BTreeSet::from([116_u16, 120, 124]));
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
             event,
-            Level2DispatchEvent::AuthoredGroupActivated {
-                group: 10,
-                authored_indices,
-                ..
-            } if authored_indices.as_ref() == [112]
+            Level2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
         )));
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
@@ -28292,6 +28416,276 @@ mod tests {
         assert!(session.economy().authored_model76().is_empty());
         assert!(session.economy().model76_children().is_empty());
         assert!(session.economy().model76_tail_spawns().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_model76_switch25_stays_latent_without_overlap() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-76 switch25 latent session");
+        let switch = session
+            .level2_group10_switch25
+            .expect("live group-10 switch slot 25");
+        assert_eq!(switch.source_slot, 25);
+        assert_eq!(switch.phase, 26);
+        assert!(
+            session
+                .economy()
+                .authored_model76()
+                .iter()
+                .all(|source| source.authored_index != 112)
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(
+            session
+                .economy()
+                .authored_model76()
+                .iter()
+                .all(|source| source.authored_index != 112)
+        );
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
+        )));
+        let live_switch = session
+            .entities()
+            .iter()
+            .find(|entity| entity.index == 25)
+            .expect("live switch slot 25");
+        assert!(!live_switch.drawing_disabled());
+    }
+
+    #[test]
+    fn level_two_model76_switch25_rejects_far_and_strict_boundary_positions() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut far = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-76 switch25 far session");
+        let switch = far
+            .level2_group10_switch25
+            .expect("live group-10 switch slot 25");
+        let activation_turns = level_two_model76_switch25_activation_turns(switch.phase);
+        far.state.position = Position {
+            x: switch.position.x.wrapping_add(4_096),
+            y: switch.position.y,
+            z: switch.position.z,
+        };
+        for _ in 0..activation_turns {
+            far.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert!(
+            far.economy()
+                .authored_model76()
+                .iter()
+                .all(|source| source.authored_index != 112)
+        );
+        assert!(!far.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
+        )));
+
+        let mut boundary = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-76 switch25 boundary session");
+        let switch = boundary
+            .level2_group10_switch25
+            .expect("live group-10 switch slot 25");
+        let activation_turns = level_two_model76_switch25_activation_turns(switch.phase);
+        boundary.state.position = Position {
+            x: switch.position.x,
+            y: switch.position.y.wrapping_add(242),
+            z: switch.position.z,
+        };
+        for _ in 0..activation_turns {
+            boundary.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert!(
+            boundary
+                .economy()
+                .authored_model76()
+                .iter()
+                .all(|source| source.authored_index != 112)
+        );
+        assert!(!boundary.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
+        )));
+    }
+
+    #[test]
+    fn level_two_model76_switch25_activates_row112_once_and_enters_cursor() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-76 switch25 positive session");
+        let switch = session
+            .level2_group10_switch25
+            .expect("live group-10 switch slot 25");
+        let activation_turns = level_two_model76_switch25_activation_turns(switch.phase);
+        assert_eq!(switch.phase, 26);
+        session.state.position = switch.position;
+
+        for _ in 0..activation_turns {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group,
+                authored_indices,
+                ..
+            } if *source_slot == 25 && *group == 10 && authored_indices.as_ref() == [112]
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::AuthoredModel76,
+                ..
+            }
+        )));
+        assert!(
+            session
+                .economy()
+                .authored_model76()
+                .iter()
+                .any(|source| source.authored_index == 112),
+            "slot 25 must materialize row 112 on overlap"
+        );
+        assert!(session.level2_group10_switch25.is_none());
+        let live_switch = session
+            .entities()
+            .iter()
+            .find(|entity| entity.index == 25)
+            .expect("live switch slot 25");
+        assert!(live_switch.drawing_disabled());
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert_eq!(
+            session
+                .dispatch_events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 10, .. }
+                ))
+                .count(),
+            0,
+            "slot 25 must not emit a second group-10 activation"
+        );
+    }
+
+    #[test]
+    fn level_two_model76_switch25_allocation_failure_is_transactional() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut baseline = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-76 switch25 far-baseline session");
+        let baseline_switch = baseline
+            .level2_group10_switch25
+            .expect("live group-10 switch slot 25");
+        let activation_turns = level_two_model76_switch25_activation_turns(baseline_switch.phase);
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-76 switch25 rollback session");
+        let switch = session
+            .level2_group10_switch25
+            .expect("live group-10 switch slot 25");
+        let crafted_free_slots = vec![
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 0, 906, 905, 904,
+            903, 902, 901,
+        ];
+        baseline.economy_mut().free_slots = crafted_free_slots.clone();
+        session.economy_mut().free_slots = crafted_free_slots.clone();
+        for candidate in [&mut baseline, &mut session] {
+            for entity in candidate.entities.iter_mut().filter(|entity| {
+                entity.active
+                    && entity.class == 11
+                    && entity.model == 0
+                    && matches!(entity.source_id, 12 | 14 | 16)
+            }) {
+                entity.disable_drawing();
+            }
+        }
+        baseline.state.position = Position {
+            x: baseline_switch.position.x.wrapping_add(4_096),
+            y: baseline_switch.position.y,
+            z: baseline_switch.position.z,
+        };
+        session.state.position = switch.position;
+        for _ in 0..activation_turns {
+            baseline.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let baseline_free_slots = baseline.economy().free_slots.clone();
+        let baseline_live = baseline.economy().live_arena_slots();
+
+        for _ in 0..activation_turns {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+
+        assert!(session.economy().authored_model76().is_empty());
+        assert!(session.economy().model76_children().is_empty());
+        assert!(session.economy().model76_tail_spawns().is_empty());
+        assert_eq!(session.economy().free_slots, baseline_free_slots);
+        assert_eq!(session.economy().live_arena_slots(), baseline_live);
+        assert!(session.level2_group10_switch25.is_some());
+        let live_switch = session
+            .entities()
+            .iter()
+            .find(|entity| entity.index == 25)
+            .expect("live switch slot 25");
+        assert!(!live_switch.drawing_disabled());
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Error { source_slot, .. } if *source_slot == 25
+        )));
+    }
+
+    #[test]
+    fn level_two_model76_switch25_reset_restores_hash_and_live_switch_state() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-76 switch25 reset session");
+        let baseline_hash = session.campaign_state_hash();
+        let switch = session
+            .level2_group10_switch25
+            .expect("live group-10 switch slot 25");
+        let activation_turns = level_two_model76_switch25_activation_turns(switch.phase);
+        session.state.position = switch.position;
+
+        for _ in 0..activation_turns {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+
+        assert!(session.level2_group10_switch25.is_none());
+        assert!(
+            session
+                .economy()
+                .authored_model76()
+                .iter()
+                .any(|source| source.authored_index == 112)
+        );
+
+        session.reset();
+
+        let switch = session
+            .level2_group10_switch25
+            .expect("reset live group-10 switch slot 25");
+        assert_eq!(switch.source_slot, 25);
+        assert_eq!(switch.phase, 26);
+        assert!(session.economy().authored_model76().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
