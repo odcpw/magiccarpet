@@ -1320,6 +1320,8 @@ namespace MagicCarpet.PresentationLab.Tests
             StringAssert.Contains("_PlanarReflectionTexture", shaderSource);
             StringAssert.Contains("_PlanarReflectionEnabled", shaderSource);
             StringAssert.Contains("_PlanarReflectionMix", shaderSource);
+            StringAssert.Contains("_CausticColor", shaderSource);
+            StringAssert.Contains("CausticPattern", shaderSource);
             StringAssert.Contains("saturate(_PlanarReflectionEnabled) *", shaderSource);
             StringAssert.Contains("SAMPLE_TEXTURE2D", shaderSource);
             StringAssert.Contains("MagicCarpet/Enhanced/WaterRipple", rippleShaderSource);
@@ -1359,7 +1361,8 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.Greater(water.WaterMaterial.GetFloat("_WaveStrength"), 0.20f);
             Assert.Greater(water.WaterMaterial.GetFloat("_FresnelStrength"), 1.0f);
             Assert.Greater(water.WaterMaterial.GetFloat("_SceneReflectionStrength"), 0.5f);
-            Assert.That(water.WaterMaterial.GetFloat("_PlanarReflectionMix"), Is.EqualTo(0.46f).Within(0.001f));
+            Assert.That(water.WaterMaterial.GetFloat("_PlanarReflectionMix"), Is.EqualTo(0.62f).Within(0.001f));
+            Assert.That(water.WaterMaterial.GetFloat("_CausticStrength"), Is.EqualTo(0.9f).Within(0.001f));
             MeshRenderer rippleRenderer = gameObject.transform.Find("EnhancedWaterRipple").GetComponent<MeshRenderer>();
             Assert.IsFalse(rippleRenderer.enabled);
 

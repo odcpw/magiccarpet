@@ -17,6 +17,9 @@ Shader "MagicCarpet/Enhanced/Water"
         _PlanarReflectionEnabled ("Planar Reflection Enabled", Float) = 0
         _PlanarReflectionMix ("Planar Reflection Mix", Range(0, 1)) = 0.46
         _PlanarReflectionTexture ("Planar Reflection", 2D) = "black" {}
+        _CausticColor ("Caustic Shimmer", Color) = (0.18, 0.65, 1, 1)
+        _CausticScale ("Caustic Scale", Float) = 0.22
+        _CausticStrength ("Caustic Strength", Range(0, 2)) = 0.9
         _RippleCenter ("Ripple Center", Vector) = (0, 0, 0, 0)
         _RippleStartTime ("Ripple Start Time", Float) = 0
         _RippleStrength ("Ripple Strength", Range(0, 2)) = 0
@@ -68,6 +71,9 @@ Shader "MagicCarpet/Enhanced/Water"
                 half _ReflectionDistortion;
                 half _PlanarReflectionEnabled;
                 half _PlanarReflectionMix;
+                half4 _CausticColor;
+                half _CausticScale;
+                half _CausticStrength;
                 float4 _RippleCenter;
                 half _RippleStartTime;
                 half _RippleStrength;
@@ -130,6 +136,17 @@ Shader "MagicCarpet/Enhanced/Water"
                 float x = Wave(position + float2(epsilon, 0.0), direction, scale, time, seed);
                 float z = Wave(position + float2(0.0, epsilon), direction, scale, time, seed);
                 return float2((x - center) / epsilon, (z - center) / epsilon);
+            }
+
+            half CausticPattern(float2 position)
+            {
+                float time = _Time.y;
+                float2 coordinate = position * max(_CausticScale, 0.001h);
+                half waveA = sin(dot(coordinate, float2(1.17, 0.63)) + time * 0.42h);
+                half waveB = sin(dot(coordinate, float2(-0.71, 1.31)) - time * 0.31h + 1.7h);
+                half waveC = sin(dot(coordinate, float2(0.37, -1.09)) + time * 0.19h - 0.8h);
+                half interference = 0.5h + 0.5h * (waveA * waveB * 0.72h + waveC * 0.28h);
+                return smoothstep(0.58h, 0.92h, interference);
             }
 
             half3 WaveNormal(float2 position, half3 baseNormal)
@@ -261,8 +278,11 @@ Shader "MagicCarpet/Enhanced/Water"
                 half3 warmLighting = EvaluateWarmLight(input.positionWS, normalWS);
                 half warmShimmer = 0.55h + 0.45h * sin(
                     _Time.y * 3.3h + dot(input.positionWS.xz, float2(0.58, -0.41)));
+                half caustic = CausticPattern(input.positionWS.xz);
                 color += additionalLighting * (0.08h + fresnel * 0.18h);
                 color += warmLighting * (0.25h + fresnel * 0.45h + warmShimmer * (0.18h + crest * 0.08h));
+                color += _CausticColor.rgb * caustic * _CausticStrength *
+                         (0.025h + fresnel * 0.11h);
                 color += _FoamColor.rgb * crest * (0.018h + fresnel * 0.05h);
                 color += _FoamColor.rgb * rippleBand * (0.16h + fresnel * 0.58h);
                 color += _MoonColor.rgb * rippleBand * (0.06h + crest * 0.12h);

@@ -480,7 +480,14 @@ namespace MagicCarpet.PresentationLab
                 material.SetFloat("_ReflectionDistortion", 0.035f);
                 material.SetTexture("_PlanarReflectionTexture", null);
                 material.SetFloat("_PlanarReflectionEnabled", 0f);
-                material.SetFloat("_PlanarReflectionMix", 0.46f);
+                // Let the real bounded reflection camera carry more of the
+                // water read at game distance while retaining the screen-space
+                // fallback for OpenGL paths where the reflected horizon is
+                // sparse.
+                material.SetFloat("_PlanarReflectionMix", 0.62f);
+                material.SetColor("_CausticColor", new Color(0.18f, 0.65f, 1.0f, 1f));
+                material.SetFloat("_CausticScale", 0.22f);
+                material.SetFloat("_CausticStrength", 0.9f);
                 material.SetFloat("_RippleSpeed", 2.8f);
                 material.SetFloat("_RippleWidth", 0.65f);
                 material.SetVector("_RippleCenter", Vector4.zero);
