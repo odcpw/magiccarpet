@@ -54,6 +54,9 @@ namespace MagicCarpet.PresentationLab
         public GameObject Object;
         public MeshFilter Filter;
         public MeshRenderer Renderer;
+        public Light ImpactLight;
+        public float ImpactLightBaseIntensity;
+        public float ImpactProgress;
         public ulong Sequence;
         public ulong StartTick;
         public ulong ExpireTick;
@@ -74,6 +77,11 @@ namespace MagicCarpet.PresentationLab
         // the authoritative position, but give the transient additive cue a
         // fixed readability scale comparable to the existing fireball halo.
         private const float ImpactEventVisualScale = 5.0f;
+        private const int ImpactLightMaximumCount = 4;
+        private const float ImpactLightRange = 6f;
+        private const float ImpactLightIntensityScale = 2f;
+        private const float ImpactLightReducedMotionScale = 0.5f;
+        private static readonly Color ImpactLightColor = new Color(1f, 0.18f, 0.025f, 1f);
         private const int SpeedReadabilityBaseCount = 8;
         private const int SpeedReadabilityMaximumCount = 12;
         private const int SpeedReadabilityAuthoritativeCountCap = 4;
@@ -91,6 +99,7 @@ namespace MagicCarpet.PresentationLab
         private readonly Dictionary<ulong, UnityEnhancedVfxVisual> active = new Dictionary<ulong, UnityEnhancedVfxVisual>();
         private readonly Dictionary<UnityEnhancedVfxKind, Mesh> meshes = new Dictionary<UnityEnhancedVfxKind, Mesh>();
         private readonly Dictionary<UnityEnhancedVfxKind, Material> materials = new Dictionary<UnityEnhancedVfxKind, Material>();
+        private readonly Stack<Light> impactLightPool = new Stack<Light>();
         private readonly List<UnityEnhancedVfxVisual> speedReadabilityPool = new List<UnityEnhancedVfxVisual>();
         private Transform effectRoot;
         private Transform speedReadabilityRoot;
@@ -99,6 +108,7 @@ namespace MagicCarpet.PresentationLab
         private ulong lastEventSequence;
         private ulong lastTick;
         private bool reducedMotion;
+        private int activeImpactLightCount;
 
         public int MaxActiveEffects { get; set; } = 128;
         public int ActiveEffectCount { get { return active.Count; } }
@@ -107,6 +117,7 @@ namespace MagicCarpet.PresentationLab
         public int DuplicateEffectCount { get; private set; }
         public int ActiveSpeedStreakCount { get; private set; }
         public int SpeedStreakPoolCount { get { return speedReadabilityPool.Count; } }
+        public int ActiveImpactLightCount { get { return activeImpactLightCount; } }
         public ulong Generation { get { return generation; } }
         public ulong LastEventSequence { get { return lastEventSequence; } }
         public bool ReducedMotion { get { return reducedMotion; } }
@@ -139,6 +150,10 @@ namespace MagicCarpet.PresentationLab
                 if (visual.Object != null)
                 {
                     visual.Object.transform.localScale = Vector3.one * (value ? 0.6f : 1f);
+                }
+                if (visual.Kind == UnityEnhancedVfxKind.Impact)
+                {
+                    ApplyImpactLightProgress(visual);
                 }
             }
         }
@@ -207,6 +222,7 @@ namespace MagicCarpet.PresentationLab
             visual.Renderer.SetPropertyBlock(visual.PropertyBlock);
             if (vfxEvent.Kind == UnityEnhancedVfxKind.Impact)
             {
+                ConfigureImpactLight(visual, intensity);
                 ApplyImpactProgress(visual, 0f);
             }
             visual.Object.SetActive(true);
@@ -345,6 +361,7 @@ namespace MagicCarpet.PresentationLab
             {
                 UnityEnhancedVfxVisual visual = active[expired[index]];
                 active.Remove(expired[index]);
+                ReleaseImpactLight(visual);
                 visual.Object.SetActive(false);
                 pool.Push(visual);
             }
@@ -379,7 +396,69 @@ namespace MagicCarpet.PresentationLab
             };
         }
 
-        private static void ApplyImpactProgress(UnityEnhancedVfxVisual visual, float progress)
+        private void ConfigureImpactLight(UnityEnhancedVfxVisual visual, float intensity)
+        {
+            if (visual == null || activeImpactLightCount >= ImpactLightMaximumCount)
+            {
+                return;
+            }
+
+            Light light = impactLightPool.Count > 0 ? impactLightPool.Pop() : null;
+            if (light == null)
+            {
+                GameObject lightObject = new GameObject("EnhancedImpactLight");
+                lightObject.hideFlags = HideFlags.DontSave;
+                light = lightObject.AddComponent<Light>();
+            }
+
+            light.transform.SetParent(visual.Object.transform, false);
+            light.transform.localPosition = Vector3.zero;
+            light.type = LightType.Point;
+            light.color = ImpactLightColor;
+            light.shadows = LightShadows.None;
+            light.range = ImpactLightRange;
+            light.intensity = Mathf.Clamp(
+                intensity * ImpactLightIntensityScale,
+                0.1f,
+                ImpactLightIntensityScale * 4f);
+            light.enabled = true;
+            visual.ImpactLight = light;
+            visual.ImpactLightBaseIntensity = light.intensity;
+            visual.ImpactProgress = 0f;
+            activeImpactLightCount++;
+        }
+
+        private void ApplyImpactLightProgress(UnityEnhancedVfxVisual visual)
+        {
+            if (visual == null || visual.ImpactLight == null)
+            {
+                return;
+            }
+
+            float remaining = 1f - Mathf.Clamp01(visual.ImpactProgress);
+            visual.ImpactLight.intensity = visual.ImpactLightBaseIntensity * remaining *
+                                            (reducedMotion ? ImpactLightReducedMotionScale : 1f);
+        }
+
+        private void ReleaseImpactLight(UnityEnhancedVfxVisual visual)
+        {
+            if (visual == null || visual.ImpactLight == null)
+            {
+                return;
+            }
+
+            Light light = visual.ImpactLight;
+            light.enabled = false;
+            light.intensity = 0f;
+            light.transform.SetParent(effectRoot, false);
+            impactLightPool.Push(light);
+            visual.ImpactLight = null;
+            visual.ImpactLightBaseIntensity = 0f;
+            visual.ImpactProgress = 0f;
+            activeImpactLightCount = Mathf.Max(0, activeImpactLightCount - 1);
+        }
+
+        private void ApplyImpactProgress(UnityEnhancedVfxVisual visual, float progress)
         {
             if (visual == null || visual.Renderer == null)
             {
@@ -391,8 +470,10 @@ namespace MagicCarpet.PresentationLab
                 visual.PropertyBlock = new MaterialPropertyBlock();
             }
 
-            visual.PropertyBlock.SetFloat(ImpactProgressProperty, Mathf.Clamp01(progress));
+            visual.ImpactProgress = Mathf.Clamp01(progress);
+            visual.PropertyBlock.SetFloat(ImpactProgressProperty, visual.ImpactProgress);
             visual.Renderer.SetPropertyBlock(visual.PropertyBlock);
+            ApplyImpactLightProgress(visual);
         }
 
         private void EnsureSpeedReadabilityHierarchy(Camera camera)
@@ -911,6 +992,7 @@ namespace MagicCarpet.PresentationLab
         {
             foreach (UnityEnhancedVfxVisual visual in active.Values)
             {
+                ReleaseImpactLight(visual);
                 if (visual.Object != null)
                 {
                     visual.Object.SetActive(false);
@@ -918,6 +1000,7 @@ namespace MagicCarpet.PresentationLab
                 }
             }
             active.Clear();
+            activeImpactLightCount = 0;
         }
 
         private void OnDestroy()

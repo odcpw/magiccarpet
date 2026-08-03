@@ -1860,11 +1860,46 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.That(renderer.sharedMaterial.GetFloat("_RimStrength"), Is.EqualTo(0.65f).Within(0.001f));
             Assert.That(renderer.sharedMaterial.GetFloat("_Opacity"), Is.EqualTo(0.45f).Within(0.001f));
             Assert.That(renderer.sharedMaterial.GetFloat("_PulseSpeed"), Is.EqualTo(5.0f).Within(0.001f));
+            Light impactLight = visual.GetComponentInChildren<Light>(true);
+            Assert.IsNotNull(impactLight);
+            Assert.AreEqual(LightType.Point, impactLight.type);
+            Assert.AreEqual(LightShadows.None, impactLight.shadows);
+            Assert.That(impactLight.color.r, Is.EqualTo(1f).Within(0.001f));
+            Assert.That(impactLight.color.g, Is.EqualTo(0.18f).Within(0.001f));
+            Assert.That(impactLight.color.b, Is.EqualTo(0.025f).Within(0.001f));
+            Assert.That(impactLight.range, Is.EqualTo(6f).Within(0.001f));
+            Assert.Greater(impactLight.intensity, 0f);
+            Assert.IsTrue(impactLight.enabled);
+            Assert.AreEqual(1, vfx.ActiveImpactLightCount);
             Assert.IsFalse(vfx.ApplyEvent(impact));
             Assert.AreEqual(1, vfx.DuplicateEffectCount);
 
+            for (int index = 0; index < 4; index++)
+            {
+                Assert.IsTrue(vfx.ApplyEvent(new UnityEnhancedVfxEvent(
+                    (ulong)(index + 2),
+                    7,
+                    24,
+                    (ulong)(0x4000002b + index),
+                    UnityEnhancedVfxKind.Impact,
+                    new Vector3(2f + index, 3f, 4f),
+                    1f,
+                    18)));
+            }
+            Assert.AreEqual(4, vfx.ActiveImpactLightCount);
+            Assert.LessOrEqual(gameObject.GetComponentsInChildren<Light>(true).Length, 4);
+
+            float initialLightIntensity = impactLight.intensity;
             vfx.SetReducedMotion(true);
             Assert.That(visual.localScale.x, Is.EqualTo(0.6f).Within(0.001f));
+            Assert.That(impactLight.intensity, Is.LessThan(initialLightIntensity));
+            vfx.Advance(33);
+            Assert.That(impactLight.intensity, Is.GreaterThan(0f));
+            Assert.That(impactLight.intensity, Is.LessThan(initialLightIntensity));
+            vfx.Advance(43);
+            Assert.AreEqual(0, vfx.ActiveEffectCount);
+            Assert.AreEqual(0, vfx.ActiveImpactLightCount);
+            Assert.IsFalse(impactLight.enabled);
             Object.DestroyImmediate(gameObject);
             Object.DestroyImmediate(cameraObject);
         }
