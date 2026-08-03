@@ -23,6 +23,24 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void DiagnosticOverlayDefaultsOffForValidatedOwnerModesAndIsOptIn()
+        {
+            OwnerInputValidation valid = OwnerInputValidation.Valid();
+            OwnerInputValidation invalid = OwnerInputValidation.Invalid("missing owner inputs");
+
+            Assert.IsFalse(PresentationModeRouter.ShouldShowDiagnostics(
+                PresentationModeId.ClassicHd, valid, false));
+            Assert.IsFalse(PresentationModeRouter.ShouldShowDiagnostics(
+                PresentationModeId.UnityEnhanced, valid, false));
+            Assert.IsTrue(PresentationModeRouter.ShouldShowDiagnostics(
+                PresentationModeId.UnityEnhanced, valid, true));
+            Assert.IsTrue(PresentationModeRouter.ShouldShowDiagnostics(
+                PresentationModeId.Unknown, invalid, false));
+            Assert.IsTrue(PresentationModeRouter.ShouldShowDiagnostics(
+                PresentationModeId.ClassicHd, invalid, false));
+        }
+
+        [Test]
         public void ProjectInternalOwnerInputsAreRejectedBeforeLoading()
         {
             string projectRoot = "/tmp/presentation-lab";

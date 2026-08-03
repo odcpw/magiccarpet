@@ -22,6 +22,7 @@ namespace MagicCarpet.PresentationLab
         private const string ClosureArgument = "-mc-closure";
         private const string CacheArgument = "-mc-asset-cache";
         private const string EnhancedTierArgument = "-mc-enhanced-tier";
+        private const string ShowDiagnosticsArgument = "-mc-show-diagnostics";
 
         private PresentationSessionLease sessionLease;
         private UnityEnhancedWorldRoot enhancedRoot;
@@ -43,6 +44,7 @@ namespace MagicCarpet.PresentationLab
 
         public PresentationModeId SelectedMode { get; private set; }
         public bool SessionIsOpen { get { return sessionLease != null && sessionLease.IsOpen; } }
+        public bool DiagnosticsOverlayEnabled { get; private set; }
         public string StatusLine { get { return statusLine ?? string.Empty; } }
         public OwnerInputValidation OwnerValidation { get { return ownerValidation; } }
         public ClassicHdPresentationSettings ClassicHdSettings
@@ -74,6 +76,11 @@ namespace MagicCarpet.PresentationLab
             statusLine = "NO OWNER INPUTS: presentation lab diagnostic boot";
 
             string[] arguments = Environment.GetCommandLineArgs();
+            bool explicitDiagnostics = HasCommandLineArgument(arguments, ShowDiagnosticsArgument);
+            DiagnosticsOverlayEnabled = ShouldShowDiagnostics(
+                SelectedMode,
+                ownerValidation,
+                explicitDiagnostics);
             string modeArgument = CommandLineValue(arguments, ModeArgument);
             if (string.IsNullOrWhiteSpace(modeArgument))
             {
@@ -128,6 +135,10 @@ namespace MagicCarpet.PresentationLab
                     cachePath);
             }
             ownerValidation = OwnerInputValidator.Validate(SelectedMode, packagePath, closurePath, cachePath, projectRoot);
+            DiagnosticsOverlayEnabled = ShouldShowDiagnostics(
+                SelectedMode,
+                ownerValidation,
+                explicitDiagnostics);
             if (!ownerValidation.IsValid)
             {
                 statusLine = "NO OWNER INPUTS: " + ownerValidation.Reason;
@@ -561,6 +572,11 @@ namespace MagicCarpet.PresentationLab
 
         private void OnGUI()
         {
+            if (!DiagnosticsOverlayEnabled)
+            {
+                return;
+            }
+
             if (badgeStyle == null)
             {
                 badgeStyle = new GUIStyle(GUI.skin.box);
@@ -584,6 +600,34 @@ namespace MagicCarpet.PresentationLab
                 "No Exact claim. No mode switching after session open. No owner payload is embedded." +
                 (ClassicHdSettings == null ? string.Empty : " " + ClassicHdSettings.profile + " / " + ClassicHdSettings.outputFilter),
                 detailStyle);
+        }
+
+        public static bool ShouldShowDiagnostics(
+            PresentationModeId selectedMode,
+            OwnerInputValidation validation,
+            bool explicitFlag)
+        {
+            bool supportedMode = selectedMode == PresentationModeId.ClassicHd ||
+                                  selectedMode == PresentationModeId.UnityEnhanced;
+            return explicitFlag || !supportedMode || validation == null || !validation.IsValid;
+        }
+
+        private static bool HasCommandLineArgument(string[] arguments, string name)
+        {
+            if (arguments == null)
+            {
+                return false;
+            }
+
+            for (int index = 0; index < arguments.Length; index++)
+            {
+                if (string.Equals(arguments[index], name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static string CommandLineValue(string[] arguments, string name)
