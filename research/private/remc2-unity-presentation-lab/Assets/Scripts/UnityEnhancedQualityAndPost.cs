@@ -133,6 +133,7 @@ namespace MagicCarpet.PresentationLab
         private const float EnhancedMotionBlurIntensity = 0.28f;
         private const float EnhancedMotionBlurClamp = 0.12f;
         private static readonly Color EnhancedBloomTint = new Color(1f, 0.38f, 0.12f, 1f);
+        private const string EnhancedRendererName = "PresentationLabEnhancedRenderer";
 
         private Volume volume;
         private VolumeProfile volumeProfile;
@@ -148,6 +149,8 @@ namespace MagicCarpet.PresentationLab
         private bool priorRequiresColorTexture;
         private bool capturedColorTextureSetting;
         private bool hasAppliedSettings;
+        private int priorRendererIndex = -1;
+        private bool capturedRendererSelection;
 
         public UnityEnhancedQualitySettings Settings { get; private set; }
         public float AppliedRenderScale { get; private set; }
@@ -156,6 +159,7 @@ namespace MagicCarpet.PresentationLab
         public bool ToneMappingEnabled { get; private set; }
         public bool ColorGradingEnabled { get; private set; }
         public bool AmbientOcclusionRequested { get; private set; }
+        public bool AmbientOcclusionEnabled { get; private set; }
         public bool TemporalUpscalingEnabled { get; private set; }
         public bool UsesSpatialUpscaling { get; private set; }
         public bool UsesSupersampling { get; private set; }
@@ -226,6 +230,7 @@ namespace MagicCarpet.PresentationLab
                 CameraHistoryResetRequestCount++;
             }
             ApplyPipelineScale(settings.RenderScale);
+            AmbientOcclusionEnabled = ApplyAmbientOcclusion(settings.AmbientOcclusion);
             EnsureVolume();
             bloom.active = settings.Bloom;
             bloom.threshold.value = EnhancedBloomThreshold;
@@ -276,6 +281,8 @@ namespace MagicCarpet.PresentationLab
             TemporalUpscalingEnabled = false;
             UsesSpatialUpscaling = false;
             UsesSupersampling = false;
+            RestoreAmbientOcclusion();
+            AmbientOcclusionEnabled = false;
             MotionBlurEnabled = false;
             AppliedMotionBlurIntensity = 0f;
         }
@@ -314,6 +321,102 @@ namespace MagicCarpet.PresentationLab
             }
             capturedColorTextureSetting = false;
             OpaqueTextureRequired = false;
+        }
+
+        private bool ApplyAmbientOcclusion(bool enabled)
+        {
+            if (UniversalRenderPipeline.asset == null || cameraData == null)
+            {
+                return false;
+            }
+
+            CaptureRendererSelection();
+
+            int enhancedRendererIndex = FindEnhancedRendererIndex();
+            if (enhancedRendererIndex < 0 || !enabled || !HasActiveAmbientOcclusion(
+                UniversalRenderPipeline.asset.rendererDataList[enhancedRendererIndex]))
+            {
+                cameraData.SetRenderer(priorRendererIndex);
+                return false;
+            }
+
+            // The Enhanced renderer is serialized into the pipeline asset so
+            // URP keeps SSAO shaders/resources in player builds. The camera
+            // switches to it only for Enhanced quality; Exact and Classic HD
+            // stay on the default renderer.
+            cameraData.SetRenderer(enhancedRendererIndex);
+            return true;
+        }
+
+        private void CaptureRendererSelection()
+        {
+            if (capturedRendererSelection)
+            {
+                return;
+            }
+
+            priorRendererIndex = -1;
+            ScriptableRenderer currentRenderer = cameraData.scriptableRenderer;
+            ReadOnlySpan<ScriptableRenderer> renderers = UniversalRenderPipeline.asset.renderers;
+            for (int rendererIndex = 0; rendererIndex < renderers.Length; rendererIndex++)
+            {
+                if (renderers[rendererIndex] == currentRenderer)
+                {
+                    priorRendererIndex = rendererIndex;
+                    break;
+                }
+            }
+
+            capturedRendererSelection = true;
+        }
+
+        private int FindEnhancedRendererIndex()
+        {
+            ReadOnlySpan<ScriptableRendererData> rendererDataList =
+                UniversalRenderPipeline.asset.rendererDataList;
+            for (int rendererIndex = 0; rendererIndex < rendererDataList.Length; rendererIndex++)
+            {
+                ScriptableRendererData rendererData = rendererDataList[rendererIndex];
+                if (rendererData != null && rendererData.name == EnhancedRendererName)
+                {
+                    return rendererIndex;
+                }
+            }
+
+            return -1;
+        }
+
+        private static bool HasActiveAmbientOcclusion(ScriptableRendererData rendererData)
+        {
+            if (rendererData == null)
+            {
+                return false;
+            }
+
+            for (int featureIndex = 0; featureIndex < rendererData.rendererFeatures.Count; featureIndex++)
+            {
+                ScriptableRendererFeature rendererFeature = rendererData.rendererFeatures[featureIndex];
+                if (rendererFeature is ScreenSpaceAmbientOcclusion ambientOcclusion &&
+                    ambientOcclusion.isActive)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void RestoreAmbientOcclusion()
+        {
+            if (cameraData != null && capturedRendererSelection)
+            {
+                // Presentation lab cameras use the pipeline default renderer
+                // outside Unity Enhanced. This restores the exact mode
+                // boundary when the Enhanced root closes.
+                cameraData.SetRenderer(priorRendererIndex);
+            }
+            priorRendererIndex = -1;
+            capturedRendererSelection = false;
         }
 
         private void EnsureVolume()
@@ -378,6 +481,7 @@ namespace MagicCarpet.PresentationLab
 
         private void OnDestroy()
         {
+            RestoreAmbientOcclusion();
             RestoreColorTextureSetting();
             RestorePipelineScale();
             if (volumeProfile != null)

@@ -1868,6 +1868,8 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsFalse(quality.UsesSpatialUpscaling);
             Assert.AreEqual(0f, quality.AppliedPostExposure);
             Assert.IsFalse(quality.TemporalUpscalingEnabled);
+            Assert.IsTrue(quality.AmbientOcclusionRequested);
+            Assert.IsTrue(quality.AmbientOcclusionEnabled);
             Assert.IsNotNull(quality.PostVolume);
             MotionBlur appliedMotionBlur;
             Assert.IsTrue(quality.PostVolume.profile.TryGet(out appliedMotionBlur));
@@ -1903,6 +1905,62 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual(0f, appliedMotionBlur.intensity.value);
             quality.ResetForSession();
 
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void WholeHogAmbientOcclusionUsesDedicatedRendererAndRestoresDefault()
+        {
+            UniversalRenderPipelineAsset pipeline = UniversalRenderPipeline.asset;
+            Assert.IsNotNull(pipeline);
+            int enhancedRendererIndex = -1;
+            ReadOnlySpan<ScriptableRendererData> rendererDataList = pipeline.rendererDataList;
+            for (int index = 0; index < rendererDataList.Length; index++)
+            {
+                if (rendererDataList[index] != null &&
+                    rendererDataList[index].name == "PresentationLabEnhancedRenderer")
+                {
+                    enhancedRendererIndex = index;
+                    break;
+                }
+            }
+
+            Assert.GreaterOrEqual(enhancedRendererIndex, 0);
+            string enhancedRendererAsset = File.ReadAllText(
+                AssetDatabase.GetAssetPath(rendererDataList[enhancedRendererIndex]));
+            StringAssert.Contains("m_Active: 1", enhancedRendererAsset);
+            StringAssert.Contains("AOMethod: 1", enhancedRendererAsset);
+            StringAssert.Contains("AfterOpaque: 1", enhancedRendererAsset);
+            StringAssert.Contains("Source: 0", enhancedRendererAsset);
+
+            bool hasActiveSsao = false;
+            for (int featureIndex = 0;
+                 featureIndex < rendererDataList[enhancedRendererIndex].rendererFeatures.Count;
+                 featureIndex++)
+            {
+                if (rendererDataList[enhancedRendererIndex].rendererFeatures[featureIndex]
+                    is ScreenSpaceAmbientOcclusion ambientOcclusion && ambientOcclusion.isActive)
+                {
+                    hasActiveSsao = true;
+                    break;
+                }
+            }
+            Assert.IsTrue(hasActiveSsao);
+
+            GameObject gameObject = new GameObject("enhanced-dedicated-ssao-test");
+            Camera camera = gameObject.AddComponent<Camera>();
+            UnityEnhancedQualityAndPost quality = gameObject.AddComponent<UnityEnhancedQualityAndPost>();
+            Assert.IsTrue(quality.Apply(
+                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog),
+                camera));
+            UniversalAdditionalCameraData cameraData =
+                gameObject.GetComponent<UniversalAdditionalCameraData>();
+            Assert.AreEqual(
+                pipeline.renderers[enhancedRendererIndex],
+                cameraData.scriptableRenderer);
+
+            quality.ResetForSession();
+            Assert.AreEqual(pipeline.renderers[0], cameraData.scriptableRenderer);
             Object.DestroyImmediate(gameObject);
         }
 
