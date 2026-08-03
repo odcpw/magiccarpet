@@ -3891,6 +3891,51 @@ pub struct Level2Model13SpawnedChild {
     pub active: bool,
 }
 
+/// Authored Level 2 Day Bee constructed by remc2 `sub_4B590` (class 5,
+/// model 2).  Bee rows are dormant authored features, not reset-pool rows;
+/// the source pass allocates them when their class-11 producer group fires.
+/// The state keeps the words consumed by actions 16..19 so target loss,
+/// vertical tracking, recoil, RNG, and the action-18 latch remain observable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredBeeSource {
+    pub source_entity_index: u16,
+    pub entity_id: u16,
+    pub entity_rng: u16,
+    pub authored_index: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub minimum_speed: i16,
+    pub maximum_speed: i16,
+    pub actual_speed: i16,
+    pub max_life: i16,
+    pub life: i16,
+    pub subspell_index: u16,
+    pub dword_0x10: i32,
+    pub target_entity_index: Option<u16>,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub roll: i16,
+    /// Source `byte_0x3E_62`, the per-model constructor counter.
+    pub source_byte_3e: u8,
+    /// Source `byte_0x39_57`, derived from descriptor row 73's cycle window.
+    pub source_byte_39: i16,
+    /// Descriptor row 73 `word_0xE_14` used by action 18 vertical tracking.
+    pub vertical_step: i16,
+    /// Descriptor row 73 `word_0x1A_26` used by the action-18 recoil latch.
+    pub action_window: i16,
+    /// Most recent `PrepareEventSound_6E450` sound selected by the Bee helper.
+    /// Zero means that this source has not emitted one yet.
+    pub last_sound_id: u16,
+    pub position: Position,
+    pub particle_index: u16,
+    pub shift_rot_x: u16,
+    pub shift_rot_y: u16,
+    pub phase: u8,
+    pub drawing_enabled: bool,
+    pub active: bool,
+}
+
 /// The authored class-10/model-6 event constructed by remc2's
 /// `NewAdd0A06_4E5F0` and dispatched through `sub_31760`.  The fields mirror
 /// the callback's mutable words rather than collapsing them into a generic
@@ -4394,6 +4439,10 @@ pub struct Level2EconomyState {
     authored_model45: Vec<Level2AuthoredModel45Source>,
     baseline_authored_model13: Vec<Level2AuthoredModel13Source>,
     authored_model13: Vec<Level2AuthoredModel13Source>,
+    baseline_authored_bees: Vec<Level2AuthoredBeeSource>,
+    authored_bees: Vec<Level2AuthoredBeeSource>,
+    baseline_bee_model2_constructor_phase: u8,
+    bee_model2_constructor_phase: u8,
     baseline_model13_spawned_children: Vec<Level2Model13SpawnedChild>,
     model13_spawned_children: Vec<Level2Model13SpawnedChild>,
     baseline_authored_model6: Vec<Level2AuthoredModel6Source>,
@@ -4595,6 +4644,10 @@ impl Level2EconomyState {
             authored_model45: Vec::new(),
             baseline_authored_model13: Vec::new(),
             authored_model13: Vec::new(),
+            baseline_authored_bees: Vec::new(),
+            authored_bees: Vec::new(),
+            baseline_bee_model2_constructor_phase: 0,
+            bee_model2_constructor_phase: 0,
             baseline_model13_spawned_children: Vec::new(),
             model13_spawned_children: Vec::new(),
             baseline_authored_model6: Vec::new(),
@@ -4730,6 +4783,11 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_model13(&self) -> &[Level2AuthoredModel13Source] {
         &self.authored_model13
+    }
+
+    #[must_use]
+    pub fn authored_bees(&self) -> &[Level2AuthoredBeeSource] {
+        &self.authored_bees
     }
 
     #[must_use]
@@ -5011,6 +5069,228 @@ impl Level2EconomyState {
         self.source_rng.insert(source_entity_index, entity_rng);
         self.authored_model45.push(source);
         Some(source)
+    }
+
+    /// Allocate an authored Day Bee from the class-5/model-2 constructor
+    /// `sub_4B590`.  The caller has already proved the authored kind/subtype
+    /// and producer group; this method owns the real source arena slot, RNG,
+    /// map link, and constructor defaults.
+    pub fn allocate_authored_bee(
+        &mut self,
+        authored_index: u16,
+        position: Position,
+    ) -> Option<Level2AuthoredBeeSource> {
+        let source_entity_index = self.allocate_slot()?;
+        let initial_rng = self.new_event_rng(source_entity_index);
+        let mut position = position;
+        position.z = self.terrain.ground_height(position);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        // Pinned `sub_4B590`: NewEvent supplies the initial rand word, the
+        // constructor advances it once, and the same low 11 bits seed yaw,
+        // roll, and pitch.  The descriptor is `str_D7BD6[73]`.
+        let entity_rng = level2_next_rng16(initial_rng);
+        let angle = (entity_rng & 0x07ff) as i16 - 1;
+        let source_byte_3e = self.bee_model2_constructor_phase;
+        self.bee_model2_constructor_phase = source_byte_3e.wrapping_add(1);
+        let action_window = 30;
+        let source_byte_39 = action_window
+            - i16::from(source_byte_3e % u8::try_from(action_window).expect("positive window"))
+            + 4;
+        let source = Level2AuthoredBeeSource {
+            source_entity_index,
+            entity_id: source_entity_index,
+            entity_rng,
+            authored_index,
+            source_class: 5,
+            model: 2,
+            action: 17,
+            minimum_speed: 64,
+            maximum_speed: 30,
+            actual_speed: 32,
+            max_life: 3000,
+            life: 3000,
+            subspell_index: 200,
+            dword_0x10: i32::from(source_entity_index % 100),
+            target_entity_index: None,
+            yaw: angle,
+            pitch: angle,
+            roll: angle,
+            source_byte_3e,
+            source_byte_39,
+            vertical_step: -32,
+            action_window,
+            last_sound_id: 0,
+            position,
+            particle_index: 3,
+            shift_rot_x: 128,
+            shift_rot_y: 128,
+            phase: 0,
+            drawing_enabled: true,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.authored_bees.push(source);
+        Some(source)
+    }
+
+    /// Bind the source `word_0x96` target mailbox for the bounded Bee action
+    /// tests and the future objective/AI owner.  The target is intentionally
+    /// explicit; no player or objective is inferred here.
+    pub fn set_authored_bee_target(&mut self, source_slot: u16, target: Option<u16>) -> bool {
+        let Some(source) = self
+            .authored_bees
+            .iter_mut()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        source.target_entity_index = target;
+        true
+    }
+
+    /// Bounded projection of the generic `sub_1BD90`/`sub_1BF90` awareness
+    /// search used by actions 16 and 17.  The pinned descriptor permits an
+    /// XY search radius of `word_0x1C_28 == 0x1400`; a mailbox pointing at an
+    /// active entity outside that band is not an actionable target for these
+    /// transitions.  This keeps the explicit target mailbox from becoming a
+    /// synthetic "any target means attack" shortcut.
+    fn bee_target_in_awareness_band(source: &Level2AuthoredBeeSource, target: Position) -> bool {
+        let dx = i32::from(target.x) - i32::from(source.position.x);
+        let dy = i32::from(target.y) - i32::from(source.position.y);
+        let distance_squared = i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy);
+        distance_squared <= 5_120_i64 * 5_120_i64
+    }
+
+    /// Advance one authored Bee through the live action 16..19 band.  The
+    /// generic creature helpers are represented only for the fields this
+    /// family actually consumes: the action-18 latch, target-Z tracking,
+    /// strict target contact/recoil, and source RNG/phase ordering.
+    pub fn step_authored_bee_slot(
+        &mut self,
+        source_slot: u16,
+        target_position: Option<Position>,
+    ) -> bool {
+        self.step_authored_bee_slot_with_target(
+            source_slot,
+            target_position.map(|position| (position, 0)),
+        )
+    }
+
+    fn step_authored_bee_slot_with_target(
+        &mut self,
+        source_slot: u16,
+        target: Option<(Position, i16)>,
+    ) -> bool {
+        let Some(source_index) = self
+            .authored_bees
+            .iter()
+            .position(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        let mut source = self.authored_bees[source_index];
+        match source.action {
+            16 => {
+                if target
+                    .map(|(position, _)| Self::bee_target_in_awareness_band(&source, position))
+                    .unwrap_or(false)
+                {
+                    source.action = 18;
+                    source.dword_0x10 = 1;
+                }
+            }
+            17 => {
+                if target
+                    .map(|(position, _)| Self::bee_target_in_awareness_band(&source, position))
+                    .unwrap_or(false)
+                {
+                    source.action = 18;
+                    source.entity_rng = level2_next_rng16(source.entity_rng);
+                    source.last_sound_id = (source.entity_rng & 1) + 12;
+                    source.dword_0x10 = 1;
+                }
+            }
+            18 => {
+                let countdown_before = source.dword_0x10;
+                if countdown_before != 0 {
+                    source.dword_0x10 -= 1;
+                    if countdown_before == 1 {
+                        source.actual_speed = 5 * source.minimum_speed / 2;
+                    }
+                }
+                if let Some((target, target_yaw)) = target {
+                    let desired_z = target_yaw.wrapping_add(target.z);
+                    let delta = source.position.z.wrapping_sub(desired_z);
+                    let direction: i16 = if delta == 0 {
+                        0
+                    } else if delta < 0 {
+                        -1
+                    } else {
+                        1
+                    };
+                    source.position.z = source
+                        .position
+                        .z
+                        .wrapping_add(direction.wrapping_mul(source.vertical_step));
+                    if source.position.x == target.x && source.position.y == target.y {
+                        source.entity_rng = level2_next_rng16(source.entity_rng);
+                        source.last_sound_id = (source.entity_rng & 1) + 12;
+                        source.actual_speed = -source.maximum_speed;
+                        source.dword_0x10 = i32::from(3 * source.action_window);
+                    }
+                } else {
+                    source.action = 17;
+                }
+                if source.action != 18 {
+                    source.actual_speed = source.minimum_speed;
+                }
+            }
+            19 => {
+                // `sub_1C560` only re-evaluates its linked-target relation on
+                // the descriptor's 30-tick byte-3E window.  A valid mailbox
+                // outside that window remains in action 19 until the next
+                // helper visit rather than jumping directly to attack.
+                if source.action_window > 0
+                    && source.source_byte_3e
+                        % u8::try_from(source.action_window).expect("positive action window")
+                        == 0
+                    && target
+                        .map(|(position, _)| Self::bee_target_in_awareness_band(&source, position))
+                        .unwrap_or(false)
+                {
+                    source.action = 18;
+                    source.dword_0x10 = 1;
+                }
+            }
+            _ => {}
+        }
+        // `ApplyEvents_498A0` advances byte 0x3E after every live callback;
+        // action 19's generic helper uses that advancing cursor for its
+        // descriptor-windowed reevaluation.
+        source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
+        source.phase = source.phase.wrapping_add(1);
+        self.source_rng.insert(source_slot, source.entity_rng);
+        self.authored_bees[source_index] = source;
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: source.active,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .is_ok()
     }
 
     /// Allocate the authored class-10/model-13 emitter initialized by the
@@ -6966,6 +7246,12 @@ impl Level2EconomyState {
             visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::AuthoredModel13,
+            );
+        }
+        for source in self.authored_bees.iter().filter(|source| source.active) {
+            visit(
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredBee,
             );
         }
         for child in self
@@ -10103,6 +10389,22 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_bees = self
+            .authored_bees
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_bees.retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_bees {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_model13_children = self
             .model13_spawned_children
             .iter()
@@ -10500,6 +10802,44 @@ impl Level2EconomyState {
                 u8::from(source.active),
             ]);
         }
+        for source in &self.authored_bees {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_id.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.authored_index.to_le_bytes());
+            hasher.update([
+                source.source_class,
+                source.model,
+                source.action,
+                source.phase,
+                source.source_byte_3e,
+                u8::from(source.drawing_enabled),
+                u8::from(source.active),
+            ]);
+            hasher.update(source.minimum_speed.to_le_bytes());
+            hasher.update(source.maximum_speed.to_le_bytes());
+            hasher.update(source.actual_speed.to_le_bytes());
+            hasher.update(source.max_life.to_le_bytes());
+            hasher.update(source.life.to_le_bytes());
+            hasher.update(source.subspell_index.to_le_bytes());
+            hasher.update(source.dword_0x10.to_le_bytes());
+            hasher.update(source.target_entity_index.unwrap_or(u16::MAX).to_le_bytes());
+            hasher.update(source.yaw.to_le_bytes());
+            hasher.update(source.pitch.to_le_bytes());
+            hasher.update(source.roll.to_le_bytes());
+            hasher.update(source.source_byte_39.to_le_bytes());
+            hasher.update(source.vertical_step.to_le_bytes());
+            hasher.update(source.action_window.to_le_bytes());
+            hasher.update(source.last_sound_id.to_le_bytes());
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+            hasher.update(source.particle_index.to_le_bytes());
+            hasher.update(source.shift_rot_x.to_le_bytes());
+            hasher.update(source.shift_rot_y.to_le_bytes());
+        }
+        hasher.update(b"level2-bee-model2-constructor-phase-v1");
+        hasher.update([self.bee_model2_constructor_phase]);
         for child in &self.model13_spawned_children {
             hasher.update(child.source_entity_index.to_le_bytes());
             hasher.update(child.entity_rng.to_le_bytes());
@@ -11011,6 +11351,8 @@ impl Level2EconomyState {
         self.spell_pickups = self.baseline_spell_pickups.clone();
         self.authored_model45 = self.baseline_authored_model45.clone();
         self.authored_model13 = self.baseline_authored_model13.clone();
+        self.authored_bees = self.baseline_authored_bees.clone();
+        self.bee_model2_constructor_phase = self.baseline_bee_model2_constructor_phase;
         self.model13_spawned_children = self.baseline_model13_spawned_children.clone();
         self.authored_model6 = self.baseline_authored_model6.clone();
         self.model6_spawned_children = self.baseline_model6_spawned_children.clone();
@@ -13831,6 +14173,8 @@ pub struct Level2ResetSession {
     level2_mana_attraction_activated: BTreeSet<u16>,
     baseline_level2_model13_activated: BTreeSet<u16>,
     level2_model13_activated: BTreeSet<u16>,
+    baseline_level2_bees_activated: BTreeSet<u16>,
+    level2_bees_activated: BTreeSet<u16>,
     baseline_level2_model76_activated: BTreeSet<u16>,
     level2_model76_activated: BTreeSet<u16>,
     baseline_level2_group10_switch25: Option<Level2Group10Switch25State>,
@@ -13931,6 +14275,7 @@ pub enum Level2DynamicArenaKind {
     SpellPickup,
     AuthoredModel45,
     AuthoredModel13,
+    AuthoredBee,
     Model13SpawnedChild,
     AuthoredModel6,
     Model6SpawnedChild,
@@ -14062,6 +14407,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::SpellPickup => 10,
         Level2DynamicArenaKind::AuthoredModel45 => 11,
         Level2DynamicArenaKind::AuthoredModel13 => 21,
+        Level2DynamicArenaKind::AuthoredBee => 26,
         Level2DynamicArenaKind::Model13SpawnedChild => 22,
         Level2DynamicArenaKind::AuthoredModel6 => 15,
         Level2DynamicArenaKind::Model6SpawnedChild => 16,
@@ -14278,6 +14624,8 @@ impl Level2ResetSession {
             level2_mana_attraction_activated: BTreeSet::new(),
             baseline_level2_model13_activated: BTreeSet::new(),
             level2_model13_activated: BTreeSet::new(),
+            baseline_level2_bees_activated: BTreeSet::new(),
+            level2_bees_activated: BTreeSet::new(),
             baseline_level2_model76_activated: BTreeSet::new(),
             level2_model76_activated: BTreeSet::new(),
             baseline_level2_group10_switch25: initial_level2_group10_switch25,
@@ -14757,6 +15105,29 @@ impl Level2ResetSession {
             feature.world_position(self.terrain.ground_height(feature.world_position(0)));
         self.economy
             .allocate_authored_model13(authored_index, position)
+    }
+
+    /// Materialize one authored Day Bee row through remc2's class-5/model-2
+    /// constructor. Mission activation owns the producer/group predicate;
+    /// this seam performs the source-arena allocation and exact defaults.
+    pub fn allocate_level2_authored_bee(
+        &mut self,
+        authored_index: u16,
+    ) -> Option<Level2AuthoredBeeSource> {
+        let feature = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .find(|feature| {
+                feature.index == authored_index
+                    && feature.kind == 5
+                    && feature.subtype == 2
+                    && matches!(feature.activation_group, 4 | 17 | 21 | 29)
+            })?;
+        let position =
+            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        self.economy.allocate_authored_bee(authored_index, position)
     }
 
     #[must_use]
@@ -15484,6 +15855,38 @@ impl Level2ResetSession {
         );
     }
 
+    /// Consume only authored Day Bee rows (`kind=5/subtype=2`) rooted by a
+    /// live class-11 stage-tag producer.  Unrelated kind-5 rows in the same
+    /// groups remain latent.
+    fn activate_level2_authored_bees(&mut self, pass: u8) {
+        self.activate_level2_rows_from_live_class11_producers(
+            pass,
+            "Bee",
+            |_| true,
+            |feature| {
+                matches!(feature.activation_group, 4 | 17 | 21 | 29)
+                    && feature.kind == 5
+                    && feature.subtype == 2
+            },
+            |session, authored_index| session.level2_bees_activated.contains(&authored_index),
+            |session, authored_index| {
+                let feature = session
+                    .mission
+                    .authored_features()
+                    .iter()
+                    .copied()
+                    .find(|feature| feature.index == authored_index)?;
+                let position = feature
+                    .world_position(session.terrain.ground_height(feature.world_position(0)));
+                let source = session
+                    .economy
+                    .allocate_authored_bee(authored_index, position)?;
+                session.level2_bees_activated.insert(authored_index);
+                Some(source.source_entity_index)
+            },
+        );
+    }
+
     /// Consume authored class-10/model-76 rows when the existing live
     /// class-11 producer rows for groups 10/12/14/16 are active.
     fn activate_level2_authored_model76(&mut self, pass: u8) {
@@ -15709,6 +16112,7 @@ impl Level2ResetSession {
         self.activate_level2_authored_group31(pass);
         self.step_level2_group31_switch28(pass);
         self.step_level2_group10_switch25(pass);
+        self.activate_level2_authored_bees(pass);
         self.activate_level2_authored_model13(pass);
         self.activate_level2_authored_model76(pass);
         self.activate_level2_authored_class14(pass);
@@ -16243,6 +16647,28 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::AuthoredModel13 => {
                 self.economy.step_authored_model13_slot(source_slot)
             }
+            Level2DynamicArenaKind::AuthoredBee => {
+                let target = self
+                    .economy
+                    .authored_bees()
+                    .iter()
+                    .find(|source| source.active && source.source_entity_index == source_slot)
+                    .and_then(|source| source.target_entity_index)
+                    .and_then(|target| {
+                        self.entities
+                            .iter()
+                            .find(|entity| entity.index == target && entity.active)
+                            .map(|entity| {
+                                if entity.index == self.state.entity_index {
+                                    (self.state.position, self.state.yaw)
+                                } else {
+                                    (entity.position, entity.yaw)
+                                }
+                            })
+                    });
+                self.economy
+                    .step_authored_bee_slot_with_target(source_slot, target)
+            }
             Level2DynamicArenaKind::Model13SpawnedChild => {
                 self.economy.step_model13_spawned_child_slot(source_slot)
             }
@@ -16404,6 +16830,10 @@ impl Level2ResetSession {
         for authored_index in &self.level2_model13_activated {
             hasher.update(authored_index.to_le_bytes());
         }
+        hasher.update(b"level2-bee-activation-v1");
+        for authored_index in &self.level2_bees_activated {
+            hasher.update(authored_index.to_le_bytes());
+        }
         hasher.update(b"level2-model76-activation-v1");
         for authored_index in &self.level2_model76_activated {
             hasher.update(authored_index.to_le_bytes());
@@ -16527,6 +16957,7 @@ impl Level2ResetSession {
         self.level2_mana_attraction_activated =
             self.baseline_level2_mana_attraction_activated.clone();
         self.level2_model13_activated = self.baseline_level2_model13_activated.clone();
+        self.level2_bees_activated = self.baseline_level2_bees_activated.clone();
         self.level2_model76_activated = self.baseline_level2_model76_activated.clone();
         self.level2_group10_switch25 = self.baseline_level2_group10_switch25;
         self.level2_class11_model0_constructor_phase =
@@ -27798,6 +28229,238 @@ mod tests {
         assert!(session.economy().authored_model13().is_empty());
         assert!(session.economy().model13_spawned_children().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_authored_bee_constructor_and_action18_target_band() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 authored Bee session");
+        let baseline_hash = session.campaign_state_hash();
+        let source = session
+            .allocate_level2_authored_bee(210)
+            .expect("authored Day Bee row 210");
+        assert_eq!(
+            (
+                source.source_class,
+                source.model,
+                source.action,
+                source.minimum_speed,
+                source.maximum_speed,
+                source.actual_speed,
+                source.max_life,
+                source.life,
+            ),
+            (5, 2, 17, 64, 30, 32, 3000, 3000)
+        );
+        assert_eq!(
+            (
+                source.subspell_index,
+                source.particle_index,
+                source.shift_rot_x,
+                source.shift_rot_y,
+                source.source_byte_3e,
+                source.source_byte_39,
+                source.vertical_step,
+                source.action_window,
+            ),
+            (200, 3, 128, 128, 0, 34, -32, 30)
+        );
+        assert_eq!(source.pitch, source.roll);
+        assert_eq!(source.yaw, source.roll);
+        assert!((-1..=2046).contains(&source.roll));
+        assert_eq!(
+            source.dword_0x10,
+            i32::from(source.source_entity_index % 100)
+        );
+        let second = session
+            .allocate_level2_authored_bee(211)
+            .expect("second authored Day Bee row");
+        assert_eq!(second.source_byte_3e, 1);
+        assert_eq!(second.source_byte_39, 33);
+
+        let target = session.state.position;
+        {
+            let bee = session
+                .economy_mut()
+                .authored_bees
+                .iter_mut()
+                .find(|bee| bee.source_entity_index == second.source_entity_index)
+                .expect("second Bee remains live");
+            bee.action = 16;
+            bee.position.x = target.x;
+            bee.position.y = target.y;
+        }
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_bee_slot(second.source_entity_index, Some(target))
+        );
+        assert_eq!(
+            session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|bee| bee.source_entity_index == second.source_entity_index)
+                .expect("action-16 Bee remains live")
+                .action,
+            18
+        );
+        let third = session
+            .allocate_level2_authored_bee(212)
+            .expect("third authored Day Bee row");
+        {
+            let bee = session
+                .economy_mut()
+                .authored_bees
+                .iter_mut()
+                .find(|bee| bee.source_entity_index == third.source_entity_index)
+                .expect("third Bee remains live");
+            bee.action = 19;
+            bee.position.x = target.x;
+            bee.position.y = target.y;
+        }
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_bee_slot(third.source_entity_index, Some(target))
+        );
+        assert_eq!(
+            session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|bee| bee.source_entity_index == third.source_entity_index)
+                .expect("action-19 Bee remains live")
+                .action,
+            19
+        );
+        for _ in 0..27 {
+            assert!(
+                session
+                    .economy_mut()
+                    .step_authored_bee_slot(third.source_entity_index, Some(target))
+            );
+        }
+        assert_eq!(
+            session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|bee| bee.source_entity_index == third.source_entity_index)
+                .expect("windowed action-19 Bee remains live")
+                .action,
+            19
+        );
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_bee_slot(third.source_entity_index, Some(target))
+        );
+        assert_eq!(
+            session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|bee| bee.source_entity_index == third.source_entity_index)
+                .expect("windowed action-19 Bee remains live")
+                .action,
+            18
+        );
+        {
+            let bee = session
+                .economy_mut()
+                .authored_bees
+                .iter_mut()
+                .find(|bee| bee.source_entity_index == source.source_entity_index)
+                .expect("first Bee remains live");
+            bee.position.x = target.x;
+            bee.position.y = target.y;
+        }
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_bee_slot(source.source_entity_index, Some(target))
+        );
+        let transitioned = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == source.source_entity_index)
+            .copied()
+            .expect("transitioned Bee remains live");
+        assert_eq!(transitioned.action, 18);
+        assert_eq!(transitioned.dword_0x10, 1);
+        assert!(matches!(transitioned.last_sound_id, 12 | 13));
+        {
+            let bee = session
+                .economy_mut()
+                .authored_bees
+                .iter_mut()
+                .find(|bee| bee.source_entity_index == source.source_entity_index)
+                .expect("Bee remains live");
+            bee.action = 18;
+            bee.position = Position {
+                x: target.x,
+                y: target.y,
+                z: target.z.wrapping_add(40),
+            };
+            bee.dword_0x10 = 1;
+        }
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_bee_slot(source.source_entity_index, Some(target))
+        );
+        let stepped = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == source.source_entity_index)
+            .copied()
+            .expect("stepped Bee remains live");
+        assert_eq!(stepped.action, 18);
+        assert_eq!(stepped.actual_speed, -30);
+        assert_eq!(stepped.dword_0x10, 90);
+        assert_eq!(stepped.position.z, target.z.wrapping_add(8));
+        assert!(matches!(stepped.last_sound_id, 12 | 13));
+        assert_ne!(session.campaign_state_hash(), baseline_hash);
+        session.reset();
+        assert!(session.economy().authored_bees().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_bee_activation_filters_kind_subtype_and_preserves_source_order() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 authored Bee session");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let bees = session.economy().authored_bees();
+        assert!(
+            !bees.is_empty(),
+            "rooted Bee producer groups should activate"
+        );
+        assert!(
+            bees.windows(2)
+                .all(|rows| { rows[0].source_entity_index < rows[1].source_entity_index })
+        );
+        assert!(bees.iter().all(|bee| {
+            session.mission().authored_features().iter().any(|feature| {
+                feature.index == bee.authored_index
+                    && feature.kind == 5
+                    && feature.subtype == 2
+                    && matches!(feature.activation_group, 4 | 17 | 21 | 29)
+            })
+        }));
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(event, Level2DispatchEvent::AuthoredGroupActivated { group, .. }
+                if matches!(group, 4 | 17 | 21 | 29))
+        }));
     }
 
     #[test]
