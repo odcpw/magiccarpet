@@ -32991,6 +32991,7 @@ mod tests {
         let mut group7_activated = false;
         let mut group7_owner_mana_global_before = None;
         let mut group7_owner_mana_global_after = None;
+        let mut group4_bees_activated = false;
         for _ in 0..8 {
             let owner_global_before = session.economy().owner_mana_global();
             session.step_outer_turn(PlayerCommand::default(), 0);
@@ -33024,6 +33025,16 @@ mod tests {
                 group7_owner_mana_global_after = Some(session.economy().owner_mana_global());
             }
             group7_activated |= activated_this_turn;
+            group4_bees_activated |= session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group: 4,
+                        authored_indices,
+                        ..
+                    } if matches!(authored_indices.as_ref(), [210] | [211] | [212])
+                )
+            });
         }
         let switch_indices = session
             .economy()
@@ -33032,6 +33043,28 @@ mod tests {
             .map(|source| source.authored_index)
             .collect::<BTreeSet<_>>();
         assert!(switch_indices.contains(&65));
+        assert!(group4_bees_activated, "row 64 must activate group 4 Bees");
+        let expected_group4_bee_indices = BTreeSet::from([210_u16, 211, 212]);
+        assert!(expected_group4_bee_indices.iter().all(|index| {
+            session
+                .economy()
+                .authored_bees()
+                .iter()
+                .any(|source| source.active && source.authored_index == *index)
+        }));
+        for source in session
+            .economy()
+            .authored_bees()
+            .iter()
+            .filter(|source| expected_group4_bee_indices.contains(&source.authored_index))
+        {
+            let position = feature_position(source.authored_index);
+            assert_eq!(
+                (source.position.x, source.position.y),
+                (position.x, position.y)
+            );
+            assert_eq!(source.position.z, session.terrain.ground_height(position));
+        }
 
         // Firing row 65 selects authored group 5.  The bounded downstream
         // consumers are already production-owned: row 83 is the next switch,
@@ -33158,6 +33191,7 @@ mod tests {
 
         session.reset();
         assert!(session.economy().authored_switch_producers().is_empty());
+        assert!(session.economy().authored_bees().is_empty());
         assert!(session.economy().mana_attraction_fields().is_empty());
         assert!(session.economy().authored_class14().is_empty());
         assert_eq!(session.economy().spheres().len(), baseline_sphere_count);
