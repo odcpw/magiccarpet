@@ -282,8 +282,20 @@ namespace MagicCarpet.PresentationLab
 
         public bool ApplyRipple(UnityEnhancedVfxEvent splash)
         {
+            return ApplyRipple(splash, lastTick);
+        }
+
+        /// <summary>
+        /// Applies an owner-authored water impact against the currently
+        /// retained water surface. Water geometry is published less often
+        /// than the complete world snapshot, so the event horizon must be
+        /// the containing world tick rather than the geometry tick stored by
+        /// this component.
+        /// </summary>
+        public bool ApplyRipple(UnityEnhancedVfxEvent splash, ulong latestPresentationTick)
+        {
             if (!hasSnapshot || splash.Kind != UnityEnhancedVfxKind.Weather ||
-                splash.Generation != generation || splash.Tick > lastTick || splash.Sequence == 0 ||
+                splash.Generation != generation || splash.Tick > latestPresentationTick || splash.Sequence == 0 ||
                 !IsFinite(splash.Position) || !IsFinite(splash.Intensity) || splash.Intensity <= 0f ||
                 waterMaterial == null)
             {

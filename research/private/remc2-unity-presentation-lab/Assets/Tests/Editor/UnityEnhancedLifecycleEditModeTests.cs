@@ -1437,6 +1437,67 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void OwnerWaterImpactUsesWorldTickAcrossRetainedWaterGeometry()
+        {
+            GameObject gameObject = new GameObject("enhanced-water-impact-tick-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 12,
+                Tick = 0,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Water = new UnityEnhancedWaterSnapshot
+                {
+                    Generation = 12,
+                    Tick = 0,
+                    Reset = false,
+                    Level = 1.5f,
+                    Size = new Vector2(8f, 8f),
+                    ShorelineWidth = 0,
+                    ShorelineHeight = 0,
+                    ShorelineMask = Array.Empty<byte>()
+                }
+            }));
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 12,
+                Tick = 6,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                VfxEvents = new[]
+                {
+                    new UnityEnhancedVfxEvent(
+                        1,
+                        12,
+                        6,
+                        0x4000002aUL,
+                        UnityEnhancedVfxKind.Weather,
+                        new Vector3(1f, 1.5f, 1f),
+                        1f,
+                        18)
+                }
+            }));
+            Assert.AreEqual(1, root.WaterPresentation.ActiveRippleCount);
+            Assert.Greater(root.WaterPresentation.WaterMaterial.GetFloat("_RippleStrength"), 0.4f);
+            Assert.IsFalse(root.WaterPresentation.ApplyRipple(
+                new UnityEnhancedVfxEvent(
+                    2,
+                    12,
+                    7,
+                    0x4000002bUL,
+                    UnityEnhancedVfxKind.Weather,
+                    new Vector3(2f, 1.5f, 2f),
+                    1f,
+                    18),
+                6));
+            Assert.AreEqual(1, root.WaterPresentation.ActiveRippleCount);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void VfxEventsDeduplicateReplayAndRespectReducedMotion()
         {
             Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/Vfx"));

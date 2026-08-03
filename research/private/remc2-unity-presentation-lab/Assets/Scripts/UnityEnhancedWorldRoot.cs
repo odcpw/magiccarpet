@@ -479,7 +479,7 @@ namespace MagicCarpet.PresentationLab
                 if (snapshot.VfxEvents[index].Kind == UnityEnhancedVfxKind.Weather &&
                     waterPresentation != null)
                 {
-                    waterPresentation.ApplyRipple(snapshot.VfxEvents[index]);
+                    waterPresentation.ApplyRipple(snapshot.VfxEvents[index], snapshot.Tick);
                 }
                 vfxPresentation.ApplyEvent(snapshot.VfxEvents[index]);
             }
