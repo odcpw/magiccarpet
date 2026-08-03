@@ -683,6 +683,17 @@ namespace MagicCarpet.PresentationLab.Tests
                         PresentationFamily = (int)UnityEnhancedPresentationFamily.Fire,
                         Scale = 1f,
                         RenderLayer = 2201
+                    },
+                    new UnityEnhancedEntitySnapshot
+                    {
+                        StableIdentity = 0x0000000840000002UL,
+                        Generation = 8,
+                        Position = new Vector3(2f, 2f, 3f),
+                        Rotation = Quaternion.identity,
+                        Visible = true,
+                        PresentationFamily = (int)UnityEnhancedPresentationFamily.Fire,
+                        Scale = 1f,
+                        RenderLayer = 3002
                     }
                 },
                 NightLighting = UnityEnhancedNightLightingDescriptor.Level1Night(),
@@ -714,8 +725,14 @@ namespace MagicCarpet.PresentationLab.Tests
                 "EnhancedWorldObjects/EnhancedEntity_0000000820000001/EnhancedActorVisual");
             Assert.IsNotNull(visual);
             MeshRenderer renderer = visual.GetComponent<MeshRenderer>();
-            Assert.AreEqual("MagicCarpet/Enhanced/Vfx", renderer.sharedMaterial.shader.name);
-            Assert.Greater(renderer.sharedMaterial.GetFloat("_GlowIntensity"), 1f);
+            Assert.AreEqual("MagicCarpet/Enhanced/Fireball", renderer.sharedMaterial.shader.name);
+            Assert.Greater(renderer.sharedMaterial.GetFloat("_CoreIntensity"), 3f);
+            Assert.Greater(renderer.sharedMaterial.GetFloat("_HaloIntensity"), 1f);
+            Assert.Less(
+                renderer.sharedMaterial.GetFloat("_CoreRadius"),
+                renderer.sharedMaterial.GetFloat("_HaloRadius"));
+            Assert.Greater(renderer.sharedMaterial.GetFloat("_ShimmerStrength"), 0f);
+            Assert.That(visual.localScale.x, Is.EqualTo(1.6f).Within(0.001f));
             Assert.AreEqual(1, root.NightLighting.ActiveLocalLightCount);
             Light fireballLight = gameObject.transform
                 .Find("EnhancedNightLights/EnhancedLocalLight_0")
@@ -723,6 +740,13 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.That(fireballLight.intensity, Is.EqualTo(3f).Within(0.001f));
             Assert.That(fireballLight.range, Is.EqualTo(8f).Within(0.001f));
             Assert.AreEqual(1, root.VfxPresentation.ActiveEffectCount);
+
+            Transform impactVisual = gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000840000002/EnhancedActorVisual");
+            Assert.IsNotNull(impactVisual);
+            MeshRenderer impactRenderer = impactVisual.GetComponent<MeshRenderer>();
+            Assert.AreEqual("MagicCarpet/Enhanced/Vfx", impactRenderer.sharedMaterial.shader.name);
+            Assert.That(impactVisual.localScale.x, Is.EqualTo(1f).Within(0.001f));
 
             Object.DestroyImmediate(gameObject);
         }

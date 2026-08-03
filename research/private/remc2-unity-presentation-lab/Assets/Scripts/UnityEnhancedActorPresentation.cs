@@ -39,6 +39,7 @@ namespace MagicCarpet.PresentationLab
         public MeshFilter Filter;
         public MeshRenderer Renderer;
         public int Family = -1;
+        public bool FireballProjectileMaterial;
 
         public void Release()
         {
@@ -99,16 +100,27 @@ namespace MagicCarpet.PresentationLab
                 state.VisualObject.hideFlags = HideFlags.DontSave;
             }
 
-            if (state.Family != entity.PresentationFamily)
+            bool fireballProjectile = entity.PresentationFamily ==
+                                          (int)UnityEnhancedPresentationFamily.Fire &&
+                                      IsAuthoritativeProjectileIdentity(entity.StableIdentity);
+            if (state.Family != entity.PresentationFamily ||
+                state.FireballProjectileMaterial != fireballProjectile)
             {
                 state.Family = entity.PresentationFamily;
+                state.FireballProjectileMaterial = fireballProjectile;
                 state.Filter.sharedMesh = GetMesh(entity.PresentationFamily);
-                state.Renderer.sharedMaterial = GetMaterial(entity.PresentationFamily);
+                state.Renderer.sharedMaterial = GetMaterial(
+                    entity.PresentationFamily,
+                    fireballProjectile);
             }
 
             state.VisualObject.SetActive(entity.Visible);
             state.VisualObject.transform.localRotation = Quaternion.Euler(0f, entity.FacingDegrees, 0f);
             float scale = entity.Scale <= 0f ? 1f : entity.Scale;
+            if (fireballProjectile)
+            {
+                scale *= 1.6f;
+            }
             float animationOffset = IsAnimated(entity.PresentationFamily)
                 ? Mathf.Sin(entity.AnimationPhase * Mathf.PI * 2f) * 0.05f
                 : 0f;
@@ -168,30 +180,48 @@ namespace MagicCarpet.PresentationLab
             return mesh;
         }
 
-        private Material GetMaterial(int family)
+        private Material GetMaterial(int family, bool fireballProjectile)
         {
+            int materialKey = fireballProjectile ? family + 1000 : family;
             Material material;
-            if (materials.TryGetValue(family, out material))
+            if (materials.TryGetValue(materialKey, out material))
             {
                 return material;
             }
 
             UnityEnhancedPresentationFamily familyId = (UnityEnhancedPresentationFamily)family;
-            bool fireball = familyId == UnityEnhancedPresentationFamily.Fire;
-            Shader shader = (fireball ? Shader.Find("MagicCarpet/Enhanced/Vfx") : null) ??
+            bool fireFamily = familyId == UnityEnhancedPresentationFamily.Fire;
+            Shader shader = fireballProjectile
+                            ? Shader.Find("MagicCarpet/Enhanced/Fireball") ??
+                              Shader.Find("MagicCarpet/Enhanced/Vfx")
+                            : (fireFamily ? Shader.Find("MagicCarpet/Enhanced/Vfx") : null) ??
                             Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
                             Shader.Find("Universal Render Pipeline/Lit") ??
                             Shader.Find("Standard");
             material = shader == null ? null : new Material(shader)
             {
-                name = "EnhancedGeneratedMaterial_" + familyId,
+                name = fireballProjectile
+                    ? "EnhancedGeneratedMaterial_Fireball"
+                    : "EnhancedGeneratedMaterial_" + familyId,
                 hideFlags = HideFlags.DontSave,
                 color = FamilyColor(familyId)
             };
             if (material != null)
             {
                 material.enableInstancing = true;
-                if (fireball && shader.name == "MagicCarpet/Enhanced/Vfx")
+                if (fireballProjectile && shader.name == "MagicCarpet/Enhanced/Fireball")
+                {
+                    material.SetColor("_CoreColor", new Color(1f, 0.72f, 0.22f, 1f));
+                    material.SetColor("_HaloColor", new Color(1f, 0.06f, 0.008f, 1f));
+                    material.SetFloat("_CoreIntensity", 4.2f);
+                    material.SetFloat("_HaloIntensity", 1.65f);
+                    material.SetFloat("_CoreRadius", 0.42f);
+                    material.SetFloat("_HaloRadius", 0.94f);
+                    material.SetFloat("_Opacity", 0.88f);
+                    material.SetFloat("_PulseSpeed", 2.8f);
+                    material.SetFloat("_ShimmerStrength", 0.08f);
+                }
+                else if (fireFamily && shader.name == "MagicCarpet/Enhanced/Vfx")
                 {
                     material.SetColor("_GlowColor", new Color(1f, 0.18f, 0.025f, 1f));
                     material.SetFloat("_GlowIntensity", 1.35f);
@@ -209,8 +239,13 @@ namespace MagicCarpet.PresentationLab
                     material.SetFloat("_EmissionStrength", EmissionStrength(familyId));
                 }
             }
-            materials.Add(family, material);
+            materials.Add(materialKey, material);
             return material;
+        }
+
+        private static bool IsAuthoritativeProjectileIdentity(ulong stableIdentity)
+        {
+            return (stableIdentity & 0xf0000000UL) == 0x20000000UL;
         }
 
         private static bool IsBillboard(UnityEnhancedPresentationFamily family)
