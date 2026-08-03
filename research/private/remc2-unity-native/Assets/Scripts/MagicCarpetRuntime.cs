@@ -527,6 +527,15 @@ namespace MagicCarpet.Native
         private NativeSession session;
         private NativeCampaignSession campaignSession;
         private NativeSim.CampaignWorldInfo campaignWorldInfo;
+        private NativeSim.CampaignStepSnapshot level2StepSnapshot;
+        private NativeSim.CampaignTerrainState level2TerrainState;
+        private NativeSim.CampaignEvent[] level2StepEvents = Array.Empty<NativeSim.CampaignEvent>();
+        private ushort level2StepInputX;
+        private ushort level2StepInputY;
+        private short level2StepInputZ;
+        private ushort level2LastStepInputX;
+        private ushort level2LastStepInputY;
+        private short level2LastStepInputZ;
         private bool level2Mode;
         private bool level2StartupReady;
         private PlaythroughRecorder playthroughRecorder;
@@ -899,6 +908,18 @@ namespace MagicCarpet.Native
 
         internal NativeSim.CampaignWorldInfo Level2ProductionWorldInfo =>
             campaignWorldInfo;
+
+        internal NativeSim.CampaignStepSnapshot Level2ProductionStepSnapshot =>
+            level2StepSnapshot;
+
+        internal NativeSim.CampaignTerrainState Level2ProductionTerrainState =>
+            level2TerrainState;
+
+        internal NativeSim.CampaignEvent[] Level2ProductionStepEvents =>
+            level2StepEvents;
+
+        internal (ushort x, ushort y, short z) Level2ProductionLastStepInput =>
+            (level2LastStepInputX, level2LastStepInputY, level2LastStepInputZ);
 
         internal string Level2ProductionFatalError => fatalError;
 
@@ -1989,7 +2010,31 @@ namespace MagicCarpet.Native
 
         private void FixedUpdate()
         {
-            if (level2Mode) return;
+            if (level2Mode)
+            {
+                if (runtimeExitRequested) return;
+                try
+                {
+                    FixedUpdateLevel2Campaign();
+                }
+                catch (Exception exception)
+                {
+                    runtimeExitRequested = true;
+                    fatalError = exception.ToString();
+                    playthroughRecorder?.RecordFatal(exception);
+                    Debug.LogError("MC_RUNTIME_FATAL " + fatalError);
+                    if (AutomatedInput || Application.isBatchMode)
+                    {
+                        DisposeSession();
+                        Application.Quit(3);
+                    }
+                    else
+                    {
+                        enabled = false;
+                    }
+                }
+                return;
+            }
             if (level1AutoplayFast) return;
             if (runtimeExitRequested || autoplayCapturePending) return;
             try
@@ -2013,6 +2058,31 @@ namespace MagicCarpet.Native
                     enabled = false;
                 }
             }
+        }
+
+        private void FixedUpdateLevel2Campaign()
+        {
+            if (!level2StartupReady || campaignSession == null)
+            {
+                return;
+            }
+
+            level2LastStepInputX = level2StepInputX;
+            level2LastStepInputY = level2StepInputY;
+            level2LastStepInputZ = level2StepInputZ;
+            var result = campaignSession.Step(
+                level2StepInputX,
+                level2StepInputY,
+                level2StepInputZ,
+                playerSlot: 0,
+                speedIndex: 0,
+                flags: 1);
+            level2StepSnapshot = result.snapshot;
+            level2StepEvents = result.events;
+            level2TerrainState = campaignSession.TerrainState();
+            level2StepInputX = result.snapshot.x;
+            level2StepInputY = result.snapshot.y;
+            level2StepInputZ = result.snapshot.z;
         }
 
         private void FixedUpdateCore(bool updatePresentation)
@@ -7703,6 +7773,23 @@ namespace MagicCarpet.Native
             }
         }
 
+        internal void QualificationDriveLevel2Frames(int frameCount)
+        {
+            Require(
+                frameCount >= 0 &&
+                level2Mode &&
+                level2StartupReady &&
+                campaignSession != null,
+                "Level 2 frame route requires a validated campaign session");
+            for (var index = 0; index < frameCount; index++)
+            {
+                FixedUpdate();
+                Require(
+                    string.IsNullOrEmpty(fatalError),
+                    $"Level 2 frame {index} completed without a runtime failure");
+            }
+        }
+
         internal void QualificationDisposeNativeOwners()
         {
             DisposeSession();
@@ -10688,6 +10775,8 @@ namespace MagicCarpet.Native
             try
             {
                 campaignWorldInfo = campaignSession.WorldInfo();
+                SeedLevel2LocalPlayerPosition();
+                level2TerrainState = campaignSession.TerrainState();
                 Require(
                     campaignWorldInfo.abiVersion == NativeSim.AbiVersion &&
                     campaignWorldInfo.structSize == 64,
@@ -10729,6 +10818,19 @@ namespace MagicCarpet.Native
                 campaignSession = null;
                 throw;
             }
+        }
+
+        private void SeedLevel2LocalPlayerPosition()
+        {
+            var localPlayer = campaignSession
+                .Players()
+                .Single(player => player.slot == 0 && player.active != 0);
+            var playerEntity = campaignSession
+                .Entities()
+                .Single(entity => entity.entityIndex == localPlayer.entityIndex);
+            level2StepInputX = playerEntity.x;
+            level2StepInputY = playerEntity.y;
+            level2StepInputZ = playerEntity.z;
         }
 
         private static void ResolveOwnerPaths(
@@ -11103,6 +11205,15 @@ namespace MagicCarpet.Native
             campaignSession?.Dispose();
             campaignSession = null;
             level2StartupReady = false;
+            level2StepSnapshot = default;
+            level2TerrainState = default;
+            level2StepEvents = Array.Empty<NativeSim.CampaignEvent>();
+            level2StepInputX = 0;
+            level2StepInputY = 0;
+            level2StepInputZ = 0;
+            level2LastStepInputX = 0;
+            level2LastStepInputY = 0;
+            level2LastStepInputZ = 0;
             session?.Dispose();
             session = null;
         }

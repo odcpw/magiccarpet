@@ -85,6 +85,57 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void Level2ProductionFixedUpdateAdvancesDedicatedCampaignRoute()
+        {
+            var root = new GameObject("Level 2 fixed-step route");
+            root.SetActive(false);
+            MagicCarpetRuntime runtime = null;
+            try
+            {
+                runtime = root.AddComponent<MagicCarpetRuntime>();
+                runtime.QualificationInitializeLevel2Production(Level2Package);
+
+                runtime.QualificationDriveLevel2Frames(1);
+                var first = runtime.Level2ProductionStepSnapshot;
+                var firstInput = runtime.Level2ProductionLastStepInput;
+                Assert.That(first.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+                Assert.That(first.structSize, Is.EqualTo(112));
+                Assert.That(first.generation, Is.Zero);
+                Assert.That(first.revision, Is.GreaterThan(0));
+                Assert.That(first.eventCount, Is.GreaterThan(0));
+                Assert.That(
+                    runtime.Level2ProductionStepEvents,
+                    Has.Length.EqualTo((int)first.eventCount));
+                Assert.That(
+                    runtime.Level2ProductionTerrainState.tick,
+                    Is.EqualTo(first.revision));
+                Assert.That(NativeSession.ActiveSessionCount, Is.Zero);
+
+                runtime.QualificationDriveLevel2Frames(1);
+                var second = runtime.Level2ProductionStepSnapshot;
+                var secondInput = runtime.Level2ProductionLastStepInput;
+                Assert.That(second.generation, Is.Zero);
+                Assert.That(second.revision, Is.GreaterThan(first.revision));
+                Assert.That(second.eventCount, Is.GreaterThan(0));
+                Assert.That(
+                    (secondInput.x, secondInput.y, secondInput.z),
+                    Is.EqualTo((first.x, first.y, first.z)),
+                    "each Level 2 fixed step reuses the prior authoritative pose");
+                Assert.That(
+                    runtime.Level2ProductionTerrainState.generation,
+                    Is.Zero);
+            }
+            finally
+            {
+                runtime?.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+
+            Assert.That(NativeSession.ActiveSessionCount, Is.Zero);
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
+        [Test]
         public void Level2CampaignCabiIsReachableFromManagedSession()
         {
             using var session = NativeCampaignSession.OpenLevel2(Level2Package);
