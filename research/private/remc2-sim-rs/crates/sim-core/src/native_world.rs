@@ -553,6 +553,19 @@ impl EntitySnapshot {
         self.record[84..86].copy_from_slice(&position.z.to_le_bytes());
     }
 
+    /// Keep the lossless source cadence byte in sync with a typed callback
+    /// projection that reuses an imported frame-zero entity slot.
+    fn set_phase(&mut self, phase: u8) {
+        self.phase = phase;
+        self.record[66] = phase;
+    }
+
+    /// Keep the low source word of `dword_0x10` in sync with a callback
+    /// cooldown projected onto an imported class-11 root.
+    fn set_source_word_10(&mut self, value: u16) {
+        self.record[20..22].copy_from_slice(&value.to_le_bytes());
+    }
+
     #[cfg(test)]
     pub(crate) fn with_record_byte(mut self, offset: usize, value: u8) -> Self {
         self.record[offset] = value;
@@ -3936,6 +3949,29 @@ pub struct Level2AuthoredBeeSource {
     pub active: bool,
 }
 
+/// Authored class-11 model-0/model-1 switch producer materialized by the
+/// source `sub_4A1E0` group scan.  The authored `stage_tag` is copied into the
+/// live entity id and is therefore the next activation group, while the
+/// source phase/cooldown words remain mutable across outer turns.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredSwitchProducerSource {
+    pub source_entity_index: u16,
+    pub entity_id: u16,
+    pub entity_rng: u16,
+    pub authored_index: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub stage_tag: u16,
+    pub word_10: i16,
+    pub position: Position,
+    pub phase: u8,
+    pub cooldown: u8,
+    pub fired: bool,
+    pub drawing_enabled: bool,
+    pub active: bool,
+}
+
 /// The authored class-10/model-6 event constructed by remc2's
 /// `NewAdd0A06_4E5F0` and dispatched through `sub_31760`.  The fields mirror
 /// the callback's mutable words rather than collapsing them into a generic
@@ -4443,6 +4479,8 @@ pub struct Level2EconomyState {
     authored_bees: Vec<Level2AuthoredBeeSource>,
     baseline_bee_model2_constructor_phase: u8,
     bee_model2_constructor_phase: u8,
+    baseline_authored_switch_producers: Vec<Level2AuthoredSwitchProducerSource>,
+    authored_switch_producers: Vec<Level2AuthoredSwitchProducerSource>,
     baseline_model13_spawned_children: Vec<Level2Model13SpawnedChild>,
     model13_spawned_children: Vec<Level2Model13SpawnedChild>,
     baseline_authored_model6: Vec<Level2AuthoredModel6Source>,
@@ -4648,6 +4686,8 @@ impl Level2EconomyState {
             authored_bees: Vec::new(),
             baseline_bee_model2_constructor_phase: 0,
             bee_model2_constructor_phase: 0,
+            baseline_authored_switch_producers: Vec::new(),
+            authored_switch_producers: Vec::new(),
             baseline_model13_spawned_children: Vec::new(),
             model13_spawned_children: Vec::new(),
             baseline_authored_model6: Vec::new(),
@@ -4788,6 +4828,11 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_bees(&self) -> &[Level2AuthoredBeeSource] {
         &self.authored_bees
+    }
+
+    #[must_use]
+    pub fn authored_switch_producers(&self) -> &[Level2AuthoredSwitchProducerSource] {
+        &self.authored_switch_producers
     }
 
     #[must_use]
@@ -5158,6 +5203,93 @@ impl Level2EconomyState {
         };
         source.target_entity_index = target;
         true
+    }
+
+    /// Allocate one authored class-11 model-0/model-1 switch producer using
+    /// the shared `NewEvent_4A050` source arena.  `stage_tag` is the source
+    /// entity id consumed by the next `sub_4A1E0` group scan.
+    pub fn allocate_authored_switch_producer(
+        &mut self,
+        authored_index: u16,
+        model: u8,
+        stage_tag: u16,
+        word_10: i16,
+        position: Position,
+    ) -> Option<Level2AuthoredSwitchProducerSource> {
+        if !matches!(model, 0 | 1) || stage_tag == 0 {
+            return None;
+        }
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let mut position = position;
+        position.z = self.terrain.ground_height(position);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let source = Level2AuthoredSwitchProducerSource {
+            source_entity_index,
+            entity_id: stage_tag,
+            entity_rng,
+            authored_index,
+            source_class: 11,
+            model,
+            action: model,
+            stage_tag,
+            word_10,
+            position,
+            phase: 0,
+            cooldown: 0,
+            fired: false,
+            drawing_enabled: true,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.authored_switch_producers.push(source);
+        Some(source)
+    }
+
+    /// Advance one live authored switch callback.  The caller supplies the
+    /// source `CompareAxisWithShift` result; this method owns the source
+    /// phase/cooldown writes and reports a fired target group.
+    pub fn step_authored_switch_producer_slot(
+        &mut self,
+        source_slot: u16,
+        overlap: bool,
+    ) -> Option<u16> {
+        let source = self
+            .authored_switch_producers
+            .iter_mut()
+            .find(|source| source.active && source.source_entity_index == source_slot)?;
+        let target_group = if source.cooldown == 0 && source.phase & 7 == 0 && overlap {
+            source.cooldown = 10;
+            source.fired = true;
+            Some(source.stage_tag)
+        } else {
+            None
+        };
+        if source.cooldown != 0 && target_group.is_none() && !overlap {
+            source.cooldown = source.cooldown.saturating_sub(1);
+        }
+        source.phase = source.phase.wrapping_add(1);
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: source.active,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .ok();
+        target_group
     }
 
     /// Bounded projection of the generic `sub_1BD90`/`sub_1BF90` awareness
@@ -7252,6 +7384,16 @@ impl Level2EconomyState {
             visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::AuthoredBee,
+            );
+        }
+        for source in self
+            .authored_switch_producers
+            .iter()
+            .filter(|source| source.active)
+        {
+            visit(
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredSwitchProducer,
             );
         }
         for child in self
@@ -10405,6 +10547,23 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_switch_producers = self
+            .authored_switch_producers
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_switch_producers
+            .retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_switch_producers {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_model13_children = self
             .model13_spawned_children
             .iter()
@@ -10840,6 +10999,28 @@ impl Level2EconomyState {
         }
         hasher.update(b"level2-bee-model2-constructor-phase-v1");
         hasher.update([self.bee_model2_constructor_phase]);
+        hasher.update(b"level2-authored-switch-producer-v1");
+        for source in &self.authored_switch_producers {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_id.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.authored_index.to_le_bytes());
+            hasher.update([
+                source.source_class,
+                source.model,
+                source.action,
+                source.phase,
+                source.cooldown,
+                u8::from(source.fired),
+                u8::from(source.drawing_enabled),
+                u8::from(source.active),
+            ]);
+            hasher.update(source.stage_tag.to_le_bytes());
+            hasher.update(source.word_10.to_le_bytes());
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+        }
         for child in &self.model13_spawned_children {
             hasher.update(child.source_entity_index.to_le_bytes());
             hasher.update(child.entity_rng.to_le_bytes());
@@ -11353,6 +11534,7 @@ impl Level2EconomyState {
         self.authored_model13 = self.baseline_authored_model13.clone();
         self.authored_bees = self.baseline_authored_bees.clone();
         self.bee_model2_constructor_phase = self.baseline_bee_model2_constructor_phase;
+        self.authored_switch_producers = self.baseline_authored_switch_producers.clone();
         self.model13_spawned_children = self.baseline_model13_spawned_children.clone();
         self.authored_model6 = self.baseline_authored_model6.clone();
         self.model6_spawned_children = self.baseline_model6_spawned_children.clone();
@@ -14128,6 +14310,24 @@ struct Level2Group10Switch25State {
     phase: u8,
 }
 
+/// Callback state for a group-zero class-11 model-0/model-1 producer that is
+/// already present in the imported reset entity array.  The entity remains
+/// the visible/source authority; this wrapper only carries the mutable
+/// callback words needed to execute the generic stage-tag chain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Level2ImportedSwitchRootState {
+    source_slot: u16,
+    authored_index: u16,
+    model: u8,
+    target_group: u16,
+    word_10: i16,
+    position: Position,
+    phase: u8,
+    cooldown: u8,
+    drawing_enabled: bool,
+    active: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2ResetSession {
     profile: FlightProfile,
@@ -14175,8 +14375,12 @@ pub struct Level2ResetSession {
     level2_model13_activated: BTreeSet<u16>,
     baseline_level2_bees_activated: BTreeSet<u16>,
     level2_bees_activated: BTreeSet<u16>,
+    baseline_level2_switch_producers_activated: BTreeSet<u16>,
+    level2_switch_producers_activated: BTreeSet<u16>,
     baseline_level2_model76_activated: BTreeSet<u16>,
     level2_model76_activated: BTreeSet<u16>,
+    baseline_level2_imported_switch_roots: Box<[Level2ImportedSwitchRootState]>,
+    level2_imported_switch_roots: Box<[Level2ImportedSwitchRootState]>,
     baseline_level2_group10_switch25: Option<Level2Group10Switch25State>,
     level2_group10_switch25: Option<Level2Group10Switch25State>,
     baseline_level2_class11_model0_constructor_phase: u8,
@@ -14287,6 +14491,7 @@ pub enum Level2DynamicArenaKind {
     Model76Child,
     Model76TailSpawn,
     AuthoredClass14,
+    AuthoredSwitchProducer,
     BeyondSightPulseEffect,
     ManaAttraction,
 }
@@ -14419,6 +14624,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::Model76Child => 24,
         Level2DynamicArenaKind::Model76TailSpawn => 25,
         Level2DynamicArenaKind::AuthoredClass14 => 13,
+        Level2DynamicArenaKind::AuthoredSwitchProducer => 27,
         Level2DynamicArenaKind::BeyondSightPulseEffect => 14,
         Level2DynamicArenaKind::ManaAttraction => 12,
     }
@@ -14585,6 +14791,45 @@ impl Level2ResetSession {
                 position: entity.position,
                 phase: entity.phase,
             });
+        let initial_level2_imported_switch_roots = mission
+            .authored_features()
+            .iter()
+            .copied()
+            .filter(|feature| {
+                feature.activation_group == 0
+                    && feature.kind == 11
+                    && matches!(feature.subtype, 0 | 1)
+                    // Row 111 is the imported source for the dedicated
+                    // model-76 switch-25 path below.
+                    && feature.index != 111
+            })
+            .filter_map(|feature| {
+                let model = u8::try_from(feature.subtype).ok()?;
+                let target_group = u16::try_from(feature.stage_tag).ok()?;
+                let position = feature.world_position(0);
+                let entity = entities.iter().find(|entity| {
+                    entity.active
+                        && entity.class == 11
+                        && entity.model == model
+                        && entity.source_id == target_group
+                        && entity.position.x == position.x
+                        && entity.position.y == position.y
+                })?;
+                Some(Level2ImportedSwitchRootState {
+                    source_slot: entity.index,
+                    authored_index: feature.index,
+                    model,
+                    target_group,
+                    word_10: i16::try_from(feature.word_10).unwrap_or(i16::MAX),
+                    position: entity.position,
+                    phase: entity.phase,
+                    cooldown: 0,
+                    drawing_enabled: !entity.drawing_disabled(),
+                    active: true,
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         Self {
             profile,
             baseline_state: state,
@@ -14626,8 +14871,12 @@ impl Level2ResetSession {
             level2_model13_activated: BTreeSet::new(),
             baseline_level2_bees_activated: BTreeSet::new(),
             level2_bees_activated: BTreeSet::new(),
+            baseline_level2_switch_producers_activated: BTreeSet::new(),
+            level2_switch_producers_activated: BTreeSet::new(),
             baseline_level2_model76_activated: BTreeSet::new(),
             level2_model76_activated: BTreeSet::new(),
+            baseline_level2_imported_switch_roots: initial_level2_imported_switch_roots.clone(),
+            level2_imported_switch_roots: initial_level2_imported_switch_roots,
             baseline_level2_group10_switch25: initial_level2_group10_switch25,
             level2_group10_switch25: initial_level2_group10_switch25,
             // Source reset clears the constructor counters before any later
@@ -15709,11 +15958,159 @@ impl Level2ResetSession {
         self.level2_group31_switch28 = Some(switch);
     }
 
+    /// Step the group-zero class-11 model-0/model-1 roots that the qualified
+    /// reset already imported as live entities.  The entity remains the
+    /// source/map authority; this wrapper owns only the callback phase and
+    /// ten-tick rebroadcast cooldown. Dedicated slot-25/group-10 ownership is
+    /// intentionally excluded at construction, so it cannot race this path.
+    fn step_level2_imported_switch_roots(&mut self, pass: u8) {
+        let mut source_slots = self
+            .level2_imported_switch_roots
+            .iter()
+            .map(|root| root.source_slot)
+            .collect::<Vec<_>>();
+        source_slots.sort_unstable();
+        for source_slot in source_slots {
+            let Some(root) = self
+                .level2_imported_switch_roots
+                .iter()
+                .find(|root| root.source_slot == source_slot && root.active)
+                .copied()
+            else {
+                continue;
+            };
+            let (position, model, drawing_enabled, phase, cooldown, target_group_id) = (
+                root.position,
+                root.model,
+                root.drawing_enabled,
+                root.phase,
+                root.cooldown,
+                root.target_group,
+            );
+            if !drawing_enabled {
+                continue;
+            }
+            let overlap = self.level2_model0_overlap_matches(position, model == 0, |entity| {
+                if entity.index == self.state.entity_index {
+                    self.state.position
+                } else {
+                    entity.position
+                }
+            });
+            let target_group = if cooldown == 0 && phase & 7 == 0 && overlap {
+                Some(target_group_id)
+            } else {
+                None
+            };
+            let next_cooldown = if target_group.is_some() {
+                10
+            } else if cooldown != 0 && !overlap {
+                cooldown.saturating_sub(1)
+            } else {
+                cooldown
+            };
+            let next_phase = phase.wrapping_add(1);
+            if let Some(root) = self
+                .level2_imported_switch_roots
+                .iter_mut()
+                .find(|root| root.source_slot == source_slot)
+            {
+                root.cooldown = next_cooldown;
+                root.phase = next_phase;
+            }
+            if let Some(entity) = self.entities.get_mut(usize::from(source_slot)) {
+                entity.set_phase(next_phase);
+                entity.set_source_word_10(u16::from(next_cooldown));
+            }
+            if let Some(target_group) = target_group {
+                self.activate_level2_authored_switch_group(pass, source_slot, target_group);
+            }
+        }
+    }
+
+    /// Materialize the next authored model-0/model-1 producer group selected
+    /// by a live switch.  Row 274 is deliberately left to the existing
+    /// group-31 constructor because it owns the exit-switch countdown state.
+    fn activate_level2_authored_switch_group(
+        &mut self,
+        pass: u8,
+        producer_slot: u16,
+        target_group: u16,
+    ) {
+        let rows = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .filter(|feature| {
+                feature.activation_group == i16::try_from(target_group).unwrap_or(-1)
+                    && feature.kind == 11
+                    && matches!(feature.subtype, 0 | 1)
+                    && feature.index != 274
+            })
+            .collect::<Vec<_>>();
+        let mut activated = Vec::new();
+        for feature in rows {
+            if self
+                .level2_switch_producers_activated
+                .contains(&feature.index)
+                || self
+                    .economy
+                    .authored_switch_producers()
+                    .iter()
+                    .any(|source| source.authored_index == feature.index)
+            {
+                continue;
+            }
+            let model = u8::try_from(feature.subtype).unwrap_or(u8::MAX);
+            let position =
+                feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+            let Some(source) = self.economy.allocate_authored_switch_producer(
+                feature.index,
+                model,
+                u16::try_from(feature.stage_tag).unwrap_or_default(),
+                i16::try_from(feature.word_10).unwrap_or(i16::MAX),
+                position,
+            ) else {
+                self.dispatch_events.push(Level2DispatchEvent::Error {
+                    pass,
+                    source_slot: producer_slot,
+                    message: format!(
+                        "Level 2 authored switch group {target_group} row {} could not allocate",
+                        feature.index
+                    ),
+                });
+                continue;
+            };
+            self.level2_switch_producers_activated.insert(feature.index);
+            activated.push((feature.index, source.source_entity_index));
+        }
+        if !activated.is_empty() {
+            self.dispatch_events
+                .push(Level2DispatchEvent::AuthoredGroupActivated {
+                    pass,
+                    source_slot: producer_slot,
+                    group: target_group,
+                    authored_indices: activated
+                        .into_iter()
+                        .map(|(index, _)| index)
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                });
+            // A source callback invokes `sub_4A1E0` synchronously. Re-run the
+            // already-owned downstream stage-tag consumers so rows such as
+            // group-5 class-14/model-54 become visible in this same pass.
+            self.activate_level2_authored_mana_attraction_fields(pass);
+            self.activate_level2_authored_class14(pass);
+        }
+    }
+
     fn live_level2_class11_producers<F>(&self, mut producer_matches: F) -> Vec<(u16, u16)>
     where
         F: FnMut(&EntitySnapshot) -> bool,
     {
-        self.entities
+        let mut producers = self
+            .entities
             .iter()
             .filter(|entity| {
                 entity.active
@@ -15728,7 +16125,21 @@ impl Level2ResetSession {
                     && producer_matches(entity)
             })
             .map(|entity| (entity.index, entity.source_id))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        // Authored switch rows live in the shared economy arena rather than
+        // the imported reset entity array. Their stage_tag is the same source
+        // group value that `sub_4A310` writes into an imported class-11 row;
+        // include them in the producer view so all existing data-driven
+        // consumers observe one source list.
+        producers.extend(
+            self.economy
+                .authored_switch_producers()
+                .iter()
+                .filter(|source| source.active && source.fired && source.drawing_enabled)
+                .map(|source| (source.source_entity_index, source.stage_tag)),
+        );
+        producers.sort_unstable_by_key(|(slot, _)| *slot);
+        producers
     }
 
     fn activate_level2_rows_from_live_class11_producers<FProducer, FMatch, FSeen, FAllocate>(
@@ -16108,6 +16519,7 @@ impl Level2ResetSession {
         // boundary's capacity just like remc2.
         self.economy.rebuild_owner_max_mana_projection();
         self.synchronize_level2_terrain();
+        self.step_level2_imported_switch_roots(pass);
         self.activate_level2_authored_group8(pass);
         self.activate_level2_authored_group31(pass);
         self.step_level2_group31_switch28(pass);
@@ -16365,7 +16777,7 @@ impl Level2ResetSession {
                             player_position,
                         )
                     } else {
-                        self.step_level2_dynamic_arena(source_slot, row.kind)
+                        self.step_level2_dynamic_arena(pass, source_slot, row.kind)
                     };
                     self.append_new_economy_events(pass, source_slot);
                     if live {
@@ -16444,7 +16856,7 @@ impl Level2ResetSession {
                         player_position,
                     )
                 } else {
-                    self.step_level2_dynamic_arena(source_slot, row.kind)
+                    self.step_level2_dynamic_arena(pass, source_slot, row.kind)
                 };
                 self.append_new_economy_events(pass, source_slot);
                 if live {
@@ -16622,11 +17034,39 @@ impl Level2ResetSession {
         }
     }
 
+    fn step_level2_authored_switch_producer(&mut self, pass: u8, source_slot: u16) -> bool {
+        let Some((position, model)) = self
+            .economy
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+            .map(|source| (source.position, source.model))
+        else {
+            return false;
+        };
+        let overlap = self.level2_model0_overlap_matches(position, model == 0, |entity| {
+            if entity.index == self.state.entity_index {
+                self.state.position
+            } else {
+                entity.position
+            }
+        });
+        let Some(target_group) = self
+            .economy
+            .step_authored_switch_producer_slot(source_slot, overlap)
+        else {
+            return false;
+        };
+        self.activate_level2_authored_switch_group(pass, source_slot, target_group);
+        true
+    }
+
     /// Dispatch one live dynamic row. The source class-10/model-1 burst
     /// handler falls through to unconditional drawing disable after one
     /// callback; all dynamic families therefore receive one cursor visit.
     fn step_level2_dynamic_arena(
         &mut self,
+        pass: u8,
         source_slot: u16,
         kind: Level2DynamicArenaKind,
     ) -> bool {
@@ -16701,6 +17141,9 @@ impl Level2ResetSession {
             }
             Level2DynamicArenaKind::AuthoredClass14 => {
                 self.step_level2_authored_class14(source_slot)
+            }
+            Level2DynamicArenaKind::AuthoredSwitchProducer => {
+                self.step_level2_authored_switch_producer(pass, source_slot)
             }
             Level2DynamicArenaKind::BeyondSightPulseEffect => self
                 .economy
@@ -16834,6 +17277,27 @@ impl Level2ResetSession {
         for authored_index in &self.level2_bees_activated {
             hasher.update(authored_index.to_le_bytes());
         }
+        hasher.update(b"level2-switch-producer-activation-v1");
+        for authored_index in &self.level2_switch_producers_activated {
+            hasher.update(authored_index.to_le_bytes());
+        }
+        hasher.update(b"level2-imported-switch-root-v1");
+        for root in &self.level2_imported_switch_roots {
+            hasher.update(root.source_slot.to_le_bytes());
+            hasher.update(root.authored_index.to_le_bytes());
+            hasher.update([
+                root.model,
+                root.phase,
+                root.cooldown,
+                u8::from(root.drawing_enabled),
+                u8::from(root.active),
+            ]);
+            hasher.update(root.target_group.to_le_bytes());
+            hasher.update(root.word_10.to_le_bytes());
+            hasher.update(root.position.x.to_le_bytes());
+            hasher.update(root.position.y.to_le_bytes());
+            hasher.update(root.position.z.to_le_bytes());
+        }
         hasher.update(b"level2-model76-activation-v1");
         for authored_index in &self.level2_model76_activated {
             hasher.update(authored_index.to_le_bytes());
@@ -16958,7 +17422,10 @@ impl Level2ResetSession {
             self.baseline_level2_mana_attraction_activated.clone();
         self.level2_model13_activated = self.baseline_level2_model13_activated.clone();
         self.level2_bees_activated = self.baseline_level2_bees_activated.clone();
+        self.level2_switch_producers_activated =
+            self.baseline_level2_switch_producers_activated.clone();
         self.level2_model76_activated = self.baseline_level2_model76_activated.clone();
+        self.level2_imported_switch_roots = self.baseline_level2_imported_switch_roots.clone();
         self.level2_group10_switch25 = self.baseline_level2_group10_switch25;
         self.level2_class11_model0_constructor_phase =
             self.baseline_level2_class11_model0_constructor_phase;
@@ -29349,6 +29816,142 @@ mod tests {
         assert_eq!(switch.source_slot, 25);
         assert_eq!(switch.phase, 26);
         assert!(session.economy().authored_model76().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_authored_switch_chain_reaches_group5_consumers_from_production_turns() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 authored switch session");
+        let baseline_hash = session.campaign_state_hash();
+        let baseline_root_phase = session
+            .level2_imported_switch_roots
+            .iter()
+            .find(|root| root.authored_index == 11)
+            .expect("imported row-11 root baseline")
+            .phase;
+        let authored_features = session.mission().authored_features().to_vec();
+        let feature_position = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("authored switch row")
+                .world_position(0)
+        };
+
+        assert!(session.economy().authored_switch_producers().is_empty());
+
+        // Frame zero already imports row 11 as source slot 23. Put the local
+        // player on that switch so its normal callback fires, then let its
+        // non-overlap successor row 41 fire through the same runagain walk.
+        session.state.position = feature_position(11);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let imported_root = session
+            .level2_imported_switch_roots
+            .iter()
+            .find(|root| root.authored_index == 11)
+            .expect("imported row-11 root");
+        assert_eq!(imported_root.source_slot, 23);
+        assert_eq!(imported_root.phase, baseline_root_phase.wrapping_add(1));
+        assert_eq!(imported_root.cooldown, 10);
+        let imported_entity = session
+            .entities()
+            .iter()
+            .find(|entity| entity.index == 23)
+            .expect("imported row-11 entity");
+        assert_eq!(imported_entity.phase, baseline_root_phase.wrapping_add(1));
+        assert_eq!(imported_entity.source_word_10(), 10);
+        let switch_indices = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .map(|source| source.authored_index)
+            .collect::<BTreeSet<_>>();
+        assert!(!switch_indices.contains(&11));
+        assert!(!switch_indices.contains(&111));
+        assert!(!switch_indices.contains(&342));
+        assert!(switch_indices.contains(&41));
+        assert!(switch_indices.contains(&42));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group,
+                authored_indices,
+                ..
+            } if *source_slot == 23 && *group == 1 && authored_indices.as_ref() == [41]
+        )));
+
+        // Row 42 is the model-0 overlap gate for row 64; row 64 is the
+        // model-1 inverse gate for row 65.  Both transitions are driven by
+        // ordinary production turns, not direct allocator calls.
+        session.state.position = feature_position(42);
+        for _ in 0..8 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let switch_indices = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .map(|source| source.authored_index)
+            .collect::<BTreeSet<_>>();
+        assert!(switch_indices.contains(&64));
+
+        // Rows 42 and 64 share the authored tile: move away after firing
+        // row 42 so row 64's inverse-overlap callback can select group 4.
+        session.state.position = feature_position(65);
+        for _ in 0..8 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let switch_indices = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .map(|source| source.authored_index)
+            .collect::<BTreeSet<_>>();
+        assert!(switch_indices.contains(&65));
+
+        // Firing row 65 selects authored group 5.  The bounded downstream
+        // consumers are already production-owned: row 83 is the next switch,
+        // row 82 is model-54, and rows 248..251 are class-14/model-5.
+        let switch_indices = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .map(|source| source.authored_index)
+            .collect::<BTreeSet<_>>();
+        assert!(switch_indices.contains(&83));
+        let row65 = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 65)
+            .expect("fired row65 source");
+        assert!(row65.fired);
+        assert!(row65.cooldown > 0);
+        assert!(
+            session
+                .economy()
+                .mana_attraction_fields()
+                .iter()
+                .any(|field| field.authored_index == 82)
+        );
+        let class14_indices = session
+            .economy()
+            .authored_class14()
+            .iter()
+            .map(|source| source.authored_index)
+            .collect::<BTreeSet<_>>();
+        assert!(class14_indices.is_superset(&BTreeSet::from([248, 249, 250, 251])));
+
+        session.reset();
+        assert!(session.economy().authored_switch_producers().is_empty());
+        assert!(session.economy().mana_attraction_fields().is_empty());
+        assert!(session.economy().authored_class14().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 

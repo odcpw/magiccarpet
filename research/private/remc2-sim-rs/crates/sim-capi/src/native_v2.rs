@@ -17707,7 +17707,9 @@ mod tests {
         // GOLDEN-CHANGE: 8d3de2d corrected qualified frame-zero objective
         // selector index 3 to source state 1. Group-8/22/27 rows are latent
         // until objective completion, so reset no longer hashes them as live.
-        assert_eq!(level2_info.reset_state_hash, 0x7100_56d1_c447_5ea5);
+        // The generic imported class-11 root callback state is now also
+        // reset/hash-bound, preserving source phase/cooldown replay identity.
+        assert_eq!(level2_info.reset_state_hash, 0x02f0_b6ef_6aca_aab0);
         let mut level2_players = [McCampaignPlayerSnapshotV2::default(); 8];
         assert_eq!(
             mc_native_campaign_players_copy(
@@ -24919,8 +24921,10 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
             goats(rng_only, rng_only_session.generation);
         assert_eq!(reset_rows, second_rows);
         assert_eq!(reset_batch.live_world_hash, second_batch.live_world_hash);
+        // GOLDEN-CHANGE: generic imported class-11 root callback state is
+        // reset/hash-bound alongside the existing Level 2 campaign state.
         assert_eq!(
-            reset_batch.live_world_hash, 0xc5f2_8129_5e04_4de5,
+            reset_batch.live_world_hash, 0xe029_6244_e51f_b914,
             "C ABI publishes the explicit v2 reset hash"
         );
         assert_eq!(rng_only_reset_rows, reset_rows);
