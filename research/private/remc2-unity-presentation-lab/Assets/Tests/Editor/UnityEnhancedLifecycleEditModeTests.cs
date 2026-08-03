@@ -374,6 +374,31 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void EnhancedVerticalPresentationUsesOneSharedScaleAcrossOwnerYPaths()
+        {
+            Assert.That(
+                UnityEnhancedOwnerSessionSource.EnhancedVerticalPresentationScale,
+                Is.EqualTo(0.5f).Within(0.0001f));
+            Assert.That(
+                UnityEnhancedOwnerSessionSource.SourceVerticalToUnity(64f),
+                Is.EqualTo(0.5f).Within(0.0001f));
+            Assert.That(
+                UnityEnhancedOwnerSessionSource.SourceHeightToUnity(2),
+                Is.EqualTo(UnityEnhancedOwnerSessionSource.SourceVerticalToUnity(64f)).Within(0.0001f));
+
+            string source = File.ReadAllText(Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "UnityEnhancedOwnerSessionSource.cs"));
+            StringAssert.Contains(
+                "float y = SourceVerticalToUnity(presentation.cameraZ) + EnhancedCameraLift;",
+                source);
+            StringAssert.Contains("float y = SourceVerticalToUnity(source.z);", source);
+            StringAssert.Contains("float projectedY = SourceVerticalToUnity(sourceZ);", source);
+            StringAssert.Contains("Vector3 position = ProjectedPosition(source.x, source.y, source.z);", source);
+        }
+
+        [Test]
         public void PresentationTransformsCanInterpolateWithoutChangingSnapshotTick()
         {
             GameObject gameObject = new GameObject("enhanced-root-test");

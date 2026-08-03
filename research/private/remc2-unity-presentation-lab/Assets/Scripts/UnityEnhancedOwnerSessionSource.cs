@@ -58,6 +58,10 @@ namespace MagicCarpet.PresentationLab
         private const float SourceUnitsPerUnityUnit = 64f;
         private const float TerrainSourceStep = 256f;
         private const float TerrainCellSize = TerrainSourceStep / SourceUnitsPerUnityUnit;
+        // Enhanced-only vertical presentation compression keeps owner terrain
+        // relief readable while preserving authoritative source units and the
+        // existing horizontal mapping. Exact and Classic HD do not use it.
+        public const float EnhancedVerticalPresentationScale = 0.5f;
         // Enhanced keeps the Rust camera as its source, then gives the
         // modern presentation a readable cinematic eye height. This never
         // feeds back into gameplay or the Exact/Classic HD routes.
@@ -239,7 +243,12 @@ namespace MagicCarpet.PresentationLab
         /// </summary>
         public static float SourceHeightToUnity(byte sourceHeight)
         {
-            return sourceHeight * 32f / SourceUnitsPerUnityUnit;
+            return SourceVerticalToUnity(sourceHeight * 32f);
+        }
+
+        public static float SourceVerticalToUnity(float sourceZ)
+        {
+            return sourceZ / SourceUnitsPerUnityUnit * EnhancedVerticalPresentationScale;
         }
 
         public int ActiveEntityCount
@@ -1561,7 +1570,7 @@ namespace MagicCarpet.PresentationLab
         private UnityEnhancedCameraPose BuildCameraPose()
         {
             float x = (float)(unwrappedCameraX + renderCamera.renderOffsetX) / SourceUnitsPerUnityUnit;
-            float y = presentation.cameraZ / SourceUnitsPerUnityUnit + EnhancedCameraLift;
+            float y = SourceVerticalToUnity(presentation.cameraZ) + EnhancedCameraLift;
             float z = (float)(unwrappedCameraY + renderCamera.renderOffsetY) / SourceUnitsPerUnityUnit;
             float yaw = 180f - renderCamera.yaw * (360f / 2048f);
             float pitch = -SignedAngle11(presentation.cameraPitch) * (360f / 2048f) + EnhancedCameraPitchBias;
@@ -1691,7 +1700,7 @@ namespace MagicCarpet.PresentationLab
                 ushort sourceY = source.y;
                 float x = (float)(unwrappedCameraX + ModularDelta(sourceX, presentation.cameraX)) / SourceUnitsPerUnityUnit;
                 float z = (float)(unwrappedCameraY + ModularDelta(sourceY, presentation.cameraY)) / SourceUnitsPerUnityUnit;
-                float y = source.z / SourceUnitsPerUnityUnit;
+                float y = SourceVerticalToUnity(source.z);
                 ulong stableIdentity = ((ulong)snapshot.generation << 32) | (uint)(source.entityIndex + 1);
                 result.Add(new UnityEnhancedEntitySnapshot
                 {
@@ -1979,7 +1988,7 @@ namespace MagicCarpet.PresentationLab
         {
             float projectedX = (float)(unwrappedCameraX + ModularDelta(x, presentation.cameraX)) /
                                SourceUnitsPerUnityUnit;
-            float projectedY = sourceZ / SourceUnitsPerUnityUnit;
+            float projectedY = SourceVerticalToUnity(sourceZ);
             float projectedZ = (float)(unwrappedCameraY + ModularDelta(y, presentation.cameraY)) /
                                SourceUnitsPerUnityUnit;
             return new Vector3(projectedX, projectedY, projectedZ);
@@ -2019,7 +2028,7 @@ namespace MagicCarpet.PresentationLab
             }
 
             float x = (float)(unwrappedCameraX + ModularDelta(source.x, presentation.cameraX)) / SourceUnitsPerUnityUnit;
-            float y = source.z / SourceUnitsPerUnityUnit;
+            float y = SourceVerticalToUnity(source.z);
             float z = (float)(unwrappedCameraY + ModularDelta(source.y, presentation.cameraY)) / SourceUnitsPerUnityUnit;
             return new Vector3(x, y, z);
         }
