@@ -100,7 +100,8 @@ fn classic_hd_qualify() -> ExitCode {
     use sim_core::classic_hd::{ClassicHdRenderProfile, byte_hash};
     use sim_core::classic_hd_raster::CLASSIC_HD_TABLESN_BYTES;
     use sim_core::classic_hd_render_graph::{
-        ClassicHdBlurInput, ClassicHdGraphInput, ClassicHdRenderGraph, ClassicHdWorldReceipt,
+        ClassicHdBlurInput, ClassicHdGraphInput, ClassicHdLightingPath, ClassicHdRenderGraph,
+        ClassicHdWorldReceipt,
     };
 
     let profiles = [
@@ -144,6 +145,7 @@ fn classic_hd_qualify() -> ExitCode {
                 input_hash: 0x1000,
                 reflections_enabled: true,
                 dynamic_lighting_enabled: true,
+                lighting_path: ClassicHdLightingPath::ScreenSpaceMap,
                 water_enabled: true,
                 blur: ClassicHdBlurInput {
                     configured_mode: 2,
@@ -206,6 +208,7 @@ fn classic_hd_qualify() -> ExitCode {
             input_hash: 0x1000,
             reflections_enabled: true,
             dynamic_lighting_enabled: true,
+            lighting_path: ClassicHdLightingPath::ScreenSpaceMap,
             water_enabled: true,
             blur: ClassicHdBlurInput {
                 configured_mode: 2,

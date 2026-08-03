@@ -56,8 +56,18 @@ pub struct ClassicHdGraphInput {
     pub input_hash: u64,
     pub reflections_enabled: bool,
     pub dynamic_lighting_enabled: bool,
+    pub lighting_path: ClassicHdLightingPath,
     pub water_enabled: bool,
     pub blur: ClassicHdBlurInput,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClassicHdLightingPath {
+    /// Apply the supplied 256x256 shading plane in screen space.
+    ScreenSpaceMap,
+    /// The owner profile-sized world has already consumed the live shade row
+    /// while rasterizing each projected terrain/sprite sample.
+    OwnerWorldAlreadyLit,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -402,16 +412,26 @@ impl ClassicHdRenderGraph {
             })?;
             let before = current_hash;
             let lighting_started = Instant::now();
-            current_hash = apply_classic_hd_dynamic_lighting(
-                &self.profile,
-                &mut self.world_scratch,
-                shading,
-                tablesn.get(..CLASSIC_HD_TABLESN_BYTES).ok_or_else(|| {
-                    ClassicHdGraphError(format!(
-                        "Classic HD dynamic lighting requires at least {CLASSIC_HD_TABLESN_BYTES} TABLESN bytes"
-                    ))
-                })?,
-            )?;
+            current_hash = match input.lighting_path {
+                ClassicHdLightingPath::ScreenSpaceMap => apply_classic_hd_dynamic_lighting(
+                    &self.profile,
+                    &mut self.world_scratch,
+                    shading,
+                    tablesn.get(..CLASSIC_HD_TABLESN_BYTES).ok_or_else(|| {
+                        ClassicHdGraphError(format!(
+                            "Classic HD dynamic lighting requires at least {CLASSIC_HD_TABLESN_BYTES} TABLESN bytes"
+                        ))
+                    })?,
+                )?,
+                ClassicHdLightingPath::OwnerWorldAlreadyLit => {
+                    // The owner HD raster path applies the live shade row in
+                    // its projected pnt5/TABLESN samples. Preserve the graph
+                    // lighting receipt without treating screen coordinates
+                    // as unrelated 256x256 world-map coordinates a second
+                    // time.
+                    byte_hash(&self.world_scratch)
+                }
+            };
             stages[2] = ClassicHdStageReceipt {
                 stage: ClassicHdGraphStage::DynamicLighting,
                 enabled: true,
@@ -674,6 +694,7 @@ mod tests {
             input_hash: 0x5a,
             reflections_enabled: false,
             dynamic_lighting_enabled: false,
+            lighting_path: ClassicHdLightingPath::ScreenSpaceMap,
             water_enabled: false,
             blur,
         }
@@ -832,6 +853,7 @@ mod tests {
         let mut frame_input = input(&profile, 0, ClassicHdBlurInput::default());
         frame_input.reflections_enabled = true;
         frame_input.dynamic_lighting_enabled = true;
+        frame_input.lighting_path = ClassicHdLightingPath::ScreenSpaceMap;
         frame_input.water_enabled = true;
         frame_input.blur = ClassicHdBlurInput {
             configured_mode: 2,
@@ -909,6 +931,57 @@ mod tests {
                 .unwrap()
                 .enabled
         );
+    }
+
+    #[test]
+    fn owner_world_lighting_receipt_preserves_already_lit_sky_and_world_pixels() {
+        let profile = ClassicHdRenderProfile::hd_640x480();
+        let mut table = tablesn();
+        for pair in 0..CLASSIC_HD_TABLESN_BYTES {
+            table[pair] = (pair as u8).wrapping_add(1);
+        }
+        let shading = vec![17_u8; CLASSIC_HD_TABLESN_BYTES];
+        let mut expected = vec![23_u8; profile.extent()];
+        expected[0] = 7;
+        let world_offset = profile.stride as usize * 300 + 31;
+        expected[world_offset] = 41;
+
+        let mut graph = ClassicHdRenderGraph::new(profile.clone(), 7).unwrap();
+        let mut frame_input = input(&profile, 0, ClassicHdBlurInput::default());
+        frame_input.dynamic_lighting_enabled = true;
+        frame_input.lighting_path = ClassicHdLightingPath::OwnerWorldAlreadyLit;
+        let result = graph
+            .render_frame(
+                frame_input,
+                Some(&shading),
+                &table,
+                |indices, provenance| {
+                    indices.copy_from_slice(&expected);
+                    provenance.fill(0x10);
+                    Ok(ClassicHdWorldReceipt::complete(
+                        byte_hash(indices),
+                        byte_hash(provenance),
+                        false,
+                        false,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(graph.current_indices(), expected.as_slice());
+        assert_eq!(graph.current_indices()[0], 7, "sky pixel was remapped");
+        assert_eq!(
+            graph.current_indices()[world_offset],
+            41,
+            "world pixel was remapped"
+        );
+        let lighting = result
+            .receipt
+            .stage(ClassicHdGraphStage::DynamicLighting)
+            .unwrap();
+        assert!(lighting.enabled);
+        assert_eq!(lighting.input_hash, lighting.output_hash);
+        assert_eq!(result.receipt.output_hash, byte_hash(&expected));
     }
 
     #[test]
@@ -1010,6 +1083,7 @@ mod tests {
             input_hash: 0x5a,
             reflections_enabled: false,
             dynamic_lighting_enabled: false,
+            lighting_path: ClassicHdLightingPath::ScreenSpaceMap,
             water_enabled: false,
             blur: ClassicHdBlurInput {
                 configured_mode: 2,

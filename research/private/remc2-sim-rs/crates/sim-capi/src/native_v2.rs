@@ -25,7 +25,7 @@ use sim_core::{
     classic_hd_raster::rasterize_classic_hd_terrain,
     classic_hd_render_graph::{
         ClassicHdBlurBranch, ClassicHdBlurInput, ClassicHdGraphError, ClassicHdGraphInput,
-        ClassicHdRenderGraph, ClassicHdWorldReceipt,
+        ClassicHdLightingPath, ClassicHdRenderGraph, ClassicHdWorldReceipt,
     },
     classic_hd_sprites::{ClassicHdSpritePlan, build_classic_hd_sprite_plan},
     classic_hd_terrain::{ClassicHdSkyBank, ClassicHdTerrainResources, build_classic_hd_terrain},
@@ -3706,6 +3706,7 @@ impl SessionRecord {
                 input_hash,
                 reflections_enabled: true,
                 dynamic_lighting_enabled: true,
+                lighting_path: ClassicHdLightingPath::OwnerWorldAlreadyLit,
                 water_enabled: false,
                 blur,
             },
