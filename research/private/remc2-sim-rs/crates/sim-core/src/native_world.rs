@@ -17384,7 +17384,7 @@ impl Level2ResetSession {
             .filter_map(|entity_index| self.entities.get(usize::from(entity_index)))
             .filter(|entity| {
                 entity.active
-                    && entity.class == 3
+                    && matches!(entity.class, 3 | 10)
                     && level2_wind_sub33810_accepts(parent.entity_id, entity)
             })
             .map(|entity| entity.index)
@@ -29018,6 +29018,65 @@ mod tests {
                 .roll_0x155(),
             nonzero_roll_before
         );
+
+        // The class-10 allowlist in sub_33810 is independent of the
+        // class-3 model check. Model 39 takes the same non-player movement
+        // branch and still receives the source hit mailbox when airborne.
+        let class10_parent = session
+            .economy()
+            .authored_model22()
+            .iter()
+            .find(|source| source.source_entity_index == parent.source_entity_index)
+            .copied()
+            .expect("wind parent after non-zero model callback");
+        let class10_position = Position {
+            x: class10_parent.position.x.wrapping_add(1_024),
+            y: class10_parent.position.y,
+            z: class10_parent.position.z,
+        };
+        {
+            let target = &mut session.entities[usize::from(target_index)];
+            target.class = 10;
+            target.record[67] = 10;
+            target.model = 39;
+            target.record[68] = 39;
+            target.set_actual_speed(23);
+            target.set_yaw(0);
+            target.set_control_flags(0x1000_0000);
+            target.set_position(class10_position);
+        }
+        session
+            .economy_mut()
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: target_index,
+                active: true,
+                x: class10_position.x,
+                y: class10_position.y,
+            })
+            .expect("class-10 target map chain follows its source position");
+        let class10_snapshot = session.entities[usize::from(target_index)].clone();
+        assert!(level2_wind_sub33810_accepts(
+            parent_source_id,
+            &class10_snapshot
+        ));
+        let mut rejected_class10 = class10_snapshot.clone();
+        rejected_class10.model = 45;
+        rejected_class10.record[68] = 45;
+        assert!(!level2_wind_sub33810_accepts(
+            parent_source_id,
+            &rejected_class10
+        ));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let class10_target = &session.entities[usize::from(target_index)];
+        assert_eq!(class10_target.actual_speed, 23);
+        assert_eq!(class10_target.yaw, 204);
+        assert_ne!(class10_target.control_flags & 0x0000_0800, 0);
+        assert_eq!(
+            class10_target.source_wind_spell_payload(),
+            i32::from(parent.subspell_index)
+        );
+        assert_eq!(class10_target.source_wind_spell_owner(), parent.entity_id);
     }
 
     #[test]
