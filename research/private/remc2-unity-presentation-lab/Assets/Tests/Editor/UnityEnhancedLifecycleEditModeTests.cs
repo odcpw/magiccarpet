@@ -1760,6 +1760,10 @@ namespace MagicCarpet.PresentationLab.Tests
             MeshRenderer renderer = visual.GetComponent<MeshRenderer>();
             Assert.AreEqual("MagicCarpet/Enhanced/Impact", renderer.sharedMaterial.shader.name);
             Assert.GreaterOrEqual(filter.sharedMesh.vertexCount, 36);
+            Assert.AreEqual(filter.sharedMesh.vertexCount, filter.sharedMesh.uv.Length);
+            Assert.Greater(
+                Vector2.Distance(filter.sharedMesh.uv[1], new Vector2(0.5f, 0.5f)),
+                0.20f);
             Assert.Greater(filter.sharedMesh.bounds.size.y, 0.40f);
             Assert.LessOrEqual(filter.sharedMesh.bounds.size.x, 0.90f);
             Assert.LessOrEqual(filter.sharedMesh.bounds.size.z, 0.90f);

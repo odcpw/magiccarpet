@@ -628,9 +628,11 @@ namespace MagicCarpet.PresentationLab
             const float billboardInnerRadius = 0.14f;
             const float billboardOuterRadius = 0.42f;
             var vertices = new List<Vector3>(ringSegments * 6 + 24);
+            var uvs = new List<Vector2>(ringSegments * 6 + 24);
             var triangles = new List<int>(ringSegments * 18 + 48);
             AddImpactRing(
                 vertices,
+                uvs,
                 triangles,
                 Vector3.up * ringHeight,
                 Vector3.right,
@@ -640,6 +642,7 @@ namespace MagicCarpet.PresentationLab
                 ringSegments);
             AddImpactRing(
                 vertices,
+                uvs,
                 triangles,
                 Vector3.up * billboardCenterHeight,
                 Vector3.right,
@@ -649,6 +652,7 @@ namespace MagicCarpet.PresentationLab
                 ringSegments);
             AddImpactRing(
                 vertices,
+                uvs,
                 triangles,
                 Vector3.up * billboardCenterHeight,
                 Vector3.forward,
@@ -658,6 +662,7 @@ namespace MagicCarpet.PresentationLab
                 ringSegments);
             AddImpactDisc(
                 vertices,
+                uvs,
                 triangles,
                 Vector3.up * billboardCenterHeight,
                 Vector3.right,
@@ -675,8 +680,11 @@ namespace MagicCarpet.PresentationLab
                 Vector3 burstBase = burstCenter + direction * burstBaseRadius;
                 Vector3 burstTip = burstCenter + direction * burstTipRadius;
                 vertices.Add(burstBase - side);
+                uvs.Add(ImpactUv(burstBase - side, burstCenter, Vector3.right, Vector3.up, burstTipRadius));
                 vertices.Add(burstBase + side);
+                uvs.Add(ImpactUv(burstBase + side, burstCenter, Vector3.right, Vector3.up, burstTipRadius));
                 vertices.Add(burstTip);
+                uvs.Add(ImpactUv(burstTip, burstCenter, Vector3.right, Vector3.up, burstTipRadius));
                 triangles.Add(baseIndex);
                 triangles.Add(baseIndex + 1);
                 triangles.Add(baseIndex + 2);
@@ -688,6 +696,7 @@ namespace MagicCarpet.PresentationLab
                 hideFlags = HideFlags.DontSave
             };
             mesh.SetVertices(vertices);
+            mesh.SetUVs(0, uvs);
             mesh.SetTriangles(triangles, 0);
             mesh.RecalculateNormals();
             mesh.RecalculateBounds();
@@ -696,6 +705,7 @@ namespace MagicCarpet.PresentationLab
 
         private static void AddImpactDisc(
             List<Vector3> vertices,
+            List<Vector2> uvs,
             List<int> triangles,
             Vector3 center,
             Vector3 axisA,
@@ -705,12 +715,14 @@ namespace MagicCarpet.PresentationLab
         {
             int centerIndex = vertices.Count;
             vertices.Add(center);
+            uvs.Add(ImpactUv(center, center, axisA, axisB, radius));
             int perimeterStart = vertices.Count;
             for (int index = 0; index < segments; index++)
             {
                 float angle = index * Mathf.PI * 2f / segments;
                 Vector3 direction = axisA * Mathf.Cos(angle) + axisB * Mathf.Sin(angle);
                 vertices.Add(center + direction * radius);
+                uvs.Add(ImpactUv(center + direction * radius, center, axisA, axisB, radius));
             }
 
             for (int index = 0; index < segments; index++)
@@ -724,6 +736,7 @@ namespace MagicCarpet.PresentationLab
 
         private static void AddImpactRing(
             List<Vector3> vertices,
+            List<Vector2> uvs,
             List<int> triangles,
             Vector3 center,
             Vector3 axisA,
@@ -737,8 +750,12 @@ namespace MagicCarpet.PresentationLab
             {
                 float angle = index * Mathf.PI * 2f / segments;
                 Vector3 direction = axisA * Mathf.Cos(angle) + axisB * Mathf.Sin(angle);
-                vertices.Add(center + direction * innerRadius);
-                vertices.Add(center + direction * outerRadius);
+                Vector3 inner = center + direction * innerRadius;
+                Vector3 outer = center + direction * outerRadius;
+                vertices.Add(inner);
+                uvs.Add(ImpactUv(inner, center, axisA, axisB, outerRadius));
+                vertices.Add(outer);
+                uvs.Add(ImpactUv(outer, center, axisA, axisB, outerRadius));
             }
 
             for (int index = 0; index < segments; index++)
@@ -755,6 +772,20 @@ namespace MagicCarpet.PresentationLab
                 triangles.Add(nextOuter);
                 triangles.Add(nextInner);
             }
+        }
+
+        private static Vector2 ImpactUv(
+            Vector3 point,
+            Vector3 center,
+            Vector3 axisA,
+            Vector3 axisB,
+            float extent)
+        {
+            Vector3 offset = point - center;
+            float divisor = Mathf.Max(0.0001f, extent * 2f);
+            return new Vector2(
+                Mathf.Clamp01(0.5f + Vector3.Dot(offset, axisA.normalized) / divisor),
+                Mathf.Clamp01(0.5f + Vector3.Dot(offset, axisB.normalized) / divisor));
         }
 
         private Material GetMaterial(UnityEnhancedVfxKind kind)
