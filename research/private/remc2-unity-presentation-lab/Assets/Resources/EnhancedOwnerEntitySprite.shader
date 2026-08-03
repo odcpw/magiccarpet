@@ -8,6 +8,8 @@ Shader "MagicCarpet/Enhanced/OwnerEntitySprite"
         _Palette ("Owner PALN palette", 2D) = "white" {}
         _Tint ("Enhanced night tint", Color) = (0.92, 0.96, 1, 1)
         _EmissionStrength ("Owner pixel lift", Range(0, 1)) = 0.06
+        [HDR] _OutlineColor ("Moonlit outline color", Color) = (0.20, 0.42, 0.95, 1)
+        _OutlineStrength ("Moonlit outline strength", Range(0, 1)) = 0.72
     }
 
     SubShader
@@ -39,10 +41,13 @@ Shader "MagicCarpet/Enhanced/OwnerEntitySprite"
             SAMPLER(sampler_Indices);
             TEXTURE2D(_Palette);
             SAMPLER(sampler_Palette);
+            float4 _Indices_TexelSize;
 
             CBUFFER_START(UnityPerMaterial)
                 half4 _Tint;
                 half _EmissionStrength;
+                half4 _OutlineColor;
+                half _OutlineStrength;
             CBUFFER_END
 
             #define ENHANCED_WARM_LIGHT_CAP 4
@@ -102,6 +107,35 @@ Shader "MagicCarpet/Enhanced/OwnerEntitySprite"
                     sampler_Indices,
                     input.uv).r;
                 half paletteIndex = floor(sampleValue * 255.0h + 0.5h);
+                if (paletteIndex < 0.5h && _OutlineStrength > 0.001h)
+                {
+                    float2 texel = _Indices_TexelSize.xy;
+                    half right = SAMPLE_TEXTURE2D(
+                        _Indices,
+                        sampler_Indices,
+                        input.uv + float2(texel.x, 0.0)).r;
+                    half left = SAMPLE_TEXTURE2D(
+                        _Indices,
+                        sampler_Indices,
+                        input.uv - float2(texel.x, 0.0)).r;
+                    half up = SAMPLE_TEXTURE2D(
+                        _Indices,
+                        sampler_Indices,
+                        input.uv + float2(0.0, texel.y)).r;
+                    half down = SAMPLE_TEXTURE2D(
+                        _Indices,
+                        sampler_Indices,
+                        input.uv - float2(0.0, texel.y)).r;
+                    half neighbor = max(
+                        max(step(0.5h, right * 255.0h), step(0.5h, left * 255.0h)),
+                        max(step(0.5h, up * 255.0h), step(0.5h, down * 255.0h)));
+                    if (neighbor > 0.5h)
+                    {
+                        half3 outline = _OutlineColor.rgb * _OutlineStrength;
+                        outline = MixFog(outline, input.fogFactor);
+                        return half4(outline, 1.0h);
+                    }
+                }
                 clip(paletteIndex - 0.5h);
 
                 half3 color = SAMPLE_TEXTURE2D(

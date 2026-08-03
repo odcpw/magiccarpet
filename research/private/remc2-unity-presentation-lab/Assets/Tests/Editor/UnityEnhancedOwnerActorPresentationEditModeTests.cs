@@ -144,6 +144,84 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void OwnerEntitySpriteAddsOneTexelOutlineWithoutReplacingOwnerPixels()
+        {
+            Shader shader = Shader.Find("MagicCarpet/Enhanced/OwnerEntitySprite");
+            Assert.IsNotNull(shader);
+
+            Texture2D indices = new Texture2D(5, 5, TextureFormat.RGBA32, false, true)
+            {
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            Color32[] indexPixels = new Color32[25];
+            indexPixels[2 + 2 * 5] = new Color32(1, 1, 1, 255);
+            indices.SetPixels32(indexPixels);
+            indices.Apply(false, true);
+
+            Texture2D palette = new Texture2D(256, 1, TextureFormat.RGBA32, false, true)
+            {
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            Color32[] palettePixels = new Color32[256];
+            palettePixels[1] = new Color32(255, 255, 255, 255);
+            palette.SetPixels32(palettePixels);
+            palette.Apply(false, true);
+
+            Material material = new Material(shader);
+            RenderTexture target = new RenderTexture(
+                5,
+                5,
+                0,
+                RenderTextureFormat.ARGB32,
+                RenderTextureReadWrite.Linear);
+            Texture2D readback = new Texture2D(5, 5, TextureFormat.RGBA32, false, true);
+            RenderTexture previousActive = RenderTexture.active;
+            try
+            {
+                material.SetTexture("_Indices", indices);
+                material.SetTexture("_Palette", palette);
+                material.SetColor("_Tint", Color.white);
+                material.SetFloat("_EmissionStrength", 0f);
+                material.SetColor("_OutlineColor", Color.red);
+                material.SetFloat("_OutlineStrength", 1f);
+
+                RenderIndexedSprite(material, target, readback);
+                Color center = readback.GetPixel(2, 2);
+                Assert.That(center.a, Is.GreaterThan(0.9f));
+                Assert.That(center.g, Is.GreaterThan(0.65f));
+                Assert.That(center.b, Is.GreaterThan(0.75f));
+                Assert.That(readback.GetPixel(1, 2).r, Is.GreaterThan(0.65f));
+                Assert.That(readback.GetPixel(1, 2).g, Is.LessThan(0.20f));
+                Assert.That(readback.GetPixel(3, 2).r, Is.GreaterThan(0.65f));
+                Assert.That(readback.GetPixel(2, 1).r, Is.GreaterThan(0.65f));
+                Assert.That(readback.GetPixel(2, 3).r, Is.GreaterThan(0.65f));
+                Assert.That(readback.GetPixel(0, 2).a, Is.LessThan(0.05f));
+                Assert.That(readback.GetPixel(1, 1).a, Is.LessThan(0.05f));
+
+                Color centerWithOutline = center;
+                material.SetFloat("_OutlineStrength", 0f);
+                RenderIndexedSprite(material, target, readback);
+                Color centerWithoutOutline = readback.GetPixel(2, 2);
+                Assert.That(centerWithoutOutline.a, Is.GreaterThan(0.9f));
+                Assert.That(centerWithoutOutline.r, Is.EqualTo(centerWithOutline.r).Within(0.03f));
+                Assert.That(centerWithoutOutline.g, Is.EqualTo(centerWithOutline.g).Within(0.03f));
+                Assert.That(centerWithoutOutline.b, Is.EqualTo(centerWithOutline.b).Within(0.03f));
+                Assert.That(readback.GetPixel(1, 2).a, Is.LessThan(0.05f));
+            }
+            finally
+            {
+                RenderTexture.active = previousActive;
+                Object.DestroyImmediate(readback);
+                Object.DestroyImmediate(target);
+                Object.DestroyImmediate(material);
+                Object.DestroyImmediate(palette);
+                Object.DestroyImmediate(indices);
+            }
+        }
+
+        [Test]
         public void ConfiguredOwnerRouteFailsClosedForUnqualifiedActor()
         {
             string cachePath = OwnerCachePath();
@@ -195,6 +273,18 @@ namespace MagicCarpet.PresentationLab.Tests
                 "..",
                 "generated",
                 "level1-unity-asset-cache-plan29-final"));
+        }
+
+        private static void RenderIndexedSprite(
+            Material material,
+            RenderTexture target,
+            Texture2D readback)
+        {
+            RenderTexture.active = target;
+            GL.Clear(true, true, Color.clear);
+            Graphics.Blit(Texture2D.whiteTexture, target, material);
+            readback.ReadPixels(new Rect(0f, 0f, 5f, 5f), 0, 0, false);
+            readback.Apply(false, false);
         }
 
         private static UnityEnhancedWorldSnapshot OwnerSnapshot(
