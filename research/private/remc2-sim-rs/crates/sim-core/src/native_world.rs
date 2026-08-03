@@ -17359,13 +17359,14 @@ impl Level2ResetSession {
         }
     }
 
-    /// Bounded class-3/model-0 branch of remc2 `sub_33340`.
+    /// Bounded class-3 target branch of remc2 `sub_33340`.
     ///
     /// The source scans map-cell candidates, applies `sub_33810`, then runs a
-    /// distance-banded movement/hit callback for model-0 players.  This slice
-    /// keeps the production entity/map authority and exact signed arithmetic;
-    /// class-2, class-5, and class-10 target branches remain residual.
-    fn step_level2_authored_model22_sub33340_model0(&mut self, source_slot: u16) {
+    /// distance-banded movement/hit callback for class-3 targets. Model 0
+    /// retains its linked-player roll/speed feedback; non-zero models use the
+    /// source's wider turn/RNG bands. Class-2, class-5, and class-10 target
+    /// branches remain residual.
+    fn step_level2_authored_model22_sub33340_class3(&mut self, source_slot: u16) {
         let Some(parent) = self
             .economy
             .authored_model22()
@@ -17384,7 +17385,6 @@ impl Level2ResetSession {
             .filter(|entity| {
                 entity.active
                     && entity.class == 3
-                    && entity.model == 0
                     && level2_wind_sub33810_accepts(parent.entity_id, entity)
             })
             .map(|entity| entity.index)
@@ -17400,6 +17400,9 @@ impl Level2ResetSession {
             };
             let distance = level2_wrapping_target_distance(parent.axis_position, target_position);
             let airborne = snapshot.control_flags & 0x1000_0000 != 0;
+            let model_zero = snapshot.model == 0;
+            let turn_delta = if model_zero { 56 } else { 204 };
+            let latch_band = if model_zero { 384_u16 } else { 768_u16 };
             let mut predicted = target_position;
             let mut hit = false;
             let mut move_speed = 0_i16;
@@ -17411,7 +17414,7 @@ impl Level2ResetSession {
             if distance >= 3_211_264 {
                 if airborne {
                     let control_flags = snapshot.control_flags | 0x0000_0800;
-                    let yaw = wrap_source_angle(snapshot.yaw.wrapping_add(56));
+                    let yaw = wrap_source_angle(snapshot.yaw.wrapping_add(turn_delta));
                     settle_descent = snapshot
                         .parameter_relation
                         .and_then(|index| {
@@ -17436,28 +17439,30 @@ impl Level2ResetSession {
                         .expect("wind target heading fits");
                 if airborne {
                     let control_flags = snapshot.control_flags | 0x0000_0800;
-                    let yaw = wrap_source_angle(snapshot.yaw.wrapping_add(56));
+                    let yaw = wrap_source_angle(snapshot.yaw.wrapping_add(turn_delta));
                     predicted.z = predicted.z.wrapping_add(114);
                     self.entities[usize::from(target_index)].set_control_flags(control_flags);
                     self.entities[usize::from(target_index)].set_yaw(yaw);
                     move_speed = 128;
                     hit = true;
                 } else {
-                    if let EntitySpecialRelation::PlayerState(player_slot) =
-                        snapshot.special_relation
-                    {
-                        if let Some(player) = self
-                            .players
-                            .iter_mut()
-                            .find(|player| player.slot == player_slot)
+                    if model_zero {
+                        if let EntitySpecialRelation::PlayerState(player_slot) =
+                            snapshot.special_relation
                         {
-                            let roll = player.roll_0x155();
-                            if roll < 256 {
-                                player.set_roll_0x155(roll.saturating_add(28));
+                            if let Some(player) = self
+                                .players
+                                .iter_mut()
+                                .find(|player| player.slot == player_slot)
+                            {
+                                let roll = player.roll_0x155();
+                                if roll < 256 {
+                                    player.set_roll_0x155(roll.saturating_add(28));
+                                }
                             }
                         }
+                        self.entities[usize::from(target_index)].set_actual_speed(80);
                     }
-                    self.entities[usize::from(target_index)].set_actual_speed(80);
                     let yaw = if distance >= 0x40000 {
                         let yaw = wrap_source_angle(desired_yaw.wrapping_add(591));
                         self.entities[usize::from(target_index)]
@@ -17473,12 +17478,13 @@ impl Level2ResetSession {
                         predicted.z =
                             i16::try_from((relative_z + i32::from(ground)).max(i32::from(ground)))
                                 .unwrap_or(ground);
-                        let yaw = wrap_source_angle(snapshot.yaw.wrapping_add(56));
+                        let yaw = wrap_source_angle(snapshot.yaw.wrapping_add(turn_delta));
                         self.entities[usize::from(target_index)].set_control_flags(control_flags);
                         let mut entity_rng = snapshot.entity_rng;
                         entity_rng = entity_rng.wrapping_mul(9_377).wrapping_add(9_439);
                         self.entities[usize::from(target_index)].set_entity_rng(entity_rng);
-                        if relative_z >= 384 + i32::from(entity_rng % 384) {
+                        if relative_z >= i32::from(latch_band) + i32::from(entity_rng % latch_band)
+                        {
                             self.entities[usize::from(target_index)]
                                 .set_control_flags(control_flags | 0x1000_0000);
                             self.entities[usize::from(target_index)]
@@ -17604,7 +17610,7 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::AuthoredModel22 => {
                 let live = self.economy.step_authored_model22_slot(source_slot);
                 if live {
-                    self.step_level2_authored_model22_sub33340_model0(source_slot);
+                    self.step_level2_authored_model22_sub33340_class3(source_slot);
                     self.step_level2_authored_model22_wind_pulse(source_slot);
                 }
                 live
@@ -28958,6 +28964,60 @@ mod tests {
             .expect("target player-state row after callback")
             .roll_0x155();
         assert_eq!(roll_after, roll_before.saturating_add(28));
+
+        // Non-zero class-3 models use the source's wider v38/v34 bands but
+        // do not receive model-0 player roll/speed feedback.
+        let current_parent = session
+            .economy()
+            .authored_model22()
+            .iter()
+            .find(|source| source.source_entity_index == parent.source_entity_index)
+            .copied()
+            .expect("wind parent after second callback");
+        let nonzero_model_position = Position {
+            x: current_parent.position.x.wrapping_add(1_024),
+            y: current_parent.position.y,
+            z: current_parent.position.z,
+        };
+        {
+            let target = &mut session.entities[usize::from(target_index)];
+            target.model = 1;
+            target.record[68] = 1;
+            target.set_actual_speed(17);
+            target.set_yaw(0);
+            target.set_control_flags(0);
+            target.set_position(nonzero_model_position);
+        }
+        session
+            .economy_mut()
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: target_index,
+                active: true,
+                x: nonzero_model_position.x,
+                y: nonzero_model_position.y,
+            })
+            .expect("non-zero model target map chain follows its source position");
+        let nonzero_roll_before = session
+            .players
+            .iter()
+            .find(|player| player.slot == player_slot)
+            .expect("non-zero model target player-state row")
+            .roll_0x155();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let nonzero_model_target = &session.entities[usize::from(target_index)];
+        assert_eq!(nonzero_model_target.actual_speed, 17);
+        assert_eq!(nonzero_model_target.yaw, 204);
+        assert_ne!(nonzero_model_target.control_flags & 0x0000_0800, 0);
+        assert_eq!(
+            session
+                .players
+                .iter()
+                .find(|player| player.slot == player_slot)
+                .expect("non-zero model target player-state row after callback")
+                .roll_0x155(),
+            nonzero_roll_before
+        );
     }
 
     #[test]
