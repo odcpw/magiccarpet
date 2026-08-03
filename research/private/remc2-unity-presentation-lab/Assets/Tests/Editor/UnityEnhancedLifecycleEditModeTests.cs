@@ -790,16 +790,20 @@ namespace MagicCarpet.PresentationLab.Tests
             MeshRenderer renderer = gameObject.GetComponent<MeshRenderer>();
             Assert.IsNotNull(renderer);
             Assert.AreEqual("MagicCarpet/Enhanced/Terrain", renderer.sharedMaterial.shader.name);
-            Assert.That(renderer.sharedMaterial.GetFloat("_DetailScale"), Is.EqualTo(0.14f).Within(0.0001f));
-            Assert.That(renderer.sharedMaterial.GetFloat("_DetailStrength"), Is.EqualTo(0.35f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_DetailScale"), Is.EqualTo(0.16f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_DetailStrength"), Is.EqualTo(0.44f).Within(0.0001f));
             Assert.That(renderer.sharedMaterial.GetFloat("_SlopeStrength"), Is.EqualTo(0.50f).Within(0.0001f));
-            Assert.That(renderer.sharedMaterial.GetFloat("_NormalStrength"), Is.EqualTo(0.48f).Within(0.0001f));
-            Assert.That(renderer.sharedMaterial.GetFloat("_RidgeStrength"), Is.EqualTo(0.64f).Within(0.0001f));
-            Assert.That(renderer.sharedMaterial.GetFloat("_MicroDetailScale"), Is.EqualTo(0.62f).Within(0.0001f));
-            Assert.That(renderer.sharedMaterial.GetFloat("_MicroDetailStrength"), Is.EqualTo(0.28f).Within(0.0001f));
-            Assert.That(renderer.sharedMaterial.GetFloat("_MicroReliefStrength"), Is.EqualTo(0.20f).Within(0.0001f));
-            Assert.That(renderer.sharedMaterial.GetFloat("_MicroDetailNearStart"), Is.EqualTo(8f).Within(0.0001f));
-            Assert.That(renderer.sharedMaterial.GetFloat("_MicroDetailNearEnd"), Is.EqualTo(128f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_NormalStrength"), Is.EqualTo(0.56f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_RidgeStrength"), Is.EqualTo(0.78f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_MicroDetailScale"), Is.EqualTo(0.90f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_MicroDetailStrength"), Is.EqualTo(0.42f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_MicroReliefStrength"), Is.EqualTo(0.30f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_MicroDetailNearStart"), Is.EqualTo(4f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_MicroDetailNearEnd"), Is.EqualTo(112f).Within(0.0001f));
+            string terrainSource = File.ReadAllText(
+                Path.Combine(Application.dataPath, "Resources", "EnhancedTerrain.shader"));
+            StringAssert.Contains("grainMask", terrainSource);
+            StringAssert.Contains("grainTint", terrainSource);
 
             Object.DestroyImmediate(gameObject);
         }

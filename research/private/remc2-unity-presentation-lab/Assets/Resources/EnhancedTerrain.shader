@@ -222,6 +222,8 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 float microDown = NearSurfaceFbm(microReliefCoord - float2(0.0, microReliefStep));
                 float microUp = NearSurfaceFbm(microReliefCoord + float2(0.0, microReliefStep));
                 float2 microGradient = float2(microRight - microLeft, microUp - microDown);
+                float2 grainCoord = input.positionWS.xz * max(_MicroDetailScale * 2.4, 0.001);
+                float grain = NearSurfaceFbm(grainCoord + float2(17.4, -6.8));
 
                 // The terrain mesh is intentionally asset-free.  Reuse the
                 // multi-octave scalar field above as a bounded normal perturbation
@@ -280,8 +282,24 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 half3 rockSoilTint = lerp(_SoilTint.rgb, _RockTint.rgb, rockMask);
                 baseColor = lerp(
                     baseColor,
-                    baseColor * (0.76h + rockSoilTint * 0.62h) + rockSoilTint * 0.025h,
-                    saturate((rockMask + soilMask) * 0.34h));
+                    baseColor * (0.68h + rockSoilTint * 0.78h) + rockSoilTint * 0.032h,
+                    saturate((rockMask + soilMask) * 0.44h));
+
+                // A second, smaller procedural scale supplies the missing
+                // high-resolution material read on the generated terrain.
+                // It is strongest on nearby land and exposed faces, then
+                // fades with distance so the night scene remains calm rather
+                // than turning into noisy concept-art texture.
+                half3 grainTint = lerp(
+                    _SoilTint.rgb * 0.72h,
+                    _RockTint.rgb * 1.10h,
+                    grain);
+                half grainMask = nearSurfaceMask *
+                                  saturate(0.25h + slope * 0.55h);
+                baseColor = lerp(
+                    baseColor,
+                    baseColor * saturate(0.72h + grainTint * 0.55h),
+                    grainMask * 0.42h);
 
                 // A soft ridge mask adds readable strata to the low-poly
                 // surface while remaining a single material pass.  It is

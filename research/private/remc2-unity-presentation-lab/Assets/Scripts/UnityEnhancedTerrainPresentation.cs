@@ -281,18 +281,25 @@ namespace MagicCarpet.PresentationLab
                     if (shader == customTerrainShader)
                     {
                         terrainMaterial.SetFloat("_AmbientBoost", 0.74f);
-                        terrainMaterial.SetFloat("_DetailScale", 0.14f);
-                        terrainMaterial.SetFloat("_DetailStrength", 0.35f);
-                        terrainMaterial.SetFloat("_MicroDetailScale", 0.62f);
-                        terrainMaterial.SetFloat("_MicroDetailStrength", 0.28f);
-                        terrainMaterial.SetFloat("_MicroReliefStrength", 0.20f);
-                        terrainMaterial.SetFloat("_MicroDetailNearStart", 8f);
-                        terrainMaterial.SetFloat("_MicroDetailNearEnd", 128f);
+                        // Whole Hog keeps the owner height plane and generated
+                        // mesh intact, then lets the material carry the
+                        // high-resolution surface read.  The near-field layer
+                        // is deliberately stronger than the distant breakup:
+                        // it gives flight over the existing terrain a richer
+                        // rock/soil response without importing new assets or
+                        // changing collision/gameplay geometry.
+                        terrainMaterial.SetFloat("_DetailScale", 0.16f);
+                        terrainMaterial.SetFloat("_DetailStrength", 0.44f);
+                        terrainMaterial.SetFloat("_MicroDetailScale", 0.90f);
+                        terrainMaterial.SetFloat("_MicroDetailStrength", 0.42f);
+                        terrainMaterial.SetFloat("_MicroReliefStrength", 0.30f);
+                        terrainMaterial.SetFloat("_MicroDetailNearStart", 4f);
+                        terrainMaterial.SetFloat("_MicroDetailNearEnd", 112f);
                         terrainMaterial.SetColor("_SlopeTint", new Color(0.72f, 0.84f, 1.08f, 1f));
                         terrainMaterial.SetFloat("_SlopeStrength", 0.50f);
-                        terrainMaterial.SetFloat("_SpecularStrength", 0.22f);
-                        terrainMaterial.SetFloat("_NormalStrength", 0.48f);
-                        terrainMaterial.SetFloat("_RidgeStrength", 0.64f);
+                        terrainMaterial.SetFloat("_SpecularStrength", 0.30f);
+                        terrainMaterial.SetFloat("_NormalStrength", 0.56f);
+                        terrainMaterial.SetFloat("_RidgeStrength", 0.78f);
                         terrainMaterial.SetColor("_RockTint", new Color(0.72f, 0.80f, 0.88f, 1f));
                         terrainMaterial.SetColor("_SoilTint", new Color(0.78f, 0.62f, 0.42f, 1f));
                     }
