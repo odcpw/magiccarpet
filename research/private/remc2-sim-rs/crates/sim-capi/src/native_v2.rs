@@ -16048,6 +16048,19 @@ mod tests {
         )
     }
 
+    fn level2_objective_point(handle: u64) -> (u16, u16) {
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            let stage = reset.runtime().stages.get(3).ok_or_else(|| {
+                AbiError::new(MC_STATUS_BOUNDS, "selected objective stage missing")
+            })?;
+            Ok((stage.axis_x as u16, stage.axis_y as u16))
+        })
+        .expect("read source objective point")
+    }
+
     fn open_fixture() -> u64 {
         let (package, closure) = fixture_paths();
         let world = NativeWorld::load_without_owner_cache(package, closure)
@@ -17834,20 +17847,36 @@ mod tests {
             (0, 0, 0, 0)
         );
 
+        let (objective_x, objective_y) = level2_objective_point(handle);
         let input = McCampaignStepInputV2 {
             abi_version: MC_NATIVE_ABI_VERSION,
             struct_size: struct_size::<McCampaignStepInputV2>(),
             generation: 0,
             command: valid_command(),
             player_slot: 0,
-            player_x: 123,
-            player_y: 456,
+            player_x: objective_x,
+            player_y: objective_y,
             player_z: 7,
             ..McCampaignStepInputV2::default()
         };
         let mut snapshot = McCampaignStepSnapshotV2::default();
         let mut events = [McCampaignEventV2::default(); 1024];
         let mut event_count = 0;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
+        // Objective evaluation writes the completion sentinel after this
+        // turn; model-32 materializes group 8 on the following source turn.
         assert_eq!(
             mc_native_campaign_session_step(
                 handle,
@@ -18896,6 +18925,7 @@ mod tests {
             Ok(reset.state.position)
         })
         .expect("read initial Level 2 position");
+        let (objective_x, objective_y) = level2_objective_point(handle);
         let input_command = McCommandV2 {
             abi_version: MC_NATIVE_ABI_VERSION,
             struct_size: struct_size::<McCommandV2>(),
@@ -18909,8 +18939,8 @@ mod tests {
             generation: 0,
             command: input_command,
             player_slot: 0,
-            player_x: initial_position.x,
-            player_y: initial_position.y,
+            player_x: objective_x,
+            player_y: objective_y,
             player_z: initial_position.z,
             ..McCampaignStepInputV2::default()
         };
@@ -18931,6 +18961,19 @@ mod tests {
             MC_STATUS_OK
         );
         assert!(event_count > 0, "initial Level 2 source pass emits events");
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
         let source = with_campaign_session(handle, |session| {
             let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
                 unreachable!("campaign fixture opened as Level 2")
@@ -19307,6 +19350,7 @@ mod tests {
             Ok(reset.state.position)
         })
         .expect("read Level 2 player position");
+        let (objective_x, objective_y) = level2_objective_point(handle);
         let input_command = valid_command();
         let mut input = McCampaignStepInputV2 {
             abi_version: MC_NATIVE_ABI_VERSION,
@@ -19314,14 +19358,27 @@ mod tests {
             generation: 0,
             command: input_command,
             player_slot: 0,
-            player_x: initial_position.x,
-            player_y: initial_position.y,
+            player_x: objective_x,
+            player_y: objective_y,
             player_z: initial_position.z,
             ..McCampaignStepInputV2::default()
         };
         let mut snapshot = McCampaignStepSnapshotV2::default();
         let mut events = [McCampaignEventV2::default(); 1024];
         let mut event_count = 0;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
         assert_eq!(
             mc_native_campaign_session_step(
                 handle,

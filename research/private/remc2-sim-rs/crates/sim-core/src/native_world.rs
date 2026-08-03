@@ -3177,6 +3177,12 @@ const LEVEL2_SHARED_SPELL_PLAYER_ENTITY_SHA256: &str =
 const LEVEL2_NYPHUR_ENTITY_INDEX: u16 = 112;
 const LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX: u16 = 113;
 const LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX: u16 = 114;
+/// The qualified Level 2 objective ledger selects stage index 3 for the
+/// first type-5 point objective.  Model-32's switch consumes this exact
+/// stage byte after the objective evaluator writes the source completion
+/// sentinel.
+const LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX: usize = 3;
+const LEVEL2_OBJECTIVE_POINT_RADIUS: i32 = 768;
 const LEVEL2_NYPHUR_ENTITY_SHA256: &str =
     "a240c8711868a249b2e3ebb43c59613dc88d979a07de279ece869f14ffcf888e";
 const LEVEL2_NYPHUR_PLAYER_SHA256: &str =
@@ -13987,6 +13993,53 @@ impl Level2ResetSession {
         Ok(())
     }
 
+    /// Evaluate the currently selected Level 2 type-5 point objective using
+    /// the same signed XY tolerance as `sub_58F00_game_objectives`.  This is
+    /// intentionally a generic stage predicate: it only advances an authored
+    /// stage whose decoded kind is 5 and whose objective selector is still 1.
+    /// The model-32 switch remains responsible for consuming state 2 and
+    /// activating its authored group on the following source pass.
+    fn advance_level2_selected_point_objective(&mut self) {
+        if self.level2_selected_objective_stage_state != 1 {
+            return;
+        }
+        let Some(objective) = self.runtime.objectives.first() else {
+            return;
+        };
+        if objective
+            .stage_selectors
+            .get(LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX)
+            != Some(&1)
+        {
+            return;
+        }
+        let Some(stage) = self
+            .runtime
+            .stages
+            .get(LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX)
+        else {
+            return;
+        };
+        if stage.kind != 5 {
+            return;
+        }
+
+        // The source compares the signed 16-bit player coordinates against
+        // the signed stage axes. Preserve that narrowing before subtracting
+        // so wrapped world coordinates retain remc2's behavior.
+        let player_x = i32::from(self.state.position.x as i16);
+        let player_y = i32::from(self.state.position.y as i16);
+        let stage_x = i32::from(stage.axis_x);
+        let stage_y = i32::from(stage.axis_y);
+        if (stage_x - player_x).abs() <= LEVEL2_OBJECTIVE_POINT_RADIUS
+            && (stage_y - player_y).abs() <= LEVEL2_OBJECTIVE_POINT_RADIUS
+        {
+            self.level2_selected_objective_stage_state = 2;
+            self.runtime
+                .set_level2_objective_stage_state(self.level2_selected_objective_stage_state);
+        }
+    }
+
     #[must_use]
     pub const fn level2_selected_objective_stage_state(&self) -> u8 {
         self.level2_selected_objective_stage_state
@@ -15641,6 +15694,11 @@ impl Level2ResetSession {
                 &mut self.context,
             ));
         }
+        // remc2 evaluates objectives after the complete entity update and
+        // before the next outer turn's authored switch pass.  Keep that
+        // ordering so model-32 sees the newly completed stage only on the
+        // following turn, exactly as the source does.
+        self.advance_level2_selected_point_objective();
         evidence
     }
 
@@ -25975,6 +26033,66 @@ mod tests {
                 ..
             } if authored_indices.as_ref() == [153, 154]
         )));
+    }
+
+    #[test]
+    fn level_two_type5_objective_advances_from_player_point_before_group8() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 objective point session");
+        let stage = session
+            .runtime()
+            .stages
+            .get(LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX)
+            .cloned()
+            .expect("selected type-5 objective stage");
+        assert_eq!(stage.kind, 5);
+        assert_eq!(
+            session.level2_selected_objective_stage_state(),
+            1,
+            "frame zero starts with the source objective incomplete"
+        );
+
+        // A point just beyond the source tolerance must not advance the
+        // stage, even though the same outer-turn route is otherwise live.
+        session.state.position = Position {
+            x: (stage.axis_x as u16).wrapping_add(LEVEL2_OBJECTIVE_POINT_RADIUS as u16 + 1),
+            y: stage.axis_y as u16,
+            z: 0,
+        };
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.level2_selected_objective_stage_state(), 1);
+        assert!(session.economy().spell_pickups().is_empty());
+
+        // Entering the authored point writes state 2 after the entity pass;
+        // the model-32 switch consumes it on the next source turn.
+        session.state.position = Position {
+            x: stage.axis_x as u16,
+            y: stage.axis_y as u16,
+            z: 0,
+        };
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.level2_selected_objective_stage_state(), 2);
+        assert!(session.economy().spell_pickups().is_empty());
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.level2_objective_done());
+        assert_eq!(session.economy().spell_pickups().len(), 2);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 8,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [153, 154]
+        )));
+
+        session.reset();
+        assert_eq!(session.level2_selected_objective_stage_state(), 1);
+        assert!(!session.level2_objective_done());
+        assert!(session.economy().spell_pickups().is_empty());
     }
 
     #[test]
