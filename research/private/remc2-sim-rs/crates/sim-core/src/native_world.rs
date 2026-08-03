@@ -3765,6 +3765,8 @@ pub struct Level2Model22SpawnedChild {
     pub source_entity_index: u16,
     pub entity_id: u16,
     pub entity_rng: u16,
+    pub max_life: i16,
+    pub life: i16,
     pub parent_entity_index: u16,
     pub parent_entity_id: u16,
     pub source_class: u8,
@@ -5086,6 +5088,8 @@ impl Level2EconomyState {
                 source_entity_index: child_slot,
                 entity_id: source_entity_index,
                 entity_rng,
+                max_life: 500,
+                life: 500,
                 parent_entity_index: source_entity_index,
                 parent_entity_id: source_entity_index,
                 source_class: 10,
@@ -5261,8 +5265,12 @@ impl Level2EconomyState {
             .is_ok()
     }
 
-    /// Action 82 is a source no-call child route; the parent callback owns
-    /// movement and expiry. The outer cursor still visits the live row.
+    /// Advance one model-75/action-82 child through the bounded part of
+    /// `sub_69250`/`sub_68FF0` that is independent of player spell ownership:
+    /// the source life countdown and `sub_580E0(position, ground, 0, 0,
+    /// -128)` terrain settle. The source's player-overlap spell handoff is a
+    /// separate relation-heavy follow-up; this row is still a real callback,
+    /// not a no-call placeholder.
     pub fn step_model22_spawned_child_slot(&mut self, source_slot: u16) -> bool {
         let Some(child) = self
             .model22_spawned_children
@@ -5271,9 +5279,27 @@ impl Level2EconomyState {
         else {
             return false;
         };
-        // Action 82 is a null dispatch slot, but ApplyEvents still advances
-        // byte 0x3e after visiting the live row.
+        if child.life != 0 {
+            child.life = child.life.wrapping_sub(1);
+        }
+        let ground = self.terrain.ground_height(child.position);
+        if child.position.z > ground {
+            child.position.z = child.position.z.wrapping_sub(128);
+        }
+        if child.position.z <= ground {
+            child.position.z = ground;
+        }
+        // ApplyEvents advances byte 0x3e after visiting the live row.
         child.phase = child.phase.wrapping_add(1);
+        self.source_rng.insert(source_slot, child.entity_rng);
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: child.position.x,
+                y: child.position.y,
+            })
+            .expect("Level 2 wind child slot fits the map chain");
         true
     }
 
@@ -9161,6 +9187,8 @@ impl Level2EconomyState {
             hasher.update(child.source_entity_index.to_le_bytes());
             hasher.update(child.entity_id.to_le_bytes());
             hasher.update(child.entity_rng.to_le_bytes());
+            hasher.update(child.max_life.to_le_bytes());
+            hasher.update(child.life.to_le_bytes());
             hasher.update(child.parent_entity_index.to_le_bytes());
             hasher.update(child.parent_entity_id.to_le_bytes());
             hasher.update([child.source_class, child.model, child.action]);
@@ -24362,6 +24390,7 @@ mod tests {
                 0,
             )
         );
+        assert_eq!((first_child.max_life, first_child.life), (500, 500));
 
         let before_position = wind.position;
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -24385,6 +24414,14 @@ mod tests {
                 .phase,
             first_child.phase.wrapping_add(1)
         );
+        let stepped_child = session
+            .economy()
+            .model22_spawned_children()
+            .iter()
+            .find(|child| child.source_entity_index == first_child.source_entity_index)
+            .copied()
+            .expect("Wind child after action-82 terrain settle");
+        assert_eq!((stepped_child.max_life, stepped_child.life), (500, 499));
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
             Level2DispatchEvent::DynamicArena {
