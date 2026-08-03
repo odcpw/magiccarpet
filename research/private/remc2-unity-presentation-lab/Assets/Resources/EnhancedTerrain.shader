@@ -153,7 +153,7 @@ Shader "MagicCarpet/Enhanced/Terrain"
                     0.0h,
                     -reliefGradient.y * _NormalStrength * 2.10));
 
-                half variation = lerp(0.64h, 1.38h, saturate(detail));
+                half variation = lerp(0.50h, 1.55h, saturate(detail));
                 baseColor *= lerp(1.0h, variation, _DetailStrength);
 
                 half slope = saturate(1.0h - normalWS.y);
@@ -169,8 +169,8 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 half3 rockSoilTint = lerp(_SoilTint.rgb, _RockTint.rgb, rockMask);
                 baseColor = lerp(
                     baseColor,
-                    baseColor * rockSoilTint + _RockTint.rgb * 0.012h,
-                    saturate((rockMask + soilMask) * 0.22h));
+                    baseColor * (0.76h + rockSoilTint * 0.62h) + rockSoilTint * 0.025h,
+                    saturate((rockMask + soilMask) * 0.34h));
 
                 // A soft ridge mask adds readable strata to the low-poly
                 // surface while remaining a single material pass.  It is
@@ -184,12 +184,12 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 ridgeMask = max(ridgeMask, strataMask * 0.52h);
                 ridgeMask *= saturate(0.12h + slope * 1.20h) * landMask;
                 half3 ridgeTint = lerp(
-                    _SlopeTint.rgb * 0.62h,
-                    _SlopeTint.rgb * 0.88h,
+                    _SoilTint.rgb * 0.72h,
+                    _RockTint.rgb * 1.06h,
                     saturate(detail * 1.4h));
                 baseColor = lerp(
                     baseColor,
-                    baseColor * ridgeTint + ridgeTint * 0.015h,
+                    baseColor * (0.72h + ridgeTint * 0.55h) + ridgeTint * 0.028h,
                     ridgeMask * _RidgeStrength);
 
                 half3 lighting = max(SampleSH(normalWS), _AmbientBoost * half3(0.60h, 0.73h, 0.96h));

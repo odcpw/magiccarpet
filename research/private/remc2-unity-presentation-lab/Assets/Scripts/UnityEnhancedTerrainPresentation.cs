@@ -253,14 +253,16 @@ namespace MagicCarpet.PresentationLab
                     terrainMaterial.enableInstancing = true;
                     if (shader == customTerrainShader)
                     {
-                        terrainMaterial.SetFloat("_AmbientBoost", 0.65f);
-                        terrainMaterial.SetFloat("_DetailScale", 0.075f);
-                        terrainMaterial.SetFloat("_DetailStrength", 0.52f);
+                        terrainMaterial.SetFloat("_AmbientBoost", 0.60f);
+                        terrainMaterial.SetFloat("_DetailScale", 0.14f);
+                        terrainMaterial.SetFloat("_DetailStrength", 0.78f);
                         terrainMaterial.SetColor("_SlopeTint", new Color(0.72f, 0.84f, 1.08f, 1f));
-                        terrainMaterial.SetFloat("_SlopeStrength", 0.48f);
-                        terrainMaterial.SetFloat("_SpecularStrength", 0.10f);
-                        terrainMaterial.SetFloat("_NormalStrength", 0.16f);
-                        terrainMaterial.SetFloat("_RidgeStrength", 0.24f);
+                        terrainMaterial.SetFloat("_SlopeStrength", 0.72f);
+                        terrainMaterial.SetFloat("_SpecularStrength", 0.16f);
+                        terrainMaterial.SetFloat("_NormalStrength", 0.36f);
+                        terrainMaterial.SetFloat("_RidgeStrength", 0.48f);
+                        terrainMaterial.SetColor("_RockTint", new Color(0.72f, 0.80f, 0.88f, 1f));
+                        terrainMaterial.SetColor("_SoilTint", new Color(0.78f, 0.62f, 0.42f, 1f));
                     }
                     else
                     {

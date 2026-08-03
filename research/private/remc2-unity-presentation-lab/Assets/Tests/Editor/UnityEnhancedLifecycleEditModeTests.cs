@@ -629,8 +629,11 @@ namespace MagicCarpet.PresentationLab.Tests
             MeshRenderer renderer = gameObject.GetComponent<MeshRenderer>();
             Assert.IsNotNull(renderer);
             Assert.AreEqual("MagicCarpet/Enhanced/Terrain", renderer.sharedMaterial.shader.name);
-            Assert.That(renderer.sharedMaterial.GetFloat("_NormalStrength"), Is.EqualTo(0.16f).Within(0.0001f));
-            Assert.That(renderer.sharedMaterial.GetFloat("_RidgeStrength"), Is.EqualTo(0.24f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_DetailScale"), Is.EqualTo(0.14f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_DetailStrength"), Is.EqualTo(0.78f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_SlopeStrength"), Is.EqualTo(0.72f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_NormalStrength"), Is.EqualTo(0.36f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_RidgeStrength"), Is.EqualTo(0.48f).Within(0.0001f));
 
             Object.DestroyImmediate(gameObject);
         }
