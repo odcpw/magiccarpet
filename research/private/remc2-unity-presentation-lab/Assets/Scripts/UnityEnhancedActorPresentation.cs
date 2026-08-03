@@ -961,7 +961,14 @@ namespace MagicCarpet.PresentationLab
                     ? "EnhancedGeneratedMaterial_Fireball"
                     : "EnhancedGeneratedMaterial_" + familyId,
                 hideFlags = HideFlags.DontSave,
-                color = FamilyColor(familyId)
+                // Town and castle meshes already carry a bounded wall, roof,
+                // trim, and window palette in their vertex colors. Do not
+                // multiply that authored structure palette by one family tint
+                // or the night route collapses the silhouette into orange
+                // boxes. Creature/VFX families retain their family tint.
+                color = IsStructuredFamily(familyId)
+                    ? Color.white
+                    : FamilyColor(familyId)
             };
             if (material != null)
             {
@@ -1015,6 +1022,12 @@ namespace MagicCarpet.PresentationLab
         private static bool IsAuthoritativeProjectileIdentity(ulong stableIdentity)
         {
             return (stableIdentity & 0xf0000000UL) == 0x20000000UL;
+        }
+
+        private static bool IsStructuredFamily(UnityEnhancedPresentationFamily family)
+        {
+            return family == UnityEnhancedPresentationFamily.Town ||
+                   family == UnityEnhancedPresentationFamily.Castle;
         }
 
         private static bool IsOwnerActorFamily(int family)

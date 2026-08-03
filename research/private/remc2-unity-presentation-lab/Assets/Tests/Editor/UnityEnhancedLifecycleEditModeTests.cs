@@ -1873,6 +1873,9 @@ namespace MagicCarpet.PresentationLab.Tests
             actors.Configure(view, town);
             MeshRenderer renderer = view.transform.Find("EnhancedActorVisual").GetComponent<MeshRenderer>();
             Assert.Greater(renderer.sharedMaterial.GetFloat("_AccentStrength"), 0.9f);
+            Assert.That(renderer.sharedMaterial.color.r, Is.EqualTo(1f).Within(0.001f));
+            Assert.That(renderer.sharedMaterial.color.g, Is.EqualTo(1f).Within(0.001f));
+            Assert.That(renderer.sharedMaterial.color.b, Is.EqualTo(1f).Within(0.001f));
 
             UnityEnhancedEntitySnapshot castle = Entity(1, 42, Vector3.zero);
             castle.PresentationFamily = (int)UnityEnhancedPresentationFamily.Castle;
