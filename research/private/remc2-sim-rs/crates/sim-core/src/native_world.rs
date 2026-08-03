@@ -16337,8 +16337,9 @@ impl Level2ResetSession {
                 let is_switch =
                     feature.kind == 11 && matches!(feature.subtype, 0 | 1) && feature.index != 274;
                 let is_model22 = feature.kind == 10 && feature.subtype == 22;
-                let is_model39 =
-                    feature.kind == 10 && feature.subtype == 39 && matches!(target_group, 7 | 26);
+                let is_model39 = feature.kind == 10
+                    && feature.subtype == 39
+                    && matches!(target_group, 5 | 7 | 26);
                 feature.activation_group == i16::try_from(target_group).unwrap_or(-1)
                     && (is_switch || is_model22 || is_model39)
             })
@@ -16364,7 +16365,7 @@ impl Level2ResetSession {
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
-            if feature.kind == 10 && feature.subtype == 39 && matches!(target_group, 7 | 26) {
+            if feature.kind == 10 && feature.subtype == 39 && matches!(target_group, 5 | 7 | 26) {
                 if self.level2_model39_activated.contains(&feature.index) {
                     continue;
                 }
@@ -31371,6 +31372,7 @@ mod tests {
         let baseline_hash = session.campaign_state_hash();
         let baseline_sphere_count = session.economy().spheres().len();
         let baseline_owner_mana_global = session.economy().owner_mana_global();
+        let expected_group5_model39_indices = (66..=81).collect::<Vec<_>>();
         let expected_group7_indices = (85..=104).collect::<Vec<_>>();
         let baseline_root_phase = session
             .level2_imported_switch_roots
@@ -31449,12 +31451,35 @@ mod tests {
         // Rows 42 and 64 share the authored tile: move away after firing
         // row 42 so row 64's inverse-overlap callback can select group 4.
         session.state.position = feature_position(65);
+        let expected_group5_indices = expected_group5_model39_indices
+            .iter()
+            .copied()
+            .chain([83])
+            .collect::<Vec<_>>();
+        let mut group5_activated = false;
+        let mut group5_owner_mana_global_before = None;
+        let mut group5_owner_mana_global_after = None;
         let mut group7_activated = false;
         let mut group7_owner_mana_global_before = None;
         let mut group7_owner_mana_global_after = None;
         for _ in 0..8 {
             let owner_global_before = session.economy().owner_mana_global();
             session.step_outer_turn(PlayerCommand::default(), 0);
+            let activated_group5_this_turn = session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group,
+                        authored_indices,
+                        ..
+                    } if *group == 5 && authored_indices.as_ref() == expected_group5_indices.as_slice()
+                )
+            });
+            if activated_group5_this_turn {
+                group5_owner_mana_global_before = Some(owner_global_before);
+                group5_owner_mana_global_after = Some(session.economy().owner_mana_global());
+            }
+            group5_activated |= activated_group5_this_turn;
             let activated_this_turn = session.dispatch_events().iter().any(|event| {
                 matches!(
                     event,
@@ -31517,6 +31542,50 @@ mod tests {
         assert!(
             group7_activated,
             "row 84 must activate group 7 in production"
+        );
+        assert!(
+            group5_activated,
+            "row 65 must activate group 5 in production"
+        );
+        let group5_owner_mana_global_before = group5_owner_mana_global_before
+            .expect("group 5 owner-mana baseline captured on activation");
+        let group5_owner_mana_global_after = group5_owner_mana_global_after
+            .expect("group 5 owner-mana projection captured on activation");
+        assert!(
+            group5_owner_mana_global_after >= group5_owner_mana_global_before + 16 * 512,
+            "group 5 spheres update the source owner-mana projection"
+        );
+        let expected_group5_positions = expected_group5_model39_indices
+            .iter()
+            .copied()
+            .map(feature_position)
+            .collect::<Vec<_>>();
+        let expected_group5_position_set = expected_group5_positions
+            .iter()
+            .map(|position| (position.x, position.y))
+            .collect::<BTreeSet<_>>();
+        let mut actual_group5_position_counts = BTreeMap::new();
+        for sphere in session.economy().spheres().iter().filter(|sphere| {
+            expected_group5_position_set.contains(&(sphere.position.x, sphere.position.y))
+        }) {
+            *actual_group5_position_counts
+                .entry((sphere.position.x, sphere.position.y))
+                .or_insert(0usize) += 1;
+            assert!(sphere.active);
+            assert_eq!(sphere.mana, 512);
+            assert_eq!(
+                (sphere.owner_entity_index, sphere.player_entity_index),
+                (0, 0)
+            );
+        }
+        let expected_group5_position_counts = expected_group5_position_set
+            .iter()
+            .copied()
+            .map(|position| (position, 1usize))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            actual_group5_position_counts, expected_group5_position_counts,
+            "group 5 materializes one sphere for every row 66..81 position"
         );
         let expected_group7_positions = expected_group7_indices
             .iter()
