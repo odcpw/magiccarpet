@@ -69,7 +69,8 @@ use crate::{
         POSSESSION_IMPACT_RENDER_INDEX, POSSESSION_IMPACT_RENDER_MODE, SOURCE_REPLACEABLE_FLAG,
         SPEED_SPELL_ACTIVATION_TICKS, SPEED_SPELL_FAMILY, SPEED_SPELL_MANA_COST,
         SPELL_JAR_BASE_TMAP, SPELL_JAR_LOGICAL_HEIGHT, SPELL_JAR_RENDER_INDEX,
-        SPELL_JAR_RENDER_MODE, mana_sphere_size_ordinal,
+        SPELL_JAR_RENDER_MODE, mana_sphere_size_ordinal, source_map_search_slots,
+        source_search_offsets,
     },
     mark_source_audio_call,
     mission_content::{
@@ -553,6 +554,35 @@ impl EntitySnapshot {
         self.record[84..86].copy_from_slice(&position.z.to_le_bytes());
     }
 
+    /// Keep the source orientation field in lockstep with a callback write.
+    fn set_yaw(&mut self, yaw: i16) {
+        self.yaw = yaw;
+        self.record[32..34].copy_from_slice(&yaw.to_le_bytes());
+    }
+
+    /// Keep the source callback speed field in lockstep with its typed cache.
+    fn set_actual_speed(&mut self, actual_speed: i16) {
+        self.actual_speed = actual_speed;
+        self.record[134..136].copy_from_slice(&actual_speed.to_le_bytes());
+    }
+
+    /// Keep the source entity RNG in lockstep with a callback draw.
+    fn set_entity_rng(&mut self, entity_rng: u16) {
+        self.entity_rng = entity_rng;
+        self.record[24..26].copy_from_slice(&entity_rng.to_le_bytes());
+    }
+
+    /// Keep the source control dword in lockstep with a callback flag write.
+    fn set_control_flags(&mut self, control_flags: u32) {
+        self.control_flags = control_flags;
+        self.record[16..20].copy_from_slice(&control_flags.to_le_bytes());
+    }
+
+    /// Raw source `word_0x30_48` writer used by the wind target callback.
+    fn set_source_word_30(&mut self, value: u16) {
+        self.record[48..50].copy_from_slice(&value.to_le_bytes());
+    }
+
     /// Keep the lossless source cadence byte in sync with a typed callback
     /// projection that reuses an imported frame-zero entity slot.
     fn set_phase(&mut self, phase: u8) {
@@ -621,6 +651,13 @@ impl EntitySnapshot {
     #[must_use]
     fn array_roll(&self) -> i16 {
         i16::from_le_bytes([self.record[90], self.record[91]])
+    }
+
+    /// Raw source `array_0x52_82.fov`, used by the cave ceiling clamp in
+    /// `sub_33340` after the target movement branch.
+    #[must_use]
+    fn array_fov(&self) -> i16 {
+        i16::from_le_bytes([self.record[92], self.record[93]])
     }
 
     /// Raw source `word_0x24_36` targeted by the action-51 first pass.
@@ -1516,6 +1553,18 @@ impl PlayerSnapshot {
     #[must_use]
     pub fn player_color_index(&self) -> u8 {
         self.record[40]
+    }
+
+    /// Source `roll_0x155_341`, exported at the compact player-state offset
+    /// used by the Level 2 reset projection.
+    fn roll_0x155(&self) -> i16 {
+        i16::from_le_bytes([self.record[46], self.record[47]])
+    }
+
+    /// Keep the linked player-state roll feedback in lockstep with source
+    /// `sub_33340` writes.
+    fn set_roll_0x155(&mut self, value: i16) {
+        self.record[46..48].copy_from_slice(&value.to_le_bytes());
     }
 }
 
@@ -14815,6 +14864,32 @@ fn level2_compare_axis_with_shift(
         && i32::from(dy) < i32::from(event_half_y) + i32::from(target_half_y)
 }
 
+/// Exact source target filter for remc2 `sub_33810(a1x, a2x)`.
+///
+/// The caller supplies the wind parent's source `id_0x1A_26`; the source
+/// rejects a same-id class-3 target and excludes model 2 before the movement
+/// branches run.  This helper intentionally contains no movement policy so
+/// later target-family slices can share the same allowlist.
+fn level2_wind_sub33810_accepts(parent_entity_id: u16, target: &EntitySnapshot) -> bool {
+    let class_offset = target.class.wrapping_sub(2);
+    if class_offset > 8 {
+        return false;
+    }
+    match class_offset {
+        0 => matches!(target.model, 7 | 8),
+        1 => target.source_id != parent_entity_id && target.model != 2,
+        2 | 4 | 5 | 6 | 7 => false,
+        3 => {
+            if matches!(target.action, 180 | 232) {
+                return false;
+            }
+            !matches!(target.model, 10 | 15 | 18 | 27 | 28)
+        }
+        8 => matches!(target.model, 13 | 14 | 39 | 57),
+        _ => false,
+    }
+}
+
 impl Level2ResetSession {
     fn level2_goat_player_targets(&self) -> Vec<GoatPlayerTarget> {
         self.entities
@@ -17284,6 +17359,185 @@ impl Level2ResetSession {
         }
     }
 
+    /// Bounded class-3/model-0 branch of remc2 `sub_33340`.
+    ///
+    /// The source scans map-cell candidates, applies `sub_33810`, then runs a
+    /// distance-banded movement/hit callback for model-0 players.  This slice
+    /// keeps the production entity/map authority and exact signed arithmetic;
+    /// class-2, class-5, and class-10 target branches remain residual.
+    fn step_level2_authored_model22_sub33340_model0(&mut self, source_slot: u16) {
+        let Some(parent) = self
+            .economy
+            .authored_model22()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+            .copied()
+        else {
+            return;
+        };
+        let search_offsets = source_search_offsets(12);
+        let candidates =
+            source_map_search_slots(&self.economy.map_chains, parent.position, &search_offsets);
+        let targets = candidates
+            .into_iter()
+            .filter_map(|entity_index| self.entities.get(usize::from(entity_index)))
+            .filter(|entity| {
+                entity.active
+                    && entity.class == 3
+                    && entity.model == 0
+                    && level2_wind_sub33810_accepts(parent.entity_id, entity)
+            })
+            .map(|entity| entity.index)
+            .collect::<Vec<_>>();
+        for target_index in targets {
+            let Some(snapshot) = self.entities.get(usize::from(target_index)).cloned() else {
+                continue;
+            };
+            let target_position = if target_index == self.state.entity_index {
+                self.state.position
+            } else {
+                snapshot.position
+            };
+            let distance = level2_wrapping_target_distance(parent.axis_position, target_position);
+            let airborne = snapshot.control_flags & 0x1000_0000 != 0;
+            let mut predicted = target_position;
+            let mut hit = false;
+            let mut move_speed = 0_i16;
+            // Source `sub_33340` carries `v37` as the optional descent
+            // adjustment passed to `sub_580E0`. It is reset for every
+            // candidate and populated only by the far-distance airborne
+            // branch; all other model-0 branches pass zero.
+            let mut settle_descent = 0_i16;
+            if distance >= 3_211_264 {
+                if airborne {
+                    let control_flags = snapshot.control_flags | 0x0000_0800;
+                    let yaw = wrap_source_angle(snapshot.yaw.wrapping_add(56));
+                    settle_descent = snapshot
+                        .parameter_relation
+                        .and_then(|index| {
+                            self.presentation.entity_parameters.get(usize::from(index))
+                        })
+                        .map_or(0, |parameter| {
+                            i16::from_le_bytes([parameter[14], parameter[15]])
+                        });
+                    if distance >= 5_308_416 {
+                        self.entities[usize::from(target_index)]
+                            .set_control_flags(control_flags & !0x1000_0000);
+                    } else {
+                        self.entities[usize::from(target_index)].set_control_flags(control_flags);
+                    }
+                    self.entities[usize::from(target_index)].set_yaw(yaw);
+                    move_speed = 64;
+                    hit = true;
+                }
+            } else {
+                let desired_yaw =
+                    i16::try_from(heading_for_positions(parent.axis_position, target_position))
+                        .expect("wind target heading fits");
+                if airborne {
+                    let control_flags = snapshot.control_flags | 0x0000_0800;
+                    let yaw = wrap_source_angle(snapshot.yaw.wrapping_add(56));
+                    predicted.z = predicted.z.wrapping_add(114);
+                    self.entities[usize::from(target_index)].set_control_flags(control_flags);
+                    self.entities[usize::from(target_index)].set_yaw(yaw);
+                    move_speed = 128;
+                    hit = true;
+                } else {
+                    if let EntitySpecialRelation::PlayerState(player_slot) =
+                        snapshot.special_relation
+                    {
+                        if let Some(player) = self
+                            .players
+                            .iter_mut()
+                            .find(|player| player.slot == player_slot)
+                        {
+                            let roll = player.roll_0x155();
+                            if roll < 256 {
+                                player.set_roll_0x155(roll.saturating_add(28));
+                            }
+                        }
+                    }
+                    self.entities[usize::from(target_index)].set_actual_speed(80);
+                    let yaw = if distance >= 0x40000 {
+                        let yaw = wrap_source_angle(desired_yaw.wrapping_add(591));
+                        self.entities[usize::from(target_index)]
+                            .set_source_word_30(yaw.cast_unsigned());
+                        move_speed = 96;
+                        yaw
+                    } else {
+                        let control_flags = snapshot.control_flags | 0x0000_0800;
+                        let ground = self.terrain.ground_height(parent.axis_position);
+                        let relative_z =
+                            i32::from(target_position.z) - i32::from(parent.word_0x30) + 57;
+                        predicted = parent.axis_position;
+                        predicted.z =
+                            i16::try_from((relative_z + i32::from(ground)).max(i32::from(ground)))
+                                .unwrap_or(ground);
+                        let yaw = wrap_source_angle(snapshot.yaw.wrapping_add(56));
+                        self.entities[usize::from(target_index)].set_control_flags(control_flags);
+                        let mut entity_rng = snapshot.entity_rng;
+                        entity_rng = entity_rng.wrapping_mul(9_377).wrapping_add(9_439);
+                        self.entities[usize::from(target_index)].set_entity_rng(entity_rng);
+                        if relative_z >= 384 + i32::from(entity_rng % 384) {
+                            self.entities[usize::from(target_index)]
+                                .set_control_flags(control_flags | 0x1000_0000);
+                            self.entities[usize::from(target_index)]
+                                .set_source_word_30(yaw.cast_unsigned());
+                        }
+                        yaw
+                    };
+                    self.entities[usize::from(target_index)].set_yaw(yaw);
+                }
+            }
+            if move_speed != 0 {
+                let move_yaw = self.entities[usize::from(target_index)].source_word_30();
+                crate::move_entity(
+                    &mut predicted,
+                    i16::try_from(move_yaw).expect("wind target move yaw fits"),
+                    0,
+                    move_speed,
+                );
+            }
+            let ground = self.terrain.ground_height(predicted);
+            let ground_clearance = snapshot
+                .parameter_relation
+                .and_then(|index| self.presentation.entity_parameters.get(usize::from(index)))
+                .map_or(0_i16, |parameter| {
+                    i16::from_le_bytes([parameter[12], parameter[13]])
+                });
+            if predicted.z > ground {
+                predicted.z = predicted.z.wrapping_add(settle_descent);
+            }
+            let settle_floor = ground.wrapping_add(ground_clearance);
+            if predicted.z <= settle_floor {
+                predicted.z = settle_floor;
+            }
+            if self.profile == FlightProfile::CAVE {
+                if let Some(ceiling) = self.terrain.ceiling_height(predicted) {
+                    let ceiling_limit = ceiling.wrapping_sub(snapshot.array_fov());
+                    if predicted.z > ceiling_limit {
+                        predicted.z = ceiling_limit;
+                    }
+                }
+            }
+            let entity = &mut self.entities[usize::from(target_index)];
+            entity.set_position(predicted);
+            if target_index == self.state.entity_index {
+                self.state.position = predicted;
+            }
+            let _ = self.economy.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: target_index,
+                active: true,
+                x: predicted.x,
+                y: predicted.y,
+            });
+            if hit {
+                self.entities[usize::from(target_index)]
+                    .apply_wind_model45_mailbox(parent.entity_id, parent.subspell_index);
+            }
+        }
+    }
+
     /// Dispatch one live dynamic row. The source class-10/model-1 burst
     /// handler falls through to unconditional drawing disable after one
     /// callback; all dynamic families therefore receive one cursor visit.
@@ -17350,6 +17604,7 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::AuthoredModel22 => {
                 let live = self.economy.step_authored_model22_slot(source_slot);
                 if live {
+                    self.step_level2_authored_model22_sub33340_model0(source_slot);
                     self.step_level2_authored_model22_wind_pulse(source_slot);
                 }
                 live
@@ -28577,6 +28832,122 @@ mod tests {
             payload_before
         );
         assert_eq!(session.entities[1].source_wind_spell_owner(), owner_before);
+    }
+
+    #[test]
+    fn level_two_wind_sub33340_filters_and_moves_model0_target_on_production_turn() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 wind movement session");
+        let parent = session
+            .economy_mut()
+            .allocate_authored_model22(
+                110,
+                Position {
+                    x: 20_000,
+                    y: 20_000,
+                    z: 0,
+                },
+                Position {
+                    x: 20_000,
+                    y: 20_000,
+                    z: 0,
+                },
+            )
+            .expect("wind parent allocation");
+        let target_index = 112_u16;
+        let parent_source_id = parent.entity_id;
+        let (target_snapshot, target_speed_before) = {
+            let target = session
+                .entities
+                .get_mut(usize::from(target_index))
+                .expect("imported player target");
+            assert_eq!(target.class, 3);
+            target.model = 0;
+            target.record[68] = 0;
+            target.source_id = parent_source_id.wrapping_add(1);
+            target.record[30..32].copy_from_slice(&target.source_id.to_le_bytes());
+            target.set_position(parent.position);
+            target.set_yaw(0);
+            target.set_control_flags(0x1000_0000);
+            (target.clone(), target.actual_speed)
+        };
+        session
+            .economy_mut()
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: target_index,
+                active: true,
+                x: parent.position.x,
+                y: parent.position.y,
+            })
+            .expect("target map chain follows its source position");
+
+        assert!(level2_wind_sub33810_accepts(
+            parent_source_id,
+            &target_snapshot
+        ));
+        let mut rejected = target_snapshot.clone();
+        rejected.model = 2;
+        rejected.record[68] = 2;
+        assert!(!level2_wind_sub33810_accepts(parent_source_id, &rejected));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let target = &session.entities[usize::from(target_index)];
+        assert_ne!(target.yaw, 0);
+        assert_eq!(target.actual_speed, target_speed_before);
+        assert_ne!(target.control_flags & 0x0000_0800, 0);
+        assert_eq!(
+            target.source_wind_spell_payload(),
+            i32::from(parent.subspell_index)
+        );
+        assert_eq!(target.source_wind_spell_owner(), parent.entity_id);
+        assert!(session.economy().map_chains().is_linked(target_index));
+
+        let player_slot = match target_snapshot.special_relation {
+            EntitySpecialRelation::PlayerState(slot) => slot,
+            relation => panic!("model-0 target must retain player-state relation: {relation:?}"),
+        };
+        let roll_before = session
+            .players
+            .iter()
+            .find(|player| player.slot == player_slot)
+            .expect("target player-state row")
+            .roll_0x155();
+        let current_parent = session
+            .economy()
+            .authored_model22()
+            .iter()
+            .find(|source| source.source_entity_index == parent.source_entity_index)
+            .copied()
+            .expect("wind parent after first callback");
+        let second_target_position = Position {
+            x: current_parent.position.x.wrapping_add(1_024),
+            y: current_parent.position.y,
+            z: current_parent.position.z,
+        };
+        session.entities[usize::from(target_index)].set_control_flags(0);
+        session.entities[usize::from(target_index)].set_position(second_target_position);
+        session
+            .economy_mut()
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: target_index,
+                active: true,
+                x: second_target_position.x,
+                y: second_target_position.y,
+            })
+            .expect("second target map chain follows its source position");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.entities[usize::from(target_index)].actual_speed, 80);
+        let roll_after = session
+            .players
+            .iter()
+            .find(|player| player.slot == player_slot)
+            .expect("target player-state row after callback")
+            .roll_0x155();
+        assert_eq!(roll_after, roll_before.saturating_add(28));
     }
 
     #[test]

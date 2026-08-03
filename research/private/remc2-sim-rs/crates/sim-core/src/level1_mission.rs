@@ -23042,7 +23042,7 @@ pub(crate) fn parse_authored_features(bytes: &[u8]) -> Result<Vec<AuthoredFeatur
     Ok(features)
 }
 
-fn source_map_search_slots(
+pub(crate) fn source_map_search_slots(
     map_chains: &RenderableMapChains,
     position: Position,
     offsets: &[(i8, i8)],
@@ -23067,6 +23067,25 @@ const fn search_dat_hex_nibble(byte: u8) -> u8 {
         b'a'..=b'f' => byte - b'a' + 10,
         _ => 0xff,
     }
+}
+
+pub(crate) fn source_search_offsets(max_class: u8) -> Vec<(i8, i8)> {
+    let encoded = SEARCH_DAT_CLASS_HEX.as_bytes();
+    debug_assert_eq!(encoded.len(), 2_048);
+    let mut offsets = Vec::new();
+    for search_class in 0..=max_class {
+        for index in 0..1_024 {
+            let high = search_dat_hex_nibble(encoded[index * 2]);
+            let low = search_dat_hex_nibble(encoded[index * 2 + 1]);
+            if (high << 4) | low != search_class {
+                continue;
+            }
+            let x = i8::try_from(index % 32).expect("SEARCH.DAT X fits i8") - 15;
+            let y = i8::try_from(index / 32).expect("SEARCH.DAT Y fits i8") - 15;
+            offsets.push((x, y));
+        }
+    }
+    offsets
 }
 
 fn castle_defense_search_offsets() -> Vec<(i8, i8)> {
