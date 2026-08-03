@@ -350,7 +350,10 @@ namespace MagicCarpet.PresentationLab
                 waterMesh = new Mesh { name = "EnhancedWaterMesh", hideFlags = HideFlags.DontSave };
                 waterFilter.sharedMesh = waterMesh;
                 ConfigureWaterLayer(water);
-                waterMaterial = CreateMaterial("EnhancedWaterMaterial", new Color(0.035f, 0.18f, 0.31f, 0.72f));
+                waterMaterial = CreateMaterial(
+                    "EnhancedWaterMaterial",
+                    new Color(0.035f, 0.18f, 0.31f, 0.72f),
+                    false);
                 waterRenderer.sharedMaterial = waterMaterial;
             }
 
@@ -364,7 +367,10 @@ namespace MagicCarpet.PresentationLab
                 shorelineMesh = new Mesh { name = "EnhancedShorelineMesh", hideFlags = HideFlags.DontSave };
                 shorelineFilter.sharedMesh = shorelineMesh;
                 ConfigureWaterLayer(shoreline);
-                shorelineMaterial = CreateMaterial("EnhancedShorelineMaterial", new Color(0.055f, 0.16f, 0.23f, 1f));
+                shorelineMaterial = CreateMaterial(
+                    "EnhancedShorelineMaterial",
+                    new Color(0.055f, 0.16f, 0.23f, 1f),
+                    true);
                 shorelineRenderer.sharedMaterial = shorelineMaterial;
             }
 
@@ -457,7 +463,7 @@ namespace MagicCarpet.PresentationLab
             shorelineMesh.RecalculateNormals();
         }
 
-        private static Material CreateMaterial(string name, Color color)
+        private static Material CreateMaterial(string name, Color color, bool shoreline)
         {
             Shader customWaterShader = Shader.Find("MagicCarpet/Enhanced/Water");
             Shader shader = customWaterShader ??
@@ -505,7 +511,24 @@ namespace MagicCarpet.PresentationLab
                 material.SetVector("_RippleCenter", Vector4.zero);
                 material.SetFloat("_RippleStartTime", 0f);
                 material.SetFloat("_RippleStrength", 0f);
+                material.SetFloat("_ShorelineMode", shoreline ? 1f : 0f);
+                material.SetFloat("_ShorelineFoamStrength", shoreline ? 0.82f : 0f);
+                material.SetFloat("_ShorelineFoamScale", shoreline ? 0.34f : 0f);
                 material.SetFloat("_Alpha", 0.94f);
+                if (shoreline)
+                {
+                    material.SetColor("_BaseColor", new Color(0.012f, 0.06f, 0.16f, 1f));
+                    material.SetColor("_ReflectionColor", new Color(0.025f, 0.13f, 0.34f, 1f));
+                    material.SetColor("_FoamColor", new Color(0.32f, 0.74f, 1.0f, 1f));
+                    material.SetColor("_MoonColor", new Color(0.48f, 0.72f, 1.0f, 1f));
+                    material.SetFloat("_WaveStrength", 0.20f);
+                    material.SetFloat("_FresnelStrength", 1.20f);
+                    material.SetFloat("_SpecularStrength", 1.45f);
+                    material.SetFloat("_ReflectionStrength", 0.72f);
+                    material.SetFloat("_SceneReflectionStrength", 0.38f);
+                    material.SetFloat("_CausticStrength", 0.55f);
+                    material.SetFloat("_Alpha", 0.88f);
+                }
             }
             else
             {

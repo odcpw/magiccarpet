@@ -25,6 +25,9 @@ Shader "MagicCarpet/Enhanced/Water"
         _RippleStrength ("Ripple Strength", Range(0, 2)) = 0
         _RippleSpeed ("Ripple Speed", Float) = 2.8
         _RippleWidth ("Ripple Width", Float) = 0.65
+        _ShorelineMode ("Authoritative Shoreline Foam", Float) = 0
+        _ShorelineFoamStrength ("Shoreline Foam Strength", Range(0, 2)) = 0
+        _ShorelineFoamScale ("Shoreline Foam Scale", Float) = 0.34
         _Alpha ("Surface Opacity", Range(0, 1)) = 0.94
     }
 
@@ -79,6 +82,9 @@ Shader "MagicCarpet/Enhanced/Water"
                 half _RippleStrength;
                 half _RippleSpeed;
                 half _RippleWidth;
+                half _ShorelineMode;
+                half _ShorelineFoamStrength;
+                half _ShorelineFoamScale;
                 half _Alpha;
             CBUFFER_END
 
@@ -147,6 +153,18 @@ Shader "MagicCarpet/Enhanced/Water"
                 half waveC = sin(dot(coordinate, float2(0.37, -1.09)) + time * 0.19h - 0.8h);
                 half interference = 0.5h + 0.5h * (waveA * waveB * 0.72h + waveC * 0.28h);
                 return smoothstep(0.58h, 0.92h, interference);
+            }
+
+            half ShorelineFoam(float2 position)
+            {
+                float2 coordinate = position * max(_ShorelineFoamScale, 0.001h);
+                float time = _Time.y * (_WaveSpeed * 0.72h);
+                half waveA = sin(dot(coordinate, float2(1.00, 0.38)) + time);
+                half waveB = cos(dot(coordinate, float2(-0.34, 0.94)) - time * 0.76h + 1.1h);
+                half waveC = sin(dot(coordinate, float2(0.62, -0.78)) + time * 0.43h - 0.7h);
+                half interference = 0.5h + 0.5h * (
+                    waveA * 0.52h + waveB * 0.31h + waveC * 0.17h);
+                return smoothstep(0.45h, 0.82h, interference);
             }
 
             half3 WaveNormal(float2 position, half3 baseNormal)
@@ -288,8 +306,16 @@ Shader "MagicCarpet/Enhanced/Water"
                 color += _MoonColor.rgb * rippleBand * (0.06h + crest * 0.12h);
                 color += _MoonColor.rgb * glint;
                 color += _MoonColor.rgb * fresnel * crest * 0.035h;
+                half shorelineFoam = ShorelineFoam(input.positionWS.xz) * _ShorelineMode;
+                color += _FoamColor.rgb * shorelineFoam * _ShorelineFoamStrength *
+                         (0.18h + fresnel * 0.24h);
+                color += _MoonColor.rgb * shorelineFoam * fresnel * 0.10h;
                 color = MixFog(color, ComputeFogFactor(input.positionHCS.z));
-                return half4(color, _Alpha);
+                half alpha = lerp(
+                    _Alpha,
+                    saturate(_Alpha * (0.62h + shorelineFoam * 0.28h)),
+                    saturate(_ShorelineMode));
+                return half4(color, alpha);
             }
             ENDHLSL
         }

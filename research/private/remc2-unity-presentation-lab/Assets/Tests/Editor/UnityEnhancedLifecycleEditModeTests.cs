@@ -1361,6 +1361,8 @@ namespace MagicCarpet.PresentationLab.Tests
             StringAssert.Contains("_RippleCenter", rippleShaderSource);
             StringAssert.Contains("radialFade", rippleShaderSource);
             StringAssert.Contains("_RippleLifetime", rippleShaderSource);
+            StringAssert.Contains("_ShorelineMode", shaderSource);
+            StringAssert.Contains("ShorelineFoam", shaderSource);
             StringAssert.DoesNotContain(
                 "half3 reflection = lerp(_ReflectionColor.rgb, sceneReflection, _SceneReflectionStrength);",
                 shaderSource);
@@ -1398,6 +1400,10 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.That(water.WaterMaterial.GetFloat("_CausticStrength"), Is.EqualTo(0.9f).Within(0.001f));
             MeshRenderer rippleRenderer = gameObject.transform.Find("EnhancedWaterRipple").GetComponent<MeshRenderer>();
             Assert.IsFalse(rippleRenderer.enabled);
+            MeshRenderer shorelineRenderer = gameObject.transform.Find("EnhancedShoreline").GetComponent<MeshRenderer>();
+            Assert.AreEqual("MagicCarpet/Enhanced/Water", shorelineRenderer.sharedMaterial.shader.name);
+            Assert.That(shorelineRenderer.sharedMaterial.GetFloat("_ShorelineMode"), Is.EqualTo(1f).Within(0.001f));
+            Assert.Greater(shorelineRenderer.sharedMaterial.GetFloat("_ShorelineFoamStrength"), 0.5f);
 
             UnityEnhancedVfxEvent splash = new UnityEnhancedVfxEvent(
                 1, 2, 4, 0x40000001UL, UnityEnhancedVfxKind.Weather,
