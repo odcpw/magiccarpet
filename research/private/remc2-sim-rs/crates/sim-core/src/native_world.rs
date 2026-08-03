@@ -32824,6 +32824,79 @@ mod tests {
     }
 
     #[test]
+    fn level_two_group2_row42_materializes_from_row41_production_route() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-2 production session");
+        let baseline_hash = session.campaign_state_hash();
+        let authored_features = session.mission().authored_features().to_vec();
+        let feature = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("authored group-2 feature")
+        };
+
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .all(|source| source.authored_index != 42)
+        );
+        session.state.position = feature(11).world_position(0);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 2,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [42]
+        )));
+        let row42 = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 42)
+            .copied()
+            .expect("group 2 must materialize row 42");
+        assert_eq!(
+            (
+                row42.source_class,
+                row42.model,
+                row42.action,
+                row42.stage_tag,
+                row42.word_10,
+                row42.dword_0x10,
+            ),
+            (11, 0, 0, 3, 17, 0)
+        );
+        let authored_row42 = feature(42);
+        assert_eq!(
+            (row42.position.x, row42.position.y, row42.position.z),
+            (
+                authored_row42.world_position(0).x,
+                authored_row42.world_position(0).y,
+                session
+                    .terrain
+                    .ground_height(authored_row42.world_position(0))
+            )
+        );
+        assert!(row42.active);
+        assert!(row42.drawing_enabled);
+        assert!(!row42.fired);
+
+        session.reset();
+        assert!(session.economy().authored_switch_producers().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
     fn level_two_authored_switch_chain_reaches_group5_consumers_from_production_turns() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
