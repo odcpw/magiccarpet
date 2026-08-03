@@ -45,6 +45,31 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void EnhancedQualityAppliesReachableFireballBloomContract()
+        {
+            GameObject gameObject = new GameObject("enhanced-bloom-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+
+            UnityEnhancedQualityAndPost quality = root.QualityAndPost;
+            Assert.IsNotNull(quality);
+            Assert.IsNotNull(quality.PostVolume);
+            Assert.IsTrue(quality.PostVolume.isGlobal);
+            Assert.AreEqual(100f, quality.PostVolume.priority);
+            Assert.IsTrue(quality.PostVolume.profile.TryGet<Bloom>(out Bloom bloom));
+            Assert.IsTrue(bloom.active);
+            Assert.That(bloom.threshold.value, Is.EqualTo(0.85f).Within(0.0001f));
+            Assert.That(bloom.intensity.value, Is.EqualTo(0.65f).Within(0.0001f));
+            Assert.That(bloom.scatter.value, Is.EqualTo(0.78f).Within(0.0001f));
+            Assert.That(bloom.tint.value.r, Is.EqualTo(1f).Within(0.0001f));
+            Assert.That(bloom.tint.value.g, Is.EqualTo(0.38f).Within(0.0001f));
+            Assert.That(bloom.tint.value.b, Is.EqualTo(0.12f).Within(0.0001f));
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void SnapshotLifecycleRejectsStaleAndResetsGeneration()
         {
             GameObject gameObject = new GameObject("enhanced-root-test");

@@ -121,6 +121,11 @@ namespace MagicCarpet.PresentationLab
     [DisallowMultipleComponent]
     public sealed class UnityEnhancedQualityAndPost : MonoBehaviour
     {
+        private const float EnhancedBloomThreshold = 0.85f;
+        private const float EnhancedBloomIntensity = 0.65f;
+        private const float EnhancedBloomScatter = 0.78f;
+        private static readonly Color EnhancedBloomTint = new Color(1f, 0.38f, 0.12f, 1f);
+
         private Volume volume;
         private VolumeProfile volumeProfile;
         private Bloom bloom;
@@ -197,7 +202,10 @@ namespace MagicCarpet.PresentationLab
             ApplyPipelineScale(settings.RenderScale);
             EnsureVolume();
             bloom.active = settings.Bloom;
-            bloom.intensity.value = settings.Bloom ? 0.65f : 0f;
+            bloom.threshold.value = EnhancedBloomThreshold;
+            bloom.intensity.value = settings.Bloom ? EnhancedBloomIntensity : 0f;
+            bloom.scatter.value = EnhancedBloomScatter;
+            bloom.tint.value = EnhancedBloomTint;
             toneMapping.active = settings.ToneMapping;
             toneMapping.mode.value = TonemappingMode.ACES;
             colorGrading.active = settings.ColorGrading;
