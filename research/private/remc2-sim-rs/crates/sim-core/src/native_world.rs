@@ -5368,6 +5368,72 @@ impl Level2EconomyState {
         Some(source)
     }
 
+    /// Allocate the authored class-10/subtype-39 consumer from the generic
+    /// `sub_4A310` path.  The pinned subtype table selects
+    /// `CreateManaSphere512_50080`, whose constructor writes a model-39,
+    /// action-41 sphere with a fixed 512 mana payload.  These rows are
+    /// dormant authored records, so their source owner/player links remain
+    /// zero until a later source-owned claim/possession callback changes
+    /// them; no relation is inferred from the activating switch.
+    pub fn allocate_authored_model39(
+        &mut self,
+        _authored_index: u16,
+        trigger_source_entity_index: u16,
+        position: Position,
+    ) -> Option<ManaSphere> {
+        const AUTHORED_MANA: i32 = 512;
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let sphere = ManaSphere {
+            id: u32::from(source_entity_index),
+            source_entity_index,
+            entity_rng,
+            position,
+            velocity_x: 0,
+            velocity_y: 0,
+            vertical_velocity: 0,
+            yaw: 0,
+            mana: AUTHORED_MANA,
+            owner_entity_index: 0,
+            player_entity_index: 0,
+            incoming_owner_entity_index: 0,
+            incoming_possession_payload: 0,
+            attraction_source_entity_index: 0,
+            attraction_step: 0,
+            attraction_distance_high: 0,
+            assigned_carrier_id: 0,
+            assigned_defender_slot: 0,
+            control_flags: 0,
+            // NewEvent seeds byte 0x3E from the allocated arena row.  The
+            // typed phase is the corresponding source-visible byte.
+            phase: source_entity_index as u8,
+            active: true,
+            pending_delete: false,
+        };
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.spheres.push(sphere);
+        self.rebuild_owner_mana_projection();
+        self.events.push(Level2EconomyEvent::ManaSphereSpawned {
+            sphere_id: sphere.id,
+            source_entity_index: trigger_source_entity_index,
+            mana: AUTHORED_MANA,
+        });
+        Some(sphere)
+    }
+
     /// Advance one live authored switch callback.  The caller supplies the
     /// source `CompareAxisWithShift` result; this method owns the source
     /// phase/cooldown writes and reports a fired target group.
@@ -14494,6 +14560,11 @@ pub struct Level2ResetSession {
     /// parent expiry must not rematerialize the same row.
     baseline_level2_model22_activated: BTreeSet<u16>,
     level2_model22_activated: BTreeSet<u16>,
+    /// Authored class-10/subtype-39 rows consumed by a live stage-tag
+    /// producer. The source group scan can run again, so retain authored
+    /// identity even though the typed consumers live in the sphere arena.
+    baseline_level2_model39_activated: BTreeSet<u16>,
+    level2_model39_activated: BTreeSet<u16>,
     baseline_level2_imported_switch_roots: Box<[Level2ImportedSwitchRootState]>,
     level2_imported_switch_roots: Box<[Level2ImportedSwitchRootState]>,
     baseline_level2_group10_switch25: Option<Level2Group10Switch25State>,
@@ -15046,6 +15117,8 @@ impl Level2ResetSession {
             level2_model76_activated: BTreeSet::new(),
             baseline_level2_model22_activated: BTreeSet::new(),
             level2_model22_activated: BTreeSet::new(),
+            baseline_level2_model39_activated: BTreeSet::new(),
+            level2_model39_activated: BTreeSet::new(),
             baseline_level2_imported_switch_roots: initial_level2_imported_switch_roots.clone(),
             level2_imported_switch_roots: initial_level2_imported_switch_roots,
             baseline_level2_group10_switch25: initial_level2_group10_switch25,
@@ -16265,7 +16338,9 @@ impl Level2ResetSession {
                     && ((feature.kind == 11
                         && matches!(feature.subtype, 0 | 1)
                         && feature.index != 274)
-                        || (feature.kind == 10 && feature.subtype == 22))
+                        || (feature.kind == 10
+                            && (feature.subtype == 22
+                                || (feature.subtype == 39 && target_group == 7))))
             })
             .collect::<Vec<_>>();
         let mut activated = Vec::new();
@@ -16286,6 +16361,30 @@ impl Level2ResetSession {
                     continue;
                 };
                 self.level2_model22_activated.insert(feature.index);
+                activated.push((feature.index, source.source_entity_index));
+                continue;
+            }
+            if feature.kind == 10 && feature.subtype == 39 && target_group == 7 {
+                if self.level2_model39_activated.contains(&feature.index) {
+                    continue;
+                }
+                let position =
+                    feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+                let Some(source) =
+                    self.economy
+                        .allocate_authored_model39(feature.index, producer_slot, position)
+                else {
+                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot: producer_slot,
+                        message: format!(
+                            "Level 2 authored mana sphere group {target_group} row {} could not allocate",
+                            feature.index
+                        ),
+                    });
+                    continue;
+                };
+                self.level2_model39_activated.insert(feature.index);
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
@@ -17794,6 +17893,10 @@ impl Level2ResetSession {
         for authored_index in &self.level2_model22_activated {
             hasher.update(authored_index.to_le_bytes());
         }
+        hasher.update(b"level2-model39-activation-v1");
+        for authored_index in &self.level2_model39_activated {
+            hasher.update(authored_index.to_le_bytes());
+        }
         hasher.update(b"level2-group10-switch25-v1");
         match self.level2_group10_switch25 {
             Some(switch) => {
@@ -17918,6 +18021,7 @@ impl Level2ResetSession {
             self.baseline_level2_switch_producers_activated.clone();
         self.level2_model76_activated = self.baseline_level2_model76_activated.clone();
         self.level2_model22_activated = self.baseline_level2_model22_activated.clone();
+        self.level2_model39_activated = self.baseline_level2_model39_activated.clone();
         self.level2_imported_switch_roots = self.baseline_level2_imported_switch_roots.clone();
         self.level2_group10_switch25 = self.baseline_level2_group10_switch25;
         self.level2_class11_model0_constructor_phase =
@@ -31265,6 +31369,9 @@ mod tests {
             .level2_reset_session()
             .expect("Level 2 authored switch session");
         let baseline_hash = session.campaign_state_hash();
+        let baseline_sphere_count = session.economy().spheres().len();
+        let baseline_owner_mana_global = session.economy().owner_mana_global();
+        let expected_group7_indices = (85..=104).collect::<Vec<_>>();
         let baseline_root_phase = session
             .level2_imported_switch_roots
             .iter()
@@ -31342,8 +31449,27 @@ mod tests {
         // Rows 42 and 64 share the authored tile: move away after firing
         // row 42 so row 64's inverse-overlap callback can select group 4.
         session.state.position = feature_position(65);
+        let mut group7_activated = false;
+        let mut group7_owner_mana_global_before = None;
+        let mut group7_owner_mana_global_after = None;
         for _ in 0..8 {
+            let owner_global_before = session.economy().owner_mana_global();
             session.step_outer_turn(PlayerCommand::default(), 0);
+            let activated_this_turn = session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group,
+                        authored_indices,
+                        ..
+                    } if *group == 7 && authored_indices.as_ref() == expected_group7_indices.as_slice()
+                )
+            });
+            if activated_this_turn {
+                group7_owner_mana_global_before = Some(owner_global_before);
+                group7_owner_mana_global_after = Some(session.economy().owner_mana_global());
+            }
+            group7_activated |= activated_this_turn;
         }
         let switch_indices = session
             .economy()
@@ -31386,10 +31512,61 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert!(class14_indices.is_superset(&BTreeSet::from([248, 249, 250, 251])));
 
+        // The source runagain cursor reaches row 83 -> row 84 -> group 7 in
+        // this same production chain, so no direct allocator call is needed.
+        assert!(
+            group7_activated,
+            "row 84 must activate group 7 in production"
+        );
+        let expected_group7_positions = expected_group7_indices
+            .iter()
+            .copied()
+            .map(feature_position)
+            .collect::<Vec<_>>();
+        let expected_group7_position_set = expected_group7_positions
+            .iter()
+            .map(|position| (position.x, position.y))
+            .collect::<BTreeSet<_>>();
+        let mut actual_group7_position_counts = BTreeMap::new();
+        for sphere in session.economy().spheres().iter().filter(|sphere| {
+            expected_group7_position_set.contains(&(sphere.position.x, sphere.position.y))
+        }) {
+            *actual_group7_position_counts
+                .entry((sphere.position.x, sphere.position.y))
+                .or_insert(0usize) += 1;
+            assert_eq!(sphere.mana, 512);
+            assert_eq!(
+                (sphere.owner_entity_index, sphere.player_entity_index),
+                (0, 0)
+            );
+        }
+        let expected_group7_position_counts = expected_group7_position_set
+            .iter()
+            .copied()
+            .map(|position| (position, 1usize))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            actual_group7_position_counts, expected_group7_position_counts,
+            "group 7 materializes one sphere for every row 85..104 position"
+        );
+        let group7_owner_mana_global_before = group7_owner_mana_global_before
+            .expect("group 7 owner-mana baseline captured on activation");
+        let group7_owner_mana_global_after = group7_owner_mana_global_after
+            .expect("group 7 owner-mana projection captured on activation");
+        assert!(
+            group7_owner_mana_global_after >= group7_owner_mana_global_before + 20 * 512,
+            "group 7 spheres update the source owner-mana projection"
+        );
+
         session.reset();
         assert!(session.economy().authored_switch_producers().is_empty());
         assert!(session.economy().mana_attraction_fields().is_empty());
         assert!(session.economy().authored_class14().is_empty());
+        assert_eq!(session.economy().spheres().len(), baseline_sphere_count);
+        assert_eq!(
+            session.economy().owner_mana_global(),
+            baseline_owner_mana_global
+        );
         assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
