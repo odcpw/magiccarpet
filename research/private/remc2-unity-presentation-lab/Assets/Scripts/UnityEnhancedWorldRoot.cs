@@ -405,6 +405,19 @@ namespace MagicCarpet.PresentationLab
             {
                 hudPresentation.HideForSnapshot();
             }
+            if (snapshot.Hud != null && snapshot.Quality != null)
+            {
+                vfxPresentation.ApplySpeedReadability(
+                    cameraRig.PresentationCamera,
+                    snapshot.Tick,
+                    snapshot.Hud.ActualSpeed,
+                    snapshot.Hud.SpeedTrailCount,
+                    snapshot.Quality.SpeedStreaks && !snapshot.Quality.ReducedMotion);
+            }
+            else
+            {
+                vfxPresentation.ClearSpeedReadability();
+            }
 
             seenIdentities.Clear();
             for (int index = 0; index < snapshot.Entities.Length; index++)

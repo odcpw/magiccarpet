@@ -1102,6 +1102,66 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void OwnerActualSpeedDrivesBoundedSpeedStreaksAndReducedMotionDisablesThem()
+        {
+            GameObject gameObject = new GameObject("enhanced-speed-readability-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+            UnityEnhancedQualitySettings quality =
+                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog);
+
+            Assert.IsTrue(root.ApplySnapshot(
+                SpeedSnapshot(13, 1, 0, 0, quality)));
+            Assert.AreEqual(0, root.VfxPresentation.ActiveSpeedStreakCount);
+
+            Assert.IsTrue(root.ApplySnapshot(
+                SpeedSnapshot(13, 2, 48, 0, quality)));
+            Assert.AreEqual(0, root.VfxPresentation.ActiveSpeedStreakCount);
+
+            Assert.IsTrue(root.ApplySnapshot(
+                SpeedSnapshot(13, 3, 80, 0, quality)));
+            Assert.AreEqual(8, root.VfxPresentation.ActiveSpeedStreakCount);
+            Assert.AreEqual(8, root.VfxPresentation.SpeedStreakPoolCount);
+            Transform streakRoot = root.CameraRig.PresentationCamera.transform.Find(
+                "EnhancedSpeedStreaks");
+            Assert.IsNotNull(streakRoot);
+            Vector3 firstPosition = streakRoot.GetChild(0).localPosition;
+
+            Assert.IsTrue(root.ApplySnapshot(
+                SpeedSnapshot(13, 3, 80, 0, quality)));
+            Assert.That(
+                Vector3.Distance(firstPosition, streakRoot.GetChild(0).localPosition),
+                Is.LessThan(0.0001f));
+
+            Assert.IsTrue(root.ApplySnapshot(
+                SpeedSnapshot(13, 4, 80, 4, quality)));
+            Assert.AreEqual(12, root.VfxPresentation.ActiveSpeedStreakCount);
+            Assert.AreEqual(12, root.VfxPresentation.SpeedStreakPoolCount);
+
+            Assert.IsTrue(root.ApplySnapshot(
+                SpeedSnapshot(13, 5, 80, byte.MaxValue, quality)));
+            Assert.AreEqual(12, root.VfxPresentation.ActiveSpeedStreakCount);
+
+            quality.SpeedStreaks = false;
+            Assert.IsTrue(root.ApplySnapshot(
+                SpeedSnapshot(13, 6, 80, 4, quality)));
+            Assert.AreEqual(0, root.VfxPresentation.ActiveSpeedStreakCount);
+
+            quality.ReducedMotion = true;
+            quality.CameraShake = false;
+            quality.SpeedStreaks = false;
+            quality.MotionBlur = false;
+            Assert.IsTrue(root.ApplySnapshot(
+                SpeedSnapshot(13, 7, 80, 4, quality)));
+            Assert.AreEqual(0, root.VfxPresentation.ActiveSpeedStreakCount);
+
+            root.ResetPresentation(14);
+            Assert.AreEqual(0, root.VfxPresentation.ActiveSpeedStreakCount);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void ReducedMotionSuppressesFireballPlumeButKeepsAuthoritativeProjectile()
         {
             GameObject gameObject = new GameObject("enhanced-fireball-reduced-motion-test");
@@ -1710,6 +1770,27 @@ namespace MagicCarpet.PresentationLab.Tests
                     Provenance = new byte[] { 0, 1 << 3 },
                     PaletteRgb8 = palette
                 }
+            };
+        }
+
+        private static UnityEnhancedWorldSnapshot SpeedSnapshot(
+            ulong generation,
+            ulong tick,
+            int actualSpeed,
+            byte speedTrailCount,
+            UnityEnhancedQualitySettings quality)
+        {
+            UnityEnhancedHudSnapshot hud = OwnerHudSnapshot(generation, tick);
+            hud.ActualSpeed = actualSpeed;
+            hud.SpeedTrailCount = speedTrailCount;
+            return new UnityEnhancedWorldSnapshot
+            {
+                Generation = generation,
+                Tick = tick,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Entities = new UnityEnhancedEntitySnapshot[0],
+                Hud = hud,
+                Quality = quality
             };
         }
 

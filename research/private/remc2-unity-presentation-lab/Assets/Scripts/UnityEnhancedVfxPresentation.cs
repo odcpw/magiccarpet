@@ -66,11 +66,25 @@ namespace MagicCarpet.PresentationLab
     public sealed class UnityEnhancedVfxPresentation : MonoBehaviour
     {
         private const float FireballEventVisualScale = 1.8f;
+        private const int SpeedReadabilityBaseCount = 8;
+        private const int SpeedReadabilityMaximumCount = 12;
+        private const int SpeedReadabilityAuthoritativeCountCap = 4;
+        private const float SpeedReadabilityStart = 48f;
+        private const float SpeedReadabilityFull = 80f;
+        private const float SpeedReadabilityDepth = 6f;
+        private const float SpeedReadabilityMinimumRadius = 0.34f;
+        private const float SpeedReadabilityMaximumRadius = 0.52f;
+        private const float SpeedReadabilityMinimumLength = 0.04f;
+        private const float SpeedReadabilityMaximumLength = 0.10f;
+        private const float SpeedReadabilityMinimumWidth = 0.005f;
+        private const float SpeedReadabilityMaximumWidth = 0.010f;
         private readonly Stack<UnityEnhancedVfxVisual> pool = new Stack<UnityEnhancedVfxVisual>();
         private readonly Dictionary<ulong, UnityEnhancedVfxVisual> active = new Dictionary<ulong, UnityEnhancedVfxVisual>();
         private readonly Dictionary<UnityEnhancedVfxKind, Mesh> meshes = new Dictionary<UnityEnhancedVfxKind, Mesh>();
         private readonly Dictionary<UnityEnhancedVfxKind, Material> materials = new Dictionary<UnityEnhancedVfxKind, Material>();
+        private readonly List<UnityEnhancedVfxVisual> speedReadabilityPool = new List<UnityEnhancedVfxVisual>();
         private Transform effectRoot;
+        private Transform speedReadabilityRoot;
         private ulong generation;
         private ulong lastEventSequence;
         private ulong lastTick;
@@ -81,6 +95,8 @@ namespace MagicCarpet.PresentationLab
         public int PooledEffectCount { get { return pool.Count; } }
         public int DroppedEffectCount { get; private set; }
         public int DuplicateEffectCount { get; private set; }
+        public int ActiveSpeedStreakCount { get; private set; }
+        public int SpeedStreakPoolCount { get { return speedReadabilityPool.Count; } }
         public ulong Generation { get { return generation; } }
         public ulong LastEventSequence { get { return lastEventSequence; } }
         public bool ReducedMotion { get { return reducedMotion; } }
@@ -99,6 +115,10 @@ namespace MagicCarpet.PresentationLab
         public void SetReducedMotion(bool value)
         {
             reducedMotion = value;
+            if (value)
+            {
+                ClearSpeedReadability();
+            }
             foreach (UnityEnhancedVfxVisual visual in active.Values)
             {
                 if (visual.Object != null)
@@ -116,6 +136,7 @@ namespace MagicCarpet.PresentationLab
             DroppedEffectCount = 0;
             DuplicateEffectCount = 0;
             RecycleAll();
+            ClearSpeedReadability();
         }
 
         public bool ApplyEvent(UnityEnhancedVfxEvent vfxEvent)
@@ -155,6 +176,86 @@ namespace MagicCarpet.PresentationLab
             visual.Object.SetActive(true);
             active.Add(vfxEvent.Sequence, visual);
             return true;
+        }
+
+        /// <summary>
+        /// Consumes owner HUD speed state as a camera-local readability cue.
+        /// This is deliberately separate from the ordered VFX event stream:
+        /// speed is continuous mission state, not a synthetic Unity event.
+        /// </summary>
+        public void ApplySpeedReadability(
+            Camera camera,
+            ulong tick,
+            int actualSpeed,
+            byte authoritativeTrailCount,
+            bool enabled)
+        {
+            if (!enabled || reducedMotion || camera == null)
+            {
+                ClearSpeedReadability();
+                return;
+            }
+
+            float speed = Mathf.Abs((float)actualSpeed);
+            if (speed <= SpeedReadabilityStart)
+            {
+                ClearSpeedReadability();
+                return;
+            }
+
+            float speedBlend = Mathf.InverseLerp(
+                SpeedReadabilityStart,
+                SpeedReadabilityFull,
+                speed);
+            int speedDrivenCount = Mathf.Clamp(
+                Mathf.CeilToInt(speedBlend * SpeedReadabilityBaseCount),
+                0,
+                SpeedReadabilityBaseCount);
+            int ownerDrivenCount = Mathf.Clamp(
+                (int)authoritativeTrailCount,
+                0,
+                SpeedReadabilityAuthoritativeCountCap);
+            int targetCount = Mathf.Clamp(
+                speedDrivenCount + ownerDrivenCount,
+                0,
+                SpeedReadabilityMaximumCount);
+            if (targetCount == 0)
+            {
+                ClearSpeedReadability();
+                return;
+            }
+
+            EnsureSpeedReadabilityHierarchy(camera);
+            for (int index = 0; index < targetCount; index++)
+            {
+                UnityEnhancedVfxVisual visual = EnsureSpeedReadabilityVisual(index);
+                ConfigureSpeedReadabilityVisual(
+                    visual,
+                    camera,
+                    tick,
+                    index,
+                    speedBlend);
+                visual.Object.SetActive(true);
+            }
+
+            for (int index = targetCount; index < speedReadabilityPool.Count; index++)
+            {
+                speedReadabilityPool[index].Object.SetActive(false);
+            }
+            ActiveSpeedStreakCount = targetCount;
+        }
+
+        public void ClearSpeedReadability()
+        {
+            for (int index = 0; index < speedReadabilityPool.Count; index++)
+            {
+                UnityEnhancedVfxVisual visual = speedReadabilityPool[index];
+                if (visual.Object != null)
+                {
+                    visual.Object.SetActive(false);
+                }
+            }
+            ActiveSpeedStreakCount = 0;
         }
 
         public int ApplyReplay(IList<UnityEnhancedVfxEvent> events, ulong replayGeneration)
@@ -226,6 +327,93 @@ namespace MagicCarpet.PresentationLab
             return new UnityEnhancedVfxVisual { Object = effect, Filter = filter, Renderer = renderer };
         }
 
+        private void EnsureSpeedReadabilityHierarchy(Camera camera)
+        {
+            if (speedReadabilityRoot == null)
+            {
+                GameObject root = new GameObject("EnhancedSpeedStreaks");
+                root.hideFlags = HideFlags.DontSave;
+                speedReadabilityRoot = root.transform;
+            }
+
+            if (speedReadabilityRoot.parent != camera.transform)
+            {
+                speedReadabilityRoot.SetParent(camera.transform, false);
+            }
+        }
+
+        private UnityEnhancedVfxVisual EnsureSpeedReadabilityVisual(int index)
+        {
+            while (speedReadabilityPool.Count <= index)
+            {
+                GameObject streak = new GameObject(
+                    "EnhancedSpeedStreak_" + speedReadabilityPool.Count);
+                streak.transform.SetParent(speedReadabilityRoot, false);
+                streak.hideFlags = HideFlags.DontSave;
+                MeshFilter filter = streak.AddComponent<MeshFilter>();
+                MeshRenderer renderer = streak.AddComponent<MeshRenderer>();
+                renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                renderer.receiveShadows = false;
+                speedReadabilityPool.Add(new UnityEnhancedVfxVisual
+                {
+                    Object = streak,
+                    Filter = filter,
+                    Renderer = renderer
+                });
+            }
+
+            return speedReadabilityPool[index];
+        }
+
+        private void ConfigureSpeedReadabilityVisual(
+            UnityEnhancedVfxVisual visual,
+            Camera camera,
+            ulong tick,
+            int index,
+            float speedBlend)
+        {
+            float fieldOfView = camera.fieldOfView;
+            if (fieldOfView <= 1f || fieldOfView >= 179f ||
+                float.IsNaN(fieldOfView) || float.IsInfinity(fieldOfView))
+            {
+                fieldOfView = 70f;
+            }
+
+            float halfHeight = Mathf.Tan(fieldOfView * Mathf.Deg2Rad * 0.5f) *
+                               SpeedReadabilityDepth;
+            float halfWidth = halfHeight * Mathf.Max(0.1f, camera.aspect);
+            float tickPhase = (tick % 120UL) / 120f;
+            float phase = index * 2.399963f + tickPhase * 0.32f;
+            float radius = Mathf.Lerp(
+                SpeedReadabilityMinimumRadius,
+                SpeedReadabilityMaximumRadius,
+                Mathf.Repeat(index * 0.37f + tickPhase * 0.18f, 1f));
+            float length = Mathf.Lerp(
+                SpeedReadabilityMinimumLength,
+                SpeedReadabilityMaximumLength,
+                Mathf.Clamp01(speedBlend * 0.72f +
+                              Mathf.Repeat(index * 0.29f + tickPhase, 1f) * 0.28f));
+            float width = Mathf.Lerp(
+                SpeedReadabilityMinimumWidth,
+                SpeedReadabilityMaximumWidth,
+                Mathf.Repeat(index * 0.43f + tickPhase * 0.25f, 1f));
+
+            visual.Object.transform.localPosition = new Vector3(
+                Mathf.Cos(phase) * radius * halfWidth,
+                Mathf.Sin(phase) * radius * halfHeight,
+                SpeedReadabilityDepth);
+            visual.Object.transform.localRotation = Quaternion.Euler(
+                0f,
+                0f,
+                phase * Mathf.Rad2Deg);
+            visual.Object.transform.localScale = new Vector3(
+                halfWidth * 2f * width,
+                halfHeight * 2f * length,
+                1f);
+            visual.Filter.sharedMesh = GetMesh(UnityEnhancedVfxKind.SpeedTrail);
+            visual.Renderer.sharedMaterial = GetMaterial(UnityEnhancedVfxKind.SpeedTrail);
+        }
+
         private Mesh GetMesh(UnityEnhancedVfxKind kind)
         {
             Mesh mesh;
@@ -237,6 +425,13 @@ namespace MagicCarpet.PresentationLab
             if (kind == UnityEnhancedVfxKind.Fire)
             {
                 mesh = CreateFireballMesh();
+                meshes.Add(kind, mesh);
+                return mesh;
+            }
+
+            if (kind == UnityEnhancedVfxKind.SpeedTrail)
+            {
+                mesh = CreateSpeedStreakMesh();
                 meshes.Add(kind, mesh);
                 return mesh;
             }
@@ -270,6 +465,26 @@ namespace MagicCarpet.PresentationLab
             };
             mesh.RecalculateNormals();
             meshes.Add(kind, mesh);
+            return mesh;
+        }
+
+        private static Mesh CreateSpeedStreakMesh()
+        {
+            Mesh mesh = new Mesh
+            {
+                name = "EnhancedVfxMesh_SpeedTrail",
+                hideFlags = HideFlags.DontSave
+            };
+            mesh.vertices = new[]
+            {
+                new Vector3(0f, -0.5f, 0f),
+                new Vector3(0.5f, 0f, 0f),
+                new Vector3(0f, 0.5f, 0f),
+                new Vector3(-0.5f, 0f, 0f)
+            };
+            mesh.triangles = new[] { 0, 1, 2, 0, 2, 3 };
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
             return mesh;
         }
 
@@ -346,18 +561,23 @@ namespace MagicCarpet.PresentationLab
                 }
                 else if (shader == customVfxShader)
                 {
-                    float glow = kind == UnityEnhancedVfxKind.Weather ? 0.7f :
+                    float glow = kind == UnityEnhancedVfxKind.SpeedTrail ? 0.8f :
+                                 kind == UnityEnhancedVfxKind.Weather ? 0.7f :
                                  kind == UnityEnhancedVfxKind.Smoke ? 0.28f :
                                  kind == UnityEnhancedVfxKind.Fire ? 1.5f :
                                  kind == UnityEnhancedVfxKind.SpellCast ? 1.15f :
                                  kind == UnityEnhancedVfxKind.Impact ? 1.25f : 1.6f;
-                    float opacity = kind == UnityEnhancedVfxKind.Smoke ? 0.28f :
+                    float opacity = kind == UnityEnhancedVfxKind.SpeedTrail ? 0.20f :
+                                    kind == UnityEnhancedVfxKind.Smoke ? 0.28f :
                                     kind == UnityEnhancedVfxKind.SpellCast ? 0.65f : 0.72f;
                     material.SetColor("_GlowColor", VfxColor(kind));
                     material.SetFloat("_GlowIntensity", glow);
                     material.SetFloat("_Opacity", opacity);
-                    material.SetFloat("_PulseSpeed", kind == UnityEnhancedVfxKind.SpeedTrail ? 4.5f : 2.5f);
-                    material.SetFloat("_RimStrength", kind == UnityEnhancedVfxKind.Impact ? 1.8f : 1.2f);
+                    material.SetFloat("_PulseSpeed", kind == UnityEnhancedVfxKind.SpeedTrail ? 0f : 2.5f);
+                    material.SetFloat(
+                        "_RimStrength",
+                        kind == UnityEnhancedVfxKind.SpeedTrail ? 0.65f :
+                        kind == UnityEnhancedVfxKind.Impact ? 1.8f : 1.2f);
                 }
                 else
                 {
