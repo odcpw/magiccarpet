@@ -747,7 +747,8 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.That(trailRenderer.startWidth, Is.EqualTo(0.28f).Within(0.001f));
             Assert.That(trailRenderer.endWidth, Is.EqualTo(0.025f).Within(0.001f));
             Assert.IsTrue(trailRenderer.enabled);
-            Assert.IsTrue(trailRenderer.emitting);
+            Assert.IsFalse(trailRenderer.emitting);
+            Assert.AreEqual(1, trailRenderer.positionCount);
             Transform halo = gameObject.transform.Find(
                 "EnhancedWorldObjects/EnhancedEntity_0000000820000001/EnhancedFireballHalo");
             Assert.IsNotNull(halo);
@@ -790,7 +791,40 @@ namespace MagicCarpet.PresentationLab.Tests
                     {
                         StableIdentity = fireballIdentity,
                         Generation = 8,
-                        Position = new Vector3(1f, 2f, 3f),
+                        Position = new Vector3(1.35f, 2f, 3f),
+                        Rotation = Quaternion.identity,
+                        Visible = true,
+                        PresentationFamily = (int)UnityEnhancedPresentationFamily.Fire
+                    },
+                    new UnityEnhancedEntitySnapshot
+                    {
+                        StableIdentity = 0x0000000840000002UL,
+                        Generation = 8,
+                        Position = new Vector3(2f, 2f, 3f),
+                        Rotation = Quaternion.identity,
+                        Visible = true,
+                        PresentationFamily = (int)UnityEnhancedPresentationFamily.Fire
+                    }
+                }
+            }));
+            Transform movedTrail = gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000820000001/EnhancedFireballTrail");
+            TrailRenderer movedTrailRenderer = movedTrail.GetComponent<TrailRenderer>();
+            Assert.Greater(movedTrailRenderer.positionCount, 1);
+            Assert.IsFalse(movedTrailRenderer.emitting);
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 8,
+                Tick = 14,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Entities = new[]
+                {
+                    new UnityEnhancedEntitySnapshot
+                    {
+                        StableIdentity = fireballIdentity,
+                        Generation = 8,
+                        Position = new Vector3(1.35f, 2f, 3f),
                         Rotation = Quaternion.identity,
                         Visible = false,
                         PresentationFamily = (int)UnityEnhancedPresentationFamily.Fire
@@ -809,7 +843,7 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
             {
                 Generation = 8,
-                Tick = 14,
+                Tick = 15,
                 CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
                 Entities = new[]
                 {

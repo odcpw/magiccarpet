@@ -44,6 +44,8 @@ namespace MagicCarpet.PresentationLab
         public GameObject TrailObject;
         public TrailRenderer TrailRenderer;
         public bool FireballTrailVisible;
+        public bool HasFireballTrailPosition;
+        public Vector3 LastFireballTrailPosition;
         public int Family = -1;
         public bool FireballProjectileMaterial;
 
@@ -64,6 +66,7 @@ namespace MagicCarpet.PresentationLab
                 TrailObject.SetActive(false);
             }
             FireballTrailVisible = false;
+            HasFireballTrailPosition = false;
         }
     }
 
@@ -81,6 +84,7 @@ namespace MagicCarpet.PresentationLab
         private const float FireballTrailTime = 0.24f;
         private const float FireballTrailStartWidth = 0.28f;
         private const float FireballTrailEndWidth = 0.025f;
+        private const float FireballTrailMinimumMovement = 0.035f;
         private const int FireballTrailMaterialKey = -1000;
         private readonly Dictionary<int, Mesh> meshes = new Dictionary<int, Mesh>();
         private readonly Dictionary<int, Material> materials = new Dictionary<int, Material>();
@@ -152,6 +156,7 @@ namespace MagicCarpet.PresentationLab
                     true,
                     true);
                 EnsureFireballTrail(state);
+                ConfigureFireballTrail(state, entity);
             }
             else if (state.HaloObject != null)
             {
@@ -187,14 +192,6 @@ namespace MagicCarpet.PresentationLab
                     0f);
                 state.HaloObject.transform.localRotation = localRotation;
                 state.HaloObject.transform.localScale = Vector3.one * haloScale;
-                if (entity.Visible && !state.FireballTrailVisible)
-                {
-                    state.TrailRenderer.Clear();
-                }
-                state.TrailObject.SetActive(entity.Visible);
-                state.TrailRenderer.enabled = entity.Visible;
-                state.TrailRenderer.emitting = entity.Visible;
-                state.FireballTrailVisible = entity.Visible;
             }
             state.Renderer.sortingOrder = entity.RenderLayer;
             if (state.HaloRenderer != null)
@@ -300,6 +297,37 @@ namespace MagicCarpet.PresentationLab
             state.TrailObject.SetActive(false);
         }
 
+        private static void ConfigureFireballTrail(
+            UnityEnhancedActorVisualState state,
+            UnityEnhancedEntitySnapshot entity)
+        {
+            if (!entity.Visible)
+            {
+                DisableFireballTrail(state);
+                return;
+            }
+
+            state.TrailObject.SetActive(true);
+            state.TrailRenderer.enabled = true;
+            // AddPosition receives authoritative world-space entity positions;
+            // automatic emission stays off so render-time motion cannot duplicate history.
+            state.TrailRenderer.emitting = false;
+            if (!state.FireballTrailVisible || !state.HasFireballTrailPosition)
+            {
+                state.TrailRenderer.Clear();
+                state.TrailRenderer.AddPosition(entity.Position);
+            }
+            else if ((entity.Position - state.LastFireballTrailPosition).sqrMagnitude >=
+                     FireballTrailMinimumMovement * FireballTrailMinimumMovement)
+            {
+                state.TrailRenderer.AddPosition(entity.Position);
+            }
+
+            state.LastFireballTrailPosition = entity.Position;
+            state.HasFireballTrailPosition = true;
+            state.FireballTrailVisible = true;
+        }
+
         private Material GetFireballTrailMaterial()
         {
             Material material;
@@ -358,6 +386,7 @@ namespace MagicCarpet.PresentationLab
             state.TrailRenderer.Clear();
             state.TrailObject.SetActive(false);
             state.FireballTrailVisible = false;
+            state.HasFireballTrailPosition = false;
         }
 
         private Material GetMaterial(int family, bool fireballProjectile, bool halo)
