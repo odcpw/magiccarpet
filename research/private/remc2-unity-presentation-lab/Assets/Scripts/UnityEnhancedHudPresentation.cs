@@ -9,6 +9,7 @@ namespace MagicCarpet.PresentationLab
     /// Owner-backed indexed HUD for Unity Enhanced. The Rust Classic HD graph
     /// supplies the frame; Unity only uploads its indexed pixels, provenance,
     /// and owner palette to a transparent overlay over the modern camera.
+    /// This presentation is passive: it never sends input or state back.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class UnityEnhancedHudPresentation : MonoBehaviour
