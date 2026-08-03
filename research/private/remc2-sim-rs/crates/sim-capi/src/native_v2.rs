@@ -17384,9 +17384,10 @@ mod tests {
         );
         assert_eq!(level2_info.active_entity_count, 114);
         assert_eq!(level2_info.player_count, 8);
-        // GOLDEN-CHANGE: authored Level 2 group-8/22/27 source construction
-        // is now part of the reset-state projection (aa07b82).
-        assert_eq!(level2_info.reset_state_hash, 0x722c_e919_153b_78d8);
+        // GOLDEN-CHANGE: 8d3de2d corrected qualified frame-zero objective
+        // selector index 3 to source state 1. Group-8/22/27 rows are latent
+        // until objective completion, so reset no longer hashes them as live.
+        assert_eq!(level2_info.reset_state_hash, 0x7100_56d1_c447_5ea5);
         let mut level2_players = [McCampaignPlayerSnapshotV2::default(); 8];
         assert_eq!(
             mc_native_campaign_players_copy(

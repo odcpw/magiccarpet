@@ -13,6 +13,77 @@ namespace MagicCarpet.Native.Tests
         private static string Level2Package =>
             Path.Combine(PrivateRoot, "generated/l2-debug3.fJ3PaM/level2");
 
+        private static string Level1Package =>
+            Path.Combine(PrivateRoot, "generated/level1-export-m");
+
+        [Test]
+        public void Level2ProductionStartupOpensCampaignSessionAndValidatesDayProfile()
+        {
+            var root = new GameObject("Level 2 production startup");
+            root.SetActive(false);
+            MagicCarpetRuntime runtime = null;
+            try
+            {
+                runtime = root.AddComponent<MagicCarpetRuntime>();
+                runtime.QualificationInitializeLevel2Production(Level2Package);
+
+                Assert.That(runtime.Level2ProductionStartupReady, Is.True);
+                var info = runtime.Level2ProductionWorldInfo;
+                Assert.That(
+                    (info.externalLevel, info.internalLevel, info.mapType, info.profile),
+                    Is.EqualTo(((ushort)2, (ushort)1, (byte)0, (byte)0)));
+                Assert.That(info.entityCount, Is.EqualTo(1000));
+                Assert.That(info.activeEntityCount, Is.EqualTo(114));
+                Assert.That(info.playerCount, Is.EqualTo(8));
+                Assert.That(info.objectiveCount, Is.EqualTo(8));
+                Assert.That(info.terrainWidth, Is.EqualTo(256));
+                Assert.That(info.terrainHeight, Is.EqualTo(256));
+                Assert.That(
+                    info.resetStateHash,
+                    Is.EqualTo(MagicCarpetRuntime.ExpectedLevel2ResetStateHash));
+                Assert.That(NativeSession.ActiveSessionCount, Is.Zero);
+                Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(1));
+            }
+            finally
+            {
+                runtime?.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+
+            Assert.That(NativeSession.ActiveSessionCount, Is.Zero);
+            Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+        }
+
+        [Test]
+        public void Level2ProductionStartupRejectsCrossLevelInputsBeforeRendering()
+        {
+            var root = new GameObject("Level 2 cross-level startup");
+            root.SetActive(false);
+            MagicCarpetRuntime runtime = null;
+            try
+            {
+                runtime = root.AddComponent<MagicCarpetRuntime>();
+                Assert.Throws<InvalidDataException>(
+                    () => runtime.QualificationInitializeLevel2Production(Level1Package));
+                Assert.That(runtime.Level2ProductionStartupReady, Is.False);
+                Assert.That(runtime.Level2ProductionFatalError, Is.Not.Null.And.Not.Empty);
+                StringAssert.Contains(
+                    "identity mismatch",
+                    runtime.Level2ProductionFatalError);
+                Assert.That(NativeSession.ActiveSessionCount, Is.Zero);
+                Assert.That(NativeCampaignSession.ActiveSessionCount, Is.Zero);
+                Assert.That(
+                    root.GetComponentsInChildren<Renderer>(true),
+                    Is.Empty,
+                    "cross-level input fails before Unity presentation setup");
+            }
+            finally
+            {
+                runtime?.QualificationDisposeNativeOwners();
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
         [Test]
         public void Level2CampaignCabiIsReachableFromManagedSession()
         {

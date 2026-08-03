@@ -517,8 +517,18 @@ namespace MagicCarpet.Native
             "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719";
         internal const string ExpectedNativePluginHash =
             "b315562e2b91d4bdef2067a2c26d13ffe82d7f7e7975707f043724984c1f80fa";
+        internal const ulong ExpectedLevel2ResetStateHash =
+            // GOLDEN-CHANGE: 8d3de2d binds the qualified frame-zero
+            // objective selector to source state 1. Authored group-8/22/27
+            // rows remain latent until objective completion, so the reset
+            // projection is no longer the pre-8d3de2d activated hash.
+            0x7100_56d1_c447_5ea5UL;
 
         private NativeSession session;
+        private NativeCampaignSession campaignSession;
+        private NativeSim.CampaignWorldInfo campaignWorldInfo;
+        private bool level2Mode;
+        private bool level2StartupReady;
         private PlaythroughRecorder playthroughRecorder;
         private OwnerAssetCache ownerAssetCache;
         private OwnerAudioPresentation ownerAudio;
@@ -879,6 +889,18 @@ namespace MagicCarpet.Native
             FindObjectsByType<Light>(FindObjectsSortMode.None).Length == 0;
 
         internal string QualificationFatalError => fatalError;
+
+        internal bool Level2ProductionStartupReady =>
+            level2Mode &&
+            level2StartupReady &&
+            string.IsNullOrEmpty(fatalError) &&
+            campaignSession != null &&
+            NativeCampaignSession.ActiveSessionCount == 1;
+
+        internal NativeSim.CampaignWorldInfo Level2ProductionWorldInfo =>
+            campaignWorldInfo;
+
+        internal string Level2ProductionFatalError => fatalError;
 
         internal ulong QualificationNativeTick => snapshot.tick;
         internal int QualificationSpellMenuState => spellMenuController.MenuState;
@@ -1810,6 +1832,11 @@ namespace MagicCarpet.Native
                     AudioQualificationCapture.ResolveQualifiedCapturePath(
                         requestedAudioCapture);
                 }
+                if (level2Mode)
+                {
+                    OpenLevel2FromStartupArguments(arguments);
+                    return;
+                }
                 ResolveOwnerPaths(arguments, out packagePath, out closurePath);
                 var assetCachePath = OwnerAssetCache.ResolveOptionalPath(arguments);
                 if (qualifiedMode && assetCachePath == null)
@@ -1962,6 +1989,7 @@ namespace MagicCarpet.Native
 
         private void FixedUpdate()
         {
+            if (level2Mode) return;
             if (level1AutoplayFast) return;
             if (runtimeExitRequested || autoplayCapturePending) return;
             try
@@ -2217,6 +2245,7 @@ namespace MagicCarpet.Native
 
         private void Update()
         {
+            if (level2Mode) return;
             if (localAudioQualificationMode || positionalAudioQualificationMode) return;
             if (level1AutoplayFast && !runtimeExitRequested)
             {
@@ -2532,6 +2561,7 @@ namespace MagicCarpet.Native
 
         private void LateUpdate()
         {
+            if (level2Mode) return;
             if (localAudioQualificationMode)
             {
                 if (localAudioQualificationExitRequested) return;
@@ -7651,6 +7681,33 @@ namespace MagicCarpet.Native
                 assetCache);
         }
 
+        internal void QualificationInitializeLevel2Production(string package)
+        {
+            Require(
+                !gameObject.activeInHierarchy &&
+                session == null &&
+                campaignSession == null,
+                "Level 2 production route starts before Awake with no owner handle");
+            var arguments = new[] { "-mc-level2", "-mc-package", package };
+            disposed = false;
+            try
+            {
+                ConfigureStartupArguments(arguments);
+                OpenLevel2FromStartupArguments(arguments);
+            }
+            catch (Exception exception)
+            {
+                fatalError = exception.ToString();
+                DisposeSession();
+                throw;
+            }
+        }
+
+        internal void QualificationDisposeNativeOwners()
+        {
+            DisposeSession();
+        }
+
         internal bool QualificationDiscardResolvedAudioWithoutConsumer()
         {
             Require(
@@ -10493,6 +10550,7 @@ namespace MagicCarpet.Native
 
         private void ConfigureStartupArguments(string[] arguments)
         {
+            level2Mode = HasArgument(arguments, "-mc-level2");
             autoplay = HasArgument(arguments, "-mc-autoplay");
             autoplayQuit = HasArgument(arguments, "-mc-autoplay-quit");
             level1Autoplay = HasArgument(arguments, "-mc-level1-autoplay");
@@ -10528,6 +10586,23 @@ namespace MagicCarpet.Native
             debugMode = HasArgument(arguments, "-mc-debug");
             debugEntities = HasArgument(arguments, "-mc-debug-entities");
             entityGallery = HasArgument(arguments, "-mc-entity-gallery");
+            if (level2Mode)
+            {
+                if (qualifiedRequested || debugMode || debugEntities || entityGallery)
+                {
+                    throw new InvalidDataException(
+                        "Level 2 startup is a campaign session and rejects Level 1 " +
+                        "presentation flags");
+                }
+                if (autoplay || level1Autoplay || localAudioQualificationMode ||
+                    positionalAudioQualificationMode)
+                {
+                    throw new InvalidDataException(
+                        "Level 2 startup rejects Level 1 autoplay and audio qualification");
+                }
+                qualifiedMode = false;
+                return;
+            }
             if (qualifiedRequested == debugMode)
             {
                 throw new InvalidDataException(
@@ -10586,11 +10661,106 @@ namespace MagicCarpet.Native
             }
         }
 
+        private void OpenLevel2FromStartupArguments(string[] arguments)
+        {
+            ResolveOwnerPaths(arguments, out packagePath, out closurePath);
+            if (OwnerAssetCache.ResolveOptionalPath(arguments) != null)
+            {
+                throw new InvalidDataException(
+                    "Level 2 startup rejects the Level 1 owner asset cache");
+            }
+            OpenAndValidateLevel2ProductionSession(packagePath);
+        }
+
+        internal void OpenAndValidateLevel2ProductionSession(string package)
+        {
+            if (campaignSession != null || session != null)
+            {
+                throw new InvalidOperationException(
+                    "a native campaign owner is already attached to this runtime");
+            }
+
+            level2Mode = true;
+            level2StartupReady = false;
+            packagePath = Path.GetFullPath(package);
+            closurePath = string.Empty;
+            campaignSession = NativeCampaignSession.OpenLevel2(packagePath);
+            try
+            {
+                campaignWorldInfo = campaignSession.WorldInfo();
+                Require(
+                    campaignWorldInfo.abiVersion == NativeSim.AbiVersion &&
+                    campaignWorldInfo.structSize == 64,
+                    "Level 2 campaign ABI/profile header");
+                Require(
+                    campaignWorldInfo.externalLevel == 2 &&
+                    campaignWorldInfo.internalLevel == 1 &&
+                    campaignWorldInfo.mapType == 0 &&
+                    campaignWorldInfo.profile == 0,
+                    "Level 2 Day campaign profile");
+                Require(
+                    campaignWorldInfo.entityCount == 1000 &&
+                    campaignWorldInfo.activeEntityCount == 114 &&
+                    campaignWorldInfo.playerCount == 8 &&
+                    campaignWorldInfo.objectiveCount == 8,
+                    "Level 2 entity/player/objective counts");
+                Require(
+                    campaignWorldInfo.terrainWidth == 256 &&
+                    campaignWorldInfo.terrainHeight == 256,
+                    "Level 2 256x256 terrain profile");
+                Require(
+                    campaignWorldInfo.resetStateHash == ExpectedLevel2ResetStateHash,
+                    "Level 2 reset-state identity");
+                Require(
+                    NativeCampaignSession.ActiveSessionCount == 1,
+                    "exactly one authoritative Level 2 campaign handle");
+                level2StartupReady = true;
+                Debug.Log(
+                    $"MC_LEVEL2_STARTUP VERIFIED profile=2/1/Day " +
+                    $"entities={campaignWorldInfo.entityCount} " +
+                    $"active={campaignWorldInfo.activeEntityCount} " +
+                    $"players={campaignWorldInfo.playerCount} " +
+                    $"objectives={campaignWorldInfo.objectiveCount} " +
+                    $"reset=0x{campaignWorldInfo.resetStateHash:x16}");
+            }
+            catch
+            {
+                campaignSession.Dispose();
+                campaignSession = null;
+                throw;
+            }
+        }
+
         private static void ResolveOwnerPaths(
             string[] arguments,
             out string package,
             out string closure)
         {
+            if (HasArgument(arguments, "-mc-level2"))
+            {
+                package = ArgumentValue(arguments, "-mc-package") ??
+                          Environment.GetEnvironmentVariable("MC_LEVEL2_PACKAGE_PATH");
+                closure = ArgumentValue(arguments, "-mc-closure") ??
+                          Environment.GetEnvironmentVariable("MC_CLOSURE_PATH");
+                if (!string.IsNullOrWhiteSpace(closure))
+                {
+                    throw new InvalidDataException(
+                        "Level 2 startup does not accept a Level 1 closure path");
+                }
+#if UNITY_EDITOR
+                package ??= Path.GetFullPath(Path.Combine(
+                    Application.dataPath,
+                    "../../generated/l2-debug3.fJ3PaM/level2"));
+#endif
+                if (string.IsNullOrWhiteSpace(package))
+                {
+                    throw new InvalidOperationException(
+                        "Pass -mc-package or MC_LEVEL2_PACKAGE_PATH for Level 2 owner data");
+                }
+                package = Path.GetFullPath(package);
+                closure = string.Empty;
+                return;
+            }
             package = ArgumentValue(arguments, "-mc-package") ??
                       Environment.GetEnvironmentVariable("MC_PACKAGE_PATH");
             closure = ArgumentValue(arguments, "-mc-closure") ??
@@ -10930,6 +11100,9 @@ namespace MagicCarpet.Native
             playthroughRecorder = null;
             ownerAudio?.Dispose();
             ownerAudio = null;
+            campaignSession?.Dispose();
+            campaignSession = null;
+            level2StartupReady = false;
             session?.Dispose();
             session = null;
         }

@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 
@@ -12,13 +14,53 @@ namespace MagicCarpet.Native
     /// event buffer, and reset lifecycle.
     internal sealed class NativeCampaignSession : IDisposable
     {
+        internal const string ExpectedLevel2ManifestSha256 =
+            "dcaa5103908ce2db22c71a4b55e2a1a1c9bc7a182b3fee8e3e81b9be40539cc3";
+        private static readonly IReadOnlyDictionary<string, string>
+            ExpectedLevel2PackageFiles =
+            new Dictionary<string, string>
+            {
+                ["authored-level.bin"] =
+                    "9041c66e605d573ec9aa2cbe9d8d8daabd8db3602fcfce4898f64e21fc37405e",
+                ["entities-post-features.bin"] =
+                    "9c6acead68279d3737046e9dcfd035d261c92886eb4e80961ed70e2119a84a23",
+                ["entities.bin"] =
+                    "155055a020d642641baff6674253605c309a7891342e05a7878f784e752dab7a",
+                ["feature-allocator.bin"] =
+                    "7d20f7d0446512b72ba7b699ecb9fcb4fa3eddcd6d782aabdd823af77a840ea1",
+                ["feature-construction-inputs.bin"] =
+                    "3054ad4408a00a4b154ec4406ab28eb5c4906bc346dcb5bc4c1748f5b10f0205",
+                ["feature-end.bin"] =
+                    "646b7b6664587a3c1c3b76ed6d37a8367f9f183a7758f3beef2a3e20064bc4bc",
+                ["feature-start.bin"] =
+                    "363264d46bf0e2dc74e39ab75ab77b65216500472b2ae3912f4eb2b901bacee3",
+                ["players.bin"] =
+                    "845265777788b9191a038543b1ba408ed32e37133f9d110ca540cab8396982cb",
+                ["presentation.bin"] =
+                    "2944b802258550f24f0537accc4d5764d81dd28a080a935cc9c0f0d1fc1f67f2",
+                ["runtime.bin"] =
+                    "6f1734d967a5e739d493faafdb41a822669966db46f9ffbb30cf1cc8bad30133",
+                ["terrain-post-features.bin"] =
+                    "451db813d79572b043638226101f2eeb313242216adda2740e4be644c070dedf",
+                ["terrain-pre-features.bin"] =
+                    "47c4818d811357642ae85b2d646463ad8834e259d3dffd608b1a2b84c95fc82b",
+                ["terrain.bin"] =
+                    "69f21d0840e7f2945b0f0123a954641a1b34e3d5ad8d9bf8a56c25224f57a203",
+                ["manifest.json"] = ExpectedLevel2ManifestSha256
+            };
+
+        private static int activeSessionCount;
         private long handleBits;
         private ulong generation;
 
         private NativeCampaignSession(ulong handle)
         {
             handleBits = unchecked((long)handle);
+            Interlocked.Increment(ref activeSessionCount);
         }
+
+        internal static int ActiveSessionCount =>
+            Volatile.Read(ref activeSessionCount);
 
         internal ulong Handle
         {
@@ -37,6 +79,13 @@ namespace MagicCarpet.Native
 
         internal static NativeCampaignSession OpenLevel2(string packagePath)
         {
+            if (string.IsNullOrWhiteSpace(packagePath))
+            {
+                throw new InvalidDataException(
+                    "Level 2 campaign package path must be non-empty");
+            }
+            packagePath = Path.GetFullPath(packagePath);
+            ValidateLevel2PackageIdentity(packagePath);
             NativeSim.AssertLayouts();
             if (NativeSim.mc_native_abi_version() != NativeSim.AbiVersion)
             {
@@ -61,6 +110,43 @@ namespace MagicCarpet.Native
                     "campaign session returned handle zero");
             }
             return new NativeCampaignSession(handle);
+        }
+
+        private static void ValidateLevel2PackageIdentity(string packagePath)
+        {
+            if (string.IsNullOrWhiteSpace(packagePath))
+            {
+                throw new InvalidDataException(
+                    "Level 2 campaign package path must be non-empty");
+            }
+
+            var package = Path.GetFullPath(packagePath);
+            if (!Directory.Exists(package))
+            {
+                throw new InvalidDataException(
+                    $"Level 2 campaign package is missing: {package}");
+            }
+
+            using var sha256 = SHA256.Create();
+            foreach (var expected in ExpectedLevel2PackageFiles)
+            {
+                var file = Path.Combine(package, expected.Key);
+                if (!File.Exists(file))
+                {
+                    throw new InvalidDataException(
+                        $"Level 2 campaign package is missing {expected.Key}");
+                }
+                var digest = BitConverter.ToString(
+                        sha256.ComputeHash(File.ReadAllBytes(file)))
+                    .Replace("-", string.Empty)
+                    .ToLowerInvariant();
+                if (digest != expected.Value)
+                {
+                    throw new InvalidDataException(
+                        $"Level 2 campaign package identity mismatch for " +
+                        $"{expected.Key}: {digest}");
+                }
+            }
         }
 
         internal NativeSim.CampaignWorldInfo WorldInfo()
@@ -520,10 +606,13 @@ namespace MagicCarpet.Native
                 unchecked((ulong)value));
             if (status != NativeSim.Ok)
             {
+                Interlocked.CompareExchange(ref handleBits, value, 0);
                 UnityEngine.Debug.LogError(
                     $"destroy campaign session failed: {status}: " +
                     NativeSession.ReadLastError());
+                return;
             }
+            Interlocked.Decrement(ref activeSessionCount);
         }
     }
 }
