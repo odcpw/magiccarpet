@@ -13,6 +13,10 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
         _DetailStrength ("Procedural Detail Strength", Range(0, 1)) = 0
         [HDR] _AccentColor ("Structure Accent Color", Color) = (1, 0.24, 0.04, 1)
         _AccentStrength ("Structure Accent Strength", Range(0, 2)) = 0
+        _EnhancedAerialStart ("Aerial Perspective Start", Float) = 48
+        _EnhancedAerialEnd ("Aerial Perspective End", Float) = 240
+        _EnhancedAerialMaxBlend ("Aerial Perspective Max Blend", Range(0, 1)) = 0.68
+        _EnhancedAerialColor ("Aerial Perspective Color", Color) = (0.045, 0.12, 0.32, 1)
     }
 
     SubShader
@@ -53,6 +57,10 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
                 half _DetailStrength;
                 half4 _AccentColor;
                 half _AccentStrength;
+                half _EnhancedAerialStart;
+                half _EnhancedAerialEnd;
+                half _EnhancedAerialMaxBlend;
+                half4 _EnhancedAerialColor;
             CBUFFER_END
 
             #define ENHANCED_WARM_LIGHT_CAP 4
@@ -137,6 +145,17 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
                 return contribution;
             }
 
+            half3 ApplyEnhancedAerialPerspective(half3 color, float3 positionWS)
+            {
+                float distanceFromCamera = distance(GetCameraPositionWS(), positionWS);
+                half depth = smoothstep(
+                    _EnhancedAerialStart,
+                    _EnhancedAerialEnd,
+                    distanceFromCamera);
+                half blend = depth * min(saturate(_EnhancedAerialMaxBlend), 0.68h);
+                return lerp(color, _EnhancedAerialColor.rgb, blend);
+            }
+
             half4 Frag(Varyings input) : SV_Target
             {
                 half3 normalWS = NormalizeNormalPerPixel(input.normalWS);
@@ -189,6 +208,7 @@ Shader "MagicCarpet/Enhanced/VertexColorLit"
                 half rim = pow(saturate(1.0h - dot(normalWS, viewDirectionWS)), 2.0h);
                 color += _RimColor.rgb * (rim * _RimStrength);
                 color += _EmissionColor.rgb * _EmissionStrength;
+                color = ApplyEnhancedAerialPerspective(color, input.positionWS);
                 color = MixFog(color, ComputeFogFactor(input.positionHCS.z));
                 return half4(color, _BaseColor.a * input.color.a);
             }

@@ -28,6 +28,10 @@ Shader "MagicCarpet/Enhanced/Water"
         _ShorelineMode ("Authoritative Shoreline Foam", Float) = 0
         _ShorelineFoamStrength ("Shoreline Foam Strength", Range(0, 2)) = 0
         _ShorelineFoamScale ("Shoreline Foam Scale", Float) = 0.34
+        _EnhancedAerialStart ("Aerial Perspective Start", Float) = 48
+        _EnhancedAerialEnd ("Aerial Perspective End", Float) = 240
+        _EnhancedAerialMaxBlend ("Aerial Perspective Max Blend", Range(0, 1)) = 0.68
+        _EnhancedAerialColor ("Aerial Perspective Color", Color) = (0.045, 0.12, 0.32, 1)
         _Alpha ("Surface Opacity", Range(0, 1)) = 0.94
     }
 
@@ -85,6 +89,10 @@ Shader "MagicCarpet/Enhanced/Water"
                 half _ShorelineMode;
                 half _ShorelineFoamStrength;
                 half _ShorelineFoamScale;
+                half _EnhancedAerialStart;
+                half _EnhancedAerialEnd;
+                half _EnhancedAerialMaxBlend;
+                half4 _EnhancedAerialColor;
                 half _Alpha;
             CBUFFER_END
 
@@ -228,6 +236,17 @@ Shader "MagicCarpet/Enhanced/Water"
                 return (diffuse.xxx * 0.45h + specular.xxx) * light.color * attenuation;
             }
 
+            half3 ApplyEnhancedAerialPerspective(half3 color, float3 positionWS)
+            {
+                float distanceFromCamera = distance(GetCameraPositionWS(), positionWS);
+                half depth = smoothstep(
+                    _EnhancedAerialStart,
+                    _EnhancedAerialEnd,
+                    distanceFromCamera);
+                half blend = depth * min(saturate(_EnhancedAerialMaxBlend), 0.68h);
+                return lerp(color, _EnhancedAerialColor.rgb, blend);
+            }
+
             half4 Frag(Varyings input) : SV_Target
             {
                 half3 normalWS = WaveNormal(input.positionWS.xz, NormalizeNormalPerPixel(input.normalWS));
@@ -310,6 +329,7 @@ Shader "MagicCarpet/Enhanced/Water"
                 color += _FoamColor.rgb * shorelineFoam * _ShorelineFoamStrength *
                          (0.18h + fresnel * 0.24h);
                 color += _MoonColor.rgb * shorelineFoam * fresnel * 0.10h;
+                color = ApplyEnhancedAerialPerspective(color, input.positionWS);
                 color = MixFog(color, ComputeFogFactor(input.positionHCS.z));
                 half alpha = lerp(
                     _Alpha,

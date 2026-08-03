@@ -416,6 +416,57 @@ namespace MagicCarpet.PresentationLab.Tests
             }
         }
 
+        [Test]
+        public void EnhancedWorldShadersExposeBoundedAerialPerspectiveContract()
+        {
+            string[] shaderNames =
+            {
+                "MagicCarpet/Enhanced/Terrain",
+                "MagicCarpet/Enhanced/VertexColorLit",
+                "MagicCarpet/Enhanced/Water"
+            };
+            string[] sourceNames =
+            {
+                "EnhancedTerrain.shader",
+                "EnhancedVertexColorLit.shader",
+                "EnhancedWater.shader"
+            };
+
+            for (int index = 0; index < shaderNames.Length; index++)
+            {
+                Shader shader = Shader.Find(shaderNames[index]);
+                Assert.IsNotNull(shader, shaderNames[index]);
+                Material material = new Material(shader);
+                try
+                {
+                    Assert.AreEqual(48f, material.GetFloat("_EnhancedAerialStart"), 0.001f);
+                    Assert.AreEqual(240f, material.GetFloat("_EnhancedAerialEnd"), 0.001f);
+                    Assert.AreEqual(0.68f, material.GetFloat("_EnhancedAerialMaxBlend"), 0.001f);
+                    Color aerialColor = material.GetColor("_EnhancedAerialColor");
+                    Assert.That(aerialColor.r, Is.EqualTo(0.045f).Within(0.001f));
+                    Assert.That(aerialColor.g, Is.EqualTo(0.12f).Within(0.001f));
+                    Assert.That(aerialColor.b, Is.EqualTo(0.32f).Within(0.001f));
+                    Assert.Less(material.GetFloat("_EnhancedAerialStart"),
+                        material.GetFloat("_EnhancedAerialEnd"));
+                    Assert.Less(material.GetFloat("_EnhancedAerialMaxBlend"), 1f);
+
+                    string sourcePath = Path.Combine(
+                        Application.dataPath,
+                        "Resources",
+                        sourceNames[index]);
+                    string source = File.ReadAllText(sourcePath);
+                    StringAssert.Contains("ApplyEnhancedAerialPerspective", source);
+                    StringAssert.Contains(
+                        "ApplyEnhancedAerialPerspective(color, input.positionWS)",
+                        source);
+                }
+                finally
+                {
+                    Object.DestroyImmediate(material);
+                }
+            }
+        }
+
         private static UnityEnhancedEntitySnapshot TownEntity(float forwardDepth)
         {
             return new UnityEnhancedEntitySnapshot

@@ -13,6 +13,10 @@ Shader "MagicCarpet/Enhanced/Terrain"
         _RidgeStrength ("Procedural Ridge Strength", Range(0, 1)) = 0.24
         _RockTint ("Rock Slope Tint", Color) = (0.62, 0.72, 0.80, 1)
         _SoilTint ("Soil Shelf Tint", Color) = (0.68, 0.56, 0.42, 1)
+        _EnhancedAerialStart ("Aerial Perspective Start", Float) = 48
+        _EnhancedAerialEnd ("Aerial Perspective End", Float) = 240
+        _EnhancedAerialMaxBlend ("Aerial Perspective Max Blend", Range(0, 1)) = 0.68
+        _EnhancedAerialColor ("Aerial Perspective Color", Color) = (0.045, 0.12, 0.32, 1)
     }
 
     SubShader
@@ -53,6 +57,10 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 half _RidgeStrength;
                 half4 _RockTint;
                 half4 _SoilTint;
+                half _EnhancedAerialStart;
+                half _EnhancedAerialEnd;
+                half _EnhancedAerialMaxBlend;
+                half4 _EnhancedAerialColor;
             CBUFFER_END
 
             #define ENHANCED_WARM_LIGHT_CAP 4
@@ -154,6 +162,17 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 return contribution;
             }
 
+            half3 ApplyEnhancedAerialPerspective(half3 color, float3 positionWS)
+            {
+                float distanceFromCamera = distance(GetCameraPositionWS(), positionWS);
+                half depth = smoothstep(
+                    _EnhancedAerialStart,
+                    _EnhancedAerialEnd,
+                    distanceFromCamera);
+                half blend = depth * min(saturate(_EnhancedAerialMaxBlend), 0.68h);
+                return lerp(color, _EnhancedAerialColor.rgb, blend);
+            }
+
             half4 Frag(Varyings input) : SV_Target
             {
                 half3 normalWS = NormalizeNormalPerPixel(input.normalWS);
@@ -247,6 +266,7 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 color += warmLighting * 0.14h;
                 half rim = pow(saturate(1.0h - dot(normalWS, viewDirectionWS)), 2.0h);
                 color += _SlopeTint.rgb * (rim * exposedFace * 0.08h);
+                color = ApplyEnhancedAerialPerspective(color, input.positionWS);
                 color = MixFog(color, ComputeFogFactor(input.positionHCS.z));
                 return half4(color, input.color.a * _BaseColor.a);
             }
