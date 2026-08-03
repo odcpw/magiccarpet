@@ -160,7 +160,7 @@ namespace MagicCarpet.PresentationLab
                 reflectionCamera,
                 planePosition,
                 planeNormal,
-                1f);
+                -1f);
             reflectionCamera.projectionMatrix = presentationCamera.CalculateObliqueMatrix(clipPlane);
             reflectionCamera.targetTexture = reflectionTexture;
 
