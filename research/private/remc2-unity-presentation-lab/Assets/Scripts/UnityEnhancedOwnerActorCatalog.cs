@@ -342,7 +342,7 @@ namespace MagicCarpet.PresentationLab
             material.SetTexture("_Indices", indexTexture);
             material.SetTexture("_Palette", paletteTexture);
             material.SetColor("_Tint", new Color(0.92f, 0.96f, 1f, 1f));
-            material.SetFloat("_EmissionStrength", 0.06f);
+            material.SetFloat("_EmissionStrength", 0.10f);
             materials.Add(selector, material);
             return material;
         }

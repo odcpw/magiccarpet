@@ -49,6 +49,9 @@ namespace MagicCarpet.PresentationLab.Tests
                 Assert.AreEqual(
                     "MagicCarpet/Enhanced/OwnerEntitySprite",
                     renderer.sharedMaterial.shader.name);
+                Assert.That(
+                    renderer.sharedMaterial.GetFloat("_EmissionStrength"),
+                    Is.EqualTo(0.10f).Within(0.0001f));
                 StringAssert.StartsWith("Owner Indexed Actor Billboard Quad", filter.sharedMesh.name);
                 StringAssert.StartsWith("Owner Indexed Actor Material", renderer.sharedMaterial.name);
                 StringAssert.StartsWith("Owner Indexed Actor", filter.sharedMesh.name);

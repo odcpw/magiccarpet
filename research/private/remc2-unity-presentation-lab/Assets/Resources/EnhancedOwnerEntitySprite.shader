@@ -108,7 +108,10 @@ Shader "MagicCarpet/Enhanced/OwnerEntitySprite"
                     _Palette,
                     sampler_Palette,
                     float2((paletteIndex + 0.5h) / 256.0h, 0.5h)).rgb;
-                half3 moonFill = half3(0.72h, 0.82h, 1.0h);
+                // Preserve the external owner palette while lifting its night
+                // fill enough for small creatures to separate from the cool
+                // terrain. This is display lighting, not a source-pixel edit.
+                half3 moonFill = half3(0.88h, 0.94h, 1.0h);
                 half3 warm = EvaluateWarmLight(input.positionWS);
                 color *= _Tint.rgb * (moonFill + warm);
                 color += color * _EmissionStrength;
