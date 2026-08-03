@@ -214,6 +214,10 @@ namespace MagicCarpet.PresentationLab
                 -4f,
                 4f);
             colorGrading.postExposure.value = AppliedPostExposure;
+            // Owner capture can render immediately after Apply, before URP's
+            // normal player-loop volume update. Refresh the real camera stack
+            // here so Bloom/tone mapping are visible on that same frame.
+            VolumeManager.instance.Update(camera.transform, camera.cullingMask);
             return true;
         }
 
