@@ -14693,6 +14693,12 @@ impl Level2ResetSession {
             .filter(|entity| {
                 entity.active
                     && entity.class == 11
+                    // Model-4 exit switches consume objective IsLevelEnd in
+                    // their own source callback; they are not stage-tag
+                    // producers for this generic class-14 path. Their full
+                    // group-31 dispatch remains a separate production gap.
+                    && entity.model != 4
+                    && !entity.drawing_disabled()
                     && entity.source_id != 0
                     && producer_matches(entity)
             })
@@ -26244,107 +26250,37 @@ mod tests {
     }
 
     #[test]
-    fn level_two_class14_group31_materializes_from_live_stage_tag_producer() {
+    fn level_two_model4_group31_stays_latent_before_player_level_end() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
         let mut session = inspection
             .level2_reset_session()
-            .expect("Level 2 class-14 production session");
-        let baseline_hash = session.campaign_state_hash();
+            .expect("Level 2 model-4 exit-switch session");
 
         assert!(session.economy().authored_class14().is_empty());
         session.step_outer_turn(PlayerCommand::default(), 0);
 
-        let source = session
-            .economy()
-            .authored_class14()
-            .iter()
-            .find(|source| source.authored_index == 244)
-            .copied()
-            .expect("group-31 subtype-3 row materializes from source pass");
-        let producer_slot = session
+        assert!(session.economy().authored_class14().is_empty());
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 31,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [244]
+        )));
+        let switch = session
             .entities()
             .iter()
-            .find(|entity| entity.active && entity.class == 11 && entity.source_id == 31)
-            .map(|entity| entity.index)
-            .expect("live group-31 stage-tag producer");
-        assert_eq!(source.activation_group, 31);
-        assert_eq!(source.stage_tag, 31);
-        assert_eq!((source.model, source.action, source.particle), (3, 8, 338));
-        assert!(session.dispatch_events().iter().any(|event| matches!(
-            event,
-            Level2DispatchEvent::AuthoredGroupActivated {
-                source_slot,
-                group: 31,
-                authored_indices,
-                ..
-            } if *source_slot == producer_slot && authored_indices.as_ref() == [244]
-        )));
-        assert!(session.dispatch_events().iter().any(|event| matches!(
-            event,
-            Level2DispatchEvent::DynamicArena {
-                kind: Level2DynamicArenaKind::AuthoredClass14,
-                source_slot,
-                ..
-            } if *source_slot == source.source_entity_index
-        )));
-
-        session.step_outer_turn(PlayerCommand::default(), 0);
-        assert_eq!(
-            session
-                .economy()
-                .authored_class14()
-                .iter()
-                .filter(|row| row.authored_index == 244)
-                .count(),
-            1
-        );
-        assert!(!session.dispatch_events().iter().any(|event| matches!(
-            event,
-            Level2DispatchEvent::AuthoredGroupActivated {
-                group: 31,
-                authored_indices,
-                ..
-            } if authored_indices.as_ref() == [244]
-        )));
-
-        session.reset();
-        assert!(session.economy().authored_class14().is_empty());
-        assert_eq!(session.campaign_state_hash(), baseline_hash);
-    }
-
-    #[test]
-    fn level_two_class14_group31_reports_allocation_failure_without_partial_activation() {
-        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
-            .expect("qualified Level 2 package");
-        let mut session = inspection
-            .level2_reset_session()
-            .expect("Level 2 class-14 producer-failure session");
-
-        let saved_free_slots = session.economy().free_slots.clone();
-        session.economy_mut().free_slots.clear();
-        session.step_outer_turn(PlayerCommand::default(), 0);
-
-        assert!(session.economy().authored_class14().is_empty());
-        assert!(!session.dispatch_events().iter().any(|event| matches!(
-            event,
-            Level2DispatchEvent::AuthoredGroupActivated {
-                group: 31,
-                authored_indices,
-                ..
-            } if authored_indices.as_ref() == [244]
-        )));
-        assert!(session.dispatch_events().iter().any(|event| matches!(
-            event,
-            Level2DispatchEvent::Error {
-                source_slot,
-                message,
-                ..
-            } if *source_slot != 0
-                && message == "Level 2 authored class14 row 244 could not allocate"
-        )));
-
-        session.economy_mut().free_slots = saved_free_slots;
+            .find(|entity| {
+                entity.active
+                    && entity.class == 11
+                    && entity.model == 4
+                    && entity.action == 4
+                    && entity.source_id == 31
+            })
+            .expect("live model-4 group-31 switch");
+        assert!(!switch.drawing_disabled());
     }
 
     #[test]
