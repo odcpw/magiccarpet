@@ -194,6 +194,17 @@ namespace MagicCarpet.PresentationLab
                     return;
                 }
 
+                if (!enhancedRoot.ConfigureOwnerActorCache(cachePath, out enhancedSourceError))
+                {
+                    enhancedOwnerSession.Dispose();
+                    enhancedOwnerSession = null;
+                    enhancedRoot.Close();
+                    sessionLease.Dispose();
+                    sessionLease = null;
+                    statusLine = "UNITY ENHANCED PRESENTATION FAILED CLOSED: " + enhancedSourceError;
+                    return;
+                }
+
                 if (!ApplyPendingEnhancedReset(out enhancedSourceError))
                 {
                     enhancedOwnerSession.Dispose();

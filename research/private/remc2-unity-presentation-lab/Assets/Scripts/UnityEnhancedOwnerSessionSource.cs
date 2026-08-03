@@ -1709,6 +1709,9 @@ namespace MagicCarpet.PresentationLab
                 {
                     StableIdentity = stableIdentity,
                     Generation = snapshot.generation,
+                    SourceEntityIndex = source.entityIndex,
+                    SourceYaw = source.yaw,
+                    CameraYaw = presentation.cameraYaw,
                     Position = new Vector3(x, y, z),
                     Rotation = Quaternion.Euler(0f, 180f - source.yaw * (360f / 2048f), 0f),
                     Visible = source.active != 0,
@@ -1741,6 +1744,9 @@ namespace MagicCarpet.PresentationLab
                 {
                     StableIdentity = DynamicStableIdentity(0x20000000U, source.projectileId),
                     Generation = snapshot.generation,
+                    SourceEntityIndex = ushort.MaxValue,
+                    SourceYaw = source.yaw,
+                    CameraYaw = presentation.cameraYaw,
                     Position = position,
                     Rotation = Quaternion.Euler(
                         -source.pitch * (360f / 2048f),
@@ -1773,6 +1779,9 @@ namespace MagicCarpet.PresentationLab
                 {
                     StableIdentity = DynamicStableIdentity(0x40000000U, source.impactId),
                     Generation = snapshot.generation,
+                    SourceEntityIndex = ushort.MaxValue,
+                    SourceYaw = 0,
+                    CameraYaw = presentation.cameraYaw,
                     Position = position,
                     Rotation = Quaternion.identity,
                     Visible = source.active != 0,

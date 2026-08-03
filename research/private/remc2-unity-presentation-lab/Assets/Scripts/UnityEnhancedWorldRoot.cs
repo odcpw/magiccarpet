@@ -31,6 +31,12 @@ namespace MagicCarpet.PresentationLab
     {
         public ulong StableIdentity;
         public ulong Generation;
+        // Source identity is presentation metadata only. It lets the Enhanced
+        // owner-sprite catalog select a qualified indexed frame without making
+        // Unity responsible for gameplay or entity classification.
+        public ushort SourceEntityIndex;
+        public short SourceYaw;
+        public short CameraYaw;
         public Vector3 Position;
         public Quaternion Rotation = Quaternion.identity;
         public bool Visible = true;
@@ -201,6 +207,18 @@ namespace MagicCarpet.PresentationLab
         public UnityEnhancedQualityAndPost QualityAndPost { get { return qualityAndPost; } }
         public UnityEnhancedHudPresentation HudPresentation { get { return hudPresentation; } }
         public UnityEnhancedDiagnostics Diagnostics { get { return diagnostics; } }
+
+        public bool ConfigureOwnerActorCache(string cachePath, out string reason)
+        {
+            reason = string.Empty;
+            if (State != UnityEnhancedLifecycleState.Open || actorPresentation == null)
+            {
+                reason = "Unity Enhanced owner actor cache requires an open presentation root";
+                return false;
+            }
+
+            return actorPresentation.ConfigureOwnerActorCache(cachePath, out reason);
+        }
 
         private void Awake()
         {

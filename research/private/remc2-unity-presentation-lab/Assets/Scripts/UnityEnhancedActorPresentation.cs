@@ -83,9 +83,10 @@ namespace MagicCarpet.PresentationLab
     }
 
     /// <summary>
-    /// Supplies pooled, generated billboards/meshes for all Level 1 Night
-    /// families.  It intentionally has no imported textures or authored
-    /// character payloads; those can replace the generated definitions later.
+    /// Supplies pooled presentation views for all Level 1 Night families.
+    /// Enhanced uses the qualified owner indexed sprites for the bounded actor
+    /// families when the real owner route is configured, while diagnostic-only
+    /// snapshots retain the procedural fallback geometry.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class UnityEnhancedActorPresentation : MonoBehaviour
@@ -110,6 +111,7 @@ namespace MagicCarpet.PresentationLab
         private readonly Dictionary<int, Material> materials = new Dictionary<int, Material>();
         private readonly HashSet<GameObject> configuredViews = new HashSet<GameObject>();
         private Camera presentationCamera;
+        private UnityEnhancedOwnerActorCatalog ownerActorCatalog;
         private bool reducedMotion;
 
         public int ActiveVisualCount { get; private set; }
@@ -120,6 +122,16 @@ namespace MagicCarpet.PresentationLab
         public void SetPresentationCamera(Camera camera)
         {
             presentationCamera = camera;
+        }
+
+        public bool ConfigureOwnerActorCache(string cachePath, out string reason)
+        {
+            if (ownerActorCatalog == null)
+            {
+                ownerActorCatalog = new UnityEnhancedOwnerActorCatalog();
+            }
+
+            return ownerActorCatalog.Configure(cachePath, out reason);
         }
 
         public void SetReducedMotion(bool value)
@@ -170,6 +182,49 @@ namespace MagicCarpet.PresentationLab
                 state.VisualObject.hideFlags = HideFlags.DontSave;
             }
 
+            if (ownerActorCatalog != null &&
+                IsOwnerActorFamily(entity.PresentationFamily))
+            {
+                UnityEnhancedOwnerActorSprite ownerSprite;
+                if (!ownerActorCatalog.TryResolve(entity, out ownerSprite))
+                {
+                    // A configured owner route fails closed for qualified
+                    // actor families. Never turn a missing owner row back into
+                    // one of the generated diagnostic boxes.
+                    DisableFireballTrail(state);
+                    if (state.HaloObject != null) state.HaloObject.SetActive(false);
+                    state.Renderer.enabled = false;
+                    state.VisualObject.SetActive(false);
+                    state.Family = entity.PresentationFamily;
+                    state.FireballProjectileMaterial = false;
+                    LastConfiguredFamily = entity.PresentationFamily;
+                    LastSortingOrder = entity.RenderLayer;
+                    if (configuredViews.Add(view)) ActiveVisualCount++;
+                    return;
+                }
+
+                DisableFireballTrail(state);
+                if (state.HaloObject != null) state.HaloObject.SetActive(false);
+                state.Family = entity.PresentationFamily;
+                state.FireballProjectileMaterial = false;
+                state.Filter.sharedMesh = ownerSprite.Mesh;
+                state.Renderer.sharedMaterial = ownerSprite.Material;
+                state.Renderer.enabled = true;
+                state.Renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                state.Renderer.receiveShadows = false;
+                state.VisualObject.SetActive(entity.Visible);
+                state.VisualObject.transform.localPosition =
+                    new Vector3(0f, ownerSprite.Height * 0.5f, 0f);
+                state.VisualObject.transform.localScale =
+                    new Vector3(ownerSprite.Width, ownerSprite.Height, 1f);
+                state.VisualObject.transform.rotation = OwnerBillboardRotation();
+                state.Renderer.sortingOrder = entity.RenderLayer;
+                LastConfiguredFamily = entity.PresentationFamily;
+                LastSortingOrder = entity.RenderLayer;
+                if (configuredViews.Add(view)) ActiveVisualCount++;
+                return;
+            }
+
             bool fireballProjectile = entity.PresentationFamily ==
                                           (int)UnityEnhancedPresentationFamily.Fire &&
                                       IsAuthoritativeProjectileIdentity(entity.StableIdentity);
@@ -188,6 +243,8 @@ namespace MagicCarpet.PresentationLab
                     fireballProjectile,
                     false);
             }
+
+            state.Renderer.enabled = true;
 
             if (fireballProjectile)
             {
@@ -282,6 +339,34 @@ namespace MagicCarpet.PresentationLab
             LastConfiguredFamily = -1;
             LastSortingOrder = 0;
             reducedMotion = false;
+        }
+
+        private void OnDestroy()
+        {
+            if (ownerActorCatalog != null)
+            {
+                ownerActorCatalog.Dispose();
+                ownerActorCatalog = null;
+            }
+
+            foreach (Mesh mesh in meshes.Values)
+            {
+                if (mesh != null)
+                {
+                    if (Application.isPlaying) Destroy(mesh);
+                    else DestroyImmediate(mesh);
+                }
+            }
+            meshes.Clear();
+            foreach (Material material in materials.Values)
+            {
+                if (material != null)
+                {
+                    if (Application.isPlaying) Destroy(material);
+                    else DestroyImmediate(material);
+                }
+            }
+            materials.Clear();
         }
 
         private Mesh GetMesh(int family)
@@ -683,6 +768,25 @@ namespace MagicCarpet.PresentationLab
         private static bool IsAuthoritativeProjectileIdentity(ulong stableIdentity)
         {
             return (stableIdentity & 0xf0000000UL) == 0x20000000UL;
+        }
+
+        private static bool IsOwnerActorFamily(int family)
+        {
+            return family == (int)UnityEnhancedPresentationFamily.Goat ||
+                   family == (int)UnityEnhancedPresentationFamily.Villager ||
+                   family == (int)UnityEnhancedPresentationFamily.Dolmen;
+        }
+
+        private Quaternion OwnerBillboardRotation()
+        {
+            if (presentationCamera == null)
+            {
+                return Quaternion.identity;
+            }
+
+            return Quaternion.LookRotation(
+                -presentationCamera.transform.forward,
+                presentationCamera.transform.up);
         }
 
         private static bool IsBillboard(UnityEnhancedPresentationFamily family)
@@ -1194,16 +1298,5 @@ namespace MagicCarpet.PresentationLab
             }
         }
 
-        private void OnDestroy()
-        {
-            foreach (Mesh mesh in meshes.Values)
-            {
-                if (mesh != null) DestroyImmediate(mesh);
-            }
-            foreach (Material material in materials.Values)
-            {
-                if (material != null) DestroyImmediate(material);
-            }
-        }
     }
 }
