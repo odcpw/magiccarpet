@@ -123,8 +123,8 @@ namespace MagicCarpet.PresentationLab
         // The depth multiplier starts only beyond the readable near field and
         // is capped so a far structure cannot become a billboard-sized prop.
         private const float TownReadabilityBaseHeight = 2.02f;
-        private const float TownReadabilityViewportHeightFraction = 0.045f;
-        private const float TownReadabilityMaximumScale = 1.5f;
+        private const float TownReadabilityViewportHeightFraction = 0.075f;
+        private const float TownReadabilityMaximumScale = 2.25f;
         // Keep town windows and trim alive at night without turning the
         // generated structure into a pulsing billboard. This is a bounded
         // material treatment; the owner mesh and accent mask remain intact.

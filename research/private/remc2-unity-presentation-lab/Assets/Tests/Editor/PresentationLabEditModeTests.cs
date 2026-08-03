@@ -379,8 +379,10 @@ namespace MagicCarpet.PresentationLab.Tests
         {
             GameObject root = new GameObject("enhanced-town-depth-readability-test");
             GameObject nearView = new GameObject("near-town-view");
+            GameObject midView = new GameObject("mid-town-view");
             GameObject farView = new GameObject("far-town-view");
             nearView.transform.SetParent(root.transform, false);
+            midView.transform.SetParent(root.transform, false);
             farView.transform.SetParent(root.transform, false);
             try
             {
@@ -388,27 +390,38 @@ namespace MagicCarpet.PresentationLab.Tests
                     root.AddComponent<UnityEnhancedActorPresentation>();
                 UnityEnhancedCameraPose cameraPose =
                     new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f);
-                UnityEnhancedEntitySnapshot nearTown = TownEntity(24f);
+                UnityEnhancedEntitySnapshot nearTown = TownEntity(10f);
+                UnityEnhancedEntitySnapshot midTown = TownEntity(24f);
                 UnityEnhancedEntitySnapshot farTown = TownEntity(60f);
 
                 actors.Configure(nearView, nearTown, cameraPose);
+                actors.Configure(midView, midTown, cameraPose);
                 actors.Configure(farView, farTown, cameraPose);
 
                 Transform nearVisual = nearView.transform.Find("EnhancedActorVisual");
+                Transform midVisual = midView.transform.Find("EnhancedActorVisual");
                 Transform farVisual = farView.transform.Find("EnhancedActorVisual");
                 Assert.IsNotNull(nearVisual);
+                Assert.IsNotNull(midVisual);
                 Assert.IsNotNull(farVisual);
-                Assert.Greater(farVisual.localScale.y, nearVisual.localScale.y);
+                Assert.That(nearVisual.localScale.y, Is.EqualTo(1.02f).Within(0.0001f));
+                Assert.That(midVisual.localScale.y / nearVisual.localScale.y,
+                    Is.EqualTo(1.25f).Within(0.01f));
+                Assert.Greater(farVisual.localScale.y, midVisual.localScale.y);
                 Assert.LessOrEqual(
                     farVisual.localScale.y,
-                    nearVisual.localScale.y * 1.5f + 0.0001f);
+                    nearVisual.localScale.y * 2.25f + 0.0001f);
 
                 MeshRenderer nearRenderer = nearVisual.GetComponent<MeshRenderer>();
+                MeshRenderer midRenderer = midVisual.GetComponent<MeshRenderer>();
                 MeshRenderer farRenderer = farVisual.GetComponent<MeshRenderer>();
                 MeshFilter nearFilter = nearVisual.GetComponent<MeshFilter>();
+                MeshFilter midFilter = midVisual.GetComponent<MeshFilter>();
                 MeshFilter farFilter = farVisual.GetComponent<MeshFilter>();
                 Assert.AreSame(nearFilter.sharedMesh, farFilter.sharedMesh);
+                Assert.AreSame(nearFilter.sharedMesh, midFilter.sharedMesh);
                 Assert.AreSame(nearRenderer.sharedMaterial, farRenderer.sharedMaterial);
+                Assert.AreSame(nearRenderer.sharedMaterial, midRenderer.sharedMaterial);
             }
             finally
             {
