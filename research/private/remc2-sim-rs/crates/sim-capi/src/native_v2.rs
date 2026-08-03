@@ -277,6 +277,13 @@ pub const MC_CAMPAIGN_EVENT_GOAT: u8 = 9;
 /// Additive Level 2 campaign economy events (`mc_sim_level2.h`, kind 10).
 pub const MC_CAMPAIGN_EVENT_ECONOMY: u8 = 10;
 
+pub const MC_CAMPAIGN_GOAT_BLEAT: u8 = 1;
+pub const MC_CAMPAIGN_GOAT_MANA_CONVERTED: u8 = 2;
+pub const MC_CAMPAIGN_GOAT_EXTRA_MANA_SPHERE_REQUEST: u8 = 3;
+pub const MC_CAMPAIGN_GOAT_REMOVAL_QUEUED: u8 = 4;
+pub const MC_CAMPAIGN_GOAT_RECLAIMED: u8 = 5;
+pub const MC_CAMPAIGN_GOAT_ENGAGEMENT_BOUNDARY: u8 = 6;
+
 pub const MC_CAMPAIGN_ECONOMY_MANA_SPHERE_SPAWNED: u8 = 1;
 pub const MC_CAMPAIGN_ECONOMY_MANA_SPHERE_CLAIMED: u8 = 2;
 pub const MC_CAMPAIGN_ECONOMY_MANA_SPHERE_COLLECTED: u8 = 3;
@@ -596,6 +603,36 @@ pub struct McCampaignEconomyEventV2 {
     pub value_0: i32,
     pub value_1: i32,
     pub reserved: [u32; 4],
+}
+
+/// Additive detailed payload for a kind-9 `McCampaignEventV2` row. `ordinal`
+/// joins the sidecar to the generic Goat dispatch row, and `event_index`
+/// identifies which `GoatStepEvent` within that row produced this payload.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignGoatEventV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub ordinal: u32,
+    pub pass: u8,
+    pub family: u8,
+    pub code: u8,
+    pub flags: u8,
+    pub source_slot: u16,
+    pub event_index: u16,
+    pub entity_0: u16,
+    pub entity_1: u16,
+    pub value_0: i32,
+    pub value_1: i32,
+    pub sound_id: u16,
+    pub action: u8,
+    pub reserved_0: u8,
+    pub x: u16,
+    pub y: u16,
+    pub z: i16,
+    pub asset_ref_index: u32,
+    pub reserved: [u32; 2],
 }
 
 /// Revisioned result of one Level 2 outer turn.  The digest is the exact
@@ -7662,6 +7699,54 @@ pub extern "C" fn mc_native_campaign_economy_events(
     })
 }
 
+/// Copy the detailed Level 2 Goat sidecars from the most recent outer turn.
+/// Generic `McCampaignEventV2` rows remain the stable 48-byte event stream;
+/// callers join these rows by `generation + ordinal`, and use `event_index`
+/// when one Goat dispatch row emits multiple typed Goat payloads.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_goat_events(
+    handle: u64,
+    events: *mut McCampaignGoatEventV2,
+    event_capacity: u32,
+    event_element_size: u32,
+    out_event_count: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_event_count, "campaign goat event count")?;
+        require_element_size::<McCampaignGoatEventV2>(event_element_size, "campaign goat event")?;
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign goat events require a Level 2 campaign session",
+                ));
+            };
+            let mut rows = Vec::new();
+            for (ordinal, dispatch) in reset.dispatch_events().iter().enumerate() {
+                let Level2DispatchEvent::Goat {
+                    pass,
+                    source_slot,
+                    events,
+                } = dispatch
+                else {
+                    continue;
+                };
+                for (event_index, event) in events.iter().copied().enumerate() {
+                    rows.push(campaign_goat_event_snapshot(
+                        session.generation,
+                        ordinal,
+                        event_index,
+                        *pass,
+                        *source_slot,
+                        event,
+                    ));
+                }
+            }
+            copy_slice(&rows, events, event_capacity, out_event_count)
+        })
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_native_campaign_world_info(
     handle: u64,
@@ -10607,6 +10692,7 @@ fn campaign_event_snapshot(
     let (pass, projected_kind, family, flags, source_slot) = event.campaign_projection();
     let kind = match event {
         Level2DispatchEvent::Economy { .. } => MC_CAMPAIGN_EVENT_ECONOMY,
+        Level2DispatchEvent::Goat { .. } => MC_CAMPAIGN_EVENT_GOAT,
         Level2DispatchEvent::SpellAcquisition { .. } => MC_CAMPAIGN_EVENT_SPELL_ACQUISITION,
         _ => projected_kind,
     };
@@ -11021,6 +11107,71 @@ fn campaign_economy_event_snapshot(
         value_1,
         reserved: [0; 4],
     }
+}
+
+fn campaign_goat_event_snapshot(
+    generation: u64,
+    ordinal: usize,
+    event_index: usize,
+    pass: u8,
+    source_slot: u16,
+    event: GoatStepEvent,
+) -> McCampaignGoatEventV2 {
+    let mut row = McCampaignGoatEventV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignGoatEventV2>(),
+        generation,
+        ordinal: u32::try_from(ordinal).expect("bounded campaign Goat ordinal fits u32"),
+        pass,
+        source_slot,
+        event_index: u16::try_from(event_index)
+            .expect("bounded campaign Goat event index fits u16"),
+        asset_ref_index: MC_ASSET_REF_NONE,
+        ..McCampaignGoatEventV2::default()
+    };
+    match event {
+        GoatStepEvent::Bleat {
+            entity_index,
+            sound_id,
+            position,
+            action,
+            ..
+        } => {
+            row.code = MC_CAMPAIGN_GOAT_BLEAT;
+            row.entity_0 = entity_index;
+            row.sound_id = sound_id;
+            row.action = action;
+            row.x = position.x;
+            row.y = position.y;
+            row.z = position.z;
+        }
+        GoatStepEvent::ManaConverted { entity_index, mana } => {
+            row.code = MC_CAMPAIGN_GOAT_MANA_CONVERTED;
+            row.entity_0 = entity_index;
+            row.value_0 = mana;
+        }
+        GoatStepEvent::ExtraManaSphereRequested { entity_index } => {
+            row.code = MC_CAMPAIGN_GOAT_EXTRA_MANA_SPHERE_REQUEST;
+            row.entity_0 = entity_index;
+        }
+        GoatStepEvent::RemovalQueued { entity_index } => {
+            row.code = MC_CAMPAIGN_GOAT_REMOVAL_QUEUED;
+            row.entity_0 = entity_index;
+        }
+        GoatStepEvent::Reclaimed { entity_index } => {
+            row.code = MC_CAMPAIGN_GOAT_RECLAIMED;
+            row.entity_0 = entity_index;
+        }
+        GoatStepEvent::EngagementBoundaryReached {
+            entity_index,
+            target_entity_index,
+        } => {
+            row.code = MC_CAMPAIGN_GOAT_ENGAGEMENT_BOUNDARY;
+            row.entity_0 = entity_index;
+            row.entity_1 = target_entity_index;
+        }
+    }
+    row
 }
 
 fn decode_sha256_hex(value: &str) -> [u8; 32] {
@@ -16186,6 +16337,83 @@ mod tests {
         }
     }
 
+    fn open_level2_campaign_handle() -> u64 {
+        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        let package = level2_package.to_string_lossy();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 2,
+            internal_level: 1,
+            map_type: 0,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut handle = 0;
+        assert_eq!(
+            mc_native_campaign_session_open(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                &raw const selection,
+                &raw mut handle,
+            ),
+            MC_STATUS_OK
+        );
+        handle
+    }
+
+    fn step_level2_campaign_once(
+        handle: u64,
+        generation: u64,
+    ) -> (McCampaignStepSnapshotV2, [McCampaignEventV2; 1024], usize) {
+        let input = McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation,
+            command: valid_command(),
+            player_slot: 0,
+            player_x: 123,
+            player_y: 456,
+            player_z: 7,
+            ..McCampaignStepInputV2::default()
+        };
+        let mut snapshot = McCampaignStepSnapshotV2::default();
+        let mut events = [McCampaignEventV2::default(); 1024];
+        let mut event_count = 0;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
+        (snapshot, events, event_count as usize)
+    }
+
+    fn campaign_goat_events(handle: u64) -> Vec<McCampaignGoatEventV2> {
+        let mut events = [McCampaignGoatEventV2::default(); 1024];
+        let mut event_count = 0;
+        assert_eq!(
+            mc_native_campaign_goat_events(
+                handle,
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignGoatEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
+        events[..event_count as usize].to_vec()
+    }
+
     #[test]
     fn layouts_and_versions_are_stable() {
         assert_eq!(mc_native_abi_version(), 2);
@@ -16199,6 +16427,7 @@ mod tests {
         assert_eq!(size_of::<McCampaignStepInputV2>(), 80);
         assert_eq!(size_of::<McCampaignEventV2>(), 48);
         assert_eq!(size_of::<McCampaignEconomyEventV2>(), 64);
+        assert_eq!(size_of::<McCampaignGoatEventV2>(), 64);
         assert_eq!(size_of::<McCampaignStepSnapshotV2>(), 112);
         assert_eq!(std::mem::offset_of!(McCampaignStepInputV2, command), 16);
         assert_eq!(std::mem::offset_of!(McCampaignEventV2, source_slot), 24);
@@ -16207,6 +16436,13 @@ mod tests {
             28
         );
         assert_eq!(std::mem::offset_of!(McCampaignEconomyEventV2, value_0), 40);
+        assert_eq!(std::mem::offset_of!(McCampaignGoatEventV2, entity_0), 28);
+        assert_eq!(std::mem::offset_of!(McCampaignGoatEventV2, value_0), 32);
+        assert_eq!(std::mem::offset_of!(McCampaignGoatEventV2, sound_id), 40);
+        assert_eq!(
+            std::mem::offset_of!(McCampaignGoatEventV2, asset_ref_index),
+            52
+        );
         assert_eq!(
             std::mem::offset_of!(McCampaignStepSnapshotV2, dispatch_hash),
             40
@@ -16833,6 +17069,126 @@ mod tests {
     }
 
     #[test]
+    fn campaign_goat_snapshot_maps_all_typed_variants() {
+        let ordinal = 19;
+        let pass = 3;
+        let source_slot = 157;
+        let snapshots = [
+            campaign_goat_event_snapshot(
+                11,
+                ordinal,
+                0,
+                pass,
+                source_slot,
+                GoatStepEvent::Bleat {
+                    entity_index: source_slot,
+                    sound_id: 46,
+                    position: Position {
+                        x: 20_000,
+                        y: 19_616,
+                        z: 128,
+                    },
+                    action: 11,
+                },
+            ),
+            campaign_goat_event_snapshot(
+                11,
+                ordinal,
+                1,
+                pass,
+                source_slot,
+                GoatStepEvent::ManaConverted {
+                    entity_index: source_slot,
+                    mana: 321,
+                },
+            ),
+            campaign_goat_event_snapshot(
+                11,
+                ordinal,
+                2,
+                pass,
+                source_slot,
+                GoatStepEvent::ExtraManaSphereRequested {
+                    entity_index: source_slot,
+                },
+            ),
+            campaign_goat_event_snapshot(
+                11,
+                ordinal,
+                3,
+                pass,
+                source_slot,
+                GoatStepEvent::RemovalQueued {
+                    entity_index: source_slot,
+                },
+            ),
+            campaign_goat_event_snapshot(
+                11,
+                ordinal,
+                4,
+                pass,
+                source_slot,
+                GoatStepEvent::Reclaimed {
+                    entity_index: source_slot,
+                },
+            ),
+            campaign_goat_event_snapshot(
+                11,
+                ordinal,
+                5,
+                pass,
+                source_slot,
+                GoatStepEvent::EngagementBoundaryReached {
+                    entity_index: source_slot,
+                    target_entity_index: 166,
+                },
+            ),
+        ];
+
+        for (event_index, snapshot) in snapshots.iter().enumerate() {
+            assert_eq!(snapshot.abi_version, MC_NATIVE_ABI_VERSION);
+            assert_eq!(snapshot.struct_size, struct_size::<McCampaignGoatEventV2>());
+            assert_eq!(snapshot.generation, 11);
+            assert_eq!(snapshot.ordinal, ordinal as u32);
+            assert_eq!(snapshot.pass, pass);
+            assert_eq!(snapshot.source_slot, source_slot);
+            assert_eq!(snapshot.event_index, event_index as u16);
+            assert_eq!(snapshot.asset_ref_index, MC_ASSET_REF_NONE);
+            assert_eq!(snapshot.reserved, [0; 2]);
+        }
+
+        assert_eq!(snapshots[0].code, MC_CAMPAIGN_GOAT_BLEAT);
+        assert_eq!(snapshots[0].entity_0, source_slot);
+        assert_eq!(snapshots[0].sound_id, 46);
+        assert_eq!(snapshots[0].action, 11);
+        assert_eq!(
+            (snapshots[0].x, snapshots[0].y, snapshots[0].z),
+            (20_000, 19_616, 128)
+        );
+
+        assert_eq!(snapshots[1].code, MC_CAMPAIGN_GOAT_MANA_CONVERTED);
+        assert_eq!(snapshots[1].entity_0, source_slot);
+        assert_eq!(snapshots[1].value_0, 321);
+
+        assert_eq!(
+            snapshots[2].code,
+            MC_CAMPAIGN_GOAT_EXTRA_MANA_SPHERE_REQUEST
+        );
+        assert_eq!(snapshots[2].entity_0, source_slot);
+
+        assert_eq!(snapshots[3].code, MC_CAMPAIGN_GOAT_REMOVAL_QUEUED);
+        assert_eq!(snapshots[3].entity_0, source_slot);
+
+        assert_eq!(snapshots[4].code, MC_CAMPAIGN_GOAT_RECLAIMED);
+        assert_eq!(snapshots[4].entity_0, source_slot);
+
+        assert_eq!(snapshots[5].code, MC_CAMPAIGN_GOAT_ENGAGEMENT_BOUNDARY);
+        assert_eq!(snapshots[5].entity_0, source_slot);
+        assert_eq!(snapshots[5].entity_1, 166);
+        assert!(snapshots[5].event_index > 0);
+    }
+
+    #[test]
     fn campaign_api_selects_level_profiles_and_preserves_old_level1_values() {
         let (level1_package, level1_closure) = fixture_paths();
         let package = level1_package.to_string_lossy();
@@ -17353,29 +17709,7 @@ mod tests {
 
     #[test]
     fn level2_campaign_goat_damage_submit_is_generation_bound_and_consumed() {
-        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../generated/l2-debug3.fJ3PaM/level2");
-        let package = level2_package.to_string_lossy();
-        let selection = McCampaignSelectionV2 {
-            abi_version: MC_NATIVE_ABI_VERSION,
-            struct_size: struct_size::<McCampaignSelectionV2>(),
-            external_level: 2,
-            internal_level: 1,
-            map_type: 0,
-            ..McCampaignSelectionV2::default()
-        };
-        let mut handle = 0;
-        assert_eq!(
-            mc_native_campaign_session_open(
-                package.as_ptr(),
-                package.len() as u32,
-                std::ptr::null(),
-                0,
-                &raw const selection,
-                &raw mut handle,
-            ),
-            MC_STATUS_OK
-        );
+        let handle = open_level2_campaign_handle();
 
         let mut goats = [McCampaignGoatSnapshotV2::default(); 36];
         let mut batch = McGoatBatchV2::default();
@@ -17496,6 +17830,125 @@ mod tests {
             mc_native_campaign_goat_damage_submit(handle, 0, before.entity_index, 100, 152),
             MC_STATUS_GENERATION_MISMATCH
         );
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn level2_campaign_goat_events_publish_action11_bleat_payloads() {
+        let handle = open_level2_campaign_handle();
+        let mut sidecars = [McCampaignGoatEventV2::default(); 8];
+        let mut sidecar_count = 0;
+        assert_eq!(
+            mc_native_campaign_goat_events(
+                handle,
+                sidecars.as_mut_ptr(),
+                sidecars.len() as u32,
+                struct_size::<McCampaignGoatEventV2>() - 1,
+                &raw mut sidecar_count,
+            ),
+            MC_STATUS_STRUCT_TOO_SMALL
+        );
+
+        let mut observed = None;
+        for _ in 0..256 {
+            let (snapshot, generic_events, generic_count) = step_level2_campaign_once(handle, 0);
+            let goat_events = campaign_goat_events(handle);
+            if let Some(row) = goat_events
+                .iter()
+                .find(|row| row.code == MC_CAMPAIGN_GOAT_BLEAT && row.action == 11)
+                .copied()
+            {
+                let generic = generic_events
+                    .get(row.ordinal as usize)
+                    .expect("Goat sidecar ordinal joins generic event stream");
+                assert!(row.ordinal < generic_count as u32);
+                assert_eq!(row.abi_version, MC_NATIVE_ABI_VERSION);
+                assert_eq!(row.struct_size, struct_size::<McCampaignGoatEventV2>());
+                assert_eq!(row.generation, snapshot.generation);
+                assert_eq!(row.sound_id, 46);
+                assert_eq!(row.entity_0, row.source_slot);
+                assert_eq!(generic.kind, MC_CAMPAIGN_EVENT_GOAT);
+                assert_eq!(generic.pass, row.pass);
+                assert_eq!(generic.family, row.family);
+                assert_eq!(generic.source_slot, row.source_slot);
+                assert_eq!(row.asset_ref_index, MC_ASSET_REF_NONE);
+                observed = Some(row);
+                break;
+            }
+        }
+
+        let row = observed.expect("bounded natural Level 2 turns expose an action-11 Goat bleat");
+        assert!(matches!(row.source_slot, 39 | 71));
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn level2_campaign_goat_events_publish_removal_and_reclaim_payloads() {
+        let handle = open_level2_campaign_handle();
+        let before = {
+            let mut goats = [McCampaignGoatSnapshotV2::default(); 36];
+            let mut batch = McGoatBatchV2::default();
+            assert_eq!(
+                mc_native_campaign_goats_copy(
+                    handle,
+                    0,
+                    0,
+                    goats.as_mut_ptr(),
+                    goats.len() as u32,
+                    struct_size::<McCampaignGoatSnapshotV2>(),
+                    &raw mut batch,
+                    struct_size::<McGoatBatchV2>(),
+                ),
+                MC_STATUS_OK
+            );
+            goats
+                .iter()
+                .find(|goat| goat.entity_index == 39)
+                .copied()
+                .expect("authored Level 2 Goat row")
+        };
+        assert_eq!(
+            mc_native_campaign_goat_damage_submit(handle, 0, before.entity_index, 1_000_000, 152),
+            MC_STATUS_OK
+        );
+
+        let mut saw_removal = false;
+        let mut saw_reclaim = false;
+        for _ in 0..32 {
+            let (snapshot, generic_events, generic_count) = step_level2_campaign_once(handle, 0);
+            let goat_events = campaign_goat_events(handle);
+            for row in goat_events
+                .iter()
+                .filter(|row| row.source_slot == before.entity_index)
+            {
+                let generic = generic_events
+                    .get(row.ordinal as usize)
+                    .expect("Goat sidecar ordinal joins generic event stream");
+                assert!(row.ordinal < generic_count as u32);
+                assert_eq!(row.generation, snapshot.generation);
+                assert_eq!(generic.kind, MC_CAMPAIGN_EVENT_GOAT);
+                assert_eq!(generic.pass, row.pass);
+                assert_eq!(generic.family, row.family);
+                assert_eq!(generic.source_slot, row.source_slot);
+                match row.code {
+                    MC_CAMPAIGN_GOAT_REMOVAL_QUEUED => {
+                        assert_eq!(row.entity_0, before.entity_index);
+                        saw_removal = true;
+                    }
+                    MC_CAMPAIGN_GOAT_RECLAIMED => {
+                        assert_eq!(row.entity_0, before.entity_index);
+                        saw_reclaim = true;
+                    }
+                    _ => {}
+                }
+            }
+            if saw_removal && saw_reclaim {
+                break;
+            }
+        }
+
+        assert!(saw_removal, "lethal Level 2 Goat path must publish removal");
+        assert!(saw_reclaim, "lethal Level 2 Goat path must publish reclaim");
         assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
     }
 
@@ -19556,11 +20009,16 @@ _Static_assert(sizeof(McCampaignSelectionV2) == 32, "McCampaignSelectionV2 size"
 _Static_assert(sizeof(McCampaignStepInputV2) == 80, "McCampaignStepInputV2 size");
 _Static_assert(sizeof(McCampaignEventV2) == 48, "McCampaignEventV2 size");
 _Static_assert(sizeof(McCampaignEconomyEventV2) == 64, "McCampaignEconomyEventV2 size");
+_Static_assert(sizeof(McCampaignGoatEventV2) == 64, "McCampaignGoatEventV2 size");
 _Static_assert(sizeof(McCampaignStepSnapshotV2) == 112, "McCampaignStepSnapshotV2 size");
 _Static_assert(offsetof(McCampaignStepInputV2, command) == 16, "campaign step command offset");
 _Static_assert(offsetof(McCampaignEventV2, source_slot) == 24, "campaign event source offset");
 _Static_assert(offsetof(McCampaignEconomyEventV2, primary_id) == 28, "campaign economy primary offset");
 _Static_assert(offsetof(McCampaignEconomyEventV2, value_0) == 40, "campaign economy value offset");
+_Static_assert(offsetof(McCampaignGoatEventV2, entity_0) == 28, "campaign goat entity offset");
+_Static_assert(offsetof(McCampaignGoatEventV2, value_0) == 32, "campaign goat value offset");
+_Static_assert(offsetof(McCampaignGoatEventV2, sound_id) == 40, "campaign goat sound offset");
+_Static_assert(offsetof(McCampaignGoatEventV2, asset_ref_index) == 52, "campaign goat asset offset");
 _Static_assert(offsetof(McCampaignStepSnapshotV2, dispatch_hash) == 40, "campaign step hash offset");
 _Static_assert(sizeof(McCampaignWorldInfoV2) == 64, "McCampaignWorldInfoV2 size");
 _Static_assert(sizeof(McCampaignPlayerSnapshotV2) == 48, "McCampaignPlayerSnapshotV2 size");

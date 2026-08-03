@@ -136,6 +136,44 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void Level2CampaignGoatSidecarsReachManagedProductionPath()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+
+            var target = session.Goats().Single(goat => goat.entityIndex == 39);
+            session.SubmitGoatDamage(target.entityIndex, 1_000_000, 152);
+
+            var sawRemoval = false;
+            var sawReclaim = false;
+            for (var turn = 0; turn < 32 && (!sawRemoval || !sawReclaim); turn++)
+            {
+                var stepped = session.Step(123, 456, 7);
+                var goatEvents = session.GoatEvents()
+                    .Where(eventRow => eventRow.sourceSlot == target.entityIndex)
+                    .ToArray();
+                foreach (var goatEvent in goatEvents)
+                {
+                    Assert.That(goatEvent.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+                    Assert.That(goatEvent.generation, Is.EqualTo(stepped.snapshot.generation));
+                    Assert.That(
+                        stepped.events[(int)goatEvent.ordinal].kind,
+                        Is.EqualTo(NativeSim.CampaignEventGoat));
+                    if (goatEvent.code == NativeSim.CampaignGoatRemovalQueued)
+                    {
+                        sawRemoval = true;
+                    }
+                    else if (goatEvent.code == NativeSim.CampaignGoatReclaimed)
+                    {
+                        sawReclaim = true;
+                    }
+                }
+            }
+
+            Assert.That(sawRemoval, Is.True);
+            Assert.That(sawReclaim, Is.True);
+        }
+
+        [Test]
         public void Level2CampaignManaArenaSnapshotsAreReachableFromManagedSession()
         {
             using var session = NativeCampaignSession.OpenLevel2(Level2Package);

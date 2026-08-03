@@ -484,6 +484,24 @@ namespace MagicCarpet.Native
             return events.Take(checked((int)eventCount)).ToArray();
         }
 
+        internal NativeSim.CampaignGoatEvent[] GoatEvents()
+        {
+            var events = new NativeSim.CampaignGoatEvent[1024];
+            var status = NativeSim.mc_native_campaign_goat_events(
+                Handle,
+                events,
+                checked((uint)events.Length),
+                64,
+                out var eventCount);
+            NativeSession.Check(status, "read Level 2 Goat events");
+            if (eventCount > (uint)events.Length)
+            {
+                throw new InvalidOperationException(
+                    $"campaign Goat event count {eventCount} exceeds buffer {events.Length}");
+            }
+            return events.Take(checked((int)eventCount)).ToArray();
+        }
+
         internal void Reset()
         {
             var status = NativeSim.mc_native_campaign_session_reset(Handle);

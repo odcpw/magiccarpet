@@ -346,6 +346,47 @@ enum {
     MC_CAMPAIGN_EVENT_ECONOMY = 10
 };
 
+/* Stable per-variant codes for the additive Level 2 Goat sidecar. The
+ * generic kind-9 McCampaignEventV2 row remains unchanged; clients join these
+ * rows by generation + ordinal and, when needed, event_index. */
+enum {
+    MC_CAMPAIGN_GOAT_BLEAT = 1,
+    MC_CAMPAIGN_GOAT_MANA_CONVERTED = 2,
+    MC_CAMPAIGN_GOAT_EXTRA_MANA_SPHERE_REQUEST = 3,
+    MC_CAMPAIGN_GOAT_REMOVAL_QUEUED = 4,
+    MC_CAMPAIGN_GOAT_RECLAIMED = 5,
+    MC_CAMPAIGN_GOAT_ENGAGEMENT_BOUNDARY = 6
+};
+
+/* Detailed payload for a kind-9 McCampaignEventV2 row. `ordinal` joins the
+ * sidecar to the generic event returned by mc_native_campaign_session_step;
+ * `event_index` disambiguates multiple GoatStepEvents emitted by one Goat
+ * dispatch row. */
+typedef struct McCampaignGoatEventV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint32_t ordinal;
+    uint8_t pass;
+    uint8_t family;
+    uint8_t code;
+    uint8_t flags;
+    uint16_t source_slot;
+    uint16_t event_index;
+    uint16_t entity_0;
+    uint16_t entity_1;
+    int32_t value_0;
+    int32_t value_1;
+    uint16_t sound_id;
+    uint8_t action;
+    uint8_t reserved_0;
+    uint16_t x;
+    uint16_t y;
+    int16_t z;
+    uint32_t asset_ref_index;
+    uint32_t reserved[2];
+} McCampaignGoatEventV2;
+
 /* Stable per-variant codes for the additive Level 2 economy sidecar.  The
  * generic McCampaignEventV2 row remains unchanged and clients join these
  * rows by generation + ordinal. */
@@ -477,6 +518,10 @@ int32_t mc_native_campaign_mana_carriers_copy(
 
 int32_t mc_native_campaign_economy_events(
     uint64_t handle, McCampaignEconomyEventV2 *events,
+    uint32_t event_capacity, uint32_t event_element_size,
+    uint32_t *out_event_count);
+int32_t mc_native_campaign_goat_events(
+    uint64_t handle, McCampaignGoatEventV2 *events,
     uint32_t event_capacity, uint32_t event_element_size,
     uint32_t *out_event_count);
 

@@ -51,6 +51,9 @@ namespace MagicCarpet.Native
         internal const uint EventLevel1ManaSphereClaimed = 33;
         internal const uint EventLevel1ManaSphereCollected = 34;
         internal const byte CampaignEconomyCastleDefenderCollectedSphere = 16;
+        internal const byte CampaignGoatBleat = 1;
+        internal const byte CampaignGoatRemovalQueued = 4;
+        internal const byte CampaignGoatReclaimed = 5;
         internal const uint EventLevel1ExitSequenceStarted = 35;
         internal const uint EventLevel1ExitSequenceCompleted = 36;
         internal const uint EventLevel1WaterSplashed = 37;
@@ -274,6 +277,34 @@ namespace MagicCarpet.Native
             internal int value0;
             internal int value1;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignGoatEvent
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal uint ordinal;
+            internal byte pass;
+            internal byte family;
+            internal byte code;
+            internal byte flags;
+            internal ushort sourceSlot;
+            internal ushort eventIndex;
+            internal ushort entity0;
+            internal ushort entity1;
+            internal int value0;
+            internal int value1;
+            internal ushort soundId;
+            internal byte action;
+            internal byte reserved0;
+            internal ushort x;
+            internal ushort y;
+            internal short z;
+            internal uint assetRefIndex;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 2)]
             internal uint[] reserved;
         }
 
@@ -1953,6 +1984,14 @@ namespace MagicCarpet.Native
             out uint eventCount);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_goat_events(
+            ulong handle,
+            [Out] CampaignGoatEvent[] events,
+            uint eventCapacity,
+            uint eventElementSize,
+            out uint eventCount);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_world_info(
             ulong handle,
             out CampaignWorldInfo info,
@@ -2484,6 +2523,7 @@ namespace MagicCarpet.Native
             RequireSize<CampaignStepInput>(80);
             RequireSize<CampaignEvent>(48);
             RequireSize<CampaignEconomyEvent>(64);
+            RequireSize<CampaignGoatEvent>(64);
             RequireSize<CampaignStepSnapshot>(112);
             RequireSize<CampaignWorldInfo>(64);
             RequireSize<CampaignPlayerSnapshot>(48);
@@ -2544,6 +2584,10 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignEvent>(nameof(CampaignEvent.sourceSlot), 24);
             RequireOffset<CampaignEconomyEvent>(nameof(CampaignEconomyEvent.primaryId), 28);
             RequireOffset<CampaignEconomyEvent>(nameof(CampaignEconomyEvent.value0), 40);
+            RequireOffset<CampaignGoatEvent>(nameof(CampaignGoatEvent.entity0), 28);
+            RequireOffset<CampaignGoatEvent>(nameof(CampaignGoatEvent.value0), 32);
+            RequireOffset<CampaignGoatEvent>(nameof(CampaignGoatEvent.soundId), 40);
+            RequireOffset<CampaignGoatEvent>(nameof(CampaignGoatEvent.assetRefIndex), 52);
             RequireOffset<CampaignStepSnapshot>(nameof(CampaignStepSnapshot.dispatchHash), 40);
             RequireOffset<CampaignWorldInfo>(nameof(CampaignWorldInfo.resetStateHash), 40);
             RequireOffset<CampaignPlayerSnapshot>(nameof(CampaignPlayerSnapshot.turn), 16);
