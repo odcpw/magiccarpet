@@ -97,6 +97,10 @@ namespace MagicCarpet.PresentationLab
         // indexed sprite just above that interpolated surface so it remains
         // depth-tested without disappearing into a neighboring triangle.
         private const float OwnerActorGroundClearance = 0.12f;
+        // Owner pixel rows are authored for the original low-resolution
+        // viewport. Give the Enhanced presentation enough screen presence to
+        // read during flight without changing the source texture or family.
+        private const float OwnerActorReadabilityScale = 1.5f;
         private const float FireballCoreVisualScale = 2.8f;
         // The owner projectile remains the anchor; the halo is deliberately
         // larger so a cast reads as a light event in the world, not as a tiny
@@ -218,13 +222,17 @@ namespace MagicCarpet.PresentationLab
                 state.Renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
                 state.Renderer.receiveShadows = false;
                 state.VisualObject.SetActive(entity.Visible);
+                float ownerHeight = ownerSprite.Height * OwnerActorReadabilityScale;
                 state.VisualObject.transform.localPosition =
                     new Vector3(
                         0f,
-                        ownerSprite.Height * 0.5f + OwnerActorGroundClearance,
+                        ownerHeight * 0.5f + OwnerActorGroundClearance,
                         0f);
                 state.VisualObject.transform.localScale =
-                    new Vector3(ownerSprite.Width, ownerSprite.Height, 1f);
+                    new Vector3(
+                        ownerSprite.Width * OwnerActorReadabilityScale,
+                        ownerHeight,
+                        1f);
                 state.VisualObject.transform.rotation = OwnerBillboardRotation();
                 state.Renderer.sortingOrder = entity.RenderLayer;
                 LastConfiguredFamily = entity.PresentationFamily;

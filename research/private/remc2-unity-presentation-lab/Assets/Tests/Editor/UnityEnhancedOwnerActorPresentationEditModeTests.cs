@@ -52,10 +52,12 @@ namespace MagicCarpet.PresentationLab.Tests
                 StringAssert.StartsWith("Owner Indexed Actor Billboard Quad", filter.sharedMesh.name);
                 StringAssert.StartsWith("Owner Indexed Actor Material", renderer.sharedMaterial.name);
                 StringAssert.StartsWith("Owner Indexed Actor", filter.sharedMesh.name);
-                Assert.That(visual.localScale.y, Is.EqualTo(150f / 64f * 0.5f).Within(0.0001f));
+                Assert.That(
+                    visual.localScale.y,
+                    Is.EqualTo(150f / 64f * 0.5f * 1.5f).Within(0.0001f));
                 Assert.That(
                     visual.localPosition.y,
-                    Is.EqualTo((150f / 64f * 0.5f) * 0.5f + 0.12f).Within(0.0001f));
+                    Is.EqualTo((150f / 64f * 0.5f * 1.5f) * 0.5f + 0.12f).Within(0.0001f));
                 Assert.IsFalse(filter.sharedMesh.name.StartsWith("EnhancedGenerated", StringComparison.Ordinal));
                 Assert.IsFalse(renderer.sharedMaterial.name.StartsWith("EnhancedGenerated", StringComparison.Ordinal));
 
