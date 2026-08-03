@@ -147,6 +147,7 @@ namespace MagicCarpet.PresentationLab
         private bool capturedPipelineSettings;
         private bool priorRequiresColorTexture;
         private bool capturedColorTextureSetting;
+        private bool hasAppliedSettings;
 
         public UnityEnhancedQualitySettings Settings { get; private set; }
         public float AppliedRenderScale { get; private set; }
@@ -160,6 +161,7 @@ namespace MagicCarpet.PresentationLab
         public bool UsesSupersampling { get; private set; }
         public bool MotionBlurEnabled { get; private set; }
         public float AppliedMotionBlurIntensity { get; private set; }
+        public int CameraHistoryResetRequestCount { get; private set; }
         public float AppliedPostExposure { get; private set; }
         public Volume PostVolume { get { return volume; } }
         public bool OpaqueTextureRequired { get; private set; }
@@ -182,6 +184,9 @@ namespace MagicCarpet.PresentationLab
                 return false;
             }
 
+            bool configurationChanged = !hasAppliedSettings ||
+                                        targetCamera != camera ||
+                                        !SettingsEquivalent(Settings, settings);
             Settings = settings;
             targetCamera = camera;
             HdrEnabled = settings.Hdr;
@@ -211,7 +216,15 @@ namespace MagicCarpet.PresentationLab
                 ? AntialiasingMode.FastApproximateAntialiasing
                 : AntialiasingMode.None;
             cameraData.antialiasingQuality = AntialiasingQuality.High;
-            cameraData.resetHistory = true;
+            if (configurationChanged)
+            {
+                // Quality is published on every owner tick. Resetting URP's
+                // motion history on every tick would leave Motion Blur with
+                // no previous camera frame, so only reset when the actual
+                // camera/quality configuration changes.
+                cameraData.resetHistory = true;
+                CameraHistoryResetRequestCount++;
+            }
             ApplyPipelineScale(settings.RenderScale);
             EnsureVolume();
             bloom.active = settings.Bloom;
@@ -240,6 +253,7 @@ namespace MagicCarpet.PresentationLab
                 -4f,
                 4f);
             colorGrading.postExposure.value = AppliedPostExposure;
+            hasAppliedSettings = true;
             // Owner capture can render immediately after Apply, before URP's
             // normal player-loop volume update. Refresh the real camera stack
             // here so Bloom/tone mapping are visible on that same frame.
@@ -256,6 +270,7 @@ namespace MagicCarpet.PresentationLab
             RestoreColorTextureSetting();
             RestorePipelineScale();
             Settings = null;
+            hasAppliedSettings = false;
             AppliedRenderScale = 0f;
             AppliedPostExposure = 0f;
             TemporalUpscalingEnabled = false;
@@ -263,6 +278,32 @@ namespace MagicCarpet.PresentationLab
             UsesSupersampling = false;
             MotionBlurEnabled = false;
             AppliedMotionBlurIntensity = 0f;
+        }
+
+        private static bool SettingsEquivalent(
+            UnityEnhancedQualitySettings left,
+            UnityEnhancedQualitySettings right)
+        {
+            if (left == null || right == null)
+            {
+                return left == right;
+            }
+
+            return left.SchemaVersion == right.SchemaVersion &&
+                   left.Tier == right.Tier &&
+                   left.Hdr == right.Hdr &&
+                   left.Bloom == right.Bloom &&
+                   left.ToneMapping == right.ToneMapping &&
+                   left.ColorGrading == right.ColorGrading &&
+                   left.AmbientOcclusion == right.AmbientOcclusion &&
+                   left.AntiAliasing == right.AntiAliasing &&
+                   left.ReducedMotion == right.ReducedMotion &&
+                   left.CameraShake == right.CameraShake &&
+                   left.SpeedStreaks == right.SpeedStreaks &&
+                   left.MotionBlur == right.MotionBlur &&
+                   left.RenderScale == right.RenderScale &&
+                   left.TemporalMode == right.TemporalMode &&
+                   left.ExperimentalTemporalGate == right.ExperimentalTemporalGate;
         }
 
         private void RestoreColorTextureSetting()

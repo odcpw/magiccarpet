@@ -1836,11 +1836,17 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual(MotionBlurQuality.High, appliedMotionBlur.quality.value);
             Assert.That(appliedMotionBlur.intensity.value, Is.EqualTo(0.28f).Within(0.0001f));
             Assert.That(appliedMotionBlur.clamp.value, Is.EqualTo(0.12f).Within(0.0001f));
+            Assert.AreEqual(1, quality.CameraHistoryResetRequestCount);
+            Assert.IsTrue(quality.Apply(
+                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog),
+                camera));
+            Assert.AreEqual(1, quality.CameraHistoryResetRequestCount);
             Assert.IsTrue(quality.Apply(
                 UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog),
                 camera,
                 0.35f));
             Assert.AreEqual(0.35f, quality.AppliedPostExposure, 0.0001f);
+            Assert.AreEqual(1, quality.CameraHistoryResetRequestCount);
             UnityEnhancedQualitySettings reducedMotion =
                 UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog);
             reducedMotion.ReducedMotion = true;
@@ -1848,6 +1854,7 @@ namespace MagicCarpet.PresentationLab.Tests
             reducedMotion.SpeedStreaks = false;
             reducedMotion.MotionBlur = false;
             Assert.IsTrue(quality.Apply(reducedMotion, camera));
+            Assert.AreEqual(2, quality.CameraHistoryResetRequestCount);
             Assert.IsFalse(quality.MotionBlurEnabled);
             Assert.AreEqual(0f, quality.AppliedMotionBlurIntensity);
             Assert.IsFalse(appliedMotionBlur.active);
