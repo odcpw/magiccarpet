@@ -399,6 +399,75 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void EnhancedOwnerSourceSkipsUnsupportedFamiliesWithoutGenericFallback()
+        {
+            string source = File.ReadAllText(Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "UnityEnhancedOwnerSessionSource.cs"));
+            int buildEntitiesStart = source.IndexOf(
+                "private UnityEnhancedEntitySnapshot[] BuildEntities()",
+                StringComparison.Ordinal);
+            int buildLightsStart = source.IndexOf(
+                "private UnityEnhancedLocalLightRequest[] BuildLocalLights()",
+                StringComparison.Ordinal);
+            int presentationFamilyStart = source.IndexOf(
+                "private static int PresentationFamily(",
+                StringComparison.Ordinal);
+
+            Assert.GreaterOrEqual(buildEntitiesStart, 0);
+            Assert.Greater(buildLightsStart, buildEntitiesStart);
+            Assert.Greater(presentationFamilyStart, buildLightsStart);
+
+            string buildEntities = source.Substring(
+                buildEntitiesStart,
+                buildLightsStart - buildEntitiesStart);
+            string buildLights = source.Substring(
+                buildLightsStart,
+                presentationFamilyStart - buildLightsStart);
+            string familyMapping = source.Substring(presentationFamilyStart);
+
+            StringAssert.Contains("private const int UnsupportedPresentationFamily = -1;", source);
+            StringAssert.Contains(
+                "if (family == UnsupportedPresentationFamily)\n" +
+                "                {\n" +
+                "                    continue;\n" +
+                "                }",
+                buildEntities);
+            StringAssert.DoesNotContain(
+                "family = (int)UnityEnhancedPresentationFamily.Generic;",
+                buildEntities);
+            StringAssert.Contains(
+                "if (family == UnsupportedPresentationFamily ||",
+                buildLights);
+            StringAssert.Contains("default: return UnsupportedPresentationFamily;", familyMapping);
+            StringAssert.Contains(
+                "return (int)UnityEnhancedPresentationFamily.Player;",
+                familyMapping);
+            StringAssert.Contains(
+                "case 45: return (int)UnityEnhancedPresentationFamily.Town;",
+                familyMapping);
+            StringAssert.Contains(
+                "case 79: return (int)UnityEnhancedPresentationFamily.Castle;",
+                familyMapping);
+            StringAssert.Contains(
+                "? (int)UnityEnhancedPresentationFamily.Fire",
+                buildEntities);
+            StringAssert.Contains(
+                "int family = source.projectileKind == 1",
+                buildEntities);
+            StringAssert.Contains(
+                ": (int)UnityEnhancedPresentationFamily.Impact;",
+                buildEntities);
+            StringAssert.Contains(
+                "case 59: return (int)UnityEnhancedPresentationFamily.Smoke;",
+                familyMapping);
+            StringAssert.DoesNotContain(
+                "return (int)UnityEnhancedPresentationFamily.Generic;",
+                familyMapping);
+        }
+
+        [Test]
         public void PresentationTransformsCanInterpolateWithoutChangingSnapshotTick()
         {
             GameObject gameObject = new GameObject("enhanced-root-test");

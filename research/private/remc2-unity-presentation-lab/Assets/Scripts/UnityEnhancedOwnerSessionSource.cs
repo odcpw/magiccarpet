@@ -58,6 +58,9 @@ namespace MagicCarpet.PresentationLab
         private const float SourceUnitsPerUnityUnit = 64f;
         private const float TerrainSourceStep = 256f;
         private const float TerrainCellSize = TerrainSourceStep / SourceUnitsPerUnityUnit;
+        // Owner-native rows without a verified Enhanced family are omitted;
+        // Generic remains an explicit diagnostic-only presentation family.
+        private const int UnsupportedPresentationFamily = -1;
         // Enhanced-only vertical presentation compression keeps owner terrain
         // relief readable while preserving authoritative source units and the
         // existing horizontal mapping. Exact and Classic HD do not use it.
@@ -1691,9 +1694,9 @@ namespace MagicCarpet.PresentationLab
             {
                 EntitySnapshot source = entities[index];
                 int family = PresentationFamily(source, snapshot.entityIndex);
-                if (!UnityEnhancedActorPresentation.HasCoverage(family))
+                if (family == UnsupportedPresentationFamily)
                 {
-                    family = (int)UnityEnhancedPresentationFamily.Generic;
+                    continue;
                 }
 
                 ushort sourceX = source.x;
@@ -1791,10 +1794,11 @@ namespace MagicCarpet.PresentationLab
             {
                 EntitySnapshot source = entities[index];
                 int family = PresentationFamily(source, snapshot.entityIndex);
-                if (family != (int)UnityEnhancedPresentationFamily.Firefly &&
-                    family != (int)UnityEnhancedPresentationFamily.Mana &&
-                    family != (int)UnityEnhancedPresentationFamily.Projectile &&
-                    family != (int)UnityEnhancedPresentationFamily.Impact)
+                if (family == UnsupportedPresentationFamily ||
+                    (family != (int)UnityEnhancedPresentationFamily.Firefly &&
+                     family != (int)UnityEnhancedPresentationFamily.Mana &&
+                     family != (int)UnityEnhancedPresentationFamily.Projectile &&
+                     family != (int)UnityEnhancedPresentationFamily.Impact))
                 {
                     continue;
                 }
@@ -2068,7 +2072,7 @@ namespace MagicCarpet.PresentationLab
                     case 4: return (int)UnityEnhancedPresentationFamily.Archer;
                     case 13: return (int)UnityEnhancedPresentationFamily.Villager;
                     case 19: return (int)UnityEnhancedPresentationFamily.Firefly;
-                    default: return (int)UnityEnhancedPresentationFamily.Generic;
+                    default: return UnsupportedPresentationFamily;
                 }
             }
 
@@ -2094,7 +2098,7 @@ namespace MagicCarpet.PresentationLab
                     case 13:
                     case 59: return (int)UnityEnhancedPresentationFamily.Smoke;
                     case 40: return (int)UnityEnhancedPresentationFamily.Impact;
-                    default: return (int)UnityEnhancedPresentationFamily.Generic;
+                    default: return UnsupportedPresentationFamily;
                 }
             }
 
@@ -2103,7 +2107,7 @@ namespace MagicCarpet.PresentationLab
                 return (int)UnityEnhancedPresentationFamily.SpellJar;
             }
 
-            return (int)UnityEnhancedPresentationFamily.Generic;
+            return UnsupportedPresentationFamily;
         }
 
         private static int ModularDelta(ushort current, ushort previous)
