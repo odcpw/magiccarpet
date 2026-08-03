@@ -11,6 +11,8 @@ Shader "MagicCarpet/Enhanced/Terrain"
         _SpecularStrength ("Moon Specular Strength", Range(0, 1)) = 0.10
         _NormalStrength ("Procedural Relief Strength", Range(0, 1)) = 0.16
         _RidgeStrength ("Procedural Ridge Strength", Range(0, 1)) = 0.24
+        _RockTint ("Rock Slope Tint", Color) = (0.62, 0.72, 0.80, 1)
+        _SoilTint ("Soil Shelf Tint", Color) = (0.68, 0.56, 0.42, 1)
     }
 
     SubShader
@@ -49,6 +51,8 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 half _SpecularStrength;
                 half _NormalStrength;
                 half _RidgeStrength;
+                half4 _RockTint;
+                half4 _SoilTint;
             CBUFFER_END
 
             struct Attributes
@@ -82,7 +86,7 @@ Shader "MagicCarpet/Enhanced/Terrain"
             {
                 half diffuse = saturate(dot(normalWS, light.direction));
                 half3 halfDirection = SafeNormalize(light.direction + viewDirectionWS);
-                half specular = pow(saturate(dot(normalWS, halfDirection)), 32.0h) * _SpecularStrength;
+                half specular = pow(saturate(dot(normalWS, halfDirection)), 32.0h) * _SpecularStrength * 1.8h;
                 half attenuation = light.distanceAttenuation * light.shadowAttenuation;
                 return (diffuse.xxx + specular.xxx) * light.color * attenuation;
             }
@@ -104,49 +108,81 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 return lerp(lower, upper, fraction.y);
             }
 
+            float Fbm(float2 position)
+            {
+                float octave0 = ValueNoise(position);
+                float octave1 = ValueNoise(position * 2.07 + float2(13.1, -4.7));
+                float octave2 = ValueNoise(position * 4.19 + float2(-7.3, 19.4));
+                float octave3 = ValueNoise(position * 8.41 + float2(31.6, 8.2));
+                return (octave0 * 0.50 + octave1 * 0.25 + octave2 * 0.125 + octave3 * 0.0625) / 0.9375;
+            }
+
             half4 Frag(Varyings input) : SV_Target
             {
                 half3 normalWS = NormalizeNormalPerPixel(input.normalWS);
                 half3 viewDirectionWS = GetWorldSpaceNormalizeViewDir(input.positionWS);
                 half3 baseColor = saturate(input.color.rgb * _BaseColor.rgb);
 
-                float macro = ValueNoise(input.positionWS.xz * _DetailScale);
-                float fine = ValueNoise(input.positionWS.xz * (_DetailScale * 3.5));
-                float detail = lerp(macro, fine, 0.32);
+                float2 worldCoord = input.positionWS.xz * max(_DetailScale, 0.001);
+                float broadFbm = Fbm(worldCoord);
+                float fineFbm = Fbm(worldCoord * 2.15 + float2(4.7, -9.3));
+                float detail = lerp(broadFbm, fineFbm, 0.30);
 
                 // The terrain mesh is intentionally asset-free.  Reuse the
-                // stable scalar field above as a bounded normal perturbation
+                // multi-octave scalar field above as a bounded normal perturbation
                 // so moonlight breaks across broad relief instead of only
                 // changing the albedo.  The finite-difference step is large
                 // enough to avoid noisy pixel-scale shimmer at game scale.
                 float2 reliefCoord = input.positionWS.xz * max(_DetailScale * 2.4, 0.001);
                 const float reliefStep = 0.12;
-                float reliefLeft = ValueNoise(reliefCoord - float2(reliefStep, 0.0));
-                float reliefRight = ValueNoise(reliefCoord + float2(reliefStep, 0.0));
-                float reliefDown = ValueNoise(reliefCoord - float2(0.0, reliefStep));
-                float reliefUp = ValueNoise(reliefCoord + float2(0.0, reliefStep));
+                float reliefLeft = Fbm(reliefCoord - float2(reliefStep, 0.0));
+                float reliefRight = Fbm(reliefCoord + float2(reliefStep, 0.0));
+                float reliefDown = Fbm(reliefCoord - float2(0.0, reliefStep));
+                float reliefUp = Fbm(reliefCoord + float2(0.0, reliefStep));
                 float2 reliefGradient = float2(reliefRight - reliefLeft, reliefUp - reliefDown);
+                float2 fineReliefCoord = input.positionWS.xz * max(_DetailScale * 6.5, 0.001);
+                const float fineReliefStep = 0.055;
+                float fineLeft = Fbm(fineReliefCoord - float2(fineReliefStep, 0.0));
+                float fineRight = Fbm(fineReliefCoord + float2(fineReliefStep, 0.0));
+                float fineDown = Fbm(fineReliefCoord - float2(0.0, fineReliefStep));
+                float fineUp = Fbm(fineReliefCoord + float2(0.0, fineReliefStep));
+                float2 fineGradient = float2(fineRight - fineLeft, fineUp - fineDown);
+                reliefGradient = reliefGradient * 0.78 + fineGradient * 0.22;
                 normalWS = SafeNormalize(normalWS + half3(
-                    -reliefGradient.x * _NormalStrength,
+                    -reliefGradient.x * _NormalStrength * 2.10,
                     0.0h,
-                    -reliefGradient.y * _NormalStrength));
+                    -reliefGradient.y * _NormalStrength * 2.10));
 
-                half variation = lerp(0.68h, 1.34h, detail);
+                half variation = lerp(0.64h, 1.38h, saturate(detail));
                 baseColor *= lerp(1.0h, variation, _DetailStrength);
 
                 half slope = saturate(1.0h - normalWS.y);
                 half exposedFace = smoothstep(0.18h, 0.90h, slope);
+                half landMask = smoothstep(0.08h, 0.18h, input.color.r);
                 baseColor = lerp(
                     baseColor,
                     baseColor * _SlopeTint.rgb,
                     exposedFace * _SlopeStrength);
 
+                half rockMask = smoothstep(0.34h, 0.82h, slope) * landMask;
+                half soilMask = smoothstep(0.16h, 0.54h, 1.0h - slope) * landMask;
+                half3 rockSoilTint = lerp(_SoilTint.rgb, _RockTint.rgb, rockMask);
+                baseColor = lerp(
+                    baseColor,
+                    baseColor * rockSoilTint + _RockTint.rgb * 0.012h,
+                    saturate((rockMask + soilMask) * 0.22h));
+
                 // A soft ridge mask adds readable strata to the low-poly
                 // surface while remaining a single material pass.  It is
                 // deliberately restrained so the night palette remains cool
                 // and the original terrain selectors stay legible.
-                half ridgeMask = smoothstep(0.58h, 0.94h, 1.0h - abs(2.0h * detail - 1.0h));
-                ridgeMask *= saturate(0.18h + slope * 1.15h);
+                float strataPhase = input.positionWS.y * 0.42 +
+                                    dot(input.positionWS.xz, normalize(float2(0.86, 0.49))) * 0.055 +
+                                    detail * 1.8;
+                half strataMask = smoothstep(0.76h, 0.97h, abs(sin(strataPhase)));
+                half ridgeMask = smoothstep(0.66h, 0.94h, saturate(detail));
+                ridgeMask = max(ridgeMask, strataMask * 0.52h);
+                ridgeMask *= saturate(0.12h + slope * 1.20h) * landMask;
                 half3 ridgeTint = lerp(
                     _SlopeTint.rgb * 0.62h,
                     _SlopeTint.rgb * 0.88h,
@@ -156,7 +192,7 @@ Shader "MagicCarpet/Enhanced/Terrain"
                     baseColor * ridgeTint + ridgeTint * 0.015h,
                     ridgeMask * _RidgeStrength);
 
-                half3 lighting = max(SampleSH(normalWS), _AmbientBoost * half3(0.68h, 0.80h, 1.0h));
+                half3 lighting = max(SampleSH(normalWS), _AmbientBoost * half3(0.60h, 0.73h, 0.96h));
                 Light mainLight = GetMainLight(TransformWorldToShadowCoord(input.positionWS));
                 lighting += EvaluateLight(mainLight, normalWS, viewDirectionWS);
 
