@@ -186,6 +186,46 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void HudReadableCompanionConsumesGenerationBoundMissionStateWithoutOwnerPanel()
+        {
+            GameObject gameObject = new GameObject("enhanced-hud-readable-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+
+            UnityEnhancedWorldSnapshot snapshot = OwnerHudWorldSnapshot(3, 4);
+            snapshot.Hud.PlayerLife = 37;
+            snapshot.Hud.PlayerMaxLife = 100;
+            snapshot.Hud.PlayerMana = 12;
+            snapshot.Hud.PlayerMaxMana = 50;
+            snapshot.Hud.ActualSpeed = 44;
+            snapshot.Hud.TargetSpeed = 80;
+            snapshot.Hud.CurrentStage = 2;
+            snapshot.Hud.TasksCompleted = 1;
+            snapshot.Hud.ObjectiveCount = 3;
+            snapshot.Hud.HasFireball = true;
+            snapshot.Hud.HasSpeedSpell = true;
+            snapshot.Hud.SelectedSpellUiIndex = 2;
+
+            Assert.IsTrue(root.ApplySnapshot(snapshot));
+            Assert.IsTrue(root.HudPresentation.IsReadableOverlayVisible);
+            Assert.AreEqual("37 / 100", root.HudPresentation.ReadableLifeText);
+            Assert.AreEqual("12 / 50", root.HudPresentation.ReadableManaText);
+            Assert.AreEqual("SPD 44 / 80", root.HudPresentation.ReadableSpeedText);
+            StringAssert.Contains("STAGE 2", root.HudPresentation.ReadableStatusText);
+            StringAssert.Contains("TASKS 1/3", root.HudPresentation.ReadableStatusText);
+            StringAssert.Contains("FIRE", root.HudPresentation.ReadableSpellText);
+            StringAssert.Contains("SPEED", root.HudPresentation.ReadableSpellText);
+            StringAssert.Contains("SEL 2", root.HudPresentation.ReadableSpellText);
+            Assert.IsNotNull(gameObject.transform.Find(
+                "EnhancedHud/EnhancedOwnerHudCanvas/EnhancedHudReadabilityOverlay"));
+            Assert.IsNull(gameObject.transform.Find(
+                "EnhancedHud/EnhancedOwnerHudCanvas/EnhancedHudPanel"));
+            Assert.IsNotNull(root.HudPresentation.OwnerHudMaterial);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void HudCaptureCompositorFitsOwnerFrameInsideWidescreenTarget()
         {
             GameObject gameObject = new GameObject("enhanced-hud-capture-test");

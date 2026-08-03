@@ -20,6 +20,13 @@ namespace MagicCarpet.PresentationLab
         private Canvas canvas;
         private RawImage frameImage;
         private AspectRatioFitter aspectFitter;
+        private CanvasGroup readabilityGroup;
+        private Material readabilityMaterial;
+        private Text readableLifeText;
+        private Text readableManaText;
+        private Text readableSpeedText;
+        private Text readableStatusText;
+        private Text readableSpellText;
         private Texture2D indexTexture;
         private Texture2D provenanceTexture;
         private Texture2D paletteTexture;
@@ -46,6 +53,30 @@ namespace MagicCarpet.PresentationLab
         public Texture2D PaletteTexture { get { return paletteTexture; } }
         public Material OwnerHudMaterial { get { return ownerHudMaterial; } }
         public RawImage FrameImage { get { return frameImage; } }
+        public bool IsReadableOverlayVisible
+        {
+            get { return readabilityGroup != null && readabilityGroup.alpha > 0f; }
+        }
+        public string ReadableLifeText
+        {
+            get { return readableLifeText == null ? string.Empty : readableLifeText.text; }
+        }
+        public string ReadableManaText
+        {
+            get { return readableManaText == null ? string.Empty : readableManaText.text; }
+        }
+        public string ReadableSpeedText
+        {
+            get { return readableSpeedText == null ? string.Empty : readableSpeedText.text; }
+        }
+        public string ReadableStatusText
+        {
+            get { return readableStatusText == null ? string.Empty : readableStatusText.text; }
+        }
+        public string ReadableSpellText
+        {
+            get { return readableSpellText == null ? string.Empty : readableSpellText.text; }
+        }
 
         public bool CompositeOwnerHudTo(RenderTexture target, out string reason)
         {
@@ -122,6 +153,7 @@ namespace MagicCarpet.PresentationLab
             }
 
             UploadFrame(snapshot.OwnerFrame);
+            ApplyReadableOverlay(snapshot);
             generation = snapshot.Generation;
             lastTick = snapshot.Tick;
             frameGeneration = snapshot.OwnerFrame.Generation;
@@ -316,6 +348,212 @@ namespace MagicCarpet.PresentationLab
             aspectFitter = frameObject.AddComponent<AspectRatioFitter>();
             aspectFitter.aspectMode = AspectRatioFitter.AspectMode.FitInParent;
             aspectFitter.aspectRatio = OwnerHudDisplayAspectRatio;
+
+            GameObject readabilityObject = new GameObject("EnhancedHudReadabilityOverlay");
+            // Keep this as a sibling of the indexed frame. A UI Graphic parent
+            // can draw after its children; making the readout a child of the
+            // RawImage would therefore hide it wherever owner pixels are
+            // opaque. The matching 4:3 fitter keeps the positions aligned to
+            // the authentic owner frame while preserving the layer order.
+            readabilityObject.transform.SetParent(root, false);
+            readabilityObject.hideFlags = HideFlags.DontSave;
+            RectTransform readabilityRect = readabilityObject.AddComponent<RectTransform>();
+            readabilityRect.anchorMin = Vector2.zero;
+            readabilityRect.anchorMax = Vector2.one;
+            readabilityRect.offsetMin = Vector2.zero;
+            readabilityRect.offsetMax = Vector2.zero;
+            AspectRatioFitter readabilityFitter = readabilityObject.AddComponent<AspectRatioFitter>();
+            readabilityFitter.aspectMode = AspectRatioFitter.AspectMode.FitInParent;
+            readabilityFitter.aspectRatio = OwnerHudDisplayAspectRatio;
+            readabilityGroup = readabilityObject.AddComponent<CanvasGroup>();
+            readabilityGroup.interactable = false;
+            readabilityGroup.blocksRaycasts = false;
+            readabilityGroup.alpha = 0.9f;
+            readabilityMaterial = CreateReadableMaterial();
+
+            readableStatusText = CreateReadableText(
+                readabilityRect,
+                "EnhancedHudReadableStatus",
+                11,
+                FontStyle.Bold,
+                new Color(1f, 0.86f, 0.58f, 0.92f),
+                readabilityMaterial);
+            ConfigureReadableBox(readableStatusText.rectTransform,
+                new Vector2(0.50f, 0.955f), new Vector2(180f, 22f));
+
+            readableSpellText = CreateReadableText(
+                readabilityRect,
+                "EnhancedHudReadableSpells",
+                10,
+                FontStyle.Normal,
+                new Color(0.74f, 0.91f, 1f, 0.88f),
+                readabilityMaterial);
+            ConfigureReadableBox(readableSpellText.rectTransform,
+                new Vector2(0.50f, 0.908f), new Vector2(180f, 18f));
+
+            readableLifeText = CreateReadableText(
+                readabilityRect,
+                "EnhancedHudReadableLife",
+                13,
+                FontStyle.Bold,
+                new Color(1f, 0.9f, 0.82f, 0.94f),
+                readabilityMaterial);
+            ConfigureReadableBox(readableLifeText.rectTransform,
+                new Vector2(0.738f, 0.962f), new Vector2(98f, 22f));
+
+            readableManaText = CreateReadableText(
+                readabilityRect,
+                "EnhancedHudReadableMana",
+                13,
+                FontStyle.Bold,
+                new Color(0.82f, 0.94f, 1f, 0.94f),
+                readabilityMaterial);
+            ConfigureReadableBox(readableManaText.rectTransform,
+                new Vector2(0.738f, 0.914f), new Vector2(98f, 22f));
+
+            readableSpeedText = CreateReadableText(
+                readabilityRect,
+                "EnhancedHudReadableSpeed",
+                10,
+                FontStyle.Normal,
+                new Color(0.68f, 0.89f, 1f, 0.86f),
+                readabilityMaterial);
+            ConfigureReadableBox(readableSpeedText.rectTransform,
+                new Vector2(0.738f, 0.866f), new Vector2(118f, 18f));
+        }
+
+        private void ApplyReadableOverlay(UnityEnhancedHudSnapshot snapshot)
+        {
+            if (readabilityGroup == null)
+            {
+                return;
+            }
+
+            readableLifeText.text = FormatGauge(snapshot.PlayerLife, snapshot.PlayerMaxLife);
+            readableManaText.text = FormatGauge(snapshot.PlayerMana, snapshot.PlayerMaxMana);
+            readableSpeedText.text = "SPD " + snapshot.ActualSpeed + " / " + snapshot.TargetSpeed;
+            readableStatusText.text = BuildStatusText(snapshot);
+            readableSpellText.text = BuildSpellText(snapshot);
+            readabilityGroup.alpha = 0.9f;
+        }
+
+        private static string FormatGauge(int value, int maximum)
+        {
+            return value + " / " + maximum;
+        }
+
+        private static string BuildStatusText(UnityEnhancedHudSnapshot snapshot)
+        {
+            if (snapshot.PlayerDead)
+            {
+                return "DEFEATED";
+            }
+
+            if (snapshot.ExitSequenceActive || snapshot.ExitSequenceComplete)
+            {
+                return snapshot.ExitSequenceComplete
+                    ? "EXIT COMPLETE " + snapshot.ExitResultCode
+                    : "EXITING";
+            }
+
+            string objectiveCount = snapshot.ObjectiveCount > 0
+                ? "/" + snapshot.ObjectiveCount
+                : string.Empty;
+            return "STAGE " + snapshot.CurrentStage +
+                "   TASKS " + snapshot.TasksCompleted + objectiveCount;
+        }
+
+        private static string BuildSpellText(UnityEnhancedHudSnapshot snapshot)
+        {
+            string result = string.Empty;
+            if (snapshot.HasFireball)
+            {
+                result = "FIRE";
+            }
+            if (snapshot.HasPossession)
+            {
+                result = AppendLabel(result, "POS");
+            }
+            if (snapshot.HasCastleSpell)
+            {
+                result = AppendLabel(result, "CASTLE");
+            }
+            if (snapshot.HasSpeedSpell)
+            {
+                result = AppendLabel(result, "SPEED");
+            }
+
+            if (result.Length == 0)
+            {
+                result = "NO SPELL";
+            }
+
+            if (snapshot.SelectedSpellUiIndex > 0)
+            {
+                result += "   SEL " + snapshot.SelectedSpellUiIndex;
+            }
+
+            return result;
+        }
+
+        private static string AppendLabel(string current, string label)
+        {
+            return current.Length == 0 ? label : current + "  " + label;
+        }
+
+        private static Text CreateReadableText(
+            Transform parent,
+            string name,
+            int size,
+            FontStyle style,
+            Color color,
+            Material material)
+        {
+            GameObject textObject = new GameObject(name);
+            textObject.transform.SetParent(parent, false);
+            textObject.hideFlags = HideFlags.DontSave;
+            Text text = textObject.AddComponent<Text>();
+            text.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            text.fontSize = size;
+            text.fontStyle = style;
+            text.color = color;
+            text.alignment = TextAnchor.MiddleCenter;
+            text.horizontalOverflow = HorizontalWrapMode.Overflow;
+            text.verticalOverflow = VerticalWrapMode.Overflow;
+            text.raycastTarget = false;
+            if (material != null)
+            {
+                text.material = material;
+            }
+
+            Outline outline = textObject.AddComponent<Outline>();
+            outline.effectColor = new Color(0f, 0f, 0f, 0.9f);
+            outline.effectDistance = new Vector2(1f, -1f);
+            return text;
+        }
+
+        private static Material CreateReadableMaterial()
+        {
+            Shader shader = Shader.Find("UI/Default");
+            if (shader == null)
+            {
+                return null;
+            }
+
+            Material material = new Material(shader);
+            material.name = "EnhancedHud_Readability_Overlay_Material";
+            material.renderQueue = (int)RenderQueue.Overlay + 1;
+            material.hideFlags = HideFlags.DontSave;
+            return material;
+        }
+
+        private static void ConfigureReadableBox(RectTransform rect, Vector2 anchor, Vector2 size)
+        {
+            rect.anchorMin = anchor;
+            rect.anchorMax = anchor;
+            rect.pivot = new Vector2(0.5f, 0.5f);
+            rect.anchoredPosition = Vector2.zero;
+            rect.sizeDelta = size;
         }
 
         private Rect AspectFitViewport(int targetWidth, int targetHeight)
@@ -339,6 +577,8 @@ namespace MagicCarpet.PresentationLab
         private void OnDestroy()
         {
             ReleaseSurface();
+            DestroyUnityObject(readabilityMaterial);
+            readabilityMaterial = null;
         }
 
         private void ReleaseSurface()
