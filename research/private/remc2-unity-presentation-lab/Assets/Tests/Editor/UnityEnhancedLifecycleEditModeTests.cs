@@ -760,6 +760,39 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void TerrainSelectorMaterialKeepsWaterDistinctFromLand()
+        {
+            GameObject gameObject = new GameObject("enhanced-terrain-selector-material-test");
+            UnityEnhancedTerrainPresentation terrain = gameObject.AddComponent<UnityEnhancedTerrainPresentation>();
+            UnityEnhancedTerrainSnapshot snapshot = TerrainSnapshot(
+                3,
+                0,
+                true,
+                new UnityEnhancedTerrainDirtyRegion[0]);
+            snapshot.TerrainTypes[0] = 0;
+            snapshot.TerrainTypes[1] = 2;
+            snapshot.TerrainTypes[2] = 22;
+
+            Assert.IsTrue(terrain.ApplySnapshot(snapshot));
+            Color water = terrain.GeneratedMesh.colors[0];
+            Color land = terrain.GeneratedMesh.colors[1];
+            Color rock = terrain.GeneratedMesh.colors[2];
+
+            Assert.That(Vector3.Distance(
+                    new Vector3(water.r, water.g, water.b),
+                    new Vector3(land.r, land.g, land.b)),
+                Is.GreaterThan(0.20f));
+            Assert.That(Vector3.Distance(
+                    new Vector3(land.r, land.g, land.b),
+                    new Vector3(rock.r, rock.g, rock.b)),
+                Is.GreaterThan(0.12f));
+            Assert.That(land.r, Is.GreaterThan(rock.r));
+            Assert.That(land.g, Is.GreaterThan(rock.g));
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void WholeHogTerrainUsesInterpolatedPresentationMesh()
         {
             GameObject gameObject = new GameObject("enhanced-wholehog-terrain-test");

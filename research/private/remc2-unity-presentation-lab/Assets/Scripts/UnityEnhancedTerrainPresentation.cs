@@ -416,9 +416,11 @@ namespace MagicCarpet.PresentationLab
 
         /// <summary>
         /// Selectors are direct owner texture indices, not a repeating biome
-        /// number.  Keep the Enhanced pass coherent until its optional HD
-        /// material atlas is bound: related selectors share a cool Level 1
-        /// night family and only receive a small deterministic variation.
+        /// number.  The Enhanced pass keeps the owner water selectors on the
+        /// reflective path, then uses a bounded Level 1 albedo table for the
+        /// observed land and rock families until its optional HD material
+        /// atlas is bound.  This is presentation-only color grouping; the
+        /// authoritative selector plane remains unchanged.
         /// </summary>
         internal static Color NightPaletteForSelector(byte terrainType)
         {
@@ -431,13 +433,81 @@ namespace MagicCarpet.PresentationLab
             {
                 baseColor = new Color(0.10f, 0.30f, 0.42f, 1f);
             }
-            else if (terrainType <= 7)
-            {
-                baseColor = new Color(0.24f, 0.42f, 0.32f, 1f);
-            }
             else
             {
-                baseColor = new Color(0.20f, 0.36f, 0.34f, 1f);
+                switch (terrainType)
+                {
+                    // Dark earth and shadowed rock selectors from the
+                    // owner-observed Level 1 BL32N closure.
+                    case 1:
+                    case 22:
+                    case 52:
+                    case 69:
+                    case 72:
+                    case 73:
+                    case 75:
+                    case 76:
+                    case 84:
+                    case 97:
+                    case 124:
+                        baseColor = new Color(0.16f, 0.25f, 0.30f, 1f);
+                        break;
+
+                    // Mid-value stone and exposed shelf selectors remain
+                    // distinct from the greener land family at night.
+                    case 4:
+                    case 23:
+                    case 24:
+                    case 25:
+                    case 26:
+                    case 27:
+                    case 53:
+                    case 54:
+                    case 65:
+                    case 71:
+                    case 74:
+                    case 85:
+                    case 120:
+                    case 121:
+                    case 122:
+                    case 125:
+                        baseColor = new Color(0.23f, 0.35f, 0.42f, 1f);
+                        break;
+
+                    // The brighter owner-observed selectors form the
+                    // moonlit grass/soil family used by the Level 1 ground.
+                    case 2:
+                    case 5:
+                    case 9:
+                    case 55:
+                    case 56:
+                    case 57:
+                    case 58:
+                    case 59:
+                    case 64:
+                    case 66:
+                    case 67:
+                    case 70:
+                    case 86:
+                    case 87:
+                    case 88:
+                    case 89:
+                    case 99:
+                    case 101:
+                    case 123:
+                    case 128:
+                    case 131:
+                    case 136:
+                    case 139:
+                        baseColor = new Color(0.28f, 0.46f, 0.35f, 1f);
+                        break;
+
+                    // Preserve a useful cool land fallback for selectors
+                    // outside the currently observed Level 1 closure.
+                    default:
+                        baseColor = new Color(0.20f, 0.36f, 0.34f, 1f);
+                        break;
+                }
             }
 
             float variation = 0.97f + ((terrainType * 17) & 7) * 0.008f;
