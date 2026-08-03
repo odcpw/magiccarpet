@@ -5,6 +5,11 @@ Shader "MagicCarpet/Enhanced/Terrain"
         [MainColor] _BaseColor ("Base Color", Color) = (1, 1, 1, 1)
         _DetailScale ("Procedural Detail Scale", Float) = 0.075
         _DetailStrength ("Procedural Detail Strength", Range(0, 1)) = 0.42
+        _MicroDetailScale ("Near Surface Detail Scale", Float) = 0.62
+        _MicroDetailStrength ("Near Surface Detail Strength", Range(0, 1)) = 0.28
+        _MicroReliefStrength ("Near Surface Relief Strength", Range(0, 1)) = 0.20
+        _MicroDetailNearStart ("Near Surface Detail Start", Float) = 8
+        _MicroDetailNearEnd ("Near Surface Detail End", Float) = 128
         _SlopeTint ("Moonlit Slope Tint", Color) = (0.72, 0.84, 1.08, 1)
         _SlopeStrength ("Slope Tint Strength", Range(0, 1)) = 0.42
         _AmbientBoost ("Night Ambient Boost", Range(0, 2)) = 0.65
@@ -49,6 +54,11 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 half4 _BaseColor;
                 half _DetailScale;
                 half _DetailStrength;
+                half _MicroDetailScale;
+                half _MicroDetailStrength;
+                half _MicroReliefStrength;
+                half _MicroDetailNearStart;
+                half _MicroDetailNearEnd;
                 half4 _SlopeTint;
                 half _SlopeStrength;
                 half _AmbientBoost;
@@ -131,6 +141,14 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 return (octave0 * 0.50 + octave1 * 0.25 + octave2 * 0.125 + octave3 * 0.0625) / 0.9375;
             }
 
+            float NearSurfaceFbm(float2 position)
+            {
+                float octave0 = ValueNoise(position);
+                float octave1 = ValueNoise(position * 2.03 + float2(-17.4, 6.2));
+                float octave2 = ValueNoise(position * 4.17 + float2(8.6, 21.7));
+                return saturate(octave0 * 0.56 + octave1 * 0.29 + octave2 * 0.15);
+            }
+
             half3 EvaluateWarmLight(float3 positionWS, half3 normalWS)
             {
                 half3 contribution = 0.0h;
@@ -183,6 +201,27 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 float broadFbm = Fbm(worldCoord);
                 float fineFbm = Fbm(worldCoord * 2.15 + float2(4.7, -9.3));
                 float detail = lerp(broadFbm, fineFbm, 0.30);
+                float distanceFromCamera = distance(GetCameraPositionWS(), input.positionWS);
+                half nearSurfaceFade = 1.0h - smoothstep(
+                    _MicroDetailNearStart,
+                    max(_MicroDetailNearEnd, _MicroDetailNearStart + 0.001h),
+                    distanceFromCamera);
+
+                // Whole Hog needs a readable surface material even when the
+                // owner selector plane contains broad, low-frequency color
+                // blocks. This bounded second scale adds soil/rock breakup in
+                // the foreground and fades before it can become distant
+                // shimmer. It changes only presentation shading, never the
+                // authoritative terrain or its selector identity.
+                float2 microCoord = input.positionWS.xz * max(_MicroDetailScale, 0.001);
+                float microDetail = NearSurfaceFbm(microCoord);
+                float2 microReliefCoord = input.positionWS.xz * max(_MicroDetailScale * 1.45, 0.001);
+                const float microReliefStep = 0.065;
+                float microLeft = NearSurfaceFbm(microReliefCoord - float2(microReliefStep, 0.0));
+                float microRight = NearSurfaceFbm(microReliefCoord + float2(microReliefStep, 0.0));
+                float microDown = NearSurfaceFbm(microReliefCoord - float2(0.0, microReliefStep));
+                float microUp = NearSurfaceFbm(microReliefCoord + float2(0.0, microReliefStep));
+                float2 microGradient = float2(microRight - microLeft, microUp - microDown);
 
                 // The terrain mesh is intentionally asset-free.  Reuse the
                 // multi-octave scalar field above as a bounded normal perturbation
@@ -208,6 +247,10 @@ Shader "MagicCarpet/Enhanced/Terrain"
                     -reliefGradient.x * _NormalStrength * 2.10,
                     0.0h,
                     -reliefGradient.y * _NormalStrength * 2.10));
+                normalWS = SafeNormalize(normalWS + half3(
+                    -microGradient.x * _MicroReliefStrength * nearSurfaceFade * 1.55,
+                    0.0h,
+                    -microGradient.y * _MicroReliefStrength * nearSurfaceFade * 1.55));
 
                 half variation = lerp(0.50h, 1.55h, saturate(detail));
                 baseColor *= lerp(1.0h, variation, _DetailStrength);
@@ -215,6 +258,18 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 half slope = saturate(1.0h - normalWS.y);
                 half exposedFace = smoothstep(0.18h, 0.90h, slope);
                 half landMask = smoothstep(0.08h, 0.18h, input.color.r);
+                half nearSurfaceMask = nearSurfaceFade * saturate(
+                    landMask * (0.62h + slope * 0.58h));
+                half microContrast = (half)(microDetail * 2.0 - 1.0);
+                half3 microTint = lerp(
+                    _SoilTint.rgb * 0.72h,
+                    _RockTint.rgb * 1.04h,
+                    smoothstep(0.38h, 0.76h, microDetail));
+                baseColor *= 1.0h + microContrast * _MicroDetailStrength * nearSurfaceMask;
+                baseColor = lerp(
+                    baseColor,
+                    baseColor * (0.90h + microTint * 0.20h),
+                    nearSurfaceMask * 0.24h);
                 baseColor = lerp(
                     baseColor,
                     baseColor * _SlopeTint.rgb,

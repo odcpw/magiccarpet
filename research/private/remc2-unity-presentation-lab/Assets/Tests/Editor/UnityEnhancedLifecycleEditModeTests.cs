@@ -795,6 +795,11 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.That(renderer.sharedMaterial.GetFloat("_SlopeStrength"), Is.EqualTo(0.50f).Within(0.0001f));
             Assert.That(renderer.sharedMaterial.GetFloat("_NormalStrength"), Is.EqualTo(0.48f).Within(0.0001f));
             Assert.That(renderer.sharedMaterial.GetFloat("_RidgeStrength"), Is.EqualTo(0.64f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_MicroDetailScale"), Is.EqualTo(0.62f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_MicroDetailStrength"), Is.EqualTo(0.28f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_MicroReliefStrength"), Is.EqualTo(0.20f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_MicroDetailNearStart"), Is.EqualTo(8f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_MicroDetailNearEnd"), Is.EqualTo(128f).Within(0.0001f));
 
             Object.DestroyImmediate(gameObject);
         }

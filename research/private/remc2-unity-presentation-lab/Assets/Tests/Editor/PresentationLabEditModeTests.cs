@@ -508,6 +508,10 @@ namespace MagicCarpet.PresentationLab.Tests
                 StringAssert.Contains(
                     "half3 baseColor = saturate(input.color.rgb * _BaseColor.rgb);",
                     source);
+                StringAssert.Contains("float NearSurfaceFbm(float2 position)", source);
+                StringAssert.Contains("half nearSurfaceFade = 1.0h - smoothstep(", source);
+                StringAssert.Contains("_MicroReliefStrength * nearSurfaceFade", source);
+                StringAssert.Contains("half3 microTint = lerp(", source);
                 StringAssert.Contains(
                     "ApplyEnhancedAerialPerspective(color, input.positionWS)",
                     source);
