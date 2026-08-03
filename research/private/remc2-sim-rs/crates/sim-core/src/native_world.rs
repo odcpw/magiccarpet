@@ -4078,6 +4078,29 @@ pub struct Level2AuthoredSwitchProducerSource {
     pub active: bool,
 }
 
+/// Authored class-10/model-1/action-1 effect rows created by remc2's
+/// `NewAdd0A01_4E3B0` constructor.  These are short-lived presentation
+/// events, but they still consume the shared source arena and map chain; the
+/// typed row keeps that allocation/reclaim/reset identity observable without
+/// inventing the deferred `AddEvent2_847D0` child chain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredModel1Source {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub authored_index: u16,
+    pub model: u8,
+    pub action: u8,
+    pub subspell_index: u16,
+    pub max_life: i16,
+    pub life: i16,
+    pub control_flags: u32,
+    pub particle_index: u16,
+    pub position: Position,
+    pub phase: u8,
+    pub drawing_enabled: bool,
+    pub active: bool,
+}
+
 /// Authored class-11/model-32 switch constructed by remc2's
 /// `AddSwitch32_50B80`/`sub_4A310` path.  Unlike model-0/model-1 overlap
 /// switches, action 32 consumes an objective selector (`byte_0x46`) and
@@ -4453,7 +4476,9 @@ pub struct Level2AuthoredClass14Source {
     pub active: bool,
 }
 
-/// Authored class-5/model-3 or model-9 source rows reached by the model-45
+/// Authored class-5/model-3, model-4, or model-9 source rows reached by a
+/// Level 2 producer.  Model 4 is the `AddArchers_4BA10` group-20 constructor;
+/// model 3 and model 9 remain the model-45 group-22 creature roots.
 /// group-22 callback.  The pinned constructors are live arena entities (not
 /// narrative markers): model 3 is the 9,000-life creature root and model 9
 /// is the 1,000-life creature root.  Their detailed action callbacks remain
@@ -4477,6 +4502,12 @@ pub struct Level2AuthoredClass5Source {
     pub dword_0x10: i32,
     pub particle_index: u16,
     pub source_byte_3e: u8,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub roll: i16,
+    pub fov: i16,
+    pub shift_rot_x: i16,
+    pub shift_rot_y: i16,
     pub position: Position,
     pub phase: u8,
     pub drawing_enabled: bool,
@@ -4667,6 +4698,8 @@ pub struct Level2EconomyState {
     spell_pickups: Vec<Level2SpellPickupSource>,
     baseline_authored_model45: Vec<Level2AuthoredModel45Source>,
     authored_model45: Vec<Level2AuthoredModel45Source>,
+    baseline_authored_model1: Vec<Level2AuthoredModel1Source>,
+    authored_model1: Vec<Level2AuthoredModel1Source>,
     baseline_authored_model13: Vec<Level2AuthoredModel13Source>,
     authored_model13: Vec<Level2AuthoredModel13Source>,
     baseline_authored_bees: Vec<Level2AuthoredBeeSource>,
@@ -4707,6 +4740,8 @@ pub struct Level2EconomyState {
     class5_model3_constructor_phase: u8,
     baseline_class5_model9_constructor_phase: u8,
     class5_model9_constructor_phase: u8,
+    baseline_class5_model4_constructor_phase: u8,
+    class5_model4_constructor_phase: u8,
     /// Source `word_0x36DFE`, written by `sub_51570` for the latest model-3
     /// event and left unchanged by model 5.
     baseline_class14_model3_handle: u16,
@@ -4884,6 +4919,8 @@ impl Level2EconomyState {
             spell_pickups: Vec::new(),
             baseline_authored_model45: Vec::new(),
             authored_model45: Vec::new(),
+            baseline_authored_model1: Vec::new(),
+            authored_model1: Vec::new(),
             baseline_authored_model13: Vec::new(),
             authored_model13: Vec::new(),
             baseline_authored_bees: Vec::new(),
@@ -4924,6 +4961,8 @@ impl Level2EconomyState {
             class5_model3_constructor_phase: 0,
             baseline_class5_model9_constructor_phase: 0,
             class5_model9_constructor_phase: 0,
+            baseline_class5_model4_constructor_phase: 0,
+            class5_model4_constructor_phase: 0,
             baseline_class14_model3_handle: 0,
             class14_model3_handle: 0,
             baseline_beyond_sight_effects: Vec::new(),
@@ -5032,6 +5071,11 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_model45(&self) -> &[Level2AuthoredModel45Source] {
         &self.authored_model45
+    }
+
+    #[must_use]
+    pub fn authored_model1(&self) -> &[Level2AuthoredModel1Source] {
+        &self.authored_model1
     }
 
     #[must_use]
@@ -5227,6 +5271,54 @@ impl Level2EconomyState {
         };
         self.source_rng.insert(source_entity_index, entity_rng);
         self.spell_pickups.push(source);
+        Some(source)
+    }
+
+    /// Allocate the authored class-10/model-1/action-1 effect from the
+    /// pinned `NewAdd0A01_4E3B0` constructor.  The immediate `AddEvent2`
+    /// presentation child is intentionally deferred; the root's source
+    /// arena identity and one-tick lifetime are still source-backed.
+    pub fn allocate_authored_model1(
+        &mut self,
+        authored_index: u16,
+        position: Position,
+    ) -> Option<Level2AuthoredModel1Source> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let mut position = position;
+        position.z = self.terrain.ground_height(position);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let source = Level2AuthoredModel1Source {
+            source_entity_index,
+            entity_rng,
+            authored_index,
+            model: 1,
+            action: 1,
+            subspell_index: 400,
+            max_life: 1,
+            life: 1,
+            // NewAdd0A01 clears bits 3/17, then sets byte 2 bit 1.
+            control_flags: 0x0002_0000,
+            particle_index: 41,
+            position,
+            phase: 0,
+            drawing_enabled: true,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.authored_model1.push(source);
         Some(source)
     }
 
@@ -6035,8 +6127,8 @@ impl Level2EconomyState {
         Some(source)
     }
 
-    /// Allocate an authored class-5/model-3 or model-9 row through the
-    /// pinned `sub_4B6F0`/`sub_4BBB0` constructors.  The model-3 constructor
+    /// Allocate an authored class-5/model-3, model-4, or model-9 row through
+    /// the pinned `sub_4B6F0`/`AddArchers_4BA10`/`sub_4BBB0` constructors.  The model-3 constructor
     /// also creates a sixteen-child particle chain in remc2; this bounded
     /// source row owns the root allocation and leaves that presentation
     /// child callback for the dedicated creature slice.
@@ -6059,6 +6151,7 @@ impl Level2EconomyState {
             particle_index,
         ) = match model {
             3 => (25, 64, 16, 30, 9_000, 2_250, 4_500, 0, 0, 88),
+            4 => (33, 30, 0, 30, 1_000, 500, 0, 500, 0, 0),
             9 => (72, 20, 0, 20, 1_000, 500, 0, 500, 16, 220),
             _ => return None,
         };
@@ -6071,12 +6164,25 @@ impl Level2EconomyState {
                 self.class5_model3_constructor_phase = phase.wrapping_add(1);
                 phase
             }
+            4 => {
+                let phase = self.class5_model4_constructor_phase;
+                self.class5_model4_constructor_phase = phase.wrapping_add(1);
+                phase
+            }
             9 => {
                 let phase = self.class5_model9_constructor_phase;
                 self.class5_model9_constructor_phase = phase.wrapping_add(1);
                 phase
             }
             _ => unreachable!("validated authored class-5 model"),
+        };
+        // AddArchers consumes the random orientation draw, then
+        // SetEntityIndexAndRot(0) overwrites it with particle row 0's final
+        // pose: rotation_speed/2 = 125 and speed/2 = 66.
+        let (yaw, pitch, roll, fov) = if model == 4 {
+            (125, 66, 66, 125)
+        } else {
+            (0, 0, 0, 0)
         };
         let mut position = position;
         position.z = self.terrain.ground_height(position);
@@ -6107,13 +6213,31 @@ impl Level2EconomyState {
             mana,
             max_mana,
             subspell_index,
-            dword_0x10: if model == 3 {
+            dword_0x10: if matches!(model, 3 | 4) {
                 i32::from(source_entity_index % 100)
             } else {
                 dword_0x10
             },
             particle_index,
             source_byte_3e,
+            yaw,
+            pitch,
+            roll,
+            fov,
+            shift_rot_x: if model == 4 {
+                128
+            } else if model == 9 {
+                128
+            } else {
+                0
+            },
+            shift_rot_y: if model == 4 {
+                256
+            } else if model == 9 {
+                128
+            } else {
+                0
+            },
             position,
             phase: 0,
             drawing_enabled: true,
@@ -6140,6 +6264,35 @@ impl Level2EconomyState {
             .sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
                 active: true,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .is_ok()
+    }
+
+    /// Advance one model-1 root through `AddQuickfair0A_01_30F60`.  The
+    /// source callback decrements life and hides the row only when the
+    /// pre-decrement value is negative; its deferred child chain is not
+    /// synthesized here.  The source allocation remains active after drawing
+    /// is disabled, matching remc2's separate drawing/reclaim flags.
+    pub fn step_authored_model1_slot(&mut self, source_slot: u16) -> bool {
+        let Some(source) = self
+            .authored_model1
+            .iter_mut()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        if source.life < 0 {
+            source.drawing_enabled = false;
+        } else {
+            source.life -= 1;
+            source.phase = source.phase.wrapping_add(1);
+        }
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: source.active,
                 x: source.position.x,
                 y: source.position.y,
             })
@@ -7925,6 +8078,12 @@ impl Level2EconomyState {
             visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::SpellPickup,
+            );
+        }
+        for source in self.authored_model1.iter().filter(|source| source.active) {
+            visit(
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredModel1,
             );
         }
         for source in self.authored_model45.iter().filter(|source| source.active) {
@@ -11076,6 +11235,22 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_model1 = self
+            .authored_model1
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_model1.retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_model1 {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_model45 = self
             .authored_model45
             .iter()
@@ -11529,6 +11704,22 @@ impl Level2EconomyState {
             hasher.update(source.position.z.to_le_bytes());
             hasher.update([u8::from(source.active)]);
         }
+        hasher.update(b"authored-model1-v1");
+        for source in &self.authored_model1 {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.authored_index.to_le_bytes());
+            hasher.update([source.model, source.action, source.phase]);
+            hasher.update(source.subspell_index.to_le_bytes());
+            hasher.update(source.max_life.to_le_bytes());
+            hasher.update(source.life.to_le_bytes());
+            hasher.update(source.control_flags.to_le_bytes());
+            hasher.update(source.particle_index.to_le_bytes());
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+            hasher.update([u8::from(source.drawing_enabled), u8::from(source.active)]);
+        }
         for source in &self.authored_model45 {
             hasher.update(source.source_entity_index.to_le_bytes());
             hasher.update(source.entity_rng.to_le_bytes());
@@ -11966,6 +12157,7 @@ impl Level2EconomyState {
         hasher.update(b"authored-class5-v1");
         hasher.update([
             self.class5_model3_constructor_phase,
+            self.class5_model4_constructor_phase,
             self.class5_model9_constructor_phase,
         ]);
         for source in &self.authored_class5 {
@@ -11990,6 +12182,12 @@ impl Level2EconomyState {
             hasher.update(source.subspell_index.to_le_bytes());
             hasher.update(source.dword_0x10.to_le_bytes());
             hasher.update(source.particle_index.to_le_bytes());
+            hasher.update(source.yaw.to_le_bytes());
+            hasher.update(source.pitch.to_le_bytes());
+            hasher.update(source.roll.to_le_bytes());
+            hasher.update(source.fov.to_le_bytes());
+            hasher.update(source.shift_rot_x.to_le_bytes());
+            hasher.update(source.shift_rot_y.to_le_bytes());
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
@@ -12235,6 +12433,7 @@ impl Level2EconomyState {
         self.death_bursts = self.baseline_death_bursts.clone();
         self.spell_replacements = self.baseline_spell_replacements.clone();
         self.spell_pickups = self.baseline_spell_pickups.clone();
+        self.authored_model1 = self.baseline_authored_model1.clone();
         self.authored_model45 = self.baseline_authored_model45.clone();
         self.authored_model13 = self.baseline_authored_model13.clone();
         self.authored_bees = self.baseline_authored_bees.clone();
@@ -12256,6 +12455,7 @@ impl Level2EconomyState {
         self.class14_model3_handle = self.baseline_class14_model3_handle;
         self.authored_class5 = self.baseline_authored_class5.clone();
         self.class5_model3_constructor_phase = self.baseline_class5_model3_constructor_phase;
+        self.class5_model4_constructor_phase = self.baseline_class5_model4_constructor_phase;
         self.class5_model9_constructor_phase = self.baseline_class5_model9_constructor_phase;
         self.beyond_sight_effects = self.baseline_beyond_sight_effects.clone();
         self.mana_attraction_fields = self.baseline_mana_attraction_fields.clone();
@@ -15108,6 +15308,8 @@ pub struct Level2ResetSession {
     level2_model6_activated: BTreeSet<u16>,
     baseline_level2_model59_activated: BTreeSet<u16>,
     level2_model59_activated: BTreeSet<u16>,
+    baseline_level2_model1_activated: BTreeSet<u16>,
+    level2_model1_activated: BTreeSet<u16>,
     baseline_level2_model17_activated: BTreeSet<u16>,
     level2_model17_activated: BTreeSet<u16>,
     baseline_level2_imported_switch_roots: Box<[Level2ImportedSwitchRootState]>,
@@ -15212,6 +15414,7 @@ pub enum Level2DynamicArenaKind {
     DeathBurst,
     SpellReplacement,
     SpellPickup,
+    AuthoredModel1,
     AuthoredModel45,
     AuthoredModel13,
     AuthoredBee,
@@ -15348,6 +15551,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::DeathBurst => 8,
         Level2DynamicArenaKind::SpellReplacement => 9,
         Level2DynamicArenaKind::SpellPickup => 10,
+        Level2DynamicArenaKind::AuthoredModel1 => 31,
         Level2DynamicArenaKind::AuthoredModel45 => 11,
         Level2DynamicArenaKind::AuthoredModel13 => 21,
         Level2DynamicArenaKind::AuthoredBee => 26,
@@ -15680,6 +15884,8 @@ impl Level2ResetSession {
             level2_model6_activated: BTreeSet::new(),
             baseline_level2_model59_activated: BTreeSet::new(),
             level2_model59_activated: BTreeSet::new(),
+            baseline_level2_model1_activated: BTreeSet::new(),
+            level2_model1_activated: BTreeSet::new(),
             baseline_level2_model17_activated: BTreeSet::new(),
             level2_model17_activated: BTreeSet::new(),
             baseline_level2_imported_switch_roots: initial_level2_imported_switch_roots.clone(),
@@ -16948,6 +17154,9 @@ impl Level2ResetSession {
             .filter(|feature| {
                 let is_switch =
                     feature.kind == 11 && matches!(feature.subtype, 0 | 1) && feature.index != 274;
+                let is_model1 = feature.kind == 10 && feature.subtype == 1 && target_group == 20;
+                let is_class5_model4 =
+                    feature.kind == 5 && feature.subtype == 4 && target_group == 20;
                 let is_model22 = feature.kind == 10 && feature.subtype == 22;
                 let is_model59 = feature.kind == 10 && feature.subtype == 59 && target_group == 23;
                 let is_model39 = feature.kind == 10
@@ -16959,6 +17168,8 @@ impl Level2ResetSession {
                     && matches!(target_group, 1 | 17 | 18);
                 feature.activation_group == i16::try_from(target_group).unwrap_or(-1)
                     && (is_switch
+                        || is_model1
+                        || is_class5_model4
                         || is_model22
                         || is_model39
                         || is_model6
@@ -16968,6 +17179,54 @@ impl Level2ResetSession {
             .collect::<Vec<_>>();
         let mut activated = Vec::new();
         for feature in rows {
+            if feature.kind == 10 && feature.subtype == 1 && target_group == 20 {
+                if self.level2_model1_activated.contains(&feature.index) {
+                    continue;
+                }
+                let position =
+                    feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+                let Some(source) = self
+                    .economy
+                    .allocate_authored_model1(feature.index, position)
+                else {
+                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot: producer_slot,
+                        message: format!(
+                            "Level 2 authored model1 group {target_group} row {} could not allocate",
+                            feature.index
+                        ),
+                    });
+                    continue;
+                };
+                self.level2_model1_activated.insert(feature.index);
+                activated.push((feature.index, source.source_entity_index));
+                continue;
+            }
+            if feature.kind == 5 && feature.subtype == 4 && target_group == 20 {
+                if self.level2_class5_activated.contains(&feature.index) {
+                    continue;
+                }
+                let position =
+                    feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+                let Some(source) =
+                    self.economy
+                        .allocate_authored_class5(feature.index, 4, position)
+                else {
+                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot: producer_slot,
+                        message: format!(
+                            "Level 2 authored class5 group {target_group} row {} could not allocate",
+                            feature.index
+                        ),
+                    });
+                    continue;
+                };
+                self.level2_class5_activated.insert(feature.index);
+                activated.push((feature.index, source.source_entity_index));
+                continue;
+            }
             if feature.kind == 10 && feature.subtype == 22 {
                 if self.level2_model22_activated.contains(&feature.index) {
                     continue;
@@ -18511,8 +18770,8 @@ impl Level2ResetSession {
     }
 
     /// Dispatch one live dynamic row. The source class-10/model-1 burst
-    /// handler falls through to unconditional drawing disable after one
-    /// callback; all dynamic families therefore receive one cursor visit.
+    /// handler applies its `life-- < 0` drawing gate; all dynamic families
+    /// remain on the shared cursor and reclaim policy.
     fn step_level2_dynamic_arena(
         &mut self,
         pass: u8,
@@ -18530,6 +18789,9 @@ impl Level2ResetSession {
                 self.economy.step_spell_replacement_slot(source_slot)
             }
             Level2DynamicArenaKind::SpellPickup => self.economy.step_spell_pickup_slot(source_slot),
+            Level2DynamicArenaKind::AuthoredModel1 => {
+                self.economy.step_authored_model1_slot(source_slot)
+            }
             Level2DynamicArenaKind::AuthoredModel45 => {
                 self.economy.step_authored_model45_slot(source_slot)
             }
@@ -18785,6 +19047,10 @@ impl Level2ResetSession {
         for authored_index in &self.level2_model59_activated {
             hasher.update(authored_index.to_le_bytes());
         }
+        hasher.update(b"level2-model1-activation-v1");
+        for authored_index in &self.level2_model1_activated {
+            hasher.update(authored_index.to_le_bytes());
+        }
         hasher.update(b"level2-model17-activation-v1");
         for authored_index in &self.level2_model17_activated {
             hasher.update(authored_index.to_le_bytes());
@@ -18921,6 +19187,7 @@ impl Level2ResetSession {
         self.level2_model39_activated = self.baseline_level2_model39_activated.clone();
         self.level2_model6_activated = self.baseline_level2_model6_activated.clone();
         self.level2_model59_activated = self.baseline_level2_model59_activated.clone();
+        self.level2_model1_activated = self.baseline_level2_model1_activated.clone();
         self.level2_model17_activated = self.baseline_level2_model17_activated.clone();
         self.level2_imported_switch_roots = self.baseline_level2_imported_switch_roots.clone();
         self.level2_group10_switch25 = self.baseline_level2_group10_switch25;
@@ -32917,6 +33184,158 @@ mod tests {
                 .expect("row-213 remains in the model-32 arena")
                 .drawing_enabled
         );
+    }
+
+    #[test]
+    fn level_two_group20_materializes_model1_and_archer_rows_from_row214() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-20 production session");
+        let baseline_hash = session.campaign_state_hash();
+        let authored_features = session.mission().authored_features().to_vec();
+        let feature_position = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("authored group-20 feature")
+                .world_position(0)
+        };
+
+        // Reuse the real objective chain: row 206 -> 208 -> 213 -> 214.
+        // No allocator or narrative helper is called directly.
+        session.state.position = feature_position(11);
+        session.runtime.objectives[0].stage_selectors[1] = 2;
+        session.runtime.objectives[0].stage_selectors[2] = 2;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        session.runtime.objectives[0].stage_selectors[3] = 2;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .any(|source| source.authored_index == 214)
+        );
+
+        // Row 214 is model-0, so the source callback requires the local
+        // model-0 player to overlap its authored position.  The eight-turn
+        // bound covers its phase/cooldown cadence without repeating a long
+        // suite; we stop on the first exact activation event.
+        session.state.position = feature_position(214);
+        let expected = [
+            216_u16, 217, 218, 219, 220, 221, 222, 223, 232, 233, 234, 235,
+        ];
+        let mut activated = false;
+        for _ in 0..8 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            if session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group: 20,
+                        authored_indices,
+                        ..
+                    } if authored_indices.as_ref() == expected
+                )
+            }) {
+                activated = true;
+                break;
+            }
+        }
+        assert!(activated, "row 214 must activate group 20 in production");
+
+        let model1 = session
+            .economy()
+            .authored_model1()
+            .iter()
+            .find(|source| source.authored_index == 216)
+            .copied()
+            .expect("group-20 model-1 source");
+        assert_eq!(
+            (
+                model1.model,
+                model1.action,
+                model1.subspell_index,
+                model1.max_life,
+                model1.particle_index,
+                model1.control_flags,
+            ),
+            (1, 1, 400, 1, 41, 0x0002_0000)
+        );
+        assert!(model1.active);
+
+        let archer = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 232)
+            .copied()
+            .expect("group-20 archer source");
+        assert_eq!((archer.model, archer.action), (4, 33));
+        assert_eq!(
+            (
+                archer.minimum_speed,
+                archer.maximum_speed,
+                archer.actual_speed,
+                archer.max_life,
+                archer.mana,
+                archer.subspell_index,
+            ),
+            (30, 0, 30, 1_000, 500, 500)
+        );
+        assert_eq!(
+            (
+                archer.dword_0x10,
+                archer.particle_index,
+                archer.yaw,
+                archer.pitch,
+                archer.roll,
+                archer.fov,
+                archer.shift_rot_x,
+                archer.shift_rot_y,
+            ),
+            (
+                i32::from(archer.source_entity_index % 100),
+                0,
+                125,
+                66,
+                66,
+                125,
+                128,
+                256,
+            )
+        );
+        assert!(archer.active && archer.drawing_enabled);
+
+        // The root uses remc2's `life-- < 0` callback guard: after the
+        // activation turn's first visit, two more source turns exhaust life
+        // and hide drawing while retaining the allocated row.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let model1 = session
+            .economy()
+            .authored_model1()
+            .iter()
+            .find(|source| source.authored_index == 216)
+            .copied()
+            .expect("model-1 root remains source-active after drawing disable");
+        assert_eq!(model1.life, -1);
+        assert!(!model1.drawing_enabled);
+        assert!(model1.active);
+
+        session.reset();
+        assert!(session.economy().authored_model1().is_empty());
+        assert!(
+            session
+                .economy()
+                .authored_class5()
+                .iter()
+                .all(|source| !matches!(source.authored_index, 232 | 233 | 234 | 235))
+        );
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
     #[test]
