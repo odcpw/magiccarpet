@@ -785,14 +785,16 @@ namespace MagicCarpet.PresentationLab.Tests
                 Quality = UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog)
             }));
 
-            Assert.AreEqual(2, root.TerrainPresentation.RenderSubdivision);
-            Assert.AreEqual(25, root.TerrainPresentation.VertexCount);
+            Assert.AreEqual(4, root.TerrainPresentation.RenderSubdivision);
+            Assert.AreEqual(81, root.TerrainPresentation.VertexCount);
             Assert.AreEqual(IndexFormat.UInt16,
                 root.TerrainPresentation.GeneratedMesh.indexFormat);
-            Assert.That(root.TerrainPresentation.GeneratedMesh.vertices[1].y,
-                Is.EqualTo(1f).Within(0.001f));
-            Assert.That(root.TerrainPresentation.GeneratedMesh.vertices[5].y,
+            Assert.That(root.TerrainPresentation.GeneratedMesh.vertices[4].y,
                 Is.EqualTo(2f).Within(0.001f));
+            Assert.That(root.TerrainPresentation.GeneratedMesh.vertices[36].y,
+                Is.EqualTo(4f).Within(0.001f));
+            Assert.That(root.TerrainPresentation.GeneratedMesh.vertices[20].y,
+                Is.EqualTo(3f).Within(0.001f));
 
             Object.DestroyImmediate(gameObject);
         }

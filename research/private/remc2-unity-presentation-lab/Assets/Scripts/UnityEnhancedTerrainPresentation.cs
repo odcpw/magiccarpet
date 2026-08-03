@@ -113,7 +113,7 @@ namespace MagicCarpet.PresentationLab
         /// <summary>
         /// Selects the presentation mesh density without changing the owner
         /// terrain grid. Whole Hog samples the authoritative height plane at
-        /// twice the grid density and bilinearly interpolates between samples;
+        /// four times the grid density and bilinearly interpolates between samples;
         /// simulation, collision, and dirty-region identity stay owner-sized.
         /// </summary>
         public void SetRenderSubdivision(int subdivision)

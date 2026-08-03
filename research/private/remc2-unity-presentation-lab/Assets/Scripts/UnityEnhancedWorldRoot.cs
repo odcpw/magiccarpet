@@ -325,7 +325,7 @@ namespace MagicCarpet.PresentationLab
             if (snapshot.Quality != null)
             {
                 terrainPresentation.SetRenderSubdivision(
-                    snapshot.Quality.Tier == UnityEnhancedQualityTier.WholeHog ? 2 : 1);
+                    snapshot.Quality.Tier == UnityEnhancedQualityTier.WholeHog ? 4 : 1);
             }
             if (snapshot.Terrain != null && !terrainPresentation.ApplySnapshot(snapshot.Terrain))
             {
