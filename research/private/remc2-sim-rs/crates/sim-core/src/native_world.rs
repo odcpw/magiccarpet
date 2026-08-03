@@ -503,6 +503,16 @@ impl EntitySnapshot {
         self.record[16..20].copy_from_slice(&self.control_flags.to_le_bytes());
     }
 
+    /// Update the source position while keeping the lossless record projection
+    /// in lockstep.  Level 2 switch tests and the future objective bridge use
+    /// this seam instead of mutating a typed cache and leaving stale bytes.
+    fn set_position(&mut self, position: Position) {
+        self.position = position;
+        self.record[80..82].copy_from_slice(&position.x.to_le_bytes());
+        self.record[82..84].copy_from_slice(&position.y.to_le_bytes());
+        self.record[84..86].copy_from_slice(&position.z.to_le_bytes());
+    }
+
     #[cfg(test)]
     pub(crate) fn with_record_byte(mut self, offset: usize, value: u8) -> Self {
         self.record[offset] = value;
@@ -2852,6 +2862,20 @@ impl RuntimeSnapshot {
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    fn set_level2_objective_stage_state(&mut self, state: u8) {
+        if let Some(objective) = self.objectives.get_mut(0) {
+            objective.stage_selectors[3] = state;
+            self.bytes[304 + 3] = state;
+        }
+    }
+
+    fn mark_level2_objective_done(&mut self) {
+        if let Some(objective) = self.objectives.get_mut(0) {
+            objective.done = 1;
+            self.bytes[306] = 1;
+        }
     }
 }
 
@@ -13467,8 +13491,10 @@ pub struct Level2ResetSession {
     pub terrain: SessionTerrain,
     baseline_context: FlightContext,
     pub context: FlightContext,
+    baseline_entities: Box<[EntitySnapshot]>,
     entities: Box<[EntitySnapshot]>,
     players: Box<[PlayerSnapshot]>,
+    baseline_runtime: RuntimeSnapshot,
     runtime: RuntimeSnapshot,
     presentation: PresentationSelectors,
     baseline_bad_stones: Box<[Level2BadStone]>,
@@ -13484,6 +13510,15 @@ pub struct Level2ResetSession {
     economy_event_cursor: usize,
     baseline_level2_group8_activated: bool,
     level2_group8_activated: bool,
+    /// Mutable selected-objective stage state consumed by class-11/model-32
+    /// switches.  The qualified reset starts at one; objective progression
+    /// owns the later transition to exactly two.
+    baseline_level2_selected_objective_stage_state: u8,
+    level2_selected_objective_stage_state: u8,
+    baseline_level2_objective_pause: u8,
+    level2_objective_pause: u8,
+    baseline_level2_objective_done: bool,
+    level2_objective_done: bool,
     /// Authored class-10/model-54 rows already consumed by a rooted class-11
     /// stage-tag producer.  The source can run the same group again with
     /// `a2 == 0`; retaining the authored identity prevents a normal outer
@@ -13873,6 +13908,10 @@ impl Level2ResetSession {
             }),
             ..FlightContext::default()
         };
+        let initial_level2_objective_stage_state = runtime
+            .objectives
+            .first()
+            .map_or(1, |objective| objective.stage_selectors[3]);
         Self {
             profile,
             baseline_state: state,
@@ -13881,8 +13920,10 @@ impl Level2ResetSession {
             terrain,
             baseline_context: context.clone(),
             context,
+            baseline_entities: entities.clone(),
             entities,
             players,
+            baseline_runtime: runtime.clone(),
             runtime,
             presentation,
             baseline_bad_stones: bad_stones.clone(),
@@ -13898,6 +13939,14 @@ impl Level2ResetSession {
             economy_event_cursor: 0,
             baseline_level2_group8_activated: false,
             level2_group8_activated: false,
+            // The qualified frame-zero model-32 row observes stage index 3's
+            // source state 1; the switch completes only after that state is 2.
+            baseline_level2_selected_objective_stage_state: initial_level2_objective_stage_state,
+            level2_selected_objective_stage_state: initial_level2_objective_stage_state,
+            baseline_level2_objective_pause: 0,
+            level2_objective_pause: 0,
+            baseline_level2_objective_done: false,
+            level2_objective_done: false,
             baseline_level2_mana_attraction_activated: BTreeSet::new(),
             level2_mana_attraction_activated: BTreeSet::new(),
             baseline_level2_model13_activated: BTreeSet::new(),
@@ -13922,6 +13971,97 @@ impl Level2ResetSession {
     #[must_use]
     pub fn players(&self) -> &[PlayerSnapshot] {
         &self.players
+    }
+
+    /// Set the selected objective stage value consumed by source model-32
+    /// switches. Values other than the source's completion sentinel are
+    /// retained for negative-path testing but never complete the switch.
+    pub fn set_level2_selected_objective_stage_state(&mut self, state: u8) -> Result<()> {
+        if state > 2 {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 objective stage state {state} is out of bounds"
+            )));
+        }
+        self.level2_selected_objective_stage_state = state;
+        self.runtime.set_level2_objective_stage_state(state);
+        Ok(())
+    }
+
+    #[must_use]
+    pub const fn level2_selected_objective_stage_state(&self) -> u8 {
+        self.level2_selected_objective_stage_state
+    }
+
+    #[must_use]
+    pub const fn level2_objective_pause(&self) -> u8 {
+        self.level2_objective_pause
+    }
+
+    #[must_use]
+    pub const fn level2_objective_done(&self) -> bool {
+        self.level2_objective_done
+    }
+
+    /// Move one imported source entity through the lossless Level 2 seam.
+    /// Callers cannot create an entity or alter its class/model identity.
+    pub fn set_level2_entity_position(
+        &mut self,
+        entity_index: u16,
+        position: Position,
+    ) -> Result<()> {
+        let Some(entity) = self.entities.get_mut(usize::from(entity_index)) else {
+            return Err(NativeWorldError::new(format!(
+                "Level 2 entity index {entity_index} is out of bounds"
+            )));
+        };
+        entity.set_position(position);
+        Ok(())
+    }
+
+    /// Evaluate one authored model-0/model-1 switch against the live model-0
+    /// source list using remc2's strict XY comparator. The source scan is the
+    /// live class-3 model-0 arena rebuilt by the source turn pre-pass. Model 0
+    /// requires an overlap; model 1 requires a strict non-overlap. No Z value
+    /// participates in this source callback.
+    pub fn level2_authored_switch_matches(&self, authored_index: u16) -> Result<bool> {
+        // `CompareAxisWithShift_106F0` receives the source model-0/player
+        // collision extent (121 units in the qualified corpus) on both axes.
+        const SWITCH_HALF_WIDTH: i16 = 121;
+        let feature = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .find(|feature| feature.index == authored_index)
+            .ok_or_else(|| {
+                NativeWorldError::new(format!(
+                    "Level 2 authored switch row {authored_index} is absent"
+                ))
+            })?;
+        let expected_overlap = match feature.subtype {
+            0 => true,
+            1 => false,
+            other => {
+                return Err(NativeWorldError::new(format!(
+                    "Level 2 authored switch row {authored_index} has unsupported model {other}"
+                )));
+            }
+        };
+        let switch_position = feature.world_position(0);
+        let overlap = self.entities.iter().any(|entity| {
+            entity.active
+                && entity.class == 3
+                && entity.model == 0
+                && crate::level1_mission::source_entities_overlap_xy(
+                    switch_position,
+                    SWITCH_HALF_WIDTH,
+                    SWITCH_HALF_WIDTH,
+                    entity.position,
+                    SWITCH_HALF_WIDTH,
+                    SWITCH_HALF_WIDTH,
+                )
+        });
+        Ok(overlap == expected_overlap)
     }
 
     /// Validate and expose the authored Level 2 Nyphur participant chain for
@@ -14385,7 +14525,11 @@ impl Level2ResetSession {
     /// then activate groups 22 and 27, where rows 155/156 become live.  The
     /// static outer route deliberately does not include those authored rows.
     fn activate_level2_authored_group8(&mut self, pass: u8) {
-        if self.level2_group8_activated {
+        // Pinned `AddSwitch0B_20_6F1C0` only broadcasts when the selected
+        // objective stage is exactly 2.  A live model-32 producer is not
+        // completion proof: the old existence-only path activated group 8 on
+        // the first turn and could manufacture spell sources prematurely.
+        if self.level2_group8_activated || self.level2_selected_objective_stage_state != 2 {
             return;
         }
         let Some(root_slot) = self
@@ -14467,7 +14611,13 @@ impl Level2ResetSession {
             });
             return;
         }
+        if let Some(root) = self.entities.get_mut(usize::from(root_slot)) {
+            root.disable_drawing();
+        }
         self.level2_group8_activated = true;
+        self.level2_objective_pause = 1;
+        self.level2_objective_done = true;
+        self.runtime.mark_level2_objective_done();
         self.dispatch_events
             .push(Level2DispatchEvent::AuthoredGroupActivated {
                 pass,
@@ -15434,6 +15584,12 @@ impl Level2ResetSession {
         for authored_index in &self.level2_class14_activated {
             hasher.update(authored_index.to_le_bytes());
         }
+        hasher.update(b"level2-objective-switch-state-v1");
+        hasher.update([
+            self.level2_selected_objective_stage_state,
+            self.level2_objective_pause,
+            u8::from(self.level2_objective_done),
+        ]);
         hasher.update(self.runtime.bytes());
         for entity in &self.entities {
             hasher.update(entity.record_bytes());
@@ -15493,6 +15649,8 @@ impl Level2ResetSession {
         self.state = self.baseline_state;
         self.terrain = self.baseline_terrain.clone();
         self.context = self.baseline_context.clone();
+        self.entities = self.baseline_entities.clone();
+        self.runtime = self.baseline_runtime.clone();
         self.bad_stones.clone_from(&self.baseline_bad_stones);
         self.shared_spells = self.baseline_shared_spells.clone();
         self.economy.reset();
@@ -15502,6 +15660,10 @@ impl Level2ResetSession {
         self.dispatch_events.clear();
         self.economy_event_cursor = 0;
         self.level2_group8_activated = self.baseline_level2_group8_activated;
+        self.level2_selected_objective_stage_state =
+            self.baseline_level2_selected_objective_stage_state;
+        self.level2_objective_pause = self.baseline_level2_objective_pause;
+        self.level2_objective_done = self.baseline_level2_objective_done;
         self.level2_mana_attraction_activated =
             self.baseline_level2_mana_attraction_activated.clone();
         self.level2_model13_activated = self.baseline_level2_model13_activated.clone();
@@ -25685,6 +25847,9 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 authored constructor session");
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
         let baseline_shared_hash = session.shared_spells().reset_hash();
         let baseline_economy_hash = session.economy().reset_hash();
         let global_before = session.economy().global_rng;
@@ -25745,6 +25910,12 @@ mod tests {
                 ..
             } if authored_indices.as_ref() == [153, 154]
         )));
+        assert!(session.level2_objective_done());
+        assert_eq!(session.level2_objective_pause(), 1);
+        assert!(session.entities()[32].drawing_disabled());
+        assert_eq!(session.runtime().objectives[0].stage_selectors[3], 2);
+        assert_eq!(session.runtime().objectives[0].done, 1);
+        assert_eq!(session.runtime().bytes()[306], 1);
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
             Level2DispatchEvent::DynamicArena {
@@ -25760,6 +25931,121 @@ mod tests {
         assert!(session.shared_spells().dynamic_pickups().is_empty());
         assert_eq!(session.shared_spells().reset_hash(), baseline_shared_hash);
         assert_eq!(session.economy().reset_hash(), baseline_economy_hash);
+        assert_eq!(session.level2_selected_objective_stage_state(), 1);
+        assert!(!session.level2_objective_done());
+        assert_eq!(session.level2_objective_pause(), 0);
+        assert!(!session.entities()[32].drawing_disabled());
+        assert_eq!(session.runtime().objectives[0].stage_selectors[3], 1);
+        assert_eq!(session.runtime().objectives[0].done, 0);
+    }
+
+    #[test]
+    fn level_two_model32_switch_stays_inert_until_objective_state_two() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 objective switch session");
+
+        session
+            .set_level2_selected_objective_stage_state(0)
+            .expect("source objective incomplete state");
+        assert_eq!(session.runtime().objectives[0].stage_selectors[3], 0);
+        assert_eq!(session.runtime().objectives[0].done, 0);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.economy().authored_model45().is_empty());
+        assert!(!session.level2_objective_done());
+        assert!(!session.entities()[32].drawing_disabled());
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 8, .. }
+        )));
+
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.level2_objective_done());
+        assert!(session.entities()[32].drawing_disabled());
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 8,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [153, 154]
+        )));
+    }
+
+    #[test]
+    fn level_two_model_zero_one_switches_use_strict_xy_predicates() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 switch session");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 switch session");
+        let row_65 = session
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 65)
+            .copied()
+            .expect("model-zero switch row");
+        let row_83 = session
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 83)
+            .copied()
+            .expect("model-one switch row");
+
+        session
+            .set_level2_entity_position(111, row_65.world_position(0))
+            .expect("move live class-three model-zero target");
+        assert!(
+            session
+                .level2_authored_switch_matches(65)
+                .expect("model-zero overlap predicate")
+        );
+        assert!(
+            session
+                .level2_authored_switch_matches(83)
+                .expect("model-one non-overlap predicate")
+        );
+
+        // Row 83 is 512 units away in Y. Moving the live model-0 target to
+        // that center creates overlap and flips the model-1 predicate false.
+        session
+            .set_level2_entity_position(111, row_83.world_position(0))
+            .expect("move live model-zero target");
+        assert!(
+            !session
+                .level2_authored_switch_matches(83)
+                .expect("model-one boundary predicate")
+        );
+
+        // Returning to the row-65 center restores strict interior overlap.
+        session
+            .set_level2_entity_position(111, row_65.world_position(0))
+            .expect("restore live model-zero target");
+        assert!(
+            session
+                .level2_authored_switch_matches(65)
+                .expect("model-zero strict overlap predicate")
+        );
+        let strict_boundary = Position {
+            x: row_65.world_position(0).x,
+            y: row_65.world_position(0).y.wrapping_add(242),
+            z: 0,
+        };
+        session
+            .set_level2_entity_position(111, strict_boundary)
+            .expect("move live model-zero target to strict boundary");
+        assert!(
+            !session
+                .level2_authored_switch_matches(65)
+                .expect("model-zero strict boundary predicate")
+        );
     }
 
     #[test]
@@ -27128,6 +27414,9 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 authored acquisition session");
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
         session.step_outer_turn(PlayerCommand::default(), 0);
         let source = session
             .economy()
@@ -27181,6 +27470,9 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 Shield production session");
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
         let baseline_hash = session.shared_spells().reset_hash();
         session.step_outer_turn(PlayerCommand::default(), 0);
         let source = session
@@ -27243,6 +27535,9 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 Shield damage session");
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
         let baseline_hash = session.shared_spells().reset_hash();
 
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -27340,6 +27635,9 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 remote Shield session");
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
         session.step_outer_turn(PlayerCommand::default(), 0);
         let source = session
             .economy()
@@ -27411,6 +27709,9 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 Shield cleanup session");
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
         session.step_outer_turn(PlayerCommand::default(), 0);
         let source = session
             .economy()
@@ -27476,6 +27777,9 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 Invisible production session");
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
         let baseline_hash = session.shared_spells().reset_hash();
         session.step_outer_turn(PlayerCommand::default(), 0);
         let source = session
@@ -27580,6 +27884,9 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 remote Invisible session");
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
         session.step_outer_turn(PlayerCommand::default(), 0);
         let source = session
             .economy()
@@ -27645,6 +27952,9 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 Invisible cleanup session");
+        session
+            .set_level2_selected_objective_stage_state(2)
+            .expect("source objective completion sentinel");
         session.step_outer_turn(PlayerCommand::default(), 0);
         let source = session
             .economy()
