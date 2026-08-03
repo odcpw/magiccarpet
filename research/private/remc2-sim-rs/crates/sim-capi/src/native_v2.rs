@@ -150,7 +150,7 @@ use crate::presentation_bridge::{
 use sim_core::level1_mission::FIREBALL_IMPACT_MODEL;
 
 #[cfg(test)]
-use sim_core::level1_mission::CASTLE_PROJECTILE_SOUND;
+use sim_core::level1_mission::{CASTLE_PROJECTILE_SOUND, WATER_SPLASH_SOUND};
 
 pub const MC_NATIVE_ABI_VERSION: u32 = 2;
 
@@ -6519,7 +6519,6 @@ impl SessionRecord {
                 record.code = u32::from(sound_id);
                 record.value_0 = i32::try_from(projectile_id).unwrap_or(i32::MAX);
                 record.value_1 = i32::from(position.z);
-                record.entity_index = u16::try_from(splash_id).unwrap_or(u16::MAX);
                 let source_entity_index = self
                     .mission
                     .impacts()
@@ -6534,6 +6533,11 @@ impl SessionRecord {
                     5,
                     self.mission.global_rng(),
                 );
+                // The stable event row exposes the splash impact identity to
+                // presentation.  Audio correlation uses the impact's source
+                // slot internally, but must not replace that presentation key
+                // in the shared C ABI row.
+                record.entity_index = u16::try_from(splash_id).unwrap_or(u16::MAX);
                 record
             }
             Level1MissionEvent::ActorDamaged {
@@ -19291,6 +19295,45 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
             Ok(())
         })
         .expect("selected Castle audio contract");
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn water_splash_event_preserves_impact_identity_after_audio_sidecar_attachment() {
+        let handle = open_fixture();
+        with_session_mut(handle, |session| {
+            let splash_id = 1_234_u32;
+            let position = session.state.position;
+            let event = session.encode_mission_event(
+                Level1MissionEvent::WaterSplashed {
+                    splash_id,
+                    projectile_id: 77,
+                    position,
+                    sound_id: WATER_SPLASH_SOUND,
+                },
+                state_hash(&session.state),
+            );
+            assert_eq!(event.kind, MC_EVENT_LEVEL1_WATER_SPLASHED);
+            assert_eq!(event.code, u32::from(WATER_SPLASH_SOUND));
+            assert_eq!(event.entity_index, splash_id as u16);
+            assert_eq!(event.value_0, 77);
+            assert_eq!(event.value_1, i32::from(position.z));
+            let command = session
+                .audio_commands
+                .get(&event.sequence)
+                .copied()
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        "water-splash event has no audio sidecar",
+                    )
+                })?;
+            assert_eq!(command.sound_id, WATER_SPLASH_SOUND);
+            assert_eq!(command.event_sequence, event.sequence);
+            assert_eq!(command.entity_index, 0);
+            Ok(())
+        })
+        .expect("water-splash C ABI event");
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 
