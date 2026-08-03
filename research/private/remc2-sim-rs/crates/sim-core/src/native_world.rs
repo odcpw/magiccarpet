@@ -532,6 +532,19 @@ impl EntitySnapshot {
         u16::from_le_bytes([self.record[20], self.record[21]])
     }
 
+    /// Raw source `word_0x96_150`, the model-4 special-spawn relation used
+    /// by `sub_68E50`.
+    #[must_use]
+    pub fn source_word_96(&self) -> u16 {
+        u16::from_le_bytes([self.record[154], self.record[155]])
+    }
+
+    /// Source `array_0x52_82.yaw`, distinct from the entity orientation yaw.
+    #[must_use]
+    fn array_yaw(&self) -> i16 {
+        i16::from_le_bytes([self.record[86], self.record[87]])
+    }
+
     /// Raw source `word_0x24_36` targeted by the action-51 first pass.
     #[must_use]
     pub fn word_24(&self) -> u16 {
@@ -3181,6 +3194,13 @@ pub struct Level2SharedSpellResetSession {
     /// remains a typed outer-arena seam; holder timing and cleanup are live.
     baseline_beyond_sight: Option<BeyondSightState>,
     beyond_sight: Option<BeyondSightState>,
+    baseline_beyond_sight_pulse_pending: bool,
+    beyond_sight_pulse_pending: bool,
+    /// Transient player/event state consumed by the Beyond Sight first-pulse
+    /// constructor. This is deliberately separate from the serialized entity
+    /// record, matching the source `dword_0xA4_164x` allocation.
+    baseline_beyond_sight_auxiliary: Level2PlayerEventAuxiliary,
+    beyond_sight_auxiliary: Level2PlayerEventAuxiliary,
     /// Generic source acquisition states for authored Level 2 families 6,
     /// 11, and 12.  Family-specific active lifecycles remain separate.
     baseline_acquisitions: Box<[SpellHolderAcquisitionState]>,
@@ -3618,6 +3638,45 @@ pub struct Level2AuthoredClass14Source {
     pub active: bool,
 }
 
+/// The first-pulse class-10/model-74 effect emitted by `sub_6CD20` for
+/// Beyond Sight.  The source creates it through class-9/subtype-25, then
+/// rewrites the class/model bytes to 10/74 and binds the holder/parent,
+/// subspell, life, movement, and sound payload before returning to the
+/// active-holder callback.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2BeyondSightPulseEffect {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub holder_entity_index: u16,
+    pub parent_entity_index: u16,
+    pub parent_entity_id: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub origin_subtype: u8,
+    pub subspell_index: u16,
+    pub life: i16,
+    pub effect_parameter: u8,
+    pub actual_speed: i16,
+    pub position: Position,
+    pub axis_position: Position,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub sound_id: u8,
+    pub active: bool,
+}
+
+/// The transient `Type_str_164` projection consumed by `sub_6CD20`.
+/// These values are not part of the serialized entity record: the outer
+/// player-input latch writes the two angle words, while the entity update
+/// pass advances and then consumes the byte-0x154 effect parameter.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Level2PlayerEventAuxiliary {
+    pub entity_index: u16,
+    pub next_entity: i16,
+    pub entity_index2: i16,
+    pub effect_parameter: u8,
+}
+
 /// The temporary class-10/model-54 field created by `sub_4A310` for authored
 /// Level 2 rows (alias action 76 shares the same `sub_38D80` callback as
 /// action 59). It writes one pending attraction source to each eligible
@@ -3769,6 +3828,8 @@ pub struct Level2EconomyState {
     /// event and left unchanged by model 5.
     baseline_class14_model3_handle: u16,
     class14_model3_handle: u16,
+    baseline_beyond_sight_effects: Vec<Level2BeyondSightPulseEffect>,
+    beyond_sight_effects: Vec<Level2BeyondSightPulseEffect>,
     baseline_mana_attraction_fields: Vec<Level2ManaAttractionField>,
     mana_attraction_fields: Vec<Level2ManaAttractionField>,
     baseline_carriers: Vec<ManaCarrier>,
@@ -3944,6 +4005,8 @@ impl Level2EconomyState {
             authored_class14: Vec::new(),
             baseline_class14_model3_handle: 0,
             class14_model3_handle: 0,
+            baseline_beyond_sight_effects: Vec::new(),
+            beyond_sight_effects: Vec::new(),
             baseline_mana_attraction_fields: Vec::new(),
             mana_attraction_fields: Vec::new(),
             baseline_carriers: Vec::new(),
@@ -4058,6 +4121,11 @@ impl Level2EconomyState {
     #[must_use]
     pub const fn class14_model3_handle(&self) -> u16 {
         self.class14_model3_handle
+    }
+
+    #[must_use]
+    pub fn beyond_sight_effects(&self) -> &[Level2BeyondSightPulseEffect] {
+        &self.beyond_sight_effects
     }
 
     #[must_use]
@@ -4317,6 +4385,86 @@ impl Level2EconomyState {
             .is_ok()
     }
 
+    /// Allocate the first-pulse class-10/model-74 effect from source
+    /// `sub_6CD20`. The caller supplies the already source-derived payload;
+    /// this method owns the shared NewEvent slot/RNG, map link, and reclaim
+    /// identity just like the other dynamic Level 2 rows.
+    pub fn allocate_beyond_sight_pulse_effect(
+        &mut self,
+        holder_entity_index: u16,
+        parent_entity_index: u16,
+        parent_entity_id: u16,
+        subspell_index: u16,
+        life: i16,
+        effect_parameter: u8,
+        actual_speed: i16,
+        position: Position,
+        axis_position: Position,
+        yaw: i16,
+        pitch: i16,
+    ) -> Option<Level2BeyondSightPulseEffect> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let effect = Level2BeyondSightPulseEffect {
+            source_entity_index,
+            entity_rng,
+            holder_entity_index,
+            parent_entity_index,
+            parent_entity_id,
+            source_class: 10,
+            model: 74,
+            origin_subtype: 25,
+            subspell_index,
+            life,
+            effect_parameter,
+            actual_speed,
+            position,
+            axis_position,
+            yaw,
+            pitch,
+            sound_id: 9,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.beyond_sight_effects.push(effect);
+        Some(effect)
+    }
+
+    /// The source effect has no separate generic movement callback in this
+    /// bounded slice; keep its payload live and map-linked for presentation
+    /// and later model-74 behavior without mutating constructor fields.
+    pub fn step_beyond_sight_pulse_effect_slot(&mut self, source_slot: u16) -> bool {
+        let Some(effect) = self
+            .beyond_sight_effects
+            .iter()
+            .find(|effect| effect.active && effect.source_entity_index == source_slot)
+            .copied()
+        else {
+            return false;
+        };
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: effect.position.x,
+                y: effect.position.y,
+            })
+            .is_ok()
+    }
+
     /// Advance one class-10/model-54/69 temporary field through
     /// `sub_38D80`. Eligible mana spheres receive one source-linked attraction
     /// mailbox in source order; an already-targeted sphere is left untouched.
@@ -4553,6 +4701,16 @@ impl Level2EconomyState {
             visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::AuthoredClass14,
+            );
+        }
+        for effect in self
+            .beyond_sight_effects
+            .iter()
+            .filter(|effect| effect.active)
+        {
+            visit(
+                effect.source_entity_index,
+                Level2DynamicArenaKind::BeyondSightPulseEffect,
             );
         }
         for field in self
@@ -7598,6 +7756,22 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_beyond_sight_effects = self
+            .beyond_sight_effects
+            .iter()
+            .filter(|effect| !effect.active)
+            .map(|effect| (effect.source_entity_index, effect.entity_rng))
+            .collect::<Vec<_>>();
+        self.beyond_sight_effects.retain(|effect| effect.active);
+        for (slot, entity_rng) in reclaimed_beyond_sight_effects {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_mana_attraction = self
             .mana_attraction_fields
             .iter()
@@ -7775,6 +7949,27 @@ impl Level2EconomyState {
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
             hasher.update([u8::from(source.active)]);
+        }
+        for effect in &self.beyond_sight_effects {
+            hasher.update(effect.source_entity_index.to_le_bytes());
+            hasher.update(effect.entity_rng.to_le_bytes());
+            hasher.update(effect.holder_entity_index.to_le_bytes());
+            hasher.update(effect.parent_entity_index.to_le_bytes());
+            hasher.update(effect.parent_entity_id.to_le_bytes());
+            hasher.update([effect.source_class, effect.model, effect.origin_subtype]);
+            hasher.update(effect.subspell_index.to_le_bytes());
+            hasher.update(effect.life.to_le_bytes());
+            hasher.update(effect.effect_parameter.to_le_bytes());
+            hasher.update(effect.actual_speed.to_le_bytes());
+            hasher.update(effect.position.x.to_le_bytes());
+            hasher.update(effect.position.y.to_le_bytes());
+            hasher.update(effect.position.z.to_le_bytes());
+            hasher.update(effect.axis_position.x.to_le_bytes());
+            hasher.update(effect.axis_position.y.to_le_bytes());
+            hasher.update(effect.axis_position.z.to_le_bytes());
+            hasher.update(effect.yaw.to_le_bytes());
+            hasher.update(effect.pitch.to_le_bytes());
+            hasher.update([effect.sound_id, u8::from(effect.active)]);
         }
         for field in &self.mana_attraction_fields {
             hasher.update(field.source_entity_index.to_le_bytes());
@@ -7999,6 +8194,7 @@ impl Level2EconomyState {
         self.authored_model45 = self.baseline_authored_model45.clone();
         self.authored_class14 = self.baseline_authored_class14.clone();
         self.class14_model3_handle = self.baseline_class14_model3_handle;
+        self.beyond_sight_effects = self.baseline_beyond_sight_effects.clone();
         self.mana_attraction_fields = self.baseline_mana_attraction_fields.clone();
         self.carriers = self.baseline_carriers.clone();
         self.castle = self.baseline_castle;
@@ -8235,6 +8431,16 @@ impl Level2SharedSpellResetSession {
             invisible: None,
             baseline_beyond_sight: None,
             beyond_sight: None,
+            baseline_beyond_sight_pulse_pending: false,
+            beyond_sight_pulse_pending: false,
+            baseline_beyond_sight_auxiliary: Level2PlayerEventAuxiliary {
+                entity_index: player_entity.index,
+                ..Level2PlayerEventAuxiliary::default()
+            },
+            beyond_sight_auxiliary: Level2PlayerEventAuxiliary {
+                entity_index: player_entity.index,
+                ..Level2PlayerEventAuxiliary::default()
+            },
             baseline_acquisitions: acquisitions.clone(),
             acquisitions,
             baseline_persistent_acquisitions: BTreeMap::new(),
@@ -8278,6 +8484,26 @@ impl Level2SharedSpellResetSession {
         self.dynamic_pickups
             .iter_mut()
             .find(|entity| entity.index == source_slot)
+    }
+
+    fn entity_for_beyond_sight_special_spawn(&self, source_slot: u16) -> Option<EntitySnapshot> {
+        self.pickup(source_slot)
+            .cloned()
+            .or_else(|| {
+                (self.player_entity.index == source_slot).then(|| self.player_entity.clone())
+            })
+            .or_else(|| {
+                self.player_entities
+                    .iter()
+                    .find(|entity| entity.index == source_slot)
+                    .cloned()
+            })
+            .or_else(|| {
+                self.holders
+                    .iter()
+                    .find(|entity| entity.index == source_slot)
+                    .cloned()
+            })
     }
 
     #[must_use]
@@ -8541,6 +8767,38 @@ impl Level2SharedSpellResetSession {
         self.beyond_sight
     }
 
+    #[must_use]
+    pub const fn beyond_sight_auxiliary(&self) -> Level2PlayerEventAuxiliary {
+        self.beyond_sight_auxiliary
+    }
+
+    /// Bind the latched player-input words to the same transient fields that
+    /// `PlayerEvents_51BB0` writes before the source entity pass.
+    pub fn set_beyond_sight_player_input(
+        &mut self,
+        entity_index: u16,
+        next_entity: u16,
+        entity_index2: u16,
+    ) {
+        self.beyond_sight_auxiliary.entity_index = entity_index;
+        self.beyond_sight_auxiliary.next_entity = next_entity.cast_signed();
+        self.beyond_sight_auxiliary.entity_index2 = entity_index2.cast_signed();
+    }
+
+    fn advance_beyond_sight_parent_auxiliary(&mut self, entity_index: u16) {
+        if self.beyond_sight_auxiliary.entity_index != entity_index {
+            self.beyond_sight_auxiliary = Level2PlayerEventAuxiliary {
+                entity_index,
+                ..Level2PlayerEventAuxiliary::default()
+            };
+        }
+        self.beyond_sight_auxiliary.effect_parameter = self
+            .beyond_sight_auxiliary
+            .effect_parameter
+            .saturating_add(1)
+            .min(200);
+    }
+
     pub fn activate_beyond_sight(&mut self, direction_mask: u16, help_enabled: bool) -> bool {
         self.events.clear();
         let Some(beyond_sight) = self.beyond_sight.as_mut() else {
@@ -8643,8 +8901,17 @@ impl Level2SharedSpellResetSession {
         {
             return;
         }
+        let parent_entity_index = self
+            .beyond_sight
+            .map_or(0, |beyond_sight| beyond_sight.parent_entity_index);
+        self.advance_beyond_sight_parent_auxiliary(parent_entity_index);
         if let Some(beyond_sight) = self.beyond_sight.as_mut() {
-            let _step: BeyondSightStep = beyond_sight.step(parent_castle_mana);
+            let step: BeyondSightStep = beyond_sight.step(parent_castle_mana);
+            // `sub_6CD20` allocates the model-74 effect only on the first
+            // sustained pulse, where the source awards family experience.
+            if step.experience_awarded != 0 {
+                self.beyond_sight_pulse_pending = true;
+            }
         }
         self.sync_beyond_sight_projection();
         if self
@@ -8654,6 +8921,34 @@ impl Level2SharedSpellResetSession {
             self.apply_beyond_sight_cleanup();
             self.sync_beyond_sight_projection();
         }
+    }
+
+    fn take_beyond_sight_pulse_payload(
+        &mut self,
+    ) -> Option<(
+        BeyondSightState,
+        EntitySnapshot,
+        EntitySnapshot,
+        Level2PlayerEventAuxiliary,
+    )> {
+        if !self.beyond_sight_pulse_pending {
+            return None;
+        }
+        self.beyond_sight_pulse_pending = false;
+        let state = self.beyond_sight?;
+        let holder = self.pickup(state.holder_entity_index)?.clone();
+        let parent = if self.player_entity.index == state.parent_entity_index {
+            self.player_entity.clone()
+        } else {
+            self.player_entities
+                .iter()
+                .find(|entity| entity.index == state.parent_entity_index)
+                .cloned()?
+        };
+        let mut auxiliary = self.beyond_sight_auxiliary;
+        auxiliary.entity_index = parent.index;
+        self.beyond_sight_auxiliary.effect_parameter = 0;
+        Some((state, holder, parent, auxiliary))
     }
 
     /// Materialise one authored class-15 row from `sub_4A1E0`'s group pass.
@@ -9497,6 +9792,63 @@ impl Level2SharedSpellResetSession {
             player_position,
             parent_castle_mana,
         )?;
+        if family == BEYOND_SIGHT_FAMILY {
+            if let Some((beyond_sight, holder, parent, auxiliary)) =
+                self.take_beyond_sight_pulse_payload()
+            {
+                let profile = level2_set_spell_profile(BEYOND_SIGHT_FAMILY, beyond_sight.tier)
+                    .expect("validated Beyond Sight pulse tier");
+                // `sub_6CD20` keeps the 0x4000 forward move in the effect's
+                // axis_0x9A_154x payload. Its primary position is separately
+                // adjusted by `sub_68E50` from the holder's byte-1 control
+                // bits and terrain clamp.
+                let mut axis_position = parent.position;
+                let yaw = auxiliary.next_entity.wrapping_add(parent.yaw);
+                let pitch = auxiliary.entity_index2.wrapping_add(parent.pitch);
+                crate::move_entity(&mut axis_position, yaw, pitch, 0x4000);
+                let mut position = parent.position;
+                let parent_control_byte_1 = parent.control_flags.wrapping_shr(8) as u8;
+                if parent_control_byte_1 & 1 != 0 || parent_control_byte_1 & 2 != 0 {
+                    let mut candidate = position;
+                    let special_target = (holder.model == 4)
+                        .then(|| holder.source_word_96())
+                        .filter(|target| *target != 0)
+                        .and_then(|target| self.entity_for_beyond_sight_special_spawn(target));
+                    if let Some(target) = special_target {
+                        candidate.z = target.position.z.wrapping_add(target.array_yaw());
+                    } else {
+                        let lateral_yaw = if parent_control_byte_1 & 1 != 0 {
+                            parent.yaw.wrapping_sub(512)
+                        } else {
+                            parent.yaw.wrapping_add(0x200)
+                        };
+                        crate::move_entity(&mut candidate, lateral_yaw, 0, 256);
+                    }
+                    if self.terrain.ground_height(candidate) <= candidate.z {
+                        position = candidate;
+                    }
+                }
+                economy
+                    .allocate_beyond_sight_pulse_effect(
+                        beyond_sight.holder_entity_index,
+                        beyond_sight.parent_entity_index,
+                        parent.source_id,
+                        profile.subspell_index,
+                        0,
+                        auxiliary.effect_parameter,
+                        parent.actual_speed.wrapping_add(16),
+                        position,
+                        axis_position,
+                        yaw,
+                        pitch,
+                    )
+                    .ok_or_else(|| {
+                        NativeWorldError::new(
+                            "Level 2 Beyond Sight first-pulse effect could not allocate",
+                        )
+                    })?;
+            }
+        }
         let Some(outcome) = result else {
             return Ok(None);
         };
@@ -9859,6 +10211,11 @@ impl Level2SharedSpellResetSession {
         } else {
             hasher.update([0]);
         }
+        hasher.update([u8::from(self.beyond_sight_pulse_pending)]);
+        hasher.update(self.beyond_sight_auxiliary.entity_index.to_le_bytes());
+        hasher.update(self.beyond_sight_auxiliary.next_entity.to_le_bytes());
+        hasher.update(self.beyond_sight_auxiliary.entity_index2.to_le_bytes());
+        hasher.update([self.beyond_sight_auxiliary.effect_parameter]);
         for state in &self.acquisitions {
             hasher.update([state.family]);
             hasher.update(state.source_slot.to_le_bytes());
@@ -9928,6 +10285,8 @@ impl Level2SharedSpellResetSession {
         self.shield = self.baseline_shield;
         self.invisible = self.baseline_invisible;
         self.beyond_sight = self.baseline_beyond_sight;
+        self.beyond_sight_pulse_pending = self.baseline_beyond_sight_pulse_pending;
+        self.beyond_sight_auxiliary = self.baseline_beyond_sight_auxiliary;
         self.acquisitions.clone_from(&self.baseline_acquisitions);
         self.persistent_acquisitions
             .clone_from(&self.baseline_persistent_acquisitions);
@@ -10457,6 +10816,7 @@ pub enum Level2DynamicArenaKind {
     SpellPickup,
     AuthoredModel45,
     AuthoredClass14,
+    BeyondSightPulseEffect,
     ManaAttraction,
 }
 
@@ -10576,6 +10936,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::SpellPickup => 10,
         Level2DynamicArenaKind::AuthoredModel45 => 11,
         Level2DynamicArenaKind::AuthoredClass14 => 13,
+        Level2DynamicArenaKind::BeyondSightPulseEffect => 14,
         Level2DynamicArenaKind::ManaAttraction => 12,
     }
 }
@@ -11807,6 +12168,9 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::AuthoredClass14 => {
                 self.economy.step_authored_class14_slot(source_slot)
             }
+            Level2DynamicArenaKind::BeyondSightPulseEffect => self
+                .economy
+                .step_beyond_sight_pulse_effect_slot(source_slot),
             Level2DynamicArenaKind::ManaAttraction => {
                 self.economy.step_mana_attraction_slot(source_slot)
             }
@@ -11961,6 +12325,11 @@ impl Level2ResetSession {
     ) -> Vec<crate::StepEvidence> {
         self.dispatch_events.clear();
         self.economy_event_cursor = self.economy.events().len();
+        self.shared_spells.set_beyond_sight_player_input(
+            self.state.entity_index,
+            command.argument_6,
+            command.argument_8,
+        );
         let latched_command =
             crate::latch_command_with_context(&mut self.state, command, &mut self.context);
         let mut evidence = Vec::new();
@@ -22744,7 +23113,14 @@ mod tests {
         assert_eq!(active.active_value, active.activation_value);
         assert_ne!(session.shared_spells().reset_hash(), baseline_hash);
 
-        session.step_outer_turn(PlayerCommand::default(), 0);
+        session.step_outer_turn(
+            PlayerCommand {
+                argument_6: 0x1234,
+                argument_8: 0xabcd,
+                ..PlayerCommand::default()
+            },
+            0,
+        );
         let stepped = session
             .shared_spells()
             .beyond_sight_state()
@@ -22753,9 +23129,59 @@ mod tests {
         assert_eq!(stepped.experience_awarded, 1);
         assert!(stepped.parent_mana_regen <= 0);
         assert_eq!(stepped.countdown, active.countdown - 1);
+        let effect = session
+            .economy()
+            .beyond_sight_effects()
+            .iter()
+            .find(|effect| effect.holder_entity_index == outcome.source_slot)
+            .copied()
+            .expect("Beyond Sight first-pulse model-74 effect");
+        assert_eq!(
+            (
+                effect.source_class,
+                effect.model,
+                effect.origin_subtype,
+                effect.subspell_index,
+                effect.life,
+                effect.sound_id,
+            ),
+            (10, 74, 25, 0, 0, 9)
+        );
+        assert_eq!(effect.parent_entity_index, stepped.parent_entity_index);
+        assert_eq!(effect.effect_parameter, 1);
+        assert_ne!(effect.axis_position, effect.position);
+        assert_eq!(
+            session
+                .shared_spells()
+                .beyond_sight_auxiliary()
+                .effect_parameter,
+            0
+        );
+        assert_eq!(
+            session.shared_spells().beyond_sight_auxiliary().next_entity,
+            0x1234_i16
+        );
+        assert_eq!(
+            session
+                .shared_spells()
+                .beyond_sight_auxiliary()
+                .entity_index2,
+            -21_555_i16
+        );
+        let parent_speed = session.shared_spells().player_entity.actual_speed;
+        assert_eq!(effect.actual_speed, parent_speed.wrapping_add(16));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::BeyondSightPulseEffect,
+                source_slot,
+                ..
+            } if *source_slot == effect.source_entity_index
+        )));
 
         session.reset();
         assert!(session.shared_spells().beyond_sight_state().is_none());
+        assert!(session.economy().beyond_sight_effects().is_empty());
         assert_eq!(session.shared_spells().reset_hash(), baseline_hash);
     }
 
