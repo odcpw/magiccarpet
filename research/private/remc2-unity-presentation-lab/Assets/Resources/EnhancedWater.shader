@@ -208,11 +208,12 @@ Shader "MagicCarpet/Enhanced/Water"
                 float2 screenUV = input.screenPos.xy / max(input.screenPos.w, 0.0001);
                 float2 reflectionUV = float2(screenUV.x, 1.0 - screenUV.y);
                 reflectionUV = saturate(reflectionUV + normalWS.xz * _ReflectionDistortion);
+                float2 planarReflectionUV = saturate(screenUV + normalWS.xz * _ReflectionDistortion);
                 half3 sceneReflection = SampleSceneColor(reflectionUV);
                 half3 planarReflection = SAMPLE_TEXTURE2D(
                     _PlanarReflectionTexture,
                     sampler_PlanarReflectionTexture,
-                    reflectionUV).rgb;
+                    planarReflectionUV).rgb;
                 half3 resolvedSceneReflection = lerp(
                     sceneReflection,
                     planarReflection,
