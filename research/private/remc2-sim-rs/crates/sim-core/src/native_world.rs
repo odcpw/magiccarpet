@@ -3142,6 +3142,51 @@ const LEVEL2_SHARED_SPELL_ENTITY_SHA256: [&str; 4] = [
 ];
 const LEVEL2_SHARED_SPELL_PLAYER_ENTITY_SHA256: &str =
     "b5234d405349902b3ef653ed52ac175c929b6024a19869a503fbe65f190d3834";
+const LEVEL2_NYPHUR_ENTITY_INDEX: u16 = 112;
+const LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX: u16 = 113;
+const LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX: u16 = 114;
+const LEVEL2_NYPHUR_ENTITY_SHA256: &str =
+    "a240c8711868a249b2e3ebb43c59613dc88d979a07de279ece869f14ffcf888e";
+const LEVEL2_NYPHUR_PLAYER_SHA256: &str =
+    "3859adcd13d8f32f27220c29e678581f4563fd051275ecc8b48390352dda5159";
+const LEVEL2_NYPHUR_FIREBALL_SHA256: &str =
+    "9312c195108896b32d553bdce73a43484bf80e010fcf762fc7c01d7f7ecca954";
+const LEVEL2_NYPHUR_POSSESSION_SHA256: &str =
+    "fedeb2b2fbe40c6ec72614bc4a971e2e826d52a8348156040e872c14a7c0a80e";
+
+/// Source-owned Level 2 AI participant/holder chain at reset.
+///
+/// The participant rows remain part of the lossless entity/player arrays. This
+/// typed view only exposes the constructor relations needed by later AI and
+/// presentation consumers, keeping those consumers from re-decoding raw
+/// records or silently accepting a cross-player holder chain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2NyphurParticipant {
+    pub player_slot: u8,
+    pub entity_index: u16,
+    pub is_ai: bool,
+    pub color_index: u8,
+    pub entity_class: u8,
+    pub entity_model: u8,
+    pub entity_action: u8,
+    pub entity_source_id: u16,
+    pub entity_next_relation: Option<u16>,
+    pub entity_next_entity: u16,
+    pub entity_control_flags: u32,
+    pub entity_life: i32,
+    pub entity_max_life: i32,
+    pub entity_mana: i32,
+    pub entity_max_mana: i32,
+    pub fireball_holder_index: u16,
+    pub fireball_action: u8,
+    pub fireball_parent_entity_index: u16,
+    pub fireball_next_entity: u16,
+    pub possession_holder_index: u16,
+    pub possession_action: u8,
+    pub possession_parent_entity_index: u16,
+    pub possession_next_entity: u16,
+    pub objective_stage_relation: RuntimeRelation,
+}
 
 /// Level 2's shared spell/economy reset projection. The two active authored
 /// pickups and the AI's Fireball/Possession holders are retained as typed,
@@ -13123,6 +13168,18 @@ impl Level2ResetSession {
         &self.players
     }
 
+    /// Validate and expose the authored Level 2 Nyphur participant chain for
+    /// the mutable reset session. The typed view is deliberately fallible so
+    /// a stale or cross-player holder relation cannot become authority.
+    pub fn nyphur_participant(&self) -> Result<Level2NyphurParticipant> {
+        level2_nyphur_participant(&self.players, &self.entities, &self.runtime)
+    }
+
+    /// Focused reset/replay digest for the typed Nyphur participant chain.
+    pub fn nyphur_state_hash(&self) -> Result<String> {
+        Ok(level2_nyphur_state_hash(&self.nyphur_participant()?))
+    }
+
     #[must_use]
     pub const fn runtime(&self) -> &RuntimeSnapshot {
         &self.runtime
@@ -14606,6 +14663,170 @@ impl Level2ResetSession {
         self.level2_model13_activated = self.baseline_level2_model13_activated.clone();
         self.level2_class14_activated = self.baseline_level2_class14_activated.clone();
     }
+}
+
+fn level2_nyphur_state_hash(participant: &Level2NyphurParticipant) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(REMC2_SPEC_COMMIT.as_bytes());
+    hasher.update(b"level2-nyphur-participant-v1");
+    hasher.update([participant.player_slot, u8::from(participant.is_ai)]);
+    hasher.update(participant.color_index.to_le_bytes());
+    hasher.update(participant.entity_index.to_le_bytes());
+    hasher.update([
+        participant.entity_class,
+        participant.entity_model,
+        participant.entity_action,
+    ]);
+    hasher.update(participant.entity_source_id.to_le_bytes());
+    hasher.update(
+        participant
+            .entity_next_relation
+            .unwrap_or(u16::MAX)
+            .to_le_bytes(),
+    );
+    hasher.update(participant.entity_next_entity.to_le_bytes());
+    hasher.update(participant.entity_control_flags.to_le_bytes());
+    hasher.update(participant.entity_life.to_le_bytes());
+    hasher.update(participant.entity_max_life.to_le_bytes());
+    hasher.update(participant.entity_mana.to_le_bytes());
+    hasher.update(participant.entity_max_mana.to_le_bytes());
+    hasher.update(participant.fireball_holder_index.to_le_bytes());
+    hasher.update([participant.fireball_action]);
+    hasher.update(participant.fireball_parent_entity_index.to_le_bytes());
+    hasher.update(participant.fireball_next_entity.to_le_bytes());
+    hasher.update(participant.possession_holder_index.to_le_bytes());
+    hasher.update([participant.possession_action]);
+    hasher.update(participant.possession_parent_entity_index.to_le_bytes());
+    hasher.update(participant.possession_next_entity.to_le_bytes());
+    if let RuntimeRelation::LiveEntity(index) = participant.objective_stage_relation {
+        hasher.update([1]);
+        hasher.update(index.to_le_bytes());
+    } else {
+        hasher.update([0]);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+fn level2_nyphur_participant(
+    players: &[PlayerSnapshot],
+    entities: &[EntitySnapshot],
+    runtime: &RuntimeSnapshot,
+) -> Result<Level2NyphurParticipant> {
+    let player = players
+        .get(1)
+        .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur AI player row 1 is absent"))?;
+    if player.slot != 1
+        || !player.is_ai
+        || player.entity_index != LEVEL2_NYPHUR_ENTITY_INDEX
+        || player.player_color_index() != 1
+        || player.left_spell_slot_raw != 0
+        || player.right_spell_slot_raw != 1
+        || player.enabled_spell_holders[0] != LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
+        || player.enabled_spell_holders[1] != LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
+        || player.learned_spell_flags
+            != [
+                0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+            ]
+        || sha256_hex(player.record_bytes()) != LEVEL2_NYPHUR_PLAYER_SHA256
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 Nyphur player ownership/hand census row changed",
+        ));
+    }
+
+    let entity = entities
+        .get(usize::from(LEVEL2_NYPHUR_ENTITY_INDEX))
+        .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur entity row is absent"))?;
+    if !entity.active
+        || entity.class != 3
+        || entity.model != 1
+        || entity.action != 1
+        || entity.source_id != LEVEL2_NYPHUR_ENTITY_INDEX
+        || entity.next_relation != Some(0)
+        || entity.next_entity() != LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
+        || entity.parameter_relation != Some(67)
+        || entity.special_relation != EntitySpecialRelation::PlayerState(1)
+        || entity.control_flags != 12
+        || entity.life != 3_085
+        || entity.max_life != 3_085
+        || entity.mana != 1_000
+        || entity.max_mana != 1_000
+        || sha256_hex(entity.record_bytes()) != LEVEL2_NYPHUR_ENTITY_SHA256
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 Nyphur constructor/ownership census row changed",
+        ));
+    }
+
+    let fireball = entities
+        .get(usize::from(LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX))
+        .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur Fireball holder is absent"))?;
+    if !fireball.active
+        || fireball.class != 15
+        || fireball.model != 0
+        || fireball.action != 0
+        || fireball.old_map_entity() != LEVEL2_NYPHUR_ENTITY_INDEX
+        || fireball.next_entity() != LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX
+        || sha256_hex(fireball.record_bytes()) != LEVEL2_NYPHUR_FIREBALL_SHA256
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 Nyphur Fireball holder relation changed",
+        ));
+    }
+
+    let possession = entities
+        .get(usize::from(LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX))
+        .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur Possession holder is absent"))?;
+    if !possession.active
+        || possession.class != 15
+        || possession.model != 1
+        || possession.action != 3
+        || possession.old_map_entity() != LEVEL2_NYPHUR_FIREBALL_HOLDER_INDEX
+        || possession.next_entity() != 0
+        || sha256_hex(possession.record_bytes()) != LEVEL2_NYPHUR_POSSESSION_SHA256
+    {
+        return Err(NativeWorldError::new(
+            "Level 2 Nyphur Possession holder relation changed",
+        ));
+    }
+
+    let objective_stage_relation = runtime
+        .stages
+        .get(1)
+        .ok_or_else(|| NativeWorldError::new("Level 2 Nyphur objective stage is absent"))?
+        .relation;
+    if objective_stage_relation != RuntimeRelation::LiveEntity(LEVEL2_NYPHUR_ENTITY_INDEX) {
+        return Err(NativeWorldError::new(
+            "Level 2 Nyphur objective stage relation changed",
+        ));
+    }
+
+    Ok(Level2NyphurParticipant {
+        player_slot: player.slot,
+        entity_index: entity.index,
+        is_ai: player.is_ai,
+        color_index: player.player_color_index(),
+        entity_class: entity.class,
+        entity_model: entity.model,
+        entity_action: entity.action,
+        entity_source_id: entity.source_id,
+        entity_next_relation: entity.next_relation,
+        entity_next_entity: entity.next_entity(),
+        entity_control_flags: entity.control_flags,
+        entity_life: entity.life,
+        entity_max_life: entity.max_life,
+        entity_mana: entity.mana,
+        entity_max_mana: entity.max_mana,
+        fireball_holder_index: fireball.index,
+        fireball_action: fireball.action,
+        fireball_parent_entity_index: fireball.old_map_entity(),
+        fireball_next_entity: fireball.next_entity(),
+        possession_holder_index: possession.index,
+        possession_action: possession.action,
+        possession_parent_entity_index: possession.old_map_entity(),
+        possession_next_entity: possession.next_entity(),
+        objective_stage_relation,
+    })
 }
 
 fn level2_bad_stones(
@@ -26617,6 +26838,96 @@ mod tests {
         second.reset();
         assert_eq!(first.goats(), second.goats());
         assert!(first.dispatch_events().is_empty());
+    }
+
+    #[test]
+    fn level_two_nyphur_participant_chain_is_source_bound_and_reset_isolated() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut first = inspection
+            .level2_reset_session()
+            .expect("Level 2 Nyphur production session");
+        let second = inspection
+            .level2_reset_session()
+            .expect("isolated Level 2 Nyphur production session");
+
+        let participant = first
+            .nyphur_participant()
+            .expect("authored Nyphur participant chain");
+        assert_eq!(participant.player_slot, 1);
+        assert!(participant.is_ai);
+        assert_eq!(participant.color_index, 1);
+        assert_eq!(participant.entity_index, 112);
+        assert_eq!(
+            (
+                participant.entity_class,
+                participant.entity_model,
+                participant.entity_action
+            ),
+            (3, 1, 1)
+        );
+        assert_eq!(participant.entity_source_id, 112);
+        assert_eq!(participant.entity_next_relation, Some(0));
+        assert_eq!(participant.entity_next_entity, 113);
+        assert_eq!(participant.entity_control_flags, 12);
+        assert_eq!(
+            (participant.entity_life, participant.entity_max_life),
+            (3_085, 3_085)
+        );
+        assert_eq!(
+            (participant.entity_mana, participant.entity_max_mana),
+            (1_000, 1_000)
+        );
+        assert_eq!(
+            (
+                participant.fireball_holder_index,
+                participant.fireball_action,
+                participant.fireball_parent_entity_index,
+                participant.fireball_next_entity,
+            ),
+            (113, 0, 112, 114),
+        );
+        assert_eq!(
+            (
+                participant.possession_holder_index,
+                participant.possession_action,
+                participant.possession_parent_entity_index,
+                participant.possession_next_entity,
+            ),
+            (114, 3, 113, 0),
+        );
+        assert_eq!(
+            participant.objective_stage_relation,
+            RuntimeRelation::LiveEntity(112),
+        );
+
+        let baseline_hash = first.nyphur_state_hash().expect("Nyphur hash");
+        assert_eq!(
+            baseline_hash,
+            second.nyphur_state_hash().expect("second Nyphur hash")
+        );
+        let baseline_campaign_hash = first.campaign_state_hash();
+
+        first.step_outer_turn(PlayerCommand::default(), 0);
+        first.reset();
+        assert_eq!(
+            first.nyphur_state_hash().expect("reset Nyphur hash"),
+            baseline_hash
+        );
+        assert_eq!(first.campaign_state_hash(), baseline_campaign_hash);
+
+        let mut relation_tampered = inspection
+            .level2_reset_session()
+            .expect("Nyphur relation negative session");
+        relation_tampered.entities[113].record[26..28].copy_from_slice(&114_u16.to_le_bytes());
+        assert!(relation_tampered.nyphur_participant().is_err());
+
+        let mut holder_owner_tampered = inspection
+            .level2_reset_session()
+            .expect("Nyphur ownership negative session");
+        holder_owner_tampered.players[1].enabled_spell_holders[0] = 114;
+        holder_owner_tampered.players[1].record[268..270].copy_from_slice(&114_u16.to_le_bytes());
+        assert!(holder_owner_tampered.nyphur_participant().is_err());
     }
 
     #[test]
