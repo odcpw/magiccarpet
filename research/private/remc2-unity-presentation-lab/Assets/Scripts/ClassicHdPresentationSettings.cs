@@ -189,7 +189,7 @@ namespace MagicCarpet.PresentationLab
         public float viewDistance = 1.0f;
         public bool reflections = true;
         public bool dynamicLighting = true;
-        public string blur = "tablesn";
+        public string blur = "off";
         public float uiScale = 1.0f;
         public bool fullscreen;
         public int windowWidth = 1280;

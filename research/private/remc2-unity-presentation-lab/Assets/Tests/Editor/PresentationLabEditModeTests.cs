@@ -71,6 +71,23 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void ClassicHdBlurDefaultsOffAndExplicitTableSnRemainsAccepted()
+        {
+            ClassicHdPresentationSettings settings = ClassicHdPresentationSettings.Default();
+            string reason;
+            Assert.IsTrue(settings.TryValidate(out reason), reason);
+            Assert.AreEqual("off", settings.blur);
+
+            ClassicHdSettingsLoadResult result = ClassicHdSettingsStore.LoadFromArguments(new[]
+            {
+                "player",
+                "-mc-classic-blur", "tablesn"
+            });
+            Assert.IsTrue(result.IsValid, result.Reason);
+            Assert.AreEqual("tablesn", result.Settings.blur);
+        }
+
+        [Test]
         public void ClassicHdOptionalAssetTierFallsBackExplicitly()
         {
             ClassicHdProfileInfo profile;
