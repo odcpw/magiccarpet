@@ -3757,9 +3757,9 @@ pub struct Level2AuthoredModel22Source {
     pub active: bool,
 }
 
-/// One model-75/action-82 row cloned by `AddWind_4F040`. Action 82 is a
-/// source no-call row; the parent action-22 callback owns the chain movement
-/// and disables the whole chain on expiry.
+/// One model-75/action-82 row cloned by `AddWind_4F040`. The action-82
+/// callback owns its life/terrain settle and the parent action-22 callback
+/// owns chain movement and linked expiry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2Model22SpawnedChild {
     pub source_entity_index: u16,
@@ -3783,6 +3783,7 @@ pub struct Level2Model22SpawnedChild {
     pub shift_rot_y: i16,
     pub position: Position,
     pub phase: u8,
+    pub drawing_enabled: bool,
     pub active: bool,
 }
 
@@ -5106,6 +5107,7 @@ impl Level2EconomyState {
                 shift_rot_y: LEVEL2_MODEL22_SHIFT_Y[usize::from(segment_index)],
                 position: child_position,
                 phase: segment_index - 1,
+                drawing_enabled: true,
                 active: true,
             };
             if self
@@ -5279,15 +5281,23 @@ impl Level2EconomyState {
         else {
             return false;
         };
-        if child.life != 0 {
+        let life_before = child.life;
+        if life_before != 0 {
             child.life = child.life.wrapping_sub(1);
+            if life_before == 1 {
+                // `sub_68FF0` disables drawing on the terminal positive-life
+                // visit and skips its terrain settle branch.
+                child.drawing_enabled = false;
+            }
         }
-        let ground = self.terrain.ground_height(child.position);
-        if child.position.z > ground {
-            child.position.z = child.position.z.wrapping_sub(128);
-        }
-        if child.position.z <= ground {
-            child.position.z = ground;
+        if life_before != 1 {
+            let ground = self.terrain.ground_height(child.position);
+            if child.position.z > ground {
+                child.position.z = child.position.z.wrapping_sub(128);
+            }
+            if child.position.z <= ground {
+                child.position.z = ground;
+            }
         }
         // ApplyEvents advances byte 0x3e after visiting the live row.
         child.phase = child.phase.wrapping_add(1);
@@ -5295,7 +5305,7 @@ impl Level2EconomyState {
         self.map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
-                active: true,
+                active: child.active,
                 x: child.position.x,
                 y: child.position.y,
             })
@@ -9204,7 +9214,11 @@ impl Level2EconomyState {
             hasher.update(child.position.x.to_le_bytes());
             hasher.update(child.position.y.to_le_bytes());
             hasher.update(child.position.z.to_le_bytes());
-            hasher.update([child.phase, u8::from(child.active)]);
+            hasher.update([
+                child.phase,
+                u8::from(child.drawing_enabled),
+                u8::from(child.active),
+            ]);
         }
         hasher.update(self.class14_model3_handle.to_le_bytes());
         for source in &self.authored_class14 {
@@ -24391,6 +24405,7 @@ mod tests {
             )
         );
         assert_eq!((first_child.max_life, first_child.life), (500, 500));
+        assert!(first_child.drawing_enabled);
 
         let before_position = wind.position;
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -24422,6 +24437,33 @@ mod tests {
             .copied()
             .expect("Wind child after action-82 terrain settle");
         assert_eq!((stepped_child.max_life, stepped_child.life), (500, 499));
+
+        // The positive-life terminal branch disables drawing before the
+        // terrain settle and keeps the source row alive for the next reclaim
+        // pass.
+        let terminal_z = stepped_child.position.z;
+        session
+            .economy_mut()
+            .model22_spawned_children
+            .iter_mut()
+            .find(|child| child.source_entity_index == first_child.source_entity_index)
+            .expect("Wind child for terminal action-82 branch")
+            .life = 1;
+        assert!(
+            session
+                .economy_mut()
+                .step_model22_spawned_child_slot(first_child.source_entity_index)
+        );
+        let terminal_child = session
+            .economy()
+            .model22_spawned_children()
+            .iter()
+            .find(|child| child.source_entity_index == first_child.source_entity_index)
+            .copied()
+            .expect("Wind child after terminal action-82 branch");
+        assert_eq!(terminal_child.life, 0);
+        assert!(!terminal_child.drawing_enabled);
+        assert_eq!(terminal_child.position.z, terminal_z);
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
             Level2DispatchEvent::DynamicArena {
