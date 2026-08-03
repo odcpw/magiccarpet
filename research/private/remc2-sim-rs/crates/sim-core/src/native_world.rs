@@ -202,6 +202,46 @@ const ENTITY_PARAMETER_COUNT_U32: u32 = 157;
 const ENTITY_PARAMETER_BYTES: usize = 34;
 const PLAYER_SPELL_COUNT: usize = 26;
 const PLAYER_SPELL_COUNT_I16: i16 = 26;
+const LEVEL2_EXPERIENCE_SCROLL_AWARD: i32 = 4;
+const LEVEL2_SCROLL_COLLISION_HALF_WIDTH: i16 = 768;
+const LEVEL2_SCROLL_COLLISION_VERTICAL_OFFSET: i16 = 37;
+const LEVEL2_SCROLL_COLLISION_HALF_HEIGHT: i16 = 1_280;
+const LEVEL2_PLAYER_COLLISION_HALF_WIDTH: i16 = 121;
+const LEVEL2_PLAYER_COLLISION_VERTICAL_OFFSET: i16 = 100;
+const LEVEL2_PLAYER_COLLISION_HALF_HEIGHT: i16 = 100;
+
+// `sub_6DB50` walks the owned SPELLS.DAT rows in family order.  These are the
+// two progression thresholds used by the Level 2 scroll callback; the first
+// row is the reset level and the following rows are the tier-1/tier-2
+// `xpos1_E` values from SPELLS.DAT.
+const LEVEL2_SPELL_TIER_THRESHOLDS: [[i32; 3]; PLAYER_SPELL_COUNT] = [
+    [0, 400, 12_000],
+    [0, 600, 4_800],
+    [0, 40, 80],
+    [0, 400, 1_200],
+    [0, 350, 1_050],
+    [0, 400, 1_200],
+    [0, 400, 1_200],
+    [0, 1_000, 2_000],
+    [0, 400, 1_200],
+    [0, 2_000, 10_000],
+    [0, 400, 2_000],
+    [0, 330, 990],
+    [0, 360, 1_080],
+    [0, 400, 1_200],
+    [0, 400, 1_200],
+    [0, 800, 1_600],
+    [0, 1_200, 2_400],
+    [0, 1_800, 3_600],
+    [0, 2_000, 8_000],
+    [0, 450, 1_200],
+    [0, 1_500, 3_000],
+    [0, 400, 1_200],
+    [0, 360, 720],
+    [0, 400, 1_200],
+    [0, 800, 1_600],
+    [0, 400, 1_600],
+];
 const FRAME_ASSET_COUNT: usize = 76;
 const LEVEL_ONE_CONTROL_MODE_SEAM_DEFAULT: u8 = 0;
 const LEVEL2_UPSTREAM_COMMIT: &str = "6806c7204d17220ecc0430759f784aea8ee2ddb2";
@@ -857,6 +897,21 @@ fn level2_source_intersects(left: &EntitySnapshot, right: &EntitySnapshot) -> bo
     dx.abs() < i32::from(i16_at(left, 86)) + i32::from(i16_at(right, 86))
         && dy.abs() < i32::from(i16_at(left, 88)) + i32::from(i16_at(right, 88))
         && dz.abs() < i32::from(i16_at(left, 92)) + i32::from(i16_at(right, 92))
+}
+
+fn level2_experience_scroll_overlap(scroll: Position, player: Position) -> bool {
+    let dx = i32::from(player.x.wrapping_sub(scroll.x).cast_signed()).abs();
+    let dy = i32::from(player.y.wrapping_sub(scroll.y).cast_signed()).abs();
+    let scroll_z = scroll
+        .z
+        .wrapping_add(LEVEL2_SCROLL_COLLISION_VERTICAL_OFFSET);
+    let player_z = player
+        .z
+        .wrapping_add(LEVEL2_PLAYER_COLLISION_VERTICAL_OFFSET);
+    let dz = i32::from(player_z.wrapping_sub(scroll_z)).abs();
+    dx < i32::from(LEVEL2_SCROLL_COLLISION_HALF_WIDTH + LEVEL2_PLAYER_COLLISION_HALF_WIDTH)
+        && dy < i32::from(LEVEL2_SCROLL_COLLISION_HALF_WIDTH + LEVEL2_PLAYER_COLLISION_HALF_WIDTH)
+        && dz < i32::from(LEVEL2_SCROLL_COLLISION_HALF_HEIGHT + LEVEL2_PLAYER_COLLISION_HALF_HEIGHT)
 }
 
 fn level2_wrapping_xy_distance(left: Position, right: Position) -> u32 {
@@ -3290,6 +3345,10 @@ pub struct Level2SharedSpellResetSession {
     /// 11, and 12.  Family-specific active lifecycles remain separate.
     baseline_acquisitions: Box<[SpellHolderAcquisitionState]>,
     acquisitions: Box<[SpellHolderAcquisitionState]>,
+    baseline_spell_experience: [i32; PLAYER_SPELL_COUNT],
+    spell_experience: [i32; PLAYER_SPELL_COUNT],
+    baseline_spell_levels: [i8; PLAYER_SPELL_COUNT],
+    spell_levels: [i8; PLAYER_SPELL_COUNT],
     /// Persistent replacement rows can coexist with the authored ordinary
     /// source for the same family. Keep their source-local acquisition state
     /// separate instead of letting one family slot overwrite the other.
@@ -3340,6 +3399,14 @@ pub enum Level2SharedSpellEvent {
         target_entity_index: u16,
         attacker_entity_index: u16,
         damage: ShieldDamage,
+    },
+    ExperienceScrollCollected {
+        source_slot: u16,
+        player_entity_index: u16,
+    },
+    AbilityImproved {
+        source_family: u8,
+        tier: i8,
     },
 }
 
@@ -6513,8 +6580,9 @@ impl Level2EconomyState {
     /// `sub_59C40_getTerrtoZ` (model 3/action 8) and the non-collecting branch
     /// of `UpdateScroll_59C80` (model 5/action 10) both snap the row to the
     /// current terrain height before their mission-specific work.  The
-    /// Level-2 economy owns that shared source write; scroll collection and
-    /// experience presentation remain a separate mission/UI seam.
+    /// Level-2 economy owns that shared source write; the enclosing reset
+    /// session owns the model-5 player scan and experience presentation after
+    /// this callback returns.
     pub fn step_authored_class14_slot(&mut self, source_slot: u16, ground_height: i16) -> bool {
         let Some(source_index) = self
             .authored_class14
@@ -6530,6 +6598,28 @@ impl Level2EconomyState {
             .sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
                 active: true,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .is_ok()
+    }
+
+    /// Apply `DisableEntityDrawing04_57F10` to an authored class-14 row. The
+    /// source callback leaves the row for the arena reclaim pass; unlinking
+    /// here preserves that ordering instead of deleting it from the handler.
+    pub fn deactivate_authored_class14_slot(&mut self, source_slot: u16) -> bool {
+        let Some(source) = self
+            .authored_class14
+            .iter_mut()
+            .find(|source| source.source_entity_index == source_slot && source.active)
+        else {
+            return false;
+        };
+        source.active = false;
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: false,
                 x: source.position.x,
                 y: source.position.y,
             })
@@ -11160,6 +11250,10 @@ impl Level2SharedSpellResetSession {
             },
             baseline_acquisitions: acquisitions.clone(),
             acquisitions,
+            baseline_spell_experience: [0; PLAYER_SPELL_COUNT],
+            spell_experience: [0; PLAYER_SPELL_COUNT],
+            baseline_spell_levels: [0; PLAYER_SPELL_COUNT],
+            spell_levels: [0; PLAYER_SPELL_COUNT],
             baseline_persistent_acquisitions: BTreeMap::new(),
             persistent_acquisitions: BTreeMap::new(),
             player_entity_sha256: LEVEL2_SHARED_SPELL_PLAYER_ENTITY_SHA256.to_owned(),
@@ -12046,6 +12140,134 @@ impl Level2SharedSpellResetSession {
     #[must_use]
     pub fn pickup_events(&self) -> &[Level2SharedSpellEvent] {
         &self.pickup_events
+    }
+
+    #[must_use]
+    pub fn spell_experience(&self) -> &[i32; PLAYER_SPELL_COUNT] {
+        &self.spell_experience
+    }
+
+    #[must_use]
+    pub fn spell_levels(&self) -> &[i8; PLAYER_SPELL_COUNT] {
+        &self.spell_levels
+    }
+
+    /// Run the source `UpdateScroll_59C80` callback for a live model-5 row.
+    /// The source scans every live model-0 player in linked-list order, but
+    /// only the local LevelIndex player receives XP and tier updates. A
+    /// remote collision still consumes the scroll, so the scan deliberately
+    /// does not return early after the first overlap.
+    pub fn collect_level2_experience_scroll(
+        &mut self,
+        source_slot: u16,
+        scroll_position: Position,
+        local_player_slot: u8,
+        local_player_entity_index: u16,
+        local_player_position: Position,
+        local_player_life: i32,
+        entities: &[EntitySnapshot],
+    ) -> bool {
+        let mut first_collision_entity = None;
+        let mut local_collision = false;
+        let mut local_player_index = None;
+        for (index, player) in self.players.iter().enumerate() {
+            let is_local = player.player_color_index() == local_player_slot
+                && player.entity_index == local_player_entity_index;
+            if is_local {
+                local_player_index = Some(index);
+            }
+            let (active, class, model, life, position) = if is_local {
+                (true, 3, 0, local_player_life, local_player_position)
+            } else if let Some(entity) = entities
+                .iter()
+                .find(|entity| entity.index == player.entity_index)
+            {
+                (
+                    entity.active,
+                    entity.class,
+                    entity.model,
+                    entity.life,
+                    entity.position,
+                )
+            } else {
+                continue;
+            };
+            if !active
+                || class != 3
+                || model != 0
+                || life < 0
+                || !level2_experience_scroll_overlap(scroll_position, position)
+            {
+                continue;
+            }
+            first_collision_entity.get_or_insert(player.entity_index);
+            local_collision |= is_local;
+        }
+        let Some(first_collision_entity) = first_collision_entity else {
+            return false;
+        };
+        self.pickup_events
+            .push(Level2SharedSpellEvent::ExperienceScrollCollected {
+                source_slot,
+                player_entity_index: first_collision_entity,
+            });
+        if local_collision {
+            let owner_index =
+                local_player_index.expect("local player is present for a local collision");
+            let enabled_holders = self.players[owner_index].enabled_spell_holders;
+            let mut improved = Vec::new();
+            for family in 0..PLAYER_SPELL_COUNT {
+                if enabled_holders[family] == 0 {
+                    continue;
+                }
+                let mut experience =
+                    self.spell_experience[family].saturating_add(LEVEL2_EXPERIENCE_SCROLL_AWARD);
+                if family == usize::from(CASTLE_SPELL_FAMILY) {
+                    experience = experience.min(7);
+                }
+                self.spell_experience[family] = experience;
+                let previous_level = self.spell_levels[family];
+                let level = LEVEL2_SPELL_TIER_THRESHOLDS[family]
+                    .iter()
+                    .rposition(|threshold| experience >= *threshold)
+                    .unwrap_or(0) as i8;
+                self.spell_levels[family] = level;
+                if level > previous_level {
+                    improved.push((family as u8, level));
+                }
+            }
+            let spell_levels = self.spell_levels;
+            let owner = &mut self.players[owner_index];
+            for family in 0..PLAYER_SPELL_COUNT {
+                owner.family_selected_tiers[family] = spell_levels[family];
+                owner.record[528 + family] = spell_levels[family].cast_unsigned();
+            }
+            mark_source_audio_call(SourceAudioCallTag::ExperienceScrollPickup);
+            self.events.push(FlightEvent::PrepareSound {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::ExperienceScroll,
+                entity_index: local_player_entity_index,
+                player_index: i16::from(local_player_slot),
+                sound_id: 63,
+            });
+            for (family, tier) in improved {
+                mark_source_audio_call(SourceAudioCallTag::AbilityImprovedTier);
+                self.pickup_events
+                    .push(Level2SharedSpellEvent::AbilityImproved {
+                        source_family: family,
+                        tier,
+                    });
+                self.events.push(FlightEvent::PrepareSound {
+                    #[cfg(test)]
+                    audio_site: crate::MissionAudioSite::AbilityImproved,
+                    entity_index: local_player_entity_index,
+                    player_index: i16::from(local_player_slot),
+                    sound_id: 61,
+                });
+            }
+            self.local_player = owner.clone();
+        }
+        true
     }
 
     #[must_use]
@@ -12937,6 +13159,12 @@ impl Level2SharedSpellResetSession {
         hasher.update(self.player_entity_sha256.as_bytes());
         hasher.update(self.terrain.deterministic_hash().to_le_bytes());
         hasher.update(self.player_mana.to_le_bytes());
+        for experience in self.spell_experience {
+            hasher.update(experience.to_le_bytes());
+        }
+        for level in self.spell_levels {
+            hasher.update(level.to_le_bytes());
+        }
         hasher.update(self.speed.entity_index.to_le_bytes());
         hasher.update(self.speed.active_value.to_le_bytes());
         hasher.update(self.speed.activation_value.to_le_bytes());
@@ -13084,6 +13312,8 @@ impl Level2SharedSpellResetSession {
         self.acquisitions.clone_from(&self.baseline_acquisitions);
         self.persistent_acquisitions
             .clone_from(&self.baseline_persistent_acquisitions);
+        self.spell_experience = self.baseline_spell_experience;
+        self.spell_levels = self.baseline_spell_levels;
         self.events.clear();
         self.pickup_events.clear();
     }
@@ -15453,6 +15683,53 @@ impl Level2ResetSession {
         self.economy.step_spell_replacement_slot(source_slot)
     }
 
+    fn step_level2_authored_class14(&mut self, source_slot: u16) -> bool {
+        let Some((model, position)) = self
+            .economy
+            .authored_class14()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+            .map(|source| (source.model, source.position))
+        else {
+            return false;
+        };
+        let ground_height = self.terrain.ground_height(position);
+        if !self
+            .economy
+            .step_authored_class14_slot(source_slot, ground_height)
+        {
+            return false;
+        }
+        let Some(snapped_position) = self
+            .economy
+            .authored_class14()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+            .map(|source| source.position)
+        else {
+            return false;
+        };
+        let collected = model == 5
+            && self.shared_spells.collect_level2_experience_scroll(
+                source_slot,
+                snapped_position,
+                self.runtime.local_player_slot,
+                self.state.entity_index,
+                self.state.position,
+                self.entities
+                    .iter()
+                    .find(|entity| entity.index == self.state.entity_index)
+                    .map_or(0, |entity| entity.life),
+                &self.entities,
+            );
+        if collected {
+            self.economy.deactivate_authored_class14_slot(source_slot);
+            false
+        } else {
+            true
+        }
+    }
+
     /// Dispatch one live dynamic row. The source class-10/model-1 burst
     /// handler falls through to unconditional drawing disable after one
     /// callback; all dynamic families therefore receive one cursor visit.
@@ -15509,14 +15786,7 @@ impl Level2ResetSession {
                 self.economy.step_model76_tail_spawn_slot(source_slot)
             }
             Level2DynamicArenaKind::AuthoredClass14 => {
-                let ground_height = self
-                    .economy
-                    .authored_class14()
-                    .iter()
-                    .find(|source| source.active && source.source_entity_index == source_slot)
-                    .map_or(0, |source| self.terrain.ground_height(source.position));
-                self.economy
-                    .step_authored_class14_slot(source_slot, ground_height)
+                self.step_level2_authored_class14(source_slot)
             }
             Level2DynamicArenaKind::BeyondSightPulseEffect => self
                 .economy
@@ -26410,6 +26680,159 @@ mod tests {
         session.reset();
         assert!(session.economy().authored_class14().is_empty());
         assert_eq!(session.economy().reset_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_authored_class14_model5_collects_for_local_player_and_reclaims() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 authored class-14 session");
+        let source = session
+            .allocate_level2_authored_class14(248)
+            .expect("authored subtype-5 row");
+        let source_slot = source.source_entity_index;
+        let scroll_position = source.position;
+        session
+            .shared_spells_mut()
+            .acquire_level2_spell_holder(12, PhysicalSpellActionRole::OrdinaryPickup, true)
+            .expect("source-shaped family-12 acquisition");
+        let experience_before = *session.shared_spells().spell_experience();
+        let enabled_before = session.shared_spells().players[0].enabled_spell_holders;
+        session.state.position = scroll_position;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(session.shared_spells().pickup_events().iter().any(|event| matches!(
+            event,
+            Level2SharedSpellEvent::ExperienceScrollCollected {
+                source_slot: observed,
+                player_entity_index,
+            } if *observed == source_slot && *player_entity_index == session.state.entity_index
+        )));
+        assert!(
+            session
+                .shared_spells()
+                .activation_events()
+                .iter()
+                .any(|event| matches!(event, FlightEvent::PrepareSound { sound_id: 63, .. }))
+        );
+        for family in 0..PLAYER_SPELL_COUNT {
+            let expected = if enabled_before[family] == 0 {
+                experience_before[family]
+            } else if family == usize::from(CASTLE_SPELL_FAMILY) {
+                experience_before[family]
+                    .saturating_add(LEVEL2_EXPERIENCE_SCROLL_AWARD)
+                    .min(7)
+            } else {
+                experience_before[family].saturating_add(LEVEL2_EXPERIENCE_SCROLL_AWARD)
+            };
+            assert_eq!(session.shared_spells().spell_experience()[family], expected);
+        }
+        assert!(
+            !session
+                .economy()
+                .authored_class14()
+                .iter()
+                .any(|source| source.source_entity_index == source_slot)
+        );
+        assert!(session.economy().free_slots.contains(&source_slot));
+    }
+
+    #[test]
+    fn level_two_authored_class14_model5_uses_strict_collision_boundaries() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 authored class-14 session");
+        let source = session
+            .allocate_level2_authored_class14(248)
+            .expect("authored subtype-5 row");
+        let scroll_position = source.position;
+        let before = *session.shared_spells().spell_experience();
+        let x_boundary = scroll_position.x.wrapping_add(
+            (LEVEL2_SCROLL_COLLISION_HALF_WIDTH + LEVEL2_PLAYER_COLLISION_HALF_WIDTH)
+                .cast_unsigned(),
+        );
+        session.state.position = Position {
+            x: x_boundary,
+            y: scroll_position.y,
+            z: scroll_position.z,
+        };
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(*session.shared_spells().spell_experience(), before);
+        assert!(
+            session
+                .economy()
+                .authored_class14()
+                .iter()
+                .any(|row| row.authored_index == 248 && row.active)
+        );
+    }
+
+    #[test]
+    fn level_two_authored_class14_model5_scans_past_remote_collision_for_local_xp() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 authored class-14 session");
+        let source = session
+            .allocate_level2_authored_class14(248)
+            .expect("authored subtype-5 row");
+        session
+            .shared_spells_mut()
+            .acquire_level2_spell_holder(12, PhysicalSpellActionRole::OrdinaryPickup, true)
+            .expect("source-shaped family-12 acquisition");
+        let source_slot = source.source_entity_index;
+        let scroll_position = source.position;
+        let remote_entity_index = session
+            .shared_spells()
+            .players
+            .iter()
+            .find(|player| player.slot == 1)
+            .expect("remote Level 2 player")
+            .entity_index;
+        let remote = session
+            .entities
+            .iter_mut()
+            .find(|entity| entity.index == remote_entity_index)
+            .expect("remote player entity");
+        remote.position = scroll_position;
+        // The reset package's remote player is a model-1 source row. The
+        // source scroll callback only admits model-0 players, so this
+        // discriminating candidate is normalized to the live model-0 shape
+        // before the source-order scan.
+        remote.model = 0;
+        session.state.position = scroll_position;
+        // The owner package orders local then remote. Reversing only the
+        // player cursor makes the remote overlap the first candidate and
+        // proves the source scan does not return before the local player.
+        session.shared_spells_mut().players.swap(0, 1);
+        let before = session.shared_spells().spell_experience()[12];
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert_eq!(
+            session.shared_spells().spell_experience()[12],
+            before + LEVEL2_EXPERIENCE_SCROLL_AWARD
+        );
+        assert!(
+            session
+                .shared_spells()
+                .pickup_events()
+                .iter()
+                .any(|event| matches!(
+                    event,
+                    Level2SharedSpellEvent::ExperienceScrollCollected {
+                        source_slot: observed,
+                        player_entity_index,
+                    } if *observed == source_slot && *player_entity_index == remote_entity_index
+                ))
+        );
+        assert!(session.economy().free_slots.contains(&source_slot));
     }
 
     #[test]
