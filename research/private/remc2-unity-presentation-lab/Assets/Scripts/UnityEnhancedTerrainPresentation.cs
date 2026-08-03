@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace MagicCarpet.PresentationLab
 {
@@ -84,6 +85,10 @@ namespace MagicCarpet.PresentationLab
         private float cellSize;
         private Vector3 origin;
         private UnityEnhancedTerrainWrapMode wrapMode;
+        private int renderSubdivision = 1;
+        private int renderWidth;
+        private int renderHeight;
+        private bool renderTopologyDirty;
         private ulong generation;
         private ulong lastTick;
         private bool hasSnapshot;
@@ -94,6 +99,7 @@ namespace MagicCarpet.PresentationLab
         public int Width { get { return width; } }
         public int Height { get { return height; } }
         public int VertexCount { get { return vertices.Length; } }
+        public int RenderSubdivision { get { return renderSubdivision; } }
         public int DirtyRegionApplications { get; private set; }
         public UnityEnhancedTerrainWrapMode WrapMode { get { return wrapMode; } }
         public Mesh GeneratedMesh { get { return terrainMesh; } }
@@ -102,6 +108,24 @@ namespace MagicCarpet.PresentationLab
         public void SetDiagnosticOverlay(UnityEnhancedTerrainDiagnosticOverlay overlay)
         {
             DiagnosticOverlay = overlay;
+        }
+
+        /// <summary>
+        /// Selects the presentation mesh density without changing the owner
+        /// terrain grid. Whole Hog samples the authoritative height plane at
+        /// twice the grid density and bilinearly interpolates between samples;
+        /// simulation, collision, and dirty-region identity stay owner-sized.
+        /// </summary>
+        public void SetRenderSubdivision(int subdivision)
+        {
+            subdivision = Mathf.Clamp(subdivision, 1, 4);
+            if (renderSubdivision == subdivision)
+            {
+                return;
+            }
+
+            renderSubdivision = subdivision;
+            renderTopologyDirty = true;
         }
 
         public static int WrapIndex(int value, int extent, UnityEnhancedTerrainWrapMode mode)
@@ -147,7 +171,8 @@ namespace MagicCarpet.PresentationLab
 
             bool topologyChanged = !hasSnapshot || snapshot.Reset || snapshot.Generation != generation ||
                                     snapshot.Width != width || snapshot.Height != height ||
-                                    !Mathf.Approximately(snapshot.CellSize, cellSize);
+                                    !Mathf.Approximately(snapshot.CellSize, cellSize) ||
+                                    renderTopologyDirty;
             bool originChanged = !hasSnapshot || !Approximately(snapshot.Origin, origin);
             if (topologyChanged)
             {
@@ -162,6 +187,7 @@ namespace MagicCarpet.PresentationLab
                 terrainMesh.vertices = vertices;
                 terrainMesh.colors = colors;
                 terrainMesh.RecalculateNormals();
+                renderTopologyDirty = false;
             }
             else
             {
@@ -206,6 +232,7 @@ namespace MagicCarpet.PresentationLab
             {
                 terrainMesh.Clear();
             }
+            renderTopologyDirty = false;
         }
 
         private void EnsureResources()
@@ -253,14 +280,14 @@ namespace MagicCarpet.PresentationLab
                     terrainMaterial.enableInstancing = true;
                     if (shader == customTerrainShader)
                     {
-                        terrainMaterial.SetFloat("_AmbientBoost", 0.60f);
+                        terrainMaterial.SetFloat("_AmbientBoost", 0.74f);
                         terrainMaterial.SetFloat("_DetailScale", 0.14f);
-                        terrainMaterial.SetFloat("_DetailStrength", 0.78f);
+                        terrainMaterial.SetFloat("_DetailStrength", 0.90f);
                         terrainMaterial.SetColor("_SlopeTint", new Color(0.72f, 0.84f, 1.08f, 1f));
-                        terrainMaterial.SetFloat("_SlopeStrength", 0.72f);
-                        terrainMaterial.SetFloat("_SpecularStrength", 0.16f);
-                        terrainMaterial.SetFloat("_NormalStrength", 0.36f);
-                        terrainMaterial.SetFloat("_RidgeStrength", 0.48f);
+                        terrainMaterial.SetFloat("_SlopeStrength", 0.84f);
+                        terrainMaterial.SetFloat("_SpecularStrength", 0.22f);
+                        terrainMaterial.SetFloat("_NormalStrength", 0.48f);
+                        terrainMaterial.SetFloat("_RidgeStrength", 0.64f);
                         terrainMaterial.SetColor("_RockTint", new Color(0.72f, 0.80f, 0.88f, 1f));
                         terrainMaterial.SetColor("_SoilTint", new Color(0.78f, 0.62f, 0.42f, 1f));
                     }
@@ -282,18 +309,20 @@ namespace MagicCarpet.PresentationLab
 
         private void BuildTopology()
         {
-            int vertexCount = width * height;
+            renderWidth = (width - 1) * renderSubdivision + 1;
+            renderHeight = (height - 1) * renderSubdivision + 1;
+            int vertexCount = renderWidth * renderHeight;
             vertices = new Vector3[vertexCount];
             colors = new Color[vertexCount];
-            triangles = new int[(width - 1) * (height - 1) * 6];
+            triangles = new int[(renderWidth - 1) * (renderHeight - 1) * 6];
             int triangleIndex = 0;
-            for (int y = 0; y < height - 1; y++)
+            for (int y = 0; y < renderHeight - 1; y++)
             {
-                for (int x = 0; x < width - 1; x++)
+                for (int x = 0; x < renderWidth - 1; x++)
                 {
-                    int topLeft = y * width + x;
+                    int topLeft = y * renderWidth + x;
                     int topRight = topLeft + 1;
-                    int bottomLeft = topLeft + width;
+                    int bottomLeft = topLeft + renderWidth;
                     int bottomRight = bottomLeft + 1;
                     triangles[triangleIndex++] = topLeft;
                     triangles[triangleIndex++] = bottomLeft;
@@ -305,6 +334,9 @@ namespace MagicCarpet.PresentationLab
             }
 
             terrainMesh.Clear();
+            terrainMesh.indexFormat = vertexCount > 65535
+                ? IndexFormat.UInt32
+                : IndexFormat.UInt16;
             terrainMesh.vertices = vertices;
             terrainMesh.colors = colors;
             terrainMesh.triangles = triangles;
@@ -325,16 +357,37 @@ namespace MagicCarpet.PresentationLab
             int minY = Mathf.Clamp(region.Y, 0, height - 1);
             int maxX = Mathf.Clamp(region.X + region.Width, minX + 1, width);
             int maxY = Mathf.Clamp(region.Y + region.Height, minY + 1, height);
-            for (int y = minY; y < maxY; y++)
+            int minRenderX = Mathf.Max(0, minX * renderSubdivision - 1);
+            int minRenderY = Mathf.Max(0, minY * renderSubdivision - 1);
+            int maxRenderX = Mathf.Min(renderWidth - 1, maxX * renderSubdivision + 1);
+            int maxRenderY = Mathf.Min(renderHeight - 1, maxY * renderSubdivision + 1);
+            float renderCellSize = cellSize / renderSubdivision;
+            for (int y = minRenderY; y <= maxRenderY; y++)
             {
-                for (int x = minX; x < maxX; x++)
+                for (int x = minRenderX; x <= maxRenderX; x++)
                 {
-                    int index = y * width + x;
-                    vertices[index] = origin + new Vector3(
-                        x * cellSize,
-                        snapshot.Heights[index],
-                        y * cellSize);
-                    colors[index] = VertexColor(snapshot, index);
+                    int sampleX = x / renderSubdivision;
+                    int sampleY = y / renderSubdivision;
+                    float fractionX = (x % renderSubdivision) / (float)renderSubdivision;
+                    float fractionY = (y % renderSubdivision) / (float)renderSubdivision;
+                    int x0 = WrapIndex(sampleX, width, wrapMode);
+                    int x1 = WrapIndex(sampleX + 1, width, wrapMode);
+                    int y0 = WrapIndex(sampleY, height, wrapMode);
+                    int y1 = WrapIndex(sampleY + 1, height, wrapMode);
+                    float h00 = snapshot.Heights[y0 * width + x0];
+                    float h10 = snapshot.Heights[y0 * width + x1];
+                    float h01 = snapshot.Heights[y1 * width + x0];
+                    float h11 = snapshot.Heights[y1 * width + x1];
+                    float lower = Mathf.Lerp(h00, h10, fractionX);
+                    float upper = Mathf.Lerp(h01, h11, fractionX);
+                    float heightValue = Mathf.Lerp(lower, upper, fractionY);
+                    int renderIndex = y * renderWidth + x;
+                    int colorIndex = y0 * width + x0;
+                    vertices[renderIndex] = origin + new Vector3(
+                        x * renderCellSize,
+                        heightValue,
+                        y * renderCellSize);
+                    colors[renderIndex] = VertexColor(snapshot, colorIndex);
                 }
             }
         }

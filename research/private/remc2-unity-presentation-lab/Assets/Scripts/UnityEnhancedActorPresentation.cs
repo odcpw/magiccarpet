@@ -92,14 +92,17 @@ namespace MagicCarpet.PresentationLab
     {
         private const float BillboardHalfSize = 0.35f;
         private const float FireballCoreVisualScale = 2.8f;
-        private const float FireballHaloVisualScale = 5f;
+        // The owner projectile remains the anchor; the halo is deliberately
+        // larger so a cast reads as a light event in the world, not as a tiny
+        // orange sprite.  This is presentation-only scale, not hitbox scale.
+        private const float FireballHaloVisualScale = 8f;
         private const float FireballTrailTime = 0.24f;
-        private const float FireballTrailStartWidth = 0.28f;
+        private const float FireballTrailStartWidth = 0.38f;
         private const float FireballTrailEndWidth = 0.025f;
         private const float FireballTrailMinimumMovement = 0.035f;
         private const int FireballTrailMaterialKey = -1000;
-        private const float FireballPlumeLength = 2.8f;
-        private const float FireballPlumeWidth = 1.15f;
+        private const float FireballPlumeLength = 3.6f;
+        private const float FireballPlumeWidth = 1.35f;
         private const float FireballPlumeMinimumMovement = 0.01f;
         private const int FireballPlumeMeshKey = -1001;
         private const int FireballPlumeMaterialKey = -1002;
@@ -641,14 +644,14 @@ namespace MagicCarpet.PresentationLab
                     material.SetColor("_CoreColor", new Color(1f, 0.72f, 0.22f, 1f));
                     material.SetColor("_HaloColor", new Color(1f, 0.06f, 0.008f, 1f));
                     material.SetFloat("_CoreIntensity", halo ? 0f : 4.8f);
-                    material.SetFloat("_HaloIntensity", halo ? 2.2f : 0.55f);
+                    material.SetFloat("_HaloIntensity", halo ? 3.2f : 0.55f);
                     material.SetFloat("_CoreRadius", halo ? 0.08f : 0.42f);
                     material.SetFloat("_HaloRadius", halo ? 0.98f : 0.72f);
-                    material.SetFloat("_OuterRadius", halo ? 1.36f : 0f);
-                    material.SetFloat("_OuterIntensity", halo ? 2.5f : 0f);
-                    material.SetFloat("_Opacity", halo ? 0.72f : 0.92f);
+                    material.SetFloat("_OuterRadius", halo ? 1.52f : 0f);
+                    material.SetFloat("_OuterIntensity", halo ? 3.8f : 0f);
+                    material.SetFloat("_Opacity", halo ? 0.82f : 0.92f);
                     material.SetFloat("_PulseSpeed", halo ? 2.2f : 2.8f);
-                    material.SetFloat("_ShimmerStrength", halo ? 0.06f : 0.1f);
+                    material.SetFloat("_ShimmerStrength", halo ? 0.12f : 0.1f);
                 }
                 else if (fireFamily && shader.name == "MagicCarpet/Enhanced/Vfx")
                 {
@@ -666,6 +669,11 @@ namespace MagicCarpet.PresentationLab
                     material.SetFloat("_RimStrength", 0.24f);
                     material.SetColor("_EmissionColor", FamilyColor(familyId));
                     material.SetFloat("_EmissionStrength", EmissionStrength(familyId));
+                    material.SetColor("_AccentColor", new Color(1f, 0.24f, 0.04f, 1f));
+                    material.SetFloat(
+                        "_AccentStrength",
+                        familyId == UnityEnhancedPresentationFamily.Town ? 0.34f :
+                        familyId == UnityEnhancedPresentationFamily.Castle ? 0.24f : 0f);
                 }
             }
             materials.Add(materialKey, material);

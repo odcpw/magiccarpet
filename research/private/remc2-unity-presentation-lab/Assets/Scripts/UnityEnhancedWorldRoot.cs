@@ -321,6 +321,11 @@ namespace MagicCarpet.PresentationLab
                 ResetPresentation(snapshot.Generation);
             }
 
+            if (snapshot.Quality != null)
+            {
+                terrainPresentation.SetRenderSubdivision(
+                    snapshot.Quality.Tier == UnityEnhancedQualityTier.WholeHog ? 2 : 1);
+            }
             if (snapshot.Terrain != null && !terrainPresentation.ApplySnapshot(snapshot.Terrain))
             {
                 LastRejectReason = "terrain presentation rejected snapshot";

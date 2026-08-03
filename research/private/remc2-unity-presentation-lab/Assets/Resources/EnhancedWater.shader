@@ -166,8 +166,12 @@ Shader "MagicCarpet/Enhanced/Water"
                     half intensity = _EnhancedWarmLightColors[index].a;
                     half shimmer = 0.70h + 0.30h * sin(
                         _Time.y * 3.1h + dot(positionWS.xz, float2(0.55, -0.43)));
+                    half shell = exp(-pow(
+                        (distanceToLight - range * 0.40h) / max(range * 0.20h, 0.05h),
+                        2.0h));
                     contribution += color * intensity * attenuation *
-                        (facing * 0.20h + shimmer * 0.18h);
+                        (facing * 0.24h + shimmer * 0.24h) +
+                        color * intensity * shell * (0.08h + shimmer * 0.08h);
                 }
                 return contribution;
             }

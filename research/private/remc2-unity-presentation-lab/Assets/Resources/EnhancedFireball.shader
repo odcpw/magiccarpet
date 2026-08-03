@@ -91,9 +91,19 @@ Shader "MagicCarpet/Enhanced/Fireball"
                     sin(_Time.y * (_PulseSpeed * 1.7h) + centered.x * 9.0h - centered.y * 7.0h);
                 half outerShimmer = 0.84h + 0.16h *
                     sin(_Time.y * (_PulseSpeed * 2.4h) + radius * 18.0h);
+                // Break the corona into moving radial tongues.  The result is
+                // intentionally soft: bloom supplies the broad light field,
+                // while these rays make a cast readable at native resolution.
+                half angle = atan2(centered.y, centered.x);
+                half ray = pow(saturate(0.5h + 0.5h * cos(
+                    angle * 7.0h + _Time.y * (_PulseSpeed * 1.6h))), 9.0h);
+                half coronaRing = exp(-pow(
+                    (radius - _HaloRadius * 0.76h) / 0.07h, 2.0h));
                 half3 color = _CoreColor.rgb * (_CoreIntensity * core) +
                               _HaloColor.rgb * (_HaloIntensity * halo +
-                                               _OuterIntensity * outer * outerShimmer);
+                                               _OuterIntensity * outer * outerShimmer +
+                                               _OuterIntensity * outer * ray * 0.32h +
+                                               _OuterIntensity * coronaRing * 0.16h);
                 color *= pulse * shimmer;
                 half alpha = saturate(_Opacity * max(max(core, halo * 0.82h), outer * 0.42h));
                 return half4(color, alpha);

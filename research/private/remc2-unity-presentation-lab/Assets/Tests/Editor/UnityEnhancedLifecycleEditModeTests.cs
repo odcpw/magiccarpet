@@ -657,10 +657,48 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsNotNull(renderer);
             Assert.AreEqual("MagicCarpet/Enhanced/Terrain", renderer.sharedMaterial.shader.name);
             Assert.That(renderer.sharedMaterial.GetFloat("_DetailScale"), Is.EqualTo(0.14f).Within(0.0001f));
-            Assert.That(renderer.sharedMaterial.GetFloat("_DetailStrength"), Is.EqualTo(0.78f).Within(0.0001f));
-            Assert.That(renderer.sharedMaterial.GetFloat("_SlopeStrength"), Is.EqualTo(0.72f).Within(0.0001f));
-            Assert.That(renderer.sharedMaterial.GetFloat("_NormalStrength"), Is.EqualTo(0.36f).Within(0.0001f));
-            Assert.That(renderer.sharedMaterial.GetFloat("_RidgeStrength"), Is.EqualTo(0.48f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_DetailStrength"), Is.EqualTo(0.90f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_SlopeStrength"), Is.EqualTo(0.84f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_NormalStrength"), Is.EqualTo(0.48f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_RidgeStrength"), Is.EqualTo(0.64f).Within(0.0001f));
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void WholeHogTerrainUsesInterpolatedPresentationMesh()
+        {
+            GameObject gameObject = new GameObject("enhanced-wholehog-terrain-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+            UnityEnhancedTerrainSnapshot terrain = TerrainSnapshot(
+                12,
+                0,
+                true,
+                new UnityEnhancedTerrainDirtyRegion[0]);
+            terrain.Heights[0] = 0f;
+            terrain.Heights[1] = 2f;
+            terrain.Heights[3] = 4f;
+            terrain.Heights[4] = 6f;
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 12,
+                Tick = 0,
+                Reset = true,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Terrain = terrain,
+                Quality = UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog)
+            }));
+
+            Assert.AreEqual(2, root.TerrainPresentation.RenderSubdivision);
+            Assert.AreEqual(25, root.TerrainPresentation.VertexCount);
+            Assert.AreEqual(IndexFormat.UInt16,
+                root.TerrainPresentation.GeneratedMesh.indexFormat);
+            Assert.That(root.TerrainPresentation.GeneratedMesh.vertices[1].y,
+                Is.EqualTo(1f).Within(0.001f));
+            Assert.That(root.TerrainPresentation.GeneratedMesh.vertices[5].y,
+                Is.EqualTo(2f).Within(0.001f));
 
             Object.DestroyImmediate(gameObject);
         }
@@ -771,7 +809,7 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsNotNull(trailRenderer);
             Assert.AreEqual("MagicCarpet/Enhanced/FireballTrail", trailRenderer.sharedMaterial.shader.name);
             Assert.That(trailRenderer.time, Is.EqualTo(0.24f).Within(0.001f));
-            Assert.That(trailRenderer.startWidth, Is.EqualTo(0.28f).Within(0.001f));
+            Assert.That(trailRenderer.startWidth, Is.EqualTo(0.38f).Within(0.001f));
             Assert.That(trailRenderer.endWidth, Is.EqualTo(0.025f).Within(0.001f));
             Assert.IsTrue(trailRenderer.enabled);
             Assert.IsFalse(trailRenderer.emitting);
@@ -792,7 +830,7 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsNotNull(halo);
             MeshRenderer haloRenderer = halo.GetComponent<MeshRenderer>();
             Assert.AreEqual("MagicCarpet/Enhanced/Fireball", haloRenderer.sharedMaterial.shader.name);
-            Assert.That(halo.localScale.x, Is.EqualTo(5f).Within(0.001f));
+            Assert.That(halo.localScale.x, Is.EqualTo(8f).Within(0.001f));
             Assert.Greater(
                 haloRenderer.sharedMaterial.GetFloat("_HaloIntensity"),
                 renderer.sharedMaterial.GetFloat("_HaloIntensity"));

@@ -140,8 +140,16 @@ Shader "MagicCarpet/Enhanced/Terrain"
                     half intensity = _EnhancedWarmLightColors[index].a;
                     half shimmer = 0.84h + 0.16h * sin(
                         _Time.y * 3.4h + dot(positionWS.xz, float2(0.61, -0.37)));
+                    // A narrow shell keeps a moving spell legible across
+                    // nearby faces even when the face points away from the
+                    // point light. It is a bounded screen-facing light cue,
+                    // not a second gameplay light or a global tint.
+                    half shell = exp(-pow(
+                        (distanceToLight - range * 0.42h) / max(range * 0.18h, 0.05h),
+                        2.0h));
                     contribution += color * intensity * attenuation *
-                        (facing * 0.30h + shimmer * 0.12h);
+                        (facing * 0.36h + shimmer * 0.18h) +
+                        color * intensity * shell * (0.06h + shimmer * 0.06h);
                 }
                 return contribution;
             }
