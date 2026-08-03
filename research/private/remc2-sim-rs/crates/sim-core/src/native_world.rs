@@ -14380,6 +14380,11 @@ pub struct Level2ResetSession {
     level2_switch_producers_activated: BTreeSet<u16>,
     baseline_level2_model76_activated: BTreeSet<u16>,
     level2_model76_activated: BTreeSet<u16>,
+    /// Authored class-10/model-22 wind rows consumed by one-shot switches.
+    /// The source disables the authored feature after dispatch, so a later
+    /// parent expiry must not rematerialize the same row.
+    baseline_level2_model22_activated: BTreeSet<u16>,
+    level2_model22_activated: BTreeSet<u16>,
     baseline_level2_imported_switch_roots: Box<[Level2ImportedSwitchRootState]>,
     level2_imported_switch_roots: Box<[Level2ImportedSwitchRootState]>,
     baseline_level2_group10_switch25: Option<Level2Group10Switch25State>,
@@ -14876,6 +14881,8 @@ impl Level2ResetSession {
             level2_switch_producers_activated: BTreeSet::new(),
             baseline_level2_model76_activated: BTreeSet::new(),
             level2_model76_activated: BTreeSet::new(),
+            baseline_level2_model22_activated: BTreeSet::new(),
+            level2_model22_activated: BTreeSet::new(),
             baseline_level2_imported_switch_roots: initial_level2_imported_switch_roots.clone(),
             level2_imported_switch_roots: initial_level2_imported_switch_roots,
             baseline_level2_group10_switch25: initial_level2_group10_switch25,
@@ -16079,13 +16086,33 @@ impl Level2ResetSession {
             .copied()
             .filter(|feature| {
                 feature.activation_group == i16::try_from(target_group).unwrap_or(-1)
-                    && feature.kind == 11
-                    && matches!(feature.subtype, 0 | 1)
-                    && feature.index != 274
+                    && ((feature.kind == 11
+                        && matches!(feature.subtype, 0 | 1)
+                        && feature.index != 274)
+                        || (feature.kind == 10 && feature.subtype == 22))
             })
             .collect::<Vec<_>>();
         let mut activated = Vec::new();
         for feature in rows {
+            if feature.kind == 10 && feature.subtype == 22 {
+                if self.level2_model22_activated.contains(&feature.index) {
+                    continue;
+                }
+                let Some(source) = self.allocate_level2_authored_model22(feature.index) else {
+                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot: producer_slot,
+                        message: format!(
+                            "Level 2 authored wind group {target_group} row {} could not allocate",
+                            feature.index
+                        ),
+                    });
+                    continue;
+                };
+                self.level2_model22_activated.insert(feature.index);
+                activated.push((feature.index, source.source_entity_index));
+                continue;
+            }
             if self
                 .level2_switch_producers_activated
                 .contains(&feature.index)
@@ -17337,6 +17364,10 @@ impl Level2ResetSession {
         for authored_index in &self.level2_model76_activated {
             hasher.update(authored_index.to_le_bytes());
         }
+        hasher.update(b"level2-model22-activation-v1");
+        for authored_index in &self.level2_model22_activated {
+            hasher.update(authored_index.to_le_bytes());
+        }
         hasher.update(b"level2-group10-switch25-v1");
         match self.level2_group10_switch25 {
             Some(switch) => {
@@ -17460,6 +17491,7 @@ impl Level2ResetSession {
         self.level2_switch_producers_activated =
             self.baseline_level2_switch_producers_activated.clone();
         self.level2_model76_activated = self.baseline_level2_model76_activated.clone();
+        self.level2_model22_activated = self.baseline_level2_model22_activated.clone();
         self.level2_imported_switch_roots = self.baseline_level2_imported_switch_roots.clone();
         self.level2_group10_switch25 = self.baseline_level2_group10_switch25;
         self.level2_class11_model0_constructor_phase =
@@ -28035,6 +28067,137 @@ mod tests {
                 .level2_authored_switch_matches(65)
                 .expect("dead model-zero row is excluded from overlap scan")
         );
+    }
+
+    #[test]
+    fn level_two_root_switch_materializes_authored_wind_on_production_turn() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 rooted wind-switch session");
+        let root = session
+            .level2_imported_switch_roots
+            .iter()
+            .find(|root| root.authored_index == 109 && root.target_group == 9)
+            .copied()
+            .expect("authored row 109 group-9 root switch");
+        let wind_feature = session
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 110)
+            .copied()
+            .expect("authored row 110 wind feature");
+        assert_eq!((wind_feature.kind, wind_feature.subtype), (10, 22));
+        session.state.position = root.position;
+
+        for _ in 0..16 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            if session
+                .economy()
+                .authored_model22()
+                .iter()
+                .any(|source| source.authored_index == 110)
+            {
+                break;
+            }
+        }
+
+        let wind = session
+            .economy()
+            .authored_model22()
+            .iter()
+            .find(|source| source.authored_index == 110)
+            .copied()
+            .expect("rooted group-9 switch materializes row 110 wind");
+        assert_eq!(session.economy().model22_spawned_children().len(), 11);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 9,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [110]
+        )));
+        assert_eq!(wind.model, 22);
+        assert_eq!(wind.action, 22);
+
+        // The source switch consumes row 110 once. Expire its temporary wind
+        // parent, let the root's ten-tick cooldown clear while out of range,
+        // then overlap the root again; no second authored row may appear.
+        let wind_slot = wind.source_entity_index;
+        session
+            .economy_mut()
+            .authored_model22
+            .iter_mut()
+            .find(|source| source.source_entity_index == wind_slot)
+            .expect("live row-110 wind parent")
+            .life = 0;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .economy()
+                .authored_model22()
+                .iter()
+                .all(|source| source.authored_index != 110)
+        );
+        session.state.position = Position {
+            x: root.position.x.wrapping_add(4_096),
+            y: root.position.y,
+            z: root.position.z,
+        };
+        for _ in 0..12 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        session.state.position = root.position;
+        let mut second_activation = false;
+        for _ in 0..16 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            if session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group: 9,
+                        authored_indices,
+                        ..
+                    } if authored_indices.as_ref() == [110]
+                )
+            }) {
+                second_activation = true;
+            }
+        }
+        assert!(!second_activation);
+        assert!(
+            session
+                .economy()
+                .authored_model22()
+                .iter()
+                .all(|source| source.authored_index != 110)
+        );
+
+        let mut boundary = inspection
+            .level2_reset_session()
+            .expect("Level 2 rooted wind-switch boundary session");
+        boundary.state.position = Position {
+            x: root.position.x,
+            y: root.position.y.wrapping_add(242),
+            z: root.position.z,
+        };
+        for _ in 0..16 {
+            boundary.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert!(boundary.economy().authored_model22().is_empty());
+
+        let mut dead = inspection
+            .level2_reset_session()
+            .expect("Level 2 rooted wind-switch dead-player session");
+        dead.state.position = root.position;
+        dead.entities[111].life = -1;
+        for _ in 0..16 {
+            dead.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert!(dead.economy().authored_model22().is_empty());
     }
 
     #[test]
