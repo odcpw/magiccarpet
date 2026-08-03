@@ -452,6 +452,9 @@ int32_t mc_native_campaign_goats_copy(
     uint64_t handle, uint64_t generation, uint32_t start_ordinal,
     McCampaignGoatSnapshotV2 *buffer, uint32_t capacity, uint32_t element_size,
     McGoatBatchV2 *out_batch, uint32_t out_batch_size);
+int32_t mc_native_campaign_goat_damage_submit(
+    uint64_t handle, uint64_t generation, uint16_t target_entity_index,
+    int32_t damage, uint16_t attacker_entity_index);
 int32_t mc_native_campaign_spell_pickups_copy(
     uint64_t handle, uint64_t generation, uint32_t start_ordinal,
     McCampaignSpellPickupSnapshotV2 *buffer, uint32_t capacity,

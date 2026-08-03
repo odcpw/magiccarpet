@@ -8004,6 +8004,41 @@ pub extern "C" fn mc_native_campaign_goats_copy(
     })
 }
 
+/// Queue one source-authoritative Level 2 Goat hit.  The normal campaign
+/// step consumes the pending mailbox and owns the resulting life/death and
+/// economy transitions; callers cannot mutate Goat state directly.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_goat_damage_submit(
+    handle: u64,
+    generation: u64,
+    target_entity_index: u16,
+    damage: i32,
+    attacker_entity_index: u16,
+) -> i32 {
+    boundary(|| {
+        with_campaign_session_mut(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign Goat damage requires a Level 2 campaign session",
+                ));
+            };
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign Goat damage generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            reset
+                .submit_goat_damage(target_entity_index, damage, attacker_entity_index)
+                .map_err(|error| AbiError::new(MC_STATUS_INVALID_ARGUMENT, error.to_string()))
+        })
+    })
+}
+
 /// Copy the typed Level 2 authored spell-pickup arena. The rows are created
 /// by the native authored-group route and remain bound to the shared source
 /// allocator; clients use the returned positions to feed the normal campaign
@@ -17312,6 +17347,154 @@ mod tests {
                 reset_batch.has_more,
             ),
             (1, 0, 0, 0)
+        );
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn level2_campaign_goat_damage_submit_is_generation_bound_and_consumed() {
+        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        let package = level2_package.to_string_lossy();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 2,
+            internal_level: 1,
+            map_type: 0,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut handle = 0;
+        assert_eq!(
+            mc_native_campaign_session_open(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                &raw const selection,
+                &raw mut handle,
+            ),
+            MC_STATUS_OK
+        );
+
+        let mut goats = [McCampaignGoatSnapshotV2::default(); 36];
+        let mut batch = McGoatBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_goats_copy(
+                handle,
+                0,
+                0,
+                goats.as_mut_ptr(),
+                goats.len() as u32,
+                struct_size::<McCampaignGoatSnapshotV2>(),
+                &raw mut batch,
+                struct_size::<McGoatBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let before = goats
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .copied()
+            .expect("authored action-11 Goat row");
+        assert_eq!(before.pending_damage, 0);
+
+        assert_eq!(
+            mc_native_campaign_goat_damage_submit(handle, 0, before.entity_index, 0, 152),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            mc_native_campaign_goat_damage_submit(handle, 0, before.entity_index, 100, 0),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            mc_native_campaign_goat_damage_submit(handle, 0, before.entity_index, 100, 152),
+            MC_STATUS_OK
+        );
+
+        assert_eq!(
+            mc_native_campaign_goats_copy(
+                handle,
+                0,
+                0,
+                goats.as_mut_ptr(),
+                goats.len() as u32,
+                struct_size::<McCampaignGoatSnapshotV2>(),
+                &raw mut batch,
+                struct_size::<McGoatBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let queued = goats
+            .iter()
+            .find(|goat| goat.entity_index == before.entity_index)
+            .copied()
+            .expect("queued Goat row");
+        assert_eq!(queued.pending_damage, 100);
+
+        let input_command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            flags: 1,
+            requested_spell: MC_REQUESTED_SPELL_NONE,
+            ..McCommandV2::default()
+        };
+        let input = McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation: 0,
+            command: input_command,
+            player_slot: 0,
+            player_x: 123,
+            player_y: 456,
+            player_z: 7,
+            ..McCampaignStepInputV2::default()
+        };
+        let mut snapshot = McCampaignStepSnapshotV2::default();
+        let mut events = [McCampaignEventV2::default(); 1024];
+        let mut event_count = 0;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert!(events[..event_count as usize].iter().any(|event| {
+            event.kind == MC_CAMPAIGN_EVENT_GOAT && event.source_slot == before.entity_index
+        }));
+
+        assert_eq!(
+            mc_native_campaign_goats_copy(
+                handle,
+                0,
+                0,
+                goats.as_mut_ptr(),
+                goats.len() as u32,
+                struct_size::<McCampaignGoatSnapshotV2>(),
+                &raw mut batch,
+                struct_size::<McGoatBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let after = goats
+            .iter()
+            .find(|goat| goat.entity_index == before.entity_index)
+            .copied()
+            .expect("stepped Goat row");
+        assert_eq!(after.pending_damage, 0);
+        assert_eq!(after.life, before.life - 100);
+
+        assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        assert_eq!(
+            mc_native_campaign_goat_damage_submit(handle, 0, before.entity_index, 100, 152),
+            MC_STATUS_GENERATION_MISMATCH
         );
         assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
     }

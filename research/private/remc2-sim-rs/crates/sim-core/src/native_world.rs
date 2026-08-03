@@ -13401,6 +13401,24 @@ impl Level2ResetSession {
         self.goats.goats()
     }
 
+    /// Queue one source-authoritative Goat hit for the next outer turn.
+    /// Damage is written into the Goat family's pending mailbox; the normal
+    /// Level 2 source pass consumes it and owns life/death/economy effects.
+    pub fn submit_goat_damage(
+        &mut self,
+        target_entity_index: u16,
+        damage: i32,
+        attacker_entity_index: u16,
+    ) -> Result<()> {
+        self.goats
+            .inject_damage(
+                target_entity_index,
+                damage,
+                attacker_entity_index.cast_signed(),
+            )
+            .map_err(NativeWorldError::new)
+    }
+
     #[must_use]
     pub const fn goat_outer_tick(&self) -> u32 {
         self.goats.outer_tick()

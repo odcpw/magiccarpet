@@ -249,6 +249,20 @@ namespace MagicCarpet.Native
             return goats;
         }
 
+        internal void SubmitGoatDamage(
+            ushort targetEntityIndex,
+            int damage,
+            ushort attackerEntityIndex)
+        {
+            var status = NativeSim.mc_native_campaign_goat_damage_submit(
+                Handle,
+                generation,
+                targetEntityIndex,
+                damage,
+                attackerEntityIndex);
+            NativeSession.Check(status, "submit Level 2 Goat damage");
+        }
+
         internal NativeSim.CampaignSpellPickupSnapshot[] SpellPickups()
         {
             var rows = new List<NativeSim.CampaignSpellPickupSnapshot>();

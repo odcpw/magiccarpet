@@ -107,6 +107,35 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void Level2CampaignGoatDamageMailboxReachesManagedProductionPath()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+
+            var before = session.Goats().Single(goat => goat.entityIndex == 39);
+            Assert.That(before.pendingDamage, Is.EqualTo(0));
+
+            session.SubmitGoatDamage(before.entityIndex, 100, 152);
+            var queued = session.Goats().Single(goat => goat.entityIndex == before.entityIndex);
+            Assert.That(queued.pendingDamage, Is.EqualTo(100));
+
+            var stepped = session.Step(123, 456, 7);
+            var after = session.Goats().Single(goat => goat.entityIndex == before.entityIndex);
+            Assert.That(after.pendingDamage, Is.EqualTo(0));
+            Assert.That(after.life, Is.EqualTo(before.life - 100));
+            Assert.That(
+                stepped.events.Any(eventRow =>
+                    eventRow.kind == NativeSim.CampaignEventGoat &&
+                    eventRow.sourceSlot == before.entityIndex),
+                Is.True);
+
+            session.Reset();
+            Assert.That(session.Generation, Is.EqualTo(1));
+            Assert.That(
+                session.Goats().Single(goat => goat.entityIndex == before.entityIndex).pendingDamage,
+                Is.EqualTo(0));
+        }
+
+        [Test]
         public void Level2CampaignManaArenaSnapshotsAreReachableFromManagedSession()
         {
             using var session = NativeCampaignSession.OpenLevel2(Level2Package);
