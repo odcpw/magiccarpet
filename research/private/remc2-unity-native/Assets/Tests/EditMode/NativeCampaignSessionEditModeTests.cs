@@ -289,6 +289,16 @@ namespace MagicCarpet.Native.Tests
             Assert.That(acquired.holderEntityIndex, Is.EqualTo(source.sourceEntityIndex));
             Assert.That(acquired.generation, Is.EqualTo(session.Generation));
 
+            var activated = session.ActivateShield();
+            Assert.That(activated.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+            Assert.That(activated.structSize, Is.EqualTo(72));
+            Assert.That(activated.active, Is.EqualTo(1));
+            Assert.That(activated.action, Is.EqualTo(18));
+            Assert.That(activated.activeValue, Is.EqualTo(activated.activationValue));
+            Assert.That(activated.activeValue, Is.GreaterThan(0));
+            Assert.That(activated.holderEntityIndex, Is.EqualTo(source.sourceEntityIndex));
+            Assert.That(activated.generation, Is.EqualTo(session.Generation));
+
             session.Reset();
             Assert.That(session.SpellPickups(), Is.Empty);
             Assert.That(session.ShieldState().active, Is.EqualTo(0));
