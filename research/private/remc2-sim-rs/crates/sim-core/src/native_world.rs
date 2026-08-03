@@ -12605,6 +12605,12 @@ pub struct Level2ResetSession {
     level2_mana_attraction_activated: BTreeSet<u16>,
     baseline_level2_model13_activated: BTreeSet<u16>,
     level2_model13_activated: BTreeSet<u16>,
+    /// Authored class-14 subtype-3/5 rows already consumed by an active
+    /// class-11 stage-tag producer.  The source group scan is repeatable, so
+    /// retain authored identity to prevent duplicate arena rows on later
+    /// source passes.
+    baseline_level2_class14_activated: BTreeSet<u16>,
+    level2_class14_activated: BTreeSet<u16>,
 }
 
 /// One lossless, source-ordered result from the bounded Level 2 dispatcher.
@@ -13001,6 +13007,8 @@ impl Level2ResetSession {
             level2_mana_attraction_activated: BTreeSet::new(),
             baseline_level2_model13_activated: BTreeSet::new(),
             level2_model13_activated: BTreeSet::new(),
+            baseline_level2_class14_activated: BTreeSet::new(),
+            level2_class14_activated: BTreeSet::new(),
         }
     }
 
@@ -13633,6 +13641,66 @@ impl Level2ResetSession {
         }
     }
 
+    /// Consume authored class-14 subtype-3/5 rows when an active class-11
+    /// stage-tag producer selects their activation group.  This is the
+    /// production counterpart to the rooted `sub_4A1E0` group scan: the
+    /// existing class-14 constructor owns the exact model payload and map
+    /// linkage, while this hook supplies the missing source-pass reachability.
+    fn activate_level2_authored_class14(&mut self, pass: u8) {
+        let producer_groups = self
+            .entities
+            .iter()
+            .filter(|entity| entity.active && entity.class == 11 && entity.source_id != 0)
+            .map(|entity| (entity.index, entity.source_id))
+            .collect::<Vec<_>>();
+        for (producer_slot, producer_group) in producer_groups {
+            let rows = self
+                .mission
+                .authored_features()
+                .iter()
+                .copied()
+                .filter(|feature| {
+                    feature.kind == 14
+                        && matches!(feature.subtype, 3 | 5)
+                        && feature.activation_group == producer_group.cast_signed()
+                        && !self.level2_class14_activated.contains(&feature.index)
+                        && !self
+                            .economy
+                            .authored_class14()
+                            .iter()
+                            .any(|source| source.authored_index == feature.index)
+                })
+                .collect::<Vec<_>>();
+            for feature in rows {
+                let Some(source) = self.allocate_level2_authored_class14(feature.index) else {
+                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot: producer_slot,
+                        message: format!(
+                            "Level 2 authored class14 row {} could not allocate",
+                            feature.index
+                        ),
+                    });
+                    continue;
+                };
+                self.level2_class14_activated.insert(feature.index);
+                self.dispatch_events
+                    .push(Level2DispatchEvent::AuthoredGroupActivated {
+                        pass,
+                        source_slot: producer_slot,
+                        group: producer_group,
+                        authored_indices: vec![feature.index].into_boxed_slice(),
+                    });
+                debug_assert!(
+                    self.economy
+                        .authored_class14()
+                        .iter()
+                        .any(|row| { row.source_entity_index == source.source_entity_index })
+                );
+            }
+        }
+    }
+
     fn activate_level2_authored_spell_group(
         &mut self,
         pass: u8,
@@ -13729,6 +13797,7 @@ impl Level2ResetSession {
         self.synchronize_level2_terrain();
         self.activate_level2_authored_group8(pass);
         self.activate_level2_authored_model13(pass);
+        self.activate_level2_authored_class14(pass);
         let mut goat_begin_events = BTreeMap::<u16, Vec<GoatStepEvent>>::new();
         for event in self.goats.begin_source_turn(&goat_players) {
             let source_slot = match event {
@@ -14364,6 +14433,10 @@ impl Level2ResetSession {
         for authored_index in &self.level2_model13_activated {
             hasher.update(authored_index.to_le_bytes());
         }
+        hasher.update(b"level2-class14-activation-v1");
+        for authored_index in &self.level2_class14_activated {
+            hasher.update(authored_index.to_le_bytes());
+        }
         hasher.update(self.runtime.bytes());
         for entity in &self.entities {
             hasher.update(entity.record_bytes());
@@ -14435,6 +14508,7 @@ impl Level2ResetSession {
         self.level2_mana_attraction_activated =
             self.baseline_level2_mana_attraction_activated.clone();
         self.level2_model13_activated = self.baseline_level2_model13_activated.clone();
+        self.level2_class14_activated = self.baseline_level2_class14_activated.clone();
     }
 }
 
@@ -24604,6 +24678,76 @@ mod tests {
     }
 
     #[test]
+    fn level_two_class14_group31_materializes_from_live_stage_tag_producer() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 class-14 production session");
+        let baseline_hash = session.campaign_state_hash();
+
+        assert!(session.economy().authored_class14().is_empty());
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let source = session
+            .economy()
+            .authored_class14()
+            .iter()
+            .find(|source| source.authored_index == 244)
+            .copied()
+            .expect("group-31 subtype-3 row materializes from source pass");
+        let producer_slot = session
+            .entities()
+            .iter()
+            .find(|entity| entity.active && entity.class == 11 && entity.source_id == 31)
+            .map(|entity| entity.index)
+            .expect("live group-31 stage-tag producer");
+        assert_eq!(source.activation_group, 31);
+        assert_eq!(source.stage_tag, 31);
+        assert_eq!((source.model, source.action, source.particle), (3, 8, 338));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group: 31,
+                authored_indices,
+                ..
+            } if *source_slot == producer_slot && authored_indices.as_ref() == [244]
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::AuthoredClass14,
+                source_slot,
+                ..
+            } if *source_slot == source.source_entity_index
+        )));
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session
+                .economy()
+                .authored_class14()
+                .iter()
+                .filter(|row| row.authored_index == 244)
+                .count(),
+            1
+        );
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 31,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [244]
+        )));
+
+        session.reset();
+        assert!(session.economy().authored_class14().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
     fn level_two_authored_class14_rows_allocate_and_remain_inert_in_cursor() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -26264,7 +26408,16 @@ mod tests {
                 Level2DispatchEvent::Dolmen { step, .. } => Some(step.source_slot),
             })
             .collect::<Vec<_>>();
-        assert!(all_slots.windows(2).all(|window| window[0] <= window[1]));
+        // A same-pass source callback may reclaim and reuse a lower slot; the
+        // cursor's initial visit remains ascending, while later generations
+        // can legitimately repeat that source index.
+        let mut seen = BTreeSet::new();
+        let first_slots = all_slots
+            .iter()
+            .copied()
+            .filter(|slot| seen.insert(*slot))
+            .collect::<Vec<_>>();
+        assert!(first_slots.windows(2).all(|window| window[0] < window[1]));
 
         first.reset();
         assert_eq!(first.goat_hash(), baseline_hash);
@@ -27244,7 +27397,17 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert!(dynamic.windows(2).all(|window| window[0].0 < window[1].0));
+        let mut seen = BTreeSet::new();
+        let first_dynamic_slots = dynamic
+            .iter()
+            .map(|(slot, _)| *slot)
+            .filter(|slot| seen.insert(*slot))
+            .collect::<Vec<_>>();
+        assert!(
+            first_dynamic_slots
+                .windows(2)
+                .all(|window| window[0] < window[1])
+        );
         assert!(dynamic.contains(&(carrier_slot, Level2DynamicArenaKind::ManaCarrier)));
         assert!(dynamic.contains(&(
             u16::try_from(sphere_slot).expect("sphere slot"),
