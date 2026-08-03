@@ -17206,7 +17206,8 @@ impl Level2ResetSession {
                 let is_class5_model4 =
                     feature.kind == 5 && feature.subtype == 4 && target_group == 20;
                 let is_model22 = feature.kind == 10 && feature.subtype == 22;
-                let is_model59 = feature.kind == 10 && feature.subtype == 59 && target_group == 23;
+                let is_model59 =
+                    feature.kind == 10 && feature.subtype == 59 && matches!(target_group, 19 | 23);
                 let is_model39 = feature.kind == 10
                     && feature.subtype == 39
                     && matches!(target_group, 1 | 5 | 7 | 24 | 26);
@@ -17340,7 +17341,7 @@ impl Level2ResetSession {
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
-            if feature.kind == 10 && feature.subtype == 59 && target_group == 23 {
+            if feature.kind == 10 && feature.subtype == 59 && matches!(target_group, 19 | 23) {
                 if self.level2_model59_activated.contains(&feature.index) {
                     continue;
                 }
@@ -33262,6 +33263,7 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 authored model-32 continuation session");
+        let baseline_hash = session.campaign_state_hash();
         let authored_features = session.mission().authored_features().to_vec();
         let feature_position = |index: u16| {
             authored_features
@@ -33319,7 +33321,7 @@ mod tests {
                 group: 19,
                 authored_indices,
                 ..
-            } if authored_indices.as_ref() == [214]
+            } if authored_indices.as_ref() == [214, 224, 225, 226, 227]
         )));
         let row214 = session
             .economy()
@@ -33330,6 +33332,37 @@ mod tests {
             .expect("group-19 row-214 switch source");
         assert_eq!((row214.model, row214.stage_tag), (0, 20));
         assert!(row214.drawing_enabled);
+        let checkpoint_indices = [224_u16, 225, 226, 227];
+        assert!(checkpoint_indices.iter().all(|index| {
+            session
+                .economy()
+                .authored_model59()
+                .iter()
+                .any(|source| source.authored_index == *index && source.active)
+        }));
+        for index in checkpoint_indices {
+            let checkpoint = session
+                .economy()
+                .authored_model59()
+                .iter()
+                .find(|source| source.authored_index == index)
+                .copied()
+                .expect("group-19 checkpoint source");
+            let position = feature_position(index);
+            assert_eq!((checkpoint.model, checkpoint.action), (59, 64));
+            assert_eq!(
+                (checkpoint.position.x, checkpoint.position.y),
+                (position.x, position.y)
+            );
+            assert_eq!(
+                checkpoint.position.z,
+                session.terrain.ground_height(position)
+            );
+            assert_eq!(checkpoint.life, checkpoint.max_life);
+            assert!((800..=899).contains(&checkpoint.max_life));
+            assert!((0..=16).contains(&checkpoint.actual_speed));
+            assert_eq!(checkpoint.control_flags, 9);
+        }
         assert!(
             !session
                 .economy()
@@ -33339,6 +33372,9 @@ mod tests {
                 .expect("row-213 remains in the model-32 arena")
                 .drawing_enabled
         );
+        session.reset();
+        assert!(session.economy().authored_model59().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
     #[test]
