@@ -292,6 +292,7 @@ namespace MagicCarpet.PresentationLab
                         terrainMaterial.SetFloat("_DetailStrength", 0.44f);
                         terrainMaterial.SetFloat("_MicroDetailScale", 0.90f);
                         terrainMaterial.SetFloat("_MicroDetailStrength", 0.42f);
+                        terrainMaterial.SetFloat("_NearDetailSharpenStrength", 0.36f);
                         terrainMaterial.SetFloat("_MicroReliefStrength", 0.30f);
                         terrainMaterial.SetFloat("_MicroDetailNearStart", 4f);
                         terrainMaterial.SetFloat("_MicroDetailNearEnd", 112f);

@@ -834,6 +834,45 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void EnhancedTerrainNearFieldSharpeningIsBoundedAndDistanceFaded()
+        {
+            GameObject gameObject = new GameObject("enhanced-terrain-near-detail-test");
+            UnityEnhancedTerrainPresentation terrain =
+                gameObject.AddComponent<UnityEnhancedTerrainPresentation>();
+
+            Assert.IsTrue(terrain.ApplySnapshot(TerrainSnapshot(
+                15,
+                1,
+                true,
+                new UnityEnhancedTerrainDirtyRegion[0])));
+
+            MeshRenderer renderer = gameObject.GetComponent<MeshRenderer>();
+            Assert.IsNotNull(renderer);
+            Assert.AreEqual("MagicCarpet/Enhanced/Terrain", renderer.sharedMaterial.shader.name);
+            float sharpenStrength = renderer.sharedMaterial.GetFloat("_NearDetailSharpenStrength");
+            Assert.That(sharpenStrength, Is.EqualTo(0.36f).Within(0.0001f));
+            Assert.That(sharpenStrength, Is.InRange(0f, 0.5f));
+
+            float maximumFactorDelta = 0.30f * sharpenStrength;
+            Assert.That(1f - maximumFactorDelta, Is.GreaterThanOrEqualTo(0.85f));
+            Assert.That(1f + maximumFactorDelta, Is.LessThanOrEqualTo(1.15f));
+
+            string terrainSource = File.ReadAllText(
+                Path.Combine(Application.dataPath, "Resources", "EnhancedTerrain.shader"));
+            StringAssert.Contains(
+                "_NearDetailSharpenStrength (\"Near Detail Sharpen Strength\", Range(0, 0.5)) = 0.36",
+                terrainSource);
+            StringAssert.Contains(
+                "half nearDetailHighPass = clamp((half)(grain - microDetail), -0.30h, 0.30h);",
+                terrainSource);
+            StringAssert.Contains(
+                "nearDetailHighPass * _NearDetailSharpenStrength * nearSurfaceMask",
+                terrainSource);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void TerrainSelectorMaterialKeepsWaterDistinctFromLand()
         {
             GameObject gameObject = new GameObject("enhanced-terrain-selector-material-test");

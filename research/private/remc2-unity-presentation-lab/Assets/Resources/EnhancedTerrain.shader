@@ -7,6 +7,7 @@ Shader "MagicCarpet/Enhanced/Terrain"
         _DetailStrength ("Procedural Detail Strength", Range(0, 1)) = 0.42
         _MicroDetailScale ("Near Surface Detail Scale", Float) = 0.62
         _MicroDetailStrength ("Near Surface Detail Strength", Range(0, 1)) = 0.28
+        _NearDetailSharpenStrength ("Near Detail Sharpen Strength", Range(0, 0.5)) = 0.36
         _MicroReliefStrength ("Near Surface Relief Strength", Range(0, 1)) = 0.20
         _MicroDetailNearStart ("Near Surface Detail Start", Float) = 8
         _MicroDetailNearEnd ("Near Surface Detail End", Float) = 128
@@ -56,6 +57,7 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 half _DetailStrength;
                 half _MicroDetailScale;
                 half _MicroDetailStrength;
+                half _NearDetailSharpenStrength;
                 half _MicroReliefStrength;
                 half _MicroDetailNearStart;
                 half _MicroDetailNearEnd;
@@ -262,6 +264,8 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 half landMask = smoothstep(0.08h, 0.18h, input.color.r);
                 half nearSurfaceMask = nearSurfaceFade * saturate(
                     landMask * (0.62h + slope * 0.58h));
+                half nearDetailHighPass = clamp((half)(grain - microDetail), -0.30h, 0.30h);
+                baseColor *= 1.0h + nearDetailHighPass * _NearDetailSharpenStrength * nearSurfaceMask;
                 half microContrast = (half)(microDetail * 2.0 - 1.0);
                 half3 microTint = lerp(
                     _SoilTint.rgb * 0.72h,
