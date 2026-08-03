@@ -994,6 +994,18 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.That(plume.position.x, Is.EqualTo(visual.position.x).Within(0.001f));
             Assert.That(plume.position.y, Is.EqualTo(visual.position.y).Within(0.001f));
             Assert.That(plume.position.z, Is.EqualTo(visual.position.z).Within(0.001f));
+            Transform volume = gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000820000001/EnhancedFireballVolume");
+            Assert.IsNotNull(volume);
+            MeshRenderer volumeRenderer = volume.GetComponent<MeshRenderer>();
+            Assert.AreEqual("MagicCarpet/Enhanced/FireballVolume", volumeRenderer.sharedMaterial.shader.name);
+            Assert.IsTrue(volume.gameObject.activeSelf);
+            Assert.AreEqual(12, volume.GetComponent<MeshFilter>().sharedMesh.vertexCount);
+            Assert.Greater(volume.localScale.y, volume.localScale.x * 2f);
+            string volumeShaderSource = File.ReadAllText(
+                Path.Combine(Application.dataPath, "Resources", "EnhancedFireballVolume.shader"));
+            StringAssert.Contains("ValueNoise", volumeShaderSource);
+            StringAssert.Contains("_ShimmerStrength", volumeShaderSource);
             Transform halo = gameObject.transform.Find(
                 "EnhancedWorldObjects/EnhancedEntity_0000000820000001/EnhancedFireballHalo");
             Assert.IsNotNull(halo);
@@ -1074,6 +1086,12 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.That(movedPlume.position.x, Is.EqualTo(visual.position.x).Within(0.001f));
             Assert.That(movedPlume.position.y, Is.EqualTo(visual.position.y).Within(0.001f));
             Assert.That(movedPlume.position.z, Is.EqualTo(visual.position.z).Within(0.001f));
+            Transform movedVolume = gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000820000001/EnhancedFireballVolume");
+            Assert.IsTrue(movedVolume.gameObject.activeSelf);
+            Assert.That(movedVolume.position.x, Is.EqualTo(visual.position.x).Within(0.001f));
+            Assert.That(movedVolume.position.y, Is.EqualTo(visual.position.y).Within(0.001f));
+            Assert.That(movedVolume.position.z, Is.EqualTo(visual.position.z).Within(0.001f));
 
             Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
             {
@@ -1240,6 +1258,10 @@ namespace MagicCarpet.PresentationLab.Tests
                 "EnhancedWorldObjects/EnhancedEntity_0000000920000001/EnhancedFireballPlume");
             Assert.IsTrue(core.gameObject.activeSelf);
             Assert.IsFalse(plume.gameObject.activeSelf);
+            Transform volume = gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000920000001/EnhancedFireballVolume");
+            Assert.IsNotNull(volume);
+            Assert.IsFalse(volume.gameObject.activeSelf);
             Assert.IsTrue(root.VfxPresentation.ReducedMotion);
             Assert.IsTrue(root.ActorPresentation != null);
 

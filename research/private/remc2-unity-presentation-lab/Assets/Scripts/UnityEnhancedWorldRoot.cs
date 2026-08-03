@@ -388,6 +388,8 @@ namespace MagicCarpet.PresentationLab
             {
                 vfxPresentation.SetReducedMotion(snapshot.Quality.ReducedMotion);
                 actorPresentation.SetReducedMotion(snapshot.Quality.ReducedMotion);
+                actorPresentation.SetVolumetricEffectsEnabled(
+                    snapshot.Quality.Tier >= UnityEnhancedQualityTier.High);
                 vfxPresentation.SetCameraComfort(snapshot.Quality.CameraShake);
                 diagnostics.SetAccessibility(snapshot.Quality.ReducedMotion, false);
             }
