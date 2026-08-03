@@ -1019,13 +1019,13 @@ namespace MagicCarpet.PresentationLab
                 else if (impactPresentation && shader.name == "MagicCarpet/Enhanced/Impact")
                 {
                     material.SetColor("_GlowColor", new Color(1f, 0.18f, 0.025f, 1f));
-                    material.SetColor("_ShockwaveColor", new Color(1f, 0.42f, 0.06f, 1f));
+                    material.SetColor("_ShockwaveColor", new Color(1f, 0.50f, 0.06f, 1f));
                     material.SetFloat("_GlowIntensity", 1.55f);
-                    material.SetFloat("_ShockwaveStrength", 3.0f);
-                    material.SetFloat("_SparkStrength", 1.75f);
+                    material.SetFloat("_ShockwaveStrength", 2.6f);
+                    material.SetFloat("_SparkStrength", 1.25f);
                     material.SetFloat("_Opacity", 0.84f);
                     material.SetFloat("_PulseSpeed", 3.6f);
-                    material.SetFloat("_RimStrength", 1.65f);
+                    material.SetFloat("_RimStrength", 0.65f);
                 }
                 else if (fireFamily && shader.name == "MagicCarpet/Enhanced/Vfx")
                 {

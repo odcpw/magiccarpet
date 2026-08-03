@@ -3,13 +3,13 @@ Shader "MagicCarpet/Enhanced/Impact"
     Properties
     {
         [HDR] _GlowColor ("Glow Color", Color) = (1, 0.84, 0.18, 1)
-        [HDR] _ShockwaveColor ("Shockwave Color", Color) = (1, 0.38, 0.04, 1)
-        _GlowIntensity ("Glow Intensity", Range(0, 8)) = 2.8
-        _ShockwaveStrength ("Shockwave Strength", Range(0, 8)) = 2.4
-        _SparkStrength ("Spark Strength", Range(0, 8)) = 1.5
+        [HDR] _ShockwaveColor ("Shockwave Color", Color) = (1, 0.50, 0.06, 1)
+        _GlowIntensity ("Glow Intensity", Range(0, 8)) = 1.8
+        _ShockwaveStrength ("Shockwave Strength", Range(0, 8)) = 2.6
+        _SparkStrength ("Spark Strength", Range(0, 8)) = 1.25
         _Opacity ("Opacity", Range(0, 1)) = 0.92
         _PulseSpeed ("Pulse Speed", Float) = 5
-        _RimStrength ("Rim Strength", Range(0, 4)) = 1.8
+        _RimStrength ("Rim Strength", Range(0, 4)) = 0.65
         _ImpactProgress ("Impact Progress", Range(0, 1)) = 0
     }
 
