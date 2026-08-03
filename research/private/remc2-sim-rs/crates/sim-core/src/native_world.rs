@@ -2939,10 +2939,11 @@ impl RuntimeSnapshot {
         }
     }
 
-    fn mark_level2_objective_done(&mut self) {
-        if let Some(objective) = self.objectives.get_mut(0) {
+    fn mark_level2_objective_done_for(&mut self, player_color_index: u8) {
+        let index = usize::from(player_color_index);
+        if let Some(objective) = self.objectives.get_mut(index) {
             objective.done = 1;
-            self.bytes[306] = 1;
+            self.bytes[304 + index * 11 + 2] = 1;
         }
     }
 
@@ -15604,11 +15605,37 @@ impl Level2ResetSession {
     /// then activate groups 22 and 27, where rows 155/156 become live.  The
     /// static outer route deliberately does not include those authored rows.
     fn activate_level2_authored_group8(&mut self, pass: u8) {
-        // Pinned `AddSwitch0B_20_6F1C0` only broadcasts when the selected
-        // objective stage is exactly 2.  A live model-32 producer is not
-        // completion proof: the old existence-only path activated group 8 on
-        // the first turn and could manufacture spell sources prematurely.
-        if self.level2_group8_activated || self.level2_selected_objective_stage_state != 2 {
+        // Pinned `AddSwitch0B_20_6F1C0` scans the participating player rows and
+        // broadcasts when any color's selected objective stage is exactly 2.
+        // A live model-32 producer is not completion proof: the old
+        // existence-only path activated group 8 on the first turn and could
+        // manufacture spell sources prematurely.
+        let completed_owner_color = self
+            .players
+            .iter()
+            // Outside multiplayer remc2 inspects only the local objective;
+            // multiplayer expands the scan to NumberOfPlayers. The runtime
+            // player-count field is the lossless package equivalent of that
+            // bounded participant list.
+            .take(usize::from(self.runtime.player_count))
+            .filter_map(|player| {
+                if player.active_player_index < 0 {
+                    return None;
+                }
+                let color = player.player_color_index();
+                self.runtime
+                    .objectives
+                    .get(usize::from(color))
+                    .filter(|objective| {
+                        objective.stage_selectors[LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX] == 2
+                    })
+                    .map(|_| color)
+            })
+            .next();
+        let Some(completed_owner_color) = completed_owner_color else {
+            return;
+        };
+        if self.level2_group8_activated {
             return;
         }
         let Some(root_slot) = self
@@ -15696,7 +15723,8 @@ impl Level2ResetSession {
         self.level2_group8_activated = true;
         self.level2_objective_pause = 1;
         self.level2_objective_done = true;
-        self.runtime.mark_level2_objective_done();
+        self.runtime
+            .mark_level2_objective_done_for(completed_owner_color);
         self.dispatch_events
             .push(Level2DispatchEvent::AuthoredGroupActivated {
                 pass,
@@ -27796,6 +27824,72 @@ mod tests {
                 authored_indices,
                 ..
             } if authored_indices.as_ref() == [153, 154]
+        )));
+    }
+
+    #[test]
+    fn level_two_model32_switch_scans_non_local_objective_owner() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 objective switch session");
+        let remote_color = session
+            .players
+            .iter()
+            .find(|player| player.slot != 0 && player.active_player_index >= 0)
+            .map(PlayerSnapshot::player_color_index)
+            .expect("fixture has a non-local participating player");
+        assert_eq!(session.level2_selected_objective_stage_state(), 1);
+        session.runtime.objectives[usize::from(remote_color)].stage_selectors
+            [LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX] = 2;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(session.level2_objective_done());
+        assert_eq!(
+            session.runtime.objectives[usize::from(remote_color)].done,
+            1
+        );
+        assert_eq!(session.runtime.objectives[0].done, 0);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 8,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [153, 154]
+        )));
+    }
+
+    #[test]
+    fn level_two_model32_switch_ignores_remote_objective_outside_player_count() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 objective switch session");
+        let remote_color = session
+            .players
+            .iter()
+            .find(|player| player.slot != 0 && player.active_player_index >= 0)
+            .map(PlayerSnapshot::player_color_index)
+            .expect("fixture has a non-local participating player");
+        session.runtime.player_count = 1;
+        session.runtime.objectives[usize::from(remote_color)].stage_selectors
+            [LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX] = 2;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(!session.level2_objective_done());
+        assert_eq!(
+            session.runtime.objectives[usize::from(remote_color)].done,
+            0
+        );
+        assert!(session.economy().spell_pickups().is_empty());
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 8, .. }
         )));
     }
 
