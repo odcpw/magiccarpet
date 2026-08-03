@@ -1799,7 +1799,10 @@ namespace MagicCarpet.PresentationLab
         private UnityEnhancedLocalLightRequest[] BuildLocalLights()
         {
             var result = new List<UnityEnhancedLocalLightRequest>();
-            for (int index = 0; index < entities.Length && result.Count < 24; index++)
+            // Collect a bounded request set before Unity's quality-tier sorter
+            // chooses the live point-light budget.  The old 24-item source cap
+            // could let early town rows crowd out later fireball/impact lights.
+            for (int index = 0; index < entities.Length && result.Count < 64; index++)
             {
                 EntitySnapshot source = entities[index];
                 int family = PresentationFamily(source, snapshot.entityIndex);
@@ -1807,12 +1810,32 @@ namespace MagicCarpet.PresentationLab
                     (family != (int)UnityEnhancedPresentationFamily.Firefly &&
                      family != (int)UnityEnhancedPresentationFamily.Mana &&
                      family != (int)UnityEnhancedPresentationFamily.Projectile &&
-                     family != (int)UnityEnhancedPresentationFamily.Impact))
+                     family != (int)UnityEnhancedPresentationFamily.Impact &&
+                     family != (int)UnityEnhancedPresentationFamily.Town))
                 {
                     continue;
                 }
 
                 Vector3 position = EntityPosition(source);
+                if (family == (int)UnityEnhancedPresentationFamily.Town)
+                {
+                    // Town lanterns are a presentation-only warm field.  They
+                    // sit below spells and impacts in the deterministic light
+                    // priority order, but make the owner landmarks read as
+                    // inhabited structures during flight instead of orange
+                    // unlit blocks.  The night-light adapter still enforces
+                    // the global quality-tier cap.
+                    result.Add(new UnityEnhancedLocalLightRequest(
+                        ((ulong)snapshot.generation << 32) | (uint)(source.entityIndex + 1),
+                        position + Vector3.up * 0.72f,
+                        new Color(1f, 0.24f, 0.045f, 1f),
+                        0.95f,
+                        5.5f,
+                        -Mathf.Abs(ModularDelta(source.x, presentation.cameraX)) -
+                        Mathf.Abs(ModularDelta(source.y, presentation.cameraY))));
+                    continue;
+                }
+
                 Color color = family == (int)UnityEnhancedPresentationFamily.Firefly
                     ? new Color(0.48f, 0.92f, 0.28f, 1f)
                     : new Color(0.22f, 0.64f, 1f, 1f);
@@ -1825,7 +1848,7 @@ namespace MagicCarpet.PresentationLab
                     source.entityIndex));
             }
 
-            for (int index = 0; index < projectiles.Length && result.Count < 24; index++)
+            for (int index = 0; index < projectiles.Length && result.Count < 64; index++)
             {
                 ProjectileSnapshot source = projectiles[index];
                 if (source.active == 0 || source.projectileId == 0)
@@ -1843,7 +1866,7 @@ namespace MagicCarpet.PresentationLab
                     (ushort)(2000 + (source.projectileId % 1000U))));
             }
 
-            for (int index = 0; index < impacts.Length && result.Count < 24; index++)
+            for (int index = 0; index < impacts.Length && result.Count < 64; index++)
             {
                 ImpactSnapshot source = impacts[index];
                 if (source.active == 0 || source.impactId == 0)
