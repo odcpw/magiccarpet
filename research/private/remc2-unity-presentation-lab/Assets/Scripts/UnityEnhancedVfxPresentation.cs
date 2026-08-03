@@ -846,10 +846,10 @@ namespace MagicCarpet.PresentationLab
                 {
                     material.SetColor("_StreakColor", new Color(0.18f, 0.78f, 1f, 1f));
                     material.SetColor("_CoreColor", new Color(0.82f, 0.98f, 1f, 1f));
-                    material.SetFloat("_Intensity", 2.4f);
-                    material.SetFloat("_Opacity", 0.62f);
-                    material.SetFloat("_CoreWidth", 0.28f);
-                    material.SetFloat("_EdgeSoftness", 0.18f);
+                    material.SetFloat("_Intensity", 1.4f);
+                    material.SetFloat("_Opacity", 0.40f);
+                    material.SetFloat("_CoreWidth", 0.18f);
+                    material.SetFloat("_EdgeSoftness", 0.34f);
                 }
                 else if (shader == customVfxShader)
                 {
