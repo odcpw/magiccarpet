@@ -681,7 +681,11 @@ impl ShieldState {
                 self.active_value -= 1;
                 // Preserve the post-decrement comparison/order of sub_68DE0.
                 if self.active_value == self.activation_value {
-                    self.parent_mana_regen = self.parent_mana_regen.wrapping_sub(self.mana_cost);
+                    self.parent_mana_regen = if self.parent_mana_regen >= 0 {
+                        self.mana_cost.wrapping_neg()
+                    } else {
+                        self.parent_mana_regen.wrapping_sub(self.mana_cost)
+                    };
                 } else if self.active_value != 0 && self.parent_mana_regen > 0 {
                     self.parent_mana_regen = 0;
                 }
@@ -977,10 +981,11 @@ impl InvisibleState {
                     // `sub_68DE0`: charge the owner through its regen field;
                     // the source does not immediately subtract parent mana.
                     if self.active_value == self.activation_value {
-                        self.parent_mana_regen = self
-                            .parent_mana_regen
-                            .checked_sub(self.mana_cost)
-                            .unwrap_or(i32::MIN);
+                        self.parent_mana_regen = if self.parent_mana_regen >= 0 {
+                            self.mana_cost.wrapping_neg()
+                        } else {
+                            self.parent_mana_regen.wrapping_sub(self.mana_cost)
+                        };
                     } else if self.active_value != 0 && self.parent_mana_regen > 0 {
                         self.parent_mana_regen = 0;
                     }
@@ -1046,6 +1051,224 @@ pub struct InvisibleStep {
     pub spell_flags_after: u32,
     pub visibility_before: u8,
     pub visibility_after: u8,
+    pub countdown_before: i16,
+    pub countdown_after: i16,
+    pub experience_awarded: i32,
+    pub sustained: bool,
+    pub cleanup_requested: bool,
+}
+
+/// Source family-12 (Beyond Sight) tier data from the pinned `Spells.cpp`
+/// table.  The active callback is deliberately separate from Invisible:
+/// Beyond Sight does not set the Invisible parent/entity status bits, but it
+/// does charge the same owner/castle predicate and awards family-12
+/// experience on its first pulse (`sub_6CD20`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BeyondSightTierProfile {
+    pub mana_cost: i32,
+    pub mana_regen_requirement: i32,
+    pub activation_ticks: i16,
+    pub experience_award: i32,
+}
+
+const BEYOND_SIGHT_TIERS: [BeyondSightTierProfile; 3] = [
+    BeyondSightTierProfile {
+        mana_cost: 1_800,
+        mana_regen_requirement: 0,
+        activation_ticks: 151,
+        experience_award: 1,
+    },
+    BeyondSightTierProfile {
+        mana_cost: 2_400,
+        mana_regen_requirement: 10_000,
+        activation_ticks: 261,
+        experience_award: 1,
+    },
+    BeyondSightTierProfile {
+        mana_cost: 5_000,
+        mana_regen_requirement: 10_000,
+        activation_ticks: 361,
+        experience_award: 1,
+    },
+];
+
+pub const BEYOND_SIGHT_FAMILY: u8 = 12;
+pub const BEYOND_SIGHT_ACTIVE_ACTION: u8 = 36;
+
+#[must_use]
+pub const fn beyond_sight_tier_profile(tier: u8) -> Option<BeyondSightTierProfile> {
+    match tier {
+        0..=2 => Some(BEYOND_SIGHT_TIERS[tier as usize]),
+        _ => None,
+    }
+}
+
+/// Renderer-free state for source family-12/model-12 action 36
+/// (`sub_6CD20`, `AddSpell12_36_51320`).  The first-pulse class-10/model-74
+/// effect allocation remains an outer arena concern; this state owns the
+/// exact holder, owner/castle predicate, charge, experience, countdown and
+/// SetSpell cleanup transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BeyondSightState {
+    pub holder_entity_index: u16,
+    pub parent_entity_index: u16,
+    pub tier: u8,
+    pub action: u8,
+    pub active_value: i16,
+    pub activation_value: i16,
+    pub mana_cost: i32,
+    pub mana_regen_requirement: i32,
+    pub parent_mana: i32,
+    pub parent_life: i32,
+    pub parent_mana_regen: i32,
+    pub countdown: i16,
+    pub experience_awarded: i32,
+    pub cleanup_requested: bool,
+}
+
+impl BeyondSightState {
+    #[must_use]
+    pub fn new(
+        tier: u8,
+        holder_entity_index: u16,
+        parent_entity_index: u16,
+        parent_mana: i32,
+        parent_life: i32,
+    ) -> Option<Self> {
+        let profile = beyond_sight_tier_profile(tier)?;
+        Some(Self {
+            holder_entity_index,
+            parent_entity_index,
+            tier,
+            action: BEYOND_SIGHT_ACTIVE_ACTION,
+            active_value: 0,
+            activation_value: profile.activation_ticks,
+            mana_cost: profile.mana_cost,
+            mana_regen_requirement: profile.mana_regen_requirement,
+            parent_mana,
+            parent_life,
+            parent_mana_regen: 0,
+            countdown: 64,
+            experience_awarded: 0,
+            cleanup_requested: false,
+        })
+    }
+
+    pub fn activate(
+        &mut self,
+        direction_mask: u16,
+        help_enabled: bool,
+        events: &mut Vec<FlightEvent>,
+    ) -> bool {
+        let mut caster = SpellCasterState {
+            entity_index: self.parent_entity_index,
+            mana: self.parent_mana,
+            ..SpellCasterState::default()
+        };
+        let mut holder = SpellActivationHolder {
+            entity_index: self.holder_entity_index,
+            model: BEYOND_SIGHT_FAMILY,
+            level_gate: self.tier as i8,
+            active_value: self.active_value,
+            activation_value: self.activation_value as u16,
+            mana_cost: self.mana_cost,
+            ..SpellActivationHolder::default()
+        };
+        let accepted = activate_spell(
+            &mut caster,
+            Some(&mut holder),
+            direction_mask,
+            help_enabled,
+            events,
+        );
+        self.parent_mana = caster.mana;
+        self.active_value = holder.active_value;
+        if accepted {
+            self.action = BEYOND_SIGHT_ACTIVE_ACTION;
+            self.cleanup_requested = false;
+        }
+        accepted
+    }
+
+    #[must_use]
+    pub fn authoritative_predicate(&self, parent_castle_mana: Option<i32>) -> bool {
+        if self.parent_mana < 0 || self.parent_life < 0 {
+            return false;
+        }
+        if self.mana_regen_requirement != 0 {
+            let Some(castle_mana) = parent_castle_mana else {
+                return false;
+            };
+            if self.mana_regen_requirement > castle_mana {
+                return false;
+            }
+        }
+        self.active_value != self.activation_value || self.parent_mana >= self.mana_cost
+    }
+
+    pub fn step(&mut self, parent_castle_mana: Option<i32>) -> BeyondSightStep {
+        let active_before = self.active_value;
+        let countdown_before = self.countdown;
+        let mut sustained = false;
+        let mut experience_awarded = 0;
+        if self.active_value > 0 {
+            if self.parent_entity_index != 0 {
+                if self.authoritative_predicate(parent_castle_mana) {
+                    sustained = true;
+                    if self.active_value == self.activation_value {
+                        let profile = beyond_sight_tier_profile(self.tier)
+                            .expect("validated Beyond Sight tier");
+                        self.experience_awarded = self
+                            .experience_awarded
+                            .wrapping_add(profile.experience_award);
+                        experience_awarded = profile.experience_award;
+                    }
+                    if self.active_value == self.activation_value {
+                        self.parent_mana_regen = if self.parent_mana_regen >= 0 {
+                            self.mana_cost.wrapping_neg()
+                        } else {
+                            self.parent_mana_regen.wrapping_sub(self.mana_cost)
+                        };
+                    } else if self.active_value != 0 && self.parent_mana_regen > 0 {
+                        self.parent_mana_regen = 0;
+                    }
+                } else {
+                    self.active_value = 1;
+                }
+            }
+            self.active_value -= 1;
+            if self.active_value == 0 {
+                self.cleanup_requested = true;
+            }
+        }
+        if self.countdown > 0 {
+            self.countdown -= 1;
+        }
+        BeyondSightStep {
+            active_before,
+            active_after: self.active_value,
+            countdown_before,
+            countdown_after: self.countdown,
+            experience_awarded,
+            sustained,
+            cleanup_requested: self.cleanup_requested,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.action = BEYOND_SIGHT_ACTIVE_ACTION;
+        self.active_value = 0;
+        self.parent_mana_regen = 0;
+        self.countdown = 64;
+        self.experience_awarded = 0;
+        self.cleanup_requested = false;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BeyondSightStep {
+    pub active_before: i16,
+    pub active_after: i16,
     pub countdown_before: i16,
     pub countdown_after: i16,
     pub experience_awarded: i32,
@@ -1741,6 +1964,7 @@ mod tests {
     fn invisible_first_pulse_sets_spell_flag_awards_experience_and_charges_regen() {
         let mut invisible = InvisibleState::new(2, 513, 7, 3_000, 100).expect("tier");
         invisible.active_value = invisible.activation_value;
+        invisible.parent_mana_regen = 777;
         invisible.parent_status_flags = INVISIBLE_STATUS_BIT | 0x400;
 
         let first = invisible.step(Some(4_000));
@@ -1768,6 +1992,29 @@ mod tests {
             INVISIBLE_STATUS_BIT
         );
         assert_eq!(end.visibility_after, 0);
+    }
+
+    #[test]
+    fn beyond_sight_first_pulse_matches_castle_gate_and_regen_charge() {
+        let mut beyond_sight = BeyondSightState::new(1, 513, 7, 2_400, 100).expect("tier");
+        beyond_sight.active_value = beyond_sight.activation_value;
+        beyond_sight.parent_mana_regen = 777;
+        assert!(!beyond_sight.authoritative_predicate(None));
+        assert!(!beyond_sight.authoritative_predicate(Some(9_999)));
+        assert!(beyond_sight.authoritative_predicate(Some(10_000)));
+
+        let first = beyond_sight.step(Some(10_000));
+        assert!(first.sustained);
+        assert_eq!(first.active_after, 260);
+        assert_eq!(first.experience_awarded, 1);
+        assert_eq!(beyond_sight.experience_awarded, 1);
+        assert_eq!(beyond_sight.parent_mana_regen, -2_400);
+        assert_eq!(beyond_sight.countdown, 63);
+
+        beyond_sight.active_value = 1;
+        let end = beyond_sight.step(Some(10_000));
+        assert_eq!(end.active_after, 0);
+        assert!(end.cleanup_requested);
     }
 
     #[test]

@@ -84,6 +84,7 @@ use crate::{
         unknown_source_sprite_tuple,
     },
     spell_activation::{
+        BEYOND_SIGHT_ACTIVE_ACTION, BEYOND_SIGHT_FAMILY, BeyondSightState, BeyondSightStep,
         INVISIBLE_ACTIVE_ACTION, INVISIBLE_STATUS_BIT, InvisibleState, InvisibleStep,
         PhysicalSpellActionRole, SHIELD_ACTIVE_ACTION, ShieldState, ShieldStep,
         SpellActivationHolder, SpellCasterState, SpellHolderAcquisitionOutcome,
@@ -3176,6 +3177,10 @@ pub struct Level2SharedSpellResetSession {
     /// explicitly outside this bounded slice.
     baseline_invisible: Option<InvisibleState>,
     invisible: Option<InvisibleState>,
+    /// Reachable family-12 active lifecycle. The first-pulse effect allocation
+    /// remains a typed outer-arena seam; holder timing and cleanup are live.
+    baseline_beyond_sight: Option<BeyondSightState>,
+    beyond_sight: Option<BeyondSightState>,
     /// Generic source acquisition states for authored Level 2 families 6,
     /// 11, and 12.  Family-specific active lifecycles remain separate.
     baseline_acquisitions: Box<[SpellHolderAcquisitionState]>,
@@ -8058,6 +8063,8 @@ impl Level2SharedSpellResetSession {
             shield: None,
             baseline_invisible: None,
             invisible: None,
+            baseline_beyond_sight: None,
+            beyond_sight: None,
             baseline_acquisitions: acquisitions.clone(),
             acquisitions,
             baseline_persistent_acquisitions: BTreeMap::new(),
@@ -8356,6 +8363,126 @@ impl Level2SharedSpellResetSession {
         {
             self.apply_invisible_cleanup();
             self.sync_invisible_projection();
+        }
+    }
+
+    #[must_use]
+    pub fn beyond_sight_state(&self) -> Option<BeyondSightState> {
+        self.beyond_sight
+    }
+
+    pub fn activate_beyond_sight(&mut self, direction_mask: u16, help_enabled: bool) -> bool {
+        self.events.clear();
+        let Some(beyond_sight) = self.beyond_sight.as_mut() else {
+            return false;
+        };
+        let activated = beyond_sight.activate(direction_mask, help_enabled, &mut self.events);
+        self.sync_beyond_sight_projection();
+        activated
+    }
+
+    fn sync_beyond_sight_projection(&mut self) {
+        let Some(beyond_sight) = self.beyond_sight else {
+            return;
+        };
+
+        if let Some(holder) = self.pickup_mut(beyond_sight.holder_entity_index) {
+            holder.action = beyond_sight.action;
+            holder.active_value = beyond_sight.active_value;
+            holder.activation_value = beyond_sight.activation_value.cast_unsigned();
+            holder.record[50..52].copy_from_slice(&beyond_sight.active_value.to_le_bytes());
+            holder.record[52..54].copy_from_slice(&beyond_sight.activation_value.to_le_bytes());
+            holder.record[58..60].copy_from_slice(&beyond_sight.countdown.to_le_bytes());
+            holder.record[73] = beyond_sight.action;
+        }
+
+        let sync_parent = |entity: &mut EntitySnapshot| {
+            if entity.index != beyond_sight.parent_entity_index {
+                return;
+            }
+            entity.life = beyond_sight.parent_life;
+            entity.mana = beyond_sight.parent_mana;
+            entity.mana_regen = beyond_sight.parent_mana_regen;
+            entity.record[12..16].copy_from_slice(&beyond_sight.parent_life.to_le_bytes());
+            entity.record[140..144].copy_from_slice(&beyond_sight.parent_mana_regen.to_le_bytes());
+            entity.record[148..152].copy_from_slice(&beyond_sight.parent_mana.to_le_bytes());
+        };
+        sync_parent(&mut self.player_entity);
+        for entity in &mut self.player_entities {
+            sync_parent(entity);
+        }
+        if beyond_sight.parent_entity_index == self.player_entity.index {
+            self.player_mana = beyond_sight.parent_mana;
+        }
+    }
+
+    fn apply_beyond_sight_cleanup(&mut self) {
+        let Some(beyond_sight) = self.beyond_sight else {
+            return;
+        };
+        let queued_spell = self
+            .pickup(beyond_sight.holder_entity_index)
+            .map(|holder| {
+                u16::from_le_bytes(
+                    holder.record[48..50]
+                        .try_into()
+                        .expect("queued Beyond Sight SetSpell word extent"),
+                )
+            })
+            .unwrap_or_default();
+        if queued_spell != 0 {
+            let tier = queued_spell.saturating_sub(1).min(2) as u8;
+            if let Some(profile) = level2_set_spell_profile(BEYOND_SIGHT_FAMILY, tier) {
+                if let Some(holder) = self.pickup_mut(beyond_sight.holder_entity_index) {
+                    holder.level_gate = tier.cast_signed();
+                    holder.subspell_index = profile.subspell_index;
+                    holder.activation_value = profile.word_0x30;
+                    holder.byte_3b = profile.byte_0x3b;
+                    holder.mana_regen = profile.mana_regen;
+                    holder.max_mana = profile.max_mana;
+                    holder.mana_cost = profile.max_mana;
+                    holder.mana = profile.mana;
+                    holder.record[46..48].copy_from_slice(&profile.subspell_index.to_le_bytes());
+                    holder.record[48..50].fill(0);
+                    holder.record[52..54].copy_from_slice(&profile.word_0x30.to_le_bytes());
+                    holder.record[63] = profile.byte_0x3b;
+                    holder.record[74] = tier.cast_signed().cast_unsigned();
+                    holder.record[140..144].copy_from_slice(&profile.mana_regen.to_le_bytes());
+                    holder.record[144..148].copy_from_slice(&profile.max_mana.to_le_bytes());
+                    holder.record[148..152].copy_from_slice(&profile.mana.to_le_bytes());
+                }
+                if let Some(beyond_sight) = self.beyond_sight.as_mut() {
+                    beyond_sight.tier = tier;
+                    beyond_sight.activation_value = profile.word_0x30.cast_signed();
+                    beyond_sight.mana_cost = profile.max_mana;
+                    beyond_sight.mana_regen_requirement = profile.mana_regen;
+                }
+            } else if let Some(holder) = self.pickup_mut(beyond_sight.holder_entity_index) {
+                holder.record[48..50].fill(0);
+            }
+        }
+        if let Some(beyond_sight) = self.beyond_sight.as_mut() {
+            beyond_sight.cleanup_requested = false;
+        }
+    }
+
+    fn step_beyond_sight_source_slot(&mut self, source_slot: u16, parent_castle_mana: Option<i32>) {
+        if self
+            .beyond_sight
+            .is_none_or(|beyond_sight| beyond_sight.holder_entity_index != source_slot)
+        {
+            return;
+        }
+        if let Some(beyond_sight) = self.beyond_sight.as_mut() {
+            let _step: BeyondSightStep = beyond_sight.step(parent_castle_mana);
+        }
+        self.sync_beyond_sight_projection();
+        if self
+            .beyond_sight
+            .is_some_and(|beyond_sight| beyond_sight.cleanup_requested)
+        {
+            self.apply_beyond_sight_cleanup();
+            self.sync_beyond_sight_projection();
         }
     }
 
@@ -8855,6 +8982,11 @@ impl Level2SharedSpellResetSession {
             // the positive-life prefix when life decrements from one to zero.
             pickup.record[78..80].copy_from_slice(&0_i16.to_le_bytes());
         }
+        // The active SetSpell branch only queues the newly selected tier in
+        // word_0x2E; the running holder keeps its current word_0x30/mana
+        // payload until cleanup. Read that post-branch projection before
+        // seeding a typed active lifecycle so it cannot jump tiers early.
+        let active_holder_projection = self.pickup(outcome.source_slot).cloned();
         if family == 6 {
             let parent = self
                 .player_entities
@@ -8891,6 +9023,54 @@ impl Level2SharedSpellResetSession {
             invisible.parent_status_flags = parent.control_flags;
             self.invisible = Some(invisible);
             self.sync_invisible_projection();
+        } else if family == BEYOND_SIGHT_FAMILY {
+            let parent = self
+                .player_entities
+                .get(owner_index)
+                .cloned()
+                .unwrap_or_else(|| self.player_entity.clone());
+            let mut beyond_sight = BeyondSightState::new(
+                state.selected_tier.cast_unsigned(),
+                outcome.source_slot,
+                outcome.parent_entity_index,
+                parent.mana,
+                parent.life,
+            )
+            .expect("validated Level 2 Beyond Sight tier");
+            beyond_sight.parent_mana_regen = parent.mana_regen;
+            if let Some(holder) = active_holder_projection.as_ref() {
+                let active_word_2e = u16::from_le_bytes(
+                    holder.record[50..52]
+                        .try_into()
+                        .expect("Beyond Sight active word extent"),
+                );
+                if active_word_2e != 0 {
+                    beyond_sight.active_value = active_word_2e.cast_signed();
+                    beyond_sight.activation_value = u16::from_le_bytes(
+                        holder.record[52..54]
+                            .try_into()
+                            .expect("Beyond Sight activation word extent"),
+                    )
+                    .cast_signed();
+                    beyond_sight.mana_cost = holder.max_mana;
+                    beyond_sight.mana_regen_requirement = holder.mana_regen;
+                    for tier in 0..=2 {
+                        let Some(profile) = level2_set_spell_profile(BEYOND_SIGHT_FAMILY, tier)
+                        else {
+                            continue;
+                        };
+                        if beyond_sight.activation_value == profile.word_0x30.cast_signed()
+                            && holder.max_mana == profile.max_mana
+                            && holder.mana_regen == profile.mana_regen
+                        {
+                            beyond_sight.tier = tier;
+                            break;
+                        }
+                    }
+                }
+            }
+            self.beyond_sight = Some(beyond_sight);
+            self.sync_beyond_sight_projection();
         }
         self.pickup_events
             .push(Level2SharedSpellEvent::SpellAcquired {
@@ -8986,12 +9166,13 @@ impl Level2SharedSpellResetSession {
                 self.step_shield_source_slot(source_slot);
             } else if family == 11 && source_action == INVISIBLE_ACTIVE_ACTION {
                 self.step_invisible_source_slot(source_slot, parent_castle_mana);
+            } else if family == BEYOND_SIGHT_FAMILY && source_action == BEYOND_SIGHT_ACTIVE_ACTION {
+                self.step_beyond_sight_source_slot(source_slot, parent_castle_mana);
             }
             // The source cursor still reaches the live holder row, but its
-            // pickup transition has already completed. Family-6 Shield and
-            // family-11 Invisible advance their active lifecycles above;
-            // other active families remain deliberately bounded to their
-            // acquisition seam.
+            // pickup transition has already completed. The active family
+            // lifecycles advance above; other active families remain
+            // deliberately bounded to their acquisition seam.
             return Ok(None);
         } else {
             return Err(NativeWorldError::new(format!(
@@ -9110,19 +9291,34 @@ impl Level2SharedSpellResetSession {
         player_entity_index: u16,
         player_position: Position,
     ) -> Result<Option<SpellHolderAcquisitionOutcome>> {
-        let invisible_parent = self.invisible.and_then(|invisible| {
-            (invisible.holder_entity_index
-                == self
-                    .acquisitions
-                    .iter()
-                    .find(|state| state.family == family)
-                    .map_or(0, |state| state.source_slot))
-            .then_some(invisible.parent_entity_index)
-        });
+        let active_parent = self
+            .invisible
+            .and_then(|invisible| {
+                (invisible.holder_entity_index
+                    == self
+                        .acquisitions
+                        .iter()
+                        .find(|state| state.family == family)
+                        .map_or(0, |state| state.source_slot))
+                .then_some(invisible.parent_entity_index)
+            })
+            .or_else(|| {
+                self.beyond_sight.and_then(|beyond_sight| {
+                    (beyond_sight.holder_entity_index
+                        == self
+                            .acquisitions
+                            .iter()
+                            .find(|state| state.family == family)
+                            .map_or(0, |state| state.source_slot))
+                    .then_some(beyond_sight.parent_entity_index)
+                })
+            });
         let parent_castle_mana = economy
             .castle()
             .filter(|castle| {
-                castle.active && family == 11 && invisible_parent == Some(castle.owner_entity_index)
+                castle.active
+                    && matches!(family, 11 | BEYOND_SIGHT_FAMILY)
+                    && active_parent == Some(castle.owner_entity_index)
             })
             .map(|castle| castle.mana);
         let result = self.step_level2_spell_acquisition_with_castle_mana(
@@ -9475,6 +9671,24 @@ impl Level2SharedSpellResetSession {
         } else {
             hasher.update([0]);
         }
+        if let Some(beyond_sight) = self.beyond_sight {
+            hasher.update([1]);
+            hasher.update(beyond_sight.holder_entity_index.to_le_bytes());
+            hasher.update(beyond_sight.parent_entity_index.to_le_bytes());
+            hasher.update([beyond_sight.tier, beyond_sight.action]);
+            hasher.update(beyond_sight.active_value.to_le_bytes());
+            hasher.update(beyond_sight.activation_value.to_le_bytes());
+            hasher.update(beyond_sight.mana_cost.to_le_bytes());
+            hasher.update(beyond_sight.mana_regen_requirement.to_le_bytes());
+            hasher.update(beyond_sight.parent_mana.to_le_bytes());
+            hasher.update(beyond_sight.parent_life.to_le_bytes());
+            hasher.update(beyond_sight.parent_mana_regen.to_le_bytes());
+            hasher.update(beyond_sight.countdown.to_le_bytes());
+            hasher.update(beyond_sight.experience_awarded.to_le_bytes());
+            hasher.update([u8::from(beyond_sight.cleanup_requested)]);
+        } else {
+            hasher.update([0]);
+        }
         for state in &self.acquisitions {
             hasher.update([state.family]);
             hasher.update(state.source_slot.to_le_bytes());
@@ -9543,6 +9757,7 @@ impl Level2SharedSpellResetSession {
         self.speed = self.baseline_speed;
         self.shield = self.baseline_shield;
         self.invisible = self.baseline_invisible;
+        self.beyond_sight = self.baseline_beyond_sight;
         self.acquisitions.clone_from(&self.baseline_acquisitions);
         self.persistent_acquisitions
             .clone_from(&self.baseline_persistent_acquisitions);
@@ -22173,6 +22388,201 @@ mod tests {
         assert_eq!(invisible.active_value, 0);
         assert_eq!(invisible.tier, 1);
         assert_eq!(invisible.parent_visibility_mode, 0);
+    }
+
+    #[test]
+    fn level_two_beyond_sight_active_holder_ticks_through_outer_turn_and_reset() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Beyond Sight production session");
+        let baseline_hash = session.shared_spells().reset_hash();
+        let pickup_position = session.shared_spells().pickups()[0].position;
+        session.shared_spells_mut().pickups[0].phase = 0;
+        session.shared_spells_mut().pickups[0].record[66] = 0;
+        session.state.position = pickup_position;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let outcome = session
+            .dispatch_events()
+            .iter()
+            .find_map(|event| match event {
+                Level2DispatchEvent::SpellAcquisition {
+                    family: 12,
+                    result: Some(outcome),
+                    ..
+                } => Some(*outcome),
+                _ => None,
+            })
+            .expect("reset family-12 source acquisition");
+        let cold = session
+            .shared_spells()
+            .beyond_sight_state()
+            .expect("family-12 acquisition seeds Beyond Sight state");
+        assert_eq!(cold.holder_entity_index, outcome.source_slot);
+        assert_eq!(cold.action, BEYOND_SIGHT_ACTIVE_ACTION);
+        assert_eq!(cold.active_value, 0);
+
+        {
+            let shared = session.shared_spells_mut();
+            shared.player_mana = 5_000;
+            shared.player_entity.mana = 5_000;
+            shared.player_entity.record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
+            shared.player_entities[0].mana = 5_000;
+            shared.player_entities[0].record[148..152].copy_from_slice(&5_000_i32.to_le_bytes());
+            shared
+                .beyond_sight
+                .as_mut()
+                .expect("cold Beyond Sight state")
+                .parent_mana = 5_000;
+        }
+        assert!(
+            session
+                .shared_spells_mut()
+                .activate_beyond_sight(256, false)
+        );
+        let active = session
+            .shared_spells()
+            .beyond_sight_state()
+            .expect("activated family-12 Beyond Sight state");
+        assert_eq!(active.active_value, active.activation_value);
+        assert_ne!(session.shared_spells().reset_hash(), baseline_hash);
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let stepped = session
+            .shared_spells()
+            .beyond_sight_state()
+            .expect("Beyond Sight state after outer source turn");
+        assert_eq!(stepped.active_value, active.active_value - 1);
+        assert_eq!(stepped.experience_awarded, 1);
+        assert!(stepped.parent_mana_regen <= 0);
+        assert_eq!(stepped.countdown, active.countdown - 1);
+
+        session.reset();
+        assert!(session.shared_spells().beyond_sight_state().is_none());
+        assert_eq!(session.shared_spells().reset_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_remote_beyond_sight_owner_does_not_overwrite_local_mana_projection() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 remote Beyond Sight session");
+        let source_position = session.shared_spells().pickups()[0].position;
+        let local_mana = session.shared_spells().player_mana();
+        let remote_mana = local_mana.wrapping_add(7_777);
+        {
+            let shared = session.shared_spells_mut();
+            let remote = &mut shared.player_entities[1];
+            remote.active = true;
+            remote.model = 0;
+            remote.mana = remote_mana;
+            remote.record[2] = 1;
+            remote.record[68] = 0;
+            remote.position = source_position;
+            remote.record[80..82].copy_from_slice(&source_position.x.to_le_bytes());
+            remote.record[82..84].copy_from_slice(&source_position.y.to_le_bytes());
+            remote.record[84..86].copy_from_slice(&source_position.z.to_le_bytes());
+            shared.pickups[0].phase = 0;
+            shared.pickups[0].record[66] = 0;
+        }
+        let far_position = Position {
+            x: source_position.x.wrapping_add(0x2000),
+            y: source_position.y,
+            z: source_position.z,
+        };
+        let outcome = (0..4).find_map(|_| {
+            session
+                .shared_spells_mut()
+                .step_level2_spell_acquisition(12, 111, far_position)
+                .expect("remote family-12 source pass")
+        });
+        let outcome = outcome.expect("remote model-0 player acquires Beyond Sight");
+        assert_eq!(outcome.parent_entity_index, 112);
+        let beyond_sight = session
+            .shared_spells()
+            .beyond_sight_state()
+            .expect("remote acquisition seeds Beyond Sight state");
+        assert_eq!(beyond_sight.parent_entity_index, 112);
+        assert_eq!(beyond_sight.parent_mana, remote_mana);
+        assert_eq!(session.shared_spells().player_mana(), local_mana);
+    }
+
+    #[test]
+    fn level_two_beyond_sight_expiry_replays_queued_setspell_word() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Beyond Sight cleanup session");
+        let source_position = session.shared_spells().pickups()[0].position;
+        session.shared_spells_mut().pickups[0].phase = 0;
+        session.shared_spells_mut().pickups[0].record[66] = 0;
+        session.state.position = source_position;
+        let outcome = session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::SpellAcquisition {
+                    family: 12,
+                    result: Some(_),
+                    ..
+                }
+            )),
+            "events: {outcome:?}"
+        );
+        let source_slot = session
+            .dispatch_events()
+            .iter()
+            .find_map(|event| match event {
+                Level2DispatchEvent::SpellAcquisition {
+                    family: 12,
+                    result: Some(outcome),
+                    ..
+                } => Some(outcome.source_slot),
+                _ => None,
+            })
+            .expect("family-12 acquisition source slot");
+        {
+            let shared = session.shared_spells_mut();
+            shared
+                .beyond_sight
+                .as_mut()
+                .expect("cold Beyond Sight state")
+                .parent_mana = 5_000;
+            assert!(shared.activate_beyond_sight(256, false));
+            shared
+                .beyond_sight
+                .as_mut()
+                .expect("active Beyond Sight state")
+                .active_value = 1;
+            shared
+                .pickup_mut(source_slot)
+                .expect("active Beyond Sight holder row")
+                .record[48..50]
+                .copy_from_slice(&2_u16.to_le_bytes());
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let holder = session
+            .shared_spells()
+            .pickups()
+            .iter()
+            .chain(session.shared_spells().dynamic_pickups().iter())
+            .find(|entity| entity.index == source_slot)
+            .expect("active Beyond Sight holder remains projected");
+        assert_eq!(holder.record_bytes()[48..50], [0, 0]);
+        assert_eq!(holder.activation_value, 261);
+        assert_eq!(holder.record_bytes()[52..54], 261_u16.to_le_bytes());
+        let beyond_sight = session
+            .shared_spells()
+            .beyond_sight_state()
+            .expect("Beyond Sight state retained after expiry");
+        assert_eq!(beyond_sight.active_value, 0);
+        assert_eq!(beyond_sight.tier, 1);
+        assert_eq!(beyond_sight.mana_regen_requirement, 10_000);
     }
 
     #[test]
