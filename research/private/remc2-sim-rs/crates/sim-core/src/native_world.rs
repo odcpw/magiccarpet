@@ -4078,6 +4078,33 @@ pub struct Level2AuthoredSwitchProducerSource {
     pub active: bool,
 }
 
+/// Authored class-11/model-32 switch constructed by remc2's
+/// `AddSwitch32_50B80`/`sub_4A310` path.  Unlike model-0/model-1 overlap
+/// switches, action 32 consumes an objective selector (`byte_0x46`) and
+/// fires its stage-tag group when any participating owner reaches state 2.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredModel32Source {
+    pub source_entity_index: u16,
+    pub entity_id: u16,
+    pub entity_rng: u16,
+    pub authored_index: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub stage_tag: u16,
+    pub objective_stage_index: u8,
+    pub word_10: i16,
+    pub max_life: i32,
+    pub life: i32,
+    pub control_flags: u32,
+    pub source_byte_3e: u8,
+    pub position: Position,
+    pub phase: u8,
+    pub fired: bool,
+    pub drawing_enabled: bool,
+    pub active: bool,
+}
+
 /// Authored class-10/model-59 checkpoint row constructed by remc2
 /// `ArriveCheckpoint_4EB50`. The constructor is source-backed here: action
 /// 64/model 59, two entity-local RNG draws for the 800..899 lifetime and
@@ -4618,6 +4645,8 @@ pub struct Level2EconomyState {
     bee_model2_constructor_phase: u8,
     baseline_authored_switch_producers: Vec<Level2AuthoredSwitchProducerSource>,
     authored_switch_producers: Vec<Level2AuthoredSwitchProducerSource>,
+    baseline_authored_model32: Vec<Level2AuthoredModel32Source>,
+    authored_model32: Vec<Level2AuthoredModel32Source>,
     baseline_authored_model59: Vec<Level2AuthoredModel59Source>,
     authored_model59: Vec<Level2AuthoredModel59Source>,
     baseline_model13_spawned_children: Vec<Level2Model13SpawnedChild>,
@@ -4827,6 +4856,8 @@ impl Level2EconomyState {
             bee_model2_constructor_phase: 0,
             baseline_authored_switch_producers: Vec::new(),
             authored_switch_producers: Vec::new(),
+            baseline_authored_model32: Vec::new(),
+            authored_model32: Vec::new(),
             baseline_authored_model59: Vec::new(),
             authored_model59: Vec::new(),
             baseline_model13_spawned_children: Vec::new(),
@@ -4974,6 +5005,11 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_switch_producers(&self) -> &[Level2AuthoredSwitchProducerSource] {
         &self.authored_switch_producers
+    }
+
+    #[must_use]
+    pub fn authored_model32(&self) -> &[Level2AuthoredModel32Source] {
+        &self.authored_model32
     }
 
     #[must_use]
@@ -5402,6 +5438,82 @@ impl Level2EconomyState {
         self.source_rng.insert(source_entity_index, entity_rng);
         self.authored_switch_producers.push(source);
         Some(source)
+    }
+
+    /// Allocate an authored class-11/model-32 objective switch through the
+    /// pinned `AddSwitch32_50B80` constructor and `sub_4A310` field writes.
+    pub fn allocate_authored_model32(
+        &mut self,
+        authored_index: u16,
+        stage_tag: u16,
+        objective_stage_index: u8,
+        position: Position,
+    ) -> Option<Level2AuthoredModel32Source> {
+        if stage_tag == 0 || objective_stage_index >= 8 {
+            return None;
+        }
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let mut position = position;
+        position.z = self.terrain.ground_height(position);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let source = Level2AuthoredModel32Source {
+            source_entity_index,
+            entity_id: stage_tag,
+            entity_rng,
+            authored_index,
+            source_class: 11,
+            model: 32,
+            action: 32,
+            stage_tag,
+            objective_stage_index,
+            // The model-32 branch skips SetEntityShiftRot, so NewEvent's
+            // zeroed word_0x10 remains untouched by sub_4A310.
+            word_10: 0,
+            // NewEvent_4A050 defaults maxLife/life to 300. AddSwitch32 does
+            // not alter those words; sub_4A310 copies maxLife to life.
+            max_life: 300,
+            life: 300,
+            // AddSwitchXX clears NewEvent's byte-zero 8 and sets bit 0,
+            // yielding the exact little-endian control dword 1.
+            control_flags: 1,
+            source_byte_3e: source_entity_index as u8,
+            position,
+            phase: 0,
+            fired: false,
+            drawing_enabled: true,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.authored_model32.push(source);
+        Some(source)
+    }
+
+    /// Consume one model-32 source's objective callback. The caller owns the
+    /// objective predicate and downstream group scan; this method only
+    /// applies the source's one-shot drawing/fired transition.
+    fn complete_authored_model32(
+        &mut self,
+        source_slot: u16,
+    ) -> Option<Level2AuthoredModel32Source> {
+        let source = self.authored_model32.iter_mut().find(|source| {
+            source.active && source.source_entity_index == source_slot && !source.fired
+        })?;
+        source.fired = true;
+        source.drawing_enabled = false;
+        Some(*source)
     }
 
     /// Allocate the authored class-10/model-59 checkpoint row from the
@@ -7683,6 +7795,12 @@ impl Level2EconomyState {
             visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::AuthoredSwitchProducer,
+            );
+        }
+        for source in self.authored_model32.iter().filter(|source| source.active) {
+            visit(
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredModel32,
             );
         }
         for source in self.authored_model59.iter().filter(|source| source.active) {
@@ -10859,6 +10977,22 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_model32 = self
+            .authored_model32
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_model32.retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_model32 {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_model59 = self
             .authored_model59
             .iter()
@@ -11328,6 +11462,32 @@ impl Level2EconomyState {
             ]);
             hasher.update(source.stage_tag.to_le_bytes());
             hasher.update(source.word_10.to_le_bytes());
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+        }
+        hasher.update(b"level2-authored-model32-v1");
+        for source in &self.authored_model32 {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_id.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.authored_index.to_le_bytes());
+            hasher.update([
+                source.source_class,
+                source.model,
+                source.action,
+                source.objective_stage_index,
+                source.phase,
+                source.source_byte_3e,
+                u8::from(source.fired),
+                u8::from(source.drawing_enabled),
+                u8::from(source.active),
+            ]);
+            hasher.update(source.stage_tag.to_le_bytes());
+            hasher.update(source.word_10.to_le_bytes());
+            hasher.update(source.max_life.to_le_bytes());
+            hasher.update(source.life.to_le_bytes());
+            hasher.update(source.control_flags.to_le_bytes());
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
@@ -11869,6 +12029,7 @@ impl Level2EconomyState {
         self.authored_bees = self.baseline_authored_bees.clone();
         self.bee_model2_constructor_phase = self.baseline_bee_model2_constructor_phase;
         self.authored_switch_producers = self.baseline_authored_switch_producers.clone();
+        self.authored_model32 = self.baseline_authored_model32.clone();
         self.authored_model59 = self.baseline_authored_model59.clone();
         self.model13_spawned_children = self.baseline_model13_spawned_children.clone();
         self.authored_model6 = self.baseline_authored_model6.clone();
@@ -14712,6 +14873,8 @@ pub struct Level2ResetSession {
     level2_bees_activated: BTreeSet<u16>,
     baseline_level2_switch_producers_activated: BTreeSet<u16>,
     level2_switch_producers_activated: BTreeSet<u16>,
+    baseline_level2_model32_activated: BTreeSet<u16>,
+    level2_model32_activated: BTreeSet<u16>,
     baseline_level2_model76_activated: BTreeSet<u16>,
     level2_model76_activated: BTreeSet<u16>,
     /// Authored class-10/model-22 wind rows consumed by one-shot switches.
@@ -14841,6 +15004,7 @@ pub enum Level2DynamicArenaKind {
     Model76TailSpawn,
     AuthoredClass14,
     AuthoredSwitchProducer,
+    AuthoredModel32,
     AuthoredModel59,
     BeyondSightPulseEffect,
     ManaAttraction,
@@ -14975,6 +15139,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::Model76TailSpawn => 25,
         Level2DynamicArenaKind::AuthoredClass14 => 13,
         Level2DynamicArenaKind::AuthoredSwitchProducer => 27,
+        Level2DynamicArenaKind::AuthoredModel32 => 29,
         Level2DynamicArenaKind::AuthoredModel59 => 28,
         Level2DynamicArenaKind::BeyondSightPulseEffect => 14,
         Level2DynamicArenaKind::ManaAttraction => 12,
@@ -15278,6 +15443,8 @@ impl Level2ResetSession {
             level2_bees_activated: BTreeSet::new(),
             baseline_level2_switch_producers_activated: BTreeSet::new(),
             level2_switch_producers_activated: BTreeSet::new(),
+            baseline_level2_model32_activated: BTreeSet::new(),
+            level2_model32_activated: BTreeSet::new(),
             baseline_level2_model76_activated: BTreeSet::new(),
             level2_model76_activated: BTreeSet::new(),
             baseline_level2_model22_activated: BTreeSet::new(),
@@ -15699,6 +15866,33 @@ impl Level2ResetSession {
             feature.world_position(self.terrain.ground_height(feature.world_position(0)));
         self.economy
             .allocate_authored_model59(authored_index, position)
+    }
+
+    /// Materialize one authored class-11/model-32 objective switch through
+    /// the pinned `AddSwitch32_50B80` constructor and the authored row's
+    /// stage-tag/objective-selector fields.
+    pub fn allocate_level2_authored_model32(
+        &mut self,
+        authored_index: u16,
+    ) -> Option<Level2AuthoredModel32Source> {
+        let feature = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .find(|feature| {
+                feature.index == authored_index && feature.kind == 11 && feature.subtype == 32
+            })?;
+        let stage_tag = u16::try_from(feature.stage_tag).ok()?;
+        let objective_stage_index = u8::try_from(feature.parameter_1).ok()?;
+        let position =
+            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        self.economy.allocate_authored_model32(
+            authored_index,
+            stage_tag,
+            objective_stage_index,
+            position,
+        )
     }
 
     /// Materialize one authored class-10/model-17 Meteor row through the
@@ -16530,8 +16724,11 @@ impl Level2ResetSession {
                 let is_model39 = feature.kind == 10
                     && feature.subtype == 39
                     && matches!(target_group, 1 | 5 | 7 | 26);
+                let is_model32 = feature.kind == 11
+                    && feature.subtype == 32
+                    && matches!(target_group, 1 | 17 | 18);
                 feature.activation_group == i16::try_from(target_group).unwrap_or(-1)
-                    && (is_switch || is_model22 || is_model39 || is_model59)
+                    && (is_switch || is_model22 || is_model39 || is_model59 || is_model32)
             })
             .collect::<Vec<_>>();
         let mut activated = Vec::new();
@@ -16599,6 +16796,31 @@ impl Level2ResetSession {
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
+            if feature.kind == 11 && feature.subtype == 32 {
+                if self.level2_model32_activated.contains(&feature.index)
+                    || self
+                        .economy
+                        .authored_model32()
+                        .iter()
+                        .any(|source| source.authored_index == feature.index)
+                {
+                    continue;
+                }
+                let Some(source) = self.allocate_level2_authored_model32(feature.index) else {
+                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot: producer_slot,
+                        message: format!(
+                            "Level 2 authored model32 group {target_group} row {} could not allocate",
+                            feature.index
+                        ),
+                    });
+                    continue;
+                };
+                self.level2_model32_activated.insert(feature.index);
+                activated.push((feature.index, source.source_entity_index));
+                continue;
+            }
             if self
                 .level2_switch_producers_activated
                 .contains(&feature.index)
@@ -16650,6 +16872,7 @@ impl Level2ResetSession {
             // group-5 class-14/model-54 become visible in this same pass.
             self.activate_level2_authored_mana_attraction_fields(pass);
             self.activate_level2_authored_class14(pass);
+            self.activate_level2_authored_bees(pass);
         }
     }
 
@@ -16684,6 +16907,17 @@ impl Level2ResetSession {
                 .authored_switch_producers()
                 .iter()
                 .filter(|source| source.active && source.fired && source.drawing_enabled)
+                .map(|source| (source.source_entity_index, source.stage_tag)),
+        );
+        // Model-32 disables drawing as part of its successful objective
+        // callback, but `sub_4A1E0` has already consumed its stage tag. Keep
+        // the fired source in the producer view so the same downstream group
+        // remains observable after the source entity is hidden.
+        producers.extend(
+            self.economy
+                .authored_model32()
+                .iter()
+                .filter(|source| source.active && source.fired)
                 .map(|source| (source.source_entity_index, source.stage_tag)),
         );
         producers.sort_unstable_by_key(|(slot, _)| *slot);
@@ -17899,6 +18133,57 @@ impl Level2ResetSession {
         }
     }
 
+    /// Run one authored model-32 objective switch. Pinned
+    /// `AddSwitch0B_20_6F1C0` gates on `byte_0x46 < stageIndex`, scans only
+    /// participating owners, marks the matching objective done, invokes the
+    /// stage-tag group scan, and disables drawing exactly once.
+    fn step_level2_authored_model32(&mut self, pass: u8, source_slot: u16) -> bool {
+        let Some(source) = self
+            .economy
+            .authored_model32()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+            .copied()
+        else {
+            return false;
+        };
+        if source.fired || source.objective_stage_index >= self.runtime.stage_index {
+            return true;
+        }
+        let Some(completed_owner_color) = self
+            .players
+            .iter()
+            .take(usize::from(self.runtime.player_count))
+            .filter(|player| player.active_player_index >= 0)
+            .find_map(|player| {
+                let color = player.player_color_index();
+                self.runtime
+                    .objectives
+                    .get(usize::from(color))
+                    .filter(|objective| {
+                        objective
+                            .stage_selectors
+                            .get(usize::from(source.objective_stage_index))
+                            == Some(&2)
+                    })
+                    .map(|_| color)
+            })
+        else {
+            return true;
+        };
+        let Some(fired_source) = self.economy.complete_authored_model32(source_slot) else {
+            return true;
+        };
+        self.level2_model32_activated
+            .insert(fired_source.authored_index);
+        self.level2_objective_pause = 1;
+        self.level2_objective_done = true;
+        self.runtime
+            .mark_level2_objective_done_for(completed_owner_color);
+        self.activate_level2_authored_switch_group(pass, source_slot, fired_source.stage_tag);
+        true
+    }
+
     /// Dispatch one live dynamic row. The source class-10/model-1 burst
     /// handler falls through to unconditional drawing disable after one
     /// callback; all dynamic families therefore receive one cursor visit.
@@ -17987,6 +18272,9 @@ impl Level2ResetSession {
             }
             Level2DynamicArenaKind::AuthoredSwitchProducer => {
                 self.step_level2_authored_switch_producer(pass, source_slot)
+            }
+            Level2DynamicArenaKind::AuthoredModel32 => {
+                self.step_level2_authored_model32(pass, source_slot)
             }
             Level2DynamicArenaKind::AuthoredModel59 => {
                 self.economy.step_authored_model59_slot(source_slot)
@@ -18125,6 +18413,10 @@ impl Level2ResetSession {
         }
         hasher.update(b"level2-switch-producer-activation-v1");
         for authored_index in &self.level2_switch_producers_activated {
+            hasher.update(authored_index.to_le_bytes());
+        }
+        hasher.update(b"level2-model32-activation-v1");
+        for authored_index in &self.level2_model32_activated {
             hasher.update(authored_index.to_le_bytes());
         }
         hasher.update(b"level2-imported-switch-root-v1");
@@ -18286,6 +18578,7 @@ impl Level2ResetSession {
         self.level2_bees_activated = self.baseline_level2_bees_activated.clone();
         self.level2_switch_producers_activated =
             self.baseline_level2_switch_producers_activated.clone();
+        self.level2_model32_activated = self.baseline_level2_model32_activated.clone();
         self.level2_model76_activated = self.baseline_level2_model76_activated.clone();
         self.level2_model22_activated = self.baseline_level2_model22_activated.clone();
         self.level2_model39_activated = self.baseline_level2_model39_activated.clone();
@@ -31750,7 +32043,7 @@ mod tests {
         let expected_group1_indices = expected_group1_model39_indices
             .iter()
             .copied()
-            .chain([41])
+            .chain([41, 206])
             .collect::<Vec<_>>();
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
@@ -31825,6 +32118,29 @@ mod tests {
         assert!(!switch_indices.contains(&342));
         assert!(switch_indices.contains(&41));
         assert!(switch_indices.contains(&42));
+        let model32 = session
+            .economy()
+            .authored_model32()
+            .iter()
+            .find(|source| source.authored_index == 206)
+            .copied()
+            .expect("group-1 authored model-32 source");
+        assert_eq!(
+            (
+                model32.source_class,
+                model32.model,
+                model32.action,
+                model32.stage_tag,
+                model32.objective_stage_index,
+                model32.word_10,
+                model32.max_life,
+                model32.life,
+                model32.control_flags,
+            ),
+            (11, 32, 32, 17, 1, 0, 300, 300, 1)
+        );
+        assert!(!model32.fired);
+        assert!(model32.drawing_enabled);
 
         // Row 42 is the model-0 overlap gate for row 64; row 64 is the
         // model-1 inverse gate for row 65.  Both transitions are driven by
@@ -32028,6 +32344,94 @@ mod tests {
         assert_eq!(
             session.economy().owner_mana_global(),
             baseline_owner_mana_global
+        );
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_authored_model32_switch_reaches_group17_bees_from_production_turns() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 authored model-32 session");
+        let baseline_hash = session.campaign_state_hash();
+        let authored_features = session.mission().authored_features().to_vec();
+        let feature_position = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("authored model-32 chain row")
+                .world_position(0)
+        };
+
+        // Row 206 is materialized by the real imported row-11 overlap path.
+        // Set only its source objective selector to the remc2 completion
+        // sentinel; the model-32 callback must then scan that selector and
+        // consume group 17, rather than relying on the dedicated group-8
+        // root or a direct allocator call.
+        session.state.position = feature_position(11);
+        session.runtime.objectives[0].stage_selectors[1] = 2;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let row206 = session
+            .economy()
+            .authored_model32()
+            .iter()
+            .find(|source| source.authored_index == 206)
+            .copied()
+            .expect("row-206 model-32 source");
+        assert!(row206.fired);
+        assert!(!row206.drawing_enabled);
+        assert_eq!(session.runtime.objectives[0].done, 1);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group: 17,
+                authored_indices,
+                ..
+            } if *source_slot == row206.source_entity_index
+                && authored_indices.as_ref() == [208]
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 17,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [236]
+                || authored_indices.as_ref() == [237]
+                || authored_indices.as_ref() == [257]
+        )));
+
+        let row208 = session
+            .economy()
+            .authored_model32()
+            .iter()
+            .find(|source| source.authored_index == 208)
+            .copied()
+            .expect("downstream row-208 model-32 source");
+        assert_eq!((row208.stage_tag, row208.objective_stage_index), (18, 2));
+        assert!(!row208.fired);
+        let bee_indices = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .filter(|source| matches!(source.authored_index, 236 | 237 | 257))
+            .map(|source| source.authored_index)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(bee_indices, BTreeSet::from([236, 237, 257]));
+
+        session.reset();
+        assert!(session.economy().authored_model32().is_empty());
+        assert!(
+            session
+                .economy()
+                .authored_bees()
+                .iter()
+                .all(|source| !matches!(source.authored_index, 236 | 237 | 257))
         );
         assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
