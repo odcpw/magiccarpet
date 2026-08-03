@@ -156,5 +156,22 @@ namespace MagicCarpet.Native.Tests
             Assert.That(reset.generation, Is.EqualTo(session.Generation));
             Assert.That(reset.active, Is.EqualTo(0));
         }
+
+        [Test]
+        public void Level2CampaignInvisibleSnapshotBridgeIsReachableAndResetBound()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+            var state = session.InvisibleState();
+            Assert.That(state.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+            Assert.That(state.structSize, Is.EqualTo(80));
+            Assert.That(state.generation, Is.EqualTo(session.Generation));
+            Assert.That(state.active, Is.EqualTo(0));
+            Assert.Throws<System.InvalidOperationException>(() => session.ActivateInvisible());
+
+            session.Reset();
+            var reset = session.InvisibleState();
+            Assert.That(reset.generation, Is.EqualTo(session.Generation));
+            Assert.That(reset.active, Is.EqualTo(0));
+        }
     }
 }

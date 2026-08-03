@@ -113,6 +113,32 @@ namespace MagicCarpet.Native
             NativeSession.Check(status, "submit Level 2 Shield damage");
         }
 
+        internal NativeSim.CampaignInvisibleSnapshot InvisibleState()
+        {
+            var status = NativeSim.mc_native_campaign_invisible_state(
+                Handle,
+                generation,
+                out var state,
+                80);
+            NativeSession.Check(status, "read Level 2 Invisible state");
+            return state;
+        }
+
+        internal NativeSim.CampaignInvisibleSnapshot ActivateInvisible(
+            ushort directionMask = 256,
+            bool helpEnabled = false)
+        {
+            var status = NativeSim.mc_native_campaign_invisible_activate(
+                Handle,
+                generation,
+                directionMask,
+                helpEnabled ? (byte)1 : (byte)0,
+                out var state,
+                80);
+            NativeSession.Check(status, "activate Level 2 Invisible");
+            return state;
+        }
+
         internal NativeSim.CampaignPlayerSnapshot[] Players()
         {
             var status = NativeSim.mc_native_campaign_player_count(

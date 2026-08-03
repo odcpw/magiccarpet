@@ -224,6 +224,35 @@ typedef struct McCampaignShieldSnapshotV2 {
     uint32_t reserved[4];
 } McCampaignShieldSnapshotV2;
 
+/* Additive family-11 Invisible state projection. `active == 0` is the
+ * no-holder reset state; visibility and status fields remain Rust-owned. */
+typedef struct McCampaignInvisibleSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint8_t active;
+    uint8_t tier;
+    uint8_t action;
+    uint8_t parent_visibility_mode;
+    uint16_t holder_entity_index;
+    uint16_t parent_entity_index;
+    int16_t active_value;
+    int16_t activation_value;
+    int16_t countdown;
+    int16_t reserved_0;
+    int32_t mana_cost;
+    int32_t mana_regen_requirement;
+    int32_t parent_mana;
+    int32_t parent_life;
+    int32_t parent_mana_regen;
+    uint32_t parent_status_flags;
+    uint32_t spell_status_flags;
+    int32_t experience_awarded;
+    uint8_t cleanup_requested;
+    uint8_t reserved_1[3];
+    uint32_t reserved[3];
+} McCampaignInvisibleSnapshotV2;
+
 /* Kind 10 is additive; existing McCampaignEventV2 rows are unchanged. */
 enum {
     MC_CAMPAIGN_EVENT_ECONOMY = 10
@@ -293,6 +322,13 @@ int32_t mc_native_campaign_shield_activate(
 int32_t mc_native_campaign_shield_damage_submit(
     uint64_t handle, uint64_t generation, uint16_t target_entity_index,
     int32_t damage, uint16_t attacker_entity_index);
+int32_t mc_native_campaign_invisible_state(
+    uint64_t handle, uint64_t generation,
+    McCampaignInvisibleSnapshotV2 *out_state, uint32_t out_state_size);
+int32_t mc_native_campaign_invisible_activate(
+    uint64_t handle, uint64_t generation, uint16_t direction_mask,
+    uint8_t help_enabled, McCampaignInvisibleSnapshotV2 *out_state,
+    uint32_t out_state_size);
 int32_t mc_native_campaign_session_step(
     uint64_t handle, const McCampaignStepInputV2 *input,
     McCampaignStepSnapshotV2 *out_snapshot, uint32_t out_snapshot_size,
