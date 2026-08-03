@@ -93,7 +93,7 @@ Shader "MagicCarpet/Enhanced/NightSky"
 
             half Stars(half3 direction)
             {
-                half aboveHorizon = smoothstep(0.04h, 0.28h, direction.y);
+                half aboveHorizon = smoothstep(0.015h, 0.14h, direction.y);
                 float2 spherical = float2(
                     atan2(direction.z, direction.x) * 0.15915494 + 0.5,
                     asin(clamp(direction.y, -1.0, 1.0)) * 0.31830988 + 0.5);

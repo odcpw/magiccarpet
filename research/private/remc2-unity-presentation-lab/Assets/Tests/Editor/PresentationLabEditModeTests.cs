@@ -681,6 +681,53 @@ namespace MagicCarpet.PresentationLab.Tests
             }
         }
 
+        [Test]
+        public void EnhancedNightSkyStarsReachOwnerFlightHorizonWithoutCrossingIt()
+        {
+            GameObject root = new GameObject("enhanced-night-sky-owner-horizon-test");
+            Camera camera = root.AddComponent<Camera>();
+            UnityEnhancedNightLighting lighting =
+                root.AddComponent<UnityEnhancedNightLighting>();
+            Material skyboxBefore = RenderSettings.skybox;
+            try
+            {
+                lighting.ApplyDescriptor(
+                    22,
+                    UnityEnhancedNightLightingDescriptor.Level1Night(),
+                    new UnityEnhancedLocalLightRequest[0],
+                    true,
+                    camera);
+
+                Shader skyShader = Shader.Find("MagicCarpet/Enhanced/NightSky");
+                Assert.IsNotNull(skyShader);
+                Assert.IsNotNull(RenderSettings.skybox);
+                Assert.AreEqual(skyShader, RenderSettings.skybox.shader);
+                Assert.That(RenderSettings.skybox.GetFloat("_StarDensity"),
+                    Is.EqualTo(0.025f).Within(0.0001f));
+                Assert.That(RenderSettings.skybox.GetFloat("_StarIntensity"),
+                    Is.EqualTo(0.8f).Within(0.0001f));
+                Assert.That(RenderSettings.skybox.GetFloat("_StarTwinkleStrength"),
+                    Is.EqualTo(0.18f).Within(0.0001f));
+
+                string source = File.ReadAllText(Path.Combine(
+                    Application.dataPath,
+                    "Resources",
+                    "EnhancedNightSky.shader"));
+                StringAssert.Contains(
+                    "half aboveHorizon = smoothstep(0.015h, 0.14h, direction.y);",
+                    source);
+                StringAssert.Contains(
+                    "candidate * (radius + twinkleHalo) * aboveHorizon *",
+                    source);
+            }
+            finally
+            {
+                lighting.ResetForSession();
+                Assert.AreSame(skyboxBefore, RenderSettings.skybox);
+                Object.DestroyImmediate(root);
+            }
+        }
+
         private static UnityEnhancedEntitySnapshot TownEntity(float forwardDepth)
         {
             return new UnityEnhancedEntitySnapshot
