@@ -16066,6 +16066,19 @@ impl Level2ResetSession {
             }
             if let Some(target_group) = target_group {
                 self.activate_level2_authored_switch_group(pass, source_slot, target_group);
+                // `AddSwitch0B_00_6F030` (model 0) and
+                // `CheckpointArrived_6F070` (model 1) both consume their
+                // rooted switch after a successful source overlap decision.
+                if let Some(root) = self
+                    .level2_imported_switch_roots
+                    .iter_mut()
+                    .find(|root| root.source_slot == source_slot)
+                {
+                    root.drawing_enabled = false;
+                }
+                if let Some(entity) = self.entities.get_mut(usize::from(source_slot)) {
+                    entity.disable_drawing();
+                }
             }
         }
     }
@@ -28120,6 +28133,15 @@ mod tests {
                 ..
             } if authored_indices.as_ref() == [110]
         )));
+        assert!(
+            !session
+                .level2_imported_switch_roots
+                .iter()
+                .find(|candidate| candidate.source_slot == root.source_slot)
+                .expect("rooted row-109 switch state")
+                .drawing_enabled
+        );
+        assert!(session.entities()[usize::from(root.source_slot)].drawing_disabled());
         assert_eq!(wind.model, 22);
         assert_eq!(wind.action, 22);
 
@@ -28188,6 +28210,14 @@ mod tests {
             boundary.step_outer_turn(PlayerCommand::default(), 0);
         }
         assert!(boundary.economy().authored_model22().is_empty());
+        assert!(
+            boundary
+                .level2_imported_switch_roots
+                .iter()
+                .find(|candidate| candidate.source_slot == root.source_slot)
+                .expect("boundary row-109 switch state")
+                .drawing_enabled
+        );
 
         let mut dead = inspection
             .level2_reset_session()
@@ -28198,6 +28228,13 @@ mod tests {
             dead.step_outer_turn(PlayerCommand::default(), 0);
         }
         assert!(dead.economy().authored_model22().is_empty());
+        assert!(
+            dead.level2_imported_switch_roots
+                .iter()
+                .find(|candidate| candidate.source_slot == root.source_slot)
+                .expect("dead-player row-109 switch state")
+                .drawing_enabled
+        );
     }
 
     #[test]
@@ -28247,7 +28284,70 @@ mod tests {
                     ..
                 } if *group == target_group && authored_indices.as_ref() == [wind_index]
             )));
+            assert!(
+                !session
+                    .level2_imported_switch_roots
+                    .iter()
+                    .find(|candidate| candidate.source_slot == root.source_slot)
+                    .expect("rooted wind switch state")
+                    .drawing_enabled
+            );
         }
+    }
+
+    #[test]
+    fn level_two_imported_model1_root_hides_after_inverse_overlap_success() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 imported model-1 switch session");
+        // The qualified Level 2 owner fixture currently imports only the
+        // model-0 members of this source family. Rebind one imported root to
+        // the pinned `CheckpointArrived_6F070` model-1 callback so this
+        // production-turn test exercises the inverse-overlap branch without
+        // fabricating a second owner package or weakening its manifest.
+        let root = session
+            .level2_imported_switch_roots
+            .iter()
+            .find(|root| root.model == 0)
+            .copied()
+            .expect("fixture has an imported model-0 root switch");
+        session
+            .level2_imported_switch_roots
+            .iter_mut()
+            .find(|candidate| candidate.source_slot == root.source_slot)
+            .expect("imported root state")
+            .model = 1;
+        session.entities[usize::from(root.source_slot)].model = 1;
+        session.state.position = Position {
+            x: root.position.x.wrapping_add(4_096),
+            y: root.position.y,
+            z: root.position.z,
+        };
+
+        for _ in 0..16 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            if !session
+                .level2_imported_switch_roots
+                .iter()
+                .find(|candidate| candidate.source_slot == root.source_slot)
+                .expect("imported model-1 root state")
+                .drawing_enabled
+            {
+                break;
+            }
+        }
+
+        assert!(
+            !session
+                .level2_imported_switch_roots
+                .iter()
+                .find(|candidate| candidate.source_slot == root.source_slot)
+                .expect("imported model-1 root state")
+                .drawing_enabled
+        );
+        assert!(session.entities()[usize::from(root.source_slot)].drawing_disabled());
     }
 
     #[test]
