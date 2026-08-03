@@ -173,5 +173,22 @@ namespace MagicCarpet.Native.Tests
             Assert.That(reset.generation, Is.EqualTo(session.Generation));
             Assert.That(reset.active, Is.EqualTo(0));
         }
+
+        [Test]
+        public void Level2CampaignBeyondSightSnapshotBridgeIsReachableAndResetBound()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+            var state = session.BeyondSightState();
+            Assert.That(state.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+            Assert.That(state.structSize, Is.EqualTo(80));
+            Assert.That(state.generation, Is.EqualTo(session.Generation));
+            Assert.That(state.active, Is.EqualTo(0));
+            Assert.Throws<System.InvalidOperationException>(() => session.ActivateBeyondSight());
+
+            session.Reset();
+            var reset = session.BeyondSightState();
+            Assert.That(reset.generation, Is.EqualTo(session.Generation));
+            Assert.That(reset.active, Is.EqualTo(0));
+        }
     }
 }

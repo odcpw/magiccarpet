@@ -139,6 +139,32 @@ namespace MagicCarpet.Native
             return state;
         }
 
+        internal NativeSim.CampaignBeyondSightSnapshot BeyondSightState()
+        {
+            var status = NativeSim.mc_native_campaign_beyond_sight_state(
+                Handle,
+                generation,
+                out var state,
+                80);
+            NativeSession.Check(status, "read Level 2 Beyond Sight state");
+            return state;
+        }
+
+        internal NativeSim.CampaignBeyondSightSnapshot ActivateBeyondSight(
+            ushort directionMask = 256,
+            bool helpEnabled = false)
+        {
+            var status = NativeSim.mc_native_campaign_beyond_sight_activate(
+                Handle,
+                generation,
+                directionMask,
+                helpEnabled ? (byte)1 : (byte)0,
+                out var state,
+                80);
+            NativeSession.Check(status, "activate Level 2 Beyond Sight");
+            return state;
+        }
+
         internal NativeSim.CampaignPlayerSnapshot[] Players()
         {
             var status = NativeSim.mc_native_campaign_player_count(

@@ -431,6 +431,35 @@ namespace MagicCarpet.Native
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignBeyondSightSnapshot
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal byte active;
+            internal byte tier;
+            internal byte action;
+            internal byte reserved0;
+            internal ushort holderEntityIndex;
+            internal ushort parentEntityIndex;
+            internal short activeValue;
+            internal short activationValue;
+            internal short countdown;
+            internal short reserved1;
+            internal int manaCost;
+            internal int manaRegenRequirement;
+            internal int parentMana;
+            internal int parentLife;
+            internal int parentManaRegen;
+            internal int experienceAwarded;
+            internal byte cleanupRequested;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
+            internal byte[] reserved2;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 5)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct Command
         {
             internal uint abiVersion;
@@ -1819,6 +1848,22 @@ namespace MagicCarpet.Native
             uint stateSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_beyond_sight_state(
+            ulong handle,
+            ulong generation,
+            out CampaignBeyondSightSnapshot state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_beyond_sight_activate(
+            ulong handle,
+            ulong generation,
+            ushort directionMask,
+            byte helpEnabled,
+            out CampaignBeyondSightSnapshot state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_session_step(
             ulong handle,
             ref CampaignStepInput input,
@@ -2356,6 +2401,7 @@ namespace MagicCarpet.Native
             RequireSize<CampaignEntitySnapshot>(52);
             RequireSize<CampaignShieldSnapshot>(72);
             RequireSize<CampaignInvisibleSnapshot>(80);
+            RequireSize<CampaignBeyondSightSnapshot>(80);
             RequireSize<Command>(32);
             RequireSize<CameraInput>(28);
             RequireSize<SessionSnapshot>(120);
@@ -2413,6 +2459,7 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignEntitySnapshot>(nameof(CampaignEntitySnapshot.reserved), 36);
             RequireOffset<CampaignShieldSnapshot>(nameof(CampaignShieldSnapshot.parentStatusFlags), 48);
             RequireOffset<CampaignInvisibleSnapshot>(nameof(CampaignInvisibleSnapshot.parentStatusFlags), 52);
+            RequireOffset<CampaignBeyondSightSnapshot>(nameof(CampaignBeyondSightSnapshot.experienceAwarded), 52);
             RequireOffset<Command>(nameof(Command.requestedSpell), 14);
             RequireOffset<CameraInput>(nameof(CameraInput.lookYaw), 8);
             RequireOffset<CameraInput>(nameof(CameraInput.reserved), 12);

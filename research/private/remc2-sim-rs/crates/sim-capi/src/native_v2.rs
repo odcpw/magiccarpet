@@ -751,6 +751,36 @@ pub struct McCampaignInvisibleSnapshotV2 {
     pub reserved: [u32; 3],
 }
 
+/// Additive family-12 Beyond Sight state projection for Level 2 campaign
+/// clients. `active == 0` is the no-holder reset state. Beyond Sight owns no
+/// parent status bits; its pulse/effect arena remains Rust-owned.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignBeyondSightSnapshotV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub active: u8,
+    pub tier: u8,
+    pub action: u8,
+    pub reserved_0: u8,
+    pub holder_entity_index: u16,
+    pub parent_entity_index: u16,
+    pub active_value: i16,
+    pub activation_value: i16,
+    pub countdown: i16,
+    pub reserved_1: i16,
+    pub mana_cost: i32,
+    pub mana_regen_requirement: i32,
+    pub parent_mana: i32,
+    pub parent_life: i32,
+    pub parent_mana_regen: i32,
+    pub experience_awarded: i32,
+    pub cleanup_requested: u8,
+    pub reserved_2: [u8; 3],
+    pub reserved: [u32; 5],
+}
+
 /// Additive Rust-owned Level 1 Goat row. The existing 52-byte entity snapshot
 /// remains stable; presentation clients should fetch this family in one bulk
 /// call when they need gameplay and render fields beyond pose.
@@ -7261,6 +7291,87 @@ pub extern "C" fn mc_native_campaign_invisible_activate(
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_beyond_sight_state(
+    handle: u64,
+    generation: u64,
+    out_state: *mut McCampaignBeyondSightSnapshotV2,
+    out_state_size: u32,
+) -> i32 {
+    boundary_value(out_state, out_state_size, || {
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign Beyond Sight state requires a Level 2 campaign session",
+                ));
+            };
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign Beyond Sight generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            Ok(campaign_beyond_sight_snapshot(
+                generation,
+                reset.shared_spells().beyond_sight_state(),
+            ))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_beyond_sight_activate(
+    handle: u64,
+    generation: u64,
+    direction_mask: u16,
+    help_enabled: u8,
+    out_state: *mut McCampaignBeyondSightSnapshotV2,
+    out_state_size: u32,
+) -> i32 {
+    boundary_value(out_state, out_state_size, || {
+        if help_enabled > 1 {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "campaign Beyond Sight help_enabled must be 0 or 1",
+            ));
+        }
+        with_campaign_session_mut(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign Beyond Sight activation requires a Level 2 campaign session",
+                ));
+            };
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign Beyond Sight generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            if !reset
+                .shared_spells_mut()
+                .activate_beyond_sight(direction_mask, help_enabled != 0)
+            {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign Beyond Sight holder is not active",
+                ));
+            }
+            Ok(campaign_beyond_sight_snapshot(
+                generation,
+                reset.shared_spells().beyond_sight_state(),
+            ))
+        })
+    })
+}
+
 /// Execute one additive Level 2 outer turn.  This path deliberately owns a
 /// separate campaign handle and never enters the legacy Level 1 session
 /// dispatcher.  The candidate session is stepped on a clone first so a short
@@ -10344,6 +10455,36 @@ fn campaign_invisible_snapshot(
         snapshot.parent_mana_regen = state.parent_mana_regen;
         snapshot.parent_status_flags = state.parent_status_flags;
         snapshot.spell_status_flags = state.spell_status_flags;
+        snapshot.experience_awarded = state.experience_awarded;
+        snapshot.cleanup_requested = u8::from(state.cleanup_requested);
+    }
+    snapshot
+}
+
+fn campaign_beyond_sight_snapshot(
+    generation: u64,
+    state: Option<sim_core::spell_activation::BeyondSightState>,
+) -> McCampaignBeyondSightSnapshotV2 {
+    let mut snapshot = McCampaignBeyondSightSnapshotV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignBeyondSightSnapshotV2>(),
+        generation,
+        ..McCampaignBeyondSightSnapshotV2::default()
+    };
+    if let Some(state) = state {
+        snapshot.active = 1;
+        snapshot.tier = state.tier;
+        snapshot.action = state.action;
+        snapshot.holder_entity_index = state.holder_entity_index;
+        snapshot.parent_entity_index = state.parent_entity_index;
+        snapshot.active_value = state.active_value;
+        snapshot.activation_value = state.activation_value;
+        snapshot.countdown = state.countdown;
+        snapshot.mana_cost = state.mana_cost;
+        snapshot.mana_regen_requirement = state.mana_regen_requirement;
+        snapshot.parent_mana = state.parent_mana;
+        snapshot.parent_life = state.parent_life;
+        snapshot.parent_mana_regen = state.parent_mana_regen;
         snapshot.experience_awarded = state.experience_awarded;
         snapshot.cleanup_requested = u8::from(state.cleanup_requested);
     }
@@ -15785,6 +15926,7 @@ mod tests {
         assert_eq!(size_of::<McCampaignEntitySnapshotV2>(), 52);
         assert_eq!(size_of::<McCampaignShieldSnapshotV2>(), 72);
         assert_eq!(size_of::<McCampaignInvisibleSnapshotV2>(), 80);
+        assert_eq!(size_of::<McCampaignBeyondSightSnapshotV2>(), 80);
         assert_eq!(size_of::<McGoatSnapshotV2>(), 84);
         assert_eq!(size_of::<McCampaignGoatSnapshotV2>(), 84);
         assert_eq!(size_of::<McGoatBatchV2>(), 64);
@@ -15876,6 +16018,10 @@ mod tests {
         );
         assert_eq!(
             std::mem::offset_of!(McCampaignInvisibleSnapshotV2, parent_status_flags),
+            52
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignBeyondSightSnapshotV2, experience_awarded),
             52
         );
         assert_eq!(std::mem::offset_of!(McGoatSnapshotV2, life), 48);
@@ -17486,6 +17632,167 @@ mod tests {
     }
 
     #[test]
+    fn level2_campaign_beyond_sight_state_and_activation_guard_are_cabi_reachable() {
+        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        let package = level2_package.to_string_lossy();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 2,
+            internal_level: 1,
+            map_type: 0,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut handle = 0;
+        assert_eq!(
+            mc_native_campaign_session_open(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                &raw const selection,
+                &raw mut handle,
+            ),
+            MC_STATUS_OK
+        );
+        let initial_position = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(reset.state.position)
+        })
+        .expect("read initial Level 2 position");
+        let input_command = McCommandV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCommandV2>(),
+            flags: 1,
+            requested_spell: MC_REQUESTED_SPELL_NONE,
+            ..McCommandV2::default()
+        };
+        let mut input = McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation: 0,
+            command: input_command,
+            player_slot: 0,
+            player_x: initial_position.x,
+            player_y: initial_position.y,
+            player_z: initial_position.z,
+            ..McCampaignStepInputV2::default()
+        };
+        let mut snapshot = McCampaignStepSnapshotV2::default();
+        let mut events = [McCampaignEventV2::default(); 1024];
+        let mut event_count = 0;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
+        let source_position = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(reset
+                .shared_spells()
+                .pickups()
+                .iter()
+                .find(|source| source.index == 38)
+                .expect("authored family-12 source")
+                .position)
+        })
+        .expect("read authored family-12 source");
+        input.player_x = source_position.x;
+        input.player_y = source_position.y;
+        input.player_z = source_position.z;
+        let mut acquired = false;
+        for _ in 0..4 {
+            event_count = 0;
+            assert_eq!(
+                mc_native_campaign_session_step(
+                    handle,
+                    &raw const input,
+                    &raw mut snapshot,
+                    struct_size::<McCampaignStepSnapshotV2>(),
+                    events.as_mut_ptr(),
+                    events.len() as u32,
+                    struct_size::<McCampaignEventV2>(),
+                    &raw mut event_count,
+                ),
+                MC_STATUS_OK
+            );
+            acquired |= events[..event_count as usize].iter().any(|event| {
+                event.kind == MC_CAMPAIGN_EVENT_SPELL_ACQUISITION
+                    && event.family == 12
+                    && event.source_slot == 38
+                    && event.flags == 1
+            });
+            if acquired {
+                break;
+            }
+        }
+        assert!(acquired, "C ABI exposes family-12 acquisition");
+        let mut beyond_sight = McCampaignBeyondSightSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_beyond_sight_state(
+                handle,
+                0,
+                &raw mut beyond_sight,
+                struct_size::<McCampaignBeyondSightSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(beyond_sight.active, 1);
+        assert_eq!(beyond_sight.action, 36);
+        assert_eq!(beyond_sight.active_value, 0);
+        assert_eq!(beyond_sight.experience_awarded, 0);
+        let unchanged = beyond_sight;
+        assert_eq!(
+            mc_native_campaign_beyond_sight_state(
+                handle,
+                1,
+                &raw mut beyond_sight,
+                struct_size::<McCampaignBeyondSightSnapshotV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(beyond_sight, unchanged);
+        assert_eq!(
+            mc_native_campaign_beyond_sight_activate(
+                handle,
+                0,
+                256,
+                0,
+                &raw mut beyond_sight,
+                struct_size::<McCampaignBeyondSightSnapshotV2>(),
+            ),
+            MC_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(beyond_sight, unchanged);
+        assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        assert_eq!(
+            mc_native_campaign_beyond_sight_state(
+                handle,
+                1,
+                &raw mut beyond_sight,
+                struct_size::<McCampaignBeyondSightSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(beyond_sight.generation, 1);
+        assert_eq!(beyond_sight.active, 0);
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
     fn level2_campaign_shield_state_activation_and_damage_are_cabi_reachable() {
         let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/l2-debug3.fJ3PaM/level2");
@@ -18512,6 +18819,8 @@ _Static_assert(sizeof(McCampaignPlayerSnapshotV2) == 48, "McCampaignPlayerSnapsh
 _Static_assert(sizeof(McCampaignEntitySnapshotV2) == 52, "McCampaignEntitySnapshotV2 size");
 _Static_assert(sizeof(McCampaignShieldSnapshotV2) == 72, "McCampaignShieldSnapshotV2 size");
 _Static_assert(sizeof(McCampaignInvisibleSnapshotV2) == 80, "McCampaignInvisibleSnapshotV2 size");
+_Static_assert(sizeof(McCampaignBeyondSightSnapshotV2) == 80, "McCampaignBeyondSightSnapshotV2 size");
+_Static_assert(offsetof(McCampaignBeyondSightSnapshotV2, experience_awarded) == 52, "campaign Beyond Sight experience offset");
 _Static_assert(sizeof(McGoatSnapshotV2) == 84, "McGoatSnapshotV2 size");
 _Static_assert(sizeof(McCampaignGoatSnapshotV2) == 84, "McCampaignGoatSnapshotV2 size");
 _Static_assert(sizeof(McGoatBatchV2) == 64, "McGoatBatchV2 size");
