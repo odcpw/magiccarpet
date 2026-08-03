@@ -1827,11 +1827,31 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual(0f, quality.AppliedPostExposure);
             Assert.IsFalse(quality.TemporalUpscalingEnabled);
             Assert.IsNotNull(quality.PostVolume);
+            MotionBlur appliedMotionBlur;
+            Assert.IsTrue(quality.PostVolume.profile.TryGet(out appliedMotionBlur));
+            Assert.IsTrue(quality.MotionBlurEnabled);
+            Assert.That(quality.AppliedMotionBlurIntensity, Is.EqualTo(0.28f).Within(0.0001f));
+            Assert.IsTrue(appliedMotionBlur.active);
+            Assert.AreEqual(MotionBlurMode.CameraOnly, appliedMotionBlur.mode.value);
+            Assert.AreEqual(MotionBlurQuality.High, appliedMotionBlur.quality.value);
+            Assert.That(appliedMotionBlur.intensity.value, Is.EqualTo(0.28f).Within(0.0001f));
+            Assert.That(appliedMotionBlur.clamp.value, Is.EqualTo(0.12f).Within(0.0001f));
             Assert.IsTrue(quality.Apply(
                 UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog),
                 camera,
                 0.35f));
             Assert.AreEqual(0.35f, quality.AppliedPostExposure, 0.0001f);
+            UnityEnhancedQualitySettings reducedMotion =
+                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog);
+            reducedMotion.ReducedMotion = true;
+            reducedMotion.CameraShake = false;
+            reducedMotion.SpeedStreaks = false;
+            reducedMotion.MotionBlur = false;
+            Assert.IsTrue(quality.Apply(reducedMotion, camera));
+            Assert.IsFalse(quality.MotionBlurEnabled);
+            Assert.AreEqual(0f, quality.AppliedMotionBlurIntensity);
+            Assert.IsFalse(appliedMotionBlur.active);
+            Assert.AreEqual(0f, appliedMotionBlur.intensity.value);
             quality.ResetForSession();
 
             Object.DestroyImmediate(gameObject);

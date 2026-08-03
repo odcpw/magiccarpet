@@ -130,11 +130,14 @@ namespace MagicCarpet.PresentationLab
         private const float EnhancedBloomThreshold = 0.85f;
         private const float EnhancedBloomIntensity = 0.65f;
         private const float EnhancedBloomScatter = 0.78f;
+        private const float EnhancedMotionBlurIntensity = 0.28f;
+        private const float EnhancedMotionBlurClamp = 0.12f;
         private static readonly Color EnhancedBloomTint = new Color(1f, 0.38f, 0.12f, 1f);
 
         private Volume volume;
         private VolumeProfile volumeProfile;
         private Bloom bloom;
+        private MotionBlur motionBlur;
         private Tonemapping toneMapping;
         private ColorAdjustments colorGrading;
         private Camera targetCamera;
@@ -155,6 +158,8 @@ namespace MagicCarpet.PresentationLab
         public bool TemporalUpscalingEnabled { get; private set; }
         public bool UsesSpatialUpscaling { get; private set; }
         public bool UsesSupersampling { get; private set; }
+        public bool MotionBlurEnabled { get; private set; }
+        public float AppliedMotionBlurIntensity { get; private set; }
         public float AppliedPostExposure { get; private set; }
         public Volume PostVolume { get { return volume; } }
         public bool OpaqueTextureRequired { get; private set; }
@@ -214,6 +219,19 @@ namespace MagicCarpet.PresentationLab
             bloom.intensity.value = settings.Bloom ? EnhancedBloomIntensity : 0f;
             bloom.scatter.value = EnhancedBloomScatter;
             bloom.tint.value = EnhancedBloomTint;
+            MotionBlurEnabled = settings.MotionBlur;
+            AppliedMotionBlurIntensity = settings.MotionBlur ? EnhancedMotionBlurIntensity : 0f;
+            motionBlur.active = settings.MotionBlur;
+            motionBlur.mode.overrideState = true;
+            motionBlur.mode.value = MotionBlurMode.CameraOnly;
+            motionBlur.quality.overrideState = true;
+            motionBlur.quality.value = settings.Tier == UnityEnhancedQualityTier.WholeHog
+                ? MotionBlurQuality.High
+                : MotionBlurQuality.Medium;
+            motionBlur.intensity.overrideState = true;
+            motionBlur.intensity.value = AppliedMotionBlurIntensity;
+            motionBlur.clamp.overrideState = true;
+            motionBlur.clamp.value = EnhancedMotionBlurClamp;
             toneMapping.active = settings.ToneMapping;
             toneMapping.mode.value = TonemappingMode.ACES;
             colorGrading.active = settings.ColorGrading;
@@ -243,6 +261,8 @@ namespace MagicCarpet.PresentationLab
             TemporalUpscalingEnabled = false;
             UsesSpatialUpscaling = false;
             UsesSupersampling = false;
+            MotionBlurEnabled = false;
+            AppliedMotionBlurIntensity = 0f;
         }
 
         private void RestoreColorTextureSetting()
@@ -273,6 +293,7 @@ namespace MagicCarpet.PresentationLab
             {
                 volumeProfile = volume.profile;
                 bloom = volumeProfile.Add<Bloom>(true);
+                motionBlur = volumeProfile.Add<MotionBlur>(true);
                 toneMapping = volumeProfile.Add<Tonemapping>(true);
                 colorGrading = volumeProfile.Add<ColorAdjustments>(true);
             }
