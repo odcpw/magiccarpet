@@ -751,7 +751,7 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsNotNull(renderer);
             Assert.AreEqual("MagicCarpet/Enhanced/Terrain", renderer.sharedMaterial.shader.name);
             Assert.That(renderer.sharedMaterial.GetFloat("_DetailScale"), Is.EqualTo(0.14f).Within(0.0001f));
-            Assert.That(renderer.sharedMaterial.GetFloat("_DetailStrength"), Is.EqualTo(0.90f).Within(0.0001f));
+            Assert.That(renderer.sharedMaterial.GetFloat("_DetailStrength"), Is.EqualTo(0.35f).Within(0.0001f));
             Assert.That(renderer.sharedMaterial.GetFloat("_SlopeStrength"), Is.EqualTo(0.84f).Within(0.0001f));
             Assert.That(renderer.sharedMaterial.GetFloat("_NormalStrength"), Is.EqualTo(0.48f).Within(0.0001f));
             Assert.That(renderer.sharedMaterial.GetFloat("_RidgeStrength"), Is.EqualTo(0.64f).Within(0.0001f));

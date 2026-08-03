@@ -282,7 +282,7 @@ namespace MagicCarpet.PresentationLab
                     {
                         terrainMaterial.SetFloat("_AmbientBoost", 0.74f);
                         terrainMaterial.SetFloat("_DetailScale", 0.14f);
-                        terrainMaterial.SetFloat("_DetailStrength", 0.90f);
+                        terrainMaterial.SetFloat("_DetailStrength", 0.35f);
                         terrainMaterial.SetColor("_SlopeTint", new Color(0.72f, 0.84f, 1.08f, 1f));
                         terrainMaterial.SetFloat("_SlopeStrength", 0.84f);
                         terrainMaterial.SetFloat("_SpecularStrength", 0.22f);
