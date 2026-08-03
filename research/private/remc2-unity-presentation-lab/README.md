@@ -89,7 +89,9 @@ The runtime accepts `-mc-presentation-mode classic-hd` or
 -mc-asset-cache /absolute/path/to/level1-unity-asset-cache
 ```
 
-Unity Enhanced defaults to the native-resolution `whole-hog` tier. Use
+Unity Enhanced defaults to the `whole-hog` tier. Its world and VFX render at a
+bounded 1.25x internal resolution before resolving to the selected output;
+the indexed owner HUD remains a separate overlay. Use
 `-mc-enhanced-tier low|medium|high|whole-hog` to select the presentation
 quality; the low and medium tiers use URP spatial reconstruction when the
 graphics device supports it, with Unity's built-in fallback otherwise.

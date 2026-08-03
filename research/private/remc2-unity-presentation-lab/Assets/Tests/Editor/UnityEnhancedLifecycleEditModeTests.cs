@@ -1806,7 +1806,9 @@ namespace MagicCarpet.PresentationLab.Tests
             string reason;
             Assert.IsFalse(invalid.TryValidate(out reason));
             Assert.IsTrue(quality.Apply(UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog), camera));
-            Assert.AreEqual(1f, quality.AppliedRenderScale);
+            Assert.AreEqual(1.25f, quality.AppliedRenderScale);
+            Assert.IsTrue(quality.UsesSupersampling);
+            Assert.IsFalse(quality.UsesSpatialUpscaling);
             Assert.AreEqual(0f, quality.AppliedPostExposure);
             Assert.IsFalse(quality.TemporalUpscalingEnabled);
             Assert.IsNotNull(quality.PostVolume);

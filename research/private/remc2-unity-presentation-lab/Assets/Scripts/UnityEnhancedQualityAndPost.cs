@@ -71,7 +71,12 @@ namespace MagicCarpet.PresentationLab
                     settings.RenderScale = 1f;
                     break;
                 default:
-                    settings.RenderScale = 1f;
+                    // Whole Hog renders above the requested output size and
+                    // lets URP resolve that image back to the profile. This
+                    // is the Enhanced high-resolution path: the owner HUD
+                    // remains a separate indexed overlay while the world and
+                    // VFX receive a real supersampled camera render.
+                    settings.RenderScale = 1.25f;
                     break;
             }
             return settings;
@@ -86,9 +91,9 @@ namespace MagicCarpet.PresentationLab
                 return false;
             }
 
-            if (RenderScale < 0.5f || RenderScale > 1f || float.IsNaN(RenderScale) || float.IsInfinity(RenderScale))
+            if (RenderScale < 0.5f || RenderScale > 1.5f || float.IsNaN(RenderScale) || float.IsInfinity(RenderScale))
             {
-                reason = "Enhanced render scale must be between 0.5 and 1.0";
+                reason = "Enhanced render scale must be between 0.5 and 1.5";
                 return false;
             }
 
@@ -116,7 +121,8 @@ namespace MagicCarpet.PresentationLab
     /// <summary>
     /// Applies Enhanced quality to URP's camera, render-scale, and volume
     /// boundaries. Temporal AA/upscaling remains explicitly gated off by
-    /// default; spatial/bilinear URP upscaling is the safe baseline.
+    /// default; lower tiers use spatial FSR reconstruction and Whole Hog uses
+    /// a bounded supersampled world render.
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class UnityEnhancedQualityAndPost : MonoBehaviour
@@ -148,6 +154,7 @@ namespace MagicCarpet.PresentationLab
         public bool AmbientOcclusionRequested { get; private set; }
         public bool TemporalUpscalingEnabled { get; private set; }
         public bool UsesSpatialUpscaling { get; private set; }
+        public bool UsesSupersampling { get; private set; }
         public float AppliedPostExposure { get; private set; }
         public Volume PostVolume { get { return volume; } }
         public bool OpaqueTextureRequired { get; private set; }
@@ -180,6 +187,7 @@ namespace MagicCarpet.PresentationLab
             TemporalUpscalingEnabled = settings.TemporalUpscalingEnabled;
             UsesSpatialUpscaling = settings.RenderScale < 0.999f;
             AppliedRenderScale = settings.RenderScale;
+            UsesSupersampling = settings.RenderScale > 1.001f;
             camera.allowHDR = settings.Hdr;
             cameraData = camera.GetComponent<UniversalAdditionalCameraData>();
             if (cameraData == null)
@@ -234,6 +242,7 @@ namespace MagicCarpet.PresentationLab
             AppliedPostExposure = 0f;
             TemporalUpscalingEnabled = false;
             UsesSpatialUpscaling = false;
+            UsesSupersampling = false;
         }
 
         private void RestoreColorTextureSetting()
