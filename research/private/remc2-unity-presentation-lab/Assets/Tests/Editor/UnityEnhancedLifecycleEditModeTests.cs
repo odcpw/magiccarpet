@@ -1189,6 +1189,13 @@ namespace MagicCarpet.PresentationLab.Tests
                 "EnhancedSpeedStreaks");
             Assert.IsNotNull(streakRoot);
             Vector3 firstPosition = streakRoot.GetChild(0).localPosition;
+            MeshRenderer streakRenderer = streakRoot.GetChild(0).GetComponent<MeshRenderer>();
+            Assert.IsNotNull(streakRenderer);
+            Assert.That(streakRenderer.sharedMaterial.GetFloat("_GlowIntensity"),
+                Is.EqualTo(1.1f).Within(0.001f));
+            Assert.That(streakRenderer.sharedMaterial.GetFloat("_Opacity"),
+                Is.EqualTo(0.26f).Within(0.001f));
+            Assert.Greater(streakRoot.GetChild(0).localScale.y, 0.25f);
 
             Assert.IsTrue(root.ApplySnapshot(
                 SpeedSnapshot(13, 3, 80, 0, quality)));

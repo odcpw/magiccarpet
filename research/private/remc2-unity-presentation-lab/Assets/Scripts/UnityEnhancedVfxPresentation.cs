@@ -75,13 +75,13 @@ namespace MagicCarpet.PresentationLab
         private const int SpeedReadabilityAuthoritativeCountCap = 4;
         private const float SpeedReadabilityStart = 48f;
         private const float SpeedReadabilityFull = 80f;
-        private const float SpeedReadabilityDepth = 6f;
-        private const float SpeedReadabilityMinimumRadius = 0.34f;
-        private const float SpeedReadabilityMaximumRadius = 0.52f;
-        private const float SpeedReadabilityMinimumLength = 0.04f;
-        private const float SpeedReadabilityMaximumLength = 0.10f;
-        private const float SpeedReadabilityMinimumWidth = 0.005f;
-        private const float SpeedReadabilityMaximumWidth = 0.010f;
+        private const float SpeedReadabilityDepth = 5f;
+        private const float SpeedReadabilityMinimumRadius = 0.38f;
+        private const float SpeedReadabilityMaximumRadius = 0.58f;
+        private const float SpeedReadabilityMinimumLength = 0.06f;
+        private const float SpeedReadabilityMaximumLength = 0.14f;
+        private const float SpeedReadabilityMinimumWidth = 0.010f;
+        private const float SpeedReadabilityMaximumWidth = 0.018f;
         private readonly Stack<UnityEnhancedVfxVisual> pool = new Stack<UnityEnhancedVfxVisual>();
         private readonly Dictionary<ulong, UnityEnhancedVfxVisual> active = new Dictionary<ulong, UnityEnhancedVfxVisual>();
         private readonly Dictionary<UnityEnhancedVfxKind, Mesh> meshes = new Dictionary<UnityEnhancedVfxKind, Mesh>();
@@ -740,13 +740,13 @@ namespace MagicCarpet.PresentationLab
                 }
                 else if (shader == customVfxShader)
                 {
-                    float glow = kind == UnityEnhancedVfxKind.SpeedTrail ? 0.8f :
+                    float glow = kind == UnityEnhancedVfxKind.SpeedTrail ? 1.1f :
                                  kind == UnityEnhancedVfxKind.Weather ? 0.7f :
                                  kind == UnityEnhancedVfxKind.Smoke ? 0.28f :
                                  kind == UnityEnhancedVfxKind.Fire ? 1.5f :
                                  kind == UnityEnhancedVfxKind.SpellCast ? 1.15f :
                                  kind == UnityEnhancedVfxKind.Impact ? 2.0f : 1.6f;
-                    float opacity = kind == UnityEnhancedVfxKind.SpeedTrail ? 0.20f :
+                    float opacity = kind == UnityEnhancedVfxKind.SpeedTrail ? 0.26f :
                                     kind == UnityEnhancedVfxKind.Smoke ? 0.28f :
                                     kind == UnityEnhancedVfxKind.Impact ? 0.80f :
                                     kind == UnityEnhancedVfxKind.SpellCast ? 0.65f : 0.72f;
@@ -759,7 +759,7 @@ namespace MagicCarpet.PresentationLab
                         kind == UnityEnhancedVfxKind.Impact ? 5.0f : 2.5f);
                     material.SetFloat(
                         "_RimStrength",
-                        kind == UnityEnhancedVfxKind.SpeedTrail ? 0.65f :
+                        kind == UnityEnhancedVfxKind.SpeedTrail ? 0.90f :
                         kind == UnityEnhancedVfxKind.Impact ? 1.8f : 1.2f);
                 }
                 else
