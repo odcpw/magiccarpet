@@ -41,6 +41,27 @@ namespace MagicCarpet.PresentationLab
         public int RenderLayer;
     }
 
+    public struct UnityEnhancedFireballViewportEvidence
+    {
+        public bool RendererFound;
+        public bool RendererActive;
+        public ulong StableIdentity;
+        public Vector3 WorldCenter;
+        public Vector3 ViewportCenter;
+        public Vector3 ScreenCenter;
+        public bool CenterInFront;
+        public bool CenterInViewport;
+
+        public bool CaptureReady
+        {
+            get
+            {
+                return RendererFound && RendererActive && CenterInFront &&
+                       CenterInViewport;
+            }
+        }
+    }
+
     [Serializable]
     public sealed class UnityEnhancedOwnerHudFrame
     {
@@ -469,6 +490,62 @@ namespace MagicCarpet.PresentationLab
             }
 
             cameraRig.InterpolateToTarget(alpha);
+        }
+
+        public bool TryGetFireballViewportEvidence(
+            int targetWidth,
+            int targetHeight,
+            out UnityEnhancedFireballViewportEvidence evidence)
+        {
+            evidence = default(UnityEnhancedFireballViewportEvidence);
+            Camera camera = cameraRig == null ? null : cameraRig.PresentationCamera;
+            if (State != UnityEnhancedLifecycleState.Open || camera == null ||
+                targetWidth <= 0 || targetHeight <= 0)
+            {
+                return false;
+            }
+
+            // This is presentation-only interpolation to the latest accepted
+            // snapshot pose. It never advances or mutates the Rust session.
+            InterpolatePresentation(1f);
+            foreach (KeyValuePair<ulong, GameObject> pair in activeEntities)
+            {
+                GameObject view = pair.Value;
+                UnityEnhancedActorVisualState state = view == null
+                    ? null
+                    : view.GetComponent<UnityEnhancedActorVisualState>();
+                if (state == null || state.Family != (int)UnityEnhancedPresentationFamily.Fire ||
+                    (pair.Key & 0xf0000000UL) != 0x20000000UL ||
+                    state.Renderer == null)
+                {
+                    continue;
+                }
+
+                evidence.RendererFound = true;
+                evidence.RendererActive = state.Renderer.enabled &&
+                                          state.Renderer.gameObject.activeInHierarchy;
+                evidence.StableIdentity = pair.Key;
+                if (!evidence.RendererActive)
+                {
+                    return true;
+                }
+
+                evidence.WorldCenter = state.Renderer.bounds.center;
+                evidence.ViewportCenter = camera.WorldToViewportPoint(evidence.WorldCenter);
+                evidence.CenterInFront = evidence.ViewportCenter.z > camera.nearClipPlane;
+                evidence.CenterInViewport = evidence.CenterInFront &&
+                                            evidence.ViewportCenter.x >= 0f &&
+                                            evidence.ViewportCenter.x <= 1f &&
+                                            evidence.ViewportCenter.y >= 0f &&
+                                            evidence.ViewportCenter.y <= 1f;
+                evidence.ScreenCenter = new Vector3(
+                    evidence.ViewportCenter.x * targetWidth,
+                    evidence.ViewportCenter.y * targetHeight,
+                    evidence.ViewportCenter.z);
+                return true;
+            }
+
+            return false;
         }
 
         public void ResetPresentation(ulong nextGeneration)

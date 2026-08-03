@@ -82,6 +82,8 @@ namespace MagicCarpet.PresentationLab.Editor
                 int captureFrame = -1;
                 byte[] pngBytes = null;
                 ulong resolvedHash = 0;
+                UnityEnhancedFireballViewportEvidence fireballEvidence =
+                    default(UnityEnhancedFireballViewportEvidence);
 
                 for (int frame = 0; frame < RouteFrameLimit; frame++)
                 {
@@ -97,9 +99,25 @@ namespace MagicCarpet.PresentationLab.Editor
                     }
 
                     castSent |= cast;
-                    if (!castSent || source.LastEventCount <= 0 ||
-                        enhanced.VfxPresentation == null ||
-                        enhanced.VfxPresentation.ActiveEffectCount <= 0)
+                    if (!castSent || source.ActiveProjectileCount <= 0)
+                    {
+                        continue;
+                    }
+
+                    // VFX events are only a spawn signal. Capture only after
+                    // the authoritative Fire-family projectile renderer itself
+                    // is active and projects into the capture viewport.
+                    UnityEnhancedFireballViewportEvidence candidate;
+                    if (!enhanced.TryGetFireballViewportEvidence(
+                            CaptureWidth,
+                            CaptureHeight,
+                            out candidate))
+                    {
+                        continue;
+                    }
+
+                    fireballEvidence = candidate;
+                    if (!candidate.CaptureReady)
                     {
                         continue;
                     }
@@ -126,8 +144,12 @@ namespace MagicCarpet.PresentationLab.Editor
                         "owner Fireball route produced no live event frame" +
                         " cast_sent=" + castSent +
                         " last_event_count=" + source.LastEventCount +
-                        " active_effects=" +
-                        (enhanced.VfxPresentation == null ? -1 : enhanced.VfxPresentation.ActiveEffectCount));
+                        " active_projectiles=" + source.ActiveProjectileCount +
+                        " fireball_renderer_found=" + fireballEvidence.RendererFound +
+                        " fireball_renderer_active=" + fireballEvidence.RendererActive +
+                        " fireball_center_in_front=" + fireballEvidence.CenterInFront +
+                        " fireball_center_in_viewport=" + fireballEvidence.CenterInViewport +
+                        " fireball_viewport_center=" + fireballEvidence.ViewportCenter);
                     return;
                 }
 
@@ -158,6 +180,14 @@ namespace MagicCarpet.PresentationLab.Editor
                     active_effect_count = enhanced.VfxPresentation.ActiveEffectCount,
                     active_entity_count = source.ActiveEntityCount,
                     active_visual_count = enhanced.ActorPresentation.ActiveVisualCount,
+                    fireball_renderer_found = fireballEvidence.RendererFound,
+                    fireball_renderer_active = fireballEvidence.RendererActive,
+                    fireball_capture_ready = fireballEvidence.CaptureReady,
+                    fireball_center_in_front = fireballEvidence.CenterInFront,
+                    fireball_center_in_viewport = fireballEvidence.CenterInViewport,
+                    fireball_world_center = fireballEvidence.WorldCenter,
+                    fireball_viewport_center = fireballEvidence.ViewportCenter,
+                    fireball_screen_center = fireballEvidence.ScreenCenter,
                     source_generation = source.Generation.ToString(),
                     source_tick = source.Tick.ToString(),
                     png_file = Path.GetFileName(outputPath),
@@ -168,11 +198,15 @@ namespace MagicCarpet.PresentationLab.Editor
 
                 Debug.Log(
                     "OWNER UNITY ENHANCED FIREBALL EVENT CAPTURE PASS: frame=" + captureFrame +
-                    " tick=" + source.Tick +
-                    " events=" + source.LastEventCount +
-                    " vfx_events=" + source.LastVfxEventCount +
-                    " active_effects=" + enhanced.VfxPresentation.ActiveEffectCount +
-                    " output_directory=" + captureDirectory +
+                        " tick=" + source.Tick +
+                        " events=" + source.LastEventCount +
+                        " vfx_events=" + source.LastVfxEventCount +
+                        " active_effects=" + enhanced.VfxPresentation.ActiveEffectCount +
+                        " fireball_renderer_active=" + fireballEvidence.RendererActive +
+                        " fireball_capture_ready=" + fireballEvidence.CaptureReady +
+                        " fireball_viewport_center=" + fireballEvidence.ViewportCenter +
+                        " fireball_screen_center=" + fireballEvidence.ScreenCenter +
+                        " output_directory=" + captureDirectory +
                     " visual_review_status=not-reviewed" +
                     " owner_inputs_external=true" +
                     " png_sha256=" + fileSha256);
@@ -258,6 +292,14 @@ namespace MagicCarpet.PresentationLab.Editor
             public int active_effect_count;
             public int active_entity_count;
             public int active_visual_count;
+            public bool fireball_renderer_found;
+            public bool fireball_renderer_active;
+            public bool fireball_capture_ready;
+            public bool fireball_center_in_front;
+            public bool fireball_center_in_viewport;
+            public Vector3 fireball_world_center;
+            public Vector3 fireball_viewport_center;
+            public Vector3 fireball_screen_center;
             public string source_generation;
             public string source_tick;
             public string png_file;

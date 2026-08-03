@@ -728,6 +728,61 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void FireballCaptureGateRequiresFrontInViewportRenderer()
+        {
+            GameObject gameObject = new GameObject("enhanced-fireball-visibility-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+            ulong fireballIdentity = 0x0000000820000001UL;
+            UnityEnhancedWorldSnapshot snapshot = new UnityEnhancedWorldSnapshot
+            {
+                Generation = 8,
+                Tick = 1,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Entities = new[]
+                {
+                    new UnityEnhancedEntitySnapshot
+                    {
+                        StableIdentity = fireballIdentity,
+                        Generation = 8,
+                        Position = new Vector3(0f, 0f, 5f),
+                        Rotation = Quaternion.identity,
+                        Visible = true,
+                        PresentationFamily = (int)UnityEnhancedPresentationFamily.Fire,
+                        RenderLayer = 2201
+                    }
+                }
+            };
+
+            Assert.IsTrue(root.ApplySnapshot(snapshot));
+            UnityEnhancedFireballViewportEvidence evidence;
+            Assert.IsTrue(root.TryGetFireballViewportEvidence(1280, 720, out evidence));
+            Assert.IsTrue(evidence.RendererFound);
+            Assert.IsTrue(evidence.RendererActive);
+            Assert.IsTrue(evidence.CenterInFront);
+            Assert.IsTrue(evidence.CenterInViewport);
+            Assert.IsTrue(evidence.CaptureReady);
+            Assert.That(evidence.ViewportCenter.x, Is.EqualTo(0.5f).Within(0.02f));
+
+            snapshot.Tick = 2;
+            snapshot.Entities[0].Position = new Vector3(0f, 0f, -5f);
+            Assert.IsTrue(root.ApplySnapshot(snapshot));
+            Assert.IsTrue(root.TryGetFireballViewportEvidence(1280, 720, out evidence));
+            Assert.IsFalse(evidence.CenterInFront);
+            Assert.IsFalse(evidence.CaptureReady);
+
+            snapshot.Tick = 3;
+            snapshot.Entities[0].Position = new Vector3(100f, 0f, 5f);
+            Assert.IsTrue(root.ApplySnapshot(snapshot));
+            Assert.IsTrue(root.TryGetFireballViewportEvidence(1280, 720, out evidence));
+            Assert.IsTrue(evidence.CenterInFront);
+            Assert.IsFalse(evidence.CenterInViewport);
+            Assert.IsFalse(evidence.CaptureReady);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void NightLightingUsesDeterministicQualityCaps()
         {
             GameObject gameObject = new GameObject("enhanced-lighting-test");
