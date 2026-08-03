@@ -680,6 +680,28 @@ pub struct McCampaignWorldInfoV2 {
     pub reserved: [u32; 4],
 }
 
+/// Generation-bound mutable terrain metadata for a Level 2 campaign handle.
+/// This is deliberately a distinct record from the sealed Level 1 terrain
+/// state: clients must not accidentally pair a Level 2 reset with the legacy
+/// session path.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignTerrainStateV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub tick: u64,
+    pub mutation_sequence: u64,
+    pub terrain_hash: u64,
+    pub width: u16,
+    pub height: u16,
+    pub plane_count: u8,
+    pub hash_schema: u8,
+    pub authority: u8,
+    pub reserved_0: u8,
+    pub reserved: [u32; 4],
+}
+
 /// Bounded common player participation and player/entity relation row.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -7799,6 +7821,113 @@ pub extern "C" fn mc_native_campaign_world_info(
                 reset_state_hash: hash,
                 reserved: [0; 4],
             })
+        })
+    })
+}
+
+fn with_level2_campaign_terrain<T>(
+    handle: u64,
+    generation: u64,
+    operation: impl FnOnce(&Level2ResetSession) -> AbiResult<T>,
+) -> AbiResult<T> {
+    with_campaign_session(handle, |session| {
+        if generation != session.generation {
+            return Err(AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                format!(
+                    "campaign terrain generation {} does not match session generation {}",
+                    generation, session.generation
+                ),
+            ));
+        }
+        let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "campaign terrain requires a Level 2 campaign session",
+            ));
+        };
+        operation(reset)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_terrain_state(
+    handle: u64,
+    generation: u64,
+    out_state: *mut McCampaignTerrainStateV2,
+    out_state_size: u32,
+) -> i32 {
+    boundary_value(out_state, out_state_size, || {
+        with_level2_campaign_terrain(handle, generation, |reset| {
+            Ok(McCampaignTerrainStateV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McCampaignTerrainStateV2>(),
+                generation,
+                tick: reset.state.tick,
+                mutation_sequence: reset.terrain.mutation_sequence(),
+                terrain_hash: reset.terrain_hash(),
+                width: 256,
+                height: 256,
+                plane_count: 6,
+                hash_schema: 1,
+                authority: MC_AUTHORITY_SESSION_TERRAIN_LIVE,
+                reserved_0: 0,
+                reserved: [0; 4],
+            })
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_terrain_plane_length(
+    handle: u64,
+    generation: u64,
+    kind: u32,
+    out_count: *mut u32,
+) -> i32 {
+    boundary_value(out_count, struct_size::<u32>(), || {
+        with_level2_campaign_terrain(handle, generation, |reset| {
+            validate_plane_kind(reset.terrain.planes(), kind)?;
+            Ok(u32::try_from(TERRAIN_CELLS).expect("terrain count fits u32"))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_terrain_plane_copy_u8(
+    handle: u64,
+    generation: u64,
+    kind: u32,
+    buffer: *mut u8,
+    capacity: u32,
+    out_written: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_written, "out_written")?;
+        with_level2_campaign_terrain(handle, generation, |reset| {
+            let values = terrain_u8_plane(reset.terrain.planes(), kind)?;
+            copy_slice(values, buffer, capacity, out_written)
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_terrain_entity_indices_copy(
+    handle: u64,
+    generation: u64,
+    buffer: *mut i16,
+    capacity: u32,
+    out_written: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_written, "out_written")?;
+        with_level2_campaign_terrain(handle, generation, |reset| {
+            copy_slice(
+                &reset.terrain.planes().entity_indices,
+                buffer,
+                capacity,
+                out_written,
+            )
         })
     })
 }
@@ -16448,6 +16577,7 @@ mod tests {
             40
         );
         assert_eq!(size_of::<McCampaignWorldInfoV2>(), 64);
+        assert_eq!(size_of::<McCampaignTerrainStateV2>(), 64);
         assert_eq!(size_of::<McCampaignPlayerSnapshotV2>(), 48);
         assert_eq!(size_of::<McCampaignEntitySnapshotV2>(), 52);
         assert_eq!(size_of::<McCampaignShieldSnapshotV2>(), 72);
@@ -16531,6 +16661,12 @@ mod tests {
             std::mem::offset_of!(McCampaignWorldInfoV2, reset_state_hash),
             40
         );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignTerrainStateV2, mutation_sequence),
+            24
+        );
+        assert_eq!(std::mem::offset_of!(McCampaignTerrainStateV2, width), 40);
+        assert_eq!(std::mem::offset_of!(McCampaignTerrainStateV2, reserved), 48);
         assert_eq!(std::mem::offset_of!(McCampaignPlayerSnapshotV2, turn), 16);
         assert_eq!(
             std::mem::offset_of!(McCampaignPlayerSnapshotV2, reserved),
@@ -17500,6 +17636,151 @@ mod tests {
             MC_STATUS_STRUCT_TOO_SMALL
         );
         assert_eq!(handle, 0);
+    }
+
+    #[test]
+    fn level2_campaign_terrain_planes_are_generation_bound_and_reset_exact() {
+        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        let inspection =
+            NativeWorld::inspect_level2(&level2_package).expect("qualified Level 2 package");
+        let expected = inspection
+            .level2_reset_session()
+            .expect("Level 2 reset session");
+        let expected_planes = expected.terrain.planes();
+        let handle = open_level2_campaign_handle();
+
+        let mut state = McCampaignTerrainStateV2::default();
+        assert_eq!(
+            mc_native_campaign_terrain_state(
+                handle,
+                0,
+                &raw mut state,
+                struct_size::<McCampaignTerrainStateV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(state.generation, 0);
+        assert_eq!(state.tick, 0);
+        assert_eq!(state.mutation_sequence, 0);
+        assert_eq!(
+            (state.width, state.height, state.plane_count),
+            (256, 256, 6)
+        );
+        assert_eq!(state.hash_schema, 1);
+        assert_eq!(state.authority, MC_AUTHORITY_SESSION_TERRAIN_LIVE);
+        assert_eq!(state.terrain_hash, expected.terrain_hash());
+
+        for (kind, expected_values) in [
+            (MC_TERRAIN_TYPES_U8, expected_planes.terrain_types.as_ref()),
+            (
+                MC_TERRAIN_HEIGHT_U8,
+                expected_planes.ground_heights.as_ref(),
+            ),
+            (MC_TERRAIN_SHADE_U8, expected_planes.shading.as_ref()),
+            (MC_TERRAIN_ANGLE_U8, expected_planes.angles.as_ref()),
+            (
+                MC_TERRAIN_SECONDARY_U8,
+                expected_planes.secondary_heights.as_ref(),
+            ),
+        ] {
+            let mut count = 0;
+            assert_eq!(
+                mc_native_campaign_terrain_plane_length(handle, 0, kind, &raw mut count,),
+                MC_STATUS_OK
+            );
+            assert_eq!(count as usize, expected_values.len());
+            let mut values = vec![0_u8; count as usize];
+            let mut written = 0;
+            assert_eq!(
+                mc_native_campaign_terrain_plane_copy_u8(
+                    handle,
+                    0,
+                    kind,
+                    values.as_mut_ptr(),
+                    count,
+                    &raw mut written,
+                ),
+                MC_STATUS_OK
+            );
+            assert_eq!(written, count);
+            assert_eq!(values, expected_values);
+        }
+
+        let mut entity_count = 0;
+        assert_eq!(
+            mc_native_campaign_terrain_plane_length(
+                handle,
+                0,
+                MC_TERRAIN_ENTITY_INDEX_I16,
+                &raw mut entity_count,
+            ),
+            MC_STATUS_OK
+        );
+        let mut entity_indices = vec![0_i16; entity_count as usize];
+        let mut entity_written = 0;
+        assert_eq!(
+            mc_native_campaign_terrain_entity_indices_copy(
+                handle,
+                0,
+                entity_indices.as_mut_ptr(),
+                entity_count,
+                &raw mut entity_written,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(entity_written, entity_count);
+        assert_eq!(entity_indices, expected_planes.entity_indices.as_ref());
+
+        let mut stale_state = McCampaignTerrainStateV2::default();
+        assert_eq!(
+            mc_native_campaign_terrain_state(
+                handle,
+                1,
+                &raw mut stale_state,
+                struct_size::<McCampaignTerrainStateV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+
+        assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        let mut reset_state = McCampaignTerrainStateV2::default();
+        assert_eq!(
+            mc_native_campaign_terrain_state(
+                handle,
+                1,
+                &raw mut reset_state,
+                struct_size::<McCampaignTerrainStateV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(reset_state.generation, 1);
+        assert_eq!(reset_state.terrain_hash, state.terrain_hash);
+        let mut reset_types = vec![0_u8; TERRAIN_CELLS];
+        let mut reset_written = 0;
+        assert_eq!(
+            mc_native_campaign_terrain_plane_copy_u8(
+                handle,
+                1,
+                MC_TERRAIN_TYPES_U8,
+                reset_types.as_mut_ptr(),
+                reset_types.len() as u32,
+                &raw mut reset_written,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(reset_written as usize, TERRAIN_CELLS);
+        assert_eq!(reset_types, expected_planes.terrain_types.as_ref());
+        assert_eq!(
+            mc_native_campaign_terrain_state(
+                handle,
+                0,
+                &raw mut stale_state,
+                struct_size::<McCampaignTerrainStateV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
     }
 
     #[test]
@@ -20022,6 +20303,7 @@ _Static_assert(offsetof(McCampaignGoatEventV2, sound_id) == 40, "campaign goat s
 _Static_assert(offsetof(McCampaignGoatEventV2, asset_ref_index) == 52, "campaign goat asset offset");
 _Static_assert(offsetof(McCampaignStepSnapshotV2, dispatch_hash) == 40, "campaign step hash offset");
 _Static_assert(sizeof(McCampaignWorldInfoV2) == 64, "McCampaignWorldInfoV2 size");
+_Static_assert(sizeof(McCampaignTerrainStateV2) == 64, "McCampaignTerrainStateV2 size");
 _Static_assert(sizeof(McCampaignPlayerSnapshotV2) == 48, "McCampaignPlayerSnapshotV2 size");
 _Static_assert(sizeof(McCampaignEntitySnapshotV2) == 52, "McCampaignEntitySnapshotV2 size");
 _Static_assert(sizeof(McCampaignShieldSnapshotV2) == 72, "McCampaignShieldSnapshotV2 size");
@@ -20090,6 +20372,9 @@ _Static_assert(offsetof(McObjectiveSnapshotV2, reserved) == 24, "objective reser
 _Static_assert(offsetof(McEntitySnapshotV2, reserved) == 36, "entity reserved offset");
 _Static_assert(offsetof(McCampaignSelectionV2, reserved) == 16, "campaign selection reserved offset");
 _Static_assert(offsetof(McCampaignWorldInfoV2, reset_state_hash) == 40, "campaign world hash offset");
+_Static_assert(offsetof(McCampaignTerrainStateV2, mutation_sequence) == 24, "campaign terrain mutation offset");
+_Static_assert(offsetof(McCampaignTerrainStateV2, width) == 40, "campaign terrain dimensions offset");
+_Static_assert(offsetof(McCampaignTerrainStateV2, reserved) == 48, "campaign terrain reserved offset");
 _Static_assert(offsetof(McCampaignPlayerSnapshotV2, turn) == 16, "campaign player turn offset");
 _Static_assert(offsetof(McCampaignPlayerSnapshotV2, reserved) == 32, "campaign player reserved offset");
 _Static_assert(offsetof(McCampaignEntitySnapshotV2, reserved) == 36, "campaign entity reserved offset");

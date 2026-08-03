@@ -355,6 +355,25 @@ namespace MagicCarpet.Native
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignTerrainState
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal ulong tick;
+            internal ulong mutationSequence;
+            internal ulong terrainHash;
+            internal ushort width;
+            internal ushort height;
+            internal byte planeCount;
+            internal byte hashSchema;
+            internal byte authority;
+            internal byte reserved0;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct CampaignPlayerSnapshot
         {
             internal uint abiVersion;
@@ -1998,6 +2017,37 @@ namespace MagicCarpet.Native
             uint infoSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_terrain_state(
+            ulong handle,
+            ulong generation,
+            out CampaignTerrainState state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_terrain_plane_length(
+            ulong handle,
+            ulong generation,
+            uint kind,
+            out uint count);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_terrain_plane_copy_u8(
+            ulong handle,
+            ulong generation,
+            uint kind,
+            [Out] byte[] buffer,
+            uint capacity,
+            out uint written);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_terrain_entity_indices_copy(
+            ulong handle,
+            ulong generation,
+            [Out] short[] buffer,
+            uint capacity,
+            out uint written);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_player_count(
             ulong handle,
             out uint count);
@@ -2526,6 +2576,7 @@ namespace MagicCarpet.Native
             RequireSize<CampaignGoatEvent>(64);
             RequireSize<CampaignStepSnapshot>(112);
             RequireSize<CampaignWorldInfo>(64);
+            RequireSize<CampaignTerrainState>(64);
             RequireSize<CampaignPlayerSnapshot>(48);
             RequireSize<CampaignEntitySnapshot>(52);
             RequireSize<CampaignShieldSnapshot>(72);
@@ -2590,6 +2641,9 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignGoatEvent>(nameof(CampaignGoatEvent.assetRefIndex), 52);
             RequireOffset<CampaignStepSnapshot>(nameof(CampaignStepSnapshot.dispatchHash), 40);
             RequireOffset<CampaignWorldInfo>(nameof(CampaignWorldInfo.resetStateHash), 40);
+            RequireOffset<CampaignTerrainState>(nameof(CampaignTerrainState.mutationSequence), 24);
+            RequireOffset<CampaignTerrainState>(nameof(CampaignTerrainState.width), 40);
+            RequireOffset<CampaignTerrainState>(nameof(CampaignTerrainState.reserved), 48);
             RequireOffset<CampaignPlayerSnapshot>(nameof(CampaignPlayerSnapshot.turn), 16);
             RequireOffset<CampaignEntitySnapshot>(nameof(CampaignEntitySnapshot.reserved), 36);
             RequireOffset<CampaignShieldSnapshot>(nameof(CampaignShieldSnapshot.parentStatusFlags), 48);

@@ -159,6 +159,95 @@ namespace MagicCarpet.Native
             return info;
         }
 
+        internal NativeSim.CampaignTerrainState TerrainState()
+        {
+            var status = NativeSim.mc_native_campaign_terrain_state(
+                Handle,
+                generation,
+                out var state,
+                64);
+            NativeSession.Check(status, "read Level 2 campaign terrain state");
+            ValidateTerrainState(state, generation);
+            return state;
+        }
+
+        internal static void ValidateTerrainState(
+            NativeSim.CampaignTerrainState state,
+            ulong expectedGeneration)
+        {
+            if (
+                state.abiVersion != NativeSim.AbiVersion ||
+                state.structSize != 64 ||
+                state.generation != expectedGeneration ||
+                state.width != 256 ||
+                state.height != 256 ||
+                state.planeCount != 6 ||
+                state.hashSchema != 1 ||
+                state.authority != NativeSim.SessionTerrainLive ||
+                state.reserved0 != 0 ||
+                !AllZero(state.reserved))
+            {
+                throw new InvalidOperationException(
+                    "native Level 2 terrain state returned invalid generation, " +
+                    "layout, dimensions, hash schema, authority, or reserved state");
+            }
+        }
+
+        internal byte[] TerrainPlane(uint kind)
+        {
+            if (kind == NativeSim.TerrainEntityIndex)
+            {
+                throw new ArgumentException(
+                    "signed entity-index terrain plane requires TerrainEntityIndices()",
+                    nameof(kind));
+            }
+            var status = NativeSim.mc_native_campaign_terrain_plane_length(
+                Handle,
+                generation,
+                kind,
+                out var count);
+            NativeSession.Check(status, "read Level 2 campaign terrain plane length");
+            var values = new byte[checked((int)count)];
+            status = NativeSim.mc_native_campaign_terrain_plane_copy_u8(
+                Handle,
+                generation,
+                kind,
+                values,
+                count,
+                out var written);
+            NativeSession.Check(status, "read Level 2 campaign terrain plane");
+            if (written != count)
+            {
+                throw new InvalidOperationException(
+                    $"Level 2 terrain plane copy wrote {written}, expected {count}");
+            }
+            return values;
+        }
+
+        internal short[] TerrainEntityIndices()
+        {
+            var status = NativeSim.mc_native_campaign_terrain_plane_length(
+                Handle,
+                generation,
+                NativeSim.TerrainEntityIndex,
+                out var count);
+            NativeSession.Check(status, "read Level 2 entity-index terrain length");
+            var values = new short[checked((int)count)];
+            status = NativeSim.mc_native_campaign_terrain_entity_indices_copy(
+                Handle,
+                generation,
+                values,
+                count,
+                out var written);
+            NativeSession.Check(status, "read Level 2 entity-index terrain plane");
+            if (written != count)
+            {
+                throw new InvalidOperationException(
+                    $"Level 2 entity-index terrain copy wrote {written}, expected {count}");
+            }
+            return values;
+        }
+
         internal NativeSim.CampaignShieldSnapshot ShieldState()
         {
             var status = NativeSim.mc_native_campaign_shield_state(
@@ -613,6 +702,11 @@ namespace MagicCarpet.Native
                 return;
             }
             Interlocked.Decrement(ref activeSessionCount);
+        }
+
+        private static bool AllZero(uint[] values)
+        {
+            return values != null && values.All(value => value == 0);
         }
     }
 }

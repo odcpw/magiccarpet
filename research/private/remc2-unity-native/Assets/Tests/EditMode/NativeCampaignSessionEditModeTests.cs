@@ -136,6 +136,63 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void Level2CampaignTerrainIsExactAndGenerationBound()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+
+            var state = session.TerrainState();
+            Assert.That(state.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+            Assert.That(state.structSize, Is.EqualTo(64));
+            Assert.That(state.generation, Is.Zero);
+            Assert.That(state.tick, Is.Zero);
+            Assert.That(state.mutationSequence, Is.Zero);
+            Assert.That(
+                (state.width, state.height, state.planeCount, state.hashSchema),
+                Is.EqualTo(((ushort)256, (ushort)256, (byte)6, (byte)1)));
+            Assert.That(state.authority, Is.EqualTo(NativeSim.SessionTerrainLive));
+            Assert.DoesNotThrow(() =>
+                NativeCampaignSession.ValidateTerrainState(state, 0));
+            var malformed = state;
+            malformed.reserved = new uint[4];
+            malformed.reserved[0] = 1;
+            Assert.Throws<System.InvalidOperationException>(() =>
+                NativeCampaignSession.ValidateTerrainState(malformed, 0));
+
+            var terrainTypes = session.TerrainPlane(NativeSim.TerrainTypes);
+            var groundHeights = session.TerrainPlane(NativeSim.TerrainHeight);
+            var shading = session.TerrainPlane(NativeSim.TerrainShade);
+            var angles = session.TerrainPlane(NativeSim.TerrainAngle);
+            var secondaryHeights = session.TerrainPlane(NativeSim.TerrainSecondary);
+            var entityIndices = session.TerrainEntityIndices();
+            Assert.That(terrainTypes, Has.Length.EqualTo(256 * 256));
+            Assert.That(groundHeights, Has.Length.EqualTo(256 * 256));
+            Assert.That(shading, Has.Length.EqualTo(256 * 256));
+            Assert.That(angles, Has.Length.EqualTo(256 * 256));
+            Assert.That(secondaryHeights, Has.Length.EqualTo(256 * 256));
+            Assert.That(entityIndices, Has.Length.EqualTo(256 * 256));
+            Assert.That(terrainTypes.Distinct().Count(), Is.GreaterThan(1));
+            Assert.That(entityIndices.Any(index => index >= 0), Is.True);
+
+            session.Reset();
+            var reset = session.TerrainState();
+            Assert.That(reset.generation, Is.EqualTo(1));
+            Assert.That(reset.terrainHash, Is.EqualTo(state.terrainHash));
+            CollectionAssert.AreEqual(
+                terrainTypes,
+                session.TerrainPlane(NativeSim.TerrainTypes));
+            CollectionAssert.AreEqual(
+                entityIndices,
+                session.TerrainEntityIndices());
+
+            var stale = NativeSim.mc_native_campaign_terrain_state(
+                session.Handle,
+                0,
+                out var ignored,
+                64);
+            Assert.That(stale, Is.EqualTo(NativeSim.GenerationMismatch));
+        }
+
+        [Test]
         public void Level2CampaignGoatDispatchIsReachableFromManagedSession()
         {
             using var session = NativeCampaignSession.OpenLevel2(Level2Package);

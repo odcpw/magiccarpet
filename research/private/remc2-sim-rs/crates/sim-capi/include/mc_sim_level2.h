@@ -114,6 +114,24 @@ typedef struct McCampaignWorldInfoV2 {
     uint32_t reserved[4];
 } McCampaignWorldInfoV2;
 
+/* Generation-bound mutable terrain metadata for a Level 2 campaign handle.
+ * This is intentionally distinct from the sealed Level 1 terrain state. */
+typedef struct McCampaignTerrainStateV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint64_t tick;
+    uint64_t mutation_sequence;
+    uint64_t terrain_hash;
+    uint16_t width;
+    uint16_t height;
+    uint8_t plane_count;
+    uint8_t hash_schema;
+    uint8_t authority;
+    uint8_t reserved_0;
+    uint32_t reserved[4];
+} McCampaignTerrainStateV2;
+
 typedef struct McCampaignPlayerSnapshotV2 {
     uint32_t abi_version;
     uint32_t struct_size;
@@ -475,6 +493,17 @@ int32_t mc_native_campaign_session_step(
     uint32_t event_element_size, uint32_t *out_event_count);
 int32_t mc_native_campaign_world_info(
     uint64_t handle, McCampaignWorldInfoV2 *out_info, uint32_t out_info_size);
+int32_t mc_native_campaign_terrain_state(
+    uint64_t handle, uint64_t generation,
+    McCampaignTerrainStateV2 *out_state, uint32_t out_state_size);
+int32_t mc_native_campaign_terrain_plane_length(
+    uint64_t handle, uint64_t generation, uint32_t kind, uint32_t *out_count);
+int32_t mc_native_campaign_terrain_plane_copy_u8(
+    uint64_t handle, uint64_t generation, uint32_t kind,
+    uint8_t *buffer, uint32_t capacity, uint32_t *out_written);
+int32_t mc_native_campaign_terrain_entity_indices_copy(
+    uint64_t handle, uint64_t generation, int16_t *buffer,
+    uint32_t capacity, uint32_t *out_written);
 int32_t mc_native_campaign_player_count(uint64_t handle, uint32_t *out_count);
 int32_t mc_native_campaign_objective_count(uint64_t handle, uint32_t *out_count);
 int32_t mc_native_campaign_entity_count(uint64_t handle, uint32_t *out_count);
