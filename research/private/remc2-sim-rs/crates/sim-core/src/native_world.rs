@@ -2932,6 +2932,14 @@ impl RuntimeSnapshot {
             self.bytes[306] = 1;
         }
     }
+
+    #[cfg(test)]
+    fn set_level2_is_level_end(&mut self, state: u8) {
+        if let Some(objective) = self.objectives.get_mut(0) {
+            objective.is_level_end = state;
+            self.bytes[304] = state;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -15015,6 +15023,100 @@ impl Level2ResetSession {
             });
     }
 
+    /// Run the bounded Level 2 model-4 exit-switch trigger for group 31.
+    /// Pinned `AddSwitch0B_04_6F150` consumes the switch only when a live
+    /// model-0 player has `IsLevelEnd != 0`; the resulting group contains one
+    /// class-14/model-3 row whose constructor and callback already exist in
+    /// the typed class-14 seam.
+    fn activate_level2_authored_group31(&mut self, pass: u8) {
+        if self.level2_class14_activated.contains(&244) {
+            return;
+        }
+        if self
+            .runtime
+            .objectives
+            .first()
+            .map_or(0, |objective| objective.is_level_end)
+            == 0
+        {
+            return;
+        }
+        let local_player_is_level_end_candidate = self
+            .entities
+            .get(usize::from(self.state.entity_index))
+            .is_some_and(|entity| entity.active && entity.model == 0);
+        if !local_player_is_level_end_candidate {
+            return;
+        }
+        let Some(root_slot) = self
+            .entities
+            .iter()
+            .filter(|entity| {
+                entity.active
+                    && entity.class == 11
+                    && entity.model == 4
+                    && entity.action == 4
+                    && entity.source_id == 31
+                    && !entity.drawing_disabled()
+            })
+            .min_by_key(|entity| entity.index)
+            .map(|entity| entity.index)
+        else {
+            return;
+        };
+        let group_rows = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .filter(|feature| feature.activation_group == 31)
+            .filter(|feature| feature.kind == 14 && feature.subtype == 3)
+            .collect::<Vec<_>>();
+        if group_rows.len() != 1 {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: root_slot,
+                message: format!(
+                    "Level 2 stage-tag group 31 has {} class-14/model-3 rows, expected 1",
+                    group_rows.len()
+                ),
+            });
+            return;
+        }
+        let feature = group_rows[0];
+        let Some(source_slot) = self
+            .allocate_level2_authored_class14(feature.index)
+            .map(|source| source.source_entity_index)
+        else {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: root_slot,
+                message: format!(
+                    "Level 2 authored class14 row {} could not allocate",
+                    feature.index
+                ),
+            });
+            return;
+        };
+        self.level2_class14_activated.insert(feature.index);
+        if let Some(root) = self.entities.get_mut(usize::from(root_slot)) {
+            root.disable_drawing();
+        }
+        self.dispatch_events
+            .push(Level2DispatchEvent::AuthoredGroupActivated {
+                pass,
+                source_slot: root_slot,
+                group: 31,
+                authored_indices: vec![feature.index].into_boxed_slice(),
+            });
+        debug_assert!(
+            self.economy()
+                .authored_class14()
+                .iter()
+                .any(|row| row.source_entity_index == source_slot)
+        );
+    }
+
     fn live_level2_class11_producers<F>(&self, mut producer_matches: F) -> Vec<(u16, u16)>
     where
         F: FnMut(&EntitySnapshot) -> bool,
@@ -15318,6 +15420,7 @@ impl Level2ResetSession {
         self.economy.rebuild_owner_max_mana_projection();
         self.synchronize_level2_terrain();
         self.activate_level2_authored_group8(pass);
+        self.activate_level2_authored_group31(pass);
         self.activate_level2_authored_model13(pass);
         self.activate_level2_authored_model76(pass);
         self.activate_level2_authored_class14(pass);
@@ -26699,6 +26802,83 @@ mod tests {
                 authored_indices,
                 ..
             } if authored_indices.as_ref() == [244]
+        )));
+        let switch = session
+            .entities()
+            .iter()
+            .find(|entity| {
+                entity.active
+                    && entity.class == 11
+                    && entity.model == 4
+                    && entity.action == 4
+                    && entity.source_id == 31
+            })
+            .expect("live model-4 group-31 switch");
+        assert!(!switch.drawing_disabled());
+    }
+
+    #[test]
+    fn level_two_model4_group31_activates_for_level_end_local_model_zero_player() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-4 exit-switch session");
+        assert_eq!(
+            session.entities()[usize::from(session.state.entity_index)].model,
+            0
+        );
+
+        session.runtime.set_level2_is_level_end(1);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 31,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [244]
+        )));
+        assert!(
+            session
+                .economy()
+                .authored_class14()
+                .iter()
+                .any(|source| source.authored_index == 244),
+            "group 31 must materialize its single class-14/model-3 row"
+        );
+        let switch = session
+            .entities()
+            .iter()
+            .find(|entity| {
+                entity.active
+                    && entity.class == 11
+                    && entity.model == 4
+                    && entity.action == 4
+                    && entity.source_id == 31
+            })
+            .expect("live model-4 group-31 switch");
+        assert!(switch.drawing_disabled());
+    }
+
+    #[test]
+    fn level_two_model4_group31_requires_a_model_zero_local_player() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-4 exit-switch session");
+        session.runtime.set_level2_is_level_end(1);
+        let local_index = usize::from(session.state.entity_index);
+        session.entities[local_index].model = 1;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert!(session.economy().authored_class14().is_empty());
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 31, .. }
         )));
         let switch = session
             .entities()
