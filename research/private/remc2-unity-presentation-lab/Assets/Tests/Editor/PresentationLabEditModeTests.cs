@@ -475,6 +475,50 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void EnhancedTerrainSlopeReliefUsesBoundedAmbientFloor()
+        {
+            Shader shader = Shader.Find("MagicCarpet/Enhanced/Terrain");
+            Assert.IsNotNull(shader);
+            Material material = new Material(shader);
+            try
+            {
+                float slopeStrength = material.GetFloat("_SlopeStrength");
+                Assert.GreaterOrEqual(slopeStrength, 0f);
+                Assert.LessOrEqual(slopeStrength, 1f);
+                Assert.LessOrEqual(
+                    slopeStrength * 0.28f,
+                    0.28f + 0.0001f);
+
+                string source = File.ReadAllText(Path.Combine(
+                    Application.dataPath,
+                    "Resources",
+                    "EnhancedTerrain.shader"));
+                StringAssert.Contains(
+                    "half reliefFace = max(",
+                    source);
+                StringAssert.Contains(
+                    "half ambientRelief = saturate(reliefFace * _SlopeStrength * 0.28h);",
+                    source);
+                StringAssert.Contains(
+                    "half3 ambientFloor = _AmbientBoost * half3(0.60h, 0.73h, 0.96h) *",
+                    source);
+                StringAssert.Contains(
+                    "SampleSH(normalWS) * (1.0h - ambientRelief)",
+                    source);
+                StringAssert.Contains(
+                    "half3 baseColor = saturate(input.color.rgb * _BaseColor.rgb);",
+                    source);
+                StringAssert.Contains(
+                    "ApplyEnhancedAerialPerspective(color, input.positionWS)",
+                    source);
+            }
+            finally
+            {
+                Object.DestroyImmediate(material);
+            }
+        }
+
+        [Test]
         public void EnhancedWorldShadersExposeBoundedAerialPerspectiveContract()
         {
             string[] shaderNames =

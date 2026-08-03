@@ -248,7 +248,19 @@ Shader "MagicCarpet/Enhanced/Terrain"
                     baseColor * (0.72h + ridgeTint * 0.55h) + ridgeTint * 0.028h,
                     ridgeMask * _RidgeStrength);
 
-                half3 lighting = max(SampleSH(normalWS), _AmbientBoost * half3(0.60h, 0.73h, 0.96h));
+                // Let steep authoritative faces fall below the broad night
+                // ambient floor so the existing moon direction can describe
+                // relief instead of flattening every slab to one value.  The
+                // reduction is capped at 28 percent and is presentation-only.
+                half reliefFace = max(
+                    exposedFace,
+                    smoothstep(0.04h, 0.48h, slope));
+                half ambientRelief = saturate(reliefFace * _SlopeStrength * 0.28h);
+                half3 ambientFloor = _AmbientBoost * half3(0.60h, 0.73h, 0.96h) *
+                                     (1.0h - ambientRelief);
+                half3 lighting = max(
+                    SampleSH(normalWS) * (1.0h - ambientRelief),
+                    ambientFloor);
                 Light mainLight = GetMainLight(TransformWorldToShadowCoord(input.positionWS));
                 lighting += EvaluateLight(mainLight, normalWS, viewDirectionWS);
 
