@@ -404,6 +404,56 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void Level2CampaignObjectiveStageBridgeUsesLiveAuthoredPoint()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+            var state = session.ObjectiveStageState();
+            Assert.That(state.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+            Assert.That(state.structSize, Is.EqualTo(48));
+            Assert.That(state.generation, Is.EqualTo(session.Generation));
+            Assert.That(
+                (state.objectiveSlot, state.stageSlot),
+                Is.EqualTo(((byte)0, (byte)3)));
+            Assert.That(state.stageKind, Is.EqualTo(5));
+            Assert.That(state.stageState, Is.EqualTo(1));
+            Assert.That(state.done, Is.EqualTo(0));
+            Assert.That(state.relationDomain, Is.EqualTo(0));
+
+            var malformed = state;
+            malformed.reserved[0] = 1;
+            Assert.Throws<System.InvalidOperationException>(() =>
+                NativeCampaignSession.ValidateObjectiveStageState(
+                    malformed,
+                    session.Generation,
+                    0,
+                    3));
+            malformed = state;
+            malformed.generation = session.Generation + 1;
+            Assert.Throws<System.InvalidOperationException>(() =>
+                NativeCampaignSession.ValidateObjectiveStageState(
+                    malformed,
+                    session.Generation,
+                    0,
+                    3));
+
+            session.Step((ushort)state.axisX, (ushort)state.axisY, 7);
+            var progressed = session.ObjectiveStageState();
+            Assert.That(progressed.stageState, Is.EqualTo(2));
+            Assert.That(progressed.done, Is.EqualTo(0));
+
+            session.Step((ushort)state.axisX, (ushort)state.axisY, 7);
+            var completed = session.ObjectiveStageState();
+            Assert.That(completed.stageState, Is.EqualTo(2));
+            Assert.That(completed.done, Is.EqualTo(1));
+
+            session.Reset();
+            var reset = session.ObjectiveStageState();
+            Assert.That(reset.generation, Is.EqualTo(session.Generation));
+            Assert.That(reset.stageState, Is.EqualTo(1));
+            Assert.That(reset.done, Is.EqualTo(0));
+        }
+
+        [Test]
         public void Level2CampaignInvisibleSnapshotBridgeIsReachableAndResetBound()
         {
             using var session = NativeCampaignSession.OpenLevel2(Level2Package);
@@ -495,7 +545,9 @@ namespace MagicCarpet.Native.Tests
             using var session = NativeCampaignSession.OpenLevel2(Level2Package);
 
             Assert.That(session.SpellPickups(), Is.Empty);
-            session.Step(123, 456, 7);
+            var objective = session.ObjectiveStageState();
+            session.Step((ushort)objective.axisX, (ushort)objective.axisY, 7);
+            session.Step((ushort)objective.axisX, (ushort)objective.axisY, 7);
             var source = session.SpellPickups()
                 .Single(pickup => pickup.authoredIndex == 155);
             Assert.That(source.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
@@ -566,7 +618,9 @@ namespace MagicCarpet.Native.Tests
             using var session = NativeCampaignSession.OpenLevel2(Level2Package);
 
             Assert.That(session.SpellPickups(), Is.Empty);
-            session.Step(123, 456, 7);
+            var objective = session.ObjectiveStageState();
+            session.Step((ushort)objective.axisX, (ushort)objective.axisY, 7);
+            session.Step((ushort)objective.axisX, (ushort)objective.axisY, 7);
             var source = session.SpellPickups()
                 .Single(pickup => pickup.authoredIndex == 156);
             Assert.That(source.abiVersion, Is.EqualTo(NativeSim.AbiVersion));

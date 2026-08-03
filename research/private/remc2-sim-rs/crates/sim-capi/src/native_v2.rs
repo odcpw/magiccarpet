@@ -496,6 +496,31 @@ pub struct McObjectiveSnapshotV2 {
     pub reserved: [u32; 4],
 }
 
+/// Generation-bound Level 2 objective stage state.  The legacy objective
+/// catalog remains frozen-observed; this additive surface reads the mutable
+/// runtime stage and selector state owned by the campaign reset session.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignObjectiveStageSnapshotV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub objective_slot: u8,
+    pub stage_slot: u8,
+    pub is_level_end: u8,
+    pub done: u8,
+    pub text_selector: u8,
+    pub stage_state: u8,
+    pub stage_kind: i8,
+    pub stage_flags: i8,
+    pub axis_x: i16,
+    pub axis_y: i16,
+    pub relation_domain: u8,
+    pub reserved_0: u8,
+    pub relation_value: u16,
+    pub reserved: [u32; 4],
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct McEntitySnapshotV2 {
@@ -8087,6 +8112,68 @@ pub extern "C" fn mc_native_campaign_objectives_copy(
     })
 }
 
+/// Read one mutable Level 2 objective stage from the generation-bound reset
+/// session.  This deliberately does not repurpose the frozen objective-copy
+/// contract: Unity needs the authored stage axes and the live selector state
+/// that the source model-32 switch consumes.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_objective_stage_state(
+    handle: u64,
+    generation: u64,
+    objective_slot: u8,
+    stage_slot: u8,
+    out_state: *mut McCampaignObjectiveStageSnapshotV2,
+    out_state_size: u32,
+) -> i32 {
+    boundary_value(out_state, out_state_size, || {
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign objective stage state requires a Level 2 campaign session",
+                ));
+            };
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign objective stage generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            let runtime = reset.runtime();
+            let objective = runtime
+                .objectives
+                .get(usize::from(objective_slot))
+                .ok_or_else(|| {
+                    AbiError::new(MC_STATUS_BOUNDS, "campaign objective slot is out of bounds")
+                })?;
+            let stage = runtime.stages.get(usize::from(stage_slot)).ok_or_else(|| {
+                AbiError::new(MC_STATUS_BOUNDS, "campaign stage slot is out of bounds")
+            })?;
+            let stage_state = objective
+                .stage_selectors
+                .get(usize::from(stage_slot))
+                .copied()
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_BOUNDS,
+                        "campaign objective stage slot is out of bounds",
+                    )
+                })?;
+            Ok(campaign_objective_stage_snapshot(
+                generation,
+                objective_slot,
+                stage_slot,
+                *objective,
+                stage,
+                stage_state,
+            ))
+        })
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_native_campaign_entities_copy(
     handle: u64,
@@ -13022,6 +13109,49 @@ fn objective_snapshot(
     }
 }
 
+fn campaign_objective_stage_snapshot(
+    generation: u64,
+    objective_slot: u8,
+    stage_slot: u8,
+    objective: sim_core::native_world::RuntimeObjective,
+    stage: &sim_core::native_world::RuntimeStage,
+    stage_state: u8,
+) -> McCampaignObjectiveStageSnapshotV2 {
+    let (relation_domain, relation_value) = match stage.relation {
+        sim_core::native_world::RuntimeRelation::Scalar(value) => (
+            0,
+            u16::try_from(value).expect("objective scalar relation fits u16"),
+        ),
+        sim_core::native_world::RuntimeRelation::AuthoredFeature(index) => (1, index),
+        sim_core::native_world::RuntimeRelation::LiveEntity(index) => (2, index),
+        sim_core::native_world::RuntimeRelation::LiveEntityIndex(index) => (3, index),
+        sim_core::native_world::RuntimeRelation::AxisScalar(value) => (
+            0,
+            u16::try_from(value).expect("objective axis relation fits u16"),
+        ),
+        sim_core::native_world::RuntimeRelation::Null => (0, 0),
+    };
+    McCampaignObjectiveStageSnapshotV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignObjectiveStageSnapshotV2>(),
+        generation,
+        objective_slot,
+        stage_slot,
+        is_level_end: objective.is_level_end,
+        done: objective.done,
+        text_selector: objective.text_selector,
+        stage_state,
+        stage_kind: stage.kind,
+        stage_flags: stage.flags,
+        axis_x: stage.axis_x,
+        axis_y: stage.axis_y,
+        relation_domain,
+        reserved_0: 0,
+        relation_value,
+        reserved: [0; 4],
+    }
+}
+
 fn campaign_player_snapshot(
     player: &sim_core::native_world::PlayerSnapshot,
     active: bool,
@@ -16049,16 +16179,20 @@ mod tests {
     }
 
     fn level2_objective_point(handle: u64) -> (u16, u16) {
-        with_campaign_session(handle, |session| {
-            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
-                unreachable!("campaign fixture opened as Level 2")
-            };
-            let stage = reset.runtime().stages.get(3).ok_or_else(|| {
-                AbiError::new(MC_STATUS_BOUNDS, "selected objective stage missing")
-            })?;
-            Ok((stage.axis_x as u16, stage.axis_y as u16))
-        })
-        .expect("read source objective point")
+        let mut state = McCampaignObjectiveStageSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_objective_stage_state(
+                handle,
+                0,
+                0,
+                3,
+                &raw mut state,
+                struct_size::<McCampaignObjectiveStageSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!((state.stage_kind, state.stage_state), (5, 1));
+        (state.axis_x as u16, state.axis_y as u16)
     }
 
     fn open_fixture() -> u64 {
@@ -16564,6 +16698,7 @@ mod tests {
         assert_eq!(size_of::<McCameraInputV2>(), 28);
         assert_eq!(size_of::<McSessionSnapshotV2>(), 120);
         assert_eq!(size_of::<McObjectiveSnapshotV2>(), 40);
+        assert_eq!(size_of::<McCampaignObjectiveStageSnapshotV2>(), 48);
         assert_eq!(size_of::<McEntitySnapshotV2>(), 52);
         assert_eq!(size_of::<McCampaignSelectionV2>(), 32);
         assert_eq!(size_of::<McCampaignStepInputV2>(), 80);
@@ -16668,6 +16803,18 @@ mod tests {
             13
         );
         assert_eq!(std::mem::offset_of!(McObjectiveSnapshotV2, reserved), 24);
+        assert_eq!(
+            std::mem::offset_of!(McCampaignObjectiveStageSnapshotV2, axis_x),
+            24
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignObjectiveStageSnapshotV2, relation_value),
+            30
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignObjectiveStageSnapshotV2, reserved),
+            32
+        );
         assert_eq!(std::mem::offset_of!(McEntitySnapshotV2, reserved), 36);
         assert_eq!(std::mem::offset_of!(McCampaignSelectionV2, reserved), 16);
         assert_eq!(
@@ -17649,6 +17796,138 @@ mod tests {
             MC_STATUS_STRUCT_TOO_SMALL
         );
         assert_eq!(handle, 0);
+    }
+
+    #[test]
+    fn level2_campaign_objective_stage_state_is_live_generation_bound() {
+        let handle = open_level2_campaign_handle();
+        let mut state = McCampaignObjectiveStageSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_objective_stage_state(
+                handle,
+                0,
+                0,
+                3,
+                &raw mut state,
+                struct_size::<McCampaignObjectiveStageSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(state.generation, 0);
+        assert_eq!((state.objective_slot, state.stage_slot), (0, 3));
+        assert_eq!((state.stage_kind, state.stage_state), (5, 1));
+        assert_eq!(state.done, 0);
+        assert_eq!(state.relation_domain, 0);
+        assert_eq!(state.reserved_0, 0);
+        assert_eq!(state.reserved, [0; 4]);
+
+        let step_at = |handle: u64, generation: u64, x: i16, y: i16| {
+            let input = McCampaignStepInputV2 {
+                abi_version: MC_NATIVE_ABI_VERSION,
+                struct_size: struct_size::<McCampaignStepInputV2>(),
+                generation,
+                command: valid_command(),
+                player_x: x as u16,
+                player_y: y as u16,
+                player_z: 7,
+                ..McCampaignStepInputV2::default()
+            };
+            let mut snapshot = McCampaignStepSnapshotV2::default();
+            let mut events = [McCampaignEventV2::default(); 1024];
+            let mut event_count = 0;
+            assert_eq!(
+                mc_native_campaign_session_step(
+                    handle,
+                    &raw const input,
+                    &raw mut snapshot,
+                    struct_size::<McCampaignStepSnapshotV2>(),
+                    events.as_mut_ptr(),
+                    events.len() as u32,
+                    struct_size::<McCampaignEventV2>(),
+                    &raw mut event_count,
+                ),
+                MC_STATUS_OK
+            );
+        };
+
+        step_at(handle, 0, state.axis_x, state.axis_y);
+        let mut progressed = McCampaignObjectiveStageSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_objective_stage_state(
+                handle,
+                0,
+                0,
+                3,
+                &raw mut progressed,
+                struct_size::<McCampaignObjectiveStageSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(progressed.stage_state, 2);
+        assert_eq!(progressed.done, 0);
+
+        step_at(handle, 0, state.axis_x, state.axis_y);
+        let mut completed = McCampaignObjectiveStageSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_objective_stage_state(
+                handle,
+                0,
+                0,
+                3,
+                &raw mut completed,
+                struct_size::<McCampaignObjectiveStageSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(completed.stage_state, 2);
+        assert_eq!(completed.done, 1);
+
+        assert_eq!(
+            mc_native_campaign_objective_stage_state(
+                handle,
+                0,
+                0,
+                3,
+                &raw mut completed,
+                struct_size::<McCampaignObjectiveStageSnapshotV2>() - 1,
+            ),
+            MC_STATUS_STRUCT_TOO_SMALL
+        );
+        assert_eq!(
+            mc_native_campaign_objective_stage_state(
+                handle,
+                0,
+                8,
+                3,
+                &raw mut completed,
+                struct_size::<McCampaignObjectiveStageSnapshotV2>(),
+            ),
+            MC_STATUS_BOUNDS
+        );
+        assert_eq!(
+            mc_native_campaign_objective_stage_state(
+                handle,
+                0,
+                0,
+                8,
+                &raw mut completed,
+                struct_size::<McCampaignObjectiveStageSnapshotV2>(),
+            ),
+            MC_STATUS_BOUNDS
+        );
+        assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        assert_eq!(
+            mc_native_campaign_objective_stage_state(
+                handle,
+                0,
+                0,
+                3,
+                &raw mut completed,
+                struct_size::<McCampaignObjectiveStageSnapshotV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
     }
 
     #[test]
@@ -20403,6 +20682,7 @@ _Static_assert(sizeof(McAssetRefInfoV2) == 32, "McAssetRefInfoV2 size");
 _Static_assert(sizeof(McEventQueryV2) == 40, "McEventQueryV2 size");
 _Static_assert(sizeof(McEventBatchV2) == 56, "McEventBatchV2 size");
 _Static_assert(sizeof(McEventV2) == 72, "McEventV2 size");
+_Static_assert(sizeof(McCampaignObjectiveStageSnapshotV2) == 48, "McCampaignObjectiveStageSnapshotV2 size");
 _Static_assert(sizeof(McLevel1ResidentObservationV1) == 40, "McLevel1ResidentObservationV1 size");
 _Static_assert(offsetof(McLevel1ResidentObservationV1, digest) == 16, "resident observation digest offset");
 _Static_assert(sizeof(McAudioCommandV2) == 88, "McAudioCommandV2 size");
@@ -20426,6 +20706,9 @@ _Static_assert(offsetof(McSessionSnapshotV2, left_spell_holder) == 82, "holder o
 _Static_assert(offsetof(McSessionSnapshotV2, reserved) == 104, "snapshot reserved offset");
 _Static_assert(offsetof(McObjectiveSnapshotV2, stage_selectors) == 13, "objective stages offset");
 _Static_assert(offsetof(McObjectiveSnapshotV2, reserved) == 24, "objective reserved offset");
+_Static_assert(offsetof(McCampaignObjectiveStageSnapshotV2, axis_x) == 24, "campaign objective stage axis offset");
+_Static_assert(offsetof(McCampaignObjectiveStageSnapshotV2, relation_value) == 30, "campaign objective stage relation offset");
+_Static_assert(offsetof(McCampaignObjectiveStageSnapshotV2, reserved) == 32, "campaign objective stage reserved offset");
 _Static_assert(offsetof(McEntitySnapshotV2, reserved) == 36, "entity reserved offset");
 _Static_assert(offsetof(McCampaignSelectionV2, reserved) == 16, "campaign selection reserved offset");
 _Static_assert(offsetof(McCampaignWorldInfoV2, reset_state_hash) == 40, "campaign world hash offset");

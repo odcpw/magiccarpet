@@ -132,6 +132,29 @@ typedef struct McCampaignTerrainStateV2 {
     uint32_t reserved[4];
 } McCampaignTerrainStateV2;
 
+/* Generation-bound mutable objective stage state.  This is additive to the
+ * frozen-observed McObjectiveSnapshotV2 contract and carries the authored
+ * stage axes consumed by the Level 2 source route. */
+typedef struct McCampaignObjectiveStageSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint8_t objective_slot;
+    uint8_t stage_slot;
+    uint8_t is_level_end;
+    uint8_t done;
+    uint8_t text_selector;
+    uint8_t stage_state;
+    int8_t stage_kind;
+    int8_t stage_flags;
+    int16_t axis_x;
+    int16_t axis_y;
+    uint8_t relation_domain;
+    uint8_t reserved_0;
+    uint16_t relation_value;
+    uint32_t reserved[4];
+} McCampaignObjectiveStageSnapshotV2;
+
 typedef struct McCampaignPlayerSnapshotV2 {
     uint32_t abi_version;
     uint32_t struct_size;
@@ -513,6 +536,10 @@ int32_t mc_native_campaign_players_copy(
 int32_t mc_native_campaign_objectives_copy(
     uint64_t handle, uint32_t start_slot, McObjectiveSnapshotV2 *buffer,
     uint32_t capacity, uint32_t element_size, uint32_t *out_written);
+int32_t mc_native_campaign_objective_stage_state(
+    uint64_t handle, uint64_t generation, uint8_t objective_slot,
+    uint8_t stage_slot, McCampaignObjectiveStageSnapshotV2 *out_state,
+    uint32_t out_state_size);
 int32_t mc_native_campaign_entities_copy(
     uint64_t handle, uint32_t start_index, McCampaignEntitySnapshotV2 *buffer,
     uint32_t capacity, uint32_t element_size, uint32_t *out_written);

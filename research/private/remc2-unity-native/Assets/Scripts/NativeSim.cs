@@ -374,6 +374,29 @@ namespace MagicCarpet.Native
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignObjectiveStageSnapshot
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal byte objectiveSlot;
+            internal byte stageSlot;
+            internal byte isLevelEnd;
+            internal byte done;
+            internal byte textSelector;
+            internal byte stageState;
+            internal sbyte stageKind;
+            internal sbyte stageFlags;
+            internal short axisX;
+            internal short axisY;
+            internal byte relationDomain;
+            internal byte reserved0;
+            internal ushort relationValue;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct CampaignPlayerSnapshot
         {
             internal uint abiVersion;
@@ -2048,6 +2071,15 @@ namespace MagicCarpet.Native
             out uint written);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_objective_stage_state(
+            ulong handle,
+            ulong generation,
+            byte objectiveSlot,
+            byte stageSlot,
+            out CampaignObjectiveStageSnapshot state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_player_count(
             ulong handle,
             out uint count);
@@ -2577,6 +2609,7 @@ namespace MagicCarpet.Native
             RequireSize<CampaignStepSnapshot>(112);
             RequireSize<CampaignWorldInfo>(64);
             RequireSize<CampaignTerrainState>(64);
+            RequireSize<CampaignObjectiveStageSnapshot>(48);
             RequireSize<CampaignPlayerSnapshot>(48);
             RequireSize<CampaignEntitySnapshot>(52);
             RequireSize<CampaignShieldSnapshot>(72);
@@ -2644,6 +2677,12 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignTerrainState>(nameof(CampaignTerrainState.mutationSequence), 24);
             RequireOffset<CampaignTerrainState>(nameof(CampaignTerrainState.width), 40);
             RequireOffset<CampaignTerrainState>(nameof(CampaignTerrainState.reserved), 48);
+            RequireOffset<CampaignObjectiveStageSnapshot>(
+                nameof(CampaignObjectiveStageSnapshot.axisX), 24);
+            RequireOffset<CampaignObjectiveStageSnapshot>(
+                nameof(CampaignObjectiveStageSnapshot.relationValue), 30);
+            RequireOffset<CampaignObjectiveStageSnapshot>(
+                nameof(CampaignObjectiveStageSnapshot.reserved), 32);
             RequireOffset<CampaignPlayerSnapshot>(nameof(CampaignPlayerSnapshot.turn), 16);
             RequireOffset<CampaignEntitySnapshot>(nameof(CampaignEntitySnapshot.reserved), 36);
             RequireOffset<CampaignShieldSnapshot>(nameof(CampaignShieldSnapshot.parentStatusFlags), 48);

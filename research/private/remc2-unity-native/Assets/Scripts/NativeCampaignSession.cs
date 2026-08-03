@@ -188,8 +188,46 @@ namespace MagicCarpet.Native
                 !AllZero(state.reserved))
             {
                 throw new InvalidOperationException(
-                    "native Level 2 terrain state returned invalid generation, " +
-                    "layout, dimensions, hash schema, authority, or reserved state");
+                "native Level 2 terrain state returned invalid generation, " +
+                "layout, dimensions, hash schema, authority, or reserved state");
+            }
+        }
+
+        internal NativeSim.CampaignObjectiveStageSnapshot ObjectiveStageState(
+            byte objectiveSlot = 0,
+            byte stageSlot = 3)
+        {
+            var status = NativeSim.mc_native_campaign_objective_stage_state(
+                Handle,
+                generation,
+                objectiveSlot,
+                stageSlot,
+                out var state,
+                48);
+            NativeSession.Check(status, "read Level 2 campaign objective stage state");
+            ValidateObjectiveStageState(state, generation, objectiveSlot, stageSlot);
+            return state;
+        }
+
+        internal static void ValidateObjectiveStageState(
+            NativeSim.CampaignObjectiveStageSnapshot state,
+            ulong expectedGeneration,
+            byte expectedObjectiveSlot,
+            byte expectedStageSlot)
+        {
+            if (
+                state.abiVersion != NativeSim.AbiVersion ||
+                state.structSize != 48 ||
+                state.generation != expectedGeneration ||
+                state.objectiveSlot != expectedObjectiveSlot ||
+                state.stageSlot != expectedStageSlot ||
+                state.relationDomain > 3 ||
+                state.reserved0 != 0 ||
+                !AllZero(state.reserved))
+            {
+                throw new InvalidOperationException(
+                    "native Level 2 objective stage state returned invalid ABI, " +
+                    "generation, slot, relation domain, or reserved state");
             }
         }
 
