@@ -13768,6 +13768,15 @@ fn validate_level2_ordinary_census(
 
 /// Mutable Level 2 frame-zero state used by the generic flight machinery.
 /// The owner package remains immutable; each call returns an isolated clone.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Level2Group31Switch28State {
+    authored_index: u16,
+    target_group: u16,
+    position: Position,
+    phase: u8,
+    countdown: u8,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Level2ResetSession {
     profile: FlightProfile,
@@ -13815,6 +13824,10 @@ pub struct Level2ResetSession {
     level2_model13_activated: BTreeSet<u16>,
     baseline_level2_model76_activated: BTreeSet<u16>,
     level2_model76_activated: BTreeSet<u16>,
+    baseline_level2_class11_model0_constructor_phase: u8,
+    level2_class11_model0_constructor_phase: u8,
+    baseline_level2_group31_switch28: Option<Level2Group31Switch28State>,
+    level2_group31_switch28: Option<Level2Group31Switch28State>,
     /// Authored class-14 subtype-3/5 rows already consumed by an active
     /// class-11 stage-tag producer.  The source group scan is repeatable, so
     /// retain authored identity to prevent duplicate arena rows on later
@@ -14239,6 +14252,14 @@ impl Level2ResetSession {
             level2_model13_activated: BTreeSet::new(),
             baseline_level2_model76_activated: BTreeSet::new(),
             level2_model76_activated: BTreeSet::new(),
+            // Source reset clears the constructor counters before any later
+            // authored group callbacks run. This bounded seam only owns the
+            // residual group-31 -> row-274 model-0 constructor, so start from
+            // the reset baseline and advance only through that allocation.
+            baseline_level2_class11_model0_constructor_phase: 0,
+            level2_class11_model0_constructor_phase: 0,
+            baseline_level2_group31_switch28: None,
+            level2_group31_switch28: None,
             baseline_level2_class14_activated: BTreeSet::new(),
             level2_class14_activated: BTreeSet::new(),
         }
@@ -15070,20 +15091,47 @@ impl Level2ResetSession {
             .iter()
             .copied()
             .filter(|feature| feature.activation_group == 31)
-            .filter(|feature| feature.kind == 14 && feature.subtype == 3)
+            .filter(|feature| {
+                (feature.kind == 14 && feature.subtype == 3)
+                    || (feature.kind == 11 && feature.subtype == 0 && feature.index == 274)
+            })
             .collect::<Vec<_>>();
-        if group_rows.len() != 1 {
+        if group_rows.len() != 2 {
             self.dispatch_events.push(Level2DispatchEvent::Error {
                 pass,
                 source_slot: root_slot,
                 message: format!(
-                    "Level 2 stage-tag group 31 has {} class-14/model-3 rows, expected 1",
+                    "Level 2 stage-tag group 31 has {} bounded rows, expected 2",
                     group_rows.len()
                 ),
             });
             return;
         }
-        let feature = group_rows[0];
+        let Some(feature) = group_rows
+            .iter()
+            .copied()
+            .find(|feature| feature.kind == 14 && feature.subtype == 3 && feature.index == 244)
+        else {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: root_slot,
+                message: "Level 2 stage-tag group 31 is missing class-14/model-3 row 244"
+                    .to_string(),
+            });
+            return;
+        };
+        let Some(switch_row) = group_rows
+            .iter()
+            .copied()
+            .find(|feature| feature.kind == 11 && feature.subtype == 0 && feature.index == 274)
+        else {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: root_slot,
+                message: "Level 2 stage-tag group 31 is missing model-0 switch row 274".to_string(),
+            });
+            return;
+        };
         let Some(source_slot) = self
             .allocate_level2_authored_class14(feature.index)
             .map(|source| source.source_entity_index)
@@ -15099,6 +15147,20 @@ impl Level2ResetSession {
             return;
         };
         self.level2_class14_activated.insert(feature.index);
+        let switch_phase = self.level2_class11_model0_constructor_phase;
+        self.level2_class11_model0_constructor_phase =
+            self.level2_class11_model0_constructor_phase.wrapping_add(1);
+        self.level2_group31_switch28 = Some(Level2Group31Switch28State {
+            authored_index: switch_row.index,
+            target_group: u16::try_from(switch_row.stage_tag).unwrap_or(28),
+            position: switch_row
+                .world_position(self.terrain.ground_height(switch_row.world_position(0))),
+            // remc2 seeds byte_0x3E from the model-0 class-11 constructor
+            // counter. Reuse the imported frame-zero next value and consume
+            // it exactly once when group 31 materializes row 274.
+            phase: switch_phase,
+            countdown: 0,
+        });
         if let Some(root) = self.entities.get_mut(usize::from(root_slot)) {
             root.disable_drawing();
         }
@@ -15107,7 +15169,7 @@ impl Level2ResetSession {
                 pass,
                 source_slot: root_slot,
                 group: 31,
-                authored_indices: vec![feature.index].into_boxed_slice(),
+                authored_indices: vec![feature.index, switch_row.index].into_boxed_slice(),
             });
         debug_assert!(
             self.economy()
@@ -15115,6 +15177,121 @@ impl Level2ResetSession {
                 .iter()
                 .any(|row| row.source_entity_index == source_slot)
         );
+    }
+
+    fn activate_level2_authored_class14_group(
+        &mut self,
+        pass: u8,
+        producer_slot: u16,
+        target_group: u16,
+        subtype: i16,
+    ) {
+        let all_rows = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .filter(|feature| {
+                feature.activation_group == i16::try_from(target_group).unwrap_or(-1)
+                    && feature.kind == 14
+                    && feature.subtype == subtype
+            })
+            .collect::<Vec<_>>();
+        if all_rows.is_empty() {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: producer_slot,
+                message: format!(
+                    "Level 2 group {target_group} has no class-14/model-{subtype} rows"
+                ),
+            });
+            return;
+        }
+        let pending_rows = all_rows
+            .into_iter()
+            .filter(|feature| {
+                !self.level2_class14_activated.contains(&feature.index)
+                    && !self
+                        .economy
+                        .authored_class14()
+                        .iter()
+                        .any(|row| row.authored_index == feature.index)
+            })
+            .collect::<Vec<_>>();
+        if pending_rows.is_empty() {
+            return;
+        }
+        let economy_before = self.economy.clone();
+        let activated_before = self.level2_class14_activated.clone();
+        let mut activated_rows = Vec::with_capacity(pending_rows.len());
+        for feature in pending_rows {
+            let Some(source_slot) = self.allocate_level2_authored_class14(feature.index) else {
+                self.economy = economy_before;
+                self.level2_class14_activated = activated_before;
+                self.dispatch_events.push(Level2DispatchEvent::Error {
+                    pass,
+                    source_slot: producer_slot,
+                    message: format!(
+                        "Level 2 authored class14 row {} could not allocate",
+                        feature.index
+                    ),
+                });
+                return;
+            };
+            self.level2_class14_activated.insert(feature.index);
+            activated_rows.push((feature.index, source_slot.source_entity_index));
+        }
+        self.dispatch_events
+            .push(Level2DispatchEvent::AuthoredGroupActivated {
+                pass,
+                source_slot: producer_slot,
+                group: target_group,
+                authored_indices: activated_rows
+                    .iter()
+                    .map(|(index, _)| *index)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            });
+        debug_assert!(activated_rows.iter().all(|(_, source_slot)| {
+            self.economy
+                .authored_class14()
+                .iter()
+                .any(|row| row.source_entity_index == *source_slot)
+        }));
+    }
+
+    fn step_level2_group31_switch28(&mut self, pass: u8) {
+        let Some(mut switch) = self.level2_group31_switch28 else {
+            return;
+        };
+        switch.position.z = self.terrain.ground_height(switch.position);
+        let overlap = match self.level2_authored_switch_matches(switch.authored_index) {
+            Ok(overlap) => overlap,
+            Err(error) => {
+                self.dispatch_events.push(Level2DispatchEvent::Error {
+                    pass,
+                    source_slot: switch.authored_index,
+                    message: error.to_string(),
+                });
+                self.level2_group31_switch28 = Some(switch);
+                return;
+            }
+        };
+        if switch.countdown == 0 {
+            if switch.phase & 7 == 0 && overlap {
+                self.activate_level2_authored_class14_group(
+                    pass,
+                    switch.authored_index,
+                    switch.target_group,
+                    5,
+                );
+                switch.countdown = 10;
+            }
+        } else if !overlap {
+            switch.countdown -= 1;
+        }
+        switch.phase = switch.phase.wrapping_add(1);
+        self.level2_group31_switch28 = Some(switch);
     }
 
     fn live_level2_class11_producers<F>(&self, mut producer_matches: F) -> Vec<(u16, u16)>
@@ -15421,6 +15598,7 @@ impl Level2ResetSession {
         self.synchronize_level2_terrain();
         self.activate_level2_authored_group8(pass);
         self.activate_level2_authored_group31(pass);
+        self.step_level2_group31_switch28(pass);
         self.activate_level2_authored_model13(pass);
         self.activate_level2_authored_model76(pass);
         self.activate_level2_authored_class14(pass);
@@ -16120,6 +16298,20 @@ impl Level2ResetSession {
         for authored_index in &self.level2_model76_activated {
             hasher.update(authored_index.to_le_bytes());
         }
+        hasher.update(b"level2-class11-model0-constructor-phase-v1");
+        hasher.update([self.level2_class11_model0_constructor_phase]);
+        hasher.update(b"level2-group31-switch28-v1");
+        match self.level2_group31_switch28 {
+            Some(switch) => {
+                hasher.update([1, switch.phase, switch.countdown]);
+                hasher.update(switch.authored_index.to_le_bytes());
+                hasher.update(switch.target_group.to_le_bytes());
+                hasher.update(switch.position.x.to_le_bytes());
+                hasher.update(switch.position.y.to_le_bytes());
+                hasher.update(switch.position.z.to_le_bytes());
+            }
+            None => hasher.update([0]),
+        }
         hasher.update(b"level2-class14-activation-v1");
         for authored_index in &self.level2_class14_activated {
             hasher.update(authored_index.to_le_bytes());
@@ -16213,6 +16405,9 @@ impl Level2ResetSession {
             self.baseline_level2_mana_attraction_activated.clone();
         self.level2_model13_activated = self.baseline_level2_model13_activated.clone();
         self.level2_model76_activated = self.baseline_level2_model76_activated.clone();
+        self.level2_class11_model0_constructor_phase =
+            self.baseline_level2_class11_model0_constructor_phase;
+        self.level2_group31_switch28 = self.baseline_level2_group31_switch28;
         self.level2_class14_activated = self.baseline_level2_class14_activated.clone();
     }
 }
@@ -26795,6 +26990,7 @@ mod tests {
         session.step_outer_turn(PlayerCommand::default(), 0);
 
         assert!(session.economy().authored_class14().is_empty());
+        assert!(session.level2_group31_switch28.is_none());
         assert!(!session.dispatch_events().iter().any(|event| matches!(
             event,
             Level2DispatchEvent::AuthoredGroupActivated {
@@ -26824,6 +27020,8 @@ mod tests {
         let mut session = inspection
             .level2_reset_session()
             .expect("Level 2 model-4 exit-switch session");
+        let switch_seed = session.level2_class11_model0_constructor_phase;
+        assert_eq!(switch_seed, 0);
         assert_eq!(
             session.entities()[usize::from(session.state.entity_index)].model,
             0
@@ -26832,13 +27030,23 @@ mod tests {
         session.runtime.set_level2_is_level_end(1);
         session.step_outer_turn(PlayerCommand::default(), 0);
 
+        let switch28 = session
+            .level2_group31_switch28
+            .expect("row 274 switch state must materialize with group 31");
+        assert_eq!(switch28.authored_index, 274);
+        assert_eq!(switch28.target_group, 28);
+        assert_eq!(switch28.phase, switch_seed.wrapping_add(1));
+        assert_eq!(
+            session.level2_class11_model0_constructor_phase,
+            switch_seed.wrapping_add(1)
+        );
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
             Level2DispatchEvent::AuthoredGroupActivated {
                 group: 31,
                 authored_indices,
                 ..
-            } if authored_indices.as_ref() == [244]
+            } if authored_indices.as_ref() == [244, 274]
         )));
         assert!(
             session
@@ -26892,6 +27100,164 @@ mod tests {
             })
             .expect("live model-4 group-31 switch");
         assert!(!switch.drawing_disabled());
+    }
+
+    fn level_two_group31_switch274_activation_turns(phase: u8) -> usize {
+        1 + usize::from((8_u8.wrapping_sub(phase & 7)) & 7)
+    }
+
+    #[test]
+    fn level_two_group31_switch274_activates_group28_on_strict_overlap() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-31 switch session");
+        let row_274 = session
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 274)
+            .copied()
+            .expect("group-31 row-274 switch");
+        let expected_group28 = session
+            .mission()
+            .authored_features()
+            .iter()
+            .filter(|feature| {
+                feature.activation_group == 28 && feature.kind == 14 && feature.subtype == 5
+            })
+            .map(|feature| feature.index)
+            .collect::<Vec<_>>();
+        let switch_seed = session.level2_class11_model0_constructor_phase;
+        session.runtime.set_level2_is_level_end(1);
+        session
+            .set_level2_entity_position(111, row_274.world_position(0))
+            .expect("move model-zero overlap target");
+
+        for _ in 0..level_two_group31_switch274_activation_turns(switch_seed) {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 28,
+                authored_indices,
+                source_slot,
+                ..
+            } if *source_slot == 274 && authored_indices.as_ref() == expected_group28.as_slice()
+        )));
+        for authored_index in &expected_group28 {
+            assert!(
+                session
+                    .economy()
+                    .authored_class14()
+                    .iter()
+                    .any(|row| row.authored_index == *authored_index),
+                "group 28 must materialize authored row {authored_index}"
+            );
+        }
+        let group28_events = session
+            .dispatch_events()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated { group: 28, .. }
+                )
+            })
+            .count();
+        assert_eq!(group28_events, 1, "group 28 should activate exactly once");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 28, .. }
+        )));
+    }
+
+    #[test]
+    fn level_two_group31_switch274_rejects_the_strict_boundary() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-31 switch boundary session");
+        let row_274 = session
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 274)
+            .copied()
+            .expect("group-31 row-274 switch");
+        let strict_boundary = Position {
+            x: row_274.world_position(0).x,
+            y: row_274.world_position(0).y.wrapping_add(242),
+            z: 0,
+        };
+        let switch_seed = session.level2_class11_model0_constructor_phase;
+        session.runtime.set_level2_is_level_end(1);
+        session
+            .set_level2_entity_position(111, strict_boundary)
+            .expect("move model-zero target to strict boundary");
+
+        for _ in 0..level_two_group31_switch274_activation_turns(switch_seed) {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated { group: 28, .. }
+        )));
+        assert!(
+            session
+                .economy()
+                .authored_class14()
+                .iter()
+                .all(|row| row.authored_index < 275 || row.authored_index > 321),
+            "strict boundary must leave group 28 latent"
+        );
+    }
+
+    #[test]
+    fn level_two_group31_switch274_and_group28_reset_to_baseline() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-31 reset session");
+        let baseline_hash = session.campaign_state_hash();
+        let row_274 = session
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 274)
+            .copied()
+            .expect("group-31 row-274 switch");
+        let switch_seed = session.level2_class11_model0_constructor_phase;
+        session.runtime.set_level2_is_level_end(1);
+        session
+            .set_level2_entity_position(111, row_274.world_position(0))
+            .expect("move model-zero overlap target");
+        for _ in 0..level_two_group31_switch274_activation_turns(switch_seed) {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        assert!(session.level2_group31_switch28.is_some());
+        assert!(
+            session
+                .economy()
+                .authored_class14()
+                .iter()
+                .any(|row| row.authored_index == 275),
+            "group 28 must activate before reset"
+        );
+
+        session.reset();
+
+        assert_eq!(session.level2_class11_model0_constructor_phase, 0);
+        assert!(session.level2_group31_switch28.is_none());
+        assert!(session.economy().authored_class14().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
     #[test]
