@@ -61,7 +61,7 @@ use sim_core::{
     },
     house::{HouseState, HouseStepEvent},
     indexed_overlay::IndexedOverlayAssets,
-    indexed_postprocess::{IndexedPostprocessBranch, IndexedPostprocessInput},
+    indexed_postprocess::{IndexedPostprocessBranch, IndexedPostprocessInput, OVERLAY_PROVENANCE},
     level1_mission::{
         ARCHER_ARROW_BASE_TMAP, ARCHER_ARROW_LOGICAL_HEIGHT, ARCHER_ARROW_PROJECTILE_CLASS,
         ARCHER_ARROW_PROJECTILE_MODEL, ARCHER_ARROW_RENDER_INDEX, ARCHER_ARROW_RENDER_MODE,
@@ -3738,8 +3738,16 @@ impl SessionRecord {
                 .expect("Classic HD graph restored")
                 .current_provenance(),
         );
+        let (overlay_pixels_written, overlay_stage_count) = self
+            .composite_classic_hd_owner_overlays(
+                &profile,
+                query,
+                index_buffer,
+                provenance_buffer,
+            )?;
         let mut flags = MC_CLASSIC_HD_FRAME_PROFILE_RERENDER
             | MC_PRESENTATION_FRAME_HAS_PROVENANCE
+            | MC_PRESENTATION_FRAME_OVERLAYS_COMPOSITED
             | MC_PRESENTATION_FRAME_POSTPROCESS_COMPLETE
             | MC_PRESENTATION_FRAME_LIGHTING_COMPLETE;
         if world_receipt.typed_sprites_rendered {
@@ -3777,11 +3785,115 @@ impl SessionRecord {
             provenance_hash: result.receipt.provenance_hash,
             lighting_hash: self.mission.dynamic_lighting_hash_v1(),
             source_arena_hash: self.mission.source_arena_hash_v2(),
-            overlay_pixels_written: 0,
-            overlay_stage_count: 0,
+            overlay_pixels_written,
+            overlay_stage_count,
             reserved_1: 0,
             reserved: [0; 6],
         })
+    }
+
+    /// Composite the owner-authentic fixed-pipeline overlay pixels over the
+    /// profile-sized Classic HD world. The HD Rust graph remains authoritative
+    /// for terrain and typed sprites; this imports only pixels explicitly
+    /// marked as overlays by the existing 320x200 owner compositor, preserving
+    /// the original HUD art and layout while fitting it into the profile's
+    /// 4:3 surface.
+    fn composite_classic_hd_owner_overlays(
+        &mut self,
+        profile: &ClassicHdRenderProfile,
+        query: McPresentationFrameQueryV2,
+        indices: &mut [u8],
+        provenance: &mut [u8],
+    ) -> AbiResult<(u32, u16)> {
+        let base_width = LEVEL1_VIEW_WIDTH as u32;
+        let base_height = LEVEL1_VIEW_HEIGHT as u32;
+        if profile.width < base_width || profile.height < base_height {
+            return Err(AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                format!(
+                    "Classic HD profile {} cannot fit the fixed owner HUD",
+                    profile.id.as_str()
+                ),
+            ));
+        }
+        if profile.stride != profile.width {
+            return Err(AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                format!(
+                    "Classic HD profile {} has an incompatible owner HUD stride",
+                    profile.id.as_str()
+                ),
+            ));
+        }
+
+        let mut hud_query = query;
+        hud_query.viewport_width = LEVEL1_VIEW_WIDTH as u16;
+        hud_query.viewport_height = LEVEL1_VIEW_HEIGHT as u16;
+        hud_query.screen_stride = LEVEL1_VIEW_WIDTH as u16;
+        // The owner HUD is a direct compositor surface. The HD graph already
+        // owns its separate blur/history decision, so do not blur the source
+        // HUD a second time while extracting its marked overlay pixels.
+        hud_query.configured_blur_mode = 0;
+        hud_query.blur_capability = 1;
+        hud_query.high_speed_system = 1;
+        hud_query.scratch_present = 1;
+        hud_query.vga_resolution = 1;
+        hud_query.spatial_smoothing = 0;
+
+        let owner_frame = self.presentation_frame(hud_query)?.frame;
+        if !owner_frame.compositor_complete()
+            || owner_frame.overlay_pixels_written == 0
+            || owner_frame.overlay_receipts.is_empty()
+        {
+            return Err(AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                "Classic HD owner compositor did not produce a complete HUD overlay",
+            ));
+        }
+
+        let base_width = usize::try_from(base_width).expect("base width fits usize");
+        let base_height = usize::try_from(base_height).expect("base height fits usize");
+        let output_width = usize::try_from(profile.width).expect("Classic HD width fits usize");
+        let output_height = usize::try_from(profile.height).expect("Classic HD height fits usize");
+        let output_stride = usize::try_from(profile.stride).expect("Classic HD stride fits usize");
+        let mut written = 0_u32;
+        for source_y in 0..base_height {
+            for source_x in 0..base_width {
+                let source_offset = source_y * base_width + source_x;
+                if owner_frame.provenance[source_offset] & OVERLAY_PROVENANCE == 0 {
+                    continue;
+                }
+                let value = owner_frame.indices[source_offset];
+                let output_x = source_x * output_width / base_width;
+                let output_x_end = (source_x + 1) * output_width / base_width;
+                let output_y = source_y * output_height / base_height;
+                let output_y_end = (source_y + 1) * output_height / base_height;
+                for y in output_y..output_y_end {
+                    let row = y * output_stride;
+                    for x in output_x..output_x_end {
+                        let output_offset = row + x;
+                        indices[output_offset] = value;
+                        provenance[output_offset] |= OVERLAY_PROVENANCE;
+                        written = written
+                            .checked_add(1)
+                            .expect("Classic HD overlay pixel count fits u32");
+                    }
+                }
+            }
+        }
+
+        if written == 0 {
+            return Err(AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                "Classic HD owner compositor marked no pixels for the HUD overlay",
+            ));
+        }
+
+        Ok((
+            written,
+            u16::try_from(owner_frame.overlay_receipts.len())
+                .expect("Classic HD overlay stage count fits u16"),
+        ))
     }
 
     fn world_frame(&mut self) -> AbiResult<Level1TerrainFrame> {
