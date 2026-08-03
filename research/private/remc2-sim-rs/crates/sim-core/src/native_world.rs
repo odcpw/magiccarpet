@@ -616,6 +616,13 @@ impl EntitySnapshot {
         i16::from_le_bytes([self.record[88], self.record[89]])
     }
 
+    /// Raw source `array_0x52_82.roll`, the Y half-width used by
+    /// `CompareAxisWithShift_10750`.
+    #[must_use]
+    fn array_roll(&self) -> i16 {
+        i16::from_le_bytes([self.record[90], self.record[91]])
+    }
+
     /// Raw source `word_0x24_36` targeted by the action-51 first pass.
     #[must_use]
     pub fn word_24(&self) -> u16 {
@@ -650,6 +657,55 @@ impl EntitySnapshot {
     #[must_use]
     pub fn source_spell_word_30(&self) -> u16 {
         u16::from_le_bytes([self.record[52], self.record[53]])
+    }
+
+    /// Raw source `dword_0x5E_94`, the spell payload mailbox consumed by
+    /// `sub_11900` and the wind parent pulse helper.
+    #[must_use]
+    fn source_wind_spell_payload(&self) -> i32 {
+        i32::from_le_bytes(
+            self.record[98..102]
+                .try_into()
+                .expect("entity record payload"),
+        )
+    }
+
+    /// Raw source `word_0x62_98`, the last source entity that wrote the spell
+    /// payload mailbox.
+    #[must_use]
+    fn source_wind_spell_owner(&self) -> u16 {
+        u16::from_le_bytes([self.record[102], self.record[103]])
+    }
+
+    /// Apply `sub_11900(a1, this, 0, payload)` to a class-10/model-45 row.
+    fn apply_wind_model45_mailbox(&mut self, parent_entity_id: u16, payload: u16) {
+        let next_payload = if self.source_wind_spell_owner() != 0 {
+            i32::from(payload)
+        } else {
+            self.source_wind_spell_payload()
+                .wrapping_add(i32::from(payload))
+        };
+        self.record[98..102].copy_from_slice(&next_payload.to_le_bytes());
+        self.record[102..104].copy_from_slice(&parent_entity_id.to_le_bytes());
+    }
+
+    /// Apply the model-2 player branch of the wind pulse helper. This writes
+    /// the thirty-tick mailbox, source parent relation, and additive payload
+    /// exactly where `sub_33710` stores them in the imported entity record.
+    fn apply_wind_model2_mailbox(
+        &mut self,
+        parent_source_slot: u16,
+        parent_entity_id: u16,
+        payload: u16,
+    ) {
+        self.activation_value = 30;
+        self.record[52..54].copy_from_slice(&30_u16.to_le_bytes());
+        self.record[42..44].copy_from_slice(&parent_source_slot.to_le_bytes());
+        let next_payload = self
+            .source_wind_spell_payload()
+            .wrapping_add(i32::from(payload));
+        self.record[98..102].copy_from_slice(&next_payload.to_le_bytes());
+        self.record[102..104].copy_from_slice(&parent_entity_id.to_le_bytes());
     }
 
     /// Raw source `word_0x4A_74`, the return-side hand override consumed by
@@ -4112,7 +4168,11 @@ pub struct Level2AuthoredModel22Source {
     pub pitch: i16,
     pub roll: i16,
     pub particle_index: u16,
+    /// Source `array_0x52_82.pitch` from particle row 293, used as the
+    /// parent's X half-width by `CompareAxisWithShift_10750`.
     pub shift_rot_x: i16,
+    /// Source `array_0x52_82.roll` from particle row 293, used as the
+    /// parent's Y half-width by `CompareAxisWithShift_10750`.
     pub shift_rot_y: i16,
     pub axis_position: Position,
     pub position: Position,
@@ -14727,6 +14787,34 @@ fn level2_economy_event_source_slot(event: Level2EconomyEvent, fallback: u16) ->
     u16::try_from(id).unwrap_or(fallback)
 }
 
+/// Source `CompareAxisWithShift_10750`: signed 16-bit X/Y deltas must be
+/// strictly inside the sum of both entities' axis half-widths.
+fn level2_compare_axis_with_shift(
+    event_position: Position,
+    event_half_x: i16,
+    event_half_y: i16,
+    target_position: Position,
+    target_half_x: i16,
+    target_half_y: i16,
+) -> bool {
+    let dx = i16::from_ne_bytes(
+        event_position
+            .x
+            .wrapping_sub(target_position.x)
+            .to_ne_bytes(),
+    )
+    .unsigned_abs();
+    let dy = i16::from_ne_bytes(
+        event_position
+            .y
+            .wrapping_sub(target_position.y)
+            .to_ne_bytes(),
+    )
+    .unsigned_abs();
+    i32::from(dx) < i32::from(event_half_x) + i32::from(target_half_x)
+        && i32::from(dy) < i32::from(event_half_y) + i32::from(target_half_y)
+}
+
 impl Level2ResetSession {
     fn level2_goat_player_targets(&self) -> Vec<GoatPlayerTarget> {
         self.entities
@@ -17136,6 +17224,66 @@ impl Level2ResetSession {
         true
     }
 
+    /// Apply the cadence-gated target mailbox half of remc2 `sub_33710`.
+    /// The wind parent movement is already committed by the economy callback;
+    /// this seam owns only the source collision-box test and the two target
+    /// mailbox branches. `sub_33340` remains a separate movement/effect pass.
+    fn step_level2_authored_model22_wind_pulse(&mut self, source_slot: u16) {
+        let Some(parent) = self
+            .economy
+            .authored_model22()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+            .copied()
+        else {
+            return;
+        };
+        // Economy stepping advances byte 0x3E after the callback. Recover the
+        // callback's pre-increment phase for `byte_0x3E_62 & 7 == 0`.
+        if parent.phase.wrapping_sub(1) & 7 != 0 {
+            return;
+        }
+        let local_player_index = self.state.entity_index;
+        let local_player_position = self.state.position;
+        let target_position = |entity: &EntitySnapshot| {
+            if entity.index == local_player_index {
+                local_player_position
+            } else {
+                entity.position
+            }
+        };
+        let overlaps = |entity: &EntitySnapshot| {
+            level2_compare_axis_with_shift(
+                parent.position,
+                parent.shift_rot_x,
+                parent.shift_rot_y,
+                target_position(entity),
+                entity.array_pitch(),
+                entity.array_roll(),
+            )
+        };
+        for entity in self
+            .entities
+            .iter_mut()
+            .filter(|entity| entity.active && entity.class == 10 && entity.model == 45)
+        {
+            if overlaps(entity) {
+                entity.apply_wind_model45_mailbox(parent.entity_id, parent.subspell_index);
+            }
+        }
+        for entity in self.entities.iter_mut().filter(|entity| {
+            entity.active && entity.life >= 0 && entity.class == 3 && entity.model == 2
+        }) {
+            if overlaps(entity) {
+                entity.apply_wind_model2_mailbox(
+                    parent.source_entity_index,
+                    parent.entity_id,
+                    parent.subspell_index,
+                );
+            }
+        }
+    }
+
     /// Dispatch one live dynamic row. The source class-10/model-1 burst
     /// handler falls through to unconditional drawing disable after one
     /// callback; all dynamic families therefore receive one cursor visit.
@@ -17200,7 +17348,11 @@ impl Level2ResetSession {
                 self.economy.step_model17_spawned_child_slot(source_slot)
             }
             Level2DynamicArenaKind::AuthoredModel22 => {
-                self.economy.step_authored_model22_slot(source_slot)
+                let live = self.economy.step_authored_model22_slot(source_slot);
+                if live {
+                    self.step_level2_authored_model22_wind_pulse(source_slot);
+                }
+                live
             }
             Level2DynamicArenaKind::Model22SpawnedChild => {
                 self.economy.step_model22_spawned_child_slot(source_slot)
@@ -28293,6 +28445,138 @@ mod tests {
                     .drawing_enabled
             );
         }
+    }
+
+    #[test]
+    fn level_two_wind_sub33710_writes_strict_target_mailboxes_on_cadence() {
+        assert!(level2_compare_axis_with_shift(
+            Position {
+                x: 10_000,
+                y: 10_000,
+                z: 0
+            },
+            38,
+            31,
+            Position {
+                x: 10_000,
+                y: 10_000,
+                z: 0
+            },
+            123,
+            123,
+        ));
+        assert!(!level2_compare_axis_with_shift(
+            Position {
+                x: 10_000,
+                y: 10_000,
+                z: 0
+            },
+            38,
+            31,
+            Position {
+                x: 10_161,
+                y: 10_000,
+                z: 0
+            },
+            123,
+            123,
+        ));
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 wind pulse session");
+        let parent = session
+            .economy_mut()
+            .allocate_authored_model22(
+                110,
+                Position {
+                    x: 20_000,
+                    y: 20_000,
+                    z: 0,
+                },
+                Position {
+                    x: 20_000,
+                    y: 20_000,
+                    z: 0,
+                },
+            )
+            .expect("wind parent allocation");
+        let parent_slot = parent.source_entity_index;
+        session
+            .economy_mut()
+            .authored_model22
+            .iter_mut()
+            .find(|source| source.source_entity_index == parent_slot)
+            .expect("live wind parent")
+            .phase = 8;
+
+        // Row 1 is a qualified imported class-10/model-45 target. Rebind the
+        // remote player row to model 2 so the same production scan exercises
+        // the second `sub_33710` branch without adding a synthetic arena row.
+        session.entities[1].set_position(parent.position);
+        session.entities[112].model = 2;
+        session.entities[112].record[68] = 2;
+        session.entities[112].set_position(parent.position);
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.entities[1].source_wind_spell_payload(), 1_000);
+        assert_eq!(
+            session.entities[1].source_wind_spell_owner(),
+            parent.entity_id
+        );
+        assert_eq!(session.entities[112].source_spell_word_30(), 30);
+        assert_eq!(session.entities[112].activation_value, 30);
+        assert_eq!(session.entities[112].word_26(), parent_slot);
+        assert_eq!(session.entities[112].source_wind_spell_payload(), 1_000);
+        assert_eq!(
+            session.entities[112].source_wind_spell_owner(),
+            parent.entity_id
+        );
+
+        // The model-45 branch is `sub_11900`: a non-zero owner replaces its
+        // payload on the next firing cadence rather than accumulating it.
+        session.entities[1].record[98..102].copy_from_slice(&7_i32.to_le_bytes());
+        session.entities[1].record[102..104].copy_from_slice(&55_u16.to_le_bytes());
+        let next_parent_position = session
+            .economy()
+            .authored_model22()
+            .iter()
+            .find(|source| source.source_entity_index == parent_slot)
+            .expect("live wind parent")
+            .position;
+        session.entities[1].set_position(next_parent_position);
+        session.entities[112].set_position(next_parent_position);
+        session
+            .economy_mut()
+            .authored_model22
+            .iter_mut()
+            .find(|source| source.source_entity_index == parent_slot)
+            .expect("live wind parent")
+            .phase = 16;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.entities[1].source_wind_spell_payload(), 1_000);
+        assert_eq!(
+            session.entities[1].source_wind_spell_owner(),
+            parent.entity_id
+        );
+
+        // A non-firing phase leaves both target mailboxes untouched.
+        let payload_before = session.entities[1].source_wind_spell_payload();
+        let owner_before = session.entities[1].source_wind_spell_owner();
+        session
+            .economy_mut()
+            .authored_model22
+            .iter_mut()
+            .find(|source| source.source_entity_index == parent_slot)
+            .expect("live wind parent")
+            .phase = 17;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session.entities[1].source_wind_spell_payload(),
+            payload_before
+        );
+        assert_eq!(session.entities[1].source_wind_spell_owner(), owner_before);
     }
 
     #[test]
