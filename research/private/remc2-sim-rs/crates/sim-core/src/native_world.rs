@@ -3668,6 +3668,59 @@ pub struct Level2Model6SpawnedChild {
     pub active: bool,
 }
 
+/// The authored class-10/model-17 Meteor constructed by `AddMeteor_4ED70`.
+/// The callback is the pinned `sub_32880` path: it advances the signed life
+/// sentinel, emits the source sound/control write, walks SEARCH.DAT shape 0,
+/// allocates class-10/model-0 children, and wraps its dword-0x10 phase at 11.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredModel17Source {
+    pub source_entity_index: u16,
+    pub entity_id: u16,
+    pub entity_rng: u16,
+    pub authored_index: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub subspell_index: u16,
+    pub max_life: i16,
+    pub life: i16,
+    pub dword_0x10: i32,
+    pub control_flags: u32,
+    pub shift_rot_x: i16,
+    pub shift_rot_y: i16,
+    pub yaw: i16,
+    pub position: Position,
+    pub phase: u8,
+    pub active: bool,
+}
+
+/// A class-10/model-0 child emitted by `sub_32880` through the pinned
+/// `NewAdd0A00_4E320` constructor. The stored row is the post-spawn state after
+/// `sub_32880` applies its control/shift overrides; the complete terrain-effect
+/// callback is a separate follow-up. The source arena, parent identity, map
+/// link, life sentinel, and reclaim behavior are live here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2Model17SpawnedChild {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub parent_entity_index: u16,
+    pub parent_entity_id: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub subspell_index: u16,
+    pub max_life: i16,
+    pub life: i16,
+    pub dword_0x10: i32,
+    pub control_flags: u32,
+    pub shift_rot_x: i16,
+    pub shift_rot_y: i16,
+    pub yaw: i16,
+    pub position: Position,
+    pub phase: u8,
+    pub active: bool,
+}
+
 /// A dormant authored class-14/model-3 or model-5 event materialized by the
 /// generic `sub_4A310` constructor.  The mission callbacks which decide when
 /// groups 5/28/31 fire remain a separate slice; once a row is selected, the
@@ -3884,6 +3937,10 @@ pub struct Level2EconomyState {
     authored_model6: Vec<Level2AuthoredModel6Source>,
     baseline_model6_spawned_children: Vec<Level2Model6SpawnedChild>,
     model6_spawned_children: Vec<Level2Model6SpawnedChild>,
+    baseline_authored_model17: Vec<Level2AuthoredModel17Source>,
+    authored_model17: Vec<Level2AuthoredModel17Source>,
+    baseline_model17_spawned_children: Vec<Level2Model17SpawnedChild>,
+    model17_spawned_children: Vec<Level2Model17SpawnedChild>,
     baseline_authored_class14: Vec<Level2AuthoredClass14Source>,
     authored_class14: Vec<Level2AuthoredClass14Source>,
     /// Source `word_0x36DFE`, written by `sub_51570` for the latest model-3
@@ -4067,6 +4124,10 @@ impl Level2EconomyState {
             authored_model6: Vec::new(),
             baseline_model6_spawned_children: Vec::new(),
             model6_spawned_children: Vec::new(),
+            baseline_authored_model17: Vec::new(),
+            authored_model17: Vec::new(),
+            baseline_model17_spawned_children: Vec::new(),
+            model17_spawned_children: Vec::new(),
             baseline_authored_class14: Vec::new(),
             authored_class14: Vec::new(),
             baseline_class14_model3_handle: 0,
@@ -4187,6 +4248,16 @@ impl Level2EconomyState {
     #[must_use]
     pub fn model6_spawned_children(&self) -> &[Level2Model6SpawnedChild] {
         &self.model6_spawned_children
+    }
+
+    #[must_use]
+    pub fn authored_model17(&self) -> &[Level2AuthoredModel17Source] {
+        &self.authored_model17
+    }
+
+    #[must_use]
+    pub fn model17_spawned_children(&self) -> &[Level2Model17SpawnedChild] {
+        &self.model17_spawned_children
     }
 
     #[must_use]
@@ -4623,6 +4694,224 @@ impl Level2EconomyState {
         Some(source_entity_index)
     }
 
+    /// Allocate the authored class-10/model-17 Meteor initialized by
+    /// `AddMeteor_4ED70`.  The constructor is explicit in the pinned source:
+    /// action/model 17, life/max-life 10, subspell 3000, and a map-linked
+    /// position.  The authored parameter selectors are activation metadata,
+    /// not constructor fields for this source row.
+    pub fn allocate_authored_model17(
+        &mut self,
+        authored_index: u16,
+        position: Position,
+    ) -> Option<Level2AuthoredModel17Source> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let mut position = position;
+        position.z = self.terrain.ground_height(position);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let source = Level2AuthoredModel17Source {
+            source_entity_index,
+            entity_id: source_entity_index,
+            entity_rng,
+            authored_index,
+            source_class: 10,
+            model: 17,
+            action: 17,
+            subspell_index: 3_000,
+            max_life: 10,
+            life: 10,
+            dword_0x10: 0,
+            control_flags: 0,
+            shift_rot_x: 0,
+            shift_rot_y: 0,
+            yaw: 0,
+            position,
+            phase: source_entity_index as u8,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.authored_model17.push(source);
+        Some(source)
+    }
+
+    /// Advance one authored Meteor through pinned `sub_32880`.  SEARCH.DAT
+    /// shape 0 is the four-cell 2x2 kernel centered at (15,15); the source's
+    /// iterator executes the first three cells because its return value is
+    /// tested for `== 1` before each child allocation.  The source RNG is
+    /// advanced once before the walk, then once for each child coordinate.
+    pub fn step_authored_model17_slot(&mut self, source_slot: u16) -> bool {
+        let Some(source_index) = self
+            .authored_model17
+            .iter()
+            .position(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        let source_before = self.authored_model17[source_index];
+        let mut source = source_before;
+        source.life = source.life.wrapping_sub(1);
+        if source.life < 0 {
+            source.active = false;
+            self.authored_model17[source_index] = source;
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: false,
+                    x: source.position.x,
+                    y: source.position.y,
+                })
+                .expect("Level 2 model-17 source slot fits the map chain");
+            return true;
+        }
+
+        if source.control_flags & 0x02 == 0 {
+            // `sub_32880` sets byte 0 bit 1 and byte 2 bit 0, then prepares
+            // sound 30.  The audio ledger owns presentation dispatch; the
+            // raw source write belongs in this state tuple.
+            source.control_flags |= 0x0001_0002;
+        }
+        let signed_term = 768_i32 * source.dword_0x10;
+        let sign = signed_term.signum();
+        source.shift_rot_x = i16::try_from((signed_term - sign * 5) >> 2)
+            .expect("Level 2 Meteor shift rotation fits i16");
+        source.shift_rot_y = 512;
+
+        // Source AddE7EE0x( dword, dword ) walks the first three cells of
+        // each SEARCH.DAT shape.  For shape zero these are (0,0), (1,0), and
+        // (0,1), with a 160-unit cell stride and signed 96/64 offsets.
+        source.entity_rng = level2_next_rng16(source.entity_rng);
+        for (offset_x, offset_y) in [(0_i32, 0_i32), (1, 0), (0, 1)] {
+            source.entity_rng = level2_next_rng16(source.entity_rng);
+            let x_jitter = i32::from(source.entity_rng % 0x81);
+            let child_x = i32::from(source.position.x) - 96 + 160 * offset_x + x_jitter - 64;
+            source.entity_rng = level2_next_rng16(source.entity_rng);
+            let y_jitter = i32::from(source.entity_rng % 0x81);
+            let child_y = i32::from(source.position.y) - 96 + 160 * offset_y + y_jitter - 64;
+            let child_position = Position {
+                x: child_x as u16,
+                y: child_y as u16,
+                z: source.position.z,
+            };
+            let _ = self.allocate_model17_spawned_child(
+                source_slot,
+                source.entity_id,
+                source.yaw,
+                child_position,
+            );
+        }
+        source.dword_0x10 = (source.dword_0x10 + 2).rem_euclid(11);
+        self.source_rng.insert(source_slot, source.entity_rng);
+        source.phase = source.phase.wrapping_add(1);
+        self.authored_model17[source_index] = source;
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .is_ok()
+    }
+
+    fn allocate_model17_spawned_child(
+        &mut self,
+        parent_entity_index: u16,
+        parent_entity_id: u16,
+        parent_yaw: i16,
+        position: Position,
+    ) -> Option<u16> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.model17_spawned_children
+            .push(Level2Model17SpawnedChild {
+                source_entity_index,
+                entity_rng,
+                parent_entity_index,
+                parent_entity_id,
+                source_class: 10,
+                model: 0,
+                action: 0,
+                subspell_index: 400,
+                max_life: 8,
+                life: 8,
+                dword_0x10: 0,
+                control_flags: 0x0003_0080,
+                shift_rot_x: 512,
+                shift_rot_y: 512,
+                yaw: parent_yaw,
+                position,
+                phase: source_entity_index as u8,
+                active: true,
+            });
+        Some(source_entity_index)
+    }
+
+    /// The bounded child seam preserves the post-spawn `NewAdd0A00` life
+    /// sentinel and map/reclaim order. Its terrain mutation/particle callback
+    /// (`sub_30D50`) remains a distinct follow-up, so this method does not
+    /// invent terrain edits while still making the generated row observable
+    /// and finite.
+    pub fn step_model17_spawned_child_slot(&mut self, source_slot: u16) -> bool {
+        let Some(child_index) = self
+            .model17_spawned_children
+            .iter()
+            .position(|child| child.active && child.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        let mut child = self.model17_spawned_children[child_index];
+        child.life = child.life.wrapping_sub(1);
+        if child.life < -1 {
+            child.active = false;
+            self.model17_spawned_children[child_index] = child;
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: false,
+                    x: child.position.x,
+                    y: child.position.y,
+                })
+                .expect("Level 2 model-17 child slot fits the map chain");
+            return true;
+        }
+        child.phase = child.phase.wrapping_add(1);
+        self.model17_spawned_children[child_index] = child;
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: child.position.x,
+                y: child.position.y,
+            })
+            .is_ok()
+    }
+
     /// Advance the generated class-9/model-14 child through `sub_322A0`.
     pub fn step_model6_spawned_child_slot(&mut self, source_slot: u16) -> bool {
         let Some(child_index) = self
@@ -5025,6 +5314,22 @@ impl Level2EconomyState {
             visit(
                 child.source_entity_index,
                 Level2DynamicArenaKind::Model6SpawnedChild,
+            );
+        }
+        for source in self.authored_model17.iter().filter(|source| source.active) {
+            visit(
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredModel17,
+            );
+        }
+        for child in self
+            .model17_spawned_children
+            .iter()
+            .filter(|child| child.active)
+        {
+            visit(
+                child.source_entity_index,
+                Level2DynamicArenaKind::Model17SpawnedChild,
             );
         }
         for source in self.authored_class14.iter().filter(|source| source.active) {
@@ -8102,6 +8407,38 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_model17 = self
+            .authored_model17
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_model17.retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_model17 {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
+        let reclaimed_model17_children = self
+            .model17_spawned_children
+            .iter()
+            .filter(|child| !child.active)
+            .map(|child| (child.source_entity_index, child.entity_rng))
+            .collect::<Vec<_>>();
+        self.model17_spawned_children.retain(|child| child.active);
+        for (slot, entity_rng) in reclaimed_model17_children {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_class14 = self
             .authored_class14
             .iter()
@@ -8331,6 +8668,46 @@ impl Level2EconomyState {
             hasher.update(child.dword_0x10.to_le_bytes());
             hasher.update(child.particle_index.to_le_bytes());
             hasher.update(child.control_flags.to_le_bytes());
+            hasher.update(child.position.x.to_le_bytes());
+            hasher.update(child.position.y.to_le_bytes());
+            hasher.update(child.position.z.to_le_bytes());
+            hasher.update([u8::from(child.active)]);
+        }
+        for source in &self.authored_model17 {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_id.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.authored_index.to_le_bytes());
+            hasher.update([source.source_class, source.model, source.action]);
+            hasher.update(source.subspell_index.to_le_bytes());
+            hasher.update(source.max_life.to_le_bytes());
+            hasher.update(source.life.to_le_bytes());
+            hasher.update(source.dword_0x10.to_le_bytes());
+            hasher.update(source.control_flags.to_le_bytes());
+            hasher.update(source.shift_rot_x.to_le_bytes());
+            hasher.update(source.shift_rot_y.to_le_bytes());
+            hasher.update(source.yaw.to_le_bytes());
+            hasher.update(source.phase.to_le_bytes());
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+            hasher.update([u8::from(source.active)]);
+        }
+        for child in &self.model17_spawned_children {
+            hasher.update(child.source_entity_index.to_le_bytes());
+            hasher.update(child.entity_rng.to_le_bytes());
+            hasher.update(child.parent_entity_index.to_le_bytes());
+            hasher.update(child.parent_entity_id.to_le_bytes());
+            hasher.update([child.source_class, child.model, child.action]);
+            hasher.update(child.subspell_index.to_le_bytes());
+            hasher.update(child.max_life.to_le_bytes());
+            hasher.update(child.life.to_le_bytes());
+            hasher.update(child.dword_0x10.to_le_bytes());
+            hasher.update(child.control_flags.to_le_bytes());
+            hasher.update(child.shift_rot_x.to_le_bytes());
+            hasher.update(child.shift_rot_y.to_le_bytes());
+            hasher.update(child.yaw.to_le_bytes());
+            hasher.update(child.phase.to_le_bytes());
             hasher.update(child.position.x.to_le_bytes());
             hasher.update(child.position.y.to_le_bytes());
             hasher.update(child.position.z.to_le_bytes());
@@ -8598,6 +8975,8 @@ impl Level2EconomyState {
         self.authored_model45 = self.baseline_authored_model45.clone();
         self.authored_model6 = self.baseline_authored_model6.clone();
         self.model6_spawned_children = self.baseline_model6_spawned_children.clone();
+        self.authored_model17 = self.baseline_authored_model17.clone();
+        self.model17_spawned_children = self.baseline_model17_spawned_children.clone();
         self.authored_class14 = self.baseline_authored_class14.clone();
         self.class14_model3_handle = self.baseline_class14_model3_handle;
         self.beyond_sight_effects = self.baseline_beyond_sight_effects.clone();
@@ -11223,6 +11602,8 @@ pub enum Level2DynamicArenaKind {
     AuthoredModel45,
     AuthoredModel6,
     Model6SpawnedChild,
+    AuthoredModel17,
+    Model17SpawnedChild,
     AuthoredClass14,
     BeyondSightPulseEffect,
     ManaAttraction,
@@ -11345,6 +11726,8 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::AuthoredModel45 => 11,
         Level2DynamicArenaKind::AuthoredModel6 => 15,
         Level2DynamicArenaKind::Model6SpawnedChild => 16,
+        Level2DynamicArenaKind::AuthoredModel17 => 17,
+        Level2DynamicArenaKind::Model17SpawnedChild => 18,
         Level2DynamicArenaKind::AuthoredClass14 => 13,
         Level2DynamicArenaKind::BeyondSightPulseEffect => 14,
         Level2DynamicArenaKind::ManaAttraction => 12,
@@ -11670,6 +12053,28 @@ impl Level2ResetSession {
             feature.world_position(self.terrain.ground_height(feature.world_position(0)));
         self.economy
             .allocate_authored_model6(authored_index, position)
+    }
+
+    /// Materialize one authored class-10/model-17 Meteor row through the
+    /// pinned `AddMeteor_4ED70` constructor. The callback's source-search
+    /// child terrain behavior remains a separate follow-up; this seam owns
+    /// the authored parent allocation and its explicit spawn branch.
+    pub fn allocate_level2_authored_model17(
+        &mut self,
+        authored_index: u16,
+    ) -> Option<Level2AuthoredModel17Source> {
+        let feature = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .find(|feature| {
+                feature.index == authored_index && feature.kind == 10 && feature.subtype == 17
+            })?;
+        let position =
+            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        self.economy
+            .allocate_authored_model17(authored_index, position)
     }
 
     #[must_use]
@@ -12603,6 +13008,12 @@ impl Level2ResetSession {
             }
             Level2DynamicArenaKind::Model6SpawnedChild => {
                 self.economy.step_model6_spawned_child_slot(source_slot)
+            }
+            Level2DynamicArenaKind::AuthoredModel17 => {
+                self.economy.step_authored_model17_slot(source_slot)
+            }
+            Level2DynamicArenaKind::Model17SpawnedChild => {
+                self.economy.step_model17_spawned_child_slot(source_slot)
             }
             Level2DynamicArenaKind::AuthoredClass14 => {
                 self.economy.step_authored_class14_slot(source_slot)
@@ -23187,6 +23598,186 @@ mod tests {
         session.reset();
         assert!(session.economy().authored_model6().is_empty());
         assert!(session.economy().model6_spawned_children().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_authored_model17_runs_meteor_constructor_and_spawn_branch() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 authored model-17 session");
+        let baseline_hash = session.campaign_state_hash();
+
+        // AUT-L2-0157 is a qualified class-10/subtype-17 row. Its parent
+        // fields are the explicit AddMeteor_4ED70 constructor payload.
+        let meteor = session
+            .allocate_level2_authored_model17(157)
+            .expect("authored model-17 row 157");
+        assert_eq!(
+            (
+                meteor.entity_id,
+                meteor.source_class,
+                meteor.model,
+                meteor.action,
+                meteor.subspell_index,
+                meteor.max_life,
+                meteor.life,
+                meteor.control_flags,
+                meteor.shift_rot_x,
+                meteor.shift_rot_y,
+            ),
+            (
+                meteor.source_entity_index,
+                10,
+                17,
+                17,
+                3000,
+                10,
+                10,
+                0,
+                0,
+                0
+            )
+        );
+
+        // The production outer cursor visits the parent and materializes the
+        // three source SEARCH.DAT shape-0 child cells.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let parent = session
+            .economy()
+            .authored_model17()
+            .iter()
+            .find(|source| source.source_entity_index == meteor.source_entity_index)
+            .copied()
+            .expect("Meteor parent survives first callback");
+        assert_eq!(
+            (
+                parent.life,
+                parent.dword_0x10,
+                parent.control_flags,
+                parent.shift_rot_x,
+                parent.shift_rot_y,
+            ),
+            (9, 2, 0x0001_0002, 0, 512)
+        );
+        assert_eq!(session.economy().model17_spawned_children().len(), 3);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::AuthoredModel17,
+                source_slot,
+                ..
+            } if *source_slot == meteor.source_entity_index
+        )));
+
+        let child = session.economy().model17_spawned_children()[0];
+        assert_eq!(
+            (
+                child.parent_entity_index,
+                child.parent_entity_id,
+                child.source_class,
+                child.model,
+                child.action,
+                child.subspell_index,
+                child.max_life,
+                child.life,
+                child.control_flags,
+                child.shift_rot_x,
+                child.shift_rot_y,
+                child.yaw,
+            ),
+            (
+                meteor.source_entity_index,
+                meteor.entity_id,
+                10,
+                0,
+                0,
+                400,
+                8,
+                7,
+                0x0003_0080,
+                512,
+                512,
+                meteor.yaw,
+            )
+        );
+        assert!(
+            session
+                .economy_mut()
+                .step_model17_spawned_child_slot(child.source_entity_index)
+        );
+        let stepped_child = session
+            .economy()
+            .model17_spawned_children()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == child.source_entity_index)
+            .copied()
+            .expect("Meteor child remains live");
+        assert_eq!(stepped_child.life, 6);
+        assert_eq!(stepped_child.phase, child.phase.wrapping_add(1));
+
+        // The source child callback decrements first and disables on the same
+        // visit when the new life value is below -1.
+        session
+            .economy_mut()
+            .model17_spawned_children
+            .iter_mut()
+            .find(|candidate| candidate.source_entity_index == child.source_entity_index)
+            .expect("Meteor child for negative-life sentinel")
+            .life = -1;
+        assert!(
+            session
+                .economy_mut()
+                .step_model17_spawned_child_slot(child.source_entity_index)
+        );
+        assert!(
+            !session
+                .economy()
+                .model17_spawned_children()
+                .iter()
+                .find(|candidate| candidate.source_entity_index == child.source_entity_index)
+                .expect("Meteor child after negative-life sentinel")
+                .active
+        );
+        session.economy_mut().reclaim_inactive_slots();
+        assert!(
+            session
+                .economy()
+                .model17_spawned_children()
+                .iter()
+                .all(|candidate| candidate.source_entity_index != child.source_entity_index)
+        );
+
+        // Parent expiry follows the source negative-life sentinel and the
+        // ordinary reclaim pass releases its map-linked arena slot.
+        session
+            .economy_mut()
+            .authored_model17
+            .iter_mut()
+            .find(|source| source.source_entity_index == meteor.source_entity_index)
+            .expect("Meteor parent for expiry")
+            .life = -1;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .economy()
+                .authored_model17()
+                .iter()
+                .all(|source| source.source_entity_index != meteor.source_entity_index)
+        );
+        assert!(
+            session
+                .economy()
+                .model17_spawned_children()
+                .iter()
+                .all(|child| child.active)
+        );
+
+        session.reset();
+        assert!(session.economy().authored_model17().is_empty());
+        assert!(session.economy().model17_spawned_children().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
