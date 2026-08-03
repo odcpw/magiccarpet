@@ -94,7 +94,9 @@ bounded 1.25x internal resolution before resolving to the selected output;
 the indexed owner HUD remains a separate overlay. Enhanced acquires that HUD
 through the existing Rust Classic HD `hd-640x480` profile, so only provenance-
 marked owner overlay pixels are presented at a real 640x480 4:3 extent; the
-Classic HD world frame is never composited over the Unity scene. Use
+Classic HD world frame is never composited over the Unity scene. The Enhanced
+HUD call uses the shared owner-overlay endpoint, so Rust does not redraw the
+Classic HD world merely to supply those pixels. Use
 `-mc-enhanced-tier low|medium|high|whole-hog` to select the presentation
 quality; the low and medium tiers use URP spatial reconstruction when the
 graphics device supports it, with Unity's built-in fallback otherwise.

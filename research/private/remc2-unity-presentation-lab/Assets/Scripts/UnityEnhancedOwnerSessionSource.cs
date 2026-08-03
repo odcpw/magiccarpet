@@ -38,7 +38,9 @@ namespace MagicCarpet.PresentationLab
         // Unity Enhanced keeps the modern Unity world, but its HUD remains
         // owner-authentic. Consume the existing Rust Classic HD profile for
         // that overlay so the indexed art is rendered at a real 4:3 HD extent
-        // instead of stretching the fixed 320x200 compatibility surface.
+        // instead of stretching the fixed 320x200 compatibility surface. The
+        // overlay-only endpoint leaves the modern Unity world as the only
+        // world render on this route; it does not redraw Classic HD terrain.
         public const int EnhancedOwnerHudWidth = 640;
         public const int EnhancedOwnerHudHeight = 480;
         public const uint EnhancedOwnerHudProfileId = 1;
@@ -52,8 +54,7 @@ namespace MagicCarpet.PresentationLab
             0x4000u | // provenance present
             0x8000u | // overlays composited
             0x10000u | // postprocess complete
-            0x20000u | // lighting complete
-            0x40000u; // profile-sized Rust rerender
+            0x400000u; // profile-sized owner overlay only
         private const string OwnerPaletteRelativePath = "palette/paln.rgb8";
         private const byte Level1MissionLive = 6;
         private const int EventBatchCapacity = 128;
@@ -1096,7 +1097,7 @@ namespace MagicCarpet.PresentationLab
                 reserved2 = 0
             };
 
-            int status = mc_native_session_classic_hd_frame_copy(
+            int status = mc_native_session_classic_hd_owner_overlay_copy(
                 handle,
                 EnhancedOwnerHudProfileId,
                 ref ownerHudFrameQuery,
@@ -1108,7 +1109,7 @@ namespace MagicCarpet.PresentationLab
                 OwnerHudInfoSize);
             if (status != 0)
             {
-                reason = StatusReason("Unity Enhanced owner HD owner HUD frame copy", status);
+                reason = StatusReason("Unity Enhanced owner HD owner HUD overlay copy", status);
                 return false;
             }
 
@@ -1127,7 +1128,7 @@ namespace MagicCarpet.PresentationLab
                 ownerHudFrameInfo.overlayPixelsWritten == 0 ||
                 ownerHudFrameInfo.overlayStageCount == 0)
             {
-                reason = "Unity Enhanced owner HD HUD frame failed its profile overlay receipt contract";
+                reason = "Unity Enhanced owner HD HUD overlay failed its profile overlay receipt contract";
                 return false;
             }
 
@@ -2863,7 +2864,7 @@ namespace MagicCarpet.PresentationLab
             uint snapshotSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
-        private static extern int mc_native_session_classic_hd_frame_copy(
+        private static extern int mc_native_session_classic_hd_owner_overlay_copy(
             ulong handle,
             uint profileId,
             ref McPresentationFrameQueryV2 query,

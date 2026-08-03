@@ -324,6 +324,9 @@ pub const MC_CLASSIC_HD_FRAME_PROFILE_RERENDER: u32 = 0x4_0000;
 pub const MC_CLASSIC_HD_FRAME_TYPED_SPRITES: u32 = 0x8_0000;
 pub const MC_CLASSIC_HD_FRAME_REFLECTIONS: u32 = 0x10_0000;
 pub const MC_CLASSIC_HD_FRAME_SHADOWS: u32 = 0x20_0000;
+/// The caller requested only the profile-sized, owner-authentic HUD overlay.
+/// The native world graph is intentionally not rendered for this receipt.
+pub const MC_CLASSIC_HD_FRAME_OWNER_OVERLAY_ONLY: u32 = 0x40_0000;
 
 fn world_frame_flags(reflected_sprites_composited: bool, sprite_shadows_composited: bool) -> u32 {
     let mut flags = MC_TERRAIN_FRAME_ISOLATED_SKY_TERRAIN
@@ -3578,13 +3581,13 @@ impl SessionRecord {
         Ok(receipt)
     }
 
-    fn classic_hd_frame_copy(
-        &mut self,
+    fn validate_classic_hd_frame_request(
+        &self,
         profile_id: u32,
-        query: McPresentationFrameQueryV2,
-        index_buffer: &mut [u8],
-        provenance_buffer: &mut [u8],
-    ) -> AbiResult<McPresentationFrameInfoV2> {
+        query: &McPresentationFrameQueryV2,
+        index_buffer: &[u8],
+        provenance_buffer: &[u8],
+    ) -> AbiResult<ClassicHdRenderProfile> {
         let profile = classic_hd_profile_for_id(profile_id)?;
         let required = profile.extent();
         if index_buffer.len() != required || provenance_buffer.len() != required {
@@ -3637,6 +3640,23 @@ impl SessionRecord {
                 "Classic HD paused query does not match authoritative session state",
             ));
         }
+        Ok(profile)
+    }
+
+    fn classic_hd_frame_copy(
+        &mut self,
+        profile_id: u32,
+        query: McPresentationFrameQueryV2,
+        index_buffer: &mut [u8],
+        provenance_buffer: &mut [u8],
+    ) -> AbiResult<McPresentationFrameInfoV2> {
+        let profile = self.validate_classic_hd_frame_request(
+            profile_id,
+            &query,
+            index_buffer,
+            provenance_buffer,
+        )?;
+        let required = profile.extent();
 
         let source_input_hash = self.source_render_input_hash()?;
         let mut input_bytes = Vec::with_capacity(96);
@@ -3739,7 +3759,7 @@ impl SessionRecord {
                 .expect("Classic HD graph restored")
                 .current_provenance(),
         );
-        let (overlay_pixels_written, overlay_stage_count) = self
+        let (overlay_pixels_written, overlay_stage_count, _, _) = self
             .composite_classic_hd_owner_overlays(
                 &profile,
                 query,
@@ -3793,19 +3813,111 @@ impl SessionRecord {
         })
     }
 
+    /// Copy only the owner-authentic HUD overlay into a profile-sized
+    /// transparent surface. Unity Enhanced already renders the world through
+    /// URP, so asking the Classic HD graph to redraw terrain and typed sprites
+    /// here would duplicate visible work without changing the HUD pixels.
+    fn classic_hd_owner_overlay_copy(
+        &mut self,
+        profile_id: u32,
+        query: McPresentationFrameQueryV2,
+        index_buffer: &mut [u8],
+        provenance_buffer: &mut [u8],
+    ) -> AbiResult<McPresentationFrameInfoV2> {
+        let profile = self.validate_classic_hd_frame_request(
+            profile_id,
+            &query,
+            index_buffer,
+            provenance_buffer,
+        )?;
+        let required = profile.extent();
+        index_buffer.fill(0);
+        provenance_buffer.fill(0);
+        let (overlay_pixels_written, overlay_stage_count, input_hash, newly_committed) = self
+            .composite_classic_hd_owner_overlays(
+                &profile,
+                query,
+                index_buffer,
+                provenance_buffer,
+            )?;
+        Ok(McPresentationFrameInfoV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McPresentationFrameInfoV2>(),
+            generation: self.generation,
+            tick: self.camera_history.tick,
+            presentation_revision: query.presentation_revision,
+            immutable_input_hash: input_hash,
+            width: profile.width as u16,
+            height: profile.height as u16,
+            stride: profile.stride as u16,
+            viewport_width: profile.width as u16,
+            index_bytes: u32::try_from(required).expect("Classic HD extent fits u32"),
+            provenance_bytes: u32::try_from(required).expect("Classic HD extent fits u32"),
+            flags: MC_CLASSIC_HD_FRAME_OWNER_OVERLAY_ONLY
+                | MC_PRESENTATION_FRAME_HAS_PROVENANCE
+                | MC_PRESENTATION_FRAME_OVERLAYS_COMPOSITED
+                | MC_PRESENTATION_FRAME_POSTPROCESS_COMPLETE,
+            effective_postprocess_mode: 0,
+            history_state: 0,
+            newly_committed,
+            reserved_0: 0,
+            index_hash: byte_hash(index_buffer),
+            provenance_hash: byte_hash(provenance_buffer),
+            lighting_hash: self.mission.dynamic_lighting_hash_v1(),
+            source_arena_hash: self.mission.source_arena_hash_v2(),
+            overlay_pixels_written,
+            overlay_stage_count,
+            reserved_1: 0,
+            reserved: [0; 6],
+        })
+    }
+
+    fn classic_hd_owner_overlay_frame(
+        &mut self,
+        query: McPresentationFrameQueryV2,
+    ) -> AbiResult<sim_core::presentation_frame::PresentationFrameResult> {
+        let mut hud_query = query;
+        hud_query.viewport_width = LEVEL1_VIEW_WIDTH as u16;
+        hud_query.viewport_height = LEVEL1_VIEW_HEIGHT as u16;
+        hud_query.screen_stride = LEVEL1_VIEW_WIDTH as u16;
+        // The owner HUD is a direct compositor surface. The HD graph owns its
+        // separate blur/history decision, so do not blur the source HUD a
+        // second time while extracting its marked overlay pixels.
+        hud_query.configured_blur_mode = 0;
+        hud_query.blur_capability = 1;
+        hud_query.high_speed_system = 1;
+        hud_query.scratch_present = 1;
+        hud_query.vga_resolution = 1;
+        hud_query.spatial_smoothing = 0;
+
+        let result = self.presentation_frame(hud_query)?;
+        if !result.frame.compositor_complete()
+            || result.frame.overlay_pixels_written == 0
+            || result.frame.overlay_receipts.is_empty()
+        {
+            return Err(AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                "Classic HD owner compositor did not produce a complete HUD overlay",
+            ));
+        }
+        Ok(result)
+    }
+
     /// Composite the owner-authentic fixed-pipeline overlay pixels over the
     /// profile-sized Classic HD world. The HD Rust graph remains authoritative
     /// for terrain and typed sprites; this imports only pixels explicitly
     /// marked as overlays by the existing 320x200 owner compositor, preserving
     /// the original HUD art and layout while fitting it into the profile's
-    /// 4:3 surface.
+    /// 4:3 surface. The same helper also serves the Enhanced overlay-only
+    /// endpoint, where the destination begins transparent instead of carrying
+    /// the HD world.
     fn composite_classic_hd_owner_overlays(
         &mut self,
         profile: &ClassicHdRenderProfile,
         query: McPresentationFrameQueryV2,
         indices: &mut [u8],
         provenance: &mut [u8],
-    ) -> AbiResult<(u32, u16)> {
+    ) -> AbiResult<(u32, u16, u64, u8)> {
         let base_width = LEVEL1_VIEW_WIDTH as u32;
         let base_height = LEVEL1_VIEW_HEIGHT as u32;
         if profile.width < base_width || profile.height < base_height {
@@ -3827,30 +3939,8 @@ impl SessionRecord {
             ));
         }
 
-        let mut hud_query = query;
-        hud_query.viewport_width = LEVEL1_VIEW_WIDTH as u16;
-        hud_query.viewport_height = LEVEL1_VIEW_HEIGHT as u16;
-        hud_query.screen_stride = LEVEL1_VIEW_WIDTH as u16;
-        // The owner HUD is a direct compositor surface. The HD graph already
-        // owns its separate blur/history decision, so do not blur the source
-        // HUD a second time while extracting its marked overlay pixels.
-        hud_query.configured_blur_mode = 0;
-        hud_query.blur_capability = 1;
-        hud_query.high_speed_system = 1;
-        hud_query.scratch_present = 1;
-        hud_query.vga_resolution = 1;
-        hud_query.spatial_smoothing = 0;
-
-        let owner_frame = self.presentation_frame(hud_query)?.frame;
-        if !owner_frame.compositor_complete()
-            || owner_frame.overlay_pixels_written == 0
-            || owner_frame.overlay_receipts.is_empty()
-        {
-            return Err(AbiError::new(
-                MC_STATUS_VALIDATION_FAILED,
-                "Classic HD owner compositor did not produce a complete HUD overlay",
-            ));
-        }
+        let owner_result = self.classic_hd_owner_overlay_frame(query)?;
+        let owner_frame = owner_result.frame;
 
         let base_width = usize::try_from(base_width).expect("base width fits usize");
         let base_height = usize::try_from(base_height).expect("base height fits usize");
@@ -3894,6 +3984,8 @@ impl SessionRecord {
             written,
             u16::try_from(owner_frame.overlay_receipts.len())
                 .expect("Classic HD overlay stage count fits u16"),
+            owner_frame.immutable_input_hash,
+            u8::from(owner_result.newly_committed),
         ))
     }
 
@@ -7809,6 +7901,49 @@ pub extern "C" fn mc_native_session_presentation_frame_copy(
 /// compositor. The Rust Classic HD graph rerenders terrain and supported
 /// typed sprites into its own profile-sized MAIN/history planes, then copies
 /// those planes to the caller. Unsupported source families fail closed.
+fn validate_classic_hd_frame_query(query: &McPresentationFrameQueryV2) -> AbiResult<()> {
+    validate_reserved(&query.reserved, "Classic HD frame query")?;
+    if query.reserved_0 != 0 {
+        return Err(AbiError::new(
+            MC_STATUS_RESERVED_NONZERO,
+            "Classic HD frame query reserved_0 must be zero",
+        ));
+    }
+    for (name, value) in [
+        ("blur_capability", query.blur_capability),
+        ("high_speed_system", query.high_speed_system),
+        ("scratch_present", query.scratch_present),
+        ("spatial_smoothing", query.spatial_smoothing),
+        ("minimap_enabled", query.minimap_enabled),
+        ("top_bar_enabled", query.top_bar_enabled),
+        ("game_paused", query.game_paused),
+        ("level_end", query.level_end),
+        ("objective_textbox", query.objective_textbox),
+        ("tutorial_or_briefing", query.tutorial_or_briefing),
+        ("help_popup", query.help_popup),
+    ] {
+        if value > 1 {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                format!("Classic HD frame {name} must be 0 or 1"),
+            ));
+        }
+    }
+    if query.debug_text & !0x48 != 0 {
+        return Err(AbiError::new(
+            MC_STATUS_INVALID_ARGUMENT,
+            "Classic HD frame debug_text accepts source flags 0x08 and 0x40 only",
+        ));
+    }
+    if query.configured_blur_mode > 2 {
+        return Err(AbiError::new(
+            MC_STATUS_INVALID_ARGUMENT,
+            "Classic HD configured blur mode must be zero, one, or two",
+        ));
+    }
+    Ok(())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn mc_native_session_classic_hd_frame_copy(
     handle: u64,
@@ -7823,45 +7958,7 @@ pub extern "C" fn mc_native_session_classic_hd_frame_copy(
 ) -> i32 {
     boundary_value(out_info, out_info_size, || {
         let query = read_versioned_input(query, "Classic HD frame query")?;
-        validate_reserved(&query.reserved, "Classic HD frame query")?;
-        if query.reserved_0 != 0 {
-            return Err(AbiError::new(
-                MC_STATUS_RESERVED_NONZERO,
-                "Classic HD frame query reserved_0 must be zero",
-            ));
-        }
-        for (name, value) in [
-            ("blur_capability", query.blur_capability),
-            ("high_speed_system", query.high_speed_system),
-            ("scratch_present", query.scratch_present),
-            ("spatial_smoothing", query.spatial_smoothing),
-            ("minimap_enabled", query.minimap_enabled),
-            ("top_bar_enabled", query.top_bar_enabled),
-            ("game_paused", query.game_paused),
-            ("level_end", query.level_end),
-            ("objective_textbox", query.objective_textbox),
-            ("tutorial_or_briefing", query.tutorial_or_briefing),
-            ("help_popup", query.help_popup),
-        ] {
-            if value > 1 {
-                return Err(AbiError::new(
-                    MC_STATUS_INVALID_ARGUMENT,
-                    format!("Classic HD frame {name} must be 0 or 1"),
-                ));
-            }
-        }
-        if query.debug_text & !0x48 != 0 {
-            return Err(AbiError::new(
-                MC_STATUS_INVALID_ARGUMENT,
-                "Classic HD frame debug_text accepts source flags 0x08 and 0x40 only",
-            ));
-        }
-        if query.configured_blur_mode > 2 {
-            return Err(AbiError::new(
-                MC_STATUS_INVALID_ARGUMENT,
-                "Classic HD configured blur mode must be zero, one, or two",
-            ));
-        }
+        validate_classic_hd_frame_query(&query)?;
         let profile = classic_hd_profile_for_id(profile_id)?;
         let required = profile.extent();
         let required_u32 = u32::try_from(required).expect("Classic HD extent fits u32");
@@ -7886,6 +7983,55 @@ pub extern "C" fn mc_native_session_classic_hd_frame_copy(
         let provenance = unsafe { slice::from_raw_parts_mut(provenance_buffer, required) };
         with_session_mut(handle, |session| {
             session.classic_hd_frame_copy(profile_id, query, indices, provenance)
+        })
+    })
+}
+
+/// Copy only the profile-sized owner HUD overlay for Unity Enhanced.
+///
+/// This endpoint shares the exact owner compositor and profile scaling with
+/// Classic HD, but deliberately does not render the Classic HD world graph.
+/// The destination is transparent except for provenance-marked HUD pixels;
+/// Unity's Enhanced world remains the only world image on that route.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_session_classic_hd_owner_overlay_copy(
+    handle: u64,
+    profile_id: u32,
+    query: *const McPresentationFrameQueryV2,
+    index_buffer: *mut u8,
+    index_capacity: u32,
+    provenance_buffer: *mut u8,
+    provenance_capacity: u32,
+    out_info: *mut McPresentationFrameInfoV2,
+    out_info_size: u32,
+) -> i32 {
+    boundary_value(out_info, out_info_size, || {
+        let query = read_versioned_input(query, "Classic HD owner overlay query")?;
+        validate_classic_hd_frame_query(&query)?;
+        let profile = classic_hd_profile_for_id(profile_id)?;
+        let required = profile.extent();
+        let required_u32 = u32::try_from(required).expect("Classic HD extent fits u32");
+        if index_capacity < required_u32 || provenance_capacity < required_u32 {
+            return Err(AbiError::new(
+                MC_STATUS_BUFFER_TOO_SMALL,
+                format!(
+                    "Classic HD profile {} requires {required_u32} owner overlay bytes per plane, got {index_capacity} and {provenance_capacity}",
+                    profile.id.as_str()
+                ),
+            ));
+        }
+        if index_buffer.is_null() || provenance_buffer.is_null() {
+            return Err(AbiError::new(
+                MC_STATUS_NULL_POINTER,
+                "Classic HD owner overlay index and provenance buffers must be non-null",
+            ));
+        }
+        // SAFETY: the capacities were checked against the validated profile
+        // extent and the pointers were checked non-null above.
+        let indices = unsafe { slice::from_raw_parts_mut(index_buffer, required) };
+        let provenance = unsafe { slice::from_raw_parts_mut(provenance_buffer, required) };
+        with_session_mut(handle, |session| {
+            session.classic_hd_owner_overlay_copy(profile_id, query, indices, provenance)
         })
     })
 }

@@ -300,7 +300,7 @@ namespace MagicCarpet.PresentationLab.Tests
         [Test]
         public void OwnerHudReceiptCacheRequiresMatchingCameraTickAndGeneration()
         {
-            const uint validFlags = 0x4000u | 0x8000u | 0x10000u | 0x20000u | 0x40000u;
+            const uint validFlags = 0x4000u | 0x8000u | 0x10000u | 0x400000u;
 
             Assert.IsTrue(UnityEnhancedOwnerSessionSource.CanReuseOwnerHudFrame(
                 2,
@@ -434,8 +434,8 @@ namespace MagicCarpet.PresentationLab.Tests
                 Application.dataPath,
                 "Scripts",
                 "UnityEnhancedOwnerSessionSource.cs"));
-            StringAssert.Contains("mc_native_session_classic_hd_frame_copy", source);
-            StringAssert.Contains("0x40000u", source);
+            StringAssert.Contains("mc_native_session_classic_hd_owner_overlay_copy", source);
+            StringAssert.Contains("0x400000u", source);
         }
 
         [Test]
