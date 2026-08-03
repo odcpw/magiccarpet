@@ -3721,6 +3721,77 @@ pub struct Level2Model17SpawnedChild {
     pub active: bool,
 }
 
+/// The authored class-10/model-22 wind parent created by the pinned
+/// `AddWind_4F040` constructor through `sub_4A310`. The source callback moves
+/// this parent and its chained model-75/action-82 rows; cross-entity pulse
+/// effects remain a separate follow-up.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredModel22Source {
+    pub source_entity_index: u16,
+    pub entity_id: u16,
+    pub entity_rng: u16,
+    pub authored_index: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub word_0x2c: i16,
+    pub word_0x2e: i16,
+    pub byte_0x38: u8,
+    pub actual_speed: i16,
+    pub minimum_speed: i16,
+    pub maximum_speed: i16,
+    pub max_life: i16,
+    pub life: i16,
+    pub subspell_index: u16,
+    pub control_flags: u32,
+    pub word_0x30: i16,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub roll: i16,
+    pub particle_index: u16,
+    pub shift_rot_x: i16,
+    pub shift_rot_y: i16,
+    pub axis_position: Position,
+    pub position: Position,
+    pub phase: u8,
+    pub active: bool,
+}
+
+/// One model-75/action-82 row cloned by `AddWind_4F040`. Action 82 is a
+/// source no-call row; the parent action-22 callback owns the chain movement
+/// and disables the whole chain on expiry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2Model22SpawnedChild {
+    pub source_entity_index: u16,
+    pub entity_id: u16,
+    pub entity_rng: u16,
+    pub parent_entity_index: u16,
+    pub parent_entity_id: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub segment_index: u8,
+    pub word_0x2c: i16,
+    pub word_0x36: i16,
+    pub yaw: i16,
+    pub pitch: i16,
+    pub roll: i16,
+    pub particle_index: u16,
+    pub shift_rot_x: i16,
+    pub shift_rot_y: i16,
+    pub position: Position,
+    pub phase: u8,
+    pub active: bool,
+}
+
+// Presentation rows 293..=304 in the qualified Level 2 package have
+// rotation speeds 70,80,90,100,110,120,130,150,180,220,280,360. The pinned
+// `sub_4F1C0` derives these fixed shifts as 550/1000 and 450/1000.
+const LEVEL2_MODEL22_PARTICLE_INDEXES: [u16; 12] =
+    [293, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304];
+const LEVEL2_MODEL22_SHIFT_X: [i16; 12] = [38, 44, 49, 55, 60, 66, 71, 82, 99, 121, 154, 198];
+const LEVEL2_MODEL22_SHIFT_Y: [i16; 12] = [31, 36, 40, 45, 49, 54, 58, 67, 81, 99, 126, 162];
+
 /// A dormant authored class-14/model-3 or model-5 event materialized by the
 /// generic `sub_4A310` constructor.  The mission callbacks which decide when
 /// groups 5/28/31 fire remain a separate slice; once a row is selected, the
@@ -3941,6 +4012,10 @@ pub struct Level2EconomyState {
     authored_model17: Vec<Level2AuthoredModel17Source>,
     baseline_model17_spawned_children: Vec<Level2Model17SpawnedChild>,
     model17_spawned_children: Vec<Level2Model17SpawnedChild>,
+    baseline_authored_model22: Vec<Level2AuthoredModel22Source>,
+    authored_model22: Vec<Level2AuthoredModel22Source>,
+    baseline_model22_spawned_children: Vec<Level2Model22SpawnedChild>,
+    model22_spawned_children: Vec<Level2Model22SpawnedChild>,
     baseline_authored_class14: Vec<Level2AuthoredClass14Source>,
     authored_class14: Vec<Level2AuthoredClass14Source>,
     /// Source `word_0x36DFE`, written by `sub_51570` for the latest model-3
@@ -4128,6 +4203,10 @@ impl Level2EconomyState {
             authored_model17: Vec::new(),
             baseline_model17_spawned_children: Vec::new(),
             model17_spawned_children: Vec::new(),
+            baseline_authored_model22: Vec::new(),
+            authored_model22: Vec::new(),
+            baseline_model22_spawned_children: Vec::new(),
+            model22_spawned_children: Vec::new(),
             baseline_authored_class14: Vec::new(),
             authored_class14: Vec::new(),
             baseline_class14_model3_handle: 0,
@@ -4258,6 +4337,16 @@ impl Level2EconomyState {
     #[must_use]
     pub fn model17_spawned_children(&self) -> &[Level2Model17SpawnedChild] {
         &self.model17_spawned_children
+    }
+
+    #[must_use]
+    pub fn authored_model22(&self) -> &[Level2AuthoredModel22Source] {
+        &self.authored_model22
+    }
+
+    #[must_use]
+    pub fn model22_spawned_children(&self) -> &[Level2Model22SpawnedChild] {
+        &self.model22_spawned_children
     }
 
     #[must_use]
@@ -4912,6 +5001,282 @@ impl Level2EconomyState {
             .is_ok()
     }
 
+    /// Allocate the authored class-10/model-22 wind parent and its eleven
+    /// cloned model-75/action-82 chain rows from `AddWind_4F040`. The source
+    /// requires twelve available arena rows before it starts; no synthetic
+    /// success is reported for an exhausted constructor.
+    pub fn allocate_authored_model22(
+        &mut self,
+        authored_index: u16,
+        axis_position: Position,
+        position: Position,
+    ) -> Option<Level2AuthoredModel22Source> {
+        // `AddWind_4F040` refuses to start unless the source free-list has
+        // room for the parent plus all eleven cloned chain rows.
+        if self.free_slots.len() < 12 {
+            return None;
+        }
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = level2_next_rng16(self.new_event_rng(source_entity_index));
+        let mut position = position;
+        position.z = self.terrain.ground_height(position);
+        let yaw = i16::try_from((i32::from(entity_rng & 0x07ff) - 1) & 0x07ff)
+            .expect("Level 2 wind yaw fits");
+        let parent = Level2AuthoredModel22Source {
+            source_entity_index,
+            entity_id: source_entity_index,
+            entity_rng,
+            authored_index,
+            source_class: 10,
+            model: 22,
+            action: 22,
+            word_0x2c: 0,
+            word_0x2e: 1,
+            byte_0x38: 1,
+            actual_speed: 50,
+            minimum_speed: 20,
+            maximum_speed: 10,
+            max_life: 500,
+            life: 500,
+            subspell_index: 1_000,
+            control_flags: 0,
+            word_0x30: 0,
+            yaw,
+            pitch: yaw,
+            roll: yaw,
+            particle_index: LEVEL2_MODEL22_PARTICLE_INDEXES[0],
+            shift_rot_x: LEVEL2_MODEL22_SHIFT_X[0],
+            shift_rot_y: LEVEL2_MODEL22_SHIFT_Y[0],
+            axis_position,
+            position,
+            // NewEvent seeds byte 0x3e from the source slot; ApplyEvents
+            // increments it after the action callback returns.
+            phase: source_entity_index as u8,
+            active: true,
+        };
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.authored_model22.push(parent);
+
+        let mut z_offset = 2 * LEVEL2_MODEL22_SHIFT_Y[0];
+        for segment_index in 1..=11_u8 {
+            let Some(child_slot) = self.allocate_slot() else {
+                break;
+            };
+            let child_z = i32::from(position.z)
+                .saturating_add(i32::from(z_offset))
+                .clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+            let child_position = Position {
+                z: child_z,
+                ..position
+            };
+            let child = Level2Model22SpawnedChild {
+                source_entity_index: child_slot,
+                entity_id: source_entity_index,
+                entity_rng,
+                parent_entity_index: source_entity_index,
+                parent_entity_id: source_entity_index,
+                source_class: 10,
+                model: 75,
+                action: 82,
+                segment_index,
+                word_0x2c: i16::from(segment_index),
+                word_0x36: z_offset,
+                yaw,
+                pitch: yaw,
+                roll: yaw,
+                particle_index: LEVEL2_MODEL22_PARTICLE_INDEXES[usize::from(segment_index)],
+                shift_rot_x: LEVEL2_MODEL22_SHIFT_X[usize::from(segment_index)],
+                shift_rot_y: LEVEL2_MODEL22_SHIFT_Y[usize::from(segment_index)],
+                position: child_position,
+                phase: segment_index - 1,
+                active: true,
+            };
+            if self
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: child_slot,
+                    active: true,
+                    x: child_position.x,
+                    y: child_position.y,
+                })
+                .is_err()
+            {
+                self.release_slot(child_slot, None);
+                break;
+            }
+            self.source_rng.insert(child_slot, entity_rng);
+            self.model22_spawned_children.push(child);
+            z_offset = z_offset.saturating_add(2 * child.shift_rot_y);
+        }
+        if let Some(parent) = self
+            .authored_model22
+            .iter_mut()
+            .find(|parent| parent.source_entity_index == source_entity_index)
+        {
+            parent.entity_rng = entity_rng;
+        }
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.authored_model22
+            .iter()
+            .find(|parent| parent.source_entity_index == source_entity_index)
+            .copied()
+    }
+
+    /// Advance one authored wind parent through the bounded kinematic portion
+    /// of `sub_33110`: source life, parent heading/translation, and linked
+    /// chain spacing. The source's cross-entity pulse helpers (`sub_33340`
+    /// and `sub_33710`) remain a separate relation-heavy follow-up.
+    pub fn step_authored_model22_slot(&mut self, source_slot: u16) -> bool {
+        let Some(parent_index) = self
+            .authored_model22
+            .iter()
+            .position(|parent| parent.active && parent.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        let mut parent = self.authored_model22[parent_index];
+        parent.life = parent.life.wrapping_sub(1);
+        if parent.life < 0 {
+            parent.active = false;
+            self.authored_model22[parent_index] = parent;
+            let child_slots = self
+                .model22_spawned_children
+                .iter()
+                .filter(|child| child.active && child.parent_entity_index == source_slot)
+                .map(|child| child.source_entity_index)
+                .collect::<Vec<_>>();
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: false,
+                    x: parent.position.x,
+                    y: parent.position.y,
+                })
+                .expect("Level 2 wind parent slot fits the map chain");
+            let mut child_disable_rows = Vec::new();
+            for child in &mut self.model22_spawned_children {
+                if child_slots.contains(&child.source_entity_index) {
+                    child.active = false;
+                    child_disable_rows.push((
+                        child.source_entity_index,
+                        child.position.x,
+                        child.position.y,
+                    ));
+                }
+            }
+            for (child_slot, x, y) in child_disable_rows {
+                self.map_chains
+                    .sync_entity(RenderableMapSeed {
+                        entity_index: child_slot,
+                        active: false,
+                        x,
+                        y,
+                    })
+                    .expect("Level 2 wind child slot fits the map chain");
+            }
+            return true;
+        }
+        parent.word_0x30 = parent.position.z as i16;
+        if parent.phase & 0x0f == 0 {
+            parent.entity_rng = level2_next_rng16(parent.entity_rng);
+            if parent.entity_rng & 1 == 0 {
+                parent.word_0x2e = -parent.word_0x2e;
+            }
+        }
+        parent.roll = (parent.roll + 11 * parent.word_0x2e) & 0x07ff;
+        let mut predicted = parent.position;
+        crate::move_entity(&mut predicted, parent.roll, 0, 32);
+        parent.axis_position = predicted;
+        parent.yaw = (parent.yaw + 341) & 0x07ff;
+        crate::move_entity(&mut predicted, parent.yaw, 0, 120);
+        predicted.z = self.terrain.ground_height(predicted);
+        parent.position = predicted;
+
+        let mut previous = parent.position;
+        let mut child_sync_rows = Vec::new();
+        for child in self
+            .model22_spawned_children
+            .iter_mut()
+            .filter(|child| child.active && child.parent_entity_index == source_slot)
+        {
+            child.yaw = i16::try_from(heading_for_positions(child.position, previous))
+                .expect("Level 2 wind child heading fits");
+            let distance = level2_wrapping_source_distance_3d(previous, child.position);
+            let minimum_gap = 72 - 4 * (12 - child.word_0x2c);
+            let mut child_position = child.position;
+            if distance > u32::try_from(minimum_gap).unwrap_or(0) {
+                crate::move_entity(
+                    &mut child_position,
+                    child.yaw,
+                    0,
+                    i16::try_from(distance - u32::try_from(minimum_gap).unwrap_or(0))
+                        .unwrap_or(i16::MAX),
+                );
+            }
+            child_position.z = i32::from(parent.position.z)
+                .saturating_add(i32::from(child.word_0x36))
+                .clamp(i32::from(i16::MIN), i32::from(i16::MAX))
+                as i16;
+            child.position = child_position;
+            previous = child.position;
+            child_sync_rows.push((
+                child.source_entity_index,
+                child.position.x,
+                child.position.y,
+            ));
+        }
+        for (child_slot, x, y) in child_sync_rows {
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: child_slot,
+                    active: true,
+                    x,
+                    y,
+                })
+                .expect("Level 2 wind child slot fits the map chain");
+        }
+        parent.phase = parent.phase.wrapping_add(1);
+        self.source_rng.insert(source_slot, parent.entity_rng);
+        self.authored_model22[parent_index] = parent;
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: parent.position.x,
+                y: parent.position.y,
+            })
+            .is_ok()
+    }
+
+    /// Action 82 is a source no-call child route; the parent callback owns
+    /// movement and expiry. The outer cursor still visits the live row.
+    pub fn step_model22_spawned_child_slot(&mut self, source_slot: u16) -> bool {
+        let Some(child) = self
+            .model22_spawned_children
+            .iter_mut()
+            .find(|child| child.active && child.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        // Action 82 is a null dispatch slot, but ApplyEvents still advances
+        // byte 0x3e after visiting the live row.
+        child.phase = child.phase.wrapping_add(1);
+        true
+    }
+
     /// Advance the generated class-9/model-14 child through `sub_322A0`.
     pub fn step_model6_spawned_child_slot(&mut self, source_slot: u16) -> bool {
         let Some(child_index) = self
@@ -5330,6 +5695,22 @@ impl Level2EconomyState {
             visit(
                 child.source_entity_index,
                 Level2DynamicArenaKind::Model17SpawnedChild,
+            );
+        }
+        for source in self.authored_model22.iter().filter(|source| source.active) {
+            visit(
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredModel22,
+            );
+        }
+        for child in self
+            .model22_spawned_children
+            .iter()
+            .filter(|child| child.active)
+        {
+            visit(
+                child.source_entity_index,
+                Level2DynamicArenaKind::Model22SpawnedChild,
             );
         }
         for source in self.authored_class14.iter().filter(|source| source.active) {
@@ -8439,6 +8820,38 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_model22 = self
+            .authored_model22
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_model22.retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_model22 {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
+        let reclaimed_model22_children = self
+            .model22_spawned_children
+            .iter()
+            .filter(|child| !child.active)
+            .map(|child| (child.source_entity_index, child.entity_rng))
+            .collect::<Vec<_>>();
+        self.model22_spawned_children.retain(|child| child.active);
+        for (slot, entity_rng) in reclaimed_model22_children {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_class14 = self
             .authored_class14
             .iter()
@@ -8713,6 +9126,58 @@ impl Level2EconomyState {
             hasher.update(child.position.z.to_le_bytes());
             hasher.update([u8::from(child.active)]);
         }
+        for source in &self.authored_model22 {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_id.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.authored_index.to_le_bytes());
+            hasher.update([source.source_class, source.model, source.action]);
+            hasher.update(source.word_0x2c.to_le_bytes());
+            hasher.update(source.word_0x2e.to_le_bytes());
+            hasher.update([source.byte_0x38]);
+            hasher.update(source.actual_speed.to_le_bytes());
+            hasher.update(source.minimum_speed.to_le_bytes());
+            hasher.update(source.maximum_speed.to_le_bytes());
+            hasher.update(source.max_life.to_le_bytes());
+            hasher.update(source.life.to_le_bytes());
+            hasher.update(source.subspell_index.to_le_bytes());
+            hasher.update(source.control_flags.to_le_bytes());
+            hasher.update(source.word_0x30.to_le_bytes());
+            hasher.update(source.yaw.to_le_bytes());
+            hasher.update(source.pitch.to_le_bytes());
+            hasher.update(source.roll.to_le_bytes());
+            hasher.update(source.particle_index.to_le_bytes());
+            hasher.update(source.shift_rot_x.to_le_bytes());
+            hasher.update(source.shift_rot_y.to_le_bytes());
+            hasher.update(source.axis_position.x.to_le_bytes());
+            hasher.update(source.axis_position.y.to_le_bytes());
+            hasher.update(source.axis_position.z.to_le_bytes());
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+            hasher.update([source.phase, u8::from(source.active)]);
+        }
+        for child in &self.model22_spawned_children {
+            hasher.update(child.source_entity_index.to_le_bytes());
+            hasher.update(child.entity_id.to_le_bytes());
+            hasher.update(child.entity_rng.to_le_bytes());
+            hasher.update(child.parent_entity_index.to_le_bytes());
+            hasher.update(child.parent_entity_id.to_le_bytes());
+            hasher.update([child.source_class, child.model, child.action]);
+            hasher.update([child.segment_index]);
+            hasher.update(child.word_0x2c.to_le_bytes());
+            hasher.update(child.word_0x36.to_le_bytes());
+            hasher.update(child.yaw.to_le_bytes());
+            hasher.update(child.pitch.to_le_bytes());
+            hasher.update(child.roll.to_le_bytes());
+            hasher.update(child.particle_index.to_le_bytes());
+            hasher.update(child.shift_rot_x.to_le_bytes());
+            hasher.update(child.shift_rot_y.to_le_bytes());
+            hasher.update(child.position.x.to_le_bytes());
+            hasher.update(child.position.y.to_le_bytes());
+            hasher.update(child.position.z.to_le_bytes());
+            hasher.update([child.phase, u8::from(child.active)]);
+        }
         hasher.update(self.class14_model3_handle.to_le_bytes());
         for source in &self.authored_class14 {
             hasher.update(source.source_entity_index.to_le_bytes());
@@ -8977,6 +9442,8 @@ impl Level2EconomyState {
         self.model6_spawned_children = self.baseline_model6_spawned_children.clone();
         self.authored_model17 = self.baseline_authored_model17.clone();
         self.model17_spawned_children = self.baseline_model17_spawned_children.clone();
+        self.authored_model22 = self.baseline_authored_model22.clone();
+        self.model22_spawned_children = self.baseline_model22_spawned_children.clone();
         self.authored_class14 = self.baseline_authored_class14.clone();
         self.class14_model3_handle = self.baseline_class14_model3_handle;
         self.beyond_sight_effects = self.baseline_beyond_sight_effects.clone();
@@ -11604,6 +12071,8 @@ pub enum Level2DynamicArenaKind {
     Model6SpawnedChild,
     AuthoredModel17,
     Model17SpawnedChild,
+    AuthoredModel22,
+    Model22SpawnedChild,
     AuthoredClass14,
     BeyondSightPulseEffect,
     ManaAttraction,
@@ -11728,6 +12197,8 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::Model6SpawnedChild => 16,
         Level2DynamicArenaKind::AuthoredModel17 => 17,
         Level2DynamicArenaKind::Model17SpawnedChild => 18,
+        Level2DynamicArenaKind::AuthoredModel22 => 19,
+        Level2DynamicArenaKind::Model22SpawnedChild => 20,
         Level2DynamicArenaKind::AuthoredClass14 => 13,
         Level2DynamicArenaKind::BeyondSightPulseEffect => 14,
         Level2DynamicArenaKind::ManaAttraction => 12,
@@ -12075,6 +12546,33 @@ impl Level2ResetSession {
             feature.world_position(self.terrain.ground_height(feature.world_position(0)));
         self.economy
             .allocate_authored_model17(authored_index, position)
+    }
+
+    /// Materialize one authored class-10/model-22 Wind row through the
+    /// pinned `AddWind_4F040` constructor. The generic authored path derives
+    /// the chain axis from parameter-2/parameter-1 before entering the
+    /// model-specific constructor.
+    pub fn allocate_level2_authored_model22(
+        &mut self,
+        authored_index: u16,
+    ) -> Option<Level2AuthoredModel22Source> {
+        let feature = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .find(|feature| {
+                feature.index == authored_index && feature.kind == 10 && feature.subtype == 22
+            })?;
+        let position =
+            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        let axis_position = Position {
+            x: feature.parameter_2.wrapping_shl(8).wrapping_add(128),
+            y: feature.parameter_1.wrapping_shl(8).wrapping_add(128),
+            z: position.z,
+        };
+        self.economy
+            .allocate_authored_model22(authored_index, axis_position, position)
     }
 
     #[must_use]
@@ -13014,6 +13512,12 @@ impl Level2ResetSession {
             }
             Level2DynamicArenaKind::Model17SpawnedChild => {
                 self.economy.step_model17_spawned_child_slot(source_slot)
+            }
+            Level2DynamicArenaKind::AuthoredModel22 => {
+                self.economy.step_authored_model22_slot(source_slot)
+            }
+            Level2DynamicArenaKind::Model22SpawnedChild => {
+                self.economy.step_model22_spawned_child_slot(source_slot)
             }
             Level2DynamicArenaKind::AuthoredClass14 => {
                 self.economy.step_authored_class14_slot(source_slot)
@@ -23778,6 +24282,155 @@ mod tests {
         session.reset();
         assert!(session.economy().authored_model17().is_empty());
         assert!(session.economy().model17_spawned_children().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_authored_model22_runs_wind_constructor_chain_and_expiry() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 authored model-22 session");
+        let baseline_hash = session.campaign_state_hash();
+
+        // AUT-L2-0110 is a qualified class-10/subtype-22 row. The authored
+        // path derives the wind axis from parameters before AddWind_4F040
+        // creates its model-22 parent and eleven model-75 chain rows.
+        let wind = session
+            .allocate_level2_authored_model22(110)
+            .expect("authored model-22 row 110");
+        assert_eq!(
+            (
+                wind.entity_id,
+                wind.source_class,
+                wind.model,
+                wind.action,
+                wind.word_0x2c,
+                wind.word_0x2e,
+                wind.actual_speed,
+                wind.minimum_speed,
+            ),
+            (wind.source_entity_index, 10, 22, 22, 0, 1, 50, 20,)
+        );
+        assert_eq!(
+            (
+                wind.maximum_speed,
+                wind.max_life,
+                wind.life,
+                wind.subspell_index,
+                wind.particle_index,
+                wind.shift_rot_x,
+                wind.shift_rot_y,
+            ),
+            (10, 500, 500, 1000, 293, 38, 31,)
+        );
+        assert_eq!(session.economy().model22_spawned_children().len(), 11);
+        // `sub_4A310` constructs at the authored tile center, then rewrites
+        // only the model-22 axis x/y from par2/par1.
+        assert_eq!((wind.position.x, wind.position.y), (640, 49_792));
+        assert_eq!((wind.axis_position.x, wind.axis_position.y), (128, 128));
+        assert_eq!(wind.position.z, wind.axis_position.z);
+        let first_child = session.economy().model22_spawned_children()[0];
+        assert_eq!(
+            (
+                first_child.parent_entity_index,
+                first_child.parent_entity_id,
+                first_child.source_class,
+                first_child.model,
+                first_child.action,
+                first_child.segment_index,
+                first_child.word_0x2c,
+                first_child.word_0x36,
+                first_child.particle_index,
+                first_child.shift_rot_x,
+                first_child.shift_rot_y,
+                first_child.phase,
+            ),
+            (
+                wind.source_entity_index,
+                wind.entity_id,
+                10,
+                75,
+                82,
+                1,
+                1,
+                62,
+                294,
+                44,
+                36,
+                0,
+            )
+        );
+
+        let before_position = wind.position;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let stepped = session
+            .economy()
+            .authored_model22()
+            .iter()
+            .find(|source| source.source_entity_index == wind.source_entity_index)
+            .copied()
+            .expect("Wind parent survives first callback");
+        assert_eq!(stepped.life, 499);
+        assert_eq!(stepped.phase, wind.phase.wrapping_add(1));
+        assert_ne!(stepped.position, before_position);
+        assert_eq!(
+            session
+                .economy()
+                .model22_spawned_children()
+                .iter()
+                .find(|child| child.source_entity_index == first_child.source_entity_index)
+                .expect("Wind child remains linked")
+                .phase,
+            first_child.phase.wrapping_add(1)
+        );
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::AuthoredModel22,
+                source_slot,
+                ..
+            } if *source_slot == wind.source_entity_index
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::Model22SpawnedChild,
+                ..
+            }
+        )));
+
+        // Exhaustion is a real allocator failure, not a mocked success path.
+        let saved_free_slots = session.economy().free_slots.clone();
+        session.economy_mut().free_slots.clear();
+        let parent_count = session.economy().authored_model22().len();
+        assert!(session.allocate_level2_authored_model22(114).is_none());
+        assert_eq!(session.economy().authored_model22().len(), parent_count);
+        session.economy_mut().free_slots = saved_free_slots;
+
+        // The parent callback disables the entire linked chain; reclaim then
+        // returns every map-linked source slot to the shared arena.
+        session
+            .economy_mut()
+            .authored_model22
+            .iter_mut()
+            .find(|source| source.source_entity_index == wind.source_entity_index)
+            .expect("Wind parent for expiry")
+            .life = -1;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .economy()
+                .authored_model22()
+                .iter()
+                .all(|source| source.source_entity_index != wind.source_entity_index)
+        );
+        assert!(session.economy().model22_spawned_children().is_empty());
+
+        session.reset();
+        assert!(session.economy().authored_model22().is_empty());
+        assert!(session.economy().model22_spawned_children().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
