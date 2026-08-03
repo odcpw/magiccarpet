@@ -86,6 +86,15 @@ Shader "MagicCarpet/Enhanced/Fireball"
                 outer *= outer;
                 outer = saturate(outer - core * 0.18h);
 
+                // The generated fireball is a crossed billboard.  End the
+                // radial field just inside each quad's straight edge;
+                // otherwise the additive corona exposes a rectangular card
+                // around the otherwise round, owner-anchored flame.
+                half edgeFade = 1.0h - smoothstep(0.78h, 0.99h, radius);
+                core *= edgeFade;
+                halo *= edgeFade;
+                outer *= edgeFade;
+
                 half pulse = 0.94h + 0.06h * sin(_Time.y * _PulseSpeed);
                 half shimmer = 1.0h + _ShimmerStrength *
                     sin(_Time.y * (_PulseSpeed * 1.7h) + centered.x * 9.0h - centered.y * 7.0h);

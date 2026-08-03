@@ -95,7 +95,7 @@ namespace MagicCarpet.PresentationLab
         // The owner projectile remains the anchor; the halo is deliberately
         // larger so a cast reads as a light event in the world, not as a tiny
         // orange sprite.  This is presentation-only scale, not hitbox scale.
-        private const float FireballHaloVisualScale = 8f;
+        private const float FireballHaloVisualScale = 9.5f;
         private const float FireballTrailTime = 0.24f;
         private const float FireballTrailStartWidth = 0.38f;
         private const float FireballTrailEndWidth = 0.025f;
@@ -644,14 +644,14 @@ namespace MagicCarpet.PresentationLab
                     material.SetColor("_CoreColor", new Color(1f, 0.72f, 0.22f, 1f));
                     material.SetColor("_HaloColor", new Color(1f, 0.06f, 0.008f, 1f));
                     material.SetFloat("_CoreIntensity", halo ? 0f : 4.8f);
-                    material.SetFloat("_HaloIntensity", halo ? 3.2f : 0.55f);
+                    material.SetFloat("_HaloIntensity", halo ? 4.6f : 0.75f);
                     material.SetFloat("_CoreRadius", halo ? 0.08f : 0.42f);
                     material.SetFloat("_HaloRadius", halo ? 0.98f : 0.72f);
-                    material.SetFloat("_OuterRadius", halo ? 1.52f : 0f);
-                    material.SetFloat("_OuterIntensity", halo ? 3.8f : 0f);
-                    material.SetFloat("_Opacity", halo ? 0.82f : 0.92f);
-                    material.SetFloat("_PulseSpeed", halo ? 2.2f : 2.8f);
-                    material.SetFloat("_ShimmerStrength", halo ? 0.12f : 0.1f);
+                    material.SetFloat("_OuterRadius", halo ? 1.56f : 0f);
+                    material.SetFloat("_OuterIntensity", halo ? 6.2f : 0f);
+                    material.SetFloat("_Opacity", halo ? 0.90f : 0.92f);
+                    material.SetFloat("_PulseSpeed", halo ? 3.0f : 2.8f);
+                    material.SetFloat("_ShimmerStrength", halo ? 0.24f : 0.1f);
                 }
                 else if (fireFamily && shader.name == "MagicCarpet/Enhanced/Vfx")
                 {

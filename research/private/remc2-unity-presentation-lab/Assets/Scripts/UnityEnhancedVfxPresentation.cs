@@ -65,6 +65,7 @@ namespace MagicCarpet.PresentationLab
     [DisallowMultipleComponent]
     public sealed class UnityEnhancedVfxPresentation : MonoBehaviour
     {
+        private const float FireballEventVisualScale = 1.8f;
         private readonly Stack<UnityEnhancedVfxVisual> pool = new Stack<UnityEnhancedVfxVisual>();
         private readonly Dictionary<ulong, UnityEnhancedVfxVisual> active = new Dictionary<ulong, UnityEnhancedVfxVisual>();
         private readonly Dictionary<UnityEnhancedVfxKind, Mesh> meshes = new Dictionary<UnityEnhancedVfxKind, Mesh>();
@@ -144,7 +145,11 @@ namespace MagicCarpet.PresentationLab
             visual.ExpireTick = vfxEvent.Tick + duration;
             visual.Object.transform.position = vfxEvent.Position;
             float intensity = Mathf.Clamp(vfxEvent.Intensity <= 0f ? 1f : vfxEvent.Intensity, 0.1f, 4f);
-            visual.Object.transform.localScale = Vector3.one * intensity * (reducedMotion ? 0.6f : 1f);
+            float eventScale = vfxEvent.Kind == UnityEnhancedVfxKind.Fire
+                ? FireballEventVisualScale
+                : 1f;
+            visual.Object.transform.localScale = Vector3.one * intensity * eventScale *
+                                                  (reducedMotion ? 0.6f : 1f);
             visual.Filter.sharedMesh = GetMesh(vfxEvent.Kind);
             visual.Renderer.sharedMaterial = GetMaterial(vfxEvent.Kind);
             visual.Object.SetActive(true);
@@ -229,13 +234,17 @@ namespace MagicCarpet.PresentationLab
                 return mesh;
             }
 
+            if (kind == UnityEnhancedVfxKind.Fire)
+            {
+                mesh = CreateFireballMesh();
+                meshes.Add(kind, mesh);
+                return mesh;
+            }
+
             mesh = new Mesh { name = "EnhancedVfxMesh_" + kind, hideFlags = HideFlags.DontSave };
             float radius;
             switch (kind)
             {
-                case UnityEnhancedVfxKind.Fire:
-                    radius = 0.38f;
-                    break;
                 case UnityEnhancedVfxKind.Destruction:
                     radius = 0.60f;
                     break;
@@ -264,6 +273,38 @@ namespace MagicCarpet.PresentationLab
             return mesh;
         }
 
+        private static Mesh CreateFireballMesh()
+        {
+            const float half = 0.72f;
+            Mesh mesh = new Mesh
+            {
+                name = "EnhancedVfxMesh_Fireball",
+                hideFlags = HideFlags.DontSave
+            };
+            mesh.vertices = new[]
+            {
+                new Vector3(-half, -half, 0f), new Vector3(half, -half, 0f),
+                new Vector3(half, half, 0f), new Vector3(-half, half, 0f),
+                new Vector3(0f, -half, -half), new Vector3(0f, half, -half),
+                new Vector3(0f, -half, half), new Vector3(0f, half, half)
+            };
+            mesh.uv = new[]
+            {
+                new Vector2(0f, 0f), new Vector2(1f, 0f),
+                new Vector2(1f, 1f), new Vector2(0f, 1f),
+                new Vector2(0f, 0f), new Vector2(0f, 1f),
+                new Vector2(1f, 0f), new Vector2(1f, 1f)
+            };
+            mesh.triangles = new[]
+            {
+                0, 2, 1, 0, 3, 2,
+                4, 5, 7, 4, 7, 6
+            };
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
         private Material GetMaterial(UnityEnhancedVfxKind kind)
         {
             Material material;
@@ -272,8 +313,11 @@ namespace MagicCarpet.PresentationLab
                 return material;
             }
 
+            Shader customFireballShader = kind == UnityEnhancedVfxKind.Fire
+                ? Shader.Find("MagicCarpet/Enhanced/Fireball")
+                : null;
             Shader customVfxShader = Shader.Find("MagicCarpet/Enhanced/Vfx");
-            Shader shader = customVfxShader ??
+            Shader shader = customFireballShader ?? customVfxShader ??
                             Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
                             Shader.Find("Universal Render Pipeline/Lit") ??
                             Shader.Find("Standard");
@@ -286,7 +330,21 @@ namespace MagicCarpet.PresentationLab
             if (material != null)
             {
                 material.enableInstancing = true;
-                if (shader == customVfxShader)
+                if (shader == customFireballShader)
+                {
+                    material.SetColor("_CoreColor", new Color(1f, 0.72f, 0.22f, 1f));
+                    material.SetColor("_HaloColor", new Color(1f, 0.06f, 0.008f, 1f));
+                    material.SetFloat("_CoreIntensity", 0f);
+                    material.SetFloat("_HaloIntensity", 4.6f);
+                    material.SetFloat("_CoreRadius", 0.08f);
+                    material.SetFloat("_HaloRadius", 0.98f);
+                    material.SetFloat("_OuterRadius", 1.56f);
+                    material.SetFloat("_OuterIntensity", 6.2f);
+                    material.SetFloat("_Opacity", 0.90f);
+                    material.SetFloat("_PulseSpeed", 3.0f);
+                    material.SetFloat("_ShimmerStrength", 0.24f);
+                }
+                else if (shader == customVfxShader)
                 {
                     float glow = kind == UnityEnhancedVfxKind.Weather ? 0.7f :
                                  kind == UnityEnhancedVfxKind.Smoke ? 0.28f :

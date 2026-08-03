@@ -924,7 +924,7 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsNotNull(halo);
             MeshRenderer haloRenderer = halo.GetComponent<MeshRenderer>();
             Assert.AreEqual("MagicCarpet/Enhanced/Fireball", haloRenderer.sharedMaterial.shader.name);
-            Assert.That(halo.localScale.x, Is.EqualTo(8f).Within(0.001f));
+            Assert.That(halo.localScale.x, Is.EqualTo(9.5f).Within(0.001f));
             Assert.Greater(
                 haloRenderer.sharedMaterial.GetFloat("_HaloIntensity"),
                 renderer.sharedMaterial.GetFloat("_HaloIntensity"));
@@ -934,6 +934,10 @@ namespace MagicCarpet.PresentationLab.Tests
                 Is.GreaterThan(haloRenderer.sharedMaterial.GetFloat("_HaloRadius")));
             Assert.Greater(haloRenderer.sharedMaterial.GetFloat("_OuterIntensity"), 0f);
             Assert.That(renderer.sharedMaterial.GetFloat("_OuterIntensity"), Is.EqualTo(0f));
+            string fireballShaderSource = File.ReadAllText(
+                Path.Combine(Application.dataPath, "Resources", "EnhancedFireball.shader"));
+            StringAssert.Contains("half edgeFade", fireballShaderSource);
+            StringAssert.Contains("smoothstep(0.78h, 0.99h, radius)", fireballShaderSource);
             Assert.That(haloRenderer.bounds.center.x, Is.EqualTo(renderer.bounds.center.x).Within(0.001f));
             Assert.That(haloRenderer.bounds.center.y, Is.EqualTo(renderer.bounds.center.y).Within(0.001f));
             Assert.That(haloRenderer.bounds.center.z, Is.EqualTo(renderer.bounds.center.z).Within(0.001f));
@@ -1401,6 +1405,45 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual(1, vfx.ActiveEffectCount);
             vfx.Advance(14);
             Assert.AreEqual(0, vfx.ActiveEffectCount);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void FireballVfxEventUsesRadialFireballShaderAndGeneratedCrossBillboard()
+        {
+            Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/Fireball"));
+            GameObject gameObject = new GameObject("enhanced-fireball-vfx-test");
+            UnityEnhancedVfxPresentation vfx = gameObject.AddComponent<UnityEnhancedVfxPresentation>();
+            vfx.ResetForGeneration(4);
+
+            UnityEnhancedVfxEvent fireball = new UnityEnhancedVfxEvent(
+                1,
+                4,
+                20,
+                0x20000001UL,
+                UnityEnhancedVfxKind.Fire,
+                new Vector3(2f, 3f, 4f),
+                1f,
+                16);
+            Assert.IsTrue(vfx.ApplyEvent(fireball));
+
+            Transform visual = gameObject.transform.Find("EnhancedVfxPool/EnhancedVfx");
+            Assert.IsNotNull(visual);
+            MeshFilter filter = visual.GetComponent<MeshFilter>();
+            MeshRenderer renderer = visual.GetComponent<MeshRenderer>();
+            Assert.AreEqual("MagicCarpet/Enhanced/Fireball", renderer.sharedMaterial.shader.name);
+            Assert.AreEqual(8, filter.sharedMesh.vertexCount);
+            Assert.AreEqual(8, filter.sharedMesh.uv.Length);
+            Assert.Greater(filter.sharedMesh.bounds.size.x, 1.4f);
+            Assert.Greater(renderer.sharedMaterial.GetFloat("_OuterIntensity"), 0f);
+            Assert.Greater(renderer.sharedMaterial.GetFloat("_ShimmerStrength"), 0.1f);
+            Assert.That(visual.position.x, Is.EqualTo(2f).Within(0.001f));
+            Assert.That(visual.position.y, Is.EqualTo(3f).Within(0.001f));
+            Assert.That(visual.position.z, Is.EqualTo(4f).Within(0.001f));
+
+            vfx.SetReducedMotion(true);
+            Assert.That(visual.localScale.x, Is.EqualTo(0.6f).Within(0.001f));
 
             Object.DestroyImmediate(gameObject);
         }
