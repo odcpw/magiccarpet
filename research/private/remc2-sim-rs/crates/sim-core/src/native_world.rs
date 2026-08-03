@@ -28859,6 +28859,7 @@ mod tests {
             .expect("wind parent allocation");
         let target_index = 112_u16;
         let parent_source_id = parent.entity_id;
+        let spell_experience_before = *session.shared_spells().spell_experience();
         let (target_snapshot, target_speed_before) = {
             let target = session
                 .entities
@@ -28904,6 +28905,15 @@ mod tests {
         );
         assert_eq!(target.source_wind_spell_owner(), parent.entity_id);
         assert!(session.economy().map_chains().is_linked(target_index));
+        // `sub_33340` terminates with `sub_6D8B0(parent_id, 0x15, count)`,
+        // but AddWind's parent is class-10/model-22. The source helper only
+        // awards a player entity (class 3/model 0), so this production route
+        // must remain an observable no-op rather than inventing XP for the
+        // wind parent.
+        assert_eq!(
+            *session.shared_spells().spell_experience(),
+            spell_experience_before
+        );
 
         let player_slot = match target_snapshot.special_relation {
             EntitySpecialRelation::PlayerState(slot) => slot,
