@@ -16339,7 +16339,7 @@ impl Level2ResetSession {
                 let is_model22 = feature.kind == 10 && feature.subtype == 22;
                 let is_model39 = feature.kind == 10
                     && feature.subtype == 39
-                    && matches!(target_group, 5 | 7 | 26);
+                    && matches!(target_group, 1 | 5 | 7 | 26);
                 feature.activation_group == i16::try_from(target_group).unwrap_or(-1)
                     && (is_switch || is_model22 || is_model39)
             })
@@ -16365,7 +16365,8 @@ impl Level2ResetSession {
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
-            if feature.kind == 10 && feature.subtype == 39 && matches!(target_group, 5 | 7 | 26) {
+            if feature.kind == 10 && feature.subtype == 39 && matches!(target_group, 1 | 5 | 7 | 26)
+            {
                 if self.level2_model39_activated.contains(&feature.index) {
                     continue;
                 }
@@ -31372,6 +31373,7 @@ mod tests {
         let baseline_hash = session.campaign_state_hash();
         let baseline_sphere_count = session.economy().spheres().len();
         let baseline_owner_mana_global = session.economy().owner_mana_global();
+        let expected_group1_model39_indices = (12..=15).chain(17..=40).collect::<Vec<_>>();
         let expected_group5_model39_indices = (66..=81).collect::<Vec<_>>();
         let expected_group7_indices = (85..=104).collect::<Vec<_>>();
         let baseline_root_phase = session
@@ -31396,7 +31398,60 @@ mod tests {
         // player on that switch so its normal callback fires, then let its
         // non-overlap successor row 41 fire through the same runagain walk.
         session.state.position = feature_position(11);
+        let owner_mana_global_before_group1 = session.economy().owner_mana_global();
         session.step_outer_turn(PlayerCommand::default(), 0);
+        let expected_group1_indices = expected_group1_model39_indices
+            .iter()
+            .copied()
+            .chain([41])
+            .collect::<Vec<_>>();
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                source_slot,
+                group,
+                authored_indices,
+                ..
+            } if *source_slot == 23
+                && *group == 1
+                && authored_indices.as_ref() == expected_group1_indices.as_slice()
+        )));
+        assert!(
+            session.economy().owner_mana_global() >= owner_mana_global_before_group1 + 28 * 512,
+            "group 1 spheres update the source owner-mana projection"
+        );
+        let expected_group1_positions = expected_group1_model39_indices
+            .iter()
+            .copied()
+            .map(feature_position)
+            .collect::<Vec<_>>();
+        let expected_group1_position_set = expected_group1_positions
+            .iter()
+            .map(|position| (position.x, position.y))
+            .collect::<BTreeSet<_>>();
+        let mut actual_group1_position_counts = BTreeMap::new();
+        for sphere in session.economy().spheres().iter().filter(|sphere| {
+            expected_group1_position_set.contains(&(sphere.position.x, sphere.position.y))
+        }) {
+            *actual_group1_position_counts
+                .entry((sphere.position.x, sphere.position.y))
+                .or_insert(0usize) += 1;
+            assert!(sphere.active);
+            assert_eq!(sphere.mana, 512);
+            assert_eq!(
+                (sphere.owner_entity_index, sphere.player_entity_index),
+                (0, 0)
+            );
+        }
+        let expected_group1_position_counts = expected_group1_position_set
+            .iter()
+            .copied()
+            .map(|position| (position, 1usize))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            actual_group1_position_counts, expected_group1_position_counts,
+            "group 1 materializes one sphere for every model-39 row 12..15,17..40 position"
+        );
         let imported_root = session
             .level2_imported_switch_roots
             .iter()
@@ -31423,15 +31478,6 @@ mod tests {
         assert!(!switch_indices.contains(&342));
         assert!(switch_indices.contains(&41));
         assert!(switch_indices.contains(&42));
-        assert!(session.dispatch_events().iter().any(|event| matches!(
-            event,
-            Level2DispatchEvent::AuthoredGroupActivated {
-                source_slot,
-                group,
-                authored_indices,
-                ..
-            } if *source_slot == 23 && *group == 1 && authored_indices.as_ref() == [41]
-        )));
 
         // Row 42 is the model-0 overlap gate for row 64; row 64 is the
         // model-1 inverse gate for row 65.  Both transitions are driven by
