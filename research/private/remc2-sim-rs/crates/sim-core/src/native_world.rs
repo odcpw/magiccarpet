@@ -17359,14 +17359,14 @@ impl Level2ResetSession {
         }
     }
 
-    /// Bounded class-3 target branch of remc2 `sub_33340`.
+    /// Bounded eligible-target branch of remc2 `sub_33340`.
     ///
     /// The source scans map-cell candidates, applies `sub_33810`, then runs a
-    /// distance-banded movement/hit callback for class-3 targets. Model 0
-    /// retains its linked-player roll/speed feedback; non-zero models use the
-    /// source's wider turn/RNG bands. Class-2, class-5, and class-10 target
-    /// branches remain residual.
-    fn step_level2_authored_model22_sub33340_class3(&mut self, source_slot: u16) {
+    /// distance-banded movement/hit callback for the admitted class-2,
+    /// class-3, class-5, and class-10 targets. Model 0 retains its
+    /// linked-player roll/speed feedback; all other models use the source's
+    /// wider turn/RNG bands.
+    fn step_level2_authored_model22_sub33340_eligible_targets(&mut self, source_slot: u16) {
         let Some(parent) = self
             .economy
             .authored_model22()
@@ -17384,7 +17384,7 @@ impl Level2ResetSession {
             .filter_map(|entity_index| self.entities.get(usize::from(entity_index)))
             .filter(|entity| {
                 entity.active
-                    && matches!(entity.class, 3 | 10)
+                    && matches!(entity.class, 2 | 3 | 5 | 10)
                     && level2_wind_sub33810_accepts(parent.entity_id, entity)
             })
             .map(|entity| entity.index)
@@ -17409,7 +17409,7 @@ impl Level2ResetSession {
             // Source `sub_33340` carries `v37` as the optional descent
             // adjustment passed to `sub_580E0`. It is reset for every
             // candidate and populated only by the far-distance airborne
-            // branch; all other model-0 branches pass zero.
+            // branch; all other eligible-target branches pass zero.
             let mut settle_descent = 0_i16;
             if distance >= 3_211_264 {
                 if airborne {
@@ -17610,7 +17610,7 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::AuthoredModel22 => {
                 let live = self.economy.step_authored_model22_slot(source_slot);
                 if live {
-                    self.step_level2_authored_model22_sub33340_class3(source_slot);
+                    self.step_level2_authored_model22_sub33340_eligible_targets(source_slot);
                     self.step_level2_authored_model22_wind_pulse(source_slot);
                 }
                 live
@@ -29077,6 +29077,157 @@ mod tests {
             i32::from(parent.subspell_index)
         );
         assert_eq!(class10_target.source_wind_spell_owner(), parent.entity_id);
+
+        // The remaining class-2 allowlist is just models 7/8 and shares the
+        // same non-v40 movement branch.
+        let class2_parent = session
+            .economy()
+            .authored_model22()
+            .iter()
+            .find(|source| source.source_entity_index == parent.source_entity_index)
+            .copied()
+            .expect("wind parent after class-10 callback");
+        let class2_position = Position {
+            x: class2_parent.position.x.wrapping_add(1_024),
+            y: class2_parent.position.y,
+            z: class2_parent.position.z,
+        };
+        {
+            let target = &mut session.entities[usize::from(target_index)];
+            target.class = 2;
+            target.record[67] = 2;
+            target.model = 7;
+            target.record[68] = 7;
+            target.action = 0;
+            target.record[73] = 0;
+            target.set_actual_speed(31);
+            target.set_yaw(0);
+            target.set_control_flags(0);
+            target.set_position(class2_position);
+        }
+        session
+            .economy_mut()
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: target_index,
+                active: true,
+                x: class2_position.x,
+                y: class2_position.y,
+            })
+            .expect("class-2 target map chain follows its source position");
+        let class2_snapshot = session.entities[usize::from(target_index)].clone();
+        assert!(level2_wind_sub33810_accepts(
+            parent_source_id,
+            &class2_snapshot
+        ));
+        let mut rejected_class2 = class2_snapshot.clone();
+        rejected_class2.model = 6;
+        rejected_class2.record[68] = 6;
+        assert!(!level2_wind_sub33810_accepts(
+            parent_source_id,
+            &rejected_class2
+        ));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let class2_target = &session.entities[usize::from(target_index)];
+        assert_eq!(class2_target.actual_speed, 31);
+        assert_eq!(class2_target.yaw, 204);
+        assert_ne!(class2_target.control_flags & 0x0000_0800, 0);
+        assert_eq!(class2_target.source_wind_spell_owner(), parent.entity_id);
+
+        // Class 5 admits model 13 when its action is not one of the two
+        // source-excluded action values; action 180 must remain untouched.
+        let class5_parent = session
+            .economy()
+            .authored_model22()
+            .iter()
+            .find(|source| source.source_entity_index == parent.source_entity_index)
+            .copied()
+            .expect("wind parent after class-2 callback");
+        let class5_position = Position {
+            x: class5_parent.position.x.wrapping_add(1_024),
+            y: class5_parent.position.y,
+            z: class5_parent.position.z,
+        };
+        {
+            let target = &mut session.entities[usize::from(target_index)];
+            target.class = 5;
+            target.record[67] = 5;
+            target.model = 13;
+            target.record[68] = 13;
+            target.action = 0;
+            target.record[73] = 0;
+            target.set_actual_speed(37);
+            target.set_yaw(0);
+            target.set_control_flags(0);
+            target.set_position(class5_position);
+        }
+        session
+            .economy_mut()
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: target_index,
+                active: true,
+                x: class5_position.x,
+                y: class5_position.y,
+            })
+            .expect("class-5 target map chain follows its source position");
+        let class5_snapshot = session.entities[usize::from(target_index)].clone();
+        assert!(level2_wind_sub33810_accepts(
+            parent_source_id,
+            &class5_snapshot
+        ));
+        let mut rejected_class5 = class5_snapshot.clone();
+        rejected_class5.action = 180;
+        rejected_class5.record[73] = 180;
+        assert!(!level2_wind_sub33810_accepts(
+            parent_source_id,
+            &rejected_class5
+        ));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let class5_target = &session.entities[usize::from(target_index)];
+        assert_eq!(class5_target.actual_speed, 37);
+        assert_eq!(class5_target.yaw, 204);
+        assert_ne!(class5_target.control_flags & 0x0000_0800, 0);
+        assert_eq!(class5_target.source_wind_spell_owner(), parent.entity_id);
+
+        // Exercise the negative through the real production turn as well:
+        // action 180 is rejected before any movement/mailbox mutation.
+        let rejected_parent = session
+            .economy()
+            .authored_model22()
+            .iter()
+            .find(|source| source.source_entity_index == parent.source_entity_index)
+            .copied()
+            .expect("wind parent after class-5 callback");
+        let rejected_position = Position {
+            x: rejected_parent.position.x.wrapping_add(1_024),
+            y: rejected_parent.position.y,
+            z: rejected_parent.position.z,
+        };
+        {
+            let target = &mut session.entities[usize::from(target_index)];
+            target.action = 180;
+            target.record[73] = 180;
+            target.set_actual_speed(41);
+            target.set_yaw(0);
+            target.set_control_flags(0);
+            target.set_position(rejected_position);
+        }
+        session
+            .economy_mut()
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: target_index,
+                active: true,
+                x: rejected_position.x,
+                y: rejected_position.y,
+            })
+            .expect("rejected class-5 target map chain follows its source position");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let rejected_target = &session.entities[usize::from(target_index)];
+        assert_eq!(rejected_target.actual_speed, 41);
+        assert_eq!(rejected_target.yaw, 0);
+        assert_eq!(rejected_target.control_flags & 0x0000_0800, 0);
     }
 
     #[test]
