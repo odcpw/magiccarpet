@@ -280,6 +280,48 @@ typedef struct McCampaignBeyondSightSnapshotV2 {
     uint32_t reserved[5];
 } McCampaignBeyondSightSnapshotV2;
 
+/* Additive Level 2 Nyphur participant/holder-chain projection. The snapshot
+ * is generation-bound and reset-owned; live opponent AI decisions remain a
+ * separate dispatcher surface. */
+typedef struct McCampaignOpponentSnapshotV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint8_t active;
+    uint8_t player_slot;
+    uint8_t is_ai;
+    uint8_t color_index;
+    uint16_t entity_index;
+    uint8_t entity_class;
+    uint8_t entity_model;
+    uint8_t entity_action;
+    uint8_t reserved_0;
+    uint16_t entity_source_id;
+    uint16_t entity_next_relation;
+    uint16_t entity_next_entity;
+    uint16_t reserved_1;
+    uint32_t entity_control_flags;
+    int32_t entity_life;
+    int32_t entity_max_life;
+    int32_t entity_mana;
+    int32_t entity_max_mana;
+    uint16_t fireball_holder_index;
+    uint8_t fireball_action;
+    uint8_t reserved_2;
+    uint16_t fireball_parent_entity_index;
+    uint16_t fireball_next_entity;
+    uint16_t possession_holder_index;
+    uint8_t possession_action;
+    uint8_t reserved_3;
+    uint16_t possession_parent_entity_index;
+    uint16_t possession_next_entity;
+    uint8_t objective_relation_domain;
+    uint8_t reserved_4[3];
+    uint16_t objective_relation_value;
+    uint16_t reserved_5;
+    uint32_t reserved[5];
+} McCampaignOpponentSnapshotV2;
+
 /* Kind 10 is additive; existing McCampaignEventV2 rows are unchanged. */
 enum {
     MC_CAMPAIGN_EVENT_ECONOMY = 10
@@ -363,6 +405,9 @@ int32_t mc_native_campaign_beyond_sight_activate(
     uint64_t handle, uint64_t generation, uint16_t direction_mask,
     uint8_t help_enabled, McCampaignBeyondSightSnapshotV2 *out_state,
     uint32_t out_state_size);
+int32_t mc_native_campaign_opponent_state(
+    uint64_t handle, uint64_t generation,
+    McCampaignOpponentSnapshotV2 *out_state, uint32_t out_state_size);
 int32_t mc_native_campaign_session_step(
     uint64_t handle, const McCampaignStepInputV2 *input,
     McCampaignStepSnapshotV2 *out_snapshot, uint32_t out_snapshot_size,

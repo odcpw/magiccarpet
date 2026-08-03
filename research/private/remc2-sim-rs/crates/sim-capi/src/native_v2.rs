@@ -781,6 +781,51 @@ pub struct McCampaignBeyondSightSnapshotV2 {
     pub reserved: [u32; 5],
 }
 
+/// Additive Level 2 Nyphur participant/holder-chain projection. The snapshot
+/// is generation-bound and reset-owned; live opponent AI decisions remain a
+/// separate dispatcher surface.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignOpponentSnapshotV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub active: u8,
+    pub player_slot: u8,
+    pub is_ai: u8,
+    pub color_index: u8,
+    pub entity_index: u16,
+    pub entity_class: u8,
+    pub entity_model: u8,
+    pub entity_action: u8,
+    pub reserved_0: u8,
+    pub entity_source_id: u16,
+    pub entity_next_relation: u16,
+    pub entity_next_entity: u16,
+    pub reserved_1: u16,
+    pub entity_control_flags: u32,
+    pub entity_life: i32,
+    pub entity_max_life: i32,
+    pub entity_mana: i32,
+    pub entity_max_mana: i32,
+    pub fireball_holder_index: u16,
+    pub fireball_action: u8,
+    pub reserved_2: u8,
+    pub fireball_parent_entity_index: u16,
+    pub fireball_next_entity: u16,
+    pub possession_holder_index: u16,
+    pub possession_action: u8,
+    pub reserved_3: u8,
+    pub possession_parent_entity_index: u16,
+    pub possession_next_entity: u16,
+    /// RuntimeRelation domain: 2 means LiveEntity, 0 means no relation.
+    pub objective_relation_domain: u8,
+    pub reserved_4: [u8; 3],
+    pub objective_relation_value: u16,
+    pub reserved_5: u16,
+    pub reserved: [u32; 5],
+}
+
 /// Additive Rust-owned Level 1 Goat row. The existing 52-byte entity snapshot
 /// remains stable; presentation clients should fetch this family in one bulk
 /// call when they need gameplay and render fields beyond pose.
@@ -7372,6 +7417,41 @@ pub extern "C" fn mc_native_campaign_beyond_sight_activate(
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_opponent_state(
+    handle: u64,
+    generation: u64,
+    out_state: *mut McCampaignOpponentSnapshotV2,
+    out_state_size: u32,
+) -> i32 {
+    boundary_value(out_state, out_state_size, || {
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign opponent state requires a Level 2 campaign session",
+                ));
+            };
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign opponent generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            let participant = reset.nyphur_participant().map_err(|error| {
+                AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    format!("campaign opponent reset census is invalid: {error}"),
+                )
+            })?;
+            Ok(campaign_opponent_snapshot(generation, participant))
+        })
+    })
+}
+
 /// Execute one additive Level 2 outer turn.  This path deliberately owns a
 /// separate campaign handle and never enters the legacy Level 1 session
 /// dispatcher.  The candidate session is stepped on a clone first so a short
@@ -10489,6 +10569,49 @@ fn campaign_beyond_sight_snapshot(
         snapshot.cleanup_requested = u8::from(state.cleanup_requested);
     }
     snapshot
+}
+
+fn campaign_opponent_snapshot(
+    generation: u64,
+    participant: sim_core::native_world::Level2NyphurParticipant,
+) -> McCampaignOpponentSnapshotV2 {
+    let (objective_relation_domain, objective_relation_value) =
+        match participant.objective_stage_relation {
+            sim_core::native_world::RuntimeRelation::LiveEntity(index) => (2, index),
+            _ => (0, 0),
+        };
+    McCampaignOpponentSnapshotV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignOpponentSnapshotV2>(),
+        generation,
+        active: 1,
+        player_slot: participant.player_slot,
+        is_ai: u8::from(participant.is_ai),
+        color_index: participant.color_index,
+        entity_index: participant.entity_index,
+        entity_class: participant.entity_class,
+        entity_model: participant.entity_model,
+        entity_action: participant.entity_action,
+        entity_source_id: participant.entity_source_id,
+        entity_next_relation: participant.entity_next_relation.unwrap_or(u16::MAX),
+        entity_next_entity: participant.entity_next_entity,
+        entity_control_flags: participant.entity_control_flags,
+        entity_life: participant.entity_life,
+        entity_max_life: participant.entity_max_life,
+        entity_mana: participant.entity_mana,
+        entity_max_mana: participant.entity_max_mana,
+        fireball_holder_index: participant.fireball_holder_index,
+        fireball_action: participant.fireball_action,
+        fireball_parent_entity_index: participant.fireball_parent_entity_index,
+        fireball_next_entity: participant.fireball_next_entity,
+        possession_holder_index: participant.possession_holder_index,
+        possession_action: participant.possession_action,
+        possession_parent_entity_index: participant.possession_parent_entity_index,
+        possession_next_entity: participant.possession_next_entity,
+        objective_relation_domain,
+        objective_relation_value,
+        ..McCampaignOpponentSnapshotV2::default()
+    }
 }
 
 fn campaign_economy_event_snapshot(
@@ -15927,6 +16050,7 @@ mod tests {
         assert_eq!(size_of::<McCampaignShieldSnapshotV2>(), 72);
         assert_eq!(size_of::<McCampaignInvisibleSnapshotV2>(), 80);
         assert_eq!(size_of::<McCampaignBeyondSightSnapshotV2>(), 80);
+        assert_eq!(size_of::<McCampaignOpponentSnapshotV2>(), 104);
         assert_eq!(size_of::<McGoatSnapshotV2>(), 84);
         assert_eq!(size_of::<McCampaignGoatSnapshotV2>(), 84);
         assert_eq!(size_of::<McGoatBatchV2>(), 64);
@@ -16023,6 +16147,14 @@ mod tests {
         assert_eq!(
             std::mem::offset_of!(McCampaignBeyondSightSnapshotV2, experience_awarded),
             52
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignOpponentSnapshotV2, entity_control_flags),
+            36
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignOpponentSnapshotV2, objective_relation_value),
+            76
         );
         assert_eq!(std::mem::offset_of!(McGoatSnapshotV2, life), 48);
         assert_eq!(std::mem::offset_of!(McGoatSnapshotV2, reserved), 68);
@@ -17793,6 +17925,95 @@ mod tests {
     }
 
     #[test]
+    fn level2_campaign_opponent_state_is_cabi_reachable_and_generation_bound() {
+        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        let package = level2_package.to_string_lossy();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 2,
+            internal_level: 1,
+            map_type: 0,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut handle = 0;
+        assert_eq!(
+            mc_native_campaign_session_open(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                &raw const selection,
+                &raw mut handle,
+            ),
+            MC_STATUS_OK
+        );
+
+        let mut opponent = McCampaignOpponentSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_opponent_state(
+                handle,
+                0,
+                &raw mut opponent,
+                struct_size::<McCampaignOpponentSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(opponent.active, 1);
+        assert_eq!(opponent.player_slot, 1);
+        assert_eq!(opponent.is_ai, 1);
+        assert_eq!(opponent.color_index, 1);
+        assert_eq!(opponent.entity_index, 112);
+        assert_eq!(opponent.entity_class, 3);
+        assert_eq!(opponent.entity_model, 1);
+        assert_eq!(opponent.entity_action, 1);
+        assert_eq!(opponent.fireball_holder_index, 113);
+        assert_eq!(opponent.fireball_action, 0);
+        assert_eq!(opponent.possession_holder_index, 114);
+        assert_eq!(opponent.possession_action, 3);
+        assert_eq!(opponent.objective_relation_domain, 2);
+        assert_eq!(opponent.objective_relation_value, 112);
+
+        let unchanged = opponent;
+        assert_eq!(
+            mc_native_campaign_opponent_state(
+                handle,
+                1,
+                &raw mut opponent,
+                struct_size::<McCampaignOpponentSnapshotV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(opponent, unchanged);
+        assert_eq!(
+            mc_native_campaign_opponent_state(
+                handle,
+                0,
+                &raw mut opponent,
+                struct_size::<McCampaignOpponentSnapshotV2>() - 1,
+            ),
+            MC_STATUS_STRUCT_TOO_SMALL
+        );
+        assert_eq!(opponent, unchanged);
+
+        assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        assert_eq!(
+            mc_native_campaign_opponent_state(
+                handle,
+                1,
+                &raw mut opponent,
+                struct_size::<McCampaignOpponentSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(opponent.generation, 1);
+        assert_eq!(opponent.active, 1);
+        assert_eq!(opponent.entity_index, 112);
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
     fn level2_campaign_shield_state_activation_and_damage_are_cabi_reachable() {
         let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../generated/l2-debug3.fJ3PaM/level2");
@@ -18820,7 +19041,10 @@ _Static_assert(sizeof(McCampaignEntitySnapshotV2) == 52, "McCampaignEntitySnapsh
 _Static_assert(sizeof(McCampaignShieldSnapshotV2) == 72, "McCampaignShieldSnapshotV2 size");
 _Static_assert(sizeof(McCampaignInvisibleSnapshotV2) == 80, "McCampaignInvisibleSnapshotV2 size");
 _Static_assert(sizeof(McCampaignBeyondSightSnapshotV2) == 80, "McCampaignBeyondSightSnapshotV2 size");
+_Static_assert(sizeof(McCampaignOpponentSnapshotV2) == 104, "McCampaignOpponentSnapshotV2 size");
 _Static_assert(offsetof(McCampaignBeyondSightSnapshotV2, experience_awarded) == 52, "campaign Beyond Sight experience offset");
+_Static_assert(offsetof(McCampaignOpponentSnapshotV2, entity_control_flags) == 36, "campaign opponent control flags offset");
+_Static_assert(offsetof(McCampaignOpponentSnapshotV2, objective_relation_value) == 76, "campaign opponent objective relation offset");
 _Static_assert(sizeof(McGoatSnapshotV2) == 84, "McGoatSnapshotV2 size");
 _Static_assert(sizeof(McCampaignGoatSnapshotV2) == 84, "McCampaignGoatSnapshotV2 size");
 _Static_assert(sizeof(McGoatBatchV2) == 64, "McGoatBatchV2 size");

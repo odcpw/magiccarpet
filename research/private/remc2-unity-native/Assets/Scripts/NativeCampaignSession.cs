@@ -165,6 +165,17 @@ namespace MagicCarpet.Native
             return state;
         }
 
+        internal NativeSim.CampaignOpponentSnapshot OpponentState()
+        {
+            var status = NativeSim.mc_native_campaign_opponent_state(
+                Handle,
+                generation,
+                out var state,
+                104);
+            NativeSession.Check(status, "read Level 2 opponent state");
+            return state;
+        }
+
         internal NativeSim.CampaignPlayerSnapshot[] Players()
         {
             var status = NativeSim.mc_native_campaign_player_count(

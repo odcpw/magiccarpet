@@ -460,6 +460,49 @@ namespace MagicCarpet.Native
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignOpponentSnapshot
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal byte active;
+            internal byte playerSlot;
+            internal byte isAi;
+            internal byte colorIndex;
+            internal ushort entityIndex;
+            internal byte entityClass;
+            internal byte entityModel;
+            internal byte entityAction;
+            internal byte reserved0;
+            internal ushort entitySourceId;
+            internal ushort entityNextRelation;
+            internal ushort entityNextEntity;
+            internal ushort reserved1;
+            internal uint entityControlFlags;
+            internal int entityLife;
+            internal int entityMaxLife;
+            internal int entityMana;
+            internal int entityMaxMana;
+            internal ushort fireballHolderIndex;
+            internal byte fireballAction;
+            internal byte reserved2;
+            internal ushort fireballParentEntityIndex;
+            internal ushort fireballNextEntity;
+            internal ushort possessionHolderIndex;
+            internal byte possessionAction;
+            internal byte reserved3;
+            internal ushort possessionParentEntityIndex;
+            internal ushort possessionNextEntity;
+            internal byte objectiveRelationDomain;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
+            internal byte[] reserved4;
+            internal ushort objectiveRelationValue;
+            internal ushort reserved5;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 5)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct Command
         {
             internal uint abiVersion;
@@ -1864,6 +1907,13 @@ namespace MagicCarpet.Native
             uint stateSize);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_opponent_state(
+            ulong handle,
+            ulong generation,
+            out CampaignOpponentSnapshot state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_session_step(
             ulong handle,
             ref CampaignStepInput input,
@@ -2402,6 +2452,7 @@ namespace MagicCarpet.Native
             RequireSize<CampaignShieldSnapshot>(72);
             RequireSize<CampaignInvisibleSnapshot>(80);
             RequireSize<CampaignBeyondSightSnapshot>(80);
+            RequireSize<CampaignOpponentSnapshot>(104);
             RequireSize<Command>(32);
             RequireSize<CameraInput>(28);
             RequireSize<SessionSnapshot>(120);
@@ -2460,6 +2511,8 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignShieldSnapshot>(nameof(CampaignShieldSnapshot.parentStatusFlags), 48);
             RequireOffset<CampaignInvisibleSnapshot>(nameof(CampaignInvisibleSnapshot.parentStatusFlags), 52);
             RequireOffset<CampaignBeyondSightSnapshot>(nameof(CampaignBeyondSightSnapshot.experienceAwarded), 52);
+            RequireOffset<CampaignOpponentSnapshot>(nameof(CampaignOpponentSnapshot.entityControlFlags), 36);
+            RequireOffset<CampaignOpponentSnapshot>(nameof(CampaignOpponentSnapshot.objectiveRelationValue), 76);
             RequireOffset<Command>(nameof(Command.requestedSpell), 14);
             RequireOffset<CameraInput>(nameof(CameraInput.lookYaw), 8);
             RequireOffset<CameraInput>(nameof(CameraInput.reserved), 12);

@@ -190,5 +190,35 @@ namespace MagicCarpet.Native.Tests
             Assert.That(reset.generation, Is.EqualTo(session.Generation));
             Assert.That(reset.active, Is.EqualTo(0));
         }
+
+        [Test]
+        public void Level2CampaignOpponentSnapshotBridgeIsReachableAndResetBound()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+            var state = session.OpponentState();
+            Assert.That(state.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+            Assert.That(state.structSize, Is.EqualTo(104));
+            Assert.That(state.generation, Is.EqualTo(session.Generation));
+            Assert.That(state.active, Is.EqualTo(1));
+            Assert.That(state.playerSlot, Is.EqualTo(1));
+            Assert.That(state.isAi, Is.EqualTo(1));
+            Assert.That(state.colorIndex, Is.EqualTo(1));
+            Assert.That(state.entityIndex, Is.EqualTo(112));
+            Assert.That(state.entityClass, Is.EqualTo(3));
+            Assert.That(state.entityModel, Is.EqualTo(1));
+            Assert.That(state.entityAction, Is.EqualTo(1));
+            Assert.That(state.fireballHolderIndex, Is.EqualTo(113));
+            Assert.That(state.fireballAction, Is.EqualTo(0));
+            Assert.That(state.possessionHolderIndex, Is.EqualTo(114));
+            Assert.That(state.possessionAction, Is.EqualTo(3));
+            Assert.That(state.objectiveRelationDomain, Is.EqualTo(2));
+            Assert.That(state.objectiveRelationValue, Is.EqualTo(112));
+
+            session.Reset();
+            var reset = session.OpponentState();
+            Assert.That(reset.generation, Is.EqualTo(session.Generation));
+            Assert.That(reset.active, Is.EqualTo(1));
+            Assert.That(reset.entityIndex, Is.EqualTo(112));
+        }
     }
 }
