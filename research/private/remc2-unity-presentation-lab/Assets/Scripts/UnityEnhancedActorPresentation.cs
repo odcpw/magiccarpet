@@ -38,6 +38,7 @@ namespace MagicCarpet.PresentationLab
         public GameObject VisualObject;
         public MeshFilter Filter;
         public MeshRenderer Renderer;
+        public MaterialPropertyBlock PropertyBlock;
         public GameObject HaloObject;
         public MeshFilter HaloFilter;
         public MeshRenderer HaloRenderer;
@@ -288,6 +289,7 @@ namespace MagicCarpet.PresentationLab
                 state.FireballProjectileMaterial = false;
                 state.Filter.sharedMesh = ownerSprite.Mesh;
                 state.Renderer.sharedMaterial = ownerSprite.Material;
+                state.Renderer.SetPropertyBlock(null);
                 state.Renderer.enabled = true;
                 state.Renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
                 state.Renderer.receiveShadows = false;
@@ -315,6 +317,11 @@ namespace MagicCarpet.PresentationLab
             bool fireballProjectile = entity.PresentationFamily ==
                                           (int)UnityEnhancedPresentationFamily.Fire &&
                                       IsAuthoritativeProjectileIdentity(entity.StableIdentity);
+            bool impactPresentation = entity.PresentationFamily ==
+                                          (int)UnityEnhancedPresentationFamily.Impact ||
+                                      (entity.PresentationFamily ==
+                                           (int)UnityEnhancedPresentationFamily.Fire &&
+                                       !fireballProjectile);
             if (!fireballProjectile)
             {
                 DisableFireballTrail(state);
@@ -332,6 +339,16 @@ namespace MagicCarpet.PresentationLab
                     false);
             }
 
+            if (state.PropertyBlock == null)
+            {
+                state.PropertyBlock = new MaterialPropertyBlock();
+            }
+            state.PropertyBlock.Clear();
+            if (impactPresentation)
+            {
+                state.PropertyBlock.SetFloat("_ImpactProgress", Mathf.Clamp01(entity.AnimationPhase));
+            }
+            state.Renderer.SetPropertyBlock(state.PropertyBlock);
             state.Renderer.enabled = true;
 
             if (fireballProjectile)
@@ -948,10 +965,16 @@ namespace MagicCarpet.PresentationLab
 
             UnityEnhancedPresentationFamily familyId = (UnityEnhancedPresentationFamily)family;
             bool fireFamily = familyId == UnityEnhancedPresentationFamily.Fire;
+            bool impactPresentation = familyId == UnityEnhancedPresentationFamily.Impact ||
+                                      (fireFamily && !fireballProjectile);
             Shader shader = fireballProjectile
                             ? Shader.Find("MagicCarpet/Enhanced/Fireball") ??
                               Shader.Find("MagicCarpet/Enhanced/Vfx")
-                            : (fireFamily ? Shader.Find("MagicCarpet/Enhanced/Vfx") : null) ??
+                            : (impactPresentation
+                                ? Shader.Find("MagicCarpet/Enhanced/Impact")
+                                : (fireFamily
+                                    ? Shader.Find("MagicCarpet/Enhanced/Vfx")
+                                    : null)) ??
                             Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
                             Shader.Find("Universal Render Pipeline/Lit") ??
                             Shader.Find("Standard");
@@ -986,6 +1009,17 @@ namespace MagicCarpet.PresentationLab
                     material.SetFloat("_Opacity", halo ? 0.90f : 0.92f);
                     material.SetFloat("_PulseSpeed", halo ? 3.0f : 2.8f);
                     material.SetFloat("_ShimmerStrength", halo ? 0.24f : 0.1f);
+                }
+                else if (impactPresentation && shader.name == "MagicCarpet/Enhanced/Impact")
+                {
+                    material.SetColor("_GlowColor", new Color(1f, 0.18f, 0.025f, 1f));
+                    material.SetColor("_ShockwaveColor", new Color(1f, 0.42f, 0.06f, 1f));
+                    material.SetFloat("_GlowIntensity", 1.55f);
+                    material.SetFloat("_ShockwaveStrength", 3.0f);
+                    material.SetFloat("_SparkStrength", 1.75f);
+                    material.SetFloat("_Opacity", 0.84f);
+                    material.SetFloat("_PulseSpeed", 3.6f);
+                    material.SetFloat("_RimStrength", 1.65f);
                 }
                 else if (fireFamily && shader.name == "MagicCarpet/Enhanced/Vfx")
                 {

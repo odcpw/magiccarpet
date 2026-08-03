@@ -939,6 +939,7 @@ namespace MagicCarpet.PresentationLab.Tests
                         Rotation = Quaternion.identity,
                         Visible = true,
                         PresentationFamily = (int)UnityEnhancedPresentationFamily.Fire,
+                        AnimationPhase = 0.35f,
                         Scale = 1f,
                         RenderLayer = 3002
                     }
@@ -1034,6 +1035,10 @@ namespace MagicCarpet.PresentationLab.Tests
                 Path.Combine(Application.dataPath, "Resources", "EnhancedFireball.shader"));
             StringAssert.Contains("half edgeFade", fireballShaderSource);
             StringAssert.Contains("smoothstep(0.78h, 0.99h, radius)", fireballShaderSource);
+            string impactShaderSource = File.ReadAllText(
+                Path.Combine(Application.dataPath, "Resources", "EnhancedImpact.shader"));
+            StringAssert.Contains("shockwaveBand", impactShaderSource);
+            StringAssert.Contains("_ImpactProgress", impactShaderSource);
             Assert.That(haloRenderer.bounds.center.x, Is.EqualTo(renderer.bounds.center.x).Within(0.001f));
             Assert.That(haloRenderer.bounds.center.y, Is.EqualTo(renderer.bounds.center.y).Within(0.001f));
             Assert.That(haloRenderer.bounds.center.z, Is.EqualTo(renderer.bounds.center.z).Within(0.001f));
@@ -1049,7 +1054,12 @@ namespace MagicCarpet.PresentationLab.Tests
                 "EnhancedWorldObjects/EnhancedEntity_0000000840000002/EnhancedActorVisual");
             Assert.IsNotNull(impactVisual);
             MeshRenderer impactRenderer = impactVisual.GetComponent<MeshRenderer>();
-            Assert.AreEqual("MagicCarpet/Enhanced/Vfx", impactRenderer.sharedMaterial.shader.name);
+            Assert.AreEqual("MagicCarpet/Enhanced/Impact", impactRenderer.sharedMaterial.shader.name);
+            Assert.That(impactRenderer.sharedMaterial.GetFloat("_ShockwaveStrength"), Is.EqualTo(3.0f).Within(0.001f));
+            Assert.That(impactRenderer.sharedMaterial.GetFloat("_SparkStrength"), Is.EqualTo(1.75f).Within(0.001f));
+            MaterialPropertyBlock impactPropertyBlock = new MaterialPropertyBlock();
+            impactRenderer.GetPropertyBlock(impactPropertyBlock);
+            Assert.That(impactPropertyBlock.GetFloat("_ImpactProgress"), Is.EqualTo(0.35f).Within(0.001f));
             Assert.That(impactVisual.localScale.x, Is.EqualTo(1f).Within(0.001f));
             Assert.IsNull(gameObject.transform.Find(
                 "EnhancedWorldObjects/EnhancedEntity_0000000840000002/EnhancedFireballHalo"));
