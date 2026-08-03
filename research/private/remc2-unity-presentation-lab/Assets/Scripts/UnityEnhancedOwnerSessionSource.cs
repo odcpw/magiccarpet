@@ -142,6 +142,7 @@ namespace MagicCarpet.PresentationLab
         private SessionSnapshot snapshot;
         private PresentationState presentation;
         private RenderCameraState renderCamera;
+        private UnityEnhancedQualityTier qualityTier = UnityEnhancedQualityTier.WholeHog;
 
         public bool IsConfigured { get; private set; }
         public ulong Generation { get { return snapshot.generation; } }
@@ -167,6 +168,26 @@ namespace MagicCarpet.PresentationLab
         public ulong OwnerHudFrameTick { get { return ownerHudFrameInfo.tick; } }
         public int OwnerHudFrameWidth { get { return OwnerHudWidth; } }
         public int OwnerHudFrameHeight { get { return OwnerHudHeight; } }
+        public UnityEnhancedQualityTier QualityTier { get { return qualityTier; } }
+
+        public bool TrySetQualityTier(UnityEnhancedQualityTier nextTier, out string reason)
+        {
+            reason = string.Empty;
+            if (IsConfigured)
+            {
+                reason = "Unity Enhanced quality tier must be selected before owner configuration";
+                return false;
+            }
+
+            if (!Enum.IsDefined(typeof(UnityEnhancedQualityTier), nextTier))
+            {
+                reason = "Unity Enhanced quality tier is unsupported";
+                return false;
+            }
+
+            qualityTier = nextTier;
+            return true;
+        }
 
         public static bool CanReuseOwnerHudFrame(
             uint receiptAbiVersion,
@@ -1452,7 +1473,7 @@ namespace MagicCarpet.PresentationLab
                 NightLighting = UnityEnhancedNightLightingDescriptor.Level1Night(),
                 LocalLights = BuildLocalLights(),
                 VfxEvents = BuildVfxEvents(),
-                Quality = UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog)
+                Quality = UnityEnhancedQualitySettings.ForTier(qualityTier)
             };
             if (publishTerrain)
             {

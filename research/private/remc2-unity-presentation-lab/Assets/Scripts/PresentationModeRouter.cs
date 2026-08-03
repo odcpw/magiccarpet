@@ -21,6 +21,7 @@ namespace MagicCarpet.PresentationLab
         private const string PackageArgument = "-mc-package";
         private const string ClosureArgument = "-mc-closure";
         private const string CacheArgument = "-mc-asset-cache";
+        private const string EnhancedTierArgument = "-mc-enhanced-tier";
 
         private PresentationSessionLease sessionLease;
         private UnityEnhancedWorldRoot enhancedRoot;
@@ -38,6 +39,7 @@ namespace MagicCarpet.PresentationLab
         private bool applicationFocused = true;
         private bool applicationPaused;
         private int outputRestoreRequests;
+        private UnityEnhancedQualityTier enhancedQualityTier = UnityEnhancedQualityTier.WholeHog;
 
         public PresentationModeId SelectedMode { get; private set; }
         public bool SessionIsOpen { get { return sessionLease != null && sessionLease.IsOpen; } }
@@ -54,6 +56,7 @@ namespace MagicCarpet.PresentationLab
         }
         public UnityEnhancedWorldRoot EnhancedRoot { get { return enhancedRoot; } }
         public UnityEnhancedOwnerSessionSource EnhancedOwnerSession { get { return enhancedOwnerSession; } }
+        public UnityEnhancedQualityTier EnhancedQualityTier { get { return enhancedQualityTier; } }
         public bool IsApplicationSuspended { get { return !applicationFocused || applicationPaused; } }
         public bool ApplicationFocused { get { return applicationFocused; } }
         public bool ApplicationPaused { get { return applicationPaused; } }
@@ -94,6 +97,16 @@ namespace MagicCarpet.PresentationLab
                     statusLine = "INVALID CLASSIC HD SETTINGS: " + classicHdSettingsResult.Reason;
                     return;
                 }
+            }
+            else if (SelectedMode == PresentationModeId.UnityEnhanced &&
+                     !TryParseEnhancedQualityTier(
+                         CommandLineValue(arguments, EnhancedTierArgument),
+                         out enhancedQualityTier))
+            {
+                statusLine = "INVALID UNITY ENHANCED QUALITY TIER: " +
+                             CommandLineValue(arguments, EnhancedTierArgument) +
+                             ". Use low, medium, high, or whole-hog.";
+                return;
             }
 
             string projectRoot = Directory.GetParent(Application.dataPath).FullName;
@@ -179,6 +192,16 @@ namespace MagicCarpet.PresentationLab
                 enhancedRoot.Open(SelectedMode, sessionLease);
                 enhancedOwnerSession = new UnityEnhancedOwnerSessionSource();
                 string enhancedSourceError;
+                if (!enhancedOwnerSession.TrySetQualityTier(enhancedQualityTier, out enhancedSourceError))
+                {
+                    enhancedOwnerSession.Dispose();
+                    enhancedOwnerSession = null;
+                    enhancedRoot.Close();
+                    sessionLease.Dispose();
+                    sessionLease = null;
+                    statusLine = "UNITY ENHANCED QUALITY FAILED CLOSED: " + enhancedSourceError;
+                    return;
+                }
                 if (!enhancedOwnerSession.Configure(
                         packagePath,
                         closurePath,
@@ -600,6 +623,55 @@ namespace MagicCarpet.PresentationLab
             return false;
         }
 
+        private static bool TryParseEnhancedQualityTier(
+            string value,
+            out UnityEnhancedQualityTier tier)
+        {
+            if (string.IsNullOrWhiteSpace(value) ||
+                string.Equals(value, "whole-hog", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(value, "wholehog", StringComparison.OrdinalIgnoreCase))
+            {
+                tier = UnityEnhancedQualityTier.WholeHog;
+                return true;
+            }
+
+            if (string.Equals(value, "low", StringComparison.OrdinalIgnoreCase))
+            {
+                tier = UnityEnhancedQualityTier.Low;
+                return true;
+            }
+
+            if (string.Equals(value, "medium", StringComparison.OrdinalIgnoreCase))
+            {
+                tier = UnityEnhancedQualityTier.Medium;
+                return true;
+            }
+
+            if (string.Equals(value, "high", StringComparison.OrdinalIgnoreCase))
+            {
+                tier = UnityEnhancedQualityTier.High;
+                return true;
+            }
+
+            tier = UnityEnhancedQualityTier.WholeHog;
+            return false;
+        }
+
+        private static string QualityTierName(UnityEnhancedQualityTier tier)
+        {
+            switch (tier)
+            {
+                case UnityEnhancedQualityTier.Low:
+                    return "low";
+                case UnityEnhancedQualityTier.Medium:
+                    return "medium";
+                case UnityEnhancedQualityTier.High:
+                    return "high";
+                default:
+                    return "whole-hog";
+            }
+        }
+
         private static string ModeName(PresentationModeId mode)
         {
             switch (mode)
@@ -619,7 +691,9 @@ namespace MagicCarpet.PresentationLab
             {
                 return enhancedOwnerSession == null
                     ? "Unity Enhanced diagnostic shell"
-                    : "owner-bound Rust snapshots / URP terrain / generated presentation families";
+                    : "owner-bound Rust snapshots / " +
+                      QualityTierName(enhancedQualityTier) +
+                      " / URP terrain / generated presentation families";
             }
 
             if (SelectedMode != PresentationModeId.ClassicHd || ClassicHdSettings == null)

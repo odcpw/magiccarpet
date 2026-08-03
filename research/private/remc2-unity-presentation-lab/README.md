@@ -89,6 +89,11 @@ The runtime accepts `-mc-presentation-mode classic-hd` or
 -mc-asset-cache /absolute/path/to/level1-unity-asset-cache
 ```
 
+Unity Enhanced defaults to the native-resolution `whole-hog` tier. Use
+`-mc-enhanced-tier low|medium|high|whole-hog` to select the presentation
+quality; the low and medium tiers use URP spatial reconstruction when the
+graphics device supports it, with Unity's built-in fallback otherwise.
+
 Classic HD defaults to internal `640x480` and can be overridden before scene
 assembly with `-mc-settings /absolute/path/to/classic-hd-settings.json` or
 the equivalent flags (`-mc-classic-profile`, `-mc-classic-asset-tier`,

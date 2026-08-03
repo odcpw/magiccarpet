@@ -1545,6 +1545,20 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void OwnerQualityTierIsSelectedBeforeConfiguration()
+        {
+            UnityEnhancedOwnerSessionSource source = new UnityEnhancedOwnerSessionSource();
+            string reason;
+
+            Assert.IsTrue(source.TrySetQualityTier(UnityEnhancedQualityTier.Medium, out reason));
+            Assert.AreEqual(UnityEnhancedQualityTier.Medium, source.QualityTier);
+            Assert.IsFalse(source.TrySetQualityTier((UnityEnhancedQualityTier)99, out reason));
+            Assert.AreEqual(UnityEnhancedQualityTier.Medium, source.QualityTier);
+
+            source.Dispose();
+        }
+
+        [Test]
         public void EnhancedVertexColorShaderIsAvailableForGeneratedPresentation()
         {
             Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/VertexColorLit"));
