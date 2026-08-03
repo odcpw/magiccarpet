@@ -61,6 +61,9 @@ namespace MagicCarpet.PresentationLab
     [DisallowMultipleComponent]
     public sealed class UnityEnhancedActorPresentation : MonoBehaviour
     {
+        private const float BillboardHalfSize = 0.35f;
+        private const float FireballCoreVisualScale = 2.8f;
+        private const float FireballHaloVisualScale = 5f;
         private readonly Dictionary<int, Mesh> meshes = new Dictionary<int, Mesh>();
         private readonly Dictionary<int, Material> materials = new Dictionary<int, Material>();
         private readonly HashSet<GameObject> configuredViews = new HashSet<GameObject>();
@@ -133,15 +136,21 @@ namespace MagicCarpet.PresentationLab
             }
 
             state.VisualObject.SetActive(entity.Visible);
-            float scale = entity.Scale <= 0f ? 1f : entity.Scale;
+            float baseScale = entity.Scale <= 0f ? 1f : entity.Scale;
+            float scale = baseScale;
+            float haloScale = baseScale;
             if (fireballProjectile)
             {
-                scale *= 1.6f;
+                scale *= FireballCoreVisualScale;
+                haloScale *= FireballHaloVisualScale;
             }
             float animationOffset = IsAnimated(entity.PresentationFamily)
                 ? Mathf.Sin(entity.AnimationPhase * Mathf.PI * 2f) * 0.05f
                 : 0f;
-            Vector3 localPosition = new Vector3(0f, animationOffset, 0f);
+            Vector3 localPosition = new Vector3(
+                0f,
+                animationOffset - (fireballProjectile ? BillboardHalfSize * scale : 0f),
+                0f);
             Quaternion localRotation = Quaternion.Euler(0f, entity.FacingDegrees, 0f);
             state.VisualObject.transform.localPosition = localPosition;
             state.VisualObject.transform.localRotation = localRotation;
@@ -149,9 +158,12 @@ namespace MagicCarpet.PresentationLab
             if (fireballProjectile)
             {
                 state.HaloObject.SetActive(entity.Visible);
-                state.HaloObject.transform.localPosition = localPosition;
+                state.HaloObject.transform.localPosition = new Vector3(
+                    0f,
+                    animationOffset - BillboardHalfSize * haloScale,
+                    0f);
                 state.HaloObject.transform.localRotation = localRotation;
-                state.HaloObject.transform.localScale = Vector3.one * (scale * 2f);
+                state.HaloObject.transform.localScale = Vector3.one * haloScale;
             }
             state.Renderer.sortingOrder = entity.RenderLayer;
             if (state.HaloRenderer != null)
@@ -322,7 +334,9 @@ namespace MagicCarpet.PresentationLab
 
         private static Mesh CreateBillboardMesh(UnityEnhancedPresentationFamily family)
         {
-            float half = family == UnityEnhancedPresentationFamily.Smoke ? 0.7f : 0.35f;
+            float half = family == UnityEnhancedPresentationFamily.Smoke
+                ? 0.7f
+                : BillboardHalfSize;
             Mesh mesh = new Mesh();
             mesh.vertices = new[]
             {

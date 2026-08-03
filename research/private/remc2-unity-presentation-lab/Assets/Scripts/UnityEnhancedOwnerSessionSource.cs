@@ -1816,8 +1816,8 @@ namespace MagicCarpet.PresentationLab
                     DynamicStableIdentity(0x20000000U, source.projectileId),
                     ProjectedPosition(source.x, source.y, source.z),
                     fireball ? new Color(1f, 0.2f, 0.04f, 1f) : new Color(1f, 0.32f, 0.08f, 1f),
-                    fireball ? 3f : 1.8f,
-                    fireball ? 8f : 6f,
+                    fireball ? 5.5f : 1.8f,
+                    fireball ? 11f : 6f,
                     (ushort)(2000 + (source.projectileId % 1000U))));
             }
 

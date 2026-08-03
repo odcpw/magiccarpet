@@ -703,8 +703,8 @@ namespace MagicCarpet.PresentationLab.Tests
                         fireballIdentity,
                         new Vector3(1f, 2f, 3f),
                         new Color(1f, 0.2f, 0.04f, 1f),
-                        3f,
-                        8f,
+                        5.5f,
+                        11f,
                         2201)
                 },
                 VfxEvents = new[]
@@ -732,23 +732,26 @@ namespace MagicCarpet.PresentationLab.Tests
                 renderer.sharedMaterial.GetFloat("_CoreRadius"),
                 renderer.sharedMaterial.GetFloat("_HaloRadius"));
             Assert.Greater(renderer.sharedMaterial.GetFloat("_ShimmerStrength"), 0f);
-            Assert.That(visual.localScale.x, Is.EqualTo(1.6f).Within(0.001f));
+            Assert.That(visual.localScale.x, Is.EqualTo(2.8f).Within(0.001f));
             Transform halo = gameObject.transform.Find(
                 "EnhancedWorldObjects/EnhancedEntity_0000000820000001/EnhancedFireballHalo");
             Assert.IsNotNull(halo);
             MeshRenderer haloRenderer = halo.GetComponent<MeshRenderer>();
             Assert.AreEqual("MagicCarpet/Enhanced/Fireball", haloRenderer.sharedMaterial.shader.name);
-            Assert.That(halo.localScale.x, Is.EqualTo(3.2f).Within(0.001f));
+            Assert.That(halo.localScale.x, Is.EqualTo(5f).Within(0.001f));
             Assert.Greater(
                 haloRenderer.sharedMaterial.GetFloat("_HaloIntensity"),
                 renderer.sharedMaterial.GetFloat("_HaloIntensity"));
             Assert.That(haloRenderer.sharedMaterial.GetFloat("_CoreIntensity"), Is.EqualTo(0f));
+            Assert.That(haloRenderer.bounds.center.x, Is.EqualTo(renderer.bounds.center.x).Within(0.001f));
+            Assert.That(haloRenderer.bounds.center.y, Is.EqualTo(renderer.bounds.center.y).Within(0.001f));
+            Assert.That(haloRenderer.bounds.center.z, Is.EqualTo(renderer.bounds.center.z).Within(0.001f));
             Assert.AreEqual(1, root.NightLighting.ActiveLocalLightCount);
             Light fireballLight = gameObject.transform
                 .Find("EnhancedNightLights/EnhancedLocalLight_0")
                 .GetComponent<Light>();
-            Assert.That(fireballLight.intensity, Is.EqualTo(3f).Within(0.001f));
-            Assert.That(fireballLight.range, Is.EqualTo(8f).Within(0.001f));
+            Assert.That(fireballLight.intensity, Is.EqualTo(5.5f).Within(0.001f));
+            Assert.That(fireballLight.range, Is.EqualTo(11f).Within(0.001f));
             Assert.AreEqual(1, root.VfxPresentation.ActiveEffectCount);
 
             Transform impactVisual = gameObject.transform.Find(
