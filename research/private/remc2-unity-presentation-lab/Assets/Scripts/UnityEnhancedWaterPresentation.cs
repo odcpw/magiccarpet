@@ -256,11 +256,11 @@ namespace MagicCarpet.PresentationLab
                 material.SetColor("_MoonColor", new Color(0.34f, 0.58f, 1.0f, 1f));
                 material.SetFloat("_WaveScale", 0.085f);
                 material.SetFloat("_WaveSpeed", 0.32f);
-                material.SetFloat("_WaveStrength", 0.28f);
-                material.SetFloat("_FresnelStrength", 1.30f);
-                material.SetFloat("_SpecularStrength", 1.75f);
-                material.SetFloat("_ReflectionStrength", 1.15f);
-                material.SetFloat("_SceneReflectionStrength", 0.72f);
+                material.SetFloat("_WaveStrength", 0.34f);
+                material.SetFloat("_FresnelStrength", 1.55f);
+                material.SetFloat("_SpecularStrength", 2.10f);
+                material.SetFloat("_ReflectionStrength", 1.25f);
+                material.SetFloat("_SceneReflectionStrength", 0.84f);
                 material.SetFloat("_ReflectionDistortion", 0.035f);
                 material.SetFloat("_RippleSpeed", 2.8f);
                 material.SetFloat("_RippleWidth", 0.65f);

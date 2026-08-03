@@ -207,6 +207,18 @@ Shader "MagicCarpet/Enhanced/Water"
                 reflection *= _ReflectionStrength * (0.35h + fresnel * _FresnelStrength);
                 half3 color = lerp(_BaseColor.rgb, reflection, saturate(0.32h + fresnel * 0.72h));
 
+                // The ripple normal above makes the surface react physically;
+                // this narrow moving band makes a real owner splash readable
+                // at game distance without adding a second gameplay surface.
+                float2 rippleDelta = input.positionWS.xz - _RippleCenter.xz;
+                float rippleDistance = length(rippleDelta);
+                float rippleAge = max(0.0, _Time.y - _RippleStartTime);
+                float rippleRadius = rippleAge * _RippleSpeed;
+                float rippleEnvelope = saturate(1.0 - rippleAge / 5.0);
+                half rippleBand = exp(-pow(
+                    (rippleDistance - rippleRadius) / max(0.05, _RippleWidth),
+                    2.0)) * rippleEnvelope * _RippleStrength;
+
                 half3 additionalLighting = 0.0h;
                 #if defined(_ADDITIONAL_LIGHTS)
                     uint additionalLightCount = GetAdditionalLightsCount();
@@ -224,6 +236,8 @@ Shader "MagicCarpet/Enhanced/Water"
                 color += additionalLighting * (0.08h + fresnel * 0.18h);
                 color += warmLighting * (0.25h + fresnel * 0.45h + warmShimmer * (0.18h + crest * 0.08h));
                 color += _FoamColor.rgb * crest * (0.018h + fresnel * 0.05h);
+                color += _FoamColor.rgb * rippleBand * (0.16h + fresnel * 0.58h);
+                color += _MoonColor.rgb * rippleBand * (0.06h + crest * 0.12h);
                 color += _MoonColor.rgb * glint;
                 color += _MoonColor.rgb * fresnel * crest * 0.035h;
                 color = MixFog(color, ComputeFogFactor(input.positionHCS.z));
