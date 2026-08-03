@@ -33473,6 +33473,97 @@ mod tests {
     }
 
     #[test]
+    fn level_two_group18_row213_materializes_from_model32_production_route() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-18 production session");
+        let baseline_hash = session.campaign_state_hash();
+        let authored_features = session.mission().authored_features().to_vec();
+        let feature_position = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("authored group-18 feature")
+                .world_position(0)
+        };
+
+        // Select only the first two objective stages. The real source walk
+        // then consumes row 206 -> group 17 -> row 208 -> group 18, while
+        // leaving row 213 latent for the next objective stage.
+        session.state.position = feature_position(11);
+        session.runtime.objectives[0].stage_selectors[1] = 2;
+        session.runtime.objectives[0].stage_selectors[2] = 2;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let row213 = session
+            .economy()
+            .authored_model32()
+            .iter()
+            .find(|source| source.authored_index == 213)
+            .copied()
+            .expect("group 18 must materialize row 213");
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 18,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [213]
+        )));
+        assert_eq!(
+            (
+                row213.source_class,
+                row213.model,
+                row213.action,
+                row213.stage_tag,
+                row213.objective_stage_index,
+                row213.word_10,
+                row213.max_life,
+                row213.life,
+                row213.control_flags,
+            ),
+            (11, 32, 32, 19, 3, 0, 300, 300, 1)
+        );
+        let authored_row213 = authored_features
+            .iter()
+            .copied()
+            .find(|feature| feature.index == 213)
+            .expect("authored row 213");
+        assert_eq!(
+            (row213.position.x, row213.position.y, row213.position.z),
+            (
+                authored_row213.world_position(0).x,
+                authored_row213.world_position(0).y,
+                session
+                    .terrain
+                    .ground_height(authored_row213.world_position(0))
+            )
+        );
+        assert!(!row213.fired);
+        assert!(row213.drawing_enabled);
+        assert!(
+            session
+                .economy()
+                .authored_switch_producers()
+                .iter()
+                .all(|source| source.authored_index != 214)
+        );
+
+        session.reset();
+        assert!(
+            session
+                .economy()
+                .authored_model32()
+                .iter()
+                .all(|source| source.authored_index != 213)
+        );
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
     fn level_two_authored_model32_chain_continues_through_group18_and_group19() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
