@@ -3590,6 +3590,34 @@ pub struct Level2AuthoredModel45Source {
     pub active: bool,
 }
 
+/// A dormant authored class-14/model-3 or model-5 event materialized by the
+/// generic `sub_4A310` constructor.  The mission callbacks which decide when
+/// groups 5/28/31 fire remain a separate slice; once a row is selected, the
+/// source constructor allocates this inert event, links it to the map, and
+/// leaves the payload unchanged on each cursor visit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredClass14Source {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub authored_index: u16,
+    pub model: u8,
+    pub action: u8,
+    pub particle: u16,
+    /// `sub_51570` sets bit 0 unconditionally; `sub_51610` sets it only when
+    /// the source special-settings flag 4 is enabled.  The qualified Level 2
+    /// package has that flag clear for the generic model-5 rows.
+    pub control_flags: u8,
+    /// Model 5 applies `SetEntityShiftRot(768, 1280)`; model 3 leaves the
+    /// constructor's zero shift untouched.
+    pub shift_rot_x: u16,
+    pub shift_rot_y: u16,
+    pub activation_group: i16,
+    pub stage_tag: i16,
+    pub position: Position,
+    pub phase: u8,
+    pub active: bool,
+}
+
 /// The temporary class-10/model-54 field created by `sub_4A310` for authored
 /// Level 2 rows (alias action 76 shares the same `sub_38D80` callback as
 /// action 59). It writes one pending attraction source to each eligible
@@ -3735,6 +3763,12 @@ pub struct Level2EconomyState {
     spell_pickups: Vec<Level2SpellPickupSource>,
     baseline_authored_model45: Vec<Level2AuthoredModel45Source>,
     authored_model45: Vec<Level2AuthoredModel45Source>,
+    baseline_authored_class14: Vec<Level2AuthoredClass14Source>,
+    authored_class14: Vec<Level2AuthoredClass14Source>,
+    /// Source `word_0x36DFE`, written by `sub_51570` for the latest model-3
+    /// event and left unchanged by model 5.
+    baseline_class14_model3_handle: u16,
+    class14_model3_handle: u16,
     baseline_mana_attraction_fields: Vec<Level2ManaAttractionField>,
     mana_attraction_fields: Vec<Level2ManaAttractionField>,
     baseline_carriers: Vec<ManaCarrier>,
@@ -3906,6 +3940,10 @@ impl Level2EconomyState {
             spell_pickups: Vec::new(),
             baseline_authored_model45: Vec::new(),
             authored_model45: Vec::new(),
+            baseline_authored_class14: Vec::new(),
+            authored_class14: Vec::new(),
+            baseline_class14_model3_handle: 0,
+            class14_model3_handle: 0,
             baseline_mana_attraction_fields: Vec::new(),
             mana_attraction_fields: Vec::new(),
             baseline_carriers: Vec::new(),
@@ -4010,6 +4048,16 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_model45(&self) -> &[Level2AuthoredModel45Source] {
         &self.authored_model45
+    }
+
+    #[must_use]
+    pub fn authored_class14(&self) -> &[Level2AuthoredClass14Source] {
+        &self.authored_class14
+    }
+
+    #[must_use]
+    pub const fn class14_model3_handle(&self) -> u16 {
+        self.class14_model3_handle
     }
 
     #[must_use]
@@ -4151,6 +4199,63 @@ impl Level2EconomyState {
         Some(source)
     }
 
+    /// Allocate the generic class-14/model-3 or model-5 authored event
+    /// produced by `sub_4A310`.  The pinned constructor uses action 8 and
+    /// particle 338 for model 3 (`sub_51570`), and action 10 and particle 280
+    /// for model 5 (`sub_51610`).  No mission trigger is inferred here: the
+    /// caller explicitly selects an authored row that has already fired.
+    pub fn allocate_authored_class14(
+        &mut self,
+        authored_index: u16,
+        model: u8,
+        activation_group: i16,
+        stage_tag: i16,
+        position: Position,
+    ) -> Option<Level2AuthoredClass14Source> {
+        let (action, particle, control_flags, shift_rot_x, shift_rot_y) = match model {
+            3 => (8, 338, 1, 0, 0),
+            5 => (10, 280, 0, 768, 1280),
+            _ => return None,
+        };
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let source = Level2AuthoredClass14Source {
+            source_entity_index,
+            entity_rng,
+            authored_index,
+            model,
+            action,
+            particle,
+            control_flags,
+            shift_rot_x,
+            shift_rot_y,
+            activation_group,
+            stage_tag,
+            position,
+            phase: source_entity_index as u8,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.authored_class14.push(source);
+        if model == 3 {
+            self.class14_model3_handle = source_entity_index;
+        }
+        Some(source)
+    }
+
     pub fn step_spell_pickup_slot(&mut self, source_slot: u16) -> bool {
         let Some(source) = self
             .spell_pickups
@@ -4179,6 +4284,29 @@ impl Level2EconomyState {
             return false;
         };
         source.phase = source.phase.wrapping_add(1);
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .is_ok()
+    }
+
+    /// Class-14 model 3/5 has no generic per-turn callback in the pinned
+    /// `sub_4A310` path.  Keep the row live and source-visible while leaving
+    /// its constructor payload untouched; mission-specific callbacks are a
+    /// separate follow-up.
+    pub fn step_authored_class14_slot(&mut self, source_slot: u16) -> bool {
+        let Some(source) = self
+            .authored_class14
+            .iter()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+            .copied()
+        else {
+            return false;
+        };
         self.map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
@@ -4419,6 +4547,12 @@ impl Level2EconomyState {
             visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::AuthoredModel45,
+            );
+        }
+        for source in self.authored_class14.iter().filter(|source| source.active) {
+            visit(
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredClass14,
             );
         }
         for field in self
@@ -7448,6 +7582,22 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_class14 = self
+            .authored_class14
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_class14.retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_class14 {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_mana_attraction = self
             .mana_attraction_fields
             .iter()
@@ -7602,6 +7752,24 @@ impl Level2EconomyState {
             hasher.update(source.authored_index.to_le_bytes());
             hasher.update(source.target_group.to_le_bytes());
             hasher.update(source.parameter_1.to_le_bytes());
+            hasher.update(source.phase.to_le_bytes());
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+            hasher.update([u8::from(source.active)]);
+        }
+        hasher.update(self.class14_model3_handle.to_le_bytes());
+        for source in &self.authored_class14 {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.authored_index.to_le_bytes());
+            hasher.update([source.model, source.action]);
+            hasher.update(source.particle.to_le_bytes());
+            hasher.update([source.control_flags]);
+            hasher.update(source.shift_rot_x.to_le_bytes());
+            hasher.update(source.shift_rot_y.to_le_bytes());
+            hasher.update(source.activation_group.to_le_bytes());
+            hasher.update(source.stage_tag.to_le_bytes());
             hasher.update(source.phase.to_le_bytes());
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
@@ -7829,6 +7997,8 @@ impl Level2EconomyState {
         self.spell_replacements = self.baseline_spell_replacements.clone();
         self.spell_pickups = self.baseline_spell_pickups.clone();
         self.authored_model45 = self.baseline_authored_model45.clone();
+        self.authored_class14 = self.baseline_authored_class14.clone();
+        self.class14_model3_handle = self.baseline_class14_model3_handle;
         self.mana_attraction_fields = self.baseline_mana_attraction_fields.clone();
         self.carriers = self.baseline_carriers.clone();
         self.castle = self.baseline_castle;
@@ -10286,6 +10456,7 @@ pub enum Level2DynamicArenaKind {
     SpellReplacement,
     SpellPickup,
     AuthoredModel45,
+    AuthoredClass14,
     ManaAttraction,
 }
 
@@ -10404,6 +10575,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::SpellReplacement => 9,
         Level2DynamicArenaKind::SpellPickup => 10,
         Level2DynamicArenaKind::AuthoredModel45 => 11,
+        Level2DynamicArenaKind::AuthoredClass14 => 13,
         Level2DynamicArenaKind::ManaAttraction => 12,
     }
 }
@@ -10673,6 +10845,36 @@ impl Level2ResetSession {
             position,
             feature.stage_tag,
             action,
+        )
+    }
+
+    /// Materialize one authored class-14 subtype-3/5 row through the pinned
+    /// generic constructor.  This is deliberately an explicit production
+    /// seam: groups 5/28/31 still need their switch/objective trigger logic,
+    /// but once that logic selects a row this path performs the real arena
+    /// allocation and map linkage.
+    pub fn allocate_level2_authored_class14(
+        &mut self,
+        authored_index: u16,
+    ) -> Option<Level2AuthoredClass14Source> {
+        let feature = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .find(|feature| {
+                feature.index == authored_index
+                    && feature.kind == 14
+                    && matches!(feature.subtype, 3 | 5)
+            })?;
+        let position =
+            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        self.economy.allocate_authored_class14(
+            authored_index,
+            u8::try_from(feature.subtype).ok()?,
+            feature.activation_group,
+            feature.stage_tag,
+            position,
         )
     }
 
@@ -11601,6 +11803,9 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::SpellPickup => self.economy.step_spell_pickup_slot(source_slot),
             Level2DynamicArenaKind::AuthoredModel45 => {
                 self.economy.step_authored_model45_slot(source_slot)
+            }
+            Level2DynamicArenaKind::AuthoredClass14 => {
+                self.economy.step_authored_class14_slot(source_slot)
             }
             Level2DynamicArenaKind::ManaAttraction => {
                 self.economy.step_mana_attraction_slot(source_slot)
@@ -21898,6 +22103,96 @@ mod tests {
         assert!(session.shared_spells().dynamic_pickups().is_empty());
         assert_eq!(session.shared_spells().reset_hash(), baseline_shared_hash);
         assert_eq!(session.economy().reset_hash(), baseline_economy_hash);
+    }
+
+    #[test]
+    fn level_two_authored_class14_rows_allocate_and_remain_inert_in_cursor() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 authored class-14 session");
+        let baseline_hash = session.economy().reset_hash();
+
+        // The pinned corpus contains one subtype-3 row (244) and subtype-5
+        // rows (248+).  Materialize one of each through the explicit
+        // constructor seam; group-trigger callbacks remain a separate bead.
+        let model3 = session
+            .allocate_level2_authored_class14(244)
+            .expect("authored subtype-3 row");
+        let model5 = session
+            .allocate_level2_authored_class14(248)
+            .expect("authored subtype-5 row");
+        assert_eq!(
+            (
+                model3.model,
+                model3.action,
+                model3.particle,
+                model3.control_flags,
+                model3.shift_rot_x,
+                model3.shift_rot_y,
+            ),
+            (3, 8, 338, 1, 0, 0)
+        );
+        assert_eq!(
+            (
+                model5.model,
+                model5.action,
+                model5.particle,
+                model5.control_flags,
+                model5.shift_rot_x,
+                model5.shift_rot_y,
+            ),
+            (5, 10, 280, 0, 768, 1280)
+        );
+        assert_eq!(
+            session.economy().class14_model3_handle(),
+            model3.source_entity_index
+        );
+        assert_ne!(model3.source_entity_index, model5.source_entity_index);
+        assert!(
+            session
+                .economy()
+                .map_chains()
+                .linked_entity_indices()
+                .contains(&model3.source_entity_index)
+        );
+        assert!(
+            session
+                .economy()
+                .map_chains()
+                .linked_entity_indices()
+                .contains(&model5.source_entity_index)
+        );
+
+        let before_turn = session
+            .economy()
+            .authored_class14()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::AuthoredClass14,
+                source_slot,
+                ..
+            } if *source_slot == model3.source_entity_index
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::AuthoredClass14,
+                source_slot,
+                ..
+            } if *source_slot == model5.source_entity_index
+        )));
+        assert_eq!(session.economy().authored_class14(), before_turn.as_slice());
+
+        session.reset();
+        assert!(session.economy().authored_class14().is_empty());
+        assert_eq!(session.economy().reset_hash(), baseline_hash);
     }
 
     #[test]
