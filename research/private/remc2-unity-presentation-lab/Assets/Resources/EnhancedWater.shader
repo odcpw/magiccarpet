@@ -96,9 +96,25 @@ Shader "MagicCarpet/Enhanced/Water"
                 return output;
             }
 
-            float Wave(float2 position, float2 direction, float scale, float time)
+            float LayerPhase(float2 position, float time, float seed)
             {
-                return sin(dot(position * scale, direction) + time);
+                float broad = sin(dot(position, float2(0.37, 0.61)) + time * 0.13 + seed);
+                float fine = cos(dot(position, float2(-0.53, 0.29)) - time * 0.09 - seed * 1.37);
+                return broad * 0.22 + fine * 0.11;
+            }
+
+            float Wave(float2 position, float2 direction, float scale, float time, float seed)
+            {
+                return sin(dot(position * scale, direction) + time + LayerPhase(position, time, seed));
+            }
+
+            float2 WaveSlope(float2 position, float2 direction, float scale, float time, float seed)
+            {
+                float epsilon = 0.14;
+                float center = Wave(position, direction, scale, time, seed);
+                float x = Wave(position + float2(epsilon, 0.0), direction, scale, time, seed);
+                float z = Wave(position + float2(0.0, epsilon), direction, scale, time, seed);
+                return float2((x - center) / epsilon, (z - center) / epsilon);
             }
 
             half3 WaveNormal(float2 position, half3 baseNormal)
@@ -106,15 +122,11 @@ Shader "MagicCarpet/Enhanced/Water"
                 float time = _Time.y;
                 float2 directionA = normalize(float2(1.0, 0.35));
                 float2 directionB = normalize(float2(-0.25, 1.0));
-                float epsilon = 0.16;
-                float centerA = Wave(position, directionA, _WaveScale, time * _WaveSpeed);
-                float centerB = Wave(position, directionB, _WaveScale * 1.85, time * _WaveSpeed * 1.35);
-                float xA = Wave(position + float2(epsilon, 0.0), directionA, _WaveScale, time * _WaveSpeed);
-                float zA = Wave(position + float2(0.0, epsilon), directionA, _WaveScale, time * _WaveSpeed);
-                float xB = Wave(position + float2(epsilon, 0.0), directionB, _WaveScale * 1.85, time * _WaveSpeed * 1.35);
-                float zB = Wave(position + float2(0.0, epsilon), directionB, _WaveScale * 1.85, time * _WaveSpeed * 1.35);
-                float slopeX = ((xA - centerA) + (xB - centerB) * 0.75) / epsilon;
-                float slopeZ = ((zA - centerA) + (zB - centerB) * 0.75) / epsilon;
+                float2 directionC = normalize(float2(0.73, -0.91));
+                float2 slopeA = WaveSlope(position, directionA, _WaveScale, time * _WaveSpeed, 0.0);
+                float2 slopeB = WaveSlope(position, directionB, _WaveScale * 1.85, time * _WaveSpeed * 1.35, 1.7);
+                float2 slopeC = WaveSlope(position, directionC, _WaveScale * 3.6, time * _WaveSpeed * 0.73, -2.2);
+                float2 slope = slopeA * 0.52 + slopeB * 0.30 + slopeC * 0.18;
 
                 float2 rippleDelta = position - _RippleCenter.xz;
                 float rippleDistance = length(rippleDelta);
@@ -126,9 +138,8 @@ Shader "MagicCarpet/Enhanced/Water"
                 float2 rippleDirection = rippleDistance > 0.001
                     ? rippleDelta / rippleDistance
                     : float2(0.0, 0.0);
-                slopeX += rippleDirection.x * rippleBand * 1.8;
-                slopeZ += rippleDirection.y * rippleBand * 1.8;
-                return normalize(baseNormal + half3(slopeX, 0.0h, slopeZ) * _WaveStrength);
+                slope += rippleDirection * rippleBand * 1.8;
+                return normalize(baseNormal + half3(slope.x, 0.0h, slope.y) * _WaveStrength);
             }
 
             half4 Frag(Varyings input) : SV_Target
@@ -136,9 +147,10 @@ Shader "MagicCarpet/Enhanced/Water"
                 half3 normalWS = WaveNormal(input.positionWS.xz, NormalizeNormalPerPixel(input.normalWS));
                 half3 viewDirectionWS = GetWorldSpaceNormalizeViewDir(input.positionWS);
                 half fresnel = pow(1.0h - saturate(dot(normalWS, viewDirectionWS)), 2.2h);
-                float layerA = Wave(input.positionWS.xz, normalize(float2(1.0, 0.35)), _WaveScale, _Time.y * _WaveSpeed);
-                float layerB = Wave(input.positionWS.xz, normalize(float2(-0.25, 1.0)), _WaveScale * 1.85, _Time.y * _WaveSpeed * 1.35);
-                half crest = saturate(0.5h + 0.5h * (layerA * 0.62h + layerB * 0.38h));
+                float layerA = Wave(input.positionWS.xz, normalize(float2(1.0, 0.35)), _WaveScale, _Time.y * _WaveSpeed, 0.0);
+                float layerB = Wave(input.positionWS.xz, normalize(float2(-0.25, 1.0)), _WaveScale * 1.85, _Time.y * _WaveSpeed * 1.35, 1.7);
+                float layerC = Wave(input.positionWS.xz, normalize(float2(0.73, -0.91)), _WaveScale * 3.6, _Time.y * _WaveSpeed * 0.73, -2.2);
+                half crest = smoothstep(0.70h, 0.93h, layerA * 0.52h + layerB * 0.30h + layerC * 0.18h);
 
                 Light moon = GetMainLight();
                 half3 halfDirection = SafeNormalize(moon.direction + viewDirectionWS);
@@ -151,9 +163,9 @@ Shader "MagicCarpet/Enhanced/Water"
                 half3 reflection = lerp(_ReflectionColor.rgb, sceneReflection, _SceneReflectionStrength);
                 reflection *= _ReflectionStrength * (0.35h + fresnel * _FresnelStrength);
                 half3 color = lerp(_BaseColor.rgb, reflection, saturate(0.32h + fresnel * 0.72h));
-                color += _FoamColor.rgb * crest * (0.08h + fresnel * 0.14h);
+                color += _FoamColor.rgb * crest * (0.018h + fresnel * 0.05h);
                 color += _MoonColor.rgb * glint;
-                color += _MoonColor.rgb * fresnel * crest * 0.10h;
+                color += _MoonColor.rgb * fresnel * crest * 0.035h;
                 color = MixFog(color, ComputeFogFactor(input.positionHCS.z));
                 return half4(color, _Alpha);
             }
