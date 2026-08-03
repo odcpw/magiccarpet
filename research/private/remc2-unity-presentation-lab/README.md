@@ -91,7 +91,10 @@ The runtime accepts `-mc-presentation-mode classic-hd` or
 
 Unity Enhanced defaults to the `whole-hog` tier. Its world and VFX render at a
 bounded 1.25x internal resolution before resolving to the selected output;
-the indexed owner HUD remains a separate overlay. Use
+the indexed owner HUD remains a separate overlay. Enhanced acquires that HUD
+through the existing Rust Classic HD `hd-640x480` profile, so only provenance-
+marked owner overlay pixels are presented at a real 640x480 4:3 extent; the
+Classic HD world frame is never composited over the Unity scene. Use
 `-mc-enhanced-tier low|medium|high|whole-hog` to select the presentation
 quality; the low and medium tiers use URP spatial reconstruction when the
 graphics device supports it, with Unity's built-in fallback otherwise.

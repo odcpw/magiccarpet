@@ -300,9 +300,26 @@ namespace MagicCarpet.PresentationLab.Tests
         [Test]
         public void OwnerHudReceiptCacheRequiresMatchingCameraTickAndGeneration()
         {
-            const uint validFlags = 0x2000u | 0x4000u | 0x8000u | 0x10000u | 0x20000u;
+            const uint validFlags = 0x4000u | 0x8000u | 0x10000u | 0x20000u | 0x40000u;
 
             Assert.IsTrue(UnityEnhancedOwnerSessionSource.CanReuseOwnerHudFrame(
+                2,
+                128,
+                7,
+                12,
+                7,
+                12,
+                1,
+                1,
+                640,
+                480,
+                640,
+                640u * 480u,
+                640u * 480u,
+                validFlags,
+                1,
+                1));
+            Assert.IsFalse(UnityEnhancedOwnerSessionSource.CanReuseOwnerHudFrame(
                 2,
                 128,
                 7,
@@ -328,11 +345,11 @@ namespace MagicCarpet.PresentationLab.Tests
                 13,
                 1,
                 1,
-                320,
-                200,
-                320,
-                320u * 200u,
-                320u * 200u,
+                640,
+                480,
+                640,
+                640u * 480u,
+                640u * 480u,
                 validFlags,
                 1,
                 1));
@@ -345,11 +362,11 @@ namespace MagicCarpet.PresentationLab.Tests
                 12,
                 1,
                 1,
-                320,
-                200,
-                320,
-                320u * 200u,
-                320u * 200u,
+                640,
+                480,
+                640,
+                640u * 480u,
+                640u * 480u,
                 validFlags,
                 1,
                 1));
@@ -362,11 +379,11 @@ namespace MagicCarpet.PresentationLab.Tests
                 12,
                 1,
                 1,
-                320,
-                200,
-                320,
-                320u * 200u,
-                320u * 200u,
+                640,
+                480,
+                640,
+                640u * 480u,
+                640u * 480u,
                 0x4000u,
                 1,
                 1));
@@ -379,11 +396,11 @@ namespace MagicCarpet.PresentationLab.Tests
                 12,
                 1,
                 1,
-                320,
-                200,
-                320,
-                320u * 200u,
-                320u * 200u,
+                640,
+                480,
+                640,
+                640u * 480u,
+                640u * 480u,
                 validFlags,
                 0,
                 1));
@@ -396,14 +413,29 @@ namespace MagicCarpet.PresentationLab.Tests
                 12,
                 1,
                 1,
-                320,
-                200,
-                320,
-                320u * 200u,
-                320u * 200u,
+                640,
+                480,
+                640,
+                640u * 480u,
+                640u * 480u,
                 validFlags,
                 1,
                 0));
+        }
+
+        [Test]
+        public void EnhancedOwnerHudUsesProfileSizedClassicHdOverlay()
+        {
+            Assert.AreEqual(640, UnityEnhancedOwnerSessionSource.EnhancedOwnerHudWidth);
+            Assert.AreEqual(480, UnityEnhancedOwnerSessionSource.EnhancedOwnerHudHeight);
+            Assert.AreEqual(1u, UnityEnhancedOwnerSessionSource.EnhancedOwnerHudProfileId);
+
+            string source = File.ReadAllText(Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "UnityEnhancedOwnerSessionSource.cs"));
+            StringAssert.Contains("mc_native_session_classic_hd_frame_copy", source);
+            StringAssert.Contains("0x40000u", source);
         }
 
         [Test]
