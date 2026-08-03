@@ -448,7 +448,7 @@ namespace MagicCarpet.PresentationLab
 
                 entityStartPoses[entity.StableIdentity] = startPose;
                 entityTargetPoses[entity.StableIdentity] = targetPose;
-                actorPresentation.Configure(view, entity);
+                actorPresentation.Configure(view, entity, snapshot.CameraPose);
                 view.name = "EnhancedEntity_" + entity.StableIdentity.ToString("x16");
                 view.SetActive(true);
             }

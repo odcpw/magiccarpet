@@ -78,6 +78,69 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void QualifiedOwnerActorUsesBoundedViewportReadabilityWithoutReplacingOwnerPixels()
+        {
+            string cachePath = OwnerCachePath();
+            Assert.That(
+                Directory.Exists(cachePath),
+                Is.True,
+                "The private Level 1 owner actor cache is required for this test: " + cachePath);
+
+            GameObject gameObject = new GameObject("enhanced-owner-actor-depth-scale-test");
+            try
+            {
+                UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+                root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+
+                string reason;
+                Assert.IsTrue(root.ConfigureOwnerActorCache(cachePath, out reason), reason);
+
+                UnityEnhancedEntitySnapshot entity = OwnerEntity(
+                    1,
+                    0x1000000000000003UL,
+                    50,
+                    0,
+                    0,
+                    4f);
+                Assert.IsTrue(root.ApplySnapshot(OwnerSnapshot(1, 0, entity)));
+
+                Transform visual = gameObject.transform.Find(
+                    "EnhancedWorldObjects/EnhancedEntity_1000000000000003/EnhancedActorVisual");
+                Assert.IsNotNull(visual);
+                MeshRenderer renderer = visual.GetComponent<MeshRenderer>();
+                MeshFilter filter = visual.GetComponent<MeshFilter>();
+                Assert.IsNotNull(renderer);
+                Assert.IsNotNull(filter);
+                string materialName = renderer.sharedMaterial.name;
+                string meshName = filter.sharedMesh.name;
+                float sourceHeight = 150f / 64f * 0.5f;
+                float nearScale = visual.localScale.y / sourceHeight;
+                Assert.That(nearScale, Is.EqualTo(1.5f).Within(0.0001f));
+
+                entity.Position = new Vector3(0f, 0f, 96f);
+                entity.Generation = 1;
+                Assert.IsTrue(root.ApplySnapshot(OwnerSnapshot(1, 1, entity)));
+                float midScale = visual.localScale.y / sourceHeight;
+                Assert.Greater(midScale, nearScale);
+                Assert.That(midScale, Is.EqualTo(3.44f).Within(0.02f));
+
+                entity.Position = new Vector3(0f, 0f, 160f);
+                entity.Generation = 1;
+                Assert.IsTrue(root.ApplySnapshot(OwnerSnapshot(1, 2, entity)));
+                float farScale = visual.localScale.y / sourceHeight;
+                Assert.That(farScale, Is.EqualTo(4f).Within(0.0001f));
+                Assert.AreEqual(materialName, renderer.sharedMaterial.name);
+                Assert.AreEqual(meshName, filter.sharedMesh.name);
+                Assert.IsFalse(meshName.StartsWith("EnhancedGenerated", StringComparison.Ordinal));
+                Assert.IsFalse(materialName.StartsWith("EnhancedGenerated", StringComparison.Ordinal));
+            }
+            finally
+            {
+                Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        [Test]
         public void ConfiguredOwnerRouteFailsClosedForUnqualifiedActor()
         {
             string cachePath = OwnerCachePath();
@@ -155,6 +218,23 @@ namespace MagicCarpet.PresentationLab.Tests
             short sourceYaw,
             short cameraYaw)
         {
+            return OwnerEntity(
+                generation,
+                stableIdentity,
+                sourceEntityIndex,
+                sourceYaw,
+                cameraYaw,
+                4f);
+        }
+
+        private static UnityEnhancedEntitySnapshot OwnerEntity(
+            ulong generation,
+            ulong stableIdentity,
+            ushort sourceEntityIndex,
+            short sourceYaw,
+            short cameraYaw,
+            float forwardDepth)
+        {
             return new UnityEnhancedEntitySnapshot
             {
                 StableIdentity = stableIdentity,
@@ -162,7 +242,7 @@ namespace MagicCarpet.PresentationLab.Tests
                 SourceEntityIndex = sourceEntityIndex,
                 SourceYaw = sourceYaw,
                 CameraYaw = cameraYaw,
-                Position = new Vector3(0f, 0f, 4f),
+                Position = new Vector3(0f, 0f, forwardDepth),
                 Rotation = Quaternion.identity,
                 Visible = true,
                 PresentationFamily = (int)UnityEnhancedPresentationFamily.Goat,

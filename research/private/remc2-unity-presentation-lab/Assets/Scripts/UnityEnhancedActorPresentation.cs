@@ -98,9 +98,15 @@ namespace MagicCarpet.PresentationLab
         // depth-tested without disappearing into a neighboring triangle.
         private const float OwnerActorGroundClearance = 0.12f;
         // Owner pixel rows are authored for the original low-resolution
-        // viewport. Give the Enhanced presentation enough screen presence to
-        // read during flight without changing the source texture or family.
-        private const float OwnerActorReadabilityScale = 1.5f;
+        // viewport. Preserve their source pixels, but scale the presentation
+        // by projected depth so a real owner actor remains readable during the
+        // town overflight without changing its source texture or family.
+        private const float OwnerActorMinimumReadabilityScale = 1.5f;
+        private const float OwnerActorMaximumReadabilityScale = 4f;
+        // Target roughly 22 vertical pixels in the 720p owner capture while
+        // retaining a hard cap for near-camera actors.
+        private const float OwnerActorViewportHeightFraction = 0.03f;
+        private const float DefaultVerticalFieldOfView = 70f;
         private const float FireballCoreVisualScale = 2.8f;
         // The owner projectile remains the anchor; the halo is deliberately
         // larger so a cast reads as a light event in the world, not as a tiny
@@ -171,6 +177,17 @@ namespace MagicCarpet.PresentationLab
 
         public void Configure(GameObject view, UnityEnhancedEntitySnapshot entity)
         {
+            Configure(
+                view,
+                entity,
+                new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, DefaultVerticalFieldOfView));
+        }
+
+        public void Configure(
+            GameObject view,
+            UnityEnhancedEntitySnapshot entity,
+            UnityEnhancedCameraPose cameraPose)
+        {
             if (view == null || entity == null || !HasCoverage(entity.PresentationFamily))
             {
                 return;
@@ -222,7 +239,8 @@ namespace MagicCarpet.PresentationLab
                 state.Renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
                 state.Renderer.receiveShadows = false;
                 state.VisualObject.SetActive(entity.Visible);
-                float ownerHeight = ownerSprite.Height * OwnerActorReadabilityScale;
+                float ownerScale = OwnerActorReadabilityScale(ownerSprite, entity, cameraPose);
+                float ownerHeight = ownerSprite.Height * ownerScale;
                 state.VisualObject.transform.localPosition =
                     new Vector3(
                         0f,
@@ -230,7 +248,7 @@ namespace MagicCarpet.PresentationLab
                         0f);
                 state.VisualObject.transform.localScale =
                     new Vector3(
-                        ownerSprite.Width * OwnerActorReadabilityScale,
+                        ownerSprite.Width * ownerScale,
                         ownerHeight,
                         1f);
                 state.VisualObject.transform.rotation = OwnerBillboardRotation();
@@ -797,10 +815,73 @@ namespace MagicCarpet.PresentationLab
                    family == (int)UnityEnhancedPresentationFamily.Dolmen;
         }
 
+        private static float OwnerActorReadabilityScale(
+            UnityEnhancedOwnerActorSprite ownerSprite,
+            UnityEnhancedEntitySnapshot entity,
+            UnityEnhancedCameraPose cameraPose)
+        {
+            if (ownerSprite == null || !IsFinite(ownerSprite.Height) || ownerSprite.Height <= 0f ||
+                entity == null || !IsFinite(entity.Position) || !IsFinite(cameraPose.Position) ||
+                !IsFinite(cameraPose.Rotation))
+            {
+                return OwnerActorMinimumReadabilityScale;
+            }
+
+            Vector3 cameraForward = cameraPose.Rotation * Vector3.forward;
+            float forwardLength = cameraForward.magnitude;
+            if (!IsFinite(cameraForward) || !IsFinite(forwardLength) || forwardLength <= 0.0001f)
+            {
+                return OwnerActorMinimumReadabilityScale;
+            }
+
+            float forwardDepth = Vector3.Dot(
+                entity.Position - cameraPose.Position,
+                cameraForward / forwardLength);
+            if (!IsFinite(forwardDepth) || forwardDepth <= 0f)
+            {
+                return OwnerActorMinimumReadabilityScale;
+            }
+
+            float fieldOfView = cameraPose.FieldOfView;
+            if (!IsFinite(fieldOfView) || fieldOfView <= 1f || fieldOfView >= 179f)
+            {
+                fieldOfView = DefaultVerticalFieldOfView;
+            }
+
+            float requiredHeight = 2f * forwardDepth *
+                                   Mathf.Tan(fieldOfView * Mathf.Deg2Rad * 0.5f) *
+                                   OwnerActorViewportHeightFraction;
+            if (!IsFinite(requiredHeight) || requiredHeight <= 0f)
+            {
+                return OwnerActorMinimumReadabilityScale;
+            }
+
+            return Mathf.Clamp(
+                requiredHeight / ownerSprite.Height,
+                OwnerActorMinimumReadabilityScale,
+                OwnerActorMaximumReadabilityScale);
+        }
+
         private static float StructureScale(ulong stableIdentity)
         {
             int variant = (int)((stableIdentity ^ (stableIdentity >> 17)) & 3UL);
             return 0.86f + variant * 0.08f;
+        }
+
+        private static bool IsFinite(float value)
+        {
+            return !float.IsNaN(value) && !float.IsInfinity(value);
+        }
+
+        private static bool IsFinite(Vector3 value)
+        {
+            return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+        }
+
+        private static bool IsFinite(Quaternion value)
+        {
+            return IsFinite(value.x) && IsFinite(value.y) &&
+                   IsFinite(value.z) && IsFinite(value.w);
         }
 
         private Quaternion OwnerBillboardRotation()
