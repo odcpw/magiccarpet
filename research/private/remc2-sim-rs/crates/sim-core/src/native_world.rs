@@ -3595,9 +3595,10 @@ pub struct Level2SpellPickupSource {
     pub active: bool,
 }
 
-/// The class-10/model-45 row created for authored group-8 event records.  Its
-/// callback remains a later Level 2 slice, but the constructor, map link, RNG,
-/// source cursor, and reclaim semantics are live now rather than skipped.
+/// The runtime class-10/model-45/action-51 row created by an authored
+/// class-10/subtype-45 group-8 event through `AddTerrainModification_50250`.
+/// `sub_4A310` then applies `sub_49A30(par1)` before the row enters the
+/// action-51 callback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2AuthoredModel45Source {
     pub source_entity_index: u16,
@@ -3605,8 +3606,42 @@ pub struct Level2AuthoredModel45Source {
     pub authored_index: u16,
     pub target_group: u16,
     pub parameter_1: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub max_life: i32,
+    pub life: i32,
+    pub actual_speed: i16,
+    pub minimum_speed: i16,
+    pub subspell_index: u16,
+    pub dword_0x10: i32,
+    pub yaw: u16,
+    pub font_type_index: u8,
+    pub source_byte_38: u8,
+    pub control_flags: u32,
+    pub mana: i32,
+    pub max_mana: i32,
+    /// Source `word_0x5A_90`, bound by `SetEntityIndexAndRot_49CD0(177)`.
+    pub particle_index: u16,
+    /// Source `byte_0x5D_93` loaded from particle row 177 before the
+    /// `sub_49A30` view-rectangle override.
+    pub particle_byte_0x5d: u8,
+    pub view_pitch: i16,
+    pub view_yaw: i16,
+    pub view_fov: i16,
+    pub view_roll: i16,
+    /// Source `axis_0x9A_154x.x`, unused by the action-51 producer callback.
+    pub axis_x: i16,
+    /// Source `axis_0x9A_154x.z`, unused by the action-51 producer callback.
+    pub axis_z: i16,
+    /// Source `byte_0x46_70`, the authored BUILD parameter index.
+    pub byte_0x46: u8,
+    /// Source `word_0x96_150`, zero for `AddTerrainModification_50250`.
+    pub parent_entity_index: u16,
+    /// Source `byte_0x3E_62`, incremented after every ApplyEvents callback.
+    pub source_byte_3e: u8,
     pub position: Position,
-    pub phase: u8,
+    pub drawing_enabled: bool,
     pub active: bool,
 }
 
@@ -4541,7 +4576,10 @@ impl Level2EconomyState {
         Some(source)
     }
 
-    /// Allocate a class-10/model-45 producer row from authored group 8.
+    /// Allocate the class-10/model-45/action-51 producer row from authored
+    /// group 8.  The qualified rows use BLDGPRM/BUILD entry 21; keeping that
+    /// source-data binding explicit prevents a generic model-45 shim from
+    /// silently accepting a different authored parameter.
     pub fn allocate_authored_model45(
         &mut self,
         authored_index: u16,
@@ -4549,29 +4587,103 @@ impl Level2EconomyState {
         parameter_1: u16,
         position: Position,
     ) -> Option<Level2AuthoredModel45Source> {
+        if parameter_1 != 21 {
+            return None;
+        }
         let source_entity_index = self.allocate_slot()?;
         let entity_rng = self.new_event_rng(source_entity_index);
+        // BUILD0-0.TAB[21] is raw 15x15 in the qualified owner package.
+        // CreateIndexes_6EB90 doubles it to runtime 30x30 under VGA selector
+        // 1, then sub_49A30 halves the runtime dimensions back to an
+        // effective 15x15 view/terrain footprint.
+        let raw_width = 15_u16;
+        let raw_height = 15_u16;
+        let runtime_width = raw_width * 2;
+        let runtime_height = raw_height * 2;
+        let width = runtime_width >> 1;
+        let height = runtime_height >> 1;
+        let mut source_position = position;
+        // sub_49A30 first copies the position snapped to 256-unit tile
+        // boundaries, then applies its parity adjustment below.
+        source_position.x &= 0xff00;
+        source_position.y &= 0xff00;
+        let tile_x = source_position.x >> 8;
+        let tile_y = source_position.y >> 8;
+        let mut corner_x = tile_x.wrapping_sub(width / 2);
+        let corner_y = tile_y.wrapping_sub(height / 2);
+        if (u16::from(corner_x) + u16::from(corner_y)) % 2 != 0 {
+            source_position.x = source_position.x.wrapping_add(256);
+            corner_x = corner_x.wrapping_add(1);
+        }
+        let corner_height = |x: u16, y: u16| {
+            i16::from(
+                self.terrain.planes.ground_heights
+                    [terrain_index(x.to_le_bytes()[0], y.to_le_bytes()[0])],
+            )
+        };
+        let average_height = (corner_height(corner_x, corner_y)
+            + corner_height(corner_x.wrapping_add(width), corner_y)
+            + corner_height(corner_x.wrapping_add(width), corner_y.wrapping_add(height))
+            + corner_height(corner_x, corner_y.wrapping_add(height)))
+            >> 2;
+        source_position.z = average_height.saturating_mul(32);
+        let minimum_speed = i16::try_from((runtime_width * runtime_height) >> 4)
+            .expect("qualified BUILD dimensions fit minimum speed");
         if self
             .map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: source_entity_index,
                 active: true,
-                x: position.x,
-                y: position.y,
+                x: source_position.x,
+                y: source_position.y,
             })
             .is_err()
         {
             self.release_slot(source_entity_index, None);
             return None;
         }
+        let subspell_index = 6_u16;
+        // NewEvent zeroes mana.  BLDGPRM[21].byte_2 has bit 3 set, so
+        // sub_49A30 skips the branch that derives mana from subSpellIndex.
+        let mana = 0;
         let source = Level2AuthoredModel45Source {
             source_entity_index,
             entity_rng,
             authored_index,
             target_group,
             parameter_1,
-            position,
-            phase: source_entity_index as u8,
+            source_class: 10,
+            model: 45,
+            action: 51,
+            max_life: 30,
+            life: 30,
+            actual_speed: 16,
+            minimum_speed,
+            subspell_index,
+            dword_0x10: 2,
+            yaw: 0,
+            font_type_index: 54,
+            // AddTerrainModification starts byte 0x38 at 33.  BLDGPRM[21]
+            // has bit 3 set, so sub_49A30 skips the branch that would OR 2.
+            source_byte_38: 33,
+            // The control byte initialized to 9 is not modified by
+            // sub_49A30; it is distinct from source byte 0x38.
+            control_flags: 9,
+            mana,
+            max_mana: 0,
+            particle_index: 177,
+            particle_byte_0x5d: 1,
+            view_pitch: 2560,
+            view_yaw: 0,
+            view_fov: 256,
+            view_roll: 2560,
+            axis_x: 0,
+            axis_z: 0,
+            byte_0x46: 21,
+            parent_entity_index: 0,
+            source_byte_3e: source_entity_index as u8,
+            position: source_position,
+            drawing_enabled: true,
             active: true,
         };
         self.source_rng.insert(source_entity_index, entity_rng);
@@ -4761,22 +4873,38 @@ impl Level2EconomyState {
     }
 
     pub fn step_authored_model45_slot(&mut self, source_slot: u16) -> bool {
-        let Some(source) = self
+        let Some(source_index) = self
             .authored_model45
-            .iter_mut()
-            .find(|source| source.active && source.source_entity_index == source_slot)
+            .iter()
+            .position(|source| source.active && source.source_entity_index == source_slot)
         else {
             return false;
         };
-        source.phase = source.phase.wrapping_add(1);
-        self.map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: source_slot,
-                active: true,
-                x: source.position.x,
-                y: source.position.y,
-            })
-            .is_ok()
+        let mut source = self.authored_model45[source_index];
+
+        // `sub_3A650` is class-10/model-45/action-51's callback.  The
+        // constructor leaves `word_0x96_150` at zero for these authored rows,
+        // so its source scan has no parent target; it only sets the hidden
+        // drawing bit.  ApplyEvents immediately follows that callback with
+        // sub_57F20, unlinking and returning the row to NewEvent's free pool.
+        if source.action == 51 {
+            source.drawing_enabled = false;
+            source.active = false;
+            source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
+            let map_ok = self
+                .map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: false,
+                    x: source.position.x,
+                    y: source.position.y,
+                })
+                .is_ok();
+            self.authored_model45.remove(source_index);
+            self.release_slot(source_slot, Some(source.entity_rng));
+            return map_ok;
+        }
+        false
     }
 
     /// Advance one authored model-13 emitter through the source action-19
@@ -9453,11 +9581,33 @@ impl Level2EconomyState {
             hasher.update(source.authored_index.to_le_bytes());
             hasher.update(source.target_group.to_le_bytes());
             hasher.update(source.parameter_1.to_le_bytes());
-            hasher.update(source.phase.to_le_bytes());
+            hasher.update([source.source_class, source.model, source.action]);
+            hasher.update(source.max_life.to_le_bytes());
+            hasher.update(source.life.to_le_bytes());
+            hasher.update(source.actual_speed.to_le_bytes());
+            hasher.update(source.minimum_speed.to_le_bytes());
+            hasher.update(source.subspell_index.to_le_bytes());
+            hasher.update(source.dword_0x10.to_le_bytes());
+            hasher.update(source.yaw.to_le_bytes());
+            hasher.update([source.font_type_index, source.source_byte_38]);
+            hasher.update(source.control_flags.to_le_bytes());
+            hasher.update(source.mana.to_le_bytes());
+            hasher.update(source.max_mana.to_le_bytes());
+            hasher.update(source.particle_index.to_le_bytes());
+            hasher.update([source.particle_byte_0x5d]);
+            hasher.update(source.view_pitch.to_le_bytes());
+            hasher.update(source.view_yaw.to_le_bytes());
+            hasher.update(source.view_fov.to_le_bytes());
+            hasher.update(source.view_roll.to_le_bytes());
+            hasher.update(source.axis_x.to_le_bytes());
+            hasher.update(source.axis_z.to_le_bytes());
+            hasher.update(source.byte_0x46.to_le_bytes());
+            hasher.update(source.parent_entity_index.to_le_bytes());
+            hasher.update([source.source_byte_3e]);
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
-            hasher.update([u8::from(source.active)]);
+            hasher.update([u8::from(source.drawing_enabled), u8::from(source.active)]);
         }
         for source in &self.authored_model13 {
             hasher.update(source.source_entity_index.to_le_bytes());
@@ -24301,45 +24451,24 @@ mod tests {
             .expect("Level 2 authored constructor session");
         let baseline_shared_hash = session.shared_spells().reset_hash();
         let baseline_economy_hash = session.economy().reset_hash();
-        let free_before = session.economy().free_slots.clone();
         let global_before = session.economy().global_rng;
 
         session.step_outer_turn(PlayerCommand::default(), 0);
 
-        let model45 = session.economy().authored_model45();
         let pickups = session.economy().spell_pickups();
-        let first_free = free_before[free_before.len() - 1];
-        let second_free = free_before[free_before.len() - 2];
-        let third_free = free_before[free_before.len() - 3];
-        let fourth_free = free_before[free_before.len() - 4];
         let constructor_global = level2_next_rng32(global_before);
-        assert_eq!(model45.len(), 2, "events: {:?}", session.dispatch_events());
+        assert!(
+            session.economy().authored_model45().is_empty(),
+            "action-51 rows reclaim in the same ApplyEvents pass: {:?}",
+            session.dispatch_events()
+        );
         assert_eq!(pickups.len(), 2, "events: {:?}", session.dispatch_events());
-        assert_eq!(model45[0].source_entity_index, first_free);
-        assert_eq!(model45[1].source_entity_index, second_free);
-        assert_eq!(pickups[0].source_entity_index, third_free);
-        assert_eq!(pickups[1].source_entity_index, fourth_free);
         assert_eq!(pickups[0].authored_index, 155);
         assert_eq!(pickups[1].authored_index, 156);
         assert_eq!(pickups[0].family, 6);
         assert_eq!(pickups[1].family, 11);
         assert_eq!(pickups[0].action, 19);
         assert_eq!(pickups[1].action, 34);
-        for source in model45 {
-            assert_eq!(
-                source.entity_rng,
-                source
-                    .source_entity_index
-                    .wrapping_add(constructor_global as u16)
-            );
-            assert!(
-                session
-                    .economy()
-                    .map_chains()
-                    .linked_entity_indices()
-                    .contains(&source.source_entity_index)
-            );
-        }
         for source in pickups {
             assert_eq!(
                 source.entity_rng,
@@ -24395,6 +24524,83 @@ mod tests {
         assert!(session.shared_spells().dynamic_pickups().is_empty());
         assert_eq!(session.shared_spells().reset_hash(), baseline_shared_hash);
         assert_eq!(session.economy().reset_hash(), baseline_economy_hash);
+    }
+
+    #[test]
+    fn level_two_authored_subtype45_runs_action51_and_reclaims_immediately() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-45/action-51 session");
+        let source = session
+            .economy_mut()
+            .allocate_authored_model45(
+                153,
+                22,
+                21,
+                Position {
+                    x: 0x1234,
+                    y: 0x5678,
+                    z: 0,
+                },
+            )
+            .expect("group-8 authored subtype-45 source");
+        let source_slot = source.source_entity_index;
+        assert_eq!(source.position.x, 0x1200);
+        assert_eq!(source.position.y, 0x5600);
+        assert_eq!(
+            (
+                source.source_class,
+                source.model,
+                source.action,
+                source.max_life,
+                source.life,
+                source.actual_speed,
+                source.minimum_speed,
+                source.subspell_index,
+                source.dword_0x10,
+                source.font_type_index,
+            ),
+            (10, 45, 51, 30, 30, 16, 56, 6, 2, 54)
+        );
+        assert_eq!(
+            (
+                source.source_byte_38,
+                source.control_flags,
+                source.mana,
+                source.max_mana,
+                source.particle_index,
+                source.particle_byte_0x5d,
+                source.byte_0x46,
+                source.parent_entity_index,
+            ),
+            (33, 9, 0, 0, 177, 1, 21, 0)
+        );
+        assert_eq!(
+            (
+                source.view_pitch,
+                source.view_yaw,
+                source.view_fov,
+                source.view_roll
+            ),
+            (2560, 0, 256, 2560)
+        );
+
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_model45_slot(source_slot)
+        );
+        assert!(session.economy().authored_model45().is_empty());
+        assert!(
+            !session
+                .economy()
+                .map_chains()
+                .linked_entity_indices()
+                .contains(&source_slot)
+        );
+        assert!(session.economy().free_slots.contains(&source_slot));
     }
 
     #[test]
