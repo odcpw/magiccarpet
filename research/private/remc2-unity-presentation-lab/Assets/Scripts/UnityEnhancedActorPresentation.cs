@@ -41,6 +41,9 @@ namespace MagicCarpet.PresentationLab
         public GameObject HaloObject;
         public MeshFilter HaloFilter;
         public MeshRenderer HaloRenderer;
+        public GameObject TrailObject;
+        public TrailRenderer TrailRenderer;
+        public bool FireballTrailVisible;
         public int Family = -1;
         public bool FireballProjectileMaterial;
 
@@ -50,6 +53,17 @@ namespace MagicCarpet.PresentationLab
             {
                 VisualObject.SetActive(false);
             }
+            if (TrailRenderer != null)
+            {
+                TrailRenderer.emitting = false;
+                TrailRenderer.enabled = false;
+                TrailRenderer.Clear();
+            }
+            if (TrailObject != null)
+            {
+                TrailObject.SetActive(false);
+            }
+            FireballTrailVisible = false;
         }
     }
 
@@ -64,6 +78,10 @@ namespace MagicCarpet.PresentationLab
         private const float BillboardHalfSize = 0.35f;
         private const float FireballCoreVisualScale = 2.8f;
         private const float FireballHaloVisualScale = 5f;
+        private const float FireballTrailTime = 0.24f;
+        private const float FireballTrailStartWidth = 0.28f;
+        private const float FireballTrailEndWidth = 0.025f;
+        private const int FireballTrailMaterialKey = -1000;
         private readonly Dictionary<int, Mesh> meshes = new Dictionary<int, Mesh>();
         private readonly Dictionary<int, Material> materials = new Dictionary<int, Material>();
         private readonly HashSet<GameObject> configuredViews = new HashSet<GameObject>();
@@ -109,6 +127,10 @@ namespace MagicCarpet.PresentationLab
             bool fireballProjectile = entity.PresentationFamily ==
                                           (int)UnityEnhancedPresentationFamily.Fire &&
                                       IsAuthoritativeProjectileIdentity(entity.StableIdentity);
+            if (!fireballProjectile)
+            {
+                DisableFireballTrail(state);
+            }
             if (state.Family != entity.PresentationFamily ||
                 state.FireballProjectileMaterial != fireballProjectile)
             {
@@ -129,6 +151,7 @@ namespace MagicCarpet.PresentationLab
                     entity.PresentationFamily,
                     true,
                     true);
+                EnsureFireballTrail(state);
             }
             else if (state.HaloObject != null)
             {
@@ -164,6 +187,14 @@ namespace MagicCarpet.PresentationLab
                     0f);
                 state.HaloObject.transform.localRotation = localRotation;
                 state.HaloObject.transform.localScale = Vector3.one * haloScale;
+                if (entity.Visible && !state.FireballTrailVisible)
+                {
+                    state.TrailRenderer.Clear();
+                }
+                state.TrailObject.SetActive(entity.Visible);
+                state.TrailRenderer.enabled = entity.Visible;
+                state.TrailRenderer.emitting = entity.Visible;
+                state.FireballTrailVisible = entity.Visible;
             }
             state.Renderer.sortingOrder = entity.RenderLayer;
             if (state.HaloRenderer != null)
@@ -239,6 +270,94 @@ namespace MagicCarpet.PresentationLab
             state.HaloObject.hideFlags = HideFlags.DontSave;
             state.HaloFilter = state.HaloObject.AddComponent<MeshFilter>();
             state.HaloRenderer = state.HaloObject.AddComponent<MeshRenderer>();
+        }
+
+        private void EnsureFireballTrail(UnityEnhancedActorVisualState state)
+        {
+            if (state.TrailObject != null)
+            {
+                return;
+            }
+
+            state.TrailObject = new GameObject("EnhancedFireballTrail");
+            state.TrailObject.transform.SetParent(state.VisualObject.transform.parent, false);
+            state.TrailObject.hideFlags = HideFlags.DontSave;
+            state.TrailRenderer = state.TrailObject.AddComponent<TrailRenderer>();
+            state.TrailRenderer.material = GetFireballTrailMaterial();
+            state.TrailRenderer.time = FireballTrailTime;
+            state.TrailRenderer.widthCurve = AnimationCurve.Linear(0f, 1f, 1f, 0.1f);
+            state.TrailRenderer.startWidth = FireballTrailStartWidth;
+            state.TrailRenderer.endWidth = FireballTrailEndWidth;
+            state.TrailRenderer.minVertexDistance = 0.04f;
+            state.TrailRenderer.numCornerVertices = 2;
+            state.TrailRenderer.numCapVertices = 2;
+            state.TrailRenderer.alignment = LineAlignment.View;
+            state.TrailRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            state.TrailRenderer.receiveShadows = false;
+            state.TrailRenderer.colorGradient = FireballTrailGradient();
+            state.TrailRenderer.emitting = false;
+            state.TrailRenderer.enabled = false;
+            state.TrailObject.SetActive(false);
+        }
+
+        private Material GetFireballTrailMaterial()
+        {
+            Material material;
+            if (materials.TryGetValue(FireballTrailMaterialKey, out material))
+            {
+                return material;
+            }
+
+            Shader shader = Shader.Find("MagicCarpet/Enhanced/FireballTrail");
+            material = shader == null ? null : new Material(shader)
+            {
+                name = "EnhancedGeneratedMaterial_FireballTrail",
+                hideFlags = HideFlags.DontSave
+            };
+            if (material != null)
+            {
+                material.enableInstancing = true;
+                material.SetColor("_TrailColor", new Color(1f, 0.16f, 0.025f, 1f));
+                material.SetFloat("_Intensity", 3.6f);
+                material.SetFloat("_PulseSpeed", 3.4f);
+                material.SetFloat("_ShimmerStrength", 0.12f);
+                material.SetFloat("_Opacity", 0.9f);
+            }
+            materials.Add(FireballTrailMaterialKey, material);
+            return material;
+        }
+
+        private static Gradient FireballTrailGradient()
+        {
+            Gradient gradient = new Gradient();
+            gradient.SetKeys(
+                new[]
+                {
+                    new GradientColorKey(new Color(1f, 0.82f, 0.25f, 1f), 0f),
+                    new GradientColorKey(new Color(1f, 0.16f, 0.025f, 1f), 0.55f),
+                    new GradientColorKey(new Color(0.55f, 0.015f, 0.005f, 1f), 1f)
+                },
+                new[]
+                {
+                    new GradientAlphaKey(0.92f, 0f),
+                    new GradientAlphaKey(0.48f, 0.55f),
+                    new GradientAlphaKey(0f, 1f)
+                });
+            return gradient;
+        }
+
+        private static void DisableFireballTrail(UnityEnhancedActorVisualState state)
+        {
+            if (state == null || state.TrailRenderer == null)
+            {
+                return;
+            }
+
+            state.TrailRenderer.emitting = false;
+            state.TrailRenderer.enabled = false;
+            state.TrailRenderer.Clear();
+            state.TrailObject.SetActive(false);
+            state.FireballTrailVisible = false;
         }
 
         private Material GetMaterial(int family, bool fireballProjectile, bool halo)

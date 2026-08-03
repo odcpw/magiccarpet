@@ -737,6 +737,17 @@ namespace MagicCarpet.PresentationLab.Tests
                 renderer.sharedMaterial.GetFloat("_HaloRadius"));
             Assert.Greater(renderer.sharedMaterial.GetFloat("_ShimmerStrength"), 0f);
             Assert.That(visual.localScale.x, Is.EqualTo(2.8f).Within(0.001f));
+            Transform trail = gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000820000001/EnhancedFireballTrail");
+            Assert.IsNotNull(trail);
+            TrailRenderer trailRenderer = trail.GetComponent<TrailRenderer>();
+            Assert.IsNotNull(trailRenderer);
+            Assert.AreEqual("MagicCarpet/Enhanced/FireballTrail", trailRenderer.sharedMaterial.shader.name);
+            Assert.That(trailRenderer.time, Is.EqualTo(0.24f).Within(0.001f));
+            Assert.That(trailRenderer.startWidth, Is.EqualTo(0.28f).Within(0.001f));
+            Assert.That(trailRenderer.endWidth, Is.EqualTo(0.025f).Within(0.001f));
+            Assert.IsTrue(trailRenderer.enabled);
+            Assert.IsTrue(trailRenderer.emitting);
             Transform halo = gameObject.transform.Find(
                 "EnhancedWorldObjects/EnhancedEntity_0000000820000001/EnhancedFireballHalo");
             Assert.IsNotNull(halo);
@@ -766,6 +777,69 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.That(impactVisual.localScale.x, Is.EqualTo(1f).Within(0.001f));
             Assert.IsNull(gameObject.transform.Find(
                 "EnhancedWorldObjects/EnhancedEntity_0000000840000002/EnhancedFireballHalo"));
+            Assert.IsNull(impactVisual.GetComponentInChildren<TrailRenderer>(true));
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 8,
+                Tick = 13,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Entities = new[]
+                {
+                    new UnityEnhancedEntitySnapshot
+                    {
+                        StableIdentity = fireballIdentity,
+                        Generation = 8,
+                        Position = new Vector3(1f, 2f, 3f),
+                        Rotation = Quaternion.identity,
+                        Visible = false,
+                        PresentationFamily = (int)UnityEnhancedPresentationFamily.Fire
+                    },
+                    new UnityEnhancedEntitySnapshot
+                    {
+                        StableIdentity = 0x0000000840000002UL,
+                        Generation = 8,
+                        Position = new Vector3(2f, 2f, 3f),
+                        Rotation = Quaternion.identity,
+                        Visible = true,
+                        PresentationFamily = (int)UnityEnhancedPresentationFamily.Fire
+                    }
+                }
+            }));
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 8,
+                Tick = 14,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Entities = new[]
+                {
+                    new UnityEnhancedEntitySnapshot
+                    {
+                        StableIdentity = fireballIdentity,
+                        Generation = 8,
+                        Position = new Vector3(1f, 2f, 3f),
+                        Rotation = Quaternion.identity,
+                        Visible = true,
+                        PresentationFamily = (int)UnityEnhancedPresentationFamily.Generic
+                    },
+                    new UnityEnhancedEntitySnapshot
+                    {
+                        StableIdentity = 0x0000000840000002UL,
+                        Generation = 8,
+                        Position = new Vector3(2f, 2f, 3f),
+                        Rotation = Quaternion.identity,
+                        Visible = true,
+                        PresentationFamily = (int)UnityEnhancedPresentationFamily.Fire
+                    }
+                }
+            }));
+            Transform reusedTrail = gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000820000001/EnhancedFireballTrail");
+            Assert.IsNotNull(reusedTrail);
+            TrailRenderer reusedTrailRenderer = reusedTrail.GetComponent<TrailRenderer>();
+            Assert.IsFalse(reusedTrailRenderer.enabled);
+            Assert.IsFalse(reusedTrailRenderer.emitting);
+            Assert.AreEqual(0, reusedTrailRenderer.positionCount);
 
             Object.DestroyImmediate(gameObject);
         }
