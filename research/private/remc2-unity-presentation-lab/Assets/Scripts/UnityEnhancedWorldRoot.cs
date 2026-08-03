@@ -219,6 +219,7 @@ namespace MagicCarpet.PresentationLab
                 if (diagnostics != null) diagnostics.BeginFrame();
                 InterpolatePresentation(Mathf.Clamp01(Time.unscaledDeltaTime * 30f));
                 if (vfxPresentation != null) vfxPresentation.Advance(lastTick);
+                if (waterPresentation != null) waterPresentation.RenderReflection();
                 if (diagnostics != null)
                 {
                     diagnostics.RecordEffects(vfxPresentation, nightLighting);
@@ -628,6 +629,7 @@ namespace MagicCarpet.PresentationLab
                 // the latest accepted target pose.
                 InterpolatePresentation(1f);
                 camera.targetTexture = target;
+                if (waterPresentation != null) waterPresentation.RenderReflection();
                 camera.Render();
                 if (hudPresentation == null ||
                     !hudPresentation.CompositeOwnerHudTo(target, out reason))
@@ -766,6 +768,7 @@ namespace MagicCarpet.PresentationLab
                 water.hideFlags = HideFlags.DontSave;
                 waterPresentation = water.AddComponent<UnityEnhancedWaterPresentation>();
             }
+            waterPresentation.SetPresentationCamera(cameraRig.PresentationCamera);
 
             if (vfxPresentation == null)
             {

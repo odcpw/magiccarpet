@@ -1291,6 +1291,33 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void WaterPlanarReflectionUsesBoundedEnhancedCameraContract()
+        {
+            string waterPresentationSource = File.ReadAllText(
+                Path.Combine(Application.dataPath, "Scripts", "UnityEnhancedWaterPresentation.cs"));
+            string worldRootSource = File.ReadAllText(
+                Path.Combine(Application.dataPath, "Scripts", "UnityEnhancedWorldRoot.cs"));
+            string shaderSource = File.ReadAllText(
+                Path.Combine(Application.dataPath, "Resources", "EnhancedWater.shader"));
+
+            StringAssert.Contains("SetPresentationCamera", waterPresentationSource);
+            StringAssert.Contains("CameraType.Reflection", waterPresentationSource);
+            StringAssert.Contains("CalculateReflectionMatrix", waterPresentationSource);
+            StringAssert.Contains("CameraSpacePlane", waterPresentationSource);
+            StringAssert.Contains("GL.invertCulling", waterPresentationSource);
+            StringAssert.Contains("MaximumReflectionDimension = 512", waterPresentationSource);
+            StringAssert.Contains("LayerMask.NameToLayer(WaterLayerName)", waterPresentationSource);
+            StringAssert.Contains("LayerMask.NameToLayer(UiLayerName)", waterPresentationSource);
+            StringAssert.Contains("waterPresentation.RenderReflection()", worldRootSource);
+            StringAssert.Contains("_PlanarReflectionTexture", shaderSource);
+            StringAssert.Contains("_PlanarReflectionEnabled", shaderSource);
+            StringAssert.Contains("SAMPLE_TEXTURE2D", shaderSource);
+            StringAssert.DoesNotContain(
+                "half3 reflection = lerp(_ReflectionColor.rgb, sceneReflection, _SceneReflectionStrength);",
+                shaderSource);
+        }
+
+        [Test]
         public void WaterBuildsReflectionSurfaceAndShorelineMesh()
         {
             Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/Water"));

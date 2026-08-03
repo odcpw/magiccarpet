@@ -1,12 +1,17 @@
 using System;
 using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 
 namespace MagicCarpet.PresentationLab
 {
     public enum UnityEnhancedWaterReflectionMode
     {
         FallbackSky = 0,
-        ScreenSpaceWhenSupported = 1
+        PlanarWhenSupported = 1,
+        // Kept as an ABI/source-compatibility alias for the earlier water
+        // contract.  Enhanced now fills this slot with a planar reflection.
+        ScreenSpaceWhenSupported = PlanarWhenSupported
     }
 
     [Serializable]
@@ -34,6 +39,11 @@ namespace MagicCarpet.PresentationLab
     {
         private const float WaterSurfaceOffset = 0.08f;
         private const float ShorelineSurfaceOffset = 0.012f;
+        private const float ReflectionClipOffset = 0.05f;
+        private const int MinimumReflectionDimension = 64;
+        private const int MaximumReflectionDimension = 512;
+        private const string WaterLayerName = "Water";
+        private const string UiLayerName = "UI";
         private MeshFilter waterFilter;
         private MeshRenderer waterRenderer;
         private MeshFilter shorelineFilter;
@@ -46,6 +56,15 @@ namespace MagicCarpet.PresentationLab
         private ulong lastTick;
         private bool hasSnapshot;
         private int activeRippleCount;
+        private Camera presentationCamera;
+        private Camera reflectionCamera;
+        private RenderTexture reflectionTexture;
+        private float waterSurfaceLevel;
+        private Vector3 waterCenter;
+        private int waterLayer = -1;
+        private int reflectionWidth;
+        private int reflectionHeight;
+        private bool renderingReflection;
 
         public bool HasSnapshot { get { return hasSnapshot; } }
         public ulong Generation { get { return generation; } }
@@ -56,6 +75,136 @@ namespace MagicCarpet.PresentationLab
         public int ShorelineVertexCount { get { return shorelineMesh == null ? 0 : shorelineMesh.vertexCount; } }
         public Material WaterMaterial { get { return waterMaterial; } }
         public int ActiveRippleCount { get { return activeRippleCount; } }
+        public bool PlanarReflectionReady { get; private set; }
+        public int PlanarReflectionWidth { get { return reflectionWidth; } }
+        public int PlanarReflectionHeight { get { return reflectionHeight; } }
+
+        /// <summary>
+        /// Supplies the Enhanced presentation camera used to render the
+        /// bounded, owner-world-only planar reflection.  Exact and Classic HD
+        /// never instantiate this component.
+        /// </summary>
+        public void SetPresentationCamera(Camera camera)
+        {
+            if (presentationCamera == camera)
+            {
+                if (camera != null)
+                {
+                    EnsureReflectionCamera();
+                }
+                return;
+            }
+
+            presentationCamera = camera;
+            DisablePlanarReflection();
+            if (presentationCamera != null)
+            {
+                EnsureReflectionCamera();
+            }
+        }
+
+        /// <summary>
+        /// Renders the current Enhanced world from the mirrored camera.  The
+        /// caller invokes this after presentation interpolation and before
+        /// the main camera render; owner simulation state is never changed.
+        /// </summary>
+        public bool RenderReflection()
+        {
+            if (!ReflectionEnabled || !hasSnapshot || presentationCamera == null ||
+                waterMaterial == null || renderingReflection)
+            {
+                if (!ReflectionEnabled || !hasSnapshot || presentationCamera == null)
+                {
+                    DisablePlanarReflection();
+                }
+                return PlanarReflectionReady;
+            }
+
+            if (!EnsureReflectionCamera() || !EnsureReflectionTexture())
+            {
+                DisablePlanarReflection();
+                return false;
+            }
+
+            ConfigureReflectionCamera();
+            Vector3 planePosition = new Vector3(
+                waterCenter.x,
+                waterSurfaceLevel,
+                waterCenter.z);
+            Vector3 planeNormal = Vector3.up;
+            Vector4 reflectionPlane = new Vector4(
+                planeNormal.x,
+                planeNormal.y,
+                planeNormal.z,
+                -Vector3.Dot(planeNormal, planePosition));
+            Matrix4x4 reflectionMatrix = CalculateReflectionMatrix(reflectionPlane);
+            Vector3 reflectedPosition = reflectionMatrix.MultiplyPoint(
+                presentationCamera.transform.position);
+            Vector3 reflectedForward = reflectionMatrix.MultiplyVector(
+                presentationCamera.transform.forward);
+            Vector3 reflectedUp = reflectionMatrix.MultiplyVector(
+                presentationCamera.transform.up);
+            if (reflectedForward.sqrMagnitude < 0.000001f ||
+                reflectedUp.sqrMagnitude < 0.000001f)
+            {
+                DisablePlanarReflection();
+                return false;
+            }
+
+            reflectionCamera.transform.SetPositionAndRotation(
+                reflectedPosition,
+                Quaternion.LookRotation(reflectedForward, reflectedUp));
+            reflectionCamera.worldToCameraMatrix =
+                presentationCamera.worldToCameraMatrix * reflectionMatrix;
+            Vector4 clipPlane = CameraSpacePlane(
+                reflectionCamera,
+                planePosition,
+                planeNormal,
+                1f);
+            reflectionCamera.projectionMatrix = presentationCamera.CalculateObliqueMatrix(clipPlane);
+            reflectionCamera.targetTexture = reflectionTexture;
+
+            bool priorInvertCulling = GL.invertCulling;
+            bool priorReflectionCameraEnabled = reflectionCamera.enabled;
+            RenderTexture priorActive = RenderTexture.active;
+            bool priorWaterEnabled = waterRenderer != null && waterRenderer.enabled;
+            bool priorShorelineEnabled = shorelineRenderer != null && shorelineRenderer.enabled;
+            renderingReflection = true;
+            try
+            {
+                // The Water layer is excluded when available.  The fallback
+                // renderer toggle also prevents recursion in projects with a
+                // stripped TagManager that has no Water layer.
+                if (waterLayer < 0)
+                {
+                    if (waterRenderer != null) waterRenderer.enabled = false;
+                    if (shorelineRenderer != null) shorelineRenderer.enabled = false;
+                }
+
+                reflectionCamera.enabled = false;
+                GL.invertCulling = !priorInvertCulling;
+                reflectionCamera.Render();
+                waterMaterial.SetTexture("_PlanarReflectionTexture", reflectionTexture);
+                waterMaterial.SetFloat("_PlanarReflectionEnabled", 1f);
+                PlanarReflectionReady = true;
+                ReflectionMode = UnityEnhancedWaterReflectionMode.PlanarWhenSupported;
+                return true;
+            }
+            catch (Exception)
+            {
+                DisablePlanarReflection();
+                return false;
+            }
+            finally
+            {
+                GL.invertCulling = priorInvertCulling;
+                RenderTexture.active = priorActive;
+                reflectionCamera.enabled = priorReflectionCameraEnabled;
+                if (waterRenderer != null) waterRenderer.enabled = priorWaterEnabled;
+                if (shorelineRenderer != null) shorelineRenderer.enabled = priorShorelineEnabled;
+                renderingReflection = false;
+            }
+        }
 
         public bool ApplySnapshot(UnityEnhancedWaterSnapshot snapshot)
         {
@@ -88,10 +237,16 @@ namespace MagicCarpet.PresentationLab
             EnsureResources();
             BuildWater(snapshot);
             BuildShoreline(snapshot);
+            waterCenter = snapshot.Center;
+            waterSurfaceLevel = snapshot.Level + WaterSurfaceOffset;
             ReflectionEnabled = snapshot.ReflectionEnabled;
             ReflectionMode = ReflectionEnabled
-                ? UnityEnhancedWaterReflectionMode.ScreenSpaceWhenSupported
+                ? UnityEnhancedWaterReflectionMode.PlanarWhenSupported
                 : UnityEnhancedWaterReflectionMode.FallbackSky;
+            if (!ReflectionEnabled)
+            {
+                DisablePlanarReflection();
+            }
             generation = snapshot.Generation;
             lastTick = snapshot.Tick;
             hasSnapshot = true;
@@ -104,7 +259,11 @@ namespace MagicCarpet.PresentationLab
             lastTick = 0;
             hasSnapshot = false;
             ReflectionEnabled = false;
+            ReflectionMode = UnityEnhancedWaterReflectionMode.FallbackSky;
+            DisablePlanarReflection();
             ShorelineCellCount = 0;
+            waterSurfaceLevel = 0f;
+            waterCenter = Vector3.zero;
             ClearRipple();
             if (waterMesh != null) waterMesh.Clear();
             if (shorelineMesh != null) shorelineMesh.Clear();
@@ -138,6 +297,7 @@ namespace MagicCarpet.PresentationLab
                 waterRenderer = water.AddComponent<MeshRenderer>();
                 waterMesh = new Mesh { name = "EnhancedWaterMesh", hideFlags = HideFlags.DontSave };
                 waterFilter.sharedMesh = waterMesh;
+                ConfigureWaterLayer(water);
                 waterMaterial = CreateMaterial("EnhancedWaterMaterial", new Color(0.035f, 0.18f, 0.31f, 0.72f));
                 waterRenderer.sharedMaterial = waterMaterial;
             }
@@ -151,6 +311,7 @@ namespace MagicCarpet.PresentationLab
                 shorelineRenderer = shoreline.AddComponent<MeshRenderer>();
                 shorelineMesh = new Mesh { name = "EnhancedShorelineMesh", hideFlags = HideFlags.DontSave };
                 shorelineFilter.sharedMesh = shorelineMesh;
+                ConfigureWaterLayer(shoreline);
                 shorelineMaterial = CreateMaterial("EnhancedShorelineMaterial", new Color(0.055f, 0.16f, 0.23f, 1f));
                 shorelineRenderer.sharedMaterial = shorelineMaterial;
             }
@@ -262,6 +423,8 @@ namespace MagicCarpet.PresentationLab
                 material.SetFloat("_ReflectionStrength", 1.25f);
                 material.SetFloat("_SceneReflectionStrength", 0.84f);
                 material.SetFloat("_ReflectionDistortion", 0.035f);
+                material.SetTexture("_PlanarReflectionTexture", null);
+                material.SetFloat("_PlanarReflectionEnabled", 0f);
                 material.SetFloat("_RippleSpeed", 2.8f);
                 material.SetFloat("_RippleWidth", 0.65f);
                 material.SetVector("_RippleCenter", Vector4.zero);
@@ -300,12 +463,236 @@ namespace MagicCarpet.PresentationLab
             return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
         }
 
+        private bool EnsureReflectionCamera()
+        {
+            if (reflectionCamera != null)
+            {
+                return true;
+            }
+
+            if (!SystemInfo.supportsRenderTextures)
+            {
+                return false;
+            }
+
+            GameObject reflectionObject = new GameObject("EnhancedWaterReflectionCamera");
+            reflectionObject.transform.SetParent(transform, false);
+            reflectionObject.hideFlags = HideFlags.DontSave;
+            reflectionCamera = reflectionObject.AddComponent<Camera>();
+            reflectionCamera.enabled = false;
+            reflectionCamera.cameraType = CameraType.Reflection;
+            reflectionCamera.useOcclusionCulling = false;
+            reflectionCamera.stereoTargetEye = StereoTargetEyeMask.None;
+
+            UniversalAdditionalCameraData cameraData =
+                reflectionObject.AddComponent<UniversalAdditionalCameraData>();
+            cameraData.renderType = CameraRenderType.Base;
+            cameraData.renderPostProcessing = false;
+            cameraData.requiresColorTexture = false;
+            cameraData.requiresDepthTexture = false;
+            return true;
+        }
+
+        private bool EnsureReflectionTexture()
+        {
+            int sourceWidth = presentationCamera.targetTexture != null
+                ? presentationCamera.targetTexture.width
+                : Screen.width;
+            int sourceHeight = presentationCamera.targetTexture != null
+                ? presentationCamera.targetTexture.height
+                : Screen.height;
+            if (sourceWidth <= 0 || sourceHeight <= 0)
+            {
+                sourceWidth = 256;
+                sourceHeight = 256;
+            }
+
+            float scale = Mathf.Min(
+                1f,
+                (float)MaximumReflectionDimension / Mathf.Max(sourceWidth, sourceHeight));
+            int width = Mathf.Clamp(
+                Mathf.RoundToInt(sourceWidth * scale),
+                MinimumReflectionDimension,
+                MaximumReflectionDimension);
+            int height = Mathf.Clamp(
+                Mathf.RoundToInt(sourceHeight * scale),
+                MinimumReflectionDimension,
+                MaximumReflectionDimension);
+            if (reflectionTexture != null &&
+                reflectionWidth == width && reflectionHeight == height &&
+                reflectionTexture.IsCreated())
+            {
+                return true;
+            }
+
+            ReleaseReflectionTexture();
+            RenderTextureFormat format =
+                SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.ARGBHalf)
+                    ? RenderTextureFormat.ARGBHalf
+                    : RenderTextureFormat.ARGB32;
+            try
+            {
+                reflectionTexture = new RenderTexture(
+                    width,
+                    height,
+                    24,
+                    format,
+                    RenderTextureReadWrite.sRGB);
+                reflectionTexture.name = "EnhancedWaterPlanarReflection";
+                reflectionTexture.hideFlags = HideFlags.DontSave;
+                reflectionTexture.filterMode = FilterMode.Bilinear;
+                reflectionTexture.wrapMode = TextureWrapMode.Clamp;
+                reflectionTexture.useMipMap = false;
+                reflectionTexture.autoGenerateMips = false;
+                reflectionTexture.Create();
+                reflectionWidth = width;
+                reflectionHeight = height;
+                return reflectionTexture.IsCreated();
+            }
+            catch (Exception)
+            {
+                ReleaseReflectionTexture();
+                return false;
+            }
+        }
+
+        private void ConfigureReflectionCamera()
+        {
+            reflectionCamera.clearFlags = presentationCamera.clearFlags;
+            reflectionCamera.backgroundColor = presentationCamera.backgroundColor;
+            reflectionCamera.fieldOfView = presentationCamera.fieldOfView;
+            reflectionCamera.nearClipPlane = presentationCamera.nearClipPlane;
+            reflectionCamera.farClipPlane = presentationCamera.farClipPlane;
+            reflectionCamera.orthographic = presentationCamera.orthographic;
+            reflectionCamera.orthographicSize = presentationCamera.orthographicSize;
+            reflectionCamera.allowHDR = presentationCamera.allowHDR;
+            reflectionCamera.cullingMask = ReflectionCullingMask();
+            reflectionCamera.aspect = (float)reflectionWidth / Mathf.Max(1, reflectionHeight);
+            reflectionCamera.depthTextureMode = DepthTextureMode.None;
+            reflectionCamera.useOcclusionCulling = false;
+        }
+
+        private int ReflectionCullingMask()
+        {
+            int mask = presentationCamera == null ? 0 : presentationCamera.cullingMask;
+            if (waterLayer >= 0)
+            {
+                mask &= ~(1 << waterLayer);
+            }
+
+            int uiLayer = LayerMask.NameToLayer(UiLayerName);
+            if (uiLayer >= 0)
+            {
+                mask &= ~(1 << uiLayer);
+            }
+
+            return mask;
+        }
+
+        private void ConfigureWaterLayer(GameObject waterObject)
+        {
+            waterLayer = LayerMask.NameToLayer(WaterLayerName);
+            if (waterLayer >= 0 && waterObject != null)
+            {
+                waterObject.layer = waterLayer;
+            }
+        }
+
+        private void DisablePlanarReflection()
+        {
+            PlanarReflectionReady = false;
+            if (waterMaterial != null)
+            {
+                waterMaterial.SetFloat("_PlanarReflectionEnabled", 0f);
+                waterMaterial.SetTexture("_PlanarReflectionTexture", null);
+            }
+
+            ReflectionMode = UnityEnhancedWaterReflectionMode.FallbackSky;
+        }
+
+        private void ReleaseReflectionTexture()
+        {
+            if (reflectionTexture != null)
+            {
+                reflectionTexture.Release();
+                DestroyUnityObject(reflectionTexture);
+                reflectionTexture = null;
+            }
+
+            reflectionWidth = 0;
+            reflectionHeight = 0;
+            PlanarReflectionReady = false;
+        }
+
+        private static Vector4 CameraSpacePlane(
+            Camera camera,
+            Vector3 position,
+            Vector3 normal,
+            float sideSign)
+        {
+            Vector3 offsetPosition = position + normal * ReflectionClipOffset;
+            Matrix4x4 worldToCamera = camera.worldToCameraMatrix;
+            Vector3 cameraSpacePosition = worldToCamera.MultiplyPoint(offsetPosition);
+            Vector3 cameraSpaceNormal = worldToCamera.MultiplyVector(normal).normalized * sideSign;
+            return new Vector4(
+                cameraSpaceNormal.x,
+                cameraSpaceNormal.y,
+                cameraSpaceNormal.z,
+                -Vector3.Dot(cameraSpacePosition, cameraSpaceNormal));
+        }
+
+        private static Matrix4x4 CalculateReflectionMatrix(Vector4 plane)
+        {
+            Matrix4x4 reflection = Matrix4x4.zero;
+            reflection.m00 = 1f - 2f * plane.x * plane.x;
+            reflection.m01 = -2f * plane.x * plane.y;
+            reflection.m02 = -2f * plane.x * plane.z;
+            reflection.m03 = -2f * plane.x * plane.w;
+            reflection.m10 = -2f * plane.y * plane.x;
+            reflection.m11 = 1f - 2f * plane.y * plane.y;
+            reflection.m12 = -2f * plane.y * plane.z;
+            reflection.m13 = -2f * plane.y * plane.w;
+            reflection.m20 = -2f * plane.z * plane.x;
+            reflection.m21 = -2f * plane.z * plane.y;
+            reflection.m22 = 1f - 2f * plane.z * plane.z;
+            reflection.m23 = -2f * plane.z * plane.w;
+            reflection.m30 = 0f;
+            reflection.m31 = 0f;
+            reflection.m32 = 0f;
+            reflection.m33 = 1f;
+            return reflection;
+        }
+
+        private static void DestroyUnityObject(UnityEngine.Object value)
+        {
+            if (value == null)
+            {
+                return;
+            }
+
+            if (Application.isPlaying)
+            {
+                Destroy(value);
+            }
+            else
+            {
+                DestroyImmediate(value);
+            }
+        }
+
         private void OnDestroy()
         {
-            if (waterMesh != null) DestroyImmediate(waterMesh);
-            if (shorelineMesh != null) DestroyImmediate(shorelineMesh);
-            if (waterMaterial != null) DestroyImmediate(waterMaterial);
-            if (shorelineMaterial != null) DestroyImmediate(shorelineMaterial);
+            ReleaseReflectionTexture();
+            if (reflectionCamera != null)
+            {
+                DestroyUnityObject(reflectionCamera.gameObject);
+                reflectionCamera = null;
+            }
+
+            if (waterMesh != null) DestroyUnityObject(waterMesh);
+            if (shorelineMesh != null) DestroyUnityObject(shorelineMesh);
+            if (waterMaterial != null) DestroyUnityObject(waterMaterial);
+            if (shorelineMaterial != null) DestroyUnityObject(shorelineMaterial);
         }
     }
 }

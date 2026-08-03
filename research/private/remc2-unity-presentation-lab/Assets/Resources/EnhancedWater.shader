@@ -14,6 +14,8 @@ Shader "MagicCarpet/Enhanced/Water"
         _ReflectionStrength ("Reflection Strength", Range(0, 2)) = 1.15
         _SceneReflectionStrength ("Scene Reflection", Range(0, 1)) = 0.72
         _ReflectionDistortion ("Reflection Distortion", Range(0, 0.2)) = 0.035
+        _PlanarReflectionEnabled ("Planar Reflection Enabled", Float) = 0
+        _PlanarReflectionTexture ("Planar Reflection", 2D) = "black" {}
         _RippleCenter ("Ripple Center", Vector) = (0, 0, 0, 0)
         _RippleStartTime ("Ripple Start Time", Float) = 0
         _RippleStrength ("Ripple Strength", Range(0, 2)) = 0
@@ -63,6 +65,7 @@ Shader "MagicCarpet/Enhanced/Water"
                 half _ReflectionStrength;
                 half _SceneReflectionStrength;
                 half _ReflectionDistortion;
+                half _PlanarReflectionEnabled;
                 float4 _RippleCenter;
                 half _RippleStartTime;
                 half _RippleStrength;
@@ -70,6 +73,9 @@ Shader "MagicCarpet/Enhanced/Water"
                 half _RippleWidth;
                 half _Alpha;
             CBUFFER_END
+
+            TEXTURE2D(_PlanarReflectionTexture);
+            SAMPLER(sampler_PlanarReflectionTexture);
 
             #define ENHANCED_WARM_LIGHT_CAP 4
             float4 _EnhancedWarmLightPositions[ENHANCED_WARM_LIGHT_CAP];
@@ -203,7 +209,18 @@ Shader "MagicCarpet/Enhanced/Water"
                 float2 reflectionUV = float2(screenUV.x, 1.0 - screenUV.y);
                 reflectionUV = saturate(reflectionUV + normalWS.xz * _ReflectionDistortion);
                 half3 sceneReflection = SampleSceneColor(reflectionUV);
-                half3 reflection = lerp(_ReflectionColor.rgb, sceneReflection, _SceneReflectionStrength);
+                half3 planarReflection = SAMPLE_TEXTURE2D(
+                    _PlanarReflectionTexture,
+                    sampler_PlanarReflectionTexture,
+                    reflectionUV).rgb;
+                half3 resolvedSceneReflection = lerp(
+                    sceneReflection,
+                    planarReflection,
+                    saturate(_PlanarReflectionEnabled));
+                half3 reflection = lerp(
+                    _ReflectionColor.rgb,
+                    resolvedSceneReflection,
+                    _SceneReflectionStrength);
                 reflection *= _ReflectionStrength * (0.35h + fresnel * _FresnelStrength);
                 half3 color = lerp(_BaseColor.rgb, reflection, saturate(0.32h + fresnel * 0.72h));
 
