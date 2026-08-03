@@ -8,6 +8,8 @@ Shader "MagicCarpet/Enhanced/Fireball"
         _HaloIntensity ("Halo Intensity", Range(0, 8)) = 1.65
         _CoreRadius ("Core Radius", Range(0.05, 0.8)) = 0.42
         _HaloRadius ("Halo Radius", Range(0.2, 1)) = 0.94
+        _OuterRadius ("Outer Glow Radius", Range(0.8, 1.6)) = 1.36
+        _OuterIntensity ("Outer Glow Intensity", Range(0, 8)) = 1.8
         _Opacity ("Opacity", Range(0, 1)) = 0.88
         _PulseSpeed ("Pulse Speed", Float) = 2.8
         _ShimmerStrength ("Shimmer Strength", Range(0, 0.4)) = 0.08
@@ -44,6 +46,8 @@ Shader "MagicCarpet/Enhanced/Fireball"
                 half _HaloIntensity;
                 half _CoreRadius;
                 half _HaloRadius;
+                half _OuterRadius;
+                half _OuterIntensity;
                 half _Opacity;
                 half _PulseSpeed;
                 half _ShimmerStrength;
@@ -78,14 +82,20 @@ Shader "MagicCarpet/Enhanced/Fireball"
                 half halo = saturate(1.0h - radius / _HaloRadius);
                 halo *= halo;
                 halo = saturate(halo - core * 0.28h);
+                half outer = 1.0h - smoothstep(_HaloRadius * 0.55h, _OuterRadius, radius);
+                outer *= outer;
+                outer = saturate(outer - core * 0.18h);
 
                 half pulse = 0.94h + 0.06h * sin(_Time.y * _PulseSpeed);
                 half shimmer = 1.0h + _ShimmerStrength *
                     sin(_Time.y * (_PulseSpeed * 1.7h) + centered.x * 9.0h - centered.y * 7.0h);
+                half outerShimmer = 0.84h + 0.16h *
+                    sin(_Time.y * (_PulseSpeed * 2.4h) + radius * 18.0h);
                 half3 color = _CoreColor.rgb * (_CoreIntensity * core) +
-                              _HaloColor.rgb * (_HaloIntensity * halo);
+                              _HaloColor.rgb * (_HaloIntensity * halo +
+                                               _OuterIntensity * outer * outerShimmer);
                 color *= pulse * shimmer;
-                half alpha = saturate(_Opacity * max(core, halo * 0.82h));
+                half alpha = saturate(_Opacity * max(max(core, halo * 0.82h), outer * 0.42h));
                 return half4(color, alpha);
             }
             ENDHLSL

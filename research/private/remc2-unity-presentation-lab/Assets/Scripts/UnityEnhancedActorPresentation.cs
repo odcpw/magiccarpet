@@ -644,6 +644,8 @@ namespace MagicCarpet.PresentationLab
                     material.SetFloat("_HaloIntensity", halo ? 2.2f : 0.55f);
                     material.SetFloat("_CoreRadius", halo ? 0.08f : 0.42f);
                     material.SetFloat("_HaloRadius", halo ? 0.98f : 0.72f);
+                    material.SetFloat("_OuterRadius", halo ? 1.36f : 0f);
+                    material.SetFloat("_OuterIntensity", halo ? 2.5f : 0f);
                     material.SetFloat("_Opacity", halo ? 0.72f : 0.92f);
                     material.SetFloat("_PulseSpeed", halo ? 2.2f : 2.8f);
                     material.SetFloat("_ShimmerStrength", halo ? 0.06f : 0.1f);

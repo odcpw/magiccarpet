@@ -797,6 +797,11 @@ namespace MagicCarpet.PresentationLab.Tests
                 haloRenderer.sharedMaterial.GetFloat("_HaloIntensity"),
                 renderer.sharedMaterial.GetFloat("_HaloIntensity"));
             Assert.That(haloRenderer.sharedMaterial.GetFloat("_CoreIntensity"), Is.EqualTo(0f));
+            Assert.That(
+                haloRenderer.sharedMaterial.GetFloat("_OuterRadius"),
+                Is.GreaterThan(haloRenderer.sharedMaterial.GetFloat("_HaloRadius")));
+            Assert.Greater(haloRenderer.sharedMaterial.GetFloat("_OuterIntensity"), 0f);
+            Assert.That(renderer.sharedMaterial.GetFloat("_OuterIntensity"), Is.EqualTo(0f));
             Assert.That(haloRenderer.bounds.center.x, Is.EqualTo(renderer.bounds.center.x).Within(0.001f));
             Assert.That(haloRenderer.bounds.center.y, Is.EqualTo(renderer.bounds.center.y).Within(0.001f));
             Assert.That(haloRenderer.bounds.center.z, Is.EqualTo(renderer.bounds.center.z).Within(0.001f));
