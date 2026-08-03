@@ -55,6 +55,12 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 half4 _SoilTint;
             CBUFFER_END
 
+            #define ENHANCED_WARM_LIGHT_CAP 4
+            float4 _EnhancedWarmLightPositions[ENHANCED_WARM_LIGHT_CAP];
+            float4 _EnhancedWarmLightColors[ENHANCED_WARM_LIGHT_CAP];
+            float4 _EnhancedWarmLightRanges[ENHANCED_WARM_LIGHT_CAP];
+            int _EnhancedWarmLightCount;
+
             struct Attributes
             {
                 float4 positionOS : POSITION;
@@ -115,6 +121,29 @@ Shader "MagicCarpet/Enhanced/Terrain"
                 float octave2 = ValueNoise(position * 4.19 + float2(-7.3, 19.4));
                 float octave3 = ValueNoise(position * 8.41 + float2(31.6, 8.2));
                 return (octave0 * 0.50 + octave1 * 0.25 + octave2 * 0.125 + octave3 * 0.0625) / 0.9375;
+            }
+
+            half3 EvaluateWarmLight(float3 positionWS, half3 normalWS)
+            {
+                half3 contribution = 0.0h;
+                int count = min(_EnhancedWarmLightCount, ENHANCED_WARM_LIGHT_CAP);
+                for (int index = 0; index < count; index++)
+                {
+                    float3 delta = _EnhancedWarmLightPositions[index].xyz - positionWS;
+                    float distanceToLight = length(delta);
+                    float range = max(_EnhancedWarmLightRanges[index].x, 0.001);
+                    half attenuation = saturate(1.0h - distanceToLight / range);
+                    attenuation *= attenuation;
+                    half3 direction = SafeNormalize(delta);
+                    half facing = saturate(dot(normalWS, direction));
+                    half3 color = _EnhancedWarmLightColors[index].rgb;
+                    half intensity = _EnhancedWarmLightColors[index].a;
+                    half shimmer = 0.84h + 0.16h * sin(
+                        _Time.y * 3.4h + dot(positionWS.xz, float2(0.61, -0.37)));
+                    contribution += color * intensity * attenuation *
+                        (facing * 0.30h + shimmer * 0.12h);
+                }
+                return contribution;
             }
 
             half4 Frag(Varyings input) : SV_Target
@@ -205,7 +234,9 @@ Shader "MagicCarpet/Enhanced/Terrain"
                     }
                 #endif
 
-                half3 color = baseColor * lighting;
+                half3 warmLighting = EvaluateWarmLight(input.positionWS, normalWS);
+                half3 color = baseColor * (lighting + warmLighting * 1.0h);
+                color += warmLighting * 0.14h;
                 half rim = pow(saturate(1.0h - dot(normalWS, viewDirectionWS)), 2.0h);
                 color += _SlopeTint.rgb * (rim * exposedFace * 0.08h);
                 color = MixFog(color, ComputeFogFactor(input.positionHCS.z));

@@ -43,6 +43,7 @@ Shader "MagicCarpet/Enhanced/Water"
             HLSLPROGRAM
             #pragma vertex Vert
             #pragma fragment Frag
+            #pragma multi_compile _ _ADDITIONAL_LIGHTS
             #pragma multi_compile_fog
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
@@ -69,6 +70,12 @@ Shader "MagicCarpet/Enhanced/Water"
                 half _RippleWidth;
                 half _Alpha;
             CBUFFER_END
+
+            #define ENHANCED_WARM_LIGHT_CAP 4
+            float4 _EnhancedWarmLightPositions[ENHANCED_WARM_LIGHT_CAP];
+            float4 _EnhancedWarmLightColors[ENHANCED_WARM_LIGHT_CAP];
+            float4 _EnhancedWarmLightRanges[ENHANCED_WARM_LIGHT_CAP];
+            int _EnhancedWarmLightCount;
 
             struct Attributes
             {
@@ -142,6 +149,38 @@ Shader "MagicCarpet/Enhanced/Water"
                 return normalize(baseNormal + half3(slope.x, 0.0h, slope.y) * _WaveStrength);
             }
 
+            half3 EvaluateWarmLight(float3 positionWS, half3 normalWS)
+            {
+                half3 contribution = 0.0h;
+                int count = min(_EnhancedWarmLightCount, ENHANCED_WARM_LIGHT_CAP);
+                for (int index = 0; index < count; index++)
+                {
+                    float3 delta = _EnhancedWarmLightPositions[index].xyz - positionWS;
+                    float distanceToLight = length(delta);
+                    float range = max(_EnhancedWarmLightRanges[index].x, 0.001);
+                    half attenuation = saturate(1.0h - distanceToLight / range);
+                    attenuation *= attenuation;
+                    half3 direction = SafeNormalize(delta);
+                    half facing = saturate(dot(normalWS, direction));
+                    half3 color = _EnhancedWarmLightColors[index].rgb;
+                    half intensity = _EnhancedWarmLightColors[index].a;
+                    half shimmer = 0.70h + 0.30h * sin(
+                        _Time.y * 3.1h + dot(positionWS.xz, float2(0.55, -0.43)));
+                    contribution += color * intensity * attenuation *
+                        (facing * 0.20h + shimmer * 0.18h);
+                }
+                return contribution;
+            }
+
+            half3 EvaluateAdditionalLight(Light light, half3 normalWS, half3 viewDirectionWS)
+            {
+                half diffuse = saturate(dot(normalWS, light.direction));
+                half3 halfDirection = SafeNormalize(light.direction + viewDirectionWS);
+                half specular = pow(saturate(dot(normalWS, halfDirection)), 32.0h) * 0.55h;
+                half attenuation = light.distanceAttenuation * light.shadowAttenuation;
+                return (diffuse.xxx * 0.45h + specular.xxx) * light.color * attenuation;
+            }
+
             half4 Frag(Varyings input) : SV_Target
             {
                 half3 normalWS = WaveNormal(input.positionWS.xz, NormalizeNormalPerPixel(input.normalWS));
@@ -163,6 +202,23 @@ Shader "MagicCarpet/Enhanced/Water"
                 half3 reflection = lerp(_ReflectionColor.rgb, sceneReflection, _SceneReflectionStrength);
                 reflection *= _ReflectionStrength * (0.35h + fresnel * _FresnelStrength);
                 half3 color = lerp(_BaseColor.rgb, reflection, saturate(0.32h + fresnel * 0.72h));
+
+                half3 additionalLighting = 0.0h;
+                #if defined(_ADDITIONAL_LIGHTS)
+                    uint additionalLightCount = GetAdditionalLightsCount();
+                    for (uint index = 0u; index < additionalLightCount; index++)
+                    {
+                        additionalLighting += EvaluateAdditionalLight(
+                            GetAdditionalLight(index, input.positionWS),
+                            normalWS,
+                            viewDirectionWS);
+                    }
+                #endif
+                half3 warmLighting = EvaluateWarmLight(input.positionWS, normalWS);
+                half warmShimmer = 0.55h + 0.45h * sin(
+                    _Time.y * 3.3h + dot(input.positionWS.xz, float2(0.58, -0.41)));
+                color += additionalLighting * (0.08h + fresnel * 0.18h);
+                color += warmLighting * (0.25h + fresnel * 0.45h + warmShimmer * (0.18h + crest * 0.08h));
                 color += _FoamColor.rgb * crest * (0.018h + fresnel * 0.05h);
                 color += _MoonColor.rgb * glint;
                 color += _MoonColor.rgb * fresnel * crest * 0.035h;

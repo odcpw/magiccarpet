@@ -1,7 +1,9 @@
 #if UNITY_EDITOR
 using System;
+using System.IO;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEditor;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using Object = UnityEngine.Object;
@@ -1016,9 +1018,61 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual(2, lighting.ActiveLocalLightCount);
             Assert.AreEqual(2, lighting.DroppedLocalLightCount);
             Assert.AreEqual(5UL, lighting.Generation);
+            Assert.AreEqual(0, lighting.ShaderVisibleWarmLightCount);
             lighting.ResetForGeneration(6);
             Assert.AreEqual(0, lighting.ActiveLocalLightCount);
+            Assert.AreEqual(0, Shader.GetGlobalInt("_EnhancedWarmLightCount"));
 
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void WarmLightShaderContractPublishesFireballAndClearsCoolOrStaleRequests()
+        {
+            string terrainSource = File.ReadAllText(
+                Path.Combine(Application.dataPath, "Resources", "EnhancedTerrain.shader"));
+            string waterSource = File.ReadAllText(
+                Path.Combine(Application.dataPath, "Resources", "EnhancedWater.shader"));
+            StringAssert.Contains("_EnhancedWarmLightPositions", terrainSource);
+            StringAssert.Contains("_EnhancedWarmLightPositions", waterSource);
+            StringAssert.Contains("_ADDITIONAL_LIGHTS", waterSource);
+
+            GameObject gameObject = new GameObject("enhanced-warm-light-contract-test");
+            UnityEnhancedNightLighting lighting = gameObject.AddComponent<UnityEnhancedNightLighting>();
+            UnityEnhancedLocalLightRequest fireball = new UnityEnhancedLocalLightRequest(
+                0x20000001UL,
+                new Vector3(3f, 2f, 1f),
+                new Color(1f, 0.2f, 0.04f, 1f),
+                5.5f,
+                11f,
+                2001);
+            UnityEnhancedLocalLightRequest cool = new UnityEnhancedLocalLightRequest(
+                0x10000001UL,
+                new Vector3(-7f, 1f, 2f),
+                new Color(0.15f, 0.35f, 1f, 1f),
+                5f,
+                11f,
+                3000);
+
+            lighting.ApplyDescriptor(10, UnityEnhancedNightLightingDescriptor.Level1Night(),
+                new[] { cool, fireball }, true);
+            Assert.AreEqual(1, lighting.ShaderVisibleWarmLightCount);
+            Assert.AreEqual(1, Shader.GetGlobalInt("_EnhancedWarmLightCount"));
+            Vector4 publishedPosition = Shader.GetGlobalVectorArray("_EnhancedWarmLightPositions")[0];
+            Assert.That(publishedPosition.x, Is.EqualTo(3f).Within(0.001f));
+            Assert.That(publishedPosition.y, Is.EqualTo(2f).Within(0.001f));
+            Assert.That(publishedPosition.z, Is.EqualTo(1f).Within(0.001f));
+            Vector4 publishedRange = Shader.GetGlobalVectorArray("_EnhancedWarmLightRanges")[0];
+            Assert.That(publishedRange.x, Is.EqualTo(22f).Within(0.001f));
+
+            lighting.ApplyDescriptor(10, UnityEnhancedNightLightingDescriptor.Level1Night(),
+                new[] { cool }, false);
+            Assert.AreEqual(0, lighting.ShaderVisibleWarmLightCount);
+            Assert.AreEqual(0, Shader.GetGlobalInt("_EnhancedWarmLightCount"));
+            Assert.AreEqual(0f, Shader.GetGlobalVectorArray("_EnhancedWarmLightPositions")[0].magnitude);
+            Assert.AreEqual(1, lighting.ActiveLocalLightCount);
+
+            lighting.ResetForSession();
             Object.DestroyImmediate(gameObject);
         }
 

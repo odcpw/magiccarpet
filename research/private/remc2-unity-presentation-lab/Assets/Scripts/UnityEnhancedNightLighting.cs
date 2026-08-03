@@ -77,9 +77,17 @@ namespace MagicCarpet.PresentationLab
     [DisallowMultipleComponent]
     public sealed class UnityEnhancedNightLighting : MonoBehaviour
     {
+        private const int ShaderWarmLightCap = 4;
+        private const string ShaderWarmLightCountName = "_EnhancedWarmLightCount";
+        private const string ShaderWarmLightPositionsName = "_EnhancedWarmLightPositions";
+        private const string ShaderWarmLightColorsName = "_EnhancedWarmLightColors";
+        private const string ShaderWarmLightRangesName = "_EnhancedWarmLightRanges";
         private readonly List<UnityEnhancedLocalLightRequest> sortedRequests = new List<UnityEnhancedLocalLightRequest>();
         private readonly List<Light> pooledLights = new List<Light>();
         private readonly List<Light> activeLights = new List<Light>();
+        private readonly Vector4[] shaderWarmLightPositions = new Vector4[ShaderWarmLightCap];
+        private readonly Vector4[] shaderWarmLightColors = new Vector4[ShaderWarmLightCap];
+        private readonly Vector4[] shaderWarmLightRanges = new Vector4[ShaderWarmLightCap];
         private Transform lightRoot;
         private Light moon;
         private UnityEnhancedLightingQuality quality = UnityEnhancedLightingQuality.High;
@@ -113,6 +121,7 @@ namespace MagicCarpet.PresentationLab
         public ulong Generation { get { return generation; } }
         public bool HasDescriptor { get { return hasDescriptor; } }
         public float AppliedExposure { get; private set; }
+        public int ShaderVisibleWarmLightCount { get; private set; }
 
         public int LocalLightCap
         {
@@ -220,6 +229,8 @@ namespace MagicCarpet.PresentationLab
                 activeLights.Add(light);
             }
 
+            ApplyShaderWarmLightField(accepted);
+
             generation = nextGeneration;
             hasDescriptor = true;
         }
@@ -230,6 +241,7 @@ namespace MagicCarpet.PresentationLab
             hasDescriptor = false;
             DroppedLocalLightCount = 0;
             AppliedExposure = 0f;
+            ClearShaderWarmLightField();
             while (activeLights.Count > 0)
             {
                 RecycleLight(activeLights[activeLights.Count - 1]);
@@ -241,6 +253,65 @@ namespace MagicCarpet.PresentationLab
         {
             ResetForGeneration(0);
             RestoreRenderSettings();
+        }
+
+        private void ApplyShaderWarmLightField(int accepted)
+        {
+            ClearShaderWarmLightField();
+            int count = 0;
+            int boundedAccepted = Mathf.Min(accepted, sortedRequests.Count);
+            for (int index = 0; index < boundedAccepted && count < ShaderWarmLightCap; index++)
+            {
+                UnityEnhancedLocalLightRequest request = sortedRequests[index];
+                if (!IsWarmLight(request.Color))
+                {
+                    continue;
+                }
+
+                shaderWarmLightPositions[count] = new Vector4(
+                    request.Position.x,
+                    request.Position.y,
+                    request.Position.z,
+                    1f);
+                shaderWarmLightColors[count] = new Vector4(
+                    request.Color.r,
+                    request.Color.g,
+                    request.Color.b,
+                    Mathf.Max(0f, request.Intensity));
+                shaderWarmLightRanges[count] = new Vector4(
+                    Mathf.Min(Mathf.Max(0.05f, request.Range) * 2f, 24f),
+                    0f,
+                    0f,
+                    0f);
+                count++;
+            }
+
+            ShaderVisibleWarmLightCount = count;
+            Shader.SetGlobalInt(ShaderWarmLightCountName, count);
+            Shader.SetGlobalVectorArray(ShaderWarmLightPositionsName, shaderWarmLightPositions);
+            Shader.SetGlobalVectorArray(ShaderWarmLightColorsName, shaderWarmLightColors);
+            Shader.SetGlobalVectorArray(ShaderWarmLightRangesName, shaderWarmLightRanges);
+        }
+
+        private void ClearShaderWarmLightField()
+        {
+            for (int index = 0; index < ShaderWarmLightCap; index++)
+            {
+                shaderWarmLightPositions[index] = Vector4.zero;
+                shaderWarmLightColors[index] = Vector4.zero;
+                shaderWarmLightRanges[index] = Vector4.zero;
+            }
+
+            ShaderVisibleWarmLightCount = 0;
+            Shader.SetGlobalInt(ShaderWarmLightCountName, 0);
+            Shader.SetGlobalVectorArray(ShaderWarmLightPositionsName, shaderWarmLightPositions);
+            Shader.SetGlobalVectorArray(ShaderWarmLightColorsName, shaderWarmLightColors);
+            Shader.SetGlobalVectorArray(ShaderWarmLightRangesName, shaderWarmLightRanges);
+        }
+
+        private static bool IsWarmLight(Color color)
+        {
+            return color.r > color.g * 0.85f && color.r > color.b * 1.2f;
         }
 
         private static int CompareRequests(UnityEnhancedLocalLightRequest left, UnityEnhancedLocalLightRequest right)
@@ -453,6 +524,7 @@ namespace MagicCarpet.PresentationLab
 
         private void OnDestroy()
         {
+            ClearShaderWarmLightField();
             RestoreRenderSettings();
             if (generatedSkybox != null)
             {
