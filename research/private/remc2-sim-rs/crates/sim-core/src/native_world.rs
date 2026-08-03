@@ -15013,6 +15013,7 @@ impl Level2ResetSession {
             entity.active
                 && entity.class == 3
                 && entity.model == 0
+                && entity.life >= 0
                 && crate::level1_mission::source_entities_overlap_xy(
                     switch_position,
                     SWITCH_HALF_WIDTH,
@@ -15027,8 +15028,9 @@ impl Level2ResetSession {
 
     /// Evaluate one authored model-0/model-1 switch against the live model-0
     /// source list using remc2's strict XY comparator. The source scan is the
-    /// live class-3 model-0 arena rebuilt by the source turn pre-pass. Model 0
-    /// requires an overlap; model 1 requires a strict non-overlap. No Z value
+    /// live class-3/model-0 arena rebuilt by the source turn pre-pass; dead
+    /// rows (`life < 0`) are not linked into that player list. Model 0 requires
+    /// an overlap; model 1 requires a strict non-overlap. No Z value
     /// participates in this source callback.
     pub fn level2_authored_switch_matches(&self, authored_index: u16) -> Result<bool> {
         let feature = self
@@ -27925,6 +27927,19 @@ mod tests {
             !session
                 .level2_authored_switch_matches(65)
                 .expect("model-zero strict boundary predicate")
+        );
+
+        // A dead class-3/model-0 row is absent from remc2's linked player
+        // chain, so it cannot satisfy an overlap switch even when its position
+        // remains exactly at the authored center.
+        session
+            .set_level2_entity_position(111, row_65.world_position(0))
+            .expect("restore overlap before dead-player check");
+        session.entities[111].life = -1;
+        assert!(
+            !session
+                .level2_authored_switch_matches(65)
+                .expect("dead model-zero row is excluded from overlap scan")
         );
     }
 
