@@ -1305,6 +1305,8 @@ namespace MagicCarpet.PresentationLab.Tests
                 Path.Combine(Application.dataPath, "Scripts", "UnityEnhancedWorldRoot.cs"));
             string shaderSource = File.ReadAllText(
                 Path.Combine(Application.dataPath, "Resources", "EnhancedWater.shader"));
+            string rippleShaderSource = File.ReadAllText(
+                Path.Combine(Application.dataPath, "Resources", "EnhancedWaterRipple.shader"));
 
             StringAssert.Contains("SetPresentationCamera", waterPresentationSource);
             StringAssert.Contains("CameraType.Reflection", waterPresentationSource);
@@ -1320,6 +1322,10 @@ namespace MagicCarpet.PresentationLab.Tests
             StringAssert.Contains("_PlanarReflectionMix", shaderSource);
             StringAssert.Contains("saturate(_PlanarReflectionEnabled) *", shaderSource);
             StringAssert.Contains("SAMPLE_TEXTURE2D", shaderSource);
+            StringAssert.Contains("MagicCarpet/Enhanced/WaterRipple", rippleShaderSource);
+            StringAssert.Contains("_RippleCenter", rippleShaderSource);
+            StringAssert.Contains("radialFade", rippleShaderSource);
+            StringAssert.Contains("_RippleLifetime", rippleShaderSource);
             StringAssert.DoesNotContain(
                 "half3 reflection = lerp(_ReflectionColor.rgb, sceneReflection, _SceneReflectionStrength);",
                 shaderSource);
@@ -1329,6 +1335,7 @@ namespace MagicCarpet.PresentationLab.Tests
         public void WaterBuildsReflectionSurfaceAndShorelineMesh()
         {
             Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/Water"));
+            Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/WaterRipple"));
             GameObject gameObject = new GameObject("enhanced-water-test");
             UnityEnhancedWaterPresentation water = gameObject.AddComponent<UnityEnhancedWaterPresentation>();
             UnityEnhancedWaterSnapshot snapshot = new UnityEnhancedWaterSnapshot
@@ -1353,6 +1360,8 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.Greater(water.WaterMaterial.GetFloat("_FresnelStrength"), 1.0f);
             Assert.Greater(water.WaterMaterial.GetFloat("_SceneReflectionStrength"), 0.5f);
             Assert.That(water.WaterMaterial.GetFloat("_PlanarReflectionMix"), Is.EqualTo(0.46f).Within(0.001f));
+            MeshRenderer rippleRenderer = gameObject.transform.Find("EnhancedWaterRipple").GetComponent<MeshRenderer>();
+            Assert.IsFalse(rippleRenderer.enabled);
 
             UnityEnhancedVfxEvent splash = new UnityEnhancedVfxEvent(
                 1, 2, 4, 0x40000001UL, UnityEnhancedVfxKind.Weather,
@@ -1360,6 +1369,10 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsTrue(water.ApplyRipple(splash));
             Assert.AreEqual(1, water.ActiveRippleCount);
             Assert.Greater(water.WaterMaterial.GetFloat("_RippleStrength"), 0.4f);
+            Assert.IsTrue(rippleRenderer.enabled);
+            Assert.AreEqual("MagicCarpet/Enhanced/WaterRipple", rippleRenderer.sharedMaterial.shader.name);
+            Assert.Greater(rippleRenderer.sharedMaterial.GetFloat("_RippleMaxRadius"), 2f);
+            Assert.Greater(rippleRenderer.transform.localScale.x, 2f);
             UnityEnhancedVfxEvent nonWater = new UnityEnhancedVfxEvent(
                 2, 2, 4, 0x20000001UL, UnityEnhancedVfxKind.Fire,
                 Vector3.zero, 1f, 18);

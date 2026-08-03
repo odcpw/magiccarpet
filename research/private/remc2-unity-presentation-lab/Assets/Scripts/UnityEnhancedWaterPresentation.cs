@@ -39,6 +39,8 @@ namespace MagicCarpet.PresentationLab
     {
         private const float WaterSurfaceOffset = 0.08f;
         private const float ShorelineSurfaceOffset = 0.012f;
+        private const float RippleSurfaceOffset = 0.035f;
+        private const float RippleLifetime = 5f;
         private const float ReflectionClipOffset = 0.05f;
         private const int MinimumReflectionDimension = 64;
         private const int MaximumReflectionDimension = 512;
@@ -50,8 +52,13 @@ namespace MagicCarpet.PresentationLab
         private MeshRenderer shorelineRenderer;
         private Mesh waterMesh;
         private Mesh shorelineMesh;
+        private MeshFilter rippleFilter;
+        private MeshRenderer rippleRenderer;
+        private Mesh rippleMesh;
+        private GameObject rippleObject;
         private Material waterMaterial;
         private Material shorelineMaterial;
+        private Material rippleMaterial;
         private ulong generation;
         private ulong lastTick;
         private bool hasSnapshot;
@@ -61,6 +68,9 @@ namespace MagicCarpet.PresentationLab
         private RenderTexture reflectionTexture;
         private float waterSurfaceLevel;
         private Vector3 waterCenter;
+        private Vector2 waterSize;
+        private float rippleMaxRadius;
+        private float rippleStartTime;
         private int waterLayer = -1;
         private int reflectionWidth;
         private int reflectionHeight;
@@ -239,6 +249,7 @@ namespace MagicCarpet.PresentationLab
             BuildShoreline(snapshot);
             waterCenter = snapshot.Center;
             waterSurfaceLevel = snapshot.Level + WaterSurfaceOffset;
+            waterSize = snapshot.Size;
             ReflectionEnabled = snapshot.ReflectionEnabled;
             ReflectionMode = ReflectionEnabled
                 ? UnityEnhancedWaterReflectionMode.PlanarWhenSupported
@@ -282,8 +293,37 @@ namespace MagicCarpet.PresentationLab
             waterMaterial.SetVector("_RippleCenter", splash.Position);
             waterMaterial.SetFloat("_RippleStartTime", Time.time);
             waterMaterial.SetFloat("_RippleStrength", Mathf.Clamp(splash.Intensity, 0.45f, 1.35f));
+            if (rippleMaterial != null && rippleObject != null)
+            {
+                rippleStartTime = Time.time;
+                rippleMaxRadius = Mathf.Clamp(
+                    Mathf.Max(waterSize.x, waterSize.y) * 0.5f,
+                    2f,
+                    8f);
+                rippleObject.transform.position = new Vector3(
+                    splash.Position.x,
+                    waterSurfaceLevel + RippleSurfaceOffset,
+                    splash.Position.z);
+                rippleObject.transform.localScale = new Vector3(
+                    rippleMaxRadius,
+                    1f,
+                    rippleMaxRadius);
+                rippleMaterial.SetVector("_RippleCenter", splash.Position);
+                rippleMaterial.SetFloat("_RippleStartTime", rippleStartTime);
+                rippleMaterial.SetFloat("_RippleStrength", Mathf.Clamp(splash.Intensity, 0.55f, 1.5f));
+                rippleMaterial.SetFloat("_RippleMaxRadius", rippleMaxRadius);
+                rippleRenderer.enabled = true;
+            }
             activeRippleCount = 1;
             return true;
+        }
+
+        private void Update()
+        {
+            if (activeRippleCount != 0 && Time.time - rippleStartTime >= RippleLifetime)
+            {
+                ClearRipple();
+            }
         }
 
         private void EnsureResources()
@@ -314,6 +354,21 @@ namespace MagicCarpet.PresentationLab
                 ConfigureWaterLayer(shoreline);
                 shorelineMaterial = CreateMaterial("EnhancedShorelineMaterial", new Color(0.055f, 0.16f, 0.23f, 1f));
                 shorelineRenderer.sharedMaterial = shorelineMaterial;
+            }
+
+            if (rippleFilter == null)
+            {
+                rippleObject = new GameObject("EnhancedWaterRipple");
+                rippleObject.transform.SetParent(transform, false);
+                rippleObject.hideFlags = HideFlags.DontSave;
+                rippleFilter = rippleObject.AddComponent<MeshFilter>();
+                rippleRenderer = rippleObject.AddComponent<MeshRenderer>();
+                rippleMesh = CreateRippleQuadMesh();
+                rippleFilter.sharedMesh = rippleMesh;
+                ConfigureWaterLayer(rippleObject);
+                rippleMaterial = CreateRippleMaterial();
+                rippleRenderer.sharedMaterial = rippleMaterial;
+                rippleRenderer.enabled = false;
             }
         }
 
@@ -445,12 +500,72 @@ namespace MagicCarpet.PresentationLab
             return material;
         }
 
+        private static Mesh CreateRippleQuadMesh()
+        {
+            Mesh mesh = new Mesh
+            {
+                name = "EnhancedWaterRippleMesh",
+                hideFlags = HideFlags.DontSave
+            };
+            mesh.vertices = new[]
+            {
+                new Vector3(-1f, 0f, -1f),
+                new Vector3(1f, 0f, -1f),
+                new Vector3(1f, 0f, 1f),
+                new Vector3(-1f, 0f, 1f)
+            };
+            mesh.uv = new[]
+            {
+                new Vector2(0f, 0f),
+                new Vector2(1f, 0f),
+                new Vector2(1f, 1f),
+                new Vector2(0f, 1f)
+            };
+            mesh.triangles = new[] { 0, 2, 1, 0, 3, 2 };
+            mesh.RecalculateNormals();
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        private static Material CreateRippleMaterial()
+        {
+            Shader shader = Shader.Find("MagicCarpet/Enhanced/WaterRipple");
+            if (shader == null)
+            {
+                return null;
+            }
+
+            Material material = new Material(shader)
+            {
+                name = "EnhancedWaterRippleMaterial",
+                hideFlags = HideFlags.DontSave
+            };
+            material.enableInstancing = true;
+            material.SetColor("_RippleColor", new Color(0.28f, 0.68f, 1f, 1f));
+            material.SetFloat("_RippleStrength", 0f);
+            material.SetFloat("_RippleStartTime", 0f);
+            material.SetFloat("_RippleSpeed", 2.8f);
+            material.SetFloat("_RippleWidth", 0.12f);
+            material.SetFloat("_RippleMaxRadius", 4f);
+            material.SetFloat("_RippleLifetime", RippleLifetime);
+            material.SetVector("_RippleCenter", Vector4.zero);
+            return material;
+        }
+
         private void ClearRipple()
         {
             activeRippleCount = 0;
             if (waterMaterial != null)
             {
                 waterMaterial.SetFloat("_RippleStrength", 0f);
+            }
+            if (rippleMaterial != null)
+            {
+                rippleMaterial.SetFloat("_RippleStrength", 0f);
+            }
+            if (rippleRenderer != null)
+            {
+                rippleRenderer.enabled = false;
             }
         }
 
@@ -692,8 +807,10 @@ namespace MagicCarpet.PresentationLab
 
             if (waterMesh != null) DestroyUnityObject(waterMesh);
             if (shorelineMesh != null) DestroyUnityObject(shorelineMesh);
+            if (rippleMesh != null) DestroyUnityObject(rippleMesh);
             if (waterMaterial != null) DestroyUnityObject(waterMaterial);
             if (shorelineMaterial != null) DestroyUnityObject(shorelineMaterial);
+            if (rippleMaterial != null) DestroyUnityObject(rippleMaterial);
         }
     }
 }
