@@ -3610,6 +3610,64 @@ pub struct Level2AuthoredModel45Source {
     pub active: bool,
 }
 
+/// The authored class-10/model-6 event constructed by remc2's
+/// `NewAdd0A06_4E5F0` and dispatched through `sub_31760`.  The fields mirror
+/// the callback's mutable words rather than collapsing them into a generic
+/// timer: the final-life countdown, height offset, particle index, source RNG,
+/// and control bytes all affect the callback's branch and child allocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredModel6Source {
+    pub source_entity_index: u16,
+    /// NewEvent_4A050's `id_0x1A` identity. It is explicit even when the
+    /// qualified allocator gives it the same numeric value as the pool slot;
+    /// the model-6 child copies this field, not the arena cursor implicitly.
+    pub entity_id: u16,
+    pub entity_rng: u16,
+    pub authored_index: u16,
+    pub model: u8,
+    pub action: u8,
+    pub subspell_index: u16,
+    pub max_life: i16,
+    pub life: i16,
+    pub height_offset: i16,
+    pub dword_0x10: i32,
+    pub particle_index: u16,
+    pub control_flags: u32,
+    pub shift_rot_x: u16,
+    pub shift_rot_y: u16,
+    pub position: Position,
+    pub phase: u8,
+    pub active: bool,
+}
+
+/// The class-9/model-14 child emitted by `sub_31760`'s RNG `% 7` branch.
+/// remc2's constructor sets the child to action 15/model 14, then the parent
+/// copies its id, lifetime, height word, and particle index adjustment.  The
+/// child callback is kept typed so allocation order and the short vertical
+/// lifetime remain observable in the shared source arena.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2Model6SpawnedChild {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub parent_entity_index: u16,
+    pub parent_entity_id: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub max_life: i16,
+    pub life: i16,
+    pub actual_speed: i16,
+    pub min_speed: i16,
+    pub max_speed: i16,
+    pub yaw: i16,
+    pub height_offset: i16,
+    pub dword_0x10: i32,
+    pub particle_index: u16,
+    pub control_flags: u32,
+    pub position: Position,
+    pub active: bool,
+}
+
 /// A dormant authored class-14/model-3 or model-5 event materialized by the
 /// generic `sub_4A310` constructor.  The mission callbacks which decide when
 /// groups 5/28/31 fire remain a separate slice; once a row is selected, the
@@ -3822,6 +3880,10 @@ pub struct Level2EconomyState {
     spell_pickups: Vec<Level2SpellPickupSource>,
     baseline_authored_model45: Vec<Level2AuthoredModel45Source>,
     authored_model45: Vec<Level2AuthoredModel45Source>,
+    baseline_authored_model6: Vec<Level2AuthoredModel6Source>,
+    authored_model6: Vec<Level2AuthoredModel6Source>,
+    baseline_model6_spawned_children: Vec<Level2Model6SpawnedChild>,
+    model6_spawned_children: Vec<Level2Model6SpawnedChild>,
     baseline_authored_class14: Vec<Level2AuthoredClass14Source>,
     authored_class14: Vec<Level2AuthoredClass14Source>,
     /// Source `word_0x36DFE`, written by `sub_51570` for the latest model-3
@@ -4001,6 +4063,10 @@ impl Level2EconomyState {
             spell_pickups: Vec::new(),
             baseline_authored_model45: Vec::new(),
             authored_model45: Vec::new(),
+            baseline_authored_model6: Vec::new(),
+            authored_model6: Vec::new(),
+            baseline_model6_spawned_children: Vec::new(),
+            model6_spawned_children: Vec::new(),
             baseline_authored_class14: Vec::new(),
             authored_class14: Vec::new(),
             baseline_class14_model3_handle: 0,
@@ -4111,6 +4177,16 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_model45(&self) -> &[Level2AuthoredModel45Source] {
         &self.authored_model45
+    }
+
+    #[must_use]
+    pub fn authored_model6(&self) -> &[Level2AuthoredModel6Source] {
+        &self.authored_model6
+    }
+
+    #[must_use]
+    pub fn model6_spawned_children(&self) -> &[Level2Model6SpawnedChild] {
+        &self.model6_spawned_children
     }
 
     #[must_use]
@@ -4267,6 +4343,57 @@ impl Level2EconomyState {
         Some(source)
     }
 
+    /// Allocate the authored class-10/model-6 event initialized by
+    /// `NewAdd0A06_4E5F0`. The constructor's fixed payload is source-backed:
+    /// action/model 6, subspell 50, max/life 240, particle 228, clear low
+    /// control byte, set byte-2 bit 1, shifts 272/1536, and height offset 0.
+    pub fn allocate_authored_model6(
+        &mut self,
+        authored_index: u16,
+        position: Position,
+    ) -> Option<Level2AuthoredModel6Source> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let mut position = position;
+        position.z = self.terrain.ground_height(position);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let source = Level2AuthoredModel6Source {
+            source_entity_index,
+            entity_id: source_entity_index,
+            entity_rng,
+            authored_index,
+            model: 6,
+            action: 6,
+            subspell_index: 50,
+            max_life: 240,
+            life: 240,
+            height_offset: 0,
+            dword_0x10: 0,
+            particle_index: 228,
+            control_flags: 0x0002_0000,
+            shift_rot_x: 272,
+            shift_rot_y: 1536,
+            position,
+            phase: source_entity_index as u8,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.authored_model6.push(source);
+        Some(source)
+    }
+
     /// Allocate the generic class-14/model-3 or model-5 authored event
     /// produced by `sub_4A310`.  The pinned constructor uses action 8 and
     /// particle 338 for model 3 (`sub_51570`), and action 10 and particle 280
@@ -4358,6 +4485,193 @@ impl Level2EconomyState {
                 active: true,
                 x: source.position.x,
                 y: source.position.y,
+            })
+            .is_ok()
+    }
+
+    /// Advance one model-6 row through the pinned `sub_31760` callback.
+    /// This preserves the signed life sentinel, the late-life countdown,
+    /// source RNG cadence, class-9/model-14 child allocation, terrain-height
+    /// projection, water disable, and map-link state. The source's
+    /// `sub_5C870` player-distance mailbox and `sub_11400` attraction scan are
+    /// intentionally separate cross-entity follow-up surfaces.
+    pub fn step_authored_model6_slot(&mut self, source_slot: u16) -> bool {
+        let Some(source_index) = self
+            .authored_model6
+            .iter()
+            .position(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        let source_before = self.authored_model6[source_index];
+        let life_before = source_before.life;
+        let mut source = source_before;
+        source.life = source.life.wrapping_sub(1);
+        if life_before < 0 {
+            source.active = false;
+            self.authored_model6[source_index] = source;
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: false,
+                    x: source.position.x,
+                    y: source.position.y,
+                })
+                .expect("Level 2 model-6 source slot fits the map chain");
+            return true;
+        }
+
+        // sub_5C870 updates the local player's minimum distance sidecar. The
+        // typed economy does not own that nested player record, so preserve
+        // the callback's state mutation here and leave the sidecar bridge to
+        // the cross-entity Level 2 integration bead.
+        if source.life < 12 {
+            if source.dword_0x10 > 0 {
+                source.dword_0x10 -= 1;
+                source.particle_index = source.particle_index.wrapping_sub(1);
+                let low_control = i8::from_le_bytes([source.control_flags as u8]);
+                if low_control >= 0 {
+                    source.entity_rng = level2_next_rng16(source.entity_rng);
+                    if source.entity_rng % 7 == 0 {
+                        let child = self.allocate_model6_spawned_child(
+                            source_slot,
+                            source.entity_id,
+                            source.position,
+                        );
+                        // NewEvent failure consumes no parent state beyond the
+                        // source RNG write, matching the pinned branch.
+                        let _ = child;
+                    }
+                }
+            }
+        } else if source.dword_0x10 <= 6 {
+            source.dword_0x10 += 1;
+            source.particle_index = source.particle_index.wrapping_add(1);
+        }
+        source.position.z = source
+            .height_offset
+            .wrapping_add(self.terrain.ground_height(source.position));
+        if self.terrain.material_mask(source.position) == crate::WATER_AMBIENCE_MASK {
+            source.active = false;
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: false,
+                    x: source.position.x,
+                    y: source.position.y,
+                })
+                .expect("Level 2 model-6 water disable fits the map chain");
+        }
+        self.source_rng.insert(source_slot, source.entity_rng);
+        source.phase = source.phase.wrapping_add(1);
+        self.authored_model6[source_index] = source;
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: source.active,
+                x: source.position.x,
+                y: source.position.y,
+            })
+            .is_ok()
+    }
+
+    fn allocate_model6_spawned_child(
+        &mut self,
+        parent_entity_index: u16,
+        parent_entity_id: u16,
+        position: Position,
+    ) -> Option<u16> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.model6_spawned_children.push(Level2Model6SpawnedChild {
+            source_entity_index,
+            entity_rng,
+            parent_entity_index,
+            parent_entity_id,
+            source_class: 9,
+            model: 14,
+            action: 15,
+            max_life: 32,
+            life: 15,
+            actual_speed: 128,
+            min_speed: 128,
+            max_speed: 0,
+            yaw: 0,
+            height_offset: 0,
+            dword_0x10: 100,
+            // subtype-14's constructor sets particle 196; the parent then
+            // copies that newly-created child's word-0x5A and adds two.
+            particle_index: 198,
+            control_flags: 0,
+            position,
+            active: true,
+        });
+        Some(source_entity_index)
+    }
+
+    /// Advance the generated class-9/model-14 child through `sub_322A0`.
+    pub fn step_model6_spawned_child_slot(&mut self, source_slot: u16) -> bool {
+        let Some(child_index) = self
+            .model6_spawned_children
+            .iter()
+            .position(|child| child.active && child.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        let mut child = self.model6_spawned_children[child_index];
+        let life_before = child.life;
+        child.life = child.life.wrapping_sub(1);
+        if life_before < 0 {
+            child.active = false;
+            self.model6_spawned_children[child_index] = child;
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: false,
+                    x: child.position.x,
+                    y: child.position.y,
+                })
+                .expect("Level 2 model-6 child slot fits the map chain");
+            return true;
+        }
+        child.actual_speed = (child.actual_speed - 4).clamp(64, 128);
+        child.position.z = child.position.z.wrapping_add(child.actual_speed);
+        let ground = self.terrain.ground_height(child.position);
+        if child.position.z < ground {
+            child.position.z = ground;
+        }
+        child.dword_0x10 += 1;
+        if child.dword_0x10 < 16 {
+            crate::move_entity(&mut child.position, child.yaw, 0, child.max_speed);
+            child.max_speed = (child.max_speed - 52).clamp(30, 1024);
+            if child.dword_0x10 & 1 == 0 && child.particle_index < 16 {
+                child.particle_index += 1;
+            }
+        }
+        if child.life < 6 && child.particle_index > 9 {
+            child.particle_index -= 1;
+        }
+        self.model6_spawned_children[child_index] = child;
+        self.map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_slot,
+                active: true,
+                x: child.position.x,
+                y: child.position.y,
             })
             .is_ok()
     }
@@ -4695,6 +5009,22 @@ impl Level2EconomyState {
             visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::AuthoredModel45,
+            );
+        }
+        for source in self.authored_model6.iter().filter(|source| source.active) {
+            visit(
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredModel6,
+            );
+        }
+        for child in self
+            .model6_spawned_children
+            .iter()
+            .filter(|child| child.active)
+        {
+            visit(
+                child.source_entity_index,
+                Level2DynamicArenaKind::Model6SpawnedChild,
             );
         }
         for source in self.authored_class14.iter().filter(|source| source.active) {
@@ -7740,6 +8070,38 @@ impl Level2EconomyState {
             });
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_model6 = self
+            .authored_model6
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_model6.retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_model6 {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
+        let reclaimed_model6_children = self
+            .model6_spawned_children
+            .iter()
+            .filter(|child| !child.active)
+            .map(|child| (child.source_entity_index, child.entity_rng))
+            .collect::<Vec<_>>();
+        self.model6_spawned_children.retain(|child| child.active);
+        for (slot, entity_rng) in reclaimed_model6_children {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_class14 = self
             .authored_class14
             .iter()
@@ -7931,6 +8293,48 @@ impl Level2EconomyState {
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
             hasher.update([u8::from(source.active)]);
+        }
+        for source in &self.authored_model6 {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_id.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update(source.authored_index.to_le_bytes());
+            hasher.update([source.model, source.action]);
+            hasher.update(source.subspell_index.to_le_bytes());
+            hasher.update(source.max_life.to_le_bytes());
+            hasher.update(source.life.to_le_bytes());
+            hasher.update(source.height_offset.to_le_bytes());
+            hasher.update(source.dword_0x10.to_le_bytes());
+            hasher.update(source.particle_index.to_le_bytes());
+            hasher.update(source.control_flags.to_le_bytes());
+            hasher.update(source.shift_rot_x.to_le_bytes());
+            hasher.update(source.shift_rot_y.to_le_bytes());
+            hasher.update(source.phase.to_le_bytes());
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+            hasher.update([u8::from(source.active)]);
+        }
+        for child in &self.model6_spawned_children {
+            hasher.update(child.source_entity_index.to_le_bytes());
+            hasher.update(child.entity_rng.to_le_bytes());
+            hasher.update(child.parent_entity_index.to_le_bytes());
+            hasher.update(child.parent_entity_id.to_le_bytes());
+            hasher.update([child.source_class, child.model, child.action]);
+            hasher.update(child.max_life.to_le_bytes());
+            hasher.update(child.life.to_le_bytes());
+            hasher.update(child.actual_speed.to_le_bytes());
+            hasher.update(child.min_speed.to_le_bytes());
+            hasher.update(child.max_speed.to_le_bytes());
+            hasher.update(child.yaw.to_le_bytes());
+            hasher.update(child.height_offset.to_le_bytes());
+            hasher.update(child.dword_0x10.to_le_bytes());
+            hasher.update(child.particle_index.to_le_bytes());
+            hasher.update(child.control_flags.to_le_bytes());
+            hasher.update(child.position.x.to_le_bytes());
+            hasher.update(child.position.y.to_le_bytes());
+            hasher.update(child.position.z.to_le_bytes());
+            hasher.update([u8::from(child.active)]);
         }
         hasher.update(self.class14_model3_handle.to_le_bytes());
         for source in &self.authored_class14 {
@@ -8192,6 +8596,8 @@ impl Level2EconomyState {
         self.spell_replacements = self.baseline_spell_replacements.clone();
         self.spell_pickups = self.baseline_spell_pickups.clone();
         self.authored_model45 = self.baseline_authored_model45.clone();
+        self.authored_model6 = self.baseline_authored_model6.clone();
+        self.model6_spawned_children = self.baseline_model6_spawned_children.clone();
         self.authored_class14 = self.baseline_authored_class14.clone();
         self.class14_model3_handle = self.baseline_class14_model3_handle;
         self.beyond_sight_effects = self.baseline_beyond_sight_effects.clone();
@@ -10815,6 +11221,8 @@ pub enum Level2DynamicArenaKind {
     SpellReplacement,
     SpellPickup,
     AuthoredModel45,
+    AuthoredModel6,
+    Model6SpawnedChild,
     AuthoredClass14,
     BeyondSightPulseEffect,
     ManaAttraction,
@@ -10935,6 +11343,8 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::SpellReplacement => 9,
         Level2DynamicArenaKind::SpellPickup => 10,
         Level2DynamicArenaKind::AuthoredModel45 => 11,
+        Level2DynamicArenaKind::AuthoredModel6 => 15,
+        Level2DynamicArenaKind::Model6SpawnedChild => 16,
         Level2DynamicArenaKind::AuthoredClass14 => 13,
         Level2DynamicArenaKind::BeyondSightPulseEffect => 14,
         Level2DynamicArenaKind::ManaAttraction => 12,
@@ -11237,6 +11647,29 @@ impl Level2ResetSession {
             feature.stage_tag,
             position,
         )
+    }
+
+    /// Materialize one authored class-10/model-6 row through the pinned
+    /// `NewAdd0A06_4E5F0` constructor. The Level 2 census contains four such
+    /// rows (indices 361..=364); their mission trigger remains owned by the
+    /// aggregate authored-switch bead, while this seam performs the real
+    /// source-arena allocation and callback setup.
+    pub fn allocate_level2_authored_model6(
+        &mut self,
+        authored_index: u16,
+    ) -> Option<Level2AuthoredModel6Source> {
+        let feature = self
+            .mission
+            .authored_features()
+            .iter()
+            .copied()
+            .find(|feature| {
+                feature.index == authored_index && feature.kind == 10 && feature.subtype == 6
+            })?;
+        let position =
+            feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+        self.economy
+            .allocate_authored_model6(authored_index, position)
     }
 
     #[must_use]
@@ -12164,6 +12597,12 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::SpellPickup => self.economy.step_spell_pickup_slot(source_slot),
             Level2DynamicArenaKind::AuthoredModel45 => {
                 self.economy.step_authored_model45_slot(source_slot)
+            }
+            Level2DynamicArenaKind::AuthoredModel6 => {
+                self.economy.step_authored_model6_slot(source_slot)
+            }
+            Level2DynamicArenaKind::Model6SpawnedChild => {
+                self.economy.step_model6_spawned_child_slot(source_slot)
             }
             Level2DynamicArenaKind::AuthoredClass14 => {
                 self.economy.step_authored_class14_slot(source_slot)
@@ -22562,6 +23001,193 @@ mod tests {
         session.reset();
         assert!(session.economy().authored_class14().is_empty());
         assert_eq!(session.economy().reset_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_authored_model6_runs_source_callback_and_spawn_branch() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 authored model-6 session");
+        let baseline_hash = session.campaign_state_hash();
+
+        // The qualified census has four authored class-10/model-6 rows. The
+        // constructor payload comes from NewAdd0A06_4E5F0, not from a test
+        // fixture or a generic alias.
+        let first = session
+            .allocate_level2_authored_model6(361)
+            .expect("authored model-6 row 361");
+        let second = session
+            .allocate_level2_authored_model6(362)
+            .expect("authored model-6 row 362");
+        assert_ne!(first.source_entity_index, second.source_entity_index);
+        assert_eq!(first.entity_id, first.source_entity_index);
+        assert_eq!(
+            (
+                first.model,
+                first.action,
+                first.subspell_index,
+                first.max_life,
+                first.life,
+                first.height_offset,
+                first.dword_0x10,
+                first.particle_index,
+                first.control_flags,
+                first.shift_rot_x,
+                first.shift_rot_y,
+            ),
+            (6, 6, 50, 240, 240, 0, 0, 228, 0x0002_0000, 272, 1536)
+        );
+        let before_turn = first;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let stepped = session
+            .economy()
+            .authored_model6()
+            .iter()
+            .find(|source| source.source_entity_index == first.source_entity_index)
+            .copied()
+            .expect("model-6 source survives first callback");
+        assert_eq!(stepped.life, before_turn.life - 1);
+        assert_eq!(stepped.dword_0x10, 1);
+        assert_eq!(stepped.particle_index, before_turn.particle_index + 1);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::AuthoredModel6,
+                source_slot,
+                ..
+            } if *source_slot == first.source_entity_index
+        )));
+
+        // Drive the late-life branch until the pinned RNG `% 7` child branch
+        // fires. Resetting only the callback words keeps this a discriminating
+        // source-RNG test while avoiding a probabilistic assertion.
+        let mut child = None;
+        for _ in 0..32 {
+            if let Some(found) = session.economy().model6_spawned_children().first().copied() {
+                child = Some(found);
+                break;
+            }
+            let source = session
+                .economy_mut()
+                .authored_model6
+                .iter_mut()
+                .find(|source| source.source_entity_index == first.source_entity_index)
+                .expect("model-6 source remains live");
+            source.life = 11;
+            source.dword_0x10 = 1;
+            assert!(
+                session
+                    .economy_mut()
+                    .step_authored_model6_slot(first.source_entity_index)
+            );
+        }
+        let child = child.expect("model-6 source eventually emits subtype-14 child");
+        assert_eq!(
+            (
+                child.parent_entity_index,
+                child.parent_entity_id,
+                child.source_class,
+                child.model,
+                child.action,
+                child.max_life,
+                child.life,
+                child.actual_speed,
+                child.min_speed,
+                child.dword_0x10,
+                child.particle_index,
+                child.control_flags,
+            ),
+            (
+                first.source_entity_index,
+                first.entity_id,
+                9,
+                14,
+                15,
+                32,
+                15,
+                128,
+                128,
+                100,
+                198,
+                0,
+            )
+        );
+        assert!(
+            session
+                .economy_mut()
+                .step_model6_spawned_child_slot(child.source_entity_index)
+        );
+        let stepped_child = session
+            .economy()
+            .model6_spawned_children()
+            .iter()
+            .find(|candidate| candidate.source_entity_index == child.source_entity_index)
+            .copied()
+            .expect("spawned child remains live");
+        assert_eq!(stepped_child.actual_speed, 124);
+        assert!(stepped_child.position.z >= child.position.z);
+
+        // `sub_104D0_terrain_tile_is_water` disables drawing after the
+        // height projection. Force the live second source onto a source water
+        // tile to exercise that real branch before reclaim.
+        let water_tile = terrain_index(
+            second.position.x.to_be_bytes()[0],
+            second.position.y.to_be_bytes()[0],
+        );
+        session.economy_mut().terrain.planes.terrain_types[water_tile] = 0;
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_model6_slot(second.source_entity_index)
+        );
+        assert!(
+            !session
+                .economy()
+                .authored_model6()
+                .iter()
+                .find(|source| source.source_entity_index == second.source_entity_index)
+                .expect("water-tested model-6 source")
+                .active
+        );
+        session.economy_mut().reclaim_inactive_slots();
+        assert!(
+            session
+                .economy()
+                .authored_model6()
+                .iter()
+                .all(|source| source.source_entity_index != second.source_entity_index)
+        );
+
+        // Exhaustion is a real allocator failure, not a mocked success path.
+        let saved_free_slots = session.economy().free_slots.clone();
+        session.economy_mut().free_slots.clear();
+        let source_count = session.economy().authored_model6().len();
+        assert!(session.allocate_level2_authored_model6(363).is_none());
+        assert_eq!(session.economy().authored_model6().len(), source_count);
+        session.economy_mut().free_slots = saved_free_slots;
+
+        session
+            .economy_mut()
+            .authored_model6
+            .iter_mut()
+            .find(|source| source.source_entity_index == first.source_entity_index)
+            .expect("model-6 parent for expiry")
+            .life = -1;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .economy()
+                .authored_model6()
+                .iter()
+                .all(|source| source.source_entity_index != first.source_entity_index)
+        );
+
+        session.reset();
+        assert!(session.economy().authored_model6().is_empty());
+        assert!(session.economy().model6_spawned_children().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
     #[test]
