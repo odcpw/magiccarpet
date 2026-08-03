@@ -138,5 +138,22 @@ namespace MagicCarpet.Native.Tests
             Assert.That(session.ManaSpheres(), Has.Length.EqualTo(spheres.Length));
             Assert.That(session.ManaCarriers(), Is.Empty);
         }
+
+        [Test]
+        public void Level2CampaignShieldSnapshotBridgeIsReachableAndResetBound()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+            var state = session.ShieldState();
+            Assert.That(state.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+            Assert.That(state.structSize, Is.EqualTo(72));
+            Assert.That(state.generation, Is.EqualTo(session.Generation));
+            Assert.That(state.active, Is.EqualTo(0));
+            Assert.Throws<System.InvalidOperationException>(() => session.ActivateShield());
+
+            session.Reset();
+            var reset = session.ShieldState();
+            Assert.That(reset.generation, Is.EqualTo(session.Generation));
+            Assert.That(reset.active, Is.EqualTo(0));
+        }
     }
 }

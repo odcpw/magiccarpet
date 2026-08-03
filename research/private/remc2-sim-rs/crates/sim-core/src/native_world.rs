@@ -12135,12 +12135,10 @@ impl Level2SharedSpellResetSession {
             hasher.update([0]);
         }
         if let Some(mailbox) = self.shield_damage_mailbox {
-            hasher.update([1]);
+            hasher.update(b"shield-damage-mailbox-v1");
             hasher.update(mailbox.target_entity_index.to_le_bytes());
             hasher.update(mailbox.damage.to_le_bytes());
             hasher.update(mailbox.attacker_entity_index.to_le_bytes());
-        } else {
-            hasher.update([0]);
         }
         if let Some(invisible) = self.invisible {
             hasher.update([1]);

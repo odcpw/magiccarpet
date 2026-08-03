@@ -374,6 +374,32 @@ namespace MagicCarpet.Native
         }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignShieldSnapshot
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal byte active;
+            internal byte tier;
+            internal byte action;
+            internal byte reserved0;
+            internal ushort holderEntityIndex;
+            internal ushort parentEntityIndex;
+            internal short activeValue;
+            internal short activationValue;
+            internal short countdown;
+            internal short reserved1;
+            internal int manaCost;
+            internal int parentMana;
+            internal int parentLife;
+            internal int parentManaRegen;
+            internal uint parentStatusFlags;
+            internal int experienceAwarded;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct Command
         {
             internal uint abiVersion;
@@ -1680,6 +1706,30 @@ namespace MagicCarpet.Native
         internal static extern int mc_native_campaign_session_reset(ulong handle);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_shield_state(
+            ulong handle,
+            ulong generation,
+            out CampaignShieldSnapshot state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_shield_activate(
+            ulong handle,
+            ulong generation,
+            ushort directionMask,
+            byte helpEnabled,
+            out CampaignShieldSnapshot state,
+            uint stateSize);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_shield_damage_submit(
+            ulong handle,
+            ulong generation,
+            ushort targetEntityIndex,
+            int damage,
+            ushort attackerEntityIndex);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_session_step(
             ulong handle,
             ref CampaignStepInput input,
@@ -2215,6 +2265,7 @@ namespace MagicCarpet.Native
             RequireSize<CampaignWorldInfo>(64);
             RequireSize<CampaignPlayerSnapshot>(48);
             RequireSize<CampaignEntitySnapshot>(52);
+            RequireSize<CampaignShieldSnapshot>(72);
             RequireSize<Command>(32);
             RequireSize<CameraInput>(28);
             RequireSize<SessionSnapshot>(120);
@@ -2269,6 +2320,7 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignWorldInfo>(nameof(CampaignWorldInfo.resetStateHash), 40);
             RequireOffset<CampaignPlayerSnapshot>(nameof(CampaignPlayerSnapshot.turn), 16);
             RequireOffset<CampaignEntitySnapshot>(nameof(CampaignEntitySnapshot.reserved), 36);
+            RequireOffset<CampaignShieldSnapshot>(nameof(CampaignShieldSnapshot.parentStatusFlags), 48);
             RequireOffset<Command>(nameof(Command.requestedSpell), 14);
             RequireOffset<CameraInput>(nameof(CameraInput.lookYaw), 8);
             RequireOffset<CameraInput>(nameof(CameraInput.reserved), 12);

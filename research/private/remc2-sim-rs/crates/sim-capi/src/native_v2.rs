@@ -692,6 +692,34 @@ pub struct McCampaignEntitySnapshotV2 {
     pub reserved: [u32; 4],
 }
 
+/// Additive family-6 Shield state projection.  The row is generation-bound
+/// like the other Level 2 campaign snapshots; `active == 0` is the qualified
+/// reset/no-holder state rather than an error.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignShieldSnapshotV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub active: u8,
+    pub tier: u8,
+    pub action: u8,
+    pub reserved_0: u8,
+    pub holder_entity_index: u16,
+    pub parent_entity_index: u16,
+    pub active_value: i16,
+    pub activation_value: i16,
+    pub countdown: i16,
+    pub reserved_1: i16,
+    pub mana_cost: i32,
+    pub parent_mana: i32,
+    pub parent_life: i32,
+    pub parent_mana_regen: i32,
+    pub parent_status_flags: u32,
+    pub experience_awarded: i32,
+    pub reserved: [u32; 4],
+}
+
 /// Additive Rust-owned Level 1 Goat row. The existing 52-byte entity snapshot
 /// remains stable; presentation clients should fetch this family in one bulk
 /// call when they need gameplay and render fields beyond pose.
@@ -6956,6 +6984,127 @@ pub extern "C" fn mc_native_campaign_session_reset(handle: u64) -> i32 {
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_shield_state(
+    handle: u64,
+    generation: u64,
+    out_state: *mut McCampaignShieldSnapshotV2,
+    out_state_size: u32,
+) -> i32 {
+    boundary_value(out_state, out_state_size, || {
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign Shield state requires a Level 2 campaign session",
+                ));
+            };
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign Shield generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            Ok(campaign_shield_snapshot(
+                generation,
+                reset.shared_spells().shield_state(),
+            ))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_shield_activate(
+    handle: u64,
+    generation: u64,
+    direction_mask: u16,
+    help_enabled: u8,
+    out_state: *mut McCampaignShieldSnapshotV2,
+    out_state_size: u32,
+) -> i32 {
+    boundary_value(out_state, out_state_size, || {
+        if help_enabled > 1 {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                "campaign Shield help_enabled must be 0 or 1",
+            ));
+        }
+        with_campaign_session_mut(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign Shield activation requires a Level 2 campaign session",
+                ));
+            };
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign Shield generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            if !reset
+                .shared_spells_mut()
+                .activate_shield(direction_mask, help_enabled != 0)
+            {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign Shield holder is not active",
+                ));
+            }
+            Ok(campaign_shield_snapshot(
+                generation,
+                reset.shared_spells().shield_state(),
+            ))
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_shield_damage_submit(
+    handle: u64,
+    generation: u64,
+    target_entity_index: u16,
+    damage: i32,
+    attacker_entity_index: u16,
+) -> i32 {
+    boundary(|| {
+        with_campaign_session_mut(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &mut session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign Shield damage requires a Level 2 campaign session",
+                ));
+            };
+            if generation != session.generation {
+                return Err(AbiError::new(
+                    MC_STATUS_GENERATION_MISMATCH,
+                    format!(
+                        "campaign Shield generation {generation} does not match {}",
+                        session.generation
+                    ),
+                ));
+            }
+            if !reset.shared_spells_mut().submit_shield_damage(
+                target_entity_index,
+                damage,
+                attacker_entity_index,
+            ) {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign Shield damage mailbox rejected the hit",
+                ));
+            }
+            Ok(())
+        })
+    })
+}
+
 /// Execute one additive Level 2 outer turn.  This path deliberately owns a
 /// separate campaign handle and never enters the legacy Level 1 session
 /// dispatcher.  The candidate session is stepped on a clone first so a short
@@ -9979,6 +10128,35 @@ fn campaign_event_snapshot(
         reserved_0: 0,
         reserved: [0; 4],
     }
+}
+
+fn campaign_shield_snapshot(
+    generation: u64,
+    state: Option<sim_core::spell_activation::ShieldState>,
+) -> McCampaignShieldSnapshotV2 {
+    let mut snapshot = McCampaignShieldSnapshotV2 {
+        abi_version: MC_NATIVE_ABI_VERSION,
+        struct_size: struct_size::<McCampaignShieldSnapshotV2>(),
+        generation,
+        ..McCampaignShieldSnapshotV2::default()
+    };
+    if let Some(state) = state {
+        snapshot.active = 1;
+        snapshot.tier = state.tier;
+        snapshot.action = state.action;
+        snapshot.holder_entity_index = state.holder_entity_index;
+        snapshot.parent_entity_index = state.parent_entity_index;
+        snapshot.active_value = state.active_value;
+        snapshot.activation_value = state.activation_value;
+        snapshot.countdown = state.countdown;
+        snapshot.mana_cost = state.mana_cost;
+        snapshot.parent_mana = state.parent_mana;
+        snapshot.parent_life = state.parent_life;
+        snapshot.parent_mana_regen = state.parent_mana_regen;
+        snapshot.parent_status_flags = state.parent_status_flags;
+        snapshot.experience_awarded = state.experience_awarded;
+    }
+    snapshot
 }
 
 fn campaign_economy_event_snapshot(
@@ -15373,6 +15551,7 @@ mod tests {
         assert_eq!(size_of::<McCampaignWorldInfoV2>(), 64);
         assert_eq!(size_of::<McCampaignPlayerSnapshotV2>(), 48);
         assert_eq!(size_of::<McCampaignEntitySnapshotV2>(), 52);
+        assert_eq!(size_of::<McCampaignShieldSnapshotV2>(), 72);
         assert_eq!(size_of::<McGoatSnapshotV2>(), 84);
         assert_eq!(size_of::<McGoatBatchV2>(), 64);
         assert_eq!(size_of::<McCampaignManaBatchV2>(), 64);
@@ -15456,6 +15635,10 @@ mod tests {
         assert_eq!(
             std::mem::offset_of!(McCampaignEntitySnapshotV2, reserved),
             36
+        );
+        assert_eq!(
+            std::mem::offset_of!(McCampaignShieldSnapshotV2, parent_status_flags),
+            48
         );
         assert_eq!(std::mem::offset_of!(McGoatSnapshotV2, life), 48);
         assert_eq!(std::mem::offset_of!(McGoatSnapshotV2, reserved), 68);
@@ -16892,6 +17075,240 @@ mod tests {
     }
 
     #[test]
+    fn level2_campaign_shield_state_activation_and_damage_are_cabi_reachable() {
+        let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../generated/l2-debug3.fJ3PaM/level2");
+        let package = level2_package.to_string_lossy();
+        let selection = McCampaignSelectionV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignSelectionV2>(),
+            external_level: 2,
+            internal_level: 1,
+            map_type: 0,
+            ..McCampaignSelectionV2::default()
+        };
+        let mut handle = 0;
+        assert_eq!(
+            mc_native_campaign_session_open(
+                package.as_ptr(),
+                package.len() as u32,
+                std::ptr::null(),
+                0,
+                &raw const selection,
+                &raw mut handle,
+            ),
+            MC_STATUS_OK
+        );
+        let initial_position = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(reset.state.position)
+        })
+        .expect("read Level 2 player position");
+        let input_command = valid_command();
+        let mut input = McCampaignStepInputV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McCampaignStepInputV2>(),
+            generation: 0,
+            command: input_command,
+            player_slot: 0,
+            player_x: initial_position.x,
+            player_y: initial_position.y,
+            player_z: initial_position.z,
+            ..McCampaignStepInputV2::default()
+        };
+        let mut snapshot = McCampaignStepSnapshotV2::default();
+        let mut events = [McCampaignEventV2::default(); 1024];
+        let mut event_count = 0;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
+        let pickup_position = with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                unreachable!("campaign fixture opened as Level 2")
+            };
+            Ok(reset
+                .economy()
+                .spell_pickups()
+                .iter()
+                .find(|source| source.authored_index == 155)
+                .expect("authored family-6 source is materialized")
+                .position)
+        })
+        .expect("read authored family-6 source position");
+        input.player_x = pickup_position.x;
+        input.player_y = pickup_position.y;
+        input.player_z = pickup_position.z;
+        let mut acquired = false;
+        for _ in 0..4 {
+            event_count = 0;
+            assert_eq!(
+                mc_native_campaign_session_step(
+                    handle,
+                    &raw const input,
+                    &raw mut snapshot,
+                    struct_size::<McCampaignStepSnapshotV2>(),
+                    events.as_mut_ptr(),
+                    events.len() as u32,
+                    struct_size::<McCampaignEventV2>(),
+                    &raw mut event_count,
+                ),
+                MC_STATUS_OK
+            );
+            acquired |= events[..event_count as usize].iter().any(|event| {
+                event.kind == MC_CAMPAIGN_EVENT_SPELL_ACQUISITION
+                    && event.family == 6
+                    && event.flags == 1
+            });
+            if acquired {
+                break;
+            }
+        }
+        assert!(acquired, "C ABI exposes family-6 acquisition");
+        let mut shield = McCampaignShieldSnapshotV2::default();
+        assert_eq!(
+            mc_native_campaign_shield_state(
+                handle,
+                0,
+                &raw mut shield,
+                struct_size::<McCampaignShieldSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(shield.active, 1);
+        assert_eq!(shield.action, 18);
+        let unchanged_shield = shield;
+        assert_eq!(
+            mc_native_campaign_shield_state(
+                handle,
+                1,
+                &raw mut shield,
+                struct_size::<McCampaignShieldSnapshotV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(shield, unchanged_shield);
+        assert_eq!(
+            mc_native_campaign_shield_state(
+                handle,
+                0,
+                &raw mut shield,
+                struct_size::<McCampaignShieldSnapshotV2>() - 1,
+            ),
+            MC_STATUS_STRUCT_TOO_SMALL
+        );
+        assert_eq!(shield, unchanged_shield);
+        assert_eq!(
+            mc_native_campaign_shield_activate(
+                handle,
+                0,
+                256,
+                0,
+                &raw mut shield,
+                struct_size::<McCampaignShieldSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(shield.active_value, shield.activation_value);
+        assert_eq!(
+            mc_native_campaign_shield_activate(
+                handle,
+                1,
+                256,
+                0,
+                &raw mut shield,
+                struct_size::<McCampaignShieldSnapshotV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(
+            mc_native_campaign_shield_damage_submit(
+                handle,
+                1,
+                shield.parent_entity_index,
+                100,
+                152
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        event_count = 0;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_native_campaign_shield_state(
+                handle,
+                0,
+                &raw mut shield,
+                struct_size::<McCampaignShieldSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_ne!(
+            shield.parent_status_flags & sim_core::spell_activation::SHIELD_MANA_STATUS_BIT,
+            0
+        );
+        let life_before = shield.parent_life;
+        assert_eq!(
+            mc_native_campaign_shield_damage_submit(
+                handle,
+                0,
+                shield.parent_entity_index,
+                100,
+                152,
+            ),
+            MC_STATUS_OK
+        );
+        event_count = 0;
+        assert_eq!(
+            mc_native_campaign_session_step(
+                handle,
+                &raw const input,
+                &raw mut snapshot,
+                struct_size::<McCampaignStepSnapshotV2>(),
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            mc_native_campaign_shield_state(
+                handle,
+                0,
+                &raw mut shield,
+                struct_size::<McCampaignShieldSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(shield.parent_life, life_before - 25);
+        assert_eq!(shield.experience_awarded, 1);
+        assert_eq!(mc_native_campaign_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
     fn level2_campaign_step_projects_persistent_replacement_success_and_no_free_slot_failure() {
         let open_level2 = || {
             let level2_package = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -17682,6 +18099,7 @@ _Static_assert(offsetof(McCampaignStepSnapshotV2, dispatch_hash) == 40, "campaig
 _Static_assert(sizeof(McCampaignWorldInfoV2) == 64, "McCampaignWorldInfoV2 size");
 _Static_assert(sizeof(McCampaignPlayerSnapshotV2) == 48, "McCampaignPlayerSnapshotV2 size");
 _Static_assert(sizeof(McCampaignEntitySnapshotV2) == 52, "McCampaignEntitySnapshotV2 size");
+_Static_assert(sizeof(McCampaignShieldSnapshotV2) == 72, "McCampaignShieldSnapshotV2 size");
 _Static_assert(sizeof(McGoatSnapshotV2) == 84, "McGoatSnapshotV2 size");
 _Static_assert(sizeof(McGoatBatchV2) == 64, "McGoatBatchV2 size");
 _Static_assert(sizeof(McCampaignManaBatchV2) == 64, "McCampaignManaBatchV2 size");
@@ -17742,6 +18160,7 @@ _Static_assert(offsetof(McCampaignWorldInfoV2, reset_state_hash) == 40, "campaig
 _Static_assert(offsetof(McCampaignPlayerSnapshotV2, turn) == 16, "campaign player turn offset");
 _Static_assert(offsetof(McCampaignPlayerSnapshotV2, reserved) == 32, "campaign player reserved offset");
 _Static_assert(offsetof(McCampaignEntitySnapshotV2, reserved) == 36, "campaign entity reserved offset");
+_Static_assert(offsetof(McCampaignShieldSnapshotV2, parent_status_flags) == 48, "campaign Shield flags offset");
 _Static_assert(offsetof(McGoatSnapshotV2, life) == 48, "Goat life offset");
 _Static_assert(offsetof(McGoatSnapshotV2, reserved) == 68, "Goat reserved offset");
 _Static_assert(offsetof(McGoatBatchV2, reserved) == 48, "Goat batch reserved offset");

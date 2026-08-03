@@ -73,6 +73,46 @@ namespace MagicCarpet.Native
             return info;
         }
 
+        internal NativeSim.CampaignShieldSnapshot ShieldState()
+        {
+            var status = NativeSim.mc_native_campaign_shield_state(
+                Handle,
+                generation,
+                out var state,
+                72);
+            NativeSession.Check(status, "read Level 2 Shield state");
+            return state;
+        }
+
+        internal NativeSim.CampaignShieldSnapshot ActivateShield(
+            ushort directionMask = 256,
+            bool helpEnabled = false)
+        {
+            var status = NativeSim.mc_native_campaign_shield_activate(
+                Handle,
+                generation,
+                directionMask,
+                helpEnabled ? (byte)1 : (byte)0,
+                out var state,
+                72);
+            NativeSession.Check(status, "activate Level 2 Shield");
+            return state;
+        }
+
+        internal void SubmitShieldDamage(
+            ushort targetEntityIndex,
+            int damage,
+            ushort attackerEntityIndex)
+        {
+            var status = NativeSim.mc_native_campaign_shield_damage_submit(
+                Handle,
+                generation,
+                targetEntityIndex,
+                damage,
+                attackerEntityIndex);
+            NativeSession.Check(status, "submit Level 2 Shield damage");
+        }
+
         internal NativeSim.CampaignPlayerSnapshot[] Players()
         {
             var status = NativeSim.mc_native_campaign_player_count(
