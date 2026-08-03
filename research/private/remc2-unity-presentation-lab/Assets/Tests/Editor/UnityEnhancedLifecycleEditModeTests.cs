@@ -1191,10 +1191,19 @@ namespace MagicCarpet.PresentationLab.Tests
             Vector3 firstPosition = streakRoot.GetChild(0).localPosition;
             MeshRenderer streakRenderer = streakRoot.GetChild(0).GetComponent<MeshRenderer>();
             Assert.IsNotNull(streakRenderer);
-            Assert.That(streakRenderer.sharedMaterial.GetFloat("_GlowIntensity"),
-                Is.EqualTo(1.1f).Within(0.001f));
+            Assert.AreEqual("MagicCarpet/Enhanced/SpeedStreak",
+                streakRenderer.sharedMaterial.shader.name);
+            Assert.That(streakRenderer.sharedMaterial.GetFloat("_Intensity"),
+                Is.EqualTo(2.4f).Within(0.001f));
             Assert.That(streakRenderer.sharedMaterial.GetFloat("_Opacity"),
-                Is.EqualTo(0.26f).Within(0.001f));
+                Is.EqualTo(0.62f).Within(0.001f));
+            Mesh streakMesh = streakRoot.GetChild(0).GetComponent<MeshFilter>().sharedMesh;
+            Assert.AreEqual(8, streakMesh.vertexCount);
+            Assert.AreEqual(8, streakMesh.uv.Length);
+            Assert.Less(Mathf.Abs(streakMesh.vertices[0].x),
+                Mathf.Abs(streakMesh.vertices[2].x));
+            Assert.Less(Mathf.Abs(streakMesh.vertices[6].x),
+                Mathf.Abs(streakMesh.vertices[4].x));
             Assert.Greater(streakRoot.GetChild(0).localScale.y, 0.25f);
 
             Assert.IsTrue(root.ApplySnapshot(

@@ -502,12 +502,31 @@ namespace MagicCarpet.PresentationLab
             };
             mesh.vertices = new[]
             {
-                new Vector3(0f, -0.5f, 0f),
-                new Vector3(0.5f, 0f, 0f),
-                new Vector3(0f, 0.5f, 0f),
-                new Vector3(-0.5f, 0f, 0f)
+                // A narrow tail and head make the cue read as a ribbon of
+                // motion rather than a screen-space diamond. The material
+                // softens both the longitudinal ends and the lateral edge.
+                new Vector3(-0.06f, -0.5f, 0f),
+                new Vector3(0.06f, -0.5f, 0f),
+                new Vector3(-0.28f, -0.18f, 0f),
+                new Vector3(0.28f, -0.18f, 0f),
+                new Vector3(-0.20f, 0.24f, 0f),
+                new Vector3(0.20f, 0.24f, 0f),
+                new Vector3(-0.035f, 0.5f, 0f),
+                new Vector3(0.035f, 0.5f, 0f)
             };
-            mesh.triangles = new[] { 0, 1, 2, 0, 2, 3 };
+            mesh.uv = new[]
+            {
+                new Vector2(0f, 0f), new Vector2(1f, 0f),
+                new Vector2(0f, 0.32f), new Vector2(1f, 0.32f),
+                new Vector2(0f, 0.74f), new Vector2(1f, 0.74f),
+                new Vector2(0f, 1f), new Vector2(1f, 1f)
+            };
+            mesh.triangles = new[]
+            {
+                0, 2, 1, 1, 2, 3,
+                2, 4, 3, 3, 4, 5,
+                4, 6, 5, 5, 6, 7
+            };
             mesh.RecalculateNormals();
             mesh.RecalculateBounds();
             return mesh;
@@ -702,8 +721,12 @@ namespace MagicCarpet.PresentationLab
             Shader customImpactShader = kind == UnityEnhancedVfxKind.Impact
                 ? Shader.Find("MagicCarpet/Enhanced/Impact")
                 : null;
+            Shader customSpeedStreakShader = kind == UnityEnhancedVfxKind.SpeedTrail
+                ? Shader.Find("MagicCarpet/Enhanced/SpeedStreak")
+                : null;
             Shader customVfxShader = Shader.Find("MagicCarpet/Enhanced/Vfx");
-            Shader shader = customFireballShader ?? customImpactShader ?? customVfxShader ??
+            Shader shader = customFireballShader ?? customImpactShader ?? customSpeedStreakShader ??
+                            customVfxShader ??
                             Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
                             Shader.Find("Universal Render Pipeline/Lit") ??
                             Shader.Find("Standard");
@@ -737,6 +760,15 @@ namespace MagicCarpet.PresentationLab
                     material.SetFloat("_Opacity", 0.92f);
                     material.SetFloat("_PulseSpeed", 5.0f);
                     material.SetFloat("_RimStrength", 1.8f);
+                }
+                else if (shader == customSpeedStreakShader)
+                {
+                    material.SetColor("_StreakColor", new Color(0.18f, 0.78f, 1f, 1f));
+                    material.SetColor("_CoreColor", new Color(0.82f, 0.98f, 1f, 1f));
+                    material.SetFloat("_Intensity", 2.4f);
+                    material.SetFloat("_Opacity", 0.62f);
+                    material.SetFloat("_CoreWidth", 0.28f);
+                    material.SetFloat("_EdgeSoftness", 0.18f);
                 }
                 else if (shader == customVfxShader)
                 {
