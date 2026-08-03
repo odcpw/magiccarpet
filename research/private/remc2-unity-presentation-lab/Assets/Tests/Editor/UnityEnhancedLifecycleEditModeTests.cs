@@ -727,12 +727,22 @@ namespace MagicCarpet.PresentationLab.Tests
             MeshRenderer renderer = visual.GetComponent<MeshRenderer>();
             Assert.AreEqual("MagicCarpet/Enhanced/Fireball", renderer.sharedMaterial.shader.name);
             Assert.Greater(renderer.sharedMaterial.GetFloat("_CoreIntensity"), 3f);
-            Assert.Greater(renderer.sharedMaterial.GetFloat("_HaloIntensity"), 1f);
+            Assert.Greater(renderer.sharedMaterial.GetFloat("_HaloIntensity"), 0f);
             Assert.Less(
                 renderer.sharedMaterial.GetFloat("_CoreRadius"),
                 renderer.sharedMaterial.GetFloat("_HaloRadius"));
             Assert.Greater(renderer.sharedMaterial.GetFloat("_ShimmerStrength"), 0f);
             Assert.That(visual.localScale.x, Is.EqualTo(1.6f).Within(0.001f));
+            Transform halo = gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000820000001/EnhancedFireballHalo");
+            Assert.IsNotNull(halo);
+            MeshRenderer haloRenderer = halo.GetComponent<MeshRenderer>();
+            Assert.AreEqual("MagicCarpet/Enhanced/Fireball", haloRenderer.sharedMaterial.shader.name);
+            Assert.That(halo.localScale.x, Is.EqualTo(3.2f).Within(0.001f));
+            Assert.Greater(
+                haloRenderer.sharedMaterial.GetFloat("_HaloIntensity"),
+                renderer.sharedMaterial.GetFloat("_HaloIntensity"));
+            Assert.That(haloRenderer.sharedMaterial.GetFloat("_CoreIntensity"), Is.EqualTo(0f));
             Assert.AreEqual(1, root.NightLighting.ActiveLocalLightCount);
             Light fireballLight = gameObject.transform
                 .Find("EnhancedNightLights/EnhancedLocalLight_0")
@@ -747,6 +757,8 @@ namespace MagicCarpet.PresentationLab.Tests
             MeshRenderer impactRenderer = impactVisual.GetComponent<MeshRenderer>();
             Assert.AreEqual("MagicCarpet/Enhanced/Vfx", impactRenderer.sharedMaterial.shader.name);
             Assert.That(impactVisual.localScale.x, Is.EqualTo(1f).Within(0.001f));
+            Assert.IsNull(gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000840000002/EnhancedFireballHalo"));
 
             Object.DestroyImmediate(gameObject);
         }

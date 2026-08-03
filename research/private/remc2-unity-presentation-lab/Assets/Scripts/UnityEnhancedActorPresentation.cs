@@ -38,6 +38,9 @@ namespace MagicCarpet.PresentationLab
         public GameObject VisualObject;
         public MeshFilter Filter;
         public MeshRenderer Renderer;
+        public GameObject HaloObject;
+        public MeshFilter HaloFilter;
+        public MeshRenderer HaloRenderer;
         public int Family = -1;
         public bool FireballProjectileMaterial;
 
@@ -111,11 +114,25 @@ namespace MagicCarpet.PresentationLab
                 state.Filter.sharedMesh = GetMesh(entity.PresentationFamily);
                 state.Renderer.sharedMaterial = GetMaterial(
                     entity.PresentationFamily,
-                    fireballProjectile);
+                    fireballProjectile,
+                    false);
+            }
+
+            if (fireballProjectile)
+            {
+                EnsureFireballHalo(state);
+                state.HaloFilter.sharedMesh = GetMesh(entity.PresentationFamily);
+                state.HaloRenderer.sharedMaterial = GetMaterial(
+                    entity.PresentationFamily,
+                    true,
+                    true);
+            }
+            else if (state.HaloObject != null)
+            {
+                state.HaloObject.SetActive(false);
             }
 
             state.VisualObject.SetActive(entity.Visible);
-            state.VisualObject.transform.localRotation = Quaternion.Euler(0f, entity.FacingDegrees, 0f);
             float scale = entity.Scale <= 0f ? 1f : entity.Scale;
             if (fireballProjectile)
             {
@@ -124,9 +141,23 @@ namespace MagicCarpet.PresentationLab
             float animationOffset = IsAnimated(entity.PresentationFamily)
                 ? Mathf.Sin(entity.AnimationPhase * Mathf.PI * 2f) * 0.05f
                 : 0f;
-            state.VisualObject.transform.localPosition = new Vector3(0f, animationOffset, 0f);
+            Vector3 localPosition = new Vector3(0f, animationOffset, 0f);
+            Quaternion localRotation = Quaternion.Euler(0f, entity.FacingDegrees, 0f);
+            state.VisualObject.transform.localPosition = localPosition;
+            state.VisualObject.transform.localRotation = localRotation;
             state.VisualObject.transform.localScale = Vector3.one * scale;
+            if (fireballProjectile)
+            {
+                state.HaloObject.SetActive(entity.Visible);
+                state.HaloObject.transform.localPosition = localPosition;
+                state.HaloObject.transform.localRotation = localRotation;
+                state.HaloObject.transform.localScale = Vector3.one * (scale * 2f);
+            }
             state.Renderer.sortingOrder = entity.RenderLayer;
+            if (state.HaloRenderer != null)
+            {
+                state.HaloRenderer.sortingOrder = entity.RenderLayer;
+            }
             LastConfiguredFamily = entity.PresentationFamily;
             LastSortingOrder = entity.RenderLayer;
             if (configuredViews.Add(view))
@@ -146,6 +177,10 @@ namespace MagicCarpet.PresentationLab
             if (state != null)
             {
                 state.Release();
+                if (state.HaloObject != null)
+                {
+                    state.HaloObject.SetActive(false);
+                }
             }
 
             if (configuredViews.Remove(view))
@@ -180,9 +215,25 @@ namespace MagicCarpet.PresentationLab
             return mesh;
         }
 
-        private Material GetMaterial(int family, bool fireballProjectile)
+        private void EnsureFireballHalo(UnityEnhancedActorVisualState state)
         {
-            int materialKey = fireballProjectile ? family + 1000 : family;
+            if (state.HaloObject != null)
+            {
+                return;
+            }
+
+            state.HaloObject = new GameObject("EnhancedFireballHalo");
+            state.HaloObject.transform.SetParent(state.VisualObject.transform.parent, false);
+            state.HaloObject.hideFlags = HideFlags.DontSave;
+            state.HaloFilter = state.HaloObject.AddComponent<MeshFilter>();
+            state.HaloRenderer = state.HaloObject.AddComponent<MeshRenderer>();
+        }
+
+        private Material GetMaterial(int family, bool fireballProjectile, bool halo)
+        {
+            int materialKey = fireballProjectile
+                ? family + (halo ? 3000 : 1000)
+                : family;
             Material material;
             if (materials.TryGetValue(materialKey, out material))
             {
@@ -213,13 +264,13 @@ namespace MagicCarpet.PresentationLab
                 {
                     material.SetColor("_CoreColor", new Color(1f, 0.72f, 0.22f, 1f));
                     material.SetColor("_HaloColor", new Color(1f, 0.06f, 0.008f, 1f));
-                    material.SetFloat("_CoreIntensity", 4.2f);
-                    material.SetFloat("_HaloIntensity", 1.65f);
-                    material.SetFloat("_CoreRadius", 0.42f);
-                    material.SetFloat("_HaloRadius", 0.94f);
-                    material.SetFloat("_Opacity", 0.88f);
-                    material.SetFloat("_PulseSpeed", 2.8f);
-                    material.SetFloat("_ShimmerStrength", 0.08f);
+                    material.SetFloat("_CoreIntensity", halo ? 0f : 4.8f);
+                    material.SetFloat("_HaloIntensity", halo ? 2.2f : 0.55f);
+                    material.SetFloat("_CoreRadius", halo ? 0.08f : 0.42f);
+                    material.SetFloat("_HaloRadius", halo ? 0.98f : 0.72f);
+                    material.SetFloat("_Opacity", halo ? 0.72f : 0.92f);
+                    material.SetFloat("_PulseSpeed", halo ? 2.2f : 2.8f);
+                    material.SetFloat("_ShimmerStrength", halo ? 0.06f : 0.1f);
                 }
                 else if (fireFamily && shader.name == "MagicCarpet/Enhanced/Vfx")
                 {
