@@ -324,6 +324,10 @@ namespace MagicCarpet.Native.Tests
 
             var sawRemoval = false;
             var sawReclaim = false;
+            var sawManaSphere = false;
+            var sawDeathBurst = false;
+            uint? manaSphereOrdinal = null;
+            uint? deathBurstOrdinal = null;
             for (var turn = 0; turn < 32 && (!sawRemoval || !sawReclaim); turn++)
             {
                 var stepped = session.Step(123, 456, 7);
@@ -346,10 +350,44 @@ namespace MagicCarpet.Native.Tests
                         sawReclaim = true;
                     }
                 }
+
+                foreach (var economyEvent in session.EconomyEvents()
+                    .Where(eventRow =>
+                        (eventRow.code == NativeSim.CampaignEconomyManaSphereSpawned &&
+                            eventRow.sourceSlot == target.entityIndex &&
+                            eventRow.entity0 == target.entityIndex) ||
+                        (eventRow.code == NativeSim.CampaignEconomyDeathBurstSpawned &&
+                            eventRow.entity0 == target.entityIndex)))
+                {
+                    Assert.That(economyEvent.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
+                    Assert.That(economyEvent.structSize, Is.EqualTo(64));
+                    Assert.That(economyEvent.generation, Is.EqualTo(stepped.snapshot.generation));
+                    Assert.That(
+                        economyEvent.ordinal,
+                        Is.LessThan((uint)stepped.events.Length));
+                    Assert.That(
+                        stepped.events[(int)economyEvent.ordinal].kind,
+                        Is.EqualTo(NativeSim.CampaignEventEconomy));
+                    if (economyEvent.code == NativeSim.CampaignEconomyManaSphereSpawned)
+                    {
+                        sawManaSphere = true;
+                        manaSphereOrdinal = economyEvent.ordinal;
+                    }
+                    else if (economyEvent.code == NativeSim.CampaignEconomyDeathBurstSpawned)
+                    {
+                        sawDeathBurst = true;
+                        deathBurstOrdinal = economyEvent.ordinal;
+                    }
+                }
             }
 
             Assert.That(sawRemoval, Is.True);
             Assert.That(sawReclaim, Is.True);
+            Assert.That(sawManaSphere, Is.True);
+            Assert.That(sawDeathBurst, Is.True);
+            Assert.That(manaSphereOrdinal, Is.Not.Null);
+            Assert.That(deathBurstOrdinal, Is.Not.Null);
+            Assert.That(manaSphereOrdinal!.Value, Is.LessThan(deathBurstOrdinal!.Value));
         }
 
         [Test]
