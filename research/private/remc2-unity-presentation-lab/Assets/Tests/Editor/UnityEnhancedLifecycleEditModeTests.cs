@@ -1249,127 +1249,161 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
-        public void AuthoritativeFireballLocalLightFollowsPoseIsCappedAndHonorsQualityGates()
+        public void AuthoritativeFireballNightLightFollowsInterpolatedPoseWithoutDuplicateActorLight()
         {
-            GameObject gameObject = new GameObject("enhanced-fireball-local-light-test");
+            GameObject gameObject = new GameObject("enhanced-fireball-interpolated-light-test");
             UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
             root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
             const ulong generation = 21;
-            UnityEnhancedQualitySettings wholeHog =
+            const ulong fireballIdentity = 0x0000000020000001UL;
+            Vector3 initialPosition = new Vector3(1f, 2f, 3f);
+            Vector3 targetPosition = new Vector3(5f, 4f, 7f);
+            UnityEnhancedQualitySettings quality =
                 UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog);
-
-            UnityEnhancedEntitySnapshot[] initialEntities =
+            UnityEnhancedNightLightingDescriptor night =
+                UnityEnhancedNightLightingDescriptor.Level1Night();
+            UnityEnhancedLocalLightRequest[] initialLights =
             {
-                FireballEntity(generation, 0x0000000020000001UL, new Vector3(1f, 2f, 3f)),
-                FireballEntity(generation, 0x0000000020000002UL, new Vector3(2f, 2f, 3f)),
-                FireballEntity(generation, 0x0000000020000003UL, new Vector3(3f, 2f, 3f)),
-                FireballEntity(generation, 0x0000000020000004UL, new Vector3(4f, 2f, 3f)),
-                FireballEntity(generation, 0x0000000020000005UL, new Vector3(5f, 2f, 3f))
+                new UnityEnhancedLocalLightRequest(
+                    fireballIdentity,
+                    initialPosition,
+                    new Color(1f, 0.2f, 0.04f, 1f),
+                    5.5f,
+                    11f,
+                    2001),
+                new UnityEnhancedLocalLightRequest(
+                    0x9000000000000001UL,
+                    Vector3.one,
+                    Color.red,
+                    1f,
+                    4f,
+                    1000),
+                new UnityEnhancedLocalLightRequest(
+                    0x9000000000000002UL,
+                    Vector3.up,
+                    Color.yellow,
+                    1f,
+                    4f,
+                    999),
+                new UnityEnhancedLocalLightRequest(
+                    0x9000000000000003UL,
+                    Vector3.forward,
+                    Color.red,
+                    1f,
+                    4f,
+                    998),
+                new UnityEnhancedLocalLightRequest(
+                    0x9000000000000004UL,
+                    Vector3.right,
+                    Color.yellow,
+                    1f,
+                    4f,
+                    997),
+                new UnityEnhancedLocalLightRequest(
+                    0x9000000000000005UL,
+                    Vector3.zero,
+                    Color.red,
+                    1f,
+                    4f,
+                    996)
             };
             Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
             {
                 Generation = generation,
                 Tick = 0,
                 CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
-                Quality = wholeHog,
-                Entities = initialEntities
+                Quality = quality,
+                Entities = new[]
+                {
+                    FireballEntity(generation, fireballIdentity, initialPosition)
+                },
+                NightLighting = night,
+                LocalLights = initialLights
             }));
 
-            Assert.AreEqual(4, root.ActorPresentation.ActiveFireballLightCount);
+            Assert.AreEqual(6, root.NightLighting.ActiveLocalLightCount);
+            Assert.AreEqual(4, root.NightLighting.ShaderVisibleWarmLightCount);
+            Assert.IsNull(gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000020000001/EnhancedFireballLight"));
             Transform lightTransform = gameObject.transform.Find(
-                "EnhancedWorldObjects/EnhancedEntity_0000000020000001/EnhancedFireballLight");
+                "EnhancedNightLights/EnhancedLocalLight_0");
             Assert.IsNotNull(lightTransform);
             Light fireballLight = lightTransform.GetComponent<Light>();
             Assert.IsNotNull(fireballLight);
             Assert.IsTrue(fireballLight.enabled);
             Assert.AreEqual(LightType.Point, fireballLight.type);
-            Assert.AreEqual(LightShadows.None, fireballLight.shadows);
             Assert.That(fireballLight.color.r, Is.EqualTo(1f).Within(0.001f));
-            Assert.That(fireballLight.color.g, Is.EqualTo(0.18f).Within(0.001f));
-            Assert.That(fireballLight.color.b, Is.EqualTo(0.025f).Within(0.001f));
-            Assert.That(fireballLight.range, Is.EqualTo(6f).Within(0.001f));
-            Assert.That(fireballLight.intensity, Is.EqualTo(1.6f).Within(0.001f));
-            Assert.That(fireballLight.transform.position.x, Is.EqualTo(1f).Within(0.001f));
-            Assert.That(fireballLight.transform.position.y, Is.EqualTo(2f).Within(0.001f));
-            Assert.That(fireballLight.transform.position.z, Is.EqualTo(3f).Within(0.001f));
+            Assert.That(fireballLight.color.g, Is.EqualTo(0.2f).Within(0.001f));
+            Assert.That(fireballLight.color.b, Is.EqualTo(0.04f).Within(0.001f));
+            Assert.That(fireballLight.range, Is.EqualTo(11f).Within(0.001f));
+            Assert.That(fireballLight.intensity, Is.EqualTo(5.5f).Within(0.001f));
+            Assert.That(fireballLight.transform.position.x, Is.EqualTo(initialPosition.x).Within(0.001f));
+            Assert.That(fireballLight.transform.position.y, Is.EqualTo(initialPosition.y).Within(0.001f));
+            Assert.That(fireballLight.transform.position.z, Is.EqualTo(initialPosition.z).Within(0.001f));
+            Vector4 initialShaderPosition = Shader.GetGlobalVectorArray(
+                "_EnhancedWarmLightPositions")[0];
+            Assert.That(initialShaderPosition.x, Is.EqualTo(initialPosition.x).Within(0.001f));
+            Assert.That(initialShaderPosition.y, Is.EqualTo(initialPosition.y).Within(0.001f));
+            Assert.That(initialShaderPosition.z, Is.EqualTo(initialPosition.z).Within(0.001f));
 
-            Vector3 movedPosition = new Vector3(1.75f, 2.4f, 3.25f);
-            UnityEnhancedEntitySnapshot[] movedEntities =
-            {
-                FireballEntity(generation, 0x0000000020000001UL, movedPosition),
-                FireballEntity(generation, 0x0000000020000002UL, new Vector3(2f, 2f, 3f)),
-                FireballEntity(generation, 0x0000000020000003UL, new Vector3(3f, 2f, 3f)),
-                FireballEntity(generation, 0x0000000020000004UL, new Vector3(4f, 2f, 3f)),
-                FireballEntity(generation, 0x0000000020000005UL, new Vector3(5f, 2f, 3f))
-            };
+            UnityEnhancedLocalLightRequest[] targetLights =
+                (UnityEnhancedLocalLightRequest[])initialLights.Clone();
+            targetLights[0].Position = targetPosition;
             Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
             {
                 Generation = generation,
                 Tick = 1,
                 CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
-                Quality = wholeHog,
-                Entities = movedEntities
+                Quality = quality,
+                Entities = new[]
+                {
+                    FireballEntity(generation, fireballIdentity, targetPosition)
+                },
+                NightLighting = night,
+                LocalLights = targetLights
             }));
-            root.InterpolatePresentation(1f);
-            Assert.That(fireballLight.transform.position.x, Is.EqualTo(movedPosition.x).Within(0.001f));
-            Assert.That(fireballLight.transform.position.y, Is.EqualTo(movedPosition.y).Within(0.001f));
-            Assert.That(fireballLight.transform.position.z, Is.EqualTo(movedPosition.z).Within(0.001f));
+            root.InterpolatePresentation(0.5f);
+            Vector3 midpoint = Vector3.Lerp(initialPosition, targetPosition, 0.5f);
+            Assert.That(fireballLight.transform.position.x, Is.EqualTo(midpoint.x).Within(0.001f));
+            Assert.That(fireballLight.transform.position.y, Is.EqualTo(midpoint.y).Within(0.001f));
+            Assert.That(fireballLight.transform.position.z, Is.EqualTo(midpoint.z).Within(0.001f));
+            Vector4 midpointShaderPosition = Shader.GetGlobalVectorArray(
+                "_EnhancedWarmLightPositions")[0];
+            Assert.That(midpointShaderPosition.x, Is.EqualTo(midpoint.x).Within(0.001f));
+            Assert.That(midpointShaderPosition.y, Is.EqualTo(midpoint.y).Within(0.001f));
+            Assert.That(midpointShaderPosition.z, Is.EqualTo(midpoint.z).Within(0.001f));
 
             Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
             {
                 Generation = generation,
                 Tick = 2,
                 CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
-                Quality = wholeHog,
-                Entities = Array.Empty<UnityEnhancedEntitySnapshot>()
+                Quality = quality,
+                Entities = Array.Empty<UnityEnhancedEntitySnapshot>(),
+                NightLighting = night,
+                LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>()
             }));
-            Assert.AreEqual(0, root.ActorPresentation.ActiveFireballLightCount);
+            Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
+            Assert.AreEqual(0, root.NightLighting.ShaderVisibleWarmLightCount);
             Assert.IsFalse(fireballLight.enabled);
 
-            UnityEnhancedQualitySettings medium =
-                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.Medium);
-            const ulong qualityGeneration = 22;
             Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
             {
-                Generation = qualityGeneration,
+                Generation = generation + 1,
                 Tick = 0,
                 Reset = true,
                 CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
-                Quality = medium,
-                Entities = new[]
-                {
-                    FireballEntity(qualityGeneration, 0x0000000020000001UL, movedPosition)
-                }
+                Quality = quality,
+                Entities = Array.Empty<UnityEnhancedEntitySnapshot>(),
+                NightLighting = night,
+                LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>()
             }));
-            Assert.IsFalse(root.ActorPresentation.VolumetricEffectsEnabled);
-            Assert.AreEqual(0, root.ActorPresentation.ActiveFireballLightCount);
-            Assert.IsFalse(fireballLight.enabled);
-
-            UnityEnhancedQualitySettings reducedMotion =
-                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog);
-            reducedMotion.ReducedMotion = true;
-            reducedMotion.CameraShake = false;
-            reducedMotion.SpeedStreaks = false;
-            reducedMotion.MotionBlur = false;
-            const ulong reducedGeneration = 23;
-            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
-            {
-                Generation = reducedGeneration,
-                Tick = 0,
-                Reset = true,
-                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
-                Quality = reducedMotion,
-                Entities = new[]
-                {
-                    FireballEntity(reducedGeneration, 0x0000000020000001UL, movedPosition)
-                }
-            }));
-            Assert.IsTrue(root.ActorPresentation.VolumetricEffectsEnabled);
-            Assert.AreEqual(0, root.ActorPresentation.ActiveFireballLightCount);
+            Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
+            Assert.AreEqual(0, root.NightLighting.ShaderVisibleWarmLightCount);
             Assert.IsFalse(fireballLight.enabled);
 
             root.Close();
-            Assert.AreEqual(0, root.ActorPresentation.ActiveFireballLightCount);
+            Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
             Object.DestroyImmediate(gameObject);
         }
 

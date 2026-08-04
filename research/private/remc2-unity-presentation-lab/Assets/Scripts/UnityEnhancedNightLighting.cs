@@ -91,6 +91,7 @@ namespace MagicCarpet.PresentationLab
         private readonly HashSet<ulong> shaderRequestIdentities = new HashSet<ulong>();
         private readonly List<Light> pooledLights = new List<Light>();
         private readonly List<Light> activeLights = new List<Light>();
+        private readonly List<ulong> activeLightIdentities = new List<ulong>();
         private readonly Vector4[] shaderWarmLightPositions = new Vector4[ShaderWarmLightCap];
         private readonly Vector4[] shaderWarmLightColors = new Vector4[ShaderWarmLightCap];
         private readonly Vector4[] shaderWarmLightRanges = new Vector4[ShaderWarmLightCap];
@@ -155,6 +156,7 @@ namespace MagicCarpet.PresentationLab
                 {
                     RecycleLight(activeLights[index]);
                     activeLights.RemoveAt(index);
+                    activeLightIdentities.RemoveAt(index);
                 }
             }
         }
@@ -244,6 +246,7 @@ namespace MagicCarpet.PresentationLab
             {
                 RecycleLight(activeLights[activeLights.Count - 1]);
                 activeLights.RemoveAt(activeLights.Count - 1);
+                activeLightIdentities.RemoveAt(activeLightIdentities.Count - 1);
             }
             int accepted = acceptedStaticRequestCount;
             for (int index = 0; index < accepted; index++)
@@ -255,6 +258,7 @@ namespace MagicCarpet.PresentationLab
                 light.intensity = Mathf.Max(0f, request.Intensity);
                 light.range = Mathf.Max(0.05f, request.Range);
                 activeLights.Add(light);
+                activeLightIdentities.Add(request.StableIdentity);
             }
 
             transientRequests.Clear();
@@ -282,6 +286,7 @@ namespace MagicCarpet.PresentationLab
             {
                 RecycleLight(activeLights[activeLights.Count - 1]);
                 activeLights.RemoveAt(activeLights.Count - 1);
+                activeLightIdentities.RemoveAt(activeLightIdentities.Count - 1);
             }
         }
 
@@ -310,6 +315,48 @@ namespace MagicCarpet.PresentationLab
             }
 
             transientRequests.Sort(CompareRequests);
+            RebuildShaderWarmLightField();
+        }
+
+        /// <summary>
+        /// Moves accepted owner lights to their current interpolated entity
+        /// poses without changing authoritative light properties. The same
+        /// positions are retained for the shader warm-light field so the
+        /// pooled Light and terrain/water illumination stay co-located.
+        /// </summary>
+        public void ApplyInterpolatedLocalLightPositions(
+            IDictionary<ulong, Vector3> positions)
+        {
+            if (positions == null || positions.Count == 0)
+            {
+                return;
+            }
+
+            int boundedLights = Mathf.Min(activeLights.Count, activeLightIdentities.Count);
+            for (int index = 0; index < boundedLights; index++)
+            {
+                ulong stableIdentity = activeLightIdentities[index];
+                Vector3 position;
+                if (!positions.TryGetValue(stableIdentity, out position))
+                {
+                    continue;
+                }
+
+                activeLights[index].transform.position = position;
+                for (int requestIndex = 0; requestIndex < sortedRequests.Count; requestIndex++)
+                {
+                    if (sortedRequests[requestIndex].StableIdentity != stableIdentity)
+                    {
+                        continue;
+                    }
+
+                    UnityEnhancedLocalLightRequest request = sortedRequests[requestIndex];
+                    request.Position = position;
+                    sortedRequests[requestIndex] = request;
+                    break;
+                }
+            }
+
             RebuildShaderWarmLightField();
         }
 
@@ -445,6 +492,7 @@ namespace MagicCarpet.PresentationLab
                 light = pooledLights[last];
                 pooledLights.RemoveAt(last);
                 light.gameObject.SetActive(true);
+                light.enabled = true;
                 return light;
             }
 
@@ -464,6 +512,8 @@ namespace MagicCarpet.PresentationLab
                 return;
             }
 
+            light.enabled = false;
+            light.intensity = 0f;
             light.gameObject.SetActive(false);
             pooledLights.Add(light);
         }

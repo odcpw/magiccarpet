@@ -174,6 +174,7 @@ namespace MagicCarpet.PresentationLab
         private readonly HashSet<ulong> seenIdentities = new HashSet<ulong>();
         private readonly Dictionary<ulong, UnityEnhancedEntityPose> entityStartPoses = new Dictionary<ulong, UnityEnhancedEntityPose>();
         private readonly Dictionary<ulong, UnityEnhancedEntityPose> entityTargetPoses = new Dictionary<ulong, UnityEnhancedEntityPose>();
+        private readonly Dictionary<ulong, Vector3> interpolatedEntityPositions = new Dictionary<ulong, Vector3>();
         private readonly List<UnityEnhancedLocalLightRequest> transientWarmLightRequests = new List<UnityEnhancedLocalLightRequest>();
 
         private Transform worldObjects;
@@ -539,6 +540,7 @@ namespace MagicCarpet.PresentationLab
                     Quaternion.Slerp(startPose.Rotation, targetPose.Rotation, alpha));
             }
 
+            ApplyInterpolatedLocalLightPositions();
             cameraRig.InterpolateToTarget(alpha);
             ApplyCameraImpulse();
         }
@@ -612,6 +614,7 @@ namespace MagicCarpet.PresentationLab
             waterPresentation.ResetPresentation(nextGeneration);
             nightLighting.ResetForGeneration(nextGeneration);
             vfxPresentation.ResetForGeneration(nextGeneration);
+            interpolatedEntityPositions.Clear();
             transientWarmLightRequests.Clear();
             cameraRig.ClearLocalImpulse();
             actorPresentation.ResetForSession();
@@ -632,6 +635,26 @@ namespace MagicCarpet.PresentationLab
                     transientWarmLightRequests);
             }
             nightLighting.ApplyTransientWarmLights(transientWarmLightRequests);
+        }
+
+        private void ApplyInterpolatedLocalLightPositions()
+        {
+            if (nightLighting == null)
+            {
+                return;
+            }
+
+            interpolatedEntityPositions.Clear();
+            foreach (KeyValuePair<ulong, GameObject> pair in activeEntities)
+            {
+                if (pair.Value != null)
+                {
+                    interpolatedEntityPositions[pair.Key] = pair.Value.transform.position;
+                }
+            }
+
+            nightLighting.ApplyInterpolatedLocalLightPositions(
+                interpolatedEntityPositions);
         }
 
         private void ApplyCameraImpulse()
