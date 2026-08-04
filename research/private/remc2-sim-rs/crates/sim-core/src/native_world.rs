@@ -4685,6 +4685,10 @@ pub struct Level2AuthoredClass5Source {
     pub word_0x24: u16,
     /// Source `byte_0x3B_59`, which selects the action-220 fallback branch.
     pub byte_0x3b: u8,
+    /// Target relation `word_0x96_150` inspected by the action-25 wrapper.
+    pub word_0x96_150: u16,
+    /// Source selector `byte_0x46_70` used by the action-25 wrapper.
+    pub byte_0x46_70: u8,
     pub particle_index: u16,
     pub source_byte_3e: u8,
     pub yaw: i16,
@@ -6784,6 +6788,8 @@ impl Level2EconomyState {
             word_0x26: 0,
             word_0x24: 0,
             byte_0x3b: 0,
+            word_0x96_150: 0,
+            byte_0x46_70: 0,
             particle_index,
             source_byte_3e,
             yaw,
@@ -6826,11 +6832,11 @@ impl Level2EconomyState {
             return false;
         };
         let mut source = self.authored_class5[source_index];
-        if source.model == 3 && source.action == 25 {
+        if source.authored_index == 238 && source.model == 3 && source.action == 25 {
             // `sub_29710` calls `sub_2A6B0` before the movement callback.
             // Keep the mailbox transfer and byte-0x3B-zero fallback exact;
-            // the life/word-0x96 side effects on the byte-0x3B-nonzero branch
-            // remain outside this bounded projection.
+            // the later target scan/collision and child callbacks remain
+            // outside this bounded projection.
             let mut run_terrain_resnap = true;
             if source.pending_word_0x62 != 0 {
                 let pending = source.pending_word_0x62;
@@ -6840,6 +6846,11 @@ impl Level2EconomyState {
                     source.action = 220;
                     source.word_0x24 = pending;
                     run_terrain_resnap = false;
+                } else {
+                    // `sub_29710`'s return-1 pre-pass promotes the copied
+                    // target and refreshes life before `sub_2AF10` runs.
+                    source.word_0x96_150 = pending;
+                    source.life = 1_000_000;
                 }
             }
             // `sub_29710` reaches `sub_2AF10` for this model-3/action-25
@@ -6852,6 +6863,15 @@ impl Level2EconomyState {
             // projected into this arena record.
             if run_terrain_resnap {
                 source.position.z = self.terrain.ground_height(source.position);
+            }
+            if source.action == 25 && source.word_0x96_150 == 0 {
+                // `sub_29710`'s target wrapper treats a cleared target as
+                // lost after `sub_2AF10`: action 217, selector clear, and
+                // relation clear.  The live target scan and sprite/child
+                // callbacks remain outside this bounded projection.
+                source.action = 217;
+                source.byte_0x46_70 = 0;
+                source.word_0x96_150 = 0;
             }
         } else if source.model == 9 && source.action == 72 {
             // `sub_2AF10(a1, 1)` first advances the model-9 root, resnaps Z
@@ -12874,7 +12894,7 @@ impl Level2EconomyState {
             hasher.update(source.position.z.to_le_bytes());
             hasher.update([u8::from(source.active)]);
         }
-        hasher.update(b"authored-class5-v2");
+        hasher.update(b"authored-class5-v3");
         hasher.update([
             self.class5_model3_constructor_phase,
             self.class5_model4_constructor_phase,
@@ -12905,6 +12925,8 @@ impl Level2EconomyState {
             hasher.update(source.word_0x26.to_le_bytes());
             hasher.update(source.word_0x24.to_le_bytes());
             hasher.update([source.byte_0x3b]);
+            hasher.update(source.word_0x96_150.to_le_bytes());
+            hasher.update([source.byte_0x46_70]);
             hasher.update(source.particle_index.to_le_bytes());
             hasher.update(source.yaw.to_le_bytes());
             hasher.update(source.pitch.to_le_bytes());
@@ -30661,7 +30683,7 @@ mod tests {
                 .iter()
                 .map(|source| source.action)
                 .collect::<Vec<_>>(),
-            vec![25, 72, 72, 72, 72, 72, 72]
+            vec![217, 72, 72, 72, 72, 72, 72]
         );
         assert!(sources.iter().all(|source| source.active));
         assert!(sources.iter().all(|source| source.drawing_enabled));
@@ -30769,14 +30791,17 @@ mod tests {
             .copied()
             .expect("model-3 row 238 remains live after model-9 callbacks");
         let row238_ground = session.terrain.ground_height(row238_before.position);
-        session
+        let fragment_z = row238_ground.wrapping_add(17);
+        let row238_mut = session
             .economy_mut()
             .authored_class5
             .iter_mut()
             .find(|source| source.authored_index == 238)
-            .expect("model-3 row 238 remains mutable")
-            .position
-            .z = row238_ground.wrapping_add(17);
+            .expect("model-3 row 238 remains mutable for terrain fragment");
+        row238_mut.action = 25;
+        row238_mut.word_0x96_150 = 1;
+        row238_mut.byte_0x46_70 = 0;
+        row238_mut.position.z = fragment_z;
         session.step_outer_turn(PlayerCommand::default(), 0);
         let row238_after = session
             .economy()
@@ -30786,6 +30811,7 @@ mod tests {
             .copied()
             .expect("model-3 row 238 remains live after terrain-resnap fragment");
         assert_eq!(row238_after.phase, row238_before.phase.wrapping_add(1));
+        assert_eq!(row238_after.action, 25);
         assert_eq!(
             (row238_after.position.x, row238_after.position.y),
             (row238_before.position.x, row238_before.position.y)
@@ -30800,12 +30826,49 @@ mod tests {
             } if *source_slot == row238_after.source_entity_index
         )));
 
+        // The nonzero byte-0x3B branch must promote the pending mailbox word
+        // into the target relation before the wrapper runs.  This prevents a
+        // cleared preexisting relation from taking the action-217 fallback in
+        // place of the source's tracked-target path.
+        let handoff_target = 0x4567_u16;
+        let row238_before_handoff = row238_after;
+        let row238_mut = session
+            .economy_mut()
+            .authored_class5
+            .iter_mut()
+            .find(|source| source.authored_index == 238)
+            .expect("model-3 row 238 remains mutable for target handoff");
+        row238_mut.pending_word_0x62 = handoff_target;
+        row238_mut.byte_0x3b = 1;
+        row238_mut.word_0x96_150 = 0;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row238_after_handoff = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 238)
+            .copied()
+            .expect("model-3 row 238 remains live after target handoff");
+        assert_eq!(
+            row238_after_handoff.phase,
+            row238_before_handoff.phase.wrapping_add(1)
+        );
+        assert_eq!(row238_after_handoff.action, 25);
+        assert_eq!(row238_after_handoff.pending_word_0x62, 0);
+        assert_eq!(row238_after_handoff.word_0x26, handoff_target);
+        assert_eq!(row238_after_handoff.word_0x96_150, handoff_target);
+        assert_eq!(row238_after_handoff.life, 1_000_000);
+
+        // The preceding production activation had no target relation, so the
+        // source wrapper took its action-217 target-loss fallback.  The
+        // fragment proof above restores a nonzero relation only to isolate
+        // the terrain branch without importing the child graph.
         // Isolate the preceding `sub_2A6B0` mailbox transfer on the same
         // production row.  With byte 0x3B clear, the source selects action
         // 220, copies the pending word into both target/fallback links, and
         // clears the mailbox before returning to the cursor.
         let pending_target = 0x3456_u16;
-        let row238_before_fallback = row238_after;
+        let row238_before_fallback = row238_after_handoff;
         let fallback_z = row238_ground.wrapping_add(19);
         session
             .economy_mut()
