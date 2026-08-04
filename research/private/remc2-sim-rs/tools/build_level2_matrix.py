@@ -5,6 +5,13 @@ The Level 2 matrix is deliberately a join over the already-qualified census,
 activation closure, and dispatch/presentation ledgers.  It never reads the
 protected upstream worktree and never treats a generated fixture as behavior
 evidence.  ``--check`` is the production-path guard used by the matrix tests.
+
+Ownership is resolved by joining stable denominator IDs (and, where the
+ledger's own classification field is contradicted by the activation closure,
+activation reachability) against each *leaf* bead's own structured
+"Denominator ownership:" declaration in ``.beads/issues.jsonl``.  No row's
+family, classification, or owner is derived by scanning English behavior
+prose in a bead title.
 """
 
 from __future__ import annotations
@@ -45,6 +52,229 @@ SOURCE = {
     "cache": ("remc2/engine/Events.cpp", "3020-4047", "sub_60F00"),
     "presentation_refs": ("remc2/engine/Events.cpp", "152-3020", "GenerateEvents_49290"),
 }
+
+# ---------------------------------------------------------------------------
+# Leaf ownership join tables.
+#
+# Every open Level 2 bead's description carries a structured "Denominator
+# ownership:" line (see `.beads/issues.jsonl`).  The tables below are that
+# declared ownership translated into executable joins over the pinned
+# census/activation/denominator artifacts: explicit stable IDs where the
+# bead names them literally, and field-level joins (activation_group,
+# runtime class/model, source path/symbol, ledger classification) where the
+# bead names a computable band.  None of this depends on scanning English
+# gameplay prose in a bead title.
+#
+# A handful of assignments are coarse, single-leaf placeholders because the
+# pinned ledgers do not expose a safe, mechanical discriminator fine enough
+# to split them further (documented at each site below and in the packet's
+# closure report).  Those placeholders still satisfy "one leaf owner, never
+# a parent aggregate" even though the fine split they describe remains a
+# follow-up.
+# ---------------------------------------------------------------------------
+
+
+def _expand_id_ranges(text: str) -> list[int]:
+    """Expand '0023-0025, 0030-0031, 0043' into [23, 24, 25, 30, 31, 43]."""
+    ids: list[int] = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            ids.extend(range(int(lo), int(hi) + 1))
+        else:
+            ids.append(int(part))
+    return ids
+
+
+# AI_HELPER-NNNN ownership, transcribed verbatim from each leaf bead's
+# "Denominator ownership:" line.  Reconciles to exactly the 79 reachable
+# AI_HELPER rows in the denominator ledger (verified by
+# test_worker_ownership_is_disjoint_and_complete).
+AI_HELPER_RANGES = {
+    "mc-1g06.1": "23-25, 30-31, 43, 45-46, 52",
+    "mc-1g06.2": "68, 72-74",
+    "mc-4ipu.1": "8",
+    "mc-4ipu.2": "11",
+    "mc-4ipu.3": "12-15",
+    "mc-6dqd.1": "3, 4, 21, 22, 26-29, 53, 67",
+    "mc-6dqd.2": "0, 1, 5, 6, 32-35, 38-41, 47-49, 71",
+    "mc-app8.1": "2, 7, 9",
+    "mc-app8.2": "10, 36, 37, 42, 44, 50, 51, 62-66, 69-70, 75-78",
+    "mc-k5js.1": "16-17",
+    "mc-k5js.2": "18-20",
+    "mc-uptb.1": "54",
+    "mc-uptb.2": "55-61",
+}
+AI_HELPER_OWNER: dict[str, str] = {}
+for _bead, _text in AI_HELPER_RANGES.items():
+    for _n in _expand_id_ranges(_text):
+        AI_HELPER_OWNER[f"AI_HELPER-{_n:04d}"] = _bead
+
+# (runtime_class, model) -> leaf bead.  Shared by the reset census, the
+# CTOR-flavored tuple_denominator rows, and (for the classes it resolves)
+# the dispatch constructor/action tables -- the same pinned "class/model"
+# identity selects the same owner in every ledger that carries it.
+CLASS_MODEL_OWNER = {
+    (2, 2): "mc-oiaa.1",       # bad_stone / dolmen family (Basic.cpp)
+    (2, 3): "mc-oiaa.1",
+    (3, 0): "mc-bvihb.1",      # castle/local-wizard construction
+    (3, 1): "mc-bvihb.1",
+    (5, 1): "mc-2sbd.1",       # goat (default; slots/tuples 39/71 overridden below)
+    (5, 3): "mc-38gs.1",
+    (5, 4): "mc-38gs.3",
+    (5, 9): "mc-38gs.2",
+    (5, 13): "mc-50i6",        # villager: shared Day creature inherited from Level 1
+    (5, 14): "mc-38gs.4",
+    (10, 45): "mc-oiaa.3",     # building / vault preprocessor rows
+    (11, 0): "mc-clng",        # family 11 (Invisible)
+    (11, 4): "mc-clng",
+    (11, 32): "mc-clng",
+    (15, 0): "mc-xcgi.1.1.1",  # spell pickup / holder rows
+    (15, 1): "mc-xcgi.1.1.1",
+    (15, 3): "mc-xcgi.1.1.1",
+    (15, 12): "mc-xcgi.1.1.1",
+}
+
+# mc-2sbd.2 explicitly names these two reset slots and their CTOR tuple IDs
+# ("reset slots 39/71" / "CTOR-L2-05-001-009, CTOR-L2-05-001-011"); every
+# other goat reset slot/tuple falls back to CLASS_MODEL_OWNER's (5, 1) entry.
+GOAT_RESET_SLOT_OVERRIDE = {39: "mc-2sbd.2", 71: "mc-2sbd.2"}
+GOAT_TUPLE_ID_OVERRIDE = {"CTOR-L2-05-001-009": "mc-2sbd.2", "CTOR-L2-05-001-011": "mc-2sbd.2"}
+
+# Explicit AUT-L2 authored/tuple index overrides named by the mc-38gs.* leaf
+# beads ("authored rows AUT-L2-0164/0165/..." etc.), applied ahead of the
+# activation_group range join below.
+AUTHORED_INDEX_OVERRIDE: dict[int, str] = {}
+for _i in (164, 165, 167, 168, 169, 238):
+    AUTHORED_INDEX_OVERRIDE[_i] = "mc-38gs.1"
+for _i in (239, 240, 241, 242, 243, 245):
+    AUTHORED_INDEX_OVERRIDE[_i] = "mc-38gs.2"
+for _i in (232, 233, 234, 235):
+    AUTHORED_INDEX_OVERRIDE[_i] = "mc-38gs.3"
+for _i in range(125, 152):
+    AUTHORED_INDEX_OVERRIDE[_i] = "mc-38gs.4"
+
+
+def _activation_group_owner(group: int) -> str | None:
+    """mc-uk2k.1..4 own GROUP-L2-01..08 / 09..18 / 19..29 / 31..32 respectively
+    (mc-uk2k.4 also owns GROUP-L2-30's exclusion and all 31 producer edges).
+    activation_group == -1 marks the DisId=-1 class10/model45 preprocessor
+    rows, which belong to the building/vault owner alongside their reset
+    census counterpart."""
+    if group == -1:
+        return "mc-oiaa.3"
+    if 0 <= group <= 8:
+        return "mc-uk2k.1"
+    if 9 <= group <= 18:
+        return "mc-uk2k.2"
+    if 19 <= group <= 29:
+        return "mc-uk2k.3"
+    if group in (31, 32):
+        return "mc-uk2k.4"
+    return None  # group 30: mechanically excluded (EXC-L2-GROUP-30)
+
+
+# DSP-L2 ids whose raw dispatch-scan classification in the pinned ledger
+# ("mechanically_unreachable_level2") contradicts the activation closure:
+# each of these shares its constructor/action group_token_hex with a
+# target_classes entry the activation closure marks resolved and
+# (conditionally_)reachable, and each owning leaf bead names the id (or,
+# for the two "action bands" the packet names, the specific ids within
+# those bands that match a bead-claimed constructor's own token) directly
+# in its "Denominator ownership:" line.  These move from the mechanical
+# dispatch exclusion into row coverage; the raw ledger classification is
+# left untouched (it is a pinned, sealed artifact -- the join corrects the
+# *matrix*, not the input).
+DISPATCH_CONTRADICTION_OWNER = {
+    # Bee actions 16-19 (token 0x002A5BD0)
+    "DSP-L2-089": "mc-jmcp.1", "DSP-L2-090": "mc-jmcp.1",
+    "DSP-L2-091": "mc-jmcp.2", "DSP-L2-092": "mc-jmcp.2",
+    "DSP-L2-093": "mc-mmv3", "DSP-L2-094": "mc-mmv3",
+    "DSP-L2-095": "mc-mmv3", "DSP-L2-096": "mc-mmv3",
+    # class-5 model-3: constructor + actions 25 and 216-220 (token 0x002A5BD4)
+    "DSP-L2-312": "mc-38gs.1", "DSP-L2-098": "mc-38gs.1",
+    "DSP-L2-289": "mc-38gs.1", "DSP-L2-290": "mc-38gs.1", "DSP-L2-291": "mc-38gs.1",
+    "DSP-L2-292": "mc-38gs.1", "DSP-L2-293": "mc-38gs.1",
+    # class-5 model-4 (archer): constructor (token 0x002A5BD8)
+    "DSP-L2-313": "mc-38gs.3",
+    # class-5 model-9: constructor + action 72 (token 0x002A5BEC)
+    "DSP-L2-318": "mc-38gs.2", "DSP-L2-145": "mc-38gs.2",
+    # class-5 model-14 (trader): constructor + actions 112-119 (token 0x002A5C00)
+    "DSP-L2-323": "mc-38gs.4",
+    "DSP-L2-185": "mc-38gs.4", "DSP-L2-186": "mc-38gs.4", "DSP-L2-187": "mc-38gs.4",
+    "DSP-L2-188": "mc-38gs.4", "DSP-L2-189": "mc-38gs.4", "DSP-L2-190": "mc-38gs.4",
+    "DSP-L2-191": "mc-38gs.4", "DSP-L2-192": "mc-38gs.4",
+}
+
+# Owners for the dispatch rows the pinned ledger already classifies
+# reachable_level2/reachable_no_call (58 rows), derived from each row's
+# resolved_function/runtime_class/group_token_hex identity (see the
+# packet's closure report for the per-id join).  DSP-L2-155
+# ("the reachable action-82 dispatch row", mc-hgk9.1) is a known residual:
+# it is claimed by a leaf bead's ownership text but the ledger still
+# classifies it mechanically_unreachable_level2 and it falls outside this
+# packet's named contradiction set (DSP-L2-089..096, DSP-L2-312/313/318/323,
+# and action bands 112-130/216-232), so it is intentionally left excluded
+# here and flagged in the closure report rather than silently reclassified.
+DISPATCH_LIVE_OWNER: dict[str, str] = {}
+for _id in ("DSP-L2-011", "DSP-L2-012", "DSP-L2-013", "DSP-L2-036", "DSP-L2-014",
+            "DSP-L2-037", "DSP-L2-017", "DSP-L2-020"):
+    DISPATCH_LIVE_OWNER[_id] = "mc-oiaa.1"          # class 2: tree/statue/dolmen
+for _id in ("DSP-L2-045", "DSP-L2-058", "DSP-L2-059", "DSP-L2-044", "DSP-L2-048", "DSP-L2-049"):
+    DISPATCH_LIVE_OWNER[_id] = "mc-bvihb.1"         # class 3: player/castle
+for _id in ("DSP-L2-074", "DSP-L2-075", "DSP-L2-076", "DSP-L2-077", "DSP-L2-322", "DSP-L2-178"):
+    DISPATCH_LIVE_OWNER[_id] = "mc-50i6"            # class 5: generic/villager
+for _id in ("DSP-L2-310", "DSP-L2-082", "DSP-L2-084", "DSP-L2-086", "DSP-L2-087"):
+    DISPATCH_LIVE_OWNER[_id] = "mc-2sbd.2"          # class 5 model 1: goat actions 9-14
+for _id in ("DSP-L2-455", "DSP-L2-555"):
+    DISPATCH_LIVE_OWNER[_id] = "mc-oiaa.3"          # class 10 model 45: building
+DISPATCH_LIVE_OWNER["DSP-L2-486"] = "mc-hgk9.2"     # class 10 model 76: Fire Sphere
+for _id in ("DSP-L2-411", "DSP-L2-416", "DSP-L2-423", "DSP-L2-427", "DSP-L2-432",
+            "DSP-L2-462", "DSP-L2-464", "DSP-L2-468", "DSP-L2-469"):
+    DISPATCH_LIVE_OWNER[_id] = "mc-oiaa.2"          # class 10: misc effects
+for _id in ("DSP-L2-603", "DSP-L2-649", "DSP-L2-604", "DSP-L2-607", "DSP-L2-653",
+            "DSP-L2-615", "DSP-L2-635", "DSP-L2-681"):
+    DISPATCH_LIVE_OWNER[_id] = "mc-clng"            # class 11: family 11
+for _id in ("DSP-L2-722", "DSP-L2-724", "DSP-L2-738", "DSP-L2-818", "DSP-L2-819",
+            "DSP-L2-741", "DSP-L2-821", "DSP-L2-744", "DSP-L2-748", "DSP-L2-749",
+            "DSP-L2-750", "DSP-L2-830", "DSP-L2-775"):
+    DISPATCH_LIVE_OWNER[_id] = "mc-4ipu.1"          # class 14/15: no bead names these yet
+
+# cache family: entity_parameters/sprite_selectors match mc-oiaa.1's
+# "creature entity-parameter/sprite selectors"; particle_parameters matches
+# mc-oiaa.2's "particle/sprite selectors and effect references".
+CACHE_FAMILY_OWNER = {
+    "entity_parameters": "mc-oiaa.1",
+    "sprite_selectors": "mc-oiaa.1",
+    "particle_parameters": "mc-oiaa.2",
+}
+
+# presentation_refs family: primary join is source path, which already
+# names the owning leaf bead's file directly (mc-exzm.1's "Terrain
+# references", mc-oiaa.1's "Basic.cpp references", mc-94h7.2's music
+# lifecycle -> Sound.cpp).  GameUI.cpp is further split by the exact root
+# symbols mc-a73w.1/.2/.3 each name.  EventsFunctions.cpp (the shared
+# gameplay-dispatch file) and the handful of GameUI.cpp refs outside the
+# three named a73w roots are not mechanically separable per-owner from the
+# pinned ledger alone (no field ties an individual reference to a single
+# creature/spell family); they fall to mc-c2by.1 as a coarse placeholder,
+# flagged as a residual in the closure report.
+PRESENTATION_PATH_OWNER = {
+    "remc2/engine/Terrain.cpp": "mc-exzm.1",
+    "remc2/engine/Basic.cpp": "mc-oiaa.1",
+    "remc2/engine/Sound.cpp": "mc-94h7.2",
+    "remc2/engine/EventsFunctions.cpp": "mc-c2by.1",
+}
+PRESENTATION_GAMEUI_SYMBOL_OWNER = {
+    "DrawTopStatusBar_2D710": "mc-a73w.1",
+    "DrawCurrentObjectiveTextbox_30630": "mc-a73w.2",
+    "DrawMinimapEntities_B_61A00": "mc-a73w.3",
+    "DrawMinimapMarks_644F0": "mc-a73w.3",
+}
+PRESENTATION_GAMEUI_FALLBACK_OWNER = "mc-c2by.1"
 
 
 def load(path: Path) -> dict[str, Any]:
@@ -128,31 +358,18 @@ def empty_coverage() -> dict[str, list[str]]:
     return {family: [] for family in FAMILIES}
 
 
-def row_for(plan_id: str, title: str, family: str) -> dict[str, Any]:
-    lower = title.lower()
-    anchor_family = family
-    if family == "authored":
-        if any(word in lower for word in ("ai", "opponent", "nyphur", "castle")):
-            anchor_family = "ai_helpers"
-        elif any(word in lower for word in ("sound", "audio", "music")):
-            anchor_family = "audio"
-        elif "rng" in lower:
-            anchor_family = "rng"
-        elif any(word in lower for word in ("hud", "cache", "asset", "present", "render", "unity")):
-            anchor_family = "presentation_refs"
-        elif any(word in lower for word in ("objective", "vault", "terminal")):
-            anchor_family = "objectives"
-        elif any(word in lower for word in ("reset", "flight", "terrain", "wizard", "creature", "villager", "building", "dolmen", "goat", "bee", "spell", "damage", "death")):
-            anchor_family = "reset"
-    missing = any(word in lower for word in ("implement", "port ", "close ", "materialize", "present ", "add ", "render the exact", "reconstruct"))
-    classification = "Missing" if missing else "Unproved"
-    if any(word in lower for word in ("aggregate", "prove shared", "qualify", "reality-check", "reconcile")):
-        classification = "Unproved"
-    subsystem = "presentation" if any(word in lower for word in ("present", "cache", "sound", "music", "hud", "asset", "render")) else "gameplay"
-    if "ai" in lower or "opponent" in lower or "nyphur" in lower:
-        subsystem = "ai"
-    if "rng" in lower or "audio" in lower:
-        subsystem = "rng-audio"
+def row_for(plan_id: str, title: str, is_aggregate: bool) -> dict[str, Any]:
+    """Build a matrix row for a bead.
+
+    Classification and subsystem are derived from the bead's own structural
+    role (aggregate closure gate vs. worker-ready implementation packet, a
+    literal marker in the bead description -- see build()) rather than from
+    scanning the bead's English title for behavior keywords.  `family` and
+    `source` are finalized by build() once this plan's actual denominator
+    coverage is known, so a bead that owns e.g. both dispatch and authored
+    IDs gets a source anchor consistent with what it actually covers.
+    """
+    classification = "Unproved" if is_aggregate else "Missing"
     behavior = [
         "select external level 2 -> internal index 1 -> Day profile",
         "consume owned Level 2 records in source order",
@@ -160,18 +377,18 @@ def row_for(plan_id: str, title: str, family: str) -> dict[str, Any]:
     ]
     return {
         "id": f"ROW-{plan_id}",
-        "subsystem": subsystem,
-        "family": anchor_family,
+        "subsystem": "gameplay",  # finalized in build() once family is known
+        "family": "authored",     # finalized in build() once family is known
         "title": title,
         "reachability": {"status": "reachable", "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"},
-        "source": source_anchor(anchor_family),
+        "source": source_anchor("authored"),  # finalized in build()
         "preconditions": ["external level 2", "internal index 1", "Day map type 0", "owner English data"],
         "behavior_ordered": behavior,
         "implementation": {
             "rust": ["research/private/remc2-sim-rs"],
-            "capi": ["research/private/remc2-sim-rs/crates/sim-cabi"] if "abi" in lower or "selection" in lower else [],
-            "unity": ["research/private/remc2-unity-native"] if subsystem == "presentation" else [],
-            "absent": missing,
+            "capi": [],
+            "unity": [],
+            "absent": not is_aggregate,
         },
         "classification": classification,
         "mismatch_detail": ["Level 2 executable behavior is not yet accepted; this row remains open."] if classification != "Exact" else [],
@@ -211,20 +428,6 @@ def add(coverage: dict[str, list[str]], family: str, ids: list[str]) -> None:
     coverage[family].extend(ids)
 
 
-def first_present(plan_defs: dict[str, dict[str, Any]], *plan_ids: str) -> str:
-    """Return the current open owner for a denominator family.
-
-    The Level 2 plan is live bead data, so an aggregate bead may be closed
-    while its denominator still belongs to a newer open route/qualification
-    bead.  Keeping the fallback explicit makes that ownership transition
-    reviewable and prevents the generator from indexing a stale closed bead.
-    """
-    for plan_id in plan_ids:
-        if plan_id in plan_defs:
-            return plan_id
-    raise RuntimeError(f"no open Level 2 owner found among {plan_ids}")
-
-
 def build() -> dict[str, Any]:
     c = load(HERE / "census" / "level2-authored-reset-census.json")
     a = load(HERE / "activation" / "level2-activation-closure.json")
@@ -233,74 +436,148 @@ def build() -> dict[str, Any]:
     if not plan_defs:
         raise RuntimeError("no open Level 2 implementation beads found")
     plan_ids = list(plan_defs)
-    family_by_plan = collections.defaultdict(lambda: "authored")
-    preferred = {
-        "mc-uk2k": "activation_groups", "mc-jl5p": "reset", "mc-nr19": "objectives",
-        "mc-4ipu": "dispatch", "mc-jc4w": "tuples", "mc-e7oi": "ai_helpers",
-        "mc-yawx": "rng", "mc-45i6": "audio", "mc-94h7": "audio",
-        "mc-cfjb": "cache", "mc-sml0": "cache", "mc-ewsc": "presentation_refs",
-        "mc-a73w": "presentation_refs", "mc-oiaa": "presentation_refs",
+    is_aggregate = {
+        plan_id: "worker-ready implementation packet" not in (plan_defs[plan_id].get("description") or "")
+        for plan_id in plan_ids
     }
-    for plan_id in plan_ids:
-        family_by_plan[plan_id] = preferred.get(plan_id, family_by_plan[plan_id])
-    rows = [row_for(plan_id, plan_defs[plan_id]["title"], family_by_plan[plan_id]) for plan_id in plan_ids]
+    rows = [row_for(plan_id, plan_defs[plan_id]["title"], is_aggregate[plan_id]) for plan_id in plan_ids]
     by_plan = {row["plan_item"]: row for row in rows}
-    # These older aggregate owners are intentionally closed in the bead
-    # registry.  Their still-open denominator work is now owned by the
-    # corresponding current route/qualification beads below.
-    reset_owner = first_present(plan_defs, "mc-exzm", "mc-wv4o")
-    cache_owner = first_present(plan_defs, "mc-ewsc", "mc-xm2n")
+
+    def owner_row(plan_id: str) -> dict[str, Any]:
+        if plan_id not in by_plan:
+            raise RuntimeError(f"denominator join names {plan_id!r}, which is not an open Level 2 bead")
+        return by_plan[plan_id]
+
     exclusions: list[dict[str, Any]] = []
 
+    # -- authored ------------------------------------------------------
     authored = c["authored"]["rows"]
-    by_state = collections.defaultdict(list)
     closure = {r["index"]: r for r in a["authored_rows"]["rows"]}
+    by_state = collections.defaultdict(list)
     for row in authored:
         by_state[closure[row["index"]]["closure_state"]].append(row["id"])
-    add(by_plan["mc-uk2k"]["coverage"], "authored", by_state["reachable"] + by_state["conditionally_reachable"])
-    by_plan["mc-uk2k"]["reachability"] = {
-        "status": "conditional",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> group-zero root -> producer groups; dormant authored rows require their pinned conditional switch",
-    }
+    for row in authored:
+        idx = row["index"]
+        state = closure[idx]["closure_state"]
+        if state not in ("reachable", "conditionally_reachable"):
+            continue
+        owner = AUTHORED_INDEX_OVERRIDE.get(idx) or _activation_group_owner(closure[idx]["activation_group"])
+        if owner is None:
+            raise RuntimeError(f"authored row {row['id']} (group {closure[idx]['activation_group']}) has no owner join")
+        add(owner_row(owner)["coverage"], "authored", [row["id"]])
     exclusions.append(exclusion("EXC-L2-AUTHORED-NOCALL", "755 deliberate-no-call authored records", "dispatcher requires a nonzero type and the pinned preprocessor leaves these records null", {"authored": [r["id"] for r in authored if closure[r["index"]]["closure_state"] == "deliberate_no_call"]}, "authored"))
     exclusions.append(exclusion("EXC-L2-AUTHORED-MECHANICAL", "87 mechanically excluded authored records", "pinned activation closure proves terrain auxiliary and unrooted group-zero records cannot reach the selected mission", {"authored": [r["id"] for r in authored if closure[r["index"]]["closure_state"] == "mechanically_excluded"]}, "authored"))
 
+    # -- reset -----------------------------------------------------------
     reset = c["reset"]["slots"]
-    active = [r["id"] for r in reset if r["active"]]
+    active = [r for r in reset if r["active"]]
     inactive = [r["id"] for r in reset if not r["active"]]
-    add(by_plan[reset_owner]["coverage"], "reset", active)
+    for slot in active:
+        key = (slot["class"], slot["model"])
+        if key == (5, 1) and slot["slot"] in GOAT_RESET_SLOT_OVERRIDE:
+            owner = GOAT_RESET_SLOT_OVERRIDE[slot["slot"]]
+        else:
+            owner = CLASS_MODEL_OWNER.get(key)
+        if owner is None:
+            raise RuntimeError(f"reset slot {slot['id']} (class={slot['class']} model={slot['model']}) has no owner join")
+        add(owner_row(owner)["coverage"], "reset", [slot["id"]])
     exclusions.append(exclusion("EXC-L2-RESET-INACTIVE", "886 inactive reset slots", "reset arena active partition is mechanically 114 slots; inactive records never dispatch", {"reset": inactive}, "reset"))
 
-    rooted = [str(g) for g in a["root"]["rooted_groups"]]
-    add(by_plan["mc-uk2k"]["coverage"], "activation_groups", [f"GROUP-L2-{int(g):02d}" for g in rooted])
+    # -- activation_groups + producer_edges -------------------------------
+    rooted = [int(g) for g in a["root"]["rooted_groups"]]
+    for g in rooted:
+        owner = _activation_group_owner(g)
+        if owner is None:
+            raise RuntimeError(f"activation group {g} has no owner join")
+        add(owner_row(owner)["coverage"], "activation_groups", [f"GROUP-L2-{g:02d}"])
     exclusions.append(exclusion("EXC-L2-GROUP-30", "activation group 30", "terminal group 30 is marked mechanically_excluded with five authored rows and no dispatchable rows", {"activation_groups": ["GROUP-L2-30"]}, "activation_groups"))
-    add(by_plan["mc-uk2k"]["coverage"], "producer_edges", [e["id"] for e in a["producer_edges"]])
-    add(by_plan["mc-nr19"]["coverage"], "objectives", [o["id"] for o in a["objectives"]])
+    add(owner_row("mc-uk2k.4")["coverage"], "producer_edges", [e["id"] for e in a["producer_edges"]])
+    add(owner_row("mc-nr19.1")["coverage"], "objectives", [o["id"] for o in a["objectives"]])
 
+    # -- dispatch ----------------------------------------------------------
     dispatch = d["dispatch"]["rows"]
-    live = [r["id"] for r in dispatch if r["classification"] in {"reachable_level2", "reachable_no_call"}]
-    add(by_plan["mc-4ipu"]["coverage"], "dispatch", live)
-    excluded = [r["id"] for r in dispatch if r["id"] not in set(live)]
+    ledger_live_ids = [r["id"] for r in dispatch if r["classification"] in {"reachable_level2", "reachable_no_call"}]
+    live = set(ledger_live_ids) | set(DISPATCH_CONTRADICTION_OWNER)
+    dispatch_owner: dict[str, str] = {}
+    # Iterate the pinned dispatch.rows list (deterministic JSON order), not a
+    # set, so slot_to_row/coverage ordering is byte-stable across runs.
+    for sid in ledger_live_ids:
+        dispatch_owner[sid] = DISPATCH_LIVE_OWNER[sid]
+    for sid, owner in DISPATCH_CONTRADICTION_OWNER.items():
+        dispatch_owner[sid] = owner
+    if set(dispatch_owner) != live:
+        raise RuntimeError("dispatch ownership join does not exactly cover the live dispatch set")
+    for sid, owner in dispatch_owner.items():
+        add(owner_row(owner)["coverage"], "dispatch", [sid])
+    excluded = [r["id"] for r in dispatch if r["id"] not in live]
     exclusions.append(exclusion("EXC-L2-DISPATCH-NONROOTED", "787 non-rooted/disabled/null dispatch slots", "dispatch ledger partitions every non-live slot as null sentinel, disabled, or mechanically unreachable under Level 2", {"dispatch": excluded}, "dispatch"))
 
-    add(by_plan["mc-jc4w"]["coverage"], "tuples", [r["id"] for r in d["tuple_denominator"]["rows"]])
-    by_plan["mc-jc4w"]["reachability"] = {
-        "status": "conditional",
-        "chain": "Level 2 profile -> authored/reset join -> conditional event/reset relation; unresolved authored events remain explicitly open",
-    }
-    add(by_plan["mc-e7oi"]["coverage"], "ai_helpers", [r["id"] for r in d["ai_helper_ledger"]["rows"]])
+    # -- tuples --------------------------------------------------------
+    for row in d["tuple_denominator"]["rows"]:
+        if row["id"].startswith("CTOR-L2-"):
+            key = (row["runtime_class"], row["model"])
+            if key == (5, 1) and row["id"] in GOAT_TUPLE_ID_OVERRIDE:
+                owner = GOAT_TUPLE_ID_OVERRIDE[row["id"]]
+            else:
+                owner = CLASS_MODEL_OWNER.get(key)
+        else:
+            idx = int(row["id"].split("-")[-1])
+            owner = AUTHORED_INDEX_OVERRIDE.get(idx) or _activation_group_owner(row["activation_group"])
+        if owner is None:
+            raise RuntimeError(f"tuple row {row['id']} has no owner join")
+        add(owner_row(owner)["coverage"], "tuples", [row["id"]])
+
+    # -- ai_helpers ------------------------------------------------------
+    for row in d["ai_helper_ledger"]["rows"]:
+        owner = AI_HELPER_OWNER.get(row["id"])
+        if owner is None:
+            raise RuntimeError(f"ai helper {row['id']} has no owner join")
+        add(owner_row(owner)["coverage"], "ai_helpers", [row["id"]])
+
+    # -- rng / audio: wholly owned by the beads that build their ledgers --
     rng = d["rng"]["rows"]
-    add(by_plan["mc-yawx"]["coverage"], "rng", [r["id"] for r in rng if r["classification"] == "reachable_level2"])
+    add(owner_row("mc-yawx.1")["coverage"], "rng", [r["id"] for r in rng if r["classification"] == "reachable_level2"])
     exclusions.append(exclusion("EXC-L2-RNG-NONROOTED", "414 non-rooted RNG occurrences", "RNG ledger marks each occurrence outside the rooted Level 2 helper closure mechanically unreachable", {"rng": [r["id"] for r in rng if r["classification"] != "reachable_level2"]}, "rng"))
     audio = d["audio"]["rows"]
-    add(by_plan["mc-yawx"]["coverage"], "audio", [r["id"] for r in audio if r["classification"] == "reachable_level2"])
+    add(owner_row("mc-yawx.2")["coverage"], "audio", [r["id"] for r in audio if r["classification"] == "reachable_level2"])
     exclusions.append(exclusion("EXC-L2-AUDIO-NONROOTED", "93 non-rooted audio calls", "audio ledger classifies the occurrence outside the rooted Level 2 source closure", {"audio": [r["id"] for r in audio if r["classification"] != "reachable_level2"]}, "audio"))
+
+    # -- cache -----------------------------------------------------------
     cache = d["presentation"]["cache_rows"]
-    add(by_plan[cache_owner]["coverage"], "cache", [r["id"] for r in cache if r["classification"] == "reachable_level2"])
+    for row in cache:
+        if row["classification"] != "reachable_level2":
+            continue
+        owner = CACHE_FAMILY_OWNER.get(row["family"])
+        if owner is None:
+            raise RuntimeError(f"cache row {row['id']} family {row['family']!r} has no owner join")
+        add(owner_row(owner)["coverage"], "cache", [row["id"]])
     exclusions.append(exclusion("EXC-L2-CACHE-NONROOTED", "967 presentation cache records", "cache rows without a Level 2 reset relation are mechanically unreachable", {"cache": [r["id"] for r in cache if r["classification"] != "reachable_level2"]}, "cache"))
+
+    # -- presentation_refs -------------------------------------------------
     refs = d["presentation"]["source_references"]
-    add(by_plan["mc-ewsc"]["coverage"], "presentation_refs", [r["id"] for r in refs if r["classification"] == "reachable_level2"])
+    for row in refs:
+        if row["classification"] != "reachable_level2":
+            continue
+        if row["path"] == "remc2/engine/GameUI.cpp":
+            owner = PRESENTATION_GAMEUI_SYMBOL_OWNER.get(row["enclosing_symbol"], PRESENTATION_GAMEUI_FALLBACK_OWNER)
+        else:
+            owner = PRESENTATION_PATH_OWNER.get(row["path"])
+        if owner is None:
+            raise RuntimeError(f"presentation reference {row['id']} path {row['path']!r} has no owner join")
+        add(owner_row(owner)["coverage"], "presentation_refs", [row["id"]])
     exclusions.append(exclusion("EXC-L2-PRESENTATION-NONROOTED", "818 source presentation references", "source references outside the Level 2 presentation root closure are mechanically unreachable", {"presentation_refs": [r["id"] for r in refs if r["classification"] != "reachable_level2"]}, "presentation_refs"))
+
+    # -- finalize family/subsystem/source now that coverage is known -------
+    subsystem_for_family = {
+        "ai_helpers": "ai",
+        "rng": "rng-audio", "audio": "rng-audio",
+        "cache": "presentation", "presentation_refs": "presentation",
+    }
+    for row in rows:
+        anchor_family = next((f for f in FAMILIES if row["coverage"][f]), "authored")
+        row["family"] = anchor_family
+        row["subsystem"] = subsystem_for_family.get(anchor_family, "gameplay")
+        row["source"] = source_anchor(anchor_family)
 
     # Generic authored/dispatch fields remain an exact partition of the rows
     # that are candidates for implementation; the full 1,200/845 denominator is
@@ -311,14 +588,13 @@ def build() -> dict[str, Any]:
     for row in authored_rows:
         row["authored_indices"] = row_coverage[row["id"]]
     dispatch_ids = [r["id"] for r in dispatch]
-    dispatch_row = by_plan["mc-4ipu"]["id"]
     dispatch_ex = next(e["id"] for e in exclusions if e["id"] == "EXC-L2-DISPATCH-NONROOTED")
     dispatch_census = {
         "source": "denominator/level2-dispatch-rng-audio-presentation.json dispatch.rows",
         "slot_id_format": "DSP-L2-000..DSP-L2-844",
         "slot_count": len(dispatch_ids),
         "slots": dispatch_ids,
-        "slot_to_row": {sid: [dispatch_row] for sid in live},
+        "slot_to_row": {sid: [owner_row(owner)["id"]] for sid, owner in dispatch_owner.items()},
         "slot_to_exclusion": {sid: dispatch_ex for sid in excluded},
         "partition_proof": {"included_slots": len(live), "excluded_slots": len(excluded), "disjoint": True, "union_equals_slot_set": True},
     }
@@ -347,7 +623,7 @@ def build() -> dict[str, Any]:
     return {
         "schema": descriptor_schema(),
         "meta": {
-            "generated": "2026-08-02",
+            "generated": "2026-08-04",
             "remc2_commit": COMMIT,
             "upstream_checkout": "upstream/magic-carpet-2-hd (protected dirty worktree; anchors read with git show)",
             "owner_package": "research/private/generated/l2-debug3.fJ3PaM/level2 + mc2-l2-native2 (qualified Level 2 Day exports)",
