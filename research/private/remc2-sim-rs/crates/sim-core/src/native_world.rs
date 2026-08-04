@@ -39881,6 +39881,47 @@ mod tests {
     }
 
     #[test]
+    fn level_two_goat_action10_clears_stale_obstruction_marker_on_same_tile_production_path() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Goat obstruction-marker session");
+        let baseline_goat_hash = session.goat_hash();
+        let mut primary = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .cloned()
+            .expect("authored Goat slot 39");
+        let original_position = primary.position;
+        primary.action = 10;
+        // Avoid action-10's cadence-gated acquisition; this slice isolates
+        // `sub_1B8C0`'s direct same-tile movement cleanup.
+        primary.phase = 1;
+        primary.actual_speed = 0;
+        primary.proximity_countdown = 0;
+        primary.target_entity_index = None;
+        primary.partner_entity_index = None;
+        primary.control_flags |= 0x0004_0000;
+        assert!(session.goats.replace_goat_for_test(primary));
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let goat = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .expect("stepped Goat slot 39");
+        assert_eq!(goat.control_flags & 0x0004_0000, 0);
+        assert_eq!(goat.position.x, original_position.x);
+        assert_eq!(goat.position.y, original_position.y);
+        assert_eq!(goat.action, 10);
+
+        session.reset();
+        assert_eq!(session.goat_hash(), baseline_goat_hash);
+    }
+
+    #[test]
     fn level_two_goat_dispatch_falls_back_to_peer_when_all_live_players_are_ineligible() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");

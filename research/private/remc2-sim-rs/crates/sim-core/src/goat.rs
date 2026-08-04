@@ -1434,7 +1434,7 @@ impl GoatFamily {
         let original = self.goats[family_index].position;
         let original_yaw = self.goats[family_index].yaw;
         let headings = source_retry_headings(original_yaw);
-        for heading in headings {
+        for (attempt, heading) in headings.into_iter().enumerate() {
             let mut candidate = original;
             relax_to_terrain(
                 &mut candidate,
@@ -1475,6 +1475,13 @@ impl GoatFamily {
             goat.yaw =
                 heading.wrapping_add(turn_toward(heading, goat.roll, self.config.turn_clamp))
                     & 0x07ff;
+            if attempt == 0 {
+                // `sub_1B8C0` clears the obstruction marker after either
+                // kind of first-attempt success. A later retry after a
+                // blocked first probe retains the bit, even if that retry
+                // stays within the original tile.
+                goat.control_flags &= !0x0004_0000;
+            }
             return;
         }
 
@@ -2522,6 +2529,50 @@ mod tests {
             } else {
                 4
             }
+        }
+
+        fn angle_flags(&self, _tile: Tile) -> u8 {
+            0
+        }
+    }
+
+    struct OpenWorld;
+
+    impl FlightWorld for OpenWorld {
+        fn ground_height(&self, _position: Position) -> i16 {
+            0
+        }
+
+        fn ceiling_height(&self, _position: Position) -> Option<i16> {
+            None
+        }
+
+        fn material_mask(&self, _position: Position) -> u32 {
+            4
+        }
+
+        fn angle_flags(&self, _tile: Tile) -> u8 {
+            0
+        }
+    }
+
+    struct FirstCrossingBlockedWorld {
+        material_calls: Cell<u8>,
+    }
+
+    impl FlightWorld for FirstCrossingBlockedWorld {
+        fn ground_height(&self, _position: Position) -> i16 {
+            0
+        }
+
+        fn ceiling_height(&self, _position: Position) -> Option<i16> {
+            None
+        }
+
+        fn material_mask(&self, _position: Position) -> u32 {
+            let call = self.material_calls.get();
+            self.material_calls.set(call.saturating_add(1));
+            if call == 0 { 1 } else { 4 }
         }
 
         fn angle_flags(&self, _tile: Tile) -> u8 {
@@ -4378,6 +4429,60 @@ mod tests {
     }
 
     #[test]
+    fn action11_first_tile_crossing_success_clears_obstruction_marker() {
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        let goat = &mut family.goats[primary_index];
+        goat.position = Position {
+            x: 255,
+            y: 1_000,
+            z: 0,
+        };
+        goat.yaw = 512;
+        goat.actual_speed = 1;
+        goat.control_flags |= 0x0004_0000;
+
+        family.move_action11_source(primary_index, &OpenWorld);
+
+        let goat = &family.goats[primary_index];
+        assert_eq!(source_tile(goat.position).0, 1);
+        assert_eq!(goat.control_flags & 0x0004_0000, 0);
+    }
+
+    #[test]
+    fn action11_same_tile_retry_after_blocked_first_probe_retains_marker() {
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        let goat = &mut family.goats[primary_index];
+        goat.position = Position {
+            x: 255,
+            y: 1_000,
+            z: 0,
+        };
+        goat.yaw = 512;
+        goat.actual_speed = 1;
+        goat.control_flags |= 0x0004_0000;
+        let world = FirstCrossingBlockedWorld {
+            material_calls: Cell::new(0),
+        };
+
+        family.move_action11_source(primary_index, &world);
+
+        let goat = &family.goats[primary_index];
+        assert_eq!(world.material_calls.get(), 1);
+        assert_eq!(source_tile(goat.position).0, 0);
+        assert_ne!(goat.control_flags & 0x0004_0000, 0);
+    }
+
+    #[test]
     fn action11_rejects_cave_angle_bit_eight_candidates() {
         let mut family = level_two_family();
         let primary_index = family
@@ -4428,6 +4533,11 @@ mod tests {
             family.goats[primary_index].yaw,
             source_retry_headings(0)[0],
             "the first heading must be rejected before the retry path accepts"
+        );
+        assert_ne!(
+            family.goats[primary_index].control_flags & 0x0004_0000,
+            0,
+            "a retry after the blocked first probe retains the obstruction marker"
         );
     }
 
