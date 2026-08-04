@@ -6813,7 +6813,16 @@ impl Level2EconomyState {
             return false;
         };
         let mut source = self.authored_class5[source_index];
-        if source.model == 9 && source.action == 72 {
+        if source.model == 3 && source.action == 25 {
+            // `sub_29710` reaches `sub_2AF10` for this model-3/action-25
+            // family.  This bounded projection retains the callback's
+            // unconditional terrain resnap even when movement is disabled.
+            // Its `sub_2A6B0` pre-pass, action 216/217 transitions, target
+            // selection, collision turns, and deferred child chain remain
+            // explicit creature-family residuals until their source state is
+            // projected into this arena record.
+            source.position.z = self.terrain.ground_height(source.position);
+        } else if source.model == 9 && source.action == 72 {
             // `sub_2AF10(a1, 1)` first advances the model-9 root, resnaps Z
             // to terrain, and then lets `sub_29A90` settle its linked rows.
             // The qualified Level 2 source seam has no imported collision
@@ -30709,6 +30718,52 @@ mod tests {
             row245_before.position.y >> 8,
             "free branch must commit a cross-tile model-9 movement"
         );
+
+        // Row 238 is the model-3/action-25 root.  This bounded fragment of
+        // its `sub_29710` callback is not a phase-only no-op:
+        // `sub_2AF10(a1, 0)` re-snaps the root to terrain even when movement
+        // is disabled.  Tamper only the live source height, then exercise the
+        // ordinary outer cursor and require the source-backed correction plus
+        // the typed dispatch event.  Action transitions and creature target
+        // behavior remain outside this slice.
+        let row238_before = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 238)
+            .copied()
+            .expect("model-3 row 238 remains live after model-9 callbacks");
+        let row238_ground = session.terrain.ground_height(row238_before.position);
+        session
+            .economy_mut()
+            .authored_class5
+            .iter_mut()
+            .find(|source| source.authored_index == 238)
+            .expect("model-3 row 238 remains mutable")
+            .position
+            .z = row238_ground.wrapping_add(17);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row238_after = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 238)
+            .copied()
+            .expect("model-3 row 238 remains live after terrain-resnap fragment");
+        assert_eq!(row238_after.phase, row238_before.phase.wrapping_add(1));
+        assert_eq!(
+            (row238_after.position.x, row238_after.position.y),
+            (row238_before.position.x, row238_before.position.y)
+        );
+        assert_eq!(row238_after.position.z, row238_ground);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                source_slot,
+                kind: Level2DynamicArenaKind::AuthoredClass5,
+                ..
+            } if *source_slot == row238_after.source_entity_index
+        )));
 
         session.reset();
         assert!(session.economy().authored_class5().is_empty());
