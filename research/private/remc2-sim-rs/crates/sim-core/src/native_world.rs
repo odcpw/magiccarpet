@@ -35562,6 +35562,63 @@ mod tests {
             group7_activated,
             "row 84 must activate group 7 in production"
         );
+        // The same rooted row-84 stage tag also reaches the authored
+        // class-10/model-54 field at row 105 through the source
+        // `sub_4A1E0` scan. Keep it as a separate activation event: it is
+        // not one of the model-39 sphere rows in the group-7 constructor
+        // batch. This proves the source-backed field is live on the real
+        // row-11 -> row-65 -> row-84 route rather than only through the
+        // direct allocation helper.
+        let row105 = session
+            .economy()
+            .mana_attraction_fields()
+            .iter()
+            .find(|field| field.authored_index == 105)
+            .copied()
+            .expect("group 7 must reach authored row 105 model-54 field");
+        let authored_row105 = feature_position(105);
+        let row105_feature = authored_features
+            .iter()
+            .copied()
+            .find(|feature| feature.index == 105)
+            .expect("authored row 105 feature");
+        assert_eq!(
+            (
+                row105_feature.kind,
+                row105_feature.subtype,
+                row105_feature.activation_group,
+                row105_feature.stage_tag,
+            ),
+            (10, 54, 7, 31)
+        );
+        assert_eq!(row105.action, MANA_ATTRACTION_ACTION);
+        assert_eq!(row105.radius_squared, (31_u32 * 256).pow(2));
+        assert_eq!(row105.max_life, 264);
+        assert_eq!(
+            (row105.position.x, row105.position.y, row105.position.z),
+            (
+                authored_row105.x,
+                authored_row105.y,
+                session.terrain.ground_height(authored_row105)
+            )
+        );
+        assert!(row105.active);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 7,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [105]
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                source_slot,
+                kind: Level2DynamicArenaKind::ManaAttraction,
+                ..
+            } if *source_slot == row105.source_entity_index
+        )));
         assert!(
             group5_activated,
             "row 65 must activate group 5 in production"
