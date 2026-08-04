@@ -12,6 +12,7 @@ namespace MagicCarpet.PresentationLab
     {
         private ClassicHdR8Surface surface;
         private byte[] frameBytes;
+        private GameObject canvasRoot;
         private Canvas canvas;
         private Image letterbox;
         private RawImage display;
@@ -641,8 +642,15 @@ namespace MagicCarpet.PresentationLab
             }
         }
 
+        private void OnDisable()
+        {
+            ReleaseDisplayObjects();
+        }
+
         private void OnDestroy()
         {
+            ReleaseDisplayObjects();
+
             if (surface != null)
             {
                 surface.Dispose();
@@ -660,6 +668,23 @@ namespace MagicCarpet.PresentationLab
                 ownerSession.Dispose();
                 ownerSession = null;
             }
+
+            IsConfigured = false;
+            StatusLine = string.Empty;
+        }
+
+        private void ReleaseDisplayObjects()
+        {
+            GameObject root = canvasRoot;
+            canvasRoot = null;
+            if (root != null)
+            {
+                DestroyImmediate(root);
+            }
+
+            canvas = null;
+            letterbox = null;
+            display = null;
         }
 
         private static ulong InputHash(float horizontal, float vertical)
@@ -682,7 +707,7 @@ namespace MagicCarpet.PresentationLab
             if (canvas == null)
             {
                 GameObject canvasObject = new GameObject("Classic HD Display Canvas");
-                canvasObject.transform.SetParent(transform, false);
+                canvasRoot = canvasObject;
                 canvas = canvasObject.AddComponent<Canvas>();
                 canvas.renderMode = RenderMode.ScreenSpaceOverlay;
                 canvas.sortingOrder = -100;

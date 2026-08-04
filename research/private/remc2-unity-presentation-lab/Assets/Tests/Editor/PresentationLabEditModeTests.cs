@@ -1,5 +1,6 @@
 #if UNITY_EDITOR
 using System.IO;
+using System.Reflection;
 using NUnit.Framework;
 using UnityEngine;
 using MagicCarpet.PresentationLab.Editor;
@@ -171,6 +172,29 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsFalse(presentation.IsApplicationSuspended);
             Assert.AreEqual(3, presentation.ApplicationLifecycleTransitions);
 
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void ClassicHdDisplayCanvasIsTopLevelAndOwnedByPresentationCleanup()
+        {
+            GameObject gameObject = new GameObject("classic-hd-display-canvas-test");
+            ClassicHdPresentation presentation = gameObject.AddComponent<ClassicHdPresentation>();
+            string reason;
+            Assert.IsTrue(presentation.Configure(ClassicHdPresentationSettings.Default(), out reason), reason);
+
+            GameObject canvasObject = GameObject.Find("Classic HD Display Canvas");
+            Assert.IsNotNull(canvasObject);
+            Assert.IsNull(canvasObject.transform.parent);
+            Assert.IsNull(gameObject.transform.Find("Classic HD Display Canvas"));
+
+            MethodInfo releaseDisplayObjects = typeof(ClassicHdPresentation).GetMethod(
+                "ReleaseDisplayObjects",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(releaseDisplayObjects);
+            releaseDisplayObjects.Invoke(presentation, null);
+            Object.DestroyImmediate(presentation);
+            Assert.IsTrue(canvasObject == null);
             Object.DestroyImmediate(gameObject);
         }
 
