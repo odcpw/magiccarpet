@@ -127,6 +127,7 @@ namespace MagicCarpet.PresentationLab.Editor
                     }
 
                     enhanced.InterpolatePresentation(1f);
+                    presentationCamera.Render();
                     UnityEnhancedEntitySnapshot[] entities = snapshot.Entities;
                     if (entities == null)
                     {
@@ -349,7 +350,8 @@ namespace MagicCarpet.PresentationLab.Editor
                 meshFilter.sharedMesh.vertexCount == 0 ||
                 meshRenderer == null ||
                 !meshRenderer.enabled ||
-                !meshRenderer.gameObject.activeInHierarchy)
+                !meshRenderer.gameObject.activeInHierarchy ||
+                !meshRenderer.isVisible)
             {
                 return false;
             }
