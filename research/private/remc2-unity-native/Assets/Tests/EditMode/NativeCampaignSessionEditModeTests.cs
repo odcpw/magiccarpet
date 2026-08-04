@@ -360,6 +360,38 @@ namespace MagicCarpet.Native.Tests
         }
 
         [Test]
+        public void Level2CampaignAction9GoatDamageUsesManagedSourceTransition()
+        {
+            using var session = NativeCampaignSession.OpenLevel2(Level2Package);
+
+            var before = session.Goats().Single(goat => goat.entityIndex == 40);
+            Assert.That(before.action, Is.EqualTo(9));
+            Assert.That(before.pendingDamage, Is.Zero);
+
+            session.SubmitGoatDamage(before.entityIndex, 100, 152);
+            var queued = session.Goats().Single(goat => goat.entityIndex == before.entityIndex);
+            Assert.That(queued.pendingDamage, Is.EqualTo(100));
+
+            var stepped = session.Step(123, 456, 7);
+            var after = session.Goats().Single(goat => goat.entityIndex == before.entityIndex);
+            Assert.That(after.pendingDamage, Is.Zero);
+            Assert.That(after.life, Is.EqualTo(before.life - 100));
+            Assert.That(after.action, Is.EqualTo(14));
+            Assert.That(after.targetEntityIndex, Is.EqualTo(152));
+            Assert.That(
+                stepped.events.Any(eventRow =>
+                    eventRow.kind == NativeSim.CampaignEventGoat &&
+                    eventRow.sourceSlot == before.entityIndex),
+                Is.True);
+
+            session.Reset();
+            var reset = session.Goats().Single(goat => goat.entityIndex == before.entityIndex);
+            Assert.That(reset.action, Is.EqualTo(9));
+            Assert.That(reset.pendingDamage, Is.Zero);
+            Assert.That(reset.life, Is.EqualTo(before.life));
+        }
+
+        [Test]
         public void Level2CampaignGoatSidecarsReachManagedProductionPath()
         {
             using var session = NativeCampaignSession.OpenLevel2(Level2Package);
