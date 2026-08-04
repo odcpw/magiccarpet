@@ -18941,6 +18941,31 @@ mod tests {
             MC_STATUS_OK
         );
         assert_eq!(reset_info.reset_state_hash, initial_info.reset_state_hash);
+        let mut reset_goats = [McCampaignGoatSnapshotV2::default(); 36];
+        let mut reset_goat_batch = McGoatBatchV2::default();
+        assert_eq!(
+            mc_native_campaign_goats_copy(
+                handle,
+                1,
+                0,
+                reset_goats.as_mut_ptr(),
+                reset_goats.len() as u32,
+                struct_size::<McCampaignGoatSnapshotV2>(),
+                &raw mut reset_goat_batch,
+                struct_size::<McGoatBatchV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(reset_goats, initial_goats);
+        assert_eq!(reset_goat_batch.generation, 1);
+        assert_eq!(reset_goat_batch.tick, 0);
+        assert_eq!(
+            reset_goat_batch.live_world_hash, reset_info.reset_state_hash,
+            "reset batch hash must match the reset world hash"
+        );
+        assert_eq!(reset_goat_batch.written, 36);
+        assert_eq!(reset_goat_batch.total_count, 36);
+        assert_eq!(reset_goat_batch.has_more, 0);
         let mut stale_goat_batch = McGoatBatchV2::default();
         assert_eq!(
             mc_native_campaign_goats_copy(

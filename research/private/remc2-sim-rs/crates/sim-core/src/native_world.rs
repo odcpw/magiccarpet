@@ -36231,6 +36231,8 @@ mod tests {
             assert_eq!(goat.partner_entity_index, Some(66));
         }
         let baseline_hash = first.goat_hash();
+        let baseline_rows = first.goats().to_vec();
+        assert_eq!(first.goat_outer_tick(), 0);
         let baseline_phase = first
             .goats()
             .iter()
@@ -36294,11 +36296,37 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(first_slots.windows(2).all(|window| window[0] < window[1]));
 
+        // Capture the complete 36-row production result.  Hash equality alone
+        // could miss a compensating row swap, so replay compares every typed
+        // Goat field as well as the source tick and composite family hash.
+        let stepped_rows = first.goats().to_vec();
+        let stepped_hash = first.goat_hash();
+        let stepped_tick = first.goat_outer_tick();
+        assert_eq!(stepped_rows, second.goats().to_vec());
+        assert_eq!(stepped_hash, second.goat_hash());
+        assert_eq!(stepped_tick, second.goat_outer_tick());
+        assert_eq!(stepped_tick, 1);
+
         first.reset();
-        assert_eq!(first.goat_hash(), baseline_hash);
         second.reset();
-        assert_eq!(first.goats(), second.goats());
+        assert_eq!(first.goats(), baseline_rows.as_slice());
+        assert_eq!(second.goats(), baseline_rows.as_slice());
+        assert_eq!(first.goat_hash(), baseline_hash);
+        assert_eq!(second.goat_hash(), baseline_hash);
+        assert_eq!(first.goat_outer_tick(), 0);
+        assert_eq!(second.goat_outer_tick(), 0);
         assert!(first.dispatch_events().is_empty());
+
+        // An identical idle step after reset must reproduce the original
+        // rows, hash, and tick—not merely the same event count.
+        first.step_outer_turn(PlayerCommand::default(), 0);
+        second.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(first.goats(), stepped_rows.as_slice());
+        assert_eq!(second.goats(), stepped_rows.as_slice());
+        assert_eq!(first.goat_hash(), stepped_hash);
+        assert_eq!(second.goat_hash(), stepped_hash);
+        assert_eq!(first.goat_outer_tick(), stepped_tick);
+        assert_eq!(second.goat_outer_tick(), stepped_tick);
     }
 
     #[test]
