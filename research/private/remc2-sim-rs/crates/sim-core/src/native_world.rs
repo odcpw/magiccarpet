@@ -40630,6 +40630,104 @@ mod tests {
     }
 
     #[test]
+    fn level_two_goat_action14_production_distinguishes_ordinary_and_direct_hit_tails() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 owner package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 action-14 tail session");
+        let local_player_index = session.state.entity_index;
+        let initial_position = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .expect("authored Goat slot 39")
+            .position;
+        session.state.position = initial_position;
+        session.entities[usize::from(local_player_index)].position = initial_position;
+
+        let mut ordinary = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .cloned()
+            .expect("authored Goat slot 39");
+        ordinary.action = 14;
+        ordinary.phase = 1;
+        ordinary.rng = 129;
+        ordinary.actual_speed = 0;
+        ordinary.target_entity_index = Some(local_player_index);
+        assert!(session.goats.replace_goat_for_test(ordinary));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let ordinary_after = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .expect("ordinary action-14 Goat");
+        assert_eq!(ordinary_after.action, 14);
+        assert_eq!(ordinary_after.rng, 39_424);
+        assert_eq!(ordinary_after.actual_speed, ordinary_after.minimum_speed);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Goat {
+                source_slot: 39,
+                events,
+                ..
+            } if events.iter().any(|event| matches!(
+                event,
+                GoatStepEvent::Bleat {
+                    entity_index: 39,
+                    sound_id: 46,
+                    action: 14,
+                    ..
+                }
+            ))
+        )));
+
+        session.reset();
+        session.state.position = initial_position;
+        session.entities[usize::from(local_player_index)].position = initial_position;
+        let mut direct_hit = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .cloned()
+            .expect("authored Goat slot 39 after reset");
+        direct_hit.action = 14;
+        direct_hit.phase = 1;
+        direct_hit.rng = 62;
+        direct_hit.target_entity_index = Some(local_player_index);
+        assert!(session.goats.replace_goat_for_test(direct_hit));
+        session
+            .submit_goat_damage(39, 1, local_player_index)
+            .expect("direct action-14 Goat hit");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let hit_after = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .expect("direct-hit action-14 Goat");
+        assert_eq!(hit_after.action, 14);
+        assert_eq!(hit_after.rng, 989);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Goat {
+                source_slot: 39,
+                events,
+                ..
+            } if events.iter().any(|event| matches!(
+                event,
+                GoatStepEvent::Bleat {
+                    entity_index: 39,
+                    sound_id: 46,
+                    action: 14,
+                    ..
+                }
+            ))
+        )));
+    }
+
+    #[test]
     fn level_two_goat_death_routes_mana_and_burst_through_live_arena() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");

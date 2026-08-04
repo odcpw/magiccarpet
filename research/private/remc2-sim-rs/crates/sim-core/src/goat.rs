@@ -1253,9 +1253,13 @@ impl GoatFamily {
         players: &[GoatPlayerTarget],
         events: &mut Vec<GoatStepEvent>,
     ) {
-        match self.apply_pending_damage(family_index) {
+        let direct_hit = match self.apply_pending_damage(family_index) {
             DamageResult::Dead => {
                 self.goats[family_index].action = 12;
+                // A lethal pending mailbox is still the direct-hit callback
+                // path; HitGoat_1F530 runs its modulo-43 tail after the
+                // action transition.
+                true
             }
             DamageResult::Hit(attacker) => {
                 self.goats[family_index].target_entity_index = Some(attacker.cast_unsigned());
@@ -1266,6 +1270,7 @@ impl GoatFamily {
                     self.config.ground_clearance,
                     self.config.vertical_relaxation,
                 );
+                true
             }
             DamageResult::None => {
                 self.move_patrol(family_index, world);
@@ -1297,9 +1302,18 @@ impl GoatFamily {
                 } else {
                     self.goats[family_index].action = 9;
                 }
+                false
             }
+        };
+        if direct_hit {
+            // remc2 HitGoat_1F530 uses a distinct modulo-43 audio/RNG tail
+            // from ordinary retaliation turns.
+            self.advance_action_14_hit_tail(family_index, events);
+        } else {
+            // remc2 sub_1F340/sub_1F3C0 use the shared action-08 wrapper and
+            // its modulo-77 audio/RNG tail for ordinary retaliation turns.
+            self.advance_action_14_tail(family_index, events);
         }
-        self.advance_action_14_tail(family_index, events);
     }
 
     fn apply_pending_damage(&mut self, family_index: usize) -> DamageResult {
@@ -1633,6 +1647,25 @@ impl GoatFamily {
     }
 
     fn advance_action_14_tail(&mut self, family_index: usize, events: &mut Vec<GoatStepEvent>) {
+        let goat = &mut self.goats[family_index];
+        goat.rng = next_rng(goat.rng);
+        if goat.rng.is_multiple_of(77) {
+            mark_source_audio_call(goat_bleat_source_call(8));
+            events.push(GoatStepEvent::Bleat {
+                #[cfg(test)]
+                audio_site: crate::MissionAudioSite::GoatBleat,
+                entity_index: goat.entity_index,
+                sound_id: 46,
+                position: goat.position,
+                action: goat.action,
+            });
+        }
+        if goat.action == 14 {
+            goat.actual_speed = goat.minimum_speed;
+        }
+    }
+
+    fn advance_action_14_hit_tail(&mut self, family_index: usize, events: &mut Vec<GoatStepEvent>) {
         let goat = &mut self.goats[family_index];
         if goat.action != 14 {
             goat.actual_speed = goat.maximum_speed;
@@ -3414,6 +3447,98 @@ mod tests {
         assert_eq!(goat.pending_attacker, 0);
         assert_eq!(goat.kill_credit_entity, 152);
         assert_eq!(goat.actual_speed, goat.maximum_speed);
+    }
+
+    #[test]
+    fn action14_ordinary_and_direct_hit_use_distinct_rng_audio_tails() {
+        let private_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let world = NativeWorld::load(
+            private_root.join("generated/level1-export-m"),
+            private_root.join("generated/level1-asset-closure.json"),
+        )
+        .expect("qualified Level 1 owner package");
+        let mut family = GoatFamily::from_entities(
+            world.entities(),
+            world.goat_stage_point(),
+            world.goat_config(),
+        )
+        .expect("live Goat family");
+        let goat_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 50)
+            .expect("Level 1 Goat slot 50");
+        let goat_position = family.goats[goat_index].position;
+        let player = GoatPlayerTarget {
+            entity_index: 152,
+            position: goat_position,
+            control_flags: 0,
+        };
+
+        // sub_1F340/sub_1F3C0 consumes one draw and tests modulo 77.
+        family.goats[goat_index].action = 14;
+        family.goats[goat_index].target_entity_index = Some(152);
+        family.goats[goat_index].phase = 1;
+        family.goats[goat_index].rng = 129;
+        family.goats[goat_index].actual_speed = 0;
+        let ordinary_events = family.step_source_slot(50, world.terrain(), &[player]);
+        assert_eq!(family.goats[goat_index].action, 14);
+        assert_eq!(family.goats[goat_index].rng, next_rng(129));
+        assert_eq!(
+            family.goats[goat_index].actual_speed,
+            family.goats[goat_index].minimum_speed
+        );
+        assert!(ordinary_events.iter().any(|event| matches!(
+            event,
+            GoatStepEvent::Bleat {
+                entity_index: 50,
+                sound_id: 46,
+                action: 14,
+                ..
+            }
+        )));
+
+        // HitGoat_1F530 uses the independent modulo-43 tail.
+        family.goats[goat_index].action = 14;
+        family.goats[goat_index].target_entity_index = Some(152);
+        family.goats[goat_index].phase = 1;
+        family.goats[goat_index].rng = 62;
+        family.goats[goat_index].actual_speed = family.goats[goat_index].minimum_speed;
+        family
+            .inject_damage(50, 1, 152)
+            .expect("direct action-14 hit");
+        let hit_events = family.step_source_slot(50, world.terrain(), &[player]);
+        assert_eq!(family.goats[goat_index].action, 14);
+        assert_eq!(family.goats[goat_index].rng, next_rng(62));
+        assert!(hit_events.iter().any(|event| matches!(
+            event,
+            GoatStepEvent::Bleat {
+                entity_index: 50,
+                sound_id: 46,
+                action: 14,
+                ..
+            }
+        )));
+
+        family.goats[goat_index].action = 14;
+        family.goats[goat_index].life = 1;
+        family.goats[goat_index].phase = 1;
+        family.goats[goat_index].rng = 62;
+        family
+            .inject_damage(50, 2, 152)
+            .expect("lethal direct action-14 hit");
+        let lethal_events = family.step_source_slot(50, world.terrain(), &[player]);
+        assert_eq!(family.goats[goat_index].action, 12);
+        assert_eq!(family.goats[goat_index].rng, next_rng(62));
+        assert!(lethal_events.iter().any(|event| matches!(
+            event,
+            GoatStepEvent::Bleat {
+                entity_index: 50,
+                sound_id: 46,
+                action: 12,
+                ..
+            }
+        )));
     }
 
     #[test]
