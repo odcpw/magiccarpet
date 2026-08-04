@@ -131,6 +131,8 @@ namespace MagicCarpet.PresentationLab
         private const float EnhancedBloomIntensity = 0.65f;
         private const float EnhancedBloomScatter = 0.78f;
         private const float EnhancedMotionBlurIntensity = 0.28f;
+        private const float EnhancedMotionBlurStartSpeed = 48f;
+        private const float EnhancedMotionBlurFullSpeed = 80f;
         private const float EnhancedMotionBlurClamp = 0.12f;
         private static readonly Color EnhancedBloomTint = new Color(1f, 0.38f, 0.12f, 1f);
         private const string EnhancedRendererName = "PresentationLabEnhancedRenderer";
@@ -172,10 +174,19 @@ namespace MagicCarpet.PresentationLab
 
         public bool Apply(UnityEnhancedQualitySettings settings, Camera camera)
         {
-            return Apply(settings, camera, 0f);
+            return Apply(settings, camera, 0f, 0);
         }
 
         public bool Apply(UnityEnhancedQualitySettings settings, Camera camera, float sceneExposure)
+        {
+            return Apply(settings, camera, sceneExposure, 0);
+        }
+
+        public bool Apply(
+            UnityEnhancedQualitySettings settings,
+            Camera camera,
+            float sceneExposure,
+            int actualSpeed)
         {
             if (settings == null || camera == null)
             {
@@ -237,9 +248,9 @@ namespace MagicCarpet.PresentationLab
             bloom.intensity.value = settings.Bloom ? EnhancedBloomIntensity : 0f;
             bloom.scatter.value = EnhancedBloomScatter;
             bloom.tint.value = EnhancedBloomTint;
-            MotionBlurEnabled = settings.MotionBlur;
-            AppliedMotionBlurIntensity = settings.MotionBlur ? EnhancedMotionBlurIntensity : 0f;
-            motionBlur.active = settings.MotionBlur;
+            MotionBlurEnabled = settings.MotionBlur && !settings.ReducedMotion;
+            AppliedMotionBlurIntensity = MotionBlurIntensityForSpeed(settings, actualSpeed);
+            motionBlur.active = MotionBlurEnabled;
             motionBlur.mode.overrideState = true;
             motionBlur.mode.value = MotionBlurMode.CameraOnly;
             motionBlur.quality.overrideState = true;
@@ -264,6 +275,22 @@ namespace MagicCarpet.PresentationLab
             // here so Bloom/tone mapping are visible on that same frame.
             VolumeManager.instance.Update(camera.transform, camera.cullingMask);
             return true;
+        }
+
+        public static float MotionBlurIntensityForSpeed(
+            UnityEnhancedQualitySettings settings,
+            int actualSpeed)
+        {
+            if (settings == null || !settings.MotionBlur || settings.ReducedMotion)
+            {
+                return 0f;
+            }
+
+            float normalizedSpeed = Mathf.InverseLerp(
+                EnhancedMotionBlurStartSpeed,
+                EnhancedMotionBlurFullSpeed,
+                Mathf.Max(0, actualSpeed));
+            return Mathf.SmoothStep(0f, EnhancedMotionBlurIntensity, normalizedSpeed);
         }
 
         public void ResetForSession()

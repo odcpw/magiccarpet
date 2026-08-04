@@ -382,7 +382,8 @@ namespace MagicCarpet.PresentationLab
             if (snapshot.Quality != null && !qualityAndPost.Apply(
                     snapshot.Quality,
                     cameraRig.PresentationCamera,
-                    sceneExposure))
+                    sceneExposure,
+                    snapshot.Hud == null ? 0 : snapshot.Hud.ActualSpeed))
             {
                 LastRejectReason = "quality/post presentation rejected snapshot";
                 if (diagnostics != null) diagnostics.RecordRejectedSnapshot();

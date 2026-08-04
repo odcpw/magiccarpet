@@ -3160,6 +3160,49 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void OwnerActualSpeedDrivesAdaptiveMotionBlurAndReducedMotionDisablesIt()
+        {
+            GameObject gameObject = new GameObject("enhanced-adaptive-motion-blur-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+            UnityEnhancedQualitySettings quality =
+                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog);
+            MotionBlur motionBlur;
+            Assert.IsTrue(root.QualityAndPost.PostVolume.profile.TryGet(out motionBlur));
+
+            Assert.IsTrue(root.ApplySnapshot(
+                SpeedSnapshot(13, 1, 0, 0, quality)));
+            Assert.That(root.QualityAndPost.AppliedMotionBlurIntensity,
+                Is.EqualTo(0f).Within(0.0001f));
+            Assert.That(motionBlur.intensity.value, Is.EqualTo(0f).Within(0.0001f));
+
+            Assert.IsTrue(root.ApplySnapshot(
+                SpeedSnapshot(13, 2, 64, 0, quality)));
+            float midSpeedIntensity = root.QualityAndPost.AppliedMotionBlurIntensity;
+            Assert.That(midSpeedIntensity, Is.GreaterThan(0f));
+            Assert.That(midSpeedIntensity, Is.LessThan(0.28f));
+
+            Assert.IsTrue(root.ApplySnapshot(
+                SpeedSnapshot(13, 3, 80, 0, quality)));
+            Assert.That(root.QualityAndPost.AppliedMotionBlurIntensity,
+                Is.EqualTo(0.28f).Within(0.0001f));
+            Assert.That(motionBlur.intensity.value, Is.EqualTo(0.28f).Within(0.0001f));
+
+            quality.ReducedMotion = true;
+            quality.CameraShake = false;
+            quality.SpeedStreaks = false;
+            quality.MotionBlur = false;
+            Assert.IsTrue(root.ApplySnapshot(
+                SpeedSnapshot(13, 4, 80, 0, quality)));
+            Assert.That(root.QualityAndPost.AppliedMotionBlurIntensity,
+                Is.EqualTo(0f).Within(0.0001f));
+            Assert.IsFalse(motionBlur.active);
+            Assert.That(motionBlur.intensity.value, Is.EqualTo(0f).Within(0.0001f));
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void ReducedMotionSuppressesFireballPlumeButKeepsAuthoritativeProjectile()
         {
             GameObject gameObject = new GameObject("enhanced-fireball-reduced-motion-test");
@@ -4289,7 +4332,11 @@ namespace MagicCarpet.PresentationLab.Tests
             invalid.TemporalMode = UnityEnhancedTemporalMode.GatedExperimental;
             string reason;
             Assert.IsFalse(invalid.TryValidate(out reason));
-            Assert.IsTrue(quality.Apply(UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog), camera));
+            Assert.IsTrue(quality.Apply(
+                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog),
+                camera,
+                0f,
+                80));
             Assert.AreEqual(1.25f, quality.AppliedRenderScale);
             Assert.IsTrue(quality.UsesSupersampling);
             Assert.IsFalse(quality.UsesSpatialUpscaling);
@@ -4310,12 +4357,15 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual(1, quality.CameraHistoryResetRequestCount);
             Assert.IsTrue(quality.Apply(
                 UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog),
-                camera));
+                camera,
+                0f,
+                80));
             Assert.AreEqual(1, quality.CameraHistoryResetRequestCount);
             Assert.IsTrue(quality.Apply(
                 UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog),
                 camera,
-                0.35f));
+                0.35f,
+                80));
             Assert.AreEqual(0.35f, quality.AppliedPostExposure, 0.0001f);
             Assert.AreEqual(1, quality.CameraHistoryResetRequestCount);
             UnityEnhancedQualitySettings reducedMotion =
