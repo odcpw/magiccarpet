@@ -62,10 +62,10 @@
     },
     "census_method": "independent join of L2-04 authored/reset census, L2-05 rooted activation closure, and L2-06 dispatch/RNG/audio/presentation ledger",
     "totals": {
-      "rows": 84,
+      "rows": 83,
       "by_classification": {
         "Unproved": 19,
-        "Missing": 65,
+        "Missing": 64,
         "Exact": 0,
         "Partial": 0,
         "Wrong": 0
@@ -73,7 +73,7 @@
       "by_subsystem": {
         "gameplay": {
           "Unproved": 19,
-          "Missing": 45
+          "Missing": 44
         },
         "ai": {
           "Missing": 12
@@ -85,9 +85,9 @@
           "Missing": 2
         }
       },
-      "reachable_rows": 84,
+      "reachable_rows": 83,
       "exclusions": 9,
-      "plan_items": 84
+      "plan_items": 83
     },
     "denominators": {
       "authored": 1200,
@@ -6851,82 +6851,6 @@
           "PRESENTATION-REF-L2-1356",
           "PRESENTATION-REF-L2-1357"
         ]
-      }
-    },
-    {
-      "id": "ROW-mc-a4ir.1",
-      "subsystem": "gameplay",
-      "family": "authored",
-      "title": "[L2-08A] Repair the Level 2 reachability join and publish one-to-one worker ownership",
-      "reachability": {
-        "status": "reachable",
-        "chain": "Level 2 profile -> GenerateEvents_49290 -> rooted producer/dispatch closure"
-      },
-      "source": {
-        "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
-        "symbols": [
-          "sub_49270_generate_level_features"
-        ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
-        "dispatch": null
-      },
-      "preconditions": [
-        "external level 2",
-        "internal index 1",
-        "Day map type 0",
-        "owner English data"
-      ],
-      "behavior_ordered": [
-        "select external level 2 -> internal index 1 -> Day profile",
-        "consume owned Level 2 records in source order",
-        "emit Rust-authoritative state/events to the assessed surface"
-      ],
-      "implementation": {
-        "rust": [
-          "research/private/remc2-sim-rs"
-        ],
-        "capi": [],
-        "unity": [],
-        "absent": true
-      },
-      "classification": "Missing",
-      "mismatch_detail": [
-        "Level 2 executable behavior is not yet accepted; this row remains open."
-      ],
-      "evidence_bindings": [
-        {
-          "kind": "python-test",
-          "file": "research/private/remc2-sim-rs/level2-conformance/test_level2_conformance_matrix.py",
-          "test": "test_level2_conformance_matrix.Level2ConformanceMatrixTests.test_production_denominators_are_discriminating",
-          "command": "cd research/private/remc2-sim-rs && python3 -m unittest discover -s level2-conformance -p 'test_level2_conformance_matrix.py'",
-          "proves": "production denominator builders and discriminating joins, not gameplay closure"
-        }
-      ],
-      "negative_coverage_required": [
-        "tampered denominator ID",
-        "duplicate or dropped ID",
-        "wrong pinned source anchor",
-        "wrong branch/order/value"
-      ],
-      "plan_item": "mc-a4ir.1",
-      "confidence": "high",
-      "unresolved": [
-        "behavior row remains open until owning bead supplies Level 2 production-path evidence"
-      ],
-      "coverage": {
-        "authored": [],
-        "reset": [],
-        "activation_groups": [],
-        "producer_edges": [],
-        "objectives": [],
-        "dispatch": [],
-        "tuples": [],
-        "ai_helpers": [],
-        "rng": [],
-        "audio": [],
-        "cache": [],
-        "presentation_refs": []
       }
     },
     {
@@ -18204,9 +18128,7 @@
     {
       "id": "mc-0qxf.1",
       "title": "[L2-39A] Drive the full Level 2 mission from ordinary Unity input",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18276,9 +18198,7 @@
     {
       "id": "mc-1g06.1",
       "title": "[L2-24A1] Port spell eligibility, tier, mana, and cooldown decisions for Nyphur AI",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18324,9 +18244,7 @@
     {
       "id": "mc-2eby.1",
       "title": "[L2-25A] Port AI lethal damage, attacker credit, score, and action-2 entry",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18421,9 +18339,7 @@
     {
       "id": "mc-2sbd.2",
       "title": "[L2-15D.2] Match Goat action-11 child-chain, movement, and linked-list semantics",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18473,9 +18389,7 @@
     {
       "id": "mc-38gs.1",
       "title": "[L2-29A] Finish class-5 model-3 actions 25 and 216-220",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18497,9 +18411,7 @@
     {
       "id": "mc-38gs.2",
       "title": "[L2-29B] Finish class-5 model-9 action 72 collision and retry semantics",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18521,9 +18433,7 @@
     {
       "id": "mc-38gs.3",
       "title": "[L2-29C] Finish class-5 model-4 archer construction and child-event chain",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18545,9 +18455,7 @@
     {
       "id": "mc-38gs.4",
       "title": "[L2-29D] Implement the reachable class-5 model-14 Trader family",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18569,9 +18477,7 @@
     {
       "id": "mc-4ipu.1",
       "title": "[L2-21A] Port sub_12910 dispatcher state byte and call-order semantics",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18687,9 +18593,7 @@
     {
       "id": "mc-6dqd.1",
       "title": "[L2-23A] Consume Invisible and Beyond Sight predicates in Nyphur target selection",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18735,9 +18639,7 @@
     {
       "id": "mc-94h7.1",
       "title": "[L2-38B1] Consume Level 2 gameplay sound commands with exact IDs, ordering, and positional parameters",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18759,9 +18661,7 @@
     {
       "id": "mc-94h7.2",
       "title": "[L2-38B2] Implement Day music lifecycle, restart isolation, and session teardown",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18781,33 +18681,9 @@
       ]
     },
     {
-      "id": "mc-a4ir.1",
-      "title": "[L2-08A] Repair the Level 2 reachability join and publish one-to-one worker ownership",
-      "depends_on": [],
-      "acceptance": [
-        "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
-        "source/order/value/RNG/audio/presentation negatives fail closed"
-      ],
-      "allowed_surfaces": [
-        "research/private/remc2-sim-rs",
-        "research/private/remc2-unity-native",
-        "research/private/remc2-unity-asset-cache"
-      ],
-      "not_done_if": [
-        "prose-only assertion",
-        "fixture-only test",
-        "unresolved or multiply-owned denominator ID"
-      ],
-      "owned_rows": [
-        "ROW-mc-a4ir.1"
-      ]
-    },
-    {
       "id": "mc-a73w.1",
       "title": "[L2-38A1] Implement Day HUD, minimap, status bars, and Nyphur/local visibility state",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18829,9 +18705,7 @@
     {
       "id": "mc-a73w.2",
       "title": "[L2-38A2] Implement five objective boxes, notifications, and owner-localized text/layout",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18853,9 +18727,7 @@
     {
       "id": "mc-a73w.3",
       "title": "[L2-38A3] Implement minimap entities, marks, and authoritative visibility",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18877,9 +18749,7 @@
     {
       "id": "mc-app8.1",
       "title": "[L2-20A] Port sub_12A70 common upkeep and exact auxiliary-state carriers",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18951,9 +18821,7 @@
     {
       "id": "mc-bvihb.1",
       "title": "[L2-15C-A1] Port Castle stage controller and source-chain side effects",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -18975,9 +18843,7 @@
     {
       "id": "mc-bvihb.2",
       "title": "[L2-15C-A2] Port Castle teardown and allocator fallback semantics",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19024,9 +18890,7 @@
     {
       "id": "mc-bvihb.4.2",
       "title": "[L2-15C-A4.2] Unify Level 2 dispatcher terrain and reset authority",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19048,9 +18912,7 @@
     {
       "id": "mc-bvihb.4.3",
       "title": "[L2-15C-A4.3] Dispatch dynamic Level 2 arena slots",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19072,9 +18934,7 @@
     {
       "id": "mc-c2by.1",
       "title": "[L2-37A1] Present Nyphur, holders, projectiles, death, respawn, and banishment from Rust authority",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19096,9 +18956,7 @@
     {
       "id": "mc-c2by.2",
       "title": "[L2-37A2] Present rooted Level 2 spell-family pickup, active, and expiry cues from Rust authority",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19215,9 +19073,7 @@
     {
       "id": "mc-exzm.1",
       "title": "[L2-36A] Bind Day cache/profile literals, palette tables, sky, and terrain into the indexed renderer",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19336,9 +19192,7 @@
     {
       "id": "mc-hgk9.1",
       "title": "[L2-30A] Complete Whirlwind action-82 player-overlap spell handoff",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19360,9 +19214,7 @@
     {
       "id": "mc-hgk9.2",
       "title": "[L2-30B] Complete model-76 Fire Sphere generic collision/effect callback",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19434,9 +19286,7 @@
     {
       "id": "mc-jmcp.1",
       "title": "[L2-27A] Complete Bee construction plus actions 16-17 on the authored cave route",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19458,9 +19308,7 @@
     {
       "id": "mc-jmcp.2",
       "title": "[L2-27B] Complete Bee actions 18-19, event side effects, and family accounting",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19482,9 +19330,7 @@
     {
       "id": "mc-k5js.1",
       "title": "[L2-22A] Port Nyphur combat modes 6 and 7 with exact target-loss thresholds",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19506,9 +19352,7 @@
     {
       "id": "mc-k5js.2",
       "title": "[L2-22B] Port Nyphur combat modes 8, 9, and 13 and prove mode 5 is a structural no-call",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19554,9 +19398,7 @@
     {
       "id": "mc-nr19.1",
       "title": "[L2-32A] Close remaining objective predicates and ordered stage progression",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19602,9 +19444,7 @@
     {
       "id": "mc-oiaa.1",
       "title": "[L2-37B1] Present Bees, goats, villagers, bad stones, and remaining rooted creature families",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19626,9 +19466,7 @@
     {
       "id": "mc-oiaa.2",
       "title": "[L2-37B2] Present buildings, vault destruction, scenery, and rooted class-10 effects",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19650,9 +19488,7 @@
     {
       "id": "mc-oiaa.3",
       "title": "[L2-37B3] Present Level 2 scenery, buildings, and vault destruction",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19698,9 +19534,7 @@
     {
       "id": "mc-sq58.1",
       "title": "[L2-26A] Port Nyphur castle-present countdown and exact respawn reconstruction",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19722,9 +19556,7 @@
     {
       "id": "mc-sq58.2",
       "title": "[L2-26B] Port permanent banishment and the exact objective-type-3 consumed state",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19773,9 +19605,7 @@
     {
       "id": "mc-uk2k.1",
       "title": "[L2-31A] Implement and prove root producers plus GROUP-L2-01..08",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19869,9 +19699,7 @@
     {
       "id": "mc-uptb.1",
       "title": "[L2-24B1] Port mode-14 entry, branch selection, and exit semantics",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -19941,9 +19769,7 @@
     {
       "id": "mc-wv4o.1",
       "title": "[L2-34A] Build the ordinary-input direct Rust mission route and negative branches",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -20063,9 +19889,7 @@
     {
       "id": "mc-xcgi.1.1.1",
       "title": "[L2-17.1A1] Match spell pickup owner candidate and source-field gates",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -20087,9 +19911,7 @@
     {
       "id": "mc-xcgi.1.1.2",
       "title": "[L2-17.1A2] Complete SetSpell holder and learned-versus-hand state",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -20111,9 +19933,7 @@
     {
       "id": "mc-xcgi.1.2",
       "title": "[L2-17.1B] Port replacement allocation and Level2 campaign C-ABI step",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -20163,9 +19983,7 @@
     {
       "id": "mc-yawx.1",
       "title": "[L2-33A] Build the global Level 2 RNG draw-order ledger and route-level mismatch detector",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"
@@ -20187,9 +20005,7 @@
     {
       "id": "mc-yawx.2",
       "title": "[L2-33B] Reclassify reachable Level 2 sound occurrences and exact audio parameters",
-      "depends_on": [
-        "mc-a4ir.1"
-      ],
+      "depends_on": [],
       "acceptance": [
         "all assigned denominator IDs have executable Level 2 evidence or a mechanical exclusion",
         "source/order/value/RNG/audio/presentation negatives fail closed"

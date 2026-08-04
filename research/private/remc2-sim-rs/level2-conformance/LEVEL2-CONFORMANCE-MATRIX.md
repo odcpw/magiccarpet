@@ -8,7 +8,7 @@ Pinned remc2: `6806c7204d17220ecc0430759f784aea8ee2ddb2`. Generated: `2026-08-04
 
 ## Status
 
-**84 rows**: Exact=0, Missing=65, Partial=0, Unproved=19, Wrong=0; **9 mechanical exclusions**; **84 owning beads**.
+**83 rows**: Exact=0, Missing=64, Partial=0, Unproved=19, Wrong=0; **9 mechanical exclusions**; **83 owning beads**.
 
 ## Denominator reconciliation
 
@@ -56,7 +56,6 @@ Pinned remc2: `6806c7204d17220ecc0430759f784aea8ee2ddb2`. Generated: `2026-08-04
 | `ROW-mc-6dqd.2` | ai | **Missing** | `mc-6dqd.2` | ai_helpers |
 | `ROW-mc-94h7.1` | gameplay | **Missing** | `mc-94h7.1` | — |
 | `ROW-mc-94h7.2` | presentation | **Missing** | `mc-94h7.2` | presentation_refs |
-| `ROW-mc-a4ir.1` | gameplay | **Missing** | `mc-a4ir.1` | — |
 | `ROW-mc-a73w.1` | presentation | **Missing** | `mc-a73w.1` | presentation_refs |
 | `ROW-mc-a73w.2` | presentation | **Missing** | `mc-a73w.2` | presentation_refs |
 | `ROW-mc-a73w.3` | presentation | **Missing** | `mc-a73w.3` | presentation_refs |
