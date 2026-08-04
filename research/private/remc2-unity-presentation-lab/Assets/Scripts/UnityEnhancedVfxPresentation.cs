@@ -103,8 +103,8 @@ namespace MagicCarpet.PresentationLab
         private const float CameraImpulseNearDistance = 4f;
         private const float CameraImpulseFarDistance = 28f;
         private static readonly Color ImpactLightColor = new Color(1f, 0.18f, 0.025f, 1f);
-        private const int SpeedReadabilityBaseCount = 8;
-        private const int SpeedReadabilityMaximumCount = 12;
+        private const int SpeedReadabilityBaseCount = 5;
+        private const int SpeedReadabilityMaximumCount = 9;
         private const int SpeedReadabilityAuthoritativeCountCap = 4;
         private const float SpeedReadabilityStart = 48f;
         private const float SpeedReadabilityFull = 80f;
@@ -1097,10 +1097,10 @@ namespace MagicCarpet.PresentationLab
                 {
                     material.SetColor("_StreakColor", new Color(0.18f, 0.78f, 1f, 1f));
                     material.SetColor("_CoreColor", new Color(0.82f, 0.98f, 1f, 1f));
-                    material.SetFloat("_Intensity", 1.4f);
-                    material.SetFloat("_Opacity", 0.40f);
-                    material.SetFloat("_CoreWidth", 0.18f);
-                    material.SetFloat("_EdgeSoftness", 0.34f);
+                    material.SetFloat("_Intensity", 1.1f);
+                    material.SetFloat("_Opacity", 0.32f);
+                    material.SetFloat("_CoreWidth", 0.12f);
+                    material.SetFloat("_EdgeSoftness", 0.42f);
                 }
                 else if (shader == customVfxShader)
                 {

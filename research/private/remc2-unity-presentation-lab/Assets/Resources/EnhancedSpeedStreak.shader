@@ -4,10 +4,10 @@ Shader "MagicCarpet/Enhanced/SpeedStreak"
     {
         [HDR] _StreakColor ("Streak Color", Color) = (0.18, 0.78, 1, 1)
         [HDR] _CoreColor ("Core Color", Color) = (0.82, 0.98, 1, 1)
-        _Intensity ("Intensity", Range(0, 8)) = 2.4
-        _Opacity ("Opacity", Range(0, 1)) = 0.62
-        _CoreWidth ("Core Width", Range(0.05, 0.8)) = 0.28
-        _EdgeSoftness ("Edge Softness", Range(0.02, 0.5)) = 0.18
+        _Intensity ("Intensity", Range(0, 8)) = 1.1
+        _Opacity ("Opacity", Range(0, 1)) = 0.32
+        _CoreWidth ("Core Width", Range(0.05, 0.8)) = 0.12
+        _EdgeSoftness ("Edge Softness", Range(0.02, 0.5)) = 0.42
     }
 
     SubShader

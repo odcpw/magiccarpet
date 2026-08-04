@@ -3098,8 +3098,8 @@ namespace MagicCarpet.PresentationLab.Tests
 
             Assert.IsTrue(root.ApplySnapshot(
                 SpeedSnapshot(13, 3, 80, 0, quality)));
-            Assert.AreEqual(8, root.VfxPresentation.ActiveSpeedStreakCount);
-            Assert.AreEqual(8, root.VfxPresentation.SpeedStreakPoolCount);
+            Assert.AreEqual(5, root.VfxPresentation.ActiveSpeedStreakCount);
+            Assert.AreEqual(5, root.VfxPresentation.SpeedStreakPoolCount);
             Transform streakRoot = root.CameraRig.PresentationCamera.transform.Find(
                 "EnhancedSpeedStreaks");
             Assert.IsNotNull(streakRoot);
@@ -3109,13 +3109,13 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.AreEqual("MagicCarpet/Enhanced/SpeedStreak",
                 streakRenderer.sharedMaterial.shader.name);
             Assert.That(streakRenderer.sharedMaterial.GetFloat("_Intensity"),
-                Is.EqualTo(1.4f).Within(0.001f));
+                Is.EqualTo(1.1f).Within(0.001f));
             Assert.That(streakRenderer.sharedMaterial.GetFloat("_Opacity"),
-                Is.EqualTo(0.40f).Within(0.001f));
+                Is.EqualTo(0.32f).Within(0.001f));
             Assert.That(streakRenderer.sharedMaterial.GetFloat("_CoreWidth"),
-                Is.EqualTo(0.18f).Within(0.001f));
+                Is.EqualTo(0.12f).Within(0.001f));
             Assert.That(streakRenderer.sharedMaterial.GetFloat("_EdgeSoftness"),
-                Is.EqualTo(0.34f).Within(0.001f));
+                Is.EqualTo(0.42f).Within(0.001f));
             Mesh streakMesh = streakRoot.GetChild(0).GetComponent<MeshFilter>().sharedMesh;
             Assert.AreEqual(8, streakMesh.vertexCount);
             Assert.AreEqual(8, streakMesh.uv.Length);
@@ -3133,12 +3133,12 @@ namespace MagicCarpet.PresentationLab.Tests
 
             Assert.IsTrue(root.ApplySnapshot(
                 SpeedSnapshot(13, 4, 80, 4, quality)));
-            Assert.AreEqual(12, root.VfxPresentation.ActiveSpeedStreakCount);
-            Assert.AreEqual(12, root.VfxPresentation.SpeedStreakPoolCount);
+            Assert.AreEqual(9, root.VfxPresentation.ActiveSpeedStreakCount);
+            Assert.AreEqual(9, root.VfxPresentation.SpeedStreakPoolCount);
 
             Assert.IsTrue(root.ApplySnapshot(
                 SpeedSnapshot(13, 5, 80, byte.MaxValue, quality)));
-            Assert.AreEqual(12, root.VfxPresentation.ActiveSpeedStreakCount);
+            Assert.AreEqual(9, root.VfxPresentation.ActiveSpeedStreakCount);
 
             quality.SpeedStreaks = false;
             Assert.IsTrue(root.ApplySnapshot(
