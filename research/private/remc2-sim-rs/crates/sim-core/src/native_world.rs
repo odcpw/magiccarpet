@@ -4248,6 +4248,29 @@ pub struct Level2AuthoredModel53Source {
     pub active: bool,
 }
 
+/// The class-10/model-5/action-5 water splash created by remc2's
+/// `NewAdd0A05_4E570` for the model-53 water branch. It is a live mapped
+/// source row; its own action callback remains a later presentation slice.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2AuthoredModel5WaterSplashSource {
+    pub source_entity_index: u16,
+    pub entity_id: u16,
+    pub entity_rng: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub max_life: i16,
+    pub life: i16,
+    pub subspell_index: u16,
+    pub dword_0x10: i32,
+    pub control_flags: u32,
+    pub sprite_index: u16,
+    pub position: Position,
+    pub phase: u8,
+    pub drawing_enabled: bool,
+    pub active: bool,
+}
+
 /// The authored class-10/model-6 event constructed by remc2's
 /// `NewAdd0A06_4E5F0` and dispatched through `sub_31760`.  The fields mirror
 /// the callback's mutable words rather than collapsing them into a generic
@@ -4815,6 +4838,8 @@ pub struct Level2EconomyState {
     authored_model59: Vec<Level2AuthoredModel59Source>,
     baseline_authored_model53: Vec<Level2AuthoredModel53Source>,
     authored_model53: Vec<Level2AuthoredModel53Source>,
+    baseline_authored_model5_water_splashes: Vec<Level2AuthoredModel5WaterSplashSource>,
+    authored_model5_water_splashes: Vec<Level2AuthoredModel5WaterSplashSource>,
     baseline_model13_spawned_children: Vec<Level2Model13SpawnedChild>,
     model13_spawned_children: Vec<Level2Model13SpawnedChild>,
     baseline_authored_model6: Vec<Level2AuthoredModel6Source>,
@@ -5038,6 +5063,8 @@ impl Level2EconomyState {
             authored_model59: Vec::new(),
             baseline_authored_model53: Vec::new(),
             authored_model53: Vec::new(),
+            baseline_authored_model5_water_splashes: Vec::new(),
+            authored_model5_water_splashes: Vec::new(),
             baseline_model13_spawned_children: Vec::new(),
             model13_spawned_children: Vec::new(),
             baseline_authored_model6: Vec::new(),
@@ -5211,6 +5238,11 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_model53(&self) -> &[Level2AuthoredModel53Source] {
         &self.authored_model53
+    }
+
+    #[must_use]
+    pub fn authored_model5_water_splashes(&self) -> &[Level2AuthoredModel5WaterSplashSource] {
+        &self.authored_model5_water_splashes
     }
 
     #[must_use]
@@ -6056,6 +6088,73 @@ impl Level2EconomyState {
         // with the typed row for allocation/reclaim and replay consumers.
         self.source_rng.insert(source_slot, source.entity_rng);
         source.phase = source.phase.wrapping_add(1);
+        let water_spawn_position = source.water_spawn_requested.then_some(source.position);
+        if let Some(position) = water_spawn_position {
+            let _ = self.allocate_authored_model5_water_splash(position);
+        }
+        true
+    }
+
+    /// Materialize remc2's `NewAdd0A05_4E570` consumer for the model-53 water
+    /// branch. The constructor is class 10/model 5/action 5, max/life 8,
+    /// subspell 0, control dword 0x20000, grounded, mapped, and sprite 244.
+    pub fn allocate_authored_model5_water_splash(
+        &mut self,
+        position: Position,
+    ) -> Option<Level2AuthoredModel5WaterSplashSource> {
+        let source_entity_index = self.allocate_slot()?;
+        let entity_rng = self.new_event_rng(source_entity_index);
+        let mut grounded_position = position;
+        grounded_position.z = self.terrain.ground_height(position);
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: grounded_position.x,
+                y: grounded_position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, None);
+            return None;
+        }
+        let source = Level2AuthoredModel5WaterSplashSource {
+            source_entity_index,
+            entity_id: source_entity_index,
+            entity_rng,
+            source_class: 10,
+            model: 5,
+            action: 5,
+            max_life: 8,
+            life: 8,
+            subspell_index: 0,
+            dword_0x10: 0,
+            control_flags: 0x20_000,
+            sprite_index: 244,
+            position: grounded_position,
+            phase: source_entity_index as u8,
+            drawing_enabled: true,
+            active: true,
+        };
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.authored_model5_water_splashes.push(source);
+        Some(source)
+    }
+
+    /// The model-5 water splash's own action callback remains a presentation
+    /// follow-on. Keep its mapped source row on the live cursor and preserve
+    /// source-RNG/phase bookkeeping until that callback is ported.
+    pub fn step_authored_model5_water_splash_slot(&mut self, source_slot: u16) -> bool {
+        let Some(source) = self
+            .authored_model5_water_splashes
+            .iter_mut()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        source.phase = source.phase.wrapping_add(1);
+        self.source_rng.insert(source_slot, source.entity_rng);
         true
     }
 
@@ -8521,6 +8620,16 @@ impl Level2EconomyState {
             visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::AuthoredModel53,
+            );
+        }
+        for source in self
+            .authored_model5_water_splashes
+            .iter()
+            .filter(|source| source.active)
+        {
+            visit(
+                source.source_entity_index,
+                Level2DynamicArenaKind::AuthoredModel5WaterSplash,
             );
         }
         for child in self
@@ -11755,6 +11864,23 @@ impl Level2EconomyState {
         for (slot, entity_rng) in reclaimed_model53 {
             self.release_slot(slot, Some(entity_rng));
         }
+        let reclaimed_model5_water_splashes = self
+            .authored_model5_water_splashes
+            .iter()
+            .filter(|source| !source.active)
+            .map(|source| (source.source_entity_index, source.entity_rng))
+            .collect::<Vec<_>>();
+        self.authored_model5_water_splashes
+            .retain(|source| source.active);
+        for (slot, entity_rng) in reclaimed_model5_water_splashes {
+            let _ = self.map_chains.sync_entity(RenderableMapSeed {
+                entity_index: slot,
+                active: false,
+                x: 0,
+                y: 0,
+            });
+            self.release_slot(slot, Some(entity_rng));
+        }
         let reclaimed_model13_children = self
             .model13_spawned_children
             .iter()
@@ -12329,6 +12455,29 @@ impl Level2EconomyState {
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
         }
+        hasher.update(b"level2-authored-model5-water-splash-v1");
+        for source in &self.authored_model5_water_splashes {
+            hasher.update(source.source_entity_index.to_le_bytes());
+            hasher.update(source.entity_id.to_le_bytes());
+            hasher.update(source.entity_rng.to_le_bytes());
+            hasher.update([
+                source.source_class,
+                source.model,
+                source.action,
+                source.phase,
+                u8::from(source.drawing_enabled),
+                u8::from(source.active),
+            ]);
+            hasher.update(source.max_life.to_le_bytes());
+            hasher.update(source.life.to_le_bytes());
+            hasher.update(source.subspell_index.to_le_bytes());
+            hasher.update(source.dword_0x10.to_le_bytes());
+            hasher.update(source.control_flags.to_le_bytes());
+            hasher.update(source.sprite_index.to_le_bytes());
+            hasher.update(source.position.x.to_le_bytes());
+            hasher.update(source.position.y.to_le_bytes());
+            hasher.update(source.position.z.to_le_bytes());
+        }
         for child in &self.model13_spawned_children {
             hasher.update(child.source_entity_index.to_le_bytes());
             hasher.update(child.entity_rng.to_le_bytes());
@@ -12889,6 +13038,7 @@ impl Level2EconomyState {
         self.authored_model32 = self.baseline_authored_model32.clone();
         self.authored_model59 = self.baseline_authored_model59.clone();
         self.authored_model53 = self.baseline_authored_model53.clone();
+        self.authored_model5_water_splashes = self.baseline_authored_model5_water_splashes.clone();
         self.model13_spawned_children = self.baseline_model13_spawned_children.clone();
         self.authored_model6 = self.baseline_authored_model6.clone();
         self.model6_spawned_children = self.baseline_model6_spawned_children.clone();
@@ -15884,6 +16034,7 @@ pub enum Level2DynamicArenaKind {
     AuthoredModel32,
     AuthoredModel59,
     AuthoredModel53,
+    AuthoredModel5WaterSplash,
     BeyondSightPulseEffect,
     ManaAttraction,
 }
@@ -16022,6 +16173,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::AuthoredModel32 => 29,
         Level2DynamicArenaKind::AuthoredModel59 => 28,
         Level2DynamicArenaKind::AuthoredModel53 => 32,
+        Level2DynamicArenaKind::AuthoredModel5WaterSplash => 33,
         Level2DynamicArenaKind::BeyondSightPulseEffect => 14,
         Level2DynamicArenaKind::ManaAttraction => 12,
     }
@@ -19570,6 +19722,9 @@ impl Level2ResetSession {
             Level2DynamicArenaKind::AuthoredModel53 => {
                 self.economy.step_authored_model53_slot(source_slot)
             }
+            Level2DynamicArenaKind::AuthoredModel5WaterSplash => self
+                .economy
+                .step_authored_model5_water_splash_slot(source_slot),
             Level2DynamicArenaKind::BeyondSightPulseEffect => self
                 .economy
                 .step_beyond_sight_pulse_effect_slot(source_slot),
@@ -34456,9 +34611,54 @@ mod tests {
             ),
             (10, 312, 40, 0, true)
         );
+        let splash = session
+            .economy()
+            .authored_model5_water_splashes()
+            .last()
+            .copied()
+            .expect("water branch must allocate the source model-5 splash");
+        assert!(splash.source_entity_index > row439_slot);
+        assert_eq!(
+            (
+                splash.source_class,
+                splash.model,
+                splash.action,
+                splash.max_life,
+                splash.life,
+                splash.subspell_index,
+                splash.dword_0x10,
+                splash.control_flags,
+                splash.sprite_index,
+            ),
+            (10, 5, 5, 8, 8, 0, 0, 0x20_000, 244)
+        );
+        assert_eq!(
+            splash.position,
+            Position {
+                x: row439.position.x,
+                y: row439.position.y,
+                z: session.terrain.ground_height(row439.position),
+            }
+        );
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::AuthoredModel5WaterSplash,
+                    ..
+                } if *source_slot == splash.source_entity_index
+            )
+        }));
 
         session.reset();
         assert!(session.economy().authored_model53().is_empty());
+        assert!(
+            session
+                .economy()
+                .authored_model5_water_splashes()
+                .is_empty()
+        );
         assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
