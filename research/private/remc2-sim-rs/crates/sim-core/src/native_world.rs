@@ -4265,6 +4265,7 @@ pub struct Level2AuthoredModel5WaterSplashSource {
     pub dword_0x10: i32,
     pub control_flags: u32,
     pub sprite_index: u16,
+    pub last_sound_id: u16,
     pub position: Position,
     pub phase: u8,
     pub drawing_enabled: bool,
@@ -6132,6 +6133,7 @@ impl Level2EconomyState {
             dword_0x10: 0,
             control_flags: 0x20_000,
             sprite_index: 244,
+            last_sound_id: 0,
             position: grounded_position,
             phase: source_entity_index as u8,
             drawing_enabled: true,
@@ -6142,9 +6144,13 @@ impl Level2EconomyState {
         Some(source)
     }
 
-    /// The model-5 water splash's own action callback remains a presentation
-    /// follow-on. Keep its mapped source row on the live cursor and preserve
-    /// source-RNG/phase bookkeeping until that callback is ported.
+    /// Run the bounded action-5 lifecycle from `AddAsh0A_05_318B0`: consume
+    /// the eight-life splash window, emit source sound 27 once through the
+    /// typed sidecar, then disable drawing and retire the row on the following
+    /// callback. The `sub_585A0` animation increment is a no-op for this
+    /// constructor's zero animation limit and is therefore represented by the
+    /// unchanged sprite. `reclaim_inactive_slots` mirrors the source's same-
+    /// pass `ApplyEvents` cleanup after the draw-disable bit is set.
     pub fn step_authored_model5_water_splash_slot(&mut self, source_slot: u16) -> bool {
         let Some(source) = self
             .authored_model5_water_splashes
@@ -6153,6 +6159,16 @@ impl Level2EconomyState {
         else {
             return false;
         };
+        if source.life >= 0 {
+            source.life -= 1;
+            if source.control_flags & 0x2 == 0 {
+                source.control_flags |= 0x2;
+                source.last_sound_id = 27;
+            }
+        } else {
+            source.drawing_enabled = false;
+            source.active = false;
+        }
         source.phase = source.phase.wrapping_add(1);
         self.source_rng.insert(source_slot, source.entity_rng);
         true
@@ -12474,6 +12490,7 @@ impl Level2EconomyState {
             hasher.update(source.dword_0x10.to_le_bytes());
             hasher.update(source.control_flags.to_le_bytes());
             hasher.update(source.sprite_index.to_le_bytes());
+            hasher.update(source.last_sound_id.to_le_bytes());
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
@@ -34629,8 +34646,9 @@ mod tests {
                 splash.dword_0x10,
                 splash.control_flags,
                 splash.sprite_index,
+                splash.last_sound_id,
             ),
-            (10, 5, 5, 8, 8, 0, 0, 0x20_000, 244)
+            (10, 5, 5, 8, 7, 0, 0, 0x20_002, 244, 27)
         );
         assert_eq!(
             splash.position,
@@ -34650,6 +34668,26 @@ mod tests {
                 } if *source_slot == splash.source_entity_index
             )
         }));
+        for _ in 0..8 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let splash = session
+            .economy()
+            .authored_model5_water_splashes()
+            .iter()
+            .find(|source| source.source_entity_index == splash.source_entity_index)
+            .copied()
+            .expect("water splash remains in the source arena through its life window");
+        assert_eq!(splash.life, -1);
+        assert!(splash.drawing_enabled);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            !session
+                .economy()
+                .authored_model5_water_splashes()
+                .iter()
+                .any(|source| source.source_entity_index == splash.source_entity_index)
+        );
 
         session.reset();
         assert!(session.economy().authored_model53().is_empty());
