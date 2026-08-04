@@ -6636,6 +6636,16 @@ impl Level2EconomyState {
                 // StageVar2 movement callback. The generic movement family
                 // remains outside this authored Bee seam; an invalid/zero
                 // selector must not consume RNG or change orientation.
+                // The fixed model-2 descriptor used by `sub_4B590` has no
+                // `byte_160_0x20_32 & 8` flag, so selector 10's
+                // `sub_1E040(a1, 16)` branch enters action 18 directly.
+                // `sub_1F8A0` then restores the action-18 latch after the
+                // generic callback, before applying its own selector 1..9
+                // roll perturbation (which selector 10 does not enter).
+                if source.stage_var2 == 10 {
+                    source.action = 18;
+                    source.dword_0x10 = 1;
+                }
                 if source.source_byte_3e & 7 == 0 && (1..=9).contains(&source.stage_var2) {
                     source.entity_rng = level2_next_rng16(source.entity_rng);
                     let direction = 2 * (u32::from(source.entity_rng % 0x9d) / 79);
@@ -34006,6 +34016,61 @@ mod tests {
             assert_eq!(after.source_byte_3e, 1);
             assert_eq!(after.phase, before.phase.wrapping_add(1));
         }
+
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_authored_bee_action23_selector10_rearms_through_production_cursor() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 owner package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 scripted Bee session");
+        let baseline_hash = session.campaign_state_hash();
+
+        // Materialize the authored row through the real group-21 producer,
+        // then select only its action/StageVar state. The next outer turn
+        // still dispatches the callback through the live source cursor.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.authored_index == 231)
+            .map(|bee| bee.source_entity_index)
+            .expect("production group-21 row 231 Bee");
+        let before = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == source_slot)
+            .copied()
+            .expect("live scripted Bee before selector-10 step");
+        let bee = session
+            .economy_mut()
+            .authored_bees
+            .iter_mut()
+            .find(|bee| bee.source_entity_index == source_slot)
+            .expect("live scripted Bee source");
+        bee.action = 23;
+        bee.stage_var2 = 10;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let after = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == source_slot)
+            .copied()
+            .expect("live scripted Bee after selector-10 step");
+        assert_eq!(after.action, 18);
+        assert_eq!(after.dword_0x10, 1);
+        assert_eq!(after.entity_rng, before.entity_rng);
+        assert_eq!(after.roll, before.roll);
+        assert_eq!(after.source_byte_3e, before.source_byte_3e.wrapping_add(1));
+        assert_eq!(after.phase, before.phase.wrapping_add(1));
 
         session.reset();
         assert_eq!(session.campaign_state_hash(), baseline_hash);
