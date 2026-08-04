@@ -147,10 +147,12 @@ namespace MagicCarpet.PresentationLab.Editor
 
                         spellJarEntitiesObserved++;
                         Vector3 worldCenter;
+                        MeshRenderer meshRenderer;
                         if (!TryGetPresentationCenter(
                                 enhanced,
                                 entity.StableIdentity,
-                                out worldCenter))
+                                out worldCenter,
+                                out meshRenderer))
                         {
                             continue;
                         }
@@ -162,6 +164,23 @@ namespace MagicCarpet.PresentationLab.Editor
                             viewport.y >= InnerViewportMinimum &&
                             viewport.y <= InnerViewportMaximum;
                         if (!inInnerViewport)
+                        {
+                            continue;
+                        }
+
+                        bool rendererContributes;
+                        if (!TryProveRendererContribution(
+                                enhanced,
+                                meshRenderer,
+                                out rendererContributes,
+                                out reason))
+                        {
+                            FailAndExit(
+                                "resolved SpellJar contribution capture failed at frame " +
+                                frame + ": " + reason);
+                            return;
+                        }
+                        if (!rendererContributes)
                         {
                             continue;
                         }
@@ -327,9 +346,11 @@ namespace MagicCarpet.PresentationLab.Editor
         private static bool TryGetPresentationCenter(
             UnityEnhancedWorldRoot enhanced,
             ulong stableIdentity,
-            out Vector3 center)
+            out Vector3 center,
+            out MeshRenderer meshRenderer)
         {
             center = Vector3.zero;
+            meshRenderer = null;
             Transform entity = enhanced.transform.Find(
                 "EnhancedWorldObjects/EnhancedEntity_" + stableIdentity.ToString("x16"));
             if (entity == null || !entity.gameObject.activeInHierarchy)
@@ -344,7 +365,7 @@ namespace MagicCarpet.PresentationLab.Editor
             }
 
             MeshFilter meshFilter = visual.GetComponent<MeshFilter>();
-            MeshRenderer meshRenderer = visual.GetComponent<MeshRenderer>();
+            meshRenderer = visual.GetComponent<MeshRenderer>();
             if (meshFilter == null ||
                 meshFilter.sharedMesh == null ||
                 meshFilter.sharedMesh.vertexCount == 0 ||
@@ -358,6 +379,79 @@ namespace MagicCarpet.PresentationLab.Editor
 
             center = meshRenderer.bounds.center;
             return true;
+        }
+
+        private static bool TryProveRendererContribution(
+            UnityEnhancedWorldRoot enhanced,
+            MeshRenderer meshRenderer,
+            out bool contributes,
+            out string reason)
+        {
+            contributes = false;
+            reason = string.Empty;
+            if (enhanced == null || meshRenderer == null)
+            {
+                reason = "live SpellJar MeshRenderer is missing for contribution proof";
+                return false;
+            }
+
+            byte[] enabledPng;
+            byte[] disabledPng;
+            ulong enabledResolvedHash;
+            ulong disabledResolvedHash;
+            if (!enhanced.CapturePresentationFramePng(
+                    CaptureWidth,
+                    CaptureHeight,
+                    out enabledPng,
+                    out enabledResolvedHash,
+                    out reason))
+            {
+                return false;
+            }
+
+            bool originalEnabled = meshRenderer.enabled;
+            try
+            {
+                meshRenderer.enabled = false;
+                if (!enhanced.CapturePresentationFramePng(
+                        CaptureWidth,
+                        CaptureHeight,
+                        out disabledPng,
+                        out disabledResolvedHash,
+                        out reason))
+                {
+                    return false;
+                }
+            }
+            finally
+            {
+                meshRenderer.enabled = originalEnabled;
+            }
+
+            contributes = PngBytesDiffer(enabledPng, disabledPng);
+            return true;
+        }
+
+        private static bool PngBytesDiffer(byte[] first, byte[] second)
+        {
+            if (first == null || second == null)
+            {
+                return false;
+            }
+            if (first.Length != second.Length)
+            {
+                return true;
+            }
+
+            for (int index = 0; index < first.Length; index++)
+            {
+                if (first[index] != second[index])
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static void FailAndExit(string message)
