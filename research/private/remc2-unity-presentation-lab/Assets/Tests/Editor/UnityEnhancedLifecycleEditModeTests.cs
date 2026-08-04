@@ -959,7 +959,7 @@ namespace MagicCarpet.PresentationLab.Tests
             entity.RenderLayer = 7;
 
             actors.Configure(view, entity);
-            Assert.AreEqual(UnityEnhancedActorPresentation.CoverageCount, 20);
+            Assert.AreEqual(UnityEnhancedActorPresentation.CoverageCount, 21);
             Assert.AreEqual(1, actors.ActiveVisualCount);
             Assert.IsNotNull(view.transform.Find("EnhancedActorVisual"));
             Assert.AreEqual(7, actors.LastSortingOrder);
@@ -1246,6 +1246,190 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsFalse(movedPlume.gameObject.activeSelf);
 
             Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void AuthoritativeArcherArrowUsesDirectionalMeshWithoutLuminousProxy()
+        {
+            Assert.AreEqual(19, (int)UnityEnhancedPresentationFamily.Generic);
+            Assert.AreEqual(20, (int)UnityEnhancedPresentationFamily.ArcherArrow);
+            Assert.AreEqual(21, UnityEnhancedActorPresentation.CoverageCount);
+
+            string ownerSource = File.ReadAllText(Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "UnityEnhancedOwnerSessionSource.cs"));
+            int buildEntitiesStart = ownerSource.IndexOf(
+                "private UnityEnhancedEntitySnapshot[] BuildEntities()",
+                StringComparison.Ordinal);
+            int buildLightsStart = ownerSource.IndexOf(
+                "private UnityEnhancedLocalLightRequest[] BuildLocalLights()",
+                StringComparison.Ordinal);
+            int presentationFamilyStart = ownerSource.IndexOf(
+                "private static int PresentationFamily(",
+                StringComparison.Ordinal);
+            Assert.GreaterOrEqual(buildEntitiesStart, 0);
+            Assert.Greater(buildLightsStart, buildEntitiesStart);
+            Assert.Greater(presentationFamilyStart, buildLightsStart);
+
+            string buildEntities = ownerSource.Substring(
+                buildEntitiesStart,
+                buildLightsStart - buildEntitiesStart);
+            string buildLights = ownerSource.Substring(
+                buildLightsStart,
+                presentationFamilyStart - buildLightsStart);
+            StringAssert.Contains("source.projectileKind == 2", buildEntities);
+            StringAssert.Contains(
+                "UnityEnhancedPresentationFamily.ArcherArrow",
+                buildEntities);
+            StringAssert.Contains(
+                "int family = source.projectileKind == 1",
+                buildEntities);
+            StringAssert.Contains(
+                "if (source.projectileKind == 2)\n" +
+                "                {\n" +
+                "                    continue;\n" +
+                "                }",
+                buildLights);
+            StringAssert.Contains("bool fireball = source.projectileKind == 1;", buildLights);
+
+            GameObject gameObject = new GameObject("enhanced-archer-arrow-test");
+            try
+            {
+                UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+                root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+                const ulong generation = 31;
+                const ulong fireballIdentity = 0x0000000020000001UL;
+                const ulong arrowIdentity = 0x0000000020000002UL;
+                Vector3 fireballPosition = new Vector3(1f, 2f, 3f);
+                Vector3 arrowPosition = new Vector3(4f, 5f, 6f);
+                Quaternion arrowRotation = Quaternion.Euler(17f, 43f, 0f);
+                UnityEnhancedNightLightingDescriptor night =
+                    UnityEnhancedNightLightingDescriptor.Level1Night();
+
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 0,
+                    Reset = true,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = new[]
+                    {
+                        new UnityEnhancedEntitySnapshot
+                        {
+                            StableIdentity = fireballIdentity,
+                            Generation = generation,
+                            Position = fireballPosition,
+                            Rotation = Quaternion.identity,
+                            Visible = true,
+                            PresentationFamily = (int)UnityEnhancedPresentationFamily.Fire,
+                            Scale = 1f,
+                            RenderLayer = 2201
+                        }
+                    },
+                    NightLighting = night,
+                    LocalLights = new[]
+                    {
+                        new UnityEnhancedLocalLightRequest(
+                            fireballIdentity,
+                            fireballPosition,
+                            new Color(1f, 0.2f, 0.04f, 1f),
+                            5.5f,
+                            11f,
+                            2201)
+                    },
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+
+                Transform fireballView = gameObject.transform.Find(
+                    "EnhancedWorldObjects/EnhancedEntity_0000000020000001");
+                Assert.IsNotNull(fireballView);
+                Assert.AreEqual(
+                    "MagicCarpet/Enhanced/Fireball",
+                    fireballView.Find("EnhancedActorVisual").GetComponent<MeshRenderer>()
+                        .sharedMaterial.shader.name);
+                Assert.IsNotNull(fireballView.Find("EnhancedFireballHalo"));
+                Assert.IsNotNull(fireballView.Find("EnhancedFireballTrail"));
+                Assert.IsNotNull(fireballView.Find("EnhancedFireballPlume"));
+                Assert.IsNotNull(fireballView.Find("EnhancedFireballVolume"));
+                Assert.AreEqual(1, root.NightLighting.ActiveLocalLightCount);
+
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 1,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = Array.Empty<UnityEnhancedEntitySnapshot>(),
+                    NightLighting = night,
+                    LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+                Assert.AreEqual(1, root.PooledEntityCount);
+                Assert.AreEqual(1, root.ActorPresentation.PooledVisualCount);
+                Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
+
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 2,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = new[]
+                    {
+                        new UnityEnhancedEntitySnapshot
+                        {
+                            StableIdentity = arrowIdentity,
+                            Generation = generation,
+                            Position = arrowPosition,
+                            Rotation = arrowRotation,
+                            Visible = true,
+                            PresentationFamily = (int)UnityEnhancedPresentationFamily.ArcherArrow,
+                            FacingDegrees = 179f,
+                            Scale = 1f,
+                            RenderLayer = 2202
+                        }
+                    },
+                    NightLighting = night,
+                    LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+
+                Transform arrowView = gameObject.transform.Find(
+                    "EnhancedWorldObjects/EnhancedEntity_0000000020000002");
+                Assert.IsNotNull(arrowView);
+                Transform arrowVisual = arrowView.Find("EnhancedActorVisual");
+                Assert.IsNotNull(arrowVisual);
+                MeshFilter arrowFilter = arrowVisual.GetComponent<MeshFilter>();
+                MeshRenderer arrowRenderer = arrowVisual.GetComponent<MeshRenderer>();
+                Assert.AreEqual("EnhancedGeneratedMesh_ArcherArrow", arrowFilter.sharedMesh.name);
+                Assert.Greater(
+                    arrowFilter.sharedMesh.bounds.size.z,
+                    arrowFilter.sharedMesh.bounds.size.x * 4f);
+                Assert.Greater(
+                    arrowFilter.sharedMesh.bounds.size.z,
+                    arrowFilter.sharedMesh.bounds.size.y * 4f);
+                Assert.Less(arrowFilter.sharedMesh.bounds.min.z, -0.7f);
+                Assert.Greater(arrowFilter.sharedMesh.bounds.max.z, 0.9f);
+                Assert.AreEqual(
+                    "MagicCarpet/Enhanced/VertexColorLit",
+                    arrowRenderer.sharedMaterial.shader.name);
+                Assert.IsFalse(arrowRenderer.sharedMaterial.HasProperty("_MainTex"));
+                Assert.That(
+                    Quaternion.Angle(arrowRotation, arrowView.rotation),
+                    Is.LessThan(0.001f));
+                Assert.That(
+                    Quaternion.Angle(arrowRotation, arrowVisual.rotation),
+                    Is.LessThan(0.001f));
+                Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
+                Assert.IsFalse(arrowView.Find("EnhancedFireballHalo").gameObject.activeSelf);
+                Assert.IsFalse(arrowView.Find("EnhancedFireballTrail").gameObject.activeSelf);
+                Assert.IsFalse(arrowView.Find("EnhancedFireballPlume").gameObject.activeSelf);
+                Assert.IsFalse(arrowView.Find("EnhancedFireballVolume").gameObject.activeSelf);
+                Assert.AreEqual(0, root.PooledEntityCount);
+            }
+            finally
+            {
+                Object.DestroyImmediate(gameObject);
+            }
         }
 
         [Test]

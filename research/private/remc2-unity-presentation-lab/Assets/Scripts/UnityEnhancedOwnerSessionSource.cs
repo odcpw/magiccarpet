@@ -1794,9 +1794,11 @@ namespace MagicCarpet.PresentationLab
                 // the family only selects its Enhanced visual treatment.
                 int family = source.projectileKind == 1
                     ? (int)UnityEnhancedPresentationFamily.Fire
-                    : source.projectileKind == 5
-                        ? (int)UnityEnhancedPresentationFamily.Possession
-                        : (int)UnityEnhancedPresentationFamily.Projectile;
+                    : source.projectileKind == 2
+                        ? (int)UnityEnhancedPresentationFamily.ArcherArrow
+                        : source.projectileKind == 5
+                            ? (int)UnityEnhancedPresentationFamily.Possession
+                            : (int)UnityEnhancedPresentationFamily.Projectile;
                 Vector3 position = ProjectedPosition(source.x, source.y, source.z);
                 result.Add(new UnityEnhancedEntitySnapshot
                 {
@@ -1910,6 +1912,11 @@ namespace MagicCarpet.PresentationLab
             {
                 ProjectileSnapshot source = projectiles[index];
                 if (source.active == 0 || source.projectileId == 0)
+                {
+                    continue;
+                }
+
+                if (source.projectileKind == 2)
                 {
                     continue;
                 }

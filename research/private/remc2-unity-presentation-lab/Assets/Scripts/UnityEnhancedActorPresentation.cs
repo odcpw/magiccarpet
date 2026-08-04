@@ -29,7 +29,8 @@ namespace MagicCarpet.PresentationLab
         Exit = 16,
         Castle = 17,
         Possession = 18,
-        Generic = 19
+        Generic = 19,
+        ArcherArrow = 20
     }
 
     [DisallowMultipleComponent]
@@ -239,12 +240,12 @@ namespace MagicCarpet.PresentationLab
         public static bool HasCoverage(int family)
         {
             return family >= (int)UnityEnhancedPresentationFamily.Player &&
-                   family <= (int)UnityEnhancedPresentationFamily.Generic;
+                   family <= (int)UnityEnhancedPresentationFamily.ArcherArrow;
         }
 
         public static int CoverageCount
         {
-            get { return (int)UnityEnhancedPresentationFamily.Generic + 1; }
+            get { return (int)UnityEnhancedPresentationFamily.ArcherArrow + 1; }
         }
 
         public void Configure(GameObject view, UnityEnhancedEntitySnapshot entity)
@@ -343,6 +344,8 @@ namespace MagicCarpet.PresentationLab
             bool fireballProjectile = entity.PresentationFamily ==
                                           (int)UnityEnhancedPresentationFamily.Fire &&
                                       IsAuthoritativeProjectileIdentity(entity.StableIdentity);
+            bool archerArrow = entity.PresentationFamily ==
+                               (int)UnityEnhancedPresentationFamily.ArcherArrow;
             bool impactPresentation = entity.PresentationFamily ==
                                           (int)UnityEnhancedPresentationFamily.Impact ||
                                       (entity.PresentationFamily ==
@@ -351,6 +354,10 @@ namespace MagicCarpet.PresentationLab
             if (!fireballProjectile)
             {
                 DisableFireballTrail(state);
+                if (archerArrow)
+                {
+                    DisableFireballPlume(state);
+                }
                 DisableFireballVolume(state);
             }
             if (state.Family != entity.PresentationFamily ||
@@ -418,11 +425,18 @@ namespace MagicCarpet.PresentationLab
             float animationOffset = IsAnimated(entity.PresentationFamily)
                 ? Mathf.Sin(entity.AnimationPhase * Mathf.PI * 2f) * 0.05f
                 : 0f;
-            Vector3 localPosition = new Vector3(
-                0f,
-                animationOffset - (fireballProjectile ? BillboardHalfSize * scale : 0f),
-                0f);
-            Quaternion localRotation = Quaternion.Euler(0f, entity.FacingDegrees, 0f);
+            Vector3 localPosition = archerArrow
+                ? Vector3.zero
+                : new Vector3(
+                    0f,
+                    animationOffset - (fireballProjectile ? BillboardHalfSize * scale : 0f),
+                    0f);
+            // The pooled entity root already carries the authoritative
+            // snapshot rotation and interpolation pose. Keep the arrow mesh
+            // child at identity so pitch and yaw are not applied twice.
+            Quaternion localRotation = archerArrow
+                ? Quaternion.identity
+                : Quaternion.Euler(0f, entity.FacingDegrees, 0f);
             state.VisualObject.transform.localPosition = localPosition;
             state.VisualObject.transform.localRotation = localRotation;
             state.VisualObject.transform.localScale = Vector3.one * scale;
@@ -1450,9 +1464,44 @@ namespace MagicCarpet.PresentationLab
                 case UnityEnhancedPresentationFamily.Possession:
                 case UnityEnhancedPresentationFamily.Generic:
                     return CreateCreatureMesh(family);
+                case UnityEnhancedPresentationFamily.ArcherArrow:
+                    return CreateArcherArrowMesh();
                 default:
                     return CreateBoxMesh(family);
             }
+        }
+
+        private static Mesh CreateArcherArrowMesh()
+        {
+            const float shaftRadius = 0.045f;
+            const float shaftBack = -0.72f;
+            const float tipBase = 0.50f;
+            const float tipRadius = 0.14f;
+            const float tipEnd = 0.96f;
+            Color shaftColor = new Color(0.62f, 0.38f, 0.16f, 1f);
+            Color tipColor = new Color(0.82f, 0.86f, 0.92f, 1f);
+
+            var vertices = new List<Vector3>();
+            var triangles = new List<int>();
+            var colors = new List<Color>();
+            AppendBox(
+                vertices,
+                triangles,
+                colors,
+                new Vector3(-shaftRadius, -shaftRadius, shaftBack),
+                new Vector3(shaftRadius, shaftRadius, tipBase),
+                shaftColor);
+
+            Vector3 nearLeftBottom = new Vector3(-tipRadius, -tipRadius, tipBase);
+            Vector3 nearRightBottom = new Vector3(tipRadius, -tipRadius, tipBase);
+            Vector3 nearRightTop = new Vector3(tipRadius, tipRadius, tipBase);
+            Vector3 nearLeftTop = new Vector3(-tipRadius, tipRadius, tipBase);
+            Vector3 tip = new Vector3(0f, 0f, tipEnd);
+            AppendTriangle(vertices, triangles, colors, nearRightBottom, nearLeftBottom, tip, tipColor);
+            AppendTriangle(vertices, triangles, colors, nearLeftTop, nearRightTop, tip, tipColor);
+            AppendTriangle(vertices, triangles, colors, nearLeftBottom, nearLeftTop, tip, tipColor);
+            AppendTriangle(vertices, triangles, colors, nearRightTop, nearRightBottom, tip, tipColor);
+            return BuildMesh(vertices, triangles, colors);
         }
 
         private static Mesh CreateTownMesh()
@@ -1877,6 +1926,7 @@ namespace MagicCarpet.PresentationLab
                 case UnityEnhancedPresentationFamily.Goat: return new Color(0.82f, 0.78f, 0.66f);
                 case UnityEnhancedPresentationFamily.Villager: return new Color(0.76f, 0.58f, 0.32f);
                 case UnityEnhancedPresentationFamily.Archer: return new Color(0.48f, 0.72f, 0.34f);
+                case UnityEnhancedPresentationFamily.ArcherArrow: return new Color(0.68f, 0.50f, 0.28f);
                 case UnityEnhancedPresentationFamily.Firefly: return new Color(0.72f, 1f, 0.3f);
                 case UnityEnhancedPresentationFamily.Mana: return new Color(0.3f, 0.8f, 1f);
                 case UnityEnhancedPresentationFamily.Tree: return new Color(0.2f, 0.42f, 0.18f);
