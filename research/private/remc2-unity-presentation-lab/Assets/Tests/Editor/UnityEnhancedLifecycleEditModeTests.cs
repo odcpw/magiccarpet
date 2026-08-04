@@ -2003,13 +2003,13 @@ namespace MagicCarpet.PresentationLab.Tests
                 "bool spellJarFamily = familyId == UnityEnhancedPresentationFamily.SpellJar;",
                 actorSource);
             StringAssert.Contains(
-                "fireFamily || fireflyFamily || possessionFamily || projectileFamily || manaFamily || smokeFamily || spellJarFamily",
+                "else if (spellJarFamily && shader.name == \"MagicCarpet/Enhanced/VertexColorLit\")",
                 actorSource);
             StringAssert.Contains(
-                "else if (spellJarFamily && shader.name == \"MagicCarpet/Enhanced/Vfx\")",
+                "material.SetColor(\"_BaseColor\", Color.white);",
                 actorSource);
             StringAssert.Contains(
-                "material.SetFloat(\"_RadialMask\", 1f);",
+                "material.SetFloat(\"_EmissionStrength\", 0.34f);",
                 actorSource);
             StringAssert.Contains(
                 "case UnityEnhancedPresentationFamily.SpellJar:\n                    return CreateSpellJarMesh();",
@@ -2095,7 +2095,10 @@ namespace MagicCarpet.PresentationLab.Tests
                 bool hasNeck = false;
                 bool hasLip = false;
                 bool hasStopper = false;
+                bool hasShoulderBand = false;
                 Vector3[] jarVertices = jarFilter.sharedMesh.vertices;
+                Vector2[] jarUvs = jarFilter.sharedMesh.uv;
+                Color[] jarColors = jarFilter.sharedMesh.colors;
                 for (int i = 0; i < jarVertices.Length; i++)
                 {
                     Vector3 vertex = jarVertices[i];
@@ -2104,16 +2107,32 @@ namespace MagicCarpet.PresentationLab.Tests
                     hasNeck |= vertex.y >= 0.70f && vertex.y <= 0.96f && radius <= 0.13f;
                     hasLip |= vertex.y >= 0.93f && vertex.y <= 1.04f && radius >= 0.17f;
                     hasStopper |= vertex.y >= 1.04f && vertex.y <= 1.18f && radius <= 0.12f;
+                    hasShoulderBand |= vertex.y >= 0.50f && vertex.y <= 0.58f &&
+                                       radius >= 0.28f &&
+                                       jarColors[i].r > 0.90f && jarColors[i].b > 0.84f;
+                    Assert.IsFalse(float.IsNaN(jarUvs[i].x) || float.IsInfinity(jarUvs[i].x));
+                    Assert.IsFalse(float.IsNaN(jarUvs[i].y) || float.IsInfinity(jarUvs[i].y));
+                    Assert.That(jarUvs[i].x, Is.InRange(0f, 1f));
+                    Assert.That(jarUvs[i].y, Is.InRange(0f, 1f));
+                    Assert.IsFalse(float.IsNaN(jarColors[i].r) || float.IsInfinity(jarColors[i].r));
+                    Assert.IsFalse(float.IsNaN(jarColors[i].g) || float.IsInfinity(jarColors[i].g));
+                    Assert.IsFalse(float.IsNaN(jarColors[i].b) || float.IsInfinity(jarColors[i].b));
+                    Assert.IsFalse(float.IsNaN(jarColors[i].a) || float.IsInfinity(jarColors[i].a));
+                    Assert.That(jarColors[i].r, Is.InRange(0f, 1f));
+                    Assert.That(jarColors[i].g, Is.InRange(0f, 1f));
+                    Assert.That(jarColors[i].b, Is.InRange(0f, 1f));
+                    Assert.That(jarColors[i].a, Is.InRange(0f, 1f));
                 }
                 Assert.IsTrue(hasBody, "dedicated jar body geometry is missing");
                 Assert.IsTrue(hasNeck, "dedicated jar neck geometry is missing");
                 Assert.IsTrue(hasLip, "dedicated jar lip geometry is missing");
                 Assert.IsTrue(hasStopper, "dedicated jar stopper geometry is missing");
-                Assert.AreNotEqual(Color.white, jarFilter.sharedMesh.colors[0]);
+                Assert.IsTrue(hasShoulderBand, "dedicated jar shoulder band is missing");
+                Assert.AreNotEqual(Color.white, jarColors[0]);
                 bool hasAuthoredColorVariation = false;
-                for (int i = 1; i < jarFilter.sharedMesh.colors.Length; i++)
+                for (int i = 1; i < jarColors.Length; i++)
                 {
-                    if (jarFilter.sharedMesh.colors[i] != jarFilter.sharedMesh.colors[0])
+                    if (jarColors[i] != jarColors[0])
                     {
                         hasAuthoredColorVariation = true;
                         break;
@@ -2124,26 +2143,30 @@ namespace MagicCarpet.PresentationLab.Tests
                     "EnhancedGeneratedMaterial_SpellJar",
                     jarRenderer.sharedMaterial.name);
                 Assert.AreEqual(
-                    "MagicCarpet/Enhanced/Vfx",
+                    "MagicCarpet/Enhanced/VertexColorLit",
                     jarRenderer.sharedMaterial.shader.name);
-                Color glowColor = jarRenderer.sharedMaterial.GetColor("_GlowColor");
-                Assert.That(glowColor.r, Is.EqualTo(0.7f).Within(0.001f));
-                Assert.That(glowColor.g, Is.EqualTo(0.26f).Within(0.001f));
-                Assert.That(glowColor.b, Is.EqualTo(0.84f).Within(0.001f));
-                Assert.Greater(glowColor.b, glowColor.r);
-                Assert.Greater(glowColor.r, glowColor.g);
+                Color baseColor = jarRenderer.sharedMaterial.GetColor("_BaseColor");
+                Assert.That(baseColor.r, Is.EqualTo(1f).Within(0.001f));
+                Assert.That(baseColor.g, Is.EqualTo(1f).Within(0.001f));
+                Assert.That(baseColor.b, Is.EqualTo(1f).Within(0.001f));
+                Color emissionColor = jarRenderer.sharedMaterial.GetColor("_EmissionColor");
+                Assert.That(emissionColor.r, Is.EqualTo(0.7f).Within(0.001f));
+                Assert.That(emissionColor.g, Is.EqualTo(0.26f).Within(0.001f));
+                Assert.That(emissionColor.b, Is.EqualTo(0.84f).Within(0.001f));
+                Assert.Greater(emissionColor.b, emissionColor.r);
+                Assert.Greater(emissionColor.r, emissionColor.g);
                 Assert.That(
-                    jarRenderer.sharedMaterial.GetFloat("_GlowIntensity"),
-                    Is.EqualTo(1.1f).Within(0.001f));
+                    jarRenderer.sharedMaterial.GetFloat("_EmissionStrength"),
+                    Is.EqualTo(0.34f).Within(0.001f));
                 Assert.That(
-                    jarRenderer.sharedMaterial.GetFloat("_Opacity"),
-                    Is.EqualTo(0.72f).Within(0.001f));
+                    jarRenderer.sharedMaterial.GetFloat("_AmbientBoost"),
+                    Is.EqualTo(0.62f).Within(0.001f));
                 Assert.That(
-                    jarRenderer.sharedMaterial.GetFloat("_PulseSpeed"),
-                    Is.EqualTo(2.0f).Within(0.001f));
+                    jarRenderer.sharedMaterial.GetColor("_RimColor").b,
+                    Is.EqualTo(0.84f).Within(0.001f));
                 Assert.That(
-                    jarRenderer.sharedMaterial.GetFloat("_RadialMask"),
-                    Is.EqualTo(1f).Within(0.001f));
+                    jarRenderer.sharedMaterial.GetFloat("_RimStrength"),
+                    Is.EqualTo(0.30f).Within(0.001f));
                 Assert.IsNull(castleJarView.Find("EnhancedFireballHalo"));
                 Assert.IsNull(castleJarView.Find("EnhancedFireballTrail"));
                 Assert.IsNull(castleJarView.Find("EnhancedFireballPlume"));

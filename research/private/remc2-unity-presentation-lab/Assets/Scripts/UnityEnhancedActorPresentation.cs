@@ -1176,7 +1176,7 @@ namespace MagicCarpet.PresentationLab
                               Shader.Find("MagicCarpet/Enhanced/Vfx")
                             : (impactPresentation
                                 ? Shader.Find("MagicCarpet/Enhanced/Impact")
-                                : (fireFamily || fireflyFamily || possessionFamily || projectileFamily || manaFamily || smokeFamily || spellJarFamily
+                                : (fireFamily || fireflyFamily || possessionFamily || projectileFamily || manaFamily || smokeFamily
                                     ? Shader.Find("MagicCarpet/Enhanced/Vfx")
                                     : null)) ??
                             Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
@@ -1273,13 +1273,14 @@ namespace MagicCarpet.PresentationLab
                     material.SetFloat("_PulseSpeed", 2.5f);
                     material.SetFloat("_RadialMask", 1f);
                 }
-                else if (spellJarFamily && shader.name == "MagicCarpet/Enhanced/Vfx")
+                else if (spellJarFamily && shader.name == "MagicCarpet/Enhanced/VertexColorLit")
                 {
-                    material.SetColor("_GlowColor", FamilyColor(familyId));
-                    material.SetFloat("_GlowIntensity", 1.1f);
-                    material.SetFloat("_Opacity", 0.72f);
-                    material.SetFloat("_PulseSpeed", 2.0f);
-                    material.SetFloat("_RadialMask", 1f);
+                    material.SetColor("_BaseColor", Color.white);
+                    material.SetColor("_EmissionColor", FamilyColor(familyId));
+                    material.SetFloat("_EmissionStrength", 0.34f);
+                    material.SetFloat("_AmbientBoost", 0.62f);
+                    material.SetColor("_RimColor", FamilyColor(familyId));
+                    material.SetFloat("_RimStrength", 0.30f);
                 }
                 else
                 {
@@ -1577,12 +1578,17 @@ namespace MagicCarpet.PresentationLab
             Color shoulderColor = new Color(0.68f, 0.16f, 0.82f, 1f);
             Color neckColor = new Color(0.42f, 0.08f, 0.58f, 1f);
             Color lipColor = new Color(0.92f, 0.28f, 0.86f, 1f);
+            Color shoulderBandColor = new Color(0.96f, 0.34f, 0.90f, 1f);
             Color stopperColor = new Color(0.28f, 0.06f, 0.38f, 1f);
 
             AppendLowPolyCylinder(
                 vertices, triangles, colors, sides,
                 bodyBottom, bodyTop, bodyRadius, 0.27f,
                 bodyColor, new Color(0.35f, 0.06f, 0.48f, 1f));
+            AppendLowPolyCylinder(
+                vertices, triangles, colors, sides,
+                0.50f, 0.58f, 0.285f, 0.285f,
+                shoulderBandColor, bodyColor);
             AppendLowPolyCylinder(
                 vertices, triangles, colors, sides,
                 bodyTop, shoulderTop, 0.27f, 0.14f,
