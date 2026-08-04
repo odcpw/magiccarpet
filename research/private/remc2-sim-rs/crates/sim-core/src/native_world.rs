@@ -1570,6 +1570,14 @@ impl PlayerSnapshot {
         self.record[40]
     }
 
+    /// Source `array_0x2BDE[color].byte_0x006`, consumed by objective kind 3
+    /// (the banished-player predicate). This is distinct from the linked
+    /// entity's life/drawing state and remains lossless in `players.bin`.
+    #[must_use]
+    fn objective_player_state(&self) -> u8 {
+        self.record[6]
+    }
+
     /// Source `roll_0x155_341`, exported at the compact player-state offset
     /// used by the Level 2 reset projection.
     fn roll_0x155(&self) -> i16 {
@@ -3052,27 +3060,51 @@ impl RuntimeSnapshot {
         &self.bytes
     }
 
-    fn set_level2_objective_stage_selector(&mut self, stage_index: usize, state: u8) {
-        if let Some(objective) = self.objectives.get_mut(0) {
+    fn set_level2_objective_stage_selector_for(
+        &mut self,
+        objective_index: usize,
+        stage_index: usize,
+        state: u8,
+    ) {
+        if let Some(objective) = self.objectives.get_mut(objective_index) {
             if let Some(selector) = objective.stage_selectors.get_mut(stage_index) {
                 *selector = state;
-                self.bytes[304 + stage_index + 3] = state;
+                self.bytes[304 + objective_index * 11 + stage_index + 3] = state;
             }
         }
     }
 
+    fn set_level2_objective_stage_selector(&mut self, stage_index: usize, state: u8) {
+        self.set_level2_objective_stage_selector_for(0, stage_index, state);
+    }
+
     #[cfg(test)]
     fn set_level2_objective_text_selector(&mut self, stage_index: usize) {
-        if let Some(objective) = self.objectives.get_mut(0) {
+        self.set_level2_objective_text_selector_for(0, stage_index);
+    }
+
+    fn set_level2_objective_text_selector_for(
+        &mut self,
+        objective_index: usize,
+        stage_index: usize,
+    ) {
+        if let Some(objective) = self.objectives.get_mut(objective_index) {
             if let Ok(selector) = u8::try_from(stage_index) {
                 objective.text_selector = selector;
-                self.bytes[305] = selector;
+                self.bytes[304 + objective_index * 11 + 1] = selector;
             }
         }
     }
 
     fn set_level2_objective_stage_state(&mut self, state: u8) {
         self.set_level2_objective_stage_selector(LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX, state);
+    }
+
+    fn set_level2_objective_level_end_for(&mut self, objective_index: usize, state: u8) {
+        if let Some(objective) = self.objectives.get_mut(objective_index) {
+            objective.is_level_end = state;
+            self.bytes[304 + objective_index * 11] = state;
+        }
     }
 
     /// Bind an authored event into the stage table as remc2 `sub_58DA0` does
@@ -3430,6 +3462,7 @@ const LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX: u16 = 114;
 /// stage byte after the objective evaluator writes the source completion
 /// sentinel.
 const LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX: usize = 3;
+#[cfg(test)]
 const LEVEL2_BEE_OBJECTIVE_STAGE_INDEX: usize = 2;
 const LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX: u16 = 229;
 const LEVEL2_OBJECTIVE_POINT_RADIUS: i32 = 768;
@@ -16637,85 +16670,118 @@ impl Level2ResetSession {
         Ok(())
     }
 
-    /// Evaluate the currently selected Level 2 type-5 point objective using
-    /// the same signed XY tolerance as `sub_58F00_game_objectives`.  This is
-    /// intentionally a generic stage predicate: it only advances an authored
-    /// stage whose decoded kind is 5 and whose objective selector is still 1.
-    /// The model-32 switch remains responsible for consuming state 2 and
-    /// activating its authored group on the following source pass.
-    fn advance_level2_selected_point_objective(&mut self) {
-        if self.level2_selected_objective_stage_state != 1 {
-            return;
-        }
-        let Some(objective) = self.runtime.objectives.first() else {
-            return;
-        };
-        if objective
-            .stage_selectors
-            .get(LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX)
-            != Some(&1)
-        {
-            return;
-        }
-        let Some(stage) = self
-            .runtime
-            .stages
-            .get(LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX)
-        else {
-            return;
-        };
-        if stage.kind != 5 {
-            return;
-        }
-
-        // The source compares the signed 16-bit player coordinates against
-        // the signed stage axes. Preserve that narrowing before subtracting
-        // so wrapped world coordinates retain remc2's behavior.
+    /// Evaluate every participating owner's remaining Level 2 objective
+    /// stage after the entity pass. This mirrors the source
+    /// `sub_58F00_game_objectives` walk: stage selectors at one are eligible,
+    /// a successful predicate writes two, and the first remaining one becomes
+    /// the next objective-text selector (or sets `IsLevelEnd` when none remain).
+    /// Type 9 is deliberately deferred because the compact runtime does not
+    /// yet expose the exact active BUILD-chain relation used by remc2.
+    fn advance_level2_objectives(&mut self) {
+        let owner_colors = self
+            .players
+            .iter()
+            .take(usize::from(self.runtime.player_count))
+            .filter(|player| player.active_player_index >= 0)
+            .map(|player| usize::from(player.player_color_index()))
+            .collect::<Vec<_>>();
+        let stage_count = usize::from(self.runtime.stage_index).min(self.runtime.stages.len());
         let player_x = i32::from(self.state.position.x as i16);
         let player_y = i32::from(self.state.position.y as i16);
-        let stage_x = i32::from(stage.axis_x);
-        let stage_y = i32::from(stage.axis_y);
-        if (stage_x - player_x).abs() <= LEVEL2_OBJECTIVE_POINT_RADIUS
-            && (stage_y - player_y).abs() <= LEVEL2_OBJECTIVE_POINT_RADIUS
-        {
-            self.level2_selected_objective_stage_state = 2;
-            self.runtime
-                .set_level2_objective_stage_state(self.level2_selected_objective_stage_state);
-        }
-    }
 
-    /// Evaluate the rooted type-7 objective for authored Bee row 229. The
-    /// pinned `sub_58F00_game_objectives` predicate checks the source-owned
-    /// killed-row bytearray after the complete entity pass; the typed Level 2
-    /// projection expresses that same terminal state as an activated row 229
-    /// with no live source row remaining. Other Bee rows are deliberately not
-    /// interchangeable objective targets.
-    fn advance_level2_authored_bee_objective(&mut self) {
-        let Some(objective) = self.runtime.objectives.first() else {
-            return;
-        };
-        if objective.text_selector as usize != LEVEL2_BEE_OBJECTIVE_STAGE_INDEX
-            || objective.stage_selectors[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX] != 1
-        {
-            return;
-        }
-        let Some(stage) = self.runtime.stages.get(LEVEL2_BEE_OBJECTIVE_STAGE_INDEX) else {
-            return;
-        };
-        if stage.kind != 7
-            || stage.relation != RuntimeRelation::Scalar(2)
-            || !self
-                .level2_bees_activated
-                .contains(&LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
-        {
-            return;
-        }
-        let target_is_live = self.economy.authored_bees().iter().any(|source| {
-            source.active && source.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX
-        });
-        if !target_is_live {
-            self.runtime
-                .set_level2_objective_stage_selector(LEVEL2_BEE_OBJECTIVE_STAGE_INDEX, 2);
+        for objective_index in owner_colors {
+            let Some(objective) = self.runtime.objectives.get(objective_index).copied() else {
+                continue;
+            };
+            if objective.done != 0 || objective.is_level_end != 0 {
+                continue;
+            }
+            let mut completed = Vec::new();
+            for stage_index in 0..stage_count {
+                if objective.stage_selectors[stage_index] != 1 {
+                    continue;
+                }
+                let Some(stage) = self.runtime.stages.get(stage_index) else {
+                    continue;
+                };
+                let achieved = match stage.kind {
+                    3 => {
+                        // The source type-3 predicate is independent of
+                        // ObjectiveText and reads the bound player's byte 6,
+                        // not the linked entity life/drawing fields.
+                        if stage.flags & 1 == 0 {
+                            false
+                        } else if let RuntimeRelation::LiveEntity(target_index) = stage.relation {
+                            self.players
+                                .iter()
+                                .find(|player| player.entity_index == target_index)
+                                .is_some_and(|player| player.objective_player_state() == 0)
+                        } else {
+                            false
+                        }
+                    }
+                    5 => {
+                        if objective.text_selector as usize != stage_index {
+                            false
+                        } else {
+                            let stage_x = i32::from(stage.axis_x);
+                            let stage_y = i32::from(stage.axis_y);
+                            (stage_x - player_x).abs() <= LEVEL2_OBJECTIVE_POINT_RADIUS
+                                && (stage_y - player_y).abs() <= LEVEL2_OBJECTIVE_POINT_RADIUS
+                        }
+                    }
+                    7 => {
+                        if objective.text_selector as usize != stage_index
+                            || stage.relation != RuntimeRelation::Scalar(2)
+                        {
+                            false
+                        } else {
+                            let target_is_live =
+                                self.economy.authored_bees().iter().any(|source| {
+                                    source.active
+                                        && source.authored_index
+                                            == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX
+                                });
+                            self.level2_bees_activated
+                                .contains(&LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+                                && !target_is_live
+                        }
+                    }
+                    // The source scans BLDGPRM/BUILD chains here. Until the
+                    // runtime exports those chain links, do not infer success
+                    // from the temporary model-45 producer row.
+                    9 => false,
+                    _ => false,
+                };
+                if achieved {
+                    completed.push(stage_index);
+                }
+            }
+            if completed.is_empty() {
+                continue;
+            }
+            for stage_index in completed {
+                self.runtime.set_level2_objective_stage_selector_for(
+                    objective_index,
+                    stage_index,
+                    2,
+                );
+                if objective_index == 0 && stage_index == LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX {
+                    self.level2_selected_objective_stage_state = 2;
+                }
+            }
+            let next_stage = self.runtime.objectives[objective_index]
+                .stage_selectors
+                .iter()
+                .take(stage_count)
+                .position(|selector| *selector == 1);
+            if let Some(next_stage) = next_stage {
+                self.runtime
+                    .set_level2_objective_text_selector_for(objective_index, next_stage);
+            } else {
+                self.runtime
+                    .set_level2_objective_level_end_for(objective_index, 1);
+            }
         }
     }
 
@@ -20123,8 +20189,7 @@ impl Level2ResetSession {
         // before the next outer turn's authored switch pass.  Keep that
         // ordering so model-32 sees the newly completed stage only on the
         // following turn, exactly as the source does.
-        self.advance_level2_selected_point_objective();
-        self.advance_level2_authored_bee_objective();
+        self.advance_level2_objectives();
         evidence
     }
 
@@ -30853,6 +30918,9 @@ mod tests {
             1,
             "frame zero starts with the source objective incomplete"
         );
+        session
+            .runtime
+            .set_level2_objective_text_selector(LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX);
 
         // A point just beyond the source tolerance must not advance the
         // stage, even though the same outer-turn route is otherwise live.
@@ -30892,6 +30960,115 @@ mod tests {
         assert_eq!(session.level2_selected_objective_stage_state(), 1);
         assert!(!session.level2_objective_done());
         assert!(session.economy().spell_pickups().is_empty());
+    }
+
+    #[test]
+    fn level_two_objective_type5_stage_zero_uses_source_gate_and_advances_text() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 objective stage-zero session");
+        let stage = session.runtime().stages[0].clone();
+        assert_eq!(stage.kind, 5);
+        assert_eq!(session.runtime().objectives[0].text_selector, 0);
+
+        // The source type-5 check uses the active ObjectiveText stage and a
+        // signed XY radius. One step beyond that radius is a discriminating
+        // negative case on the real outer-turn route.
+        session.state.position = Position {
+            x: (stage.axis_x as u16).wrapping_add(LEVEL2_OBJECTIVE_POINT_RADIUS as u16 + 1),
+            y: stage.axis_y as u16,
+            z: 0,
+        };
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.runtime().objectives[0].stage_selectors[0], 1);
+        assert_eq!(session.runtime().objectives[0].text_selector, 0);
+
+        session.state.position = Position {
+            x: stage.axis_x as u16,
+            y: stage.axis_y as u16,
+            z: 0,
+        };
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.runtime().objectives[0].stage_selectors[0], 2);
+        // Source progression selects the first remaining stage, rather than
+        // leaving the completed type-5 row as the text selector.
+        assert_eq!(session.runtime().objectives[0].text_selector, 1);
+    }
+
+    #[test]
+    fn level_two_objective_type3_ignores_text_selector_and_uses_bound_player_state() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 objective type-three session");
+        let stage = session.runtime().stages[1].clone();
+        assert_eq!(stage.kind, 3);
+        assert_eq!(stage.flags & 1, 1);
+        let RuntimeRelation::LiveEntity(target_index) = stage.relation else {
+            panic!("type-3 objective must retain its bound player relation");
+        };
+        let target_player = session
+            .players
+            .iter()
+            .find(|player| player.entity_index == target_index)
+            .expect("type-3 objective target player row");
+        assert_ne!(target_player.objective_player_state(), 0);
+
+        // Stage 0 is already complete, but ObjectiveText remains 0. The
+        // source type-3 predicate has no text-selector gate, so this active
+        // target must still leave stage 1 incomplete.
+        session.runtime.set_level2_objective_stage_selector(0, 2);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.runtime().objectives[0].stage_selectors[1], 1);
+
+        // A dead/hidden entity alone is not the source terminal state: the
+        // referenced player slot remains participating, so kind 3 stays put.
+        session.entities[usize::from(target_index)].life = -1;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.runtime().objectives[0].stage_selectors[1], 1);
+
+        // The source writes byte 6 when the player is banished. Mutating that
+        // exact projected state advances the stage and selects the next row
+        // through the same production objective pass.
+        session
+            .players
+            .iter_mut()
+            .find(|player| player.entity_index == target_index)
+            .expect("type-3 objective target player row")
+            .record[6] = 0;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.runtime().objectives[0].stage_selectors[1], 2);
+        assert_eq!(session.runtime().objectives[0].text_selector, 2);
+    }
+
+    #[test]
+    fn level_two_objective_progression_sets_level_end_after_final_stage() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 objective level-end session");
+        let stage = session.runtime().stages[0].clone();
+        for stage_index in 1..usize::from(session.runtime().stage_index) {
+            session
+                .runtime
+                .set_level2_objective_stage_selector(stage_index, 0);
+        }
+        session.runtime.set_level2_objective_text_selector(0);
+        session.state.position = Position {
+            x: stage.axis_x as u16,
+            y: stage.axis_y as u16,
+            z: 0,
+        };
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        assert_eq!(session.runtime().objectives[0].stage_selectors[0], 2);
+        assert_eq!(session.runtime().objectives[0].is_level_end, 1);
+        assert_eq!(session.runtime().bytes()[304], 1);
     }
 
     #[test]
