@@ -1956,6 +1956,217 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void AuthoritativeSpellJarsUseRadialPurpleCollectibleWithoutLightOrFireballStack()
+        {
+            Assert.AreEqual(10, (int)UnityEnhancedPresentationFamily.SpellJar);
+
+            string ownerSource = File.ReadAllText(Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "UnityEnhancedOwnerSessionSource.cs"));
+            string actorSource = File.ReadAllText(Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "UnityEnhancedActorPresentation.cs"));
+            int class15Start = ownerSource.IndexOf(
+                "if (source.classId == 15)",
+                StringComparison.Ordinal);
+            int class15End = ownerSource.IndexOf(
+                "return UnsupportedPresentationFamily;",
+                class15Start,
+                StringComparison.Ordinal);
+            int buildLightsStart = ownerSource.IndexOf(
+                "private UnityEnhancedLocalLightRequest[] BuildLocalLights()",
+                StringComparison.Ordinal);
+            int presentationFamilyStart = ownerSource.IndexOf(
+                "private static int PresentationFamily(",
+                StringComparison.Ordinal);
+            Assert.GreaterOrEqual(class15Start, 0);
+            Assert.Greater(class15End, class15Start);
+            Assert.GreaterOrEqual(buildLightsStart, 0);
+            Assert.Greater(presentationFamilyStart, buildLightsStart);
+
+            string class15Mapping = ownerSource.Substring(
+                class15Start,
+                class15End - class15Start);
+            string buildLights = ownerSource.Substring(
+                buildLightsStart,
+                presentationFamilyStart - buildLightsStart);
+            StringAssert.Contains(
+                "if (source.classId == 15)\n            {\n                return (int)UnityEnhancedPresentationFamily.SpellJar;",
+                class15Mapping);
+            StringAssert.DoesNotContain("source.model", class15Mapping);
+            StringAssert.DoesNotContain(
+                "UnityEnhancedPresentationFamily.SpellJar",
+                buildLights);
+            StringAssert.Contains(
+                "bool spellJarFamily = familyId == UnityEnhancedPresentationFamily.SpellJar;",
+                actorSource);
+            StringAssert.Contains(
+                "fireFamily || fireflyFamily || possessionFamily || projectileFamily || manaFamily || smokeFamily || spellJarFamily",
+                actorSource);
+            StringAssert.Contains(
+                "else if (spellJarFamily && shader.name == \"MagicCarpet/Enhanced/Vfx\")",
+                actorSource);
+            StringAssert.Contains(
+                "material.SetFloat(\"_RadialMask\", 1f);",
+                actorSource);
+
+            GameObject gameObject = new GameObject("enhanced-spell-jar-test");
+            try
+            {
+                UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+                root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+                const ulong generation = 55;
+                const ulong castleJarIdentity = 0x0000003700000031UL;
+                const ulong speedJarIdentity = 0x0000003700000100UL;
+                Vector3 position = new Vector3(2f, 3f, 4f);
+                Quaternion castleJarRotation = Quaternion.Euler(0f, 33f, 0f);
+                UnityEnhancedNightLightingDescriptor night =
+                    UnityEnhancedNightLightingDescriptor.Level1Night();
+
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 0,
+                    Reset = true,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = new[]
+                    {
+                        new UnityEnhancedEntitySnapshot
+                        {
+                            StableIdentity = castleJarIdentity,
+                            Generation = generation,
+                            Position = position,
+                            Rotation = castleJarRotation,
+                            Visible = true,
+                            PresentationFamily = (int)UnityEnhancedPresentationFamily.SpellJar,
+                            AnimationPhase = 0.2f,
+                            Scale = 1f,
+                            RenderLayer = 3031
+                        }
+                    },
+                    NightLighting = night,
+                    LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+
+                Transform castleJarView = gameObject.transform.Find(
+                    "EnhancedWorldObjects/EnhancedEntity_0000003700000031");
+                Assert.IsNotNull(castleJarView);
+                Assert.That(
+                    Quaternion.Angle(castleJarRotation, castleJarView.rotation),
+                    Is.LessThan(0.001f));
+                Transform castleJarVisual = castleJarView.Find("EnhancedActorVisual");
+                Assert.IsNotNull(castleJarVisual);
+                MeshFilter jarFilter = castleJarVisual.GetComponent<MeshFilter>();
+                MeshRenderer jarRenderer = castleJarVisual.GetComponent<MeshRenderer>();
+                Assert.AreEqual("EnhancedGeneratedMesh_SpellJar", jarFilter.sharedMesh.name);
+                Assert.AreEqual(8, jarFilter.sharedMesh.vertexCount);
+                Assert.AreEqual(8, jarFilter.sharedMesh.uv.Length);
+                Assert.That(
+                    jarFilter.sharedMesh.bounds.size.x,
+                    Is.EqualTo(0.7f).Within(0.001f));
+                Assert.That(
+                    jarFilter.sharedMesh.bounds.size.y,
+                    Is.EqualTo(0.7f).Within(0.001f));
+                Assert.That(
+                    jarFilter.sharedMesh.bounds.size.z,
+                    Is.EqualTo(0.7f).Within(0.001f));
+                Assert.AreEqual(
+                    "EnhancedGeneratedMaterial_SpellJar",
+                    jarRenderer.sharedMaterial.name);
+                Assert.AreEqual(
+                    "MagicCarpet/Enhanced/Vfx",
+                    jarRenderer.sharedMaterial.shader.name);
+                Color glowColor = jarRenderer.sharedMaterial.GetColor("_GlowColor");
+                Assert.That(glowColor.r, Is.EqualTo(0.7f).Within(0.001f));
+                Assert.That(glowColor.g, Is.EqualTo(0.26f).Within(0.001f));
+                Assert.That(glowColor.b, Is.EqualTo(0.84f).Within(0.001f));
+                Assert.Greater(glowColor.b, glowColor.r);
+                Assert.Greater(glowColor.r, glowColor.g);
+                Assert.That(
+                    jarRenderer.sharedMaterial.GetFloat("_GlowIntensity"),
+                    Is.EqualTo(1.1f).Within(0.001f));
+                Assert.That(
+                    jarRenderer.sharedMaterial.GetFloat("_Opacity"),
+                    Is.EqualTo(0.72f).Within(0.001f));
+                Assert.That(
+                    jarRenderer.sharedMaterial.GetFloat("_PulseSpeed"),
+                    Is.EqualTo(2.0f).Within(0.001f));
+                Assert.That(
+                    jarRenderer.sharedMaterial.GetFloat("_RadialMask"),
+                    Is.EqualTo(1f).Within(0.001f));
+                Assert.IsNull(castleJarView.Find("EnhancedFireballHalo"));
+                Assert.IsNull(castleJarView.Find("EnhancedFireballTrail"));
+                Assert.IsNull(castleJarView.Find("EnhancedFireballPlume"));
+                Assert.IsNull(castleJarView.Find("EnhancedFireballVolume"));
+                Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
+                Assert.AreEqual(0, root.VfxPresentation.ActiveEffectCount);
+                Assert.AreEqual(0, gameObject.transform
+                    .Find("EnhancedNightLights")
+                    .GetComponentsInChildren<Light>(true).Length);
+
+                GameObject jarObject = castleJarView.gameObject;
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 1,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = Array.Empty<UnityEnhancedEntitySnapshot>(),
+                    NightLighting = night,
+                    LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+                Assert.AreEqual(1, root.PooledEntityCount);
+                Assert.AreEqual(1, root.ActorPresentation.PooledVisualCount);
+                Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
+                Assert.AreEqual(0, root.VfxPresentation.ActiveEffectCount);
+
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 2,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = new[]
+                    {
+                        new UnityEnhancedEntitySnapshot
+                        {
+                            StableIdentity = speedJarIdentity,
+                            Generation = generation,
+                            Position = position,
+                            Rotation = Quaternion.Euler(0f, 47f, 0f),
+                            Visible = true,
+                            PresentationFamily = (int)UnityEnhancedPresentationFamily.SpellJar,
+                            AnimationPhase = 0.8f,
+                            Scale = 1f,
+                            RenderLayer = 3100
+                        }
+                    },
+                    NightLighting = night,
+                    LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+                Transform speedJarView = gameObject.transform.Find(
+                    "EnhancedWorldObjects/EnhancedEntity_0000003700000100");
+                Assert.IsNotNull(speedJarView);
+                Assert.AreSame(jarObject, speedJarView.gameObject);
+                Assert.AreEqual(0, root.PooledEntityCount);
+                Assert.AreEqual(1, root.ActorPresentation.PooledVisualCount);
+                Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
+                Assert.AreEqual(0, root.VfxPresentation.ActiveEffectCount);
+                Assert.IsNull(speedJarView.Find("EnhancedFireballHalo"));
+                Assert.IsNull(speedJarView.Find("EnhancedFireballTrail"));
+                Assert.IsNull(speedJarView.Find("EnhancedFireballPlume"));
+                Assert.IsNull(speedJarView.Find("EnhancedFireballVolume"));
+            }
+            finally
+            {
+                Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        [Test]
         public void AuthoritativeSmokeImpactUsesSoftRadialVfxWithoutLightOrFireballStack()
         {
             Assert.AreEqual(14, (int)UnityEnhancedPresentationFamily.Smoke);
