@@ -1956,7 +1956,7 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
-        public void AuthoritativeSpellJarsUseRadialPurpleCollectibleWithoutLightOrFireballStack()
+        public void AuthoritativeSpellJarsUseDedicatedGroundedBottleMeshWithoutLightOrFireballStack()
         {
             Assert.AreEqual(10, (int)UnityEnhancedPresentationFamily.SpellJar);
 
@@ -2011,6 +2011,15 @@ namespace MagicCarpet.PresentationLab.Tests
             StringAssert.Contains(
                 "material.SetFloat(\"_RadialMask\", 1f);",
                 actorSource);
+            StringAssert.Contains(
+                "case UnityEnhancedPresentationFamily.SpellJar:\n                    return CreateSpellJarMesh();",
+                actorSource);
+            StringAssert.Contains(
+                "private static Mesh CreateSpellJarMesh()",
+                actorSource);
+            StringAssert.Contains(
+                "AppendLowPolyCylinder(",
+                actorSource);
 
             GameObject gameObject = new GameObject("enhanced-spell-jar-test");
             try
@@ -2062,17 +2071,55 @@ namespace MagicCarpet.PresentationLab.Tests
                 MeshFilter jarFilter = castleJarVisual.GetComponent<MeshFilter>();
                 MeshRenderer jarRenderer = castleJarVisual.GetComponent<MeshRenderer>();
                 Assert.AreEqual("EnhancedGeneratedMesh_SpellJar", jarFilter.sharedMesh.name);
-                Assert.AreEqual(8, jarFilter.sharedMesh.vertexCount);
-                Assert.AreEqual(8, jarFilter.sharedMesh.uv.Length);
+                Assert.Greater(jarFilter.sharedMesh.vertexCount, 8);
+                Assert.AreEqual(
+                    jarFilter.sharedMesh.vertexCount,
+                    jarFilter.sharedMesh.colors.Length);
+                Assert.AreEqual(
+                    jarFilter.sharedMesh.vertexCount,
+                    jarFilter.sharedMesh.uv.Length);
                 Assert.That(
                     jarFilter.sharedMesh.bounds.size.x,
-                    Is.EqualTo(0.7f).Within(0.001f));
+                    Is.EqualTo(0.6f).Within(0.001f));
                 Assert.That(
                     jarFilter.sharedMesh.bounds.size.y,
-                    Is.EqualTo(0.7f).Within(0.001f));
+                    Is.EqualTo(1.18f).Within(0.001f));
                 Assert.That(
                     jarFilter.sharedMesh.bounds.size.z,
-                    Is.EqualTo(0.7f).Within(0.001f));
+                    Is.EqualTo(0.6f).Within(0.001f));
+                Assert.That(jarFilter.sharedMesh.bounds.min.y, Is.EqualTo(0f).Within(0.001f));
+                Assert.Less(
+                    jarFilter.sharedMesh.bounds.size.x,
+                    jarFilter.sharedMesh.bounds.size.y);
+                bool hasBody = false;
+                bool hasNeck = false;
+                bool hasLip = false;
+                bool hasStopper = false;
+                Vector3[] jarVertices = jarFilter.sharedMesh.vertices;
+                for (int i = 0; i < jarVertices.Length; i++)
+                {
+                    Vector3 vertex = jarVertices[i];
+                    float radius = new Vector2(vertex.x, vertex.z).magnitude;
+                    hasBody |= vertex.y <= 0.54f && radius >= 0.26f;
+                    hasNeck |= vertex.y >= 0.70f && vertex.y <= 0.96f && radius <= 0.13f;
+                    hasLip |= vertex.y >= 0.93f && vertex.y <= 1.04f && radius >= 0.17f;
+                    hasStopper |= vertex.y >= 1.04f && vertex.y <= 1.18f && radius <= 0.12f;
+                }
+                Assert.IsTrue(hasBody, "dedicated jar body geometry is missing");
+                Assert.IsTrue(hasNeck, "dedicated jar neck geometry is missing");
+                Assert.IsTrue(hasLip, "dedicated jar lip geometry is missing");
+                Assert.IsTrue(hasStopper, "dedicated jar stopper geometry is missing");
+                Assert.AreNotEqual(Color.white, jarFilter.sharedMesh.colors[0]);
+                bool hasAuthoredColorVariation = false;
+                for (int i = 1; i < jarFilter.sharedMesh.colors.Length; i++)
+                {
+                    if (jarFilter.sharedMesh.colors[i] != jarFilter.sharedMesh.colors[0])
+                    {
+                        hasAuthoredColorVariation = true;
+                        break;
+                    }
+                }
+                Assert.IsTrue(hasAuthoredColorVariation, "jar vertex colors are not authored");
                 Assert.AreEqual(
                     "EnhancedGeneratedMaterial_SpellJar",
                     jarRenderer.sharedMaterial.name);

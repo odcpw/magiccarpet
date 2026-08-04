@@ -1458,7 +1458,6 @@ namespace MagicCarpet.PresentationLab
                    family == UnityEnhancedPresentationFamily.Impact ||
                    family == UnityEnhancedPresentationFamily.Fire ||
                    family == UnityEnhancedPresentationFamily.Smoke ||
-                   family == UnityEnhancedPresentationFamily.SpellJar ||
                    family == UnityEnhancedPresentationFamily.Possession;
         }
 
@@ -1520,6 +1519,8 @@ namespace MagicCarpet.PresentationLab
                     return CreateCreatureMesh(family);
                 case UnityEnhancedPresentationFamily.ArcherArrow:
                     return CreateArcherArrowMesh();
+                case UnityEnhancedPresentationFamily.SpellJar:
+                    return CreateSpellJarMesh();
                 default:
                     return CreateBoxMesh(family);
             }
@@ -1556,6 +1557,63 @@ namespace MagicCarpet.PresentationLab
             AppendTriangle(vertices, triangles, colors, nearLeftBottom, nearLeftTop, tip, tipColor);
             AppendTriangle(vertices, triangles, colors, nearRightTop, nearRightBottom, tip, tipColor);
             return BuildMesh(vertices, triangles, colors);
+        }
+
+        private static Mesh CreateSpellJarMesh()
+        {
+            const int sides = 8;
+            const float bodyBottom = 0f;
+            const float bodyTop = 0.54f;
+            const float shoulderTop = 0.72f;
+            const float neckTop = 0.96f;
+            const float lipTop = 1.04f;
+            const float stopperTop = 1.18f;
+            const float bodyRadius = 0.30f;
+
+            var vertices = new List<Vector3>();
+            var triangles = new List<int>();
+            var colors = new List<Color>();
+            Color bodyColor = new Color(0.54f, 0.12f, 0.72f, 1f);
+            Color shoulderColor = new Color(0.68f, 0.16f, 0.82f, 1f);
+            Color neckColor = new Color(0.42f, 0.08f, 0.58f, 1f);
+            Color lipColor = new Color(0.92f, 0.28f, 0.86f, 1f);
+            Color stopperColor = new Color(0.28f, 0.06f, 0.38f, 1f);
+
+            AppendLowPolyCylinder(
+                vertices, triangles, colors, sides,
+                bodyBottom, bodyTop, bodyRadius, 0.27f,
+                bodyColor, new Color(0.35f, 0.06f, 0.48f, 1f));
+            AppendLowPolyCylinder(
+                vertices, triangles, colors, sides,
+                bodyTop, shoulderTop, 0.27f, 0.14f,
+                shoulderColor, bodyColor);
+            AppendLowPolyCylinder(
+                vertices, triangles, colors, sides,
+                0.70f, neckTop, 0.12f, 0.12f,
+                neckColor, shoulderColor);
+            AppendLowPolyCylinder(
+                vertices, triangles, colors, sides,
+                0.93f, lipTop, 0.18f, 0.18f,
+                lipColor, shoulderColor);
+            AppendLowPolyCylinder(
+                vertices, triangles, colors, sides,
+                lipTop, stopperTop, 0.11f, 0.10f,
+                stopperColor, lipColor);
+
+            Mesh mesh = BuildMesh(vertices, triangles, colors);
+            Vector2[] uv = new Vector2[mesh.vertexCount];
+            Vector3[] meshVertices = mesh.vertices;
+            for (int i = 0; i < meshVertices.Length; i++)
+            {
+                // Keep the procedural jar inside the Vfx radial-mask interior;
+                // its 3D silhouette supplies the shape while the existing
+                // texture-free shader softly attenuates its outer edges.
+                uv[i] = new Vector2(
+                    Mathf.Clamp01(0.5f + meshVertices[i].x / (bodyRadius * 4f)),
+                    Mathf.Clamp01(0.25f + meshVertices[i].y / (stopperTop * 2f)));
+            }
+            mesh.uv = uv;
+            return mesh;
         }
 
         private static Mesh CreateTownMesh()
@@ -1897,6 +1955,77 @@ namespace MagicCarpet.PresentationLab
             AppendTriangle(vertices, triangles, colors, p3, p2, apex, color);
             AppendTriangle(vertices, triangles, colors, p0, p3, apex, color);
             AppendTriangle(vertices, triangles, colors, p2, p1, apex, color);
+        }
+
+        private static void AppendLowPolyCylinder(
+            List<Vector3> vertices,
+            List<int> triangles,
+            List<Color> colors,
+            int sides,
+            float bottomY,
+            float topY,
+            float bottomRadius,
+            float topRadius,
+            Color sideColor,
+            Color capColor)
+        {
+            for (int i = 0; i < sides; i++)
+            {
+                float angle = i * Mathf.PI * 2f / sides;
+                float nextAngle = (i + 1) * Mathf.PI * 2f / sides;
+                Vector3 bottom = new Vector3(
+                    Mathf.Cos(angle) * bottomRadius,
+                    bottomY,
+                    Mathf.Sin(angle) * bottomRadius);
+                Vector3 top = new Vector3(
+                    Mathf.Cos(angle) * topRadius,
+                    topY,
+                    Mathf.Sin(angle) * topRadius);
+                Vector3 nextTop = new Vector3(
+                    Mathf.Cos(nextAngle) * topRadius,
+                    topY,
+                    Mathf.Sin(nextAngle) * topRadius);
+                Vector3 nextBottom = new Vector3(
+                    Mathf.Cos(nextAngle) * bottomRadius,
+                    bottomY,
+                    Mathf.Sin(nextAngle) * bottomRadius);
+                AppendQuad(
+                    vertices, triangles, colors,
+                    bottom, top, nextTop, nextBottom,
+                    sideColor);
+            }
+
+            Vector3 bottomCenter = new Vector3(0f, bottomY, 0f);
+            Vector3 topCenter = new Vector3(0f, topY, 0f);
+            for (int i = 0; i < sides; i++)
+            {
+                float angle = i * Mathf.PI * 2f / sides;
+                float nextAngle = (i + 1) * Mathf.PI * 2f / sides;
+                Vector3 bottom = new Vector3(
+                    Mathf.Cos(angle) * bottomRadius,
+                    bottomY,
+                    Mathf.Sin(angle) * bottomRadius);
+                Vector3 nextBottom = new Vector3(
+                    Mathf.Cos(nextAngle) * bottomRadius,
+                    bottomY,
+                    Mathf.Sin(nextAngle) * bottomRadius);
+                Vector3 top = new Vector3(
+                    Mathf.Cos(angle) * topRadius,
+                    topY,
+                    Mathf.Sin(angle) * topRadius);
+                Vector3 nextTop = new Vector3(
+                    Mathf.Cos(nextAngle) * topRadius,
+                    topY,
+                    Mathf.Sin(nextAngle) * topRadius);
+                AppendTriangle(
+                    vertices, triangles, colors,
+                    bottomCenter, nextBottom, bottom,
+                    capColor);
+                AppendTriangle(
+                    vertices, triangles, colors,
+                    topCenter, top, nextTop,
+                    capColor);
+            }
         }
 
         private static void AppendOctahedron(
