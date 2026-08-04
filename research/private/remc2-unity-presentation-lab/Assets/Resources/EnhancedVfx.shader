@@ -7,6 +7,7 @@ Shader "MagicCarpet/Enhanced/Vfx"
         _Opacity ("Opacity", Range(0, 1)) = 0.85
         _PulseSpeed ("Pulse Speed", Float) = 2.5
         _RimStrength ("Rim Strength", Range(0, 4)) = 1.2
+        _RadialMask ("Radial Mask", Range(0, 1)) = 0
     }
 
     SubShader
@@ -39,12 +40,14 @@ Shader "MagicCarpet/Enhanced/Vfx"
                 half _Opacity;
                 half _PulseSpeed;
                 half _RimStrength;
+                half _RadialMask;
             CBUFFER_END
 
             struct Attributes
             {
                 float4 positionOS : POSITION;
                 float3 normalOS : NORMAL;
+                float2 uv : TEXCOORD0;
             };
 
             struct Varyings
@@ -52,6 +55,7 @@ Shader "MagicCarpet/Enhanced/Vfx"
                 float4 positionHCS : SV_POSITION;
                 float3 positionWS : TEXCOORD0;
                 half3 normalWS : TEXCOORD1;
+                float2 uv : TEXCOORD2;
             };
 
             Varyings Vert(Attributes input)
@@ -62,6 +66,7 @@ Shader "MagicCarpet/Enhanced/Vfx"
                 output.positionHCS = positionInputs.positionCS;
                 output.positionWS = positionInputs.positionWS;
                 output.normalWS = normalInputs.normalWS;
+                output.uv = input.uv;
                 return output;
             }
 
@@ -71,8 +76,15 @@ Shader "MagicCarpet/Enhanced/Vfx"
                 half3 viewDirectionWS = GetWorldSpaceNormalizeViewDir(input.positionWS);
                 half rim = pow(saturate(1.0h - dot(normalWS, viewDirectionWS)), 2.0h);
                 half pulse = 0.88h + 0.12h * sin(_Time.y * _PulseSpeed);
+                half radial = 1.0h - smoothstep(
+                    0.45h,
+                    1.0h,
+                    length(input.uv * 2.0h - 1.0h));
+                half radialAttenuation = lerp(1.0h, radial, saturate(_RadialMask));
                 half intensity = _GlowIntensity * pulse * (0.72h + rim * _RimStrength);
-                return half4(_GlowColor.rgb * intensity, saturate(_Opacity * (0.75h + rim * 0.25h)));
+                return half4(
+                    _GlowColor.rgb * intensity * radialAttenuation,
+                    saturate(_Opacity * (0.75h + rim * 0.25h)) * radialAttenuation);
             }
             ENDHLSL
         }

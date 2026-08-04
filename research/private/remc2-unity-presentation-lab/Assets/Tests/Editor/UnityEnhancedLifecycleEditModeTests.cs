@@ -2481,6 +2481,125 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void AuthoritativeFireflyUsesRadialGlowWithoutChangingExistingVfx()
+        {
+            string actorSource = File.ReadAllText(Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "UnityEnhancedActorPresentation.cs"));
+            StringAssert.Contains(
+                "bool fireflyFamily = familyId == UnityEnhancedPresentationFamily.Firefly;",
+                actorSource);
+            StringAssert.Contains("fireFamily || fireflyFamily", actorSource);
+
+            string shaderSource = File.ReadAllText(Path.Combine(
+                Application.dataPath,
+                "Resources",
+                "EnhancedVfx.shader"));
+            StringAssert.Contains("_RadialMask (\"Radial Mask\", Range(0, 1)) = 0", shaderSource);
+            StringAssert.Contains("float2 uv : TEXCOORD0;", shaderSource);
+            StringAssert.Contains("output.uv = input.uv;", shaderSource);
+            StringAssert.Contains("half radial = 1.0h - smoothstep(", shaderSource);
+            StringAssert.Contains(
+                "length(input.uv * 2.0h - 1.0h)",
+                shaderSource);
+            float centerDistance = (new Vector2(0.5f, 0.5f) * 2f - Vector2.one).magnitude;
+            float centerEdgeT = Mathf.Clamp01((centerDistance - 0.45f) / (1f - 0.45f));
+            float centerRadial = 1f - centerEdgeT * centerEdgeT * (3f - 2f * centerEdgeT);
+            float cornerDistance = (new Vector2(1f, 1f) * 2f - Vector2.one).magnitude;
+            float cornerEdgeT = Mathf.Clamp01((cornerDistance - 0.45f) / (1f - 0.45f));
+            float cornerRadial = 1f - cornerEdgeT * cornerEdgeT * (3f - 2f * cornerEdgeT);
+            Assert.That(centerRadial, Is.EqualTo(1f).Within(0.001f));
+            Assert.That(cornerRadial, Is.EqualTo(0f).Within(0.001f));
+            Assert.Greater(centerRadial, cornerRadial);
+
+            GameObject gameObject = new GameObject("enhanced-firefly-radial-glow-test");
+            GameObject vfxGameObject = new GameObject("enhanced-rectangular-vfx-test");
+            try
+            {
+                UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+                root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+                const ulong generation = 9;
+                const ulong fireflyIdentity = 0x0000000900000001UL;
+                Vector3 fireflyPosition = new Vector3(2f, 3f, 4f);
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 0,
+                    Reset = true,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = new[]
+                    {
+                        new UnityEnhancedEntitySnapshot
+                        {
+                            StableIdentity = fireflyIdentity,
+                            Generation = generation,
+                            Position = fireflyPosition,
+                            Rotation = Quaternion.identity,
+                            Visible = true,
+                            PresentationFamily = (int)UnityEnhancedPresentationFamily.Firefly,
+                            Scale = 1f,
+                            RenderLayer = 17
+                        }
+                    },
+                    NightLighting = UnityEnhancedNightLightingDescriptor.Level1Night(),
+                    LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+
+                Transform fireflyVisual = gameObject.transform.Find(
+                    "EnhancedWorldObjects/EnhancedEntity_0000000900000001/EnhancedActorVisual");
+                Assert.IsNotNull(fireflyVisual);
+                MeshFilter fireflyFilter = fireflyVisual.GetComponent<MeshFilter>();
+                MeshRenderer fireflyRenderer = fireflyVisual.GetComponent<MeshRenderer>();
+                Assert.AreEqual("MagicCarpet/Enhanced/Vfx", fireflyRenderer.sharedMaterial.shader.name);
+                Assert.AreEqual(fireflyFilter.sharedMesh.vertexCount, fireflyFilter.sharedMesh.uv.Length);
+                Color glowColor = fireflyRenderer.sharedMaterial.GetColor("_GlowColor");
+                Assert.That(glowColor.r, Is.EqualTo(0.72f).Within(0.001f));
+                Assert.That(glowColor.g, Is.EqualTo(1f).Within(0.001f));
+                Assert.That(glowColor.b, Is.EqualTo(0.3f).Within(0.001f));
+                Assert.That(
+                    fireflyRenderer.sharedMaterial.GetFloat("_GlowIntensity"),
+                    Is.EqualTo(1.4f).Within(0.001f));
+                Assert.That(
+                    fireflyRenderer.sharedMaterial.GetFloat("_Opacity"),
+                    Is.EqualTo(0.7f).Within(0.001f));
+                Assert.That(
+                    fireflyRenderer.sharedMaterial.GetFloat("_PulseSpeed"),
+                    Is.EqualTo(2.2f).Within(0.001f));
+                Assert.That(
+                    fireflyRenderer.sharedMaterial.GetFloat("_RadialMask"),
+                    Is.EqualTo(1f).Within(0.001f));
+
+                UnityEnhancedVfxPresentation vfx =
+                    vfxGameObject.AddComponent<UnityEnhancedVfxPresentation>();
+                vfx.ResetForGeneration(4);
+                UnityEnhancedVfxEvent spellCast = new UnityEnhancedVfxEvent(
+                    1,
+                    4,
+                    10,
+                    17,
+                    UnityEnhancedVfxKind.SpellCast,
+                    Vector3.zero,
+                    1f,
+                    4);
+                Assert.IsTrue(vfx.ApplyEvent(spellCast));
+                MeshRenderer vfxRenderer = vfxGameObject.transform
+                    .Find("EnhancedVfxPool/EnhancedVfx")
+                    .GetComponent<MeshRenderer>();
+                Assert.AreEqual("MagicCarpet/Enhanced/Vfx", vfxRenderer.sharedMaterial.shader.name);
+                Assert.That(
+                    vfxRenderer.sharedMaterial.GetFloat("_RadialMask"),
+                    Is.EqualTo(0f).Within(0.001f));
+            }
+            finally
+            {
+                Object.DestroyImmediate(vfxGameObject);
+                Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        [Test]
         public void VfxEventsDeduplicateReplayAndRespectReducedMotion()
         {
             Assert.IsNotNull(Shader.Find("MagicCarpet/Enhanced/Vfx"));
