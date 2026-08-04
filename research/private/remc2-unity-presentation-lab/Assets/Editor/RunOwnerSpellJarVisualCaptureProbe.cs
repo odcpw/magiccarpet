@@ -1,5 +1,6 @@
 #if UNITY_EDITOR
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -21,6 +22,7 @@ namespace MagicCarpet.PresentationLab.Editor
         private const float InnerViewportMaximum = 0.88f;
         private const int ContributionRegionRadius = 48;
         private const int ContributionPixelThreshold = 3;
+        private const float ViewportCenter = 0.5f;
 
         [MenuItem("Magic Carpet/Presentation Lab/Run Owner SpellJar Visual Capture Probe")]
         public static void Run()
@@ -136,6 +138,7 @@ namespace MagicCarpet.PresentationLab.Editor
                         continue;
                     }
 
+                    var candidates = new List<SpellJarCandidate>();
                     for (int index = 0; index < entities.Length; index++)
                     {
                         UnityEnhancedEntitySnapshot entity = entities[index];
@@ -170,11 +173,37 @@ namespace MagicCarpet.PresentationLab.Editor
                             continue;
                         }
 
+                        if (!IsFinite(viewport) || !IsFinite(meshRenderer.bounds.extents.magnitude))
+                        {
+                            continue;
+                        }
+
+                        candidates.Add(new SpellJarCandidate
+                        {
+                            SourceEntityIndex = entity.SourceEntityIndex,
+                            StableIdentity = entity.StableIdentity,
+                            Renderer = meshRenderer,
+                            Viewport = viewport,
+                            ProjectedRadius = meshRenderer.bounds.extents.magnitude /
+                                               Mathf.Max(viewport.z, presentationCamera.nearClipPlane),
+                            ViewportCenterDistance = Vector2.Distance(
+                                new Vector2(viewport.x, viewport.y),
+                                new Vector2(ViewportCenter, ViewportCenter))
+                        });
+                    }
+
+                    candidates.Sort(CompareSpellJarCandidates);
+                    for (int candidateIndex = 0;
+                         candidateIndex < candidates.Count;
+                         candidateIndex++)
+                    {
+                        SpellJarCandidate candidate = candidates[candidateIndex];
+
                         bool rendererContributes;
                         if (!TryProveRendererContribution(
                                 enhanced,
-                                meshRenderer,
-                                viewport,
+                                candidate.Renderer,
+                                candidate.Viewport,
                                 out rendererContributes,
                                 out reason))
                         {
@@ -188,11 +217,11 @@ namespace MagicCarpet.PresentationLab.Editor
                             continue;
                         }
 
-                        selectedSourceEntityIndex = entity.SourceEntityIndex;
-                        selectedStableIdentity = entity.StableIdentity;
+                        selectedSourceEntityIndex = candidate.SourceEntityIndex;
+                        selectedStableIdentity = candidate.StableIdentity;
                         selectedGeneration = snapshot.Generation;
                         selectedTick = snapshot.Tick;
-                        selectedViewport = viewport;
+                        selectedViewport = candidate.Viewport;
                         captureFrame = frame;
                         captured = true;
                         Debug.Log(
@@ -202,6 +231,7 @@ namespace MagicCarpet.PresentationLab.Editor
                             " generation=" + selectedGeneration +
                             " tick=" + selectedTick +
                             " viewport=" + selectedViewport +
+                            " ranked_candidates=" + candidates.Count +
                             " spelljar_entities_observed=" + spellJarEntitiesObserved);
                         break;
                     }
@@ -344,6 +374,42 @@ namespace MagicCarpet.PresentationLab.Editor
                     "refusing to overwrite an existing owner SpellJar capture in " +
                     Path.GetDirectoryName(outputPath));
             }
+        }
+
+        private static int CompareSpellJarCandidates(
+            SpellJarCandidate left,
+            SpellJarCandidate right)
+        {
+            int depth = left.Viewport.z.CompareTo(right.Viewport.z);
+            if (depth != 0)
+            {
+                return depth;
+            }
+
+            int projectedSize = right.ProjectedRadius.CompareTo(left.ProjectedRadius);
+            if (projectedSize != 0)
+            {
+                return projectedSize;
+            }
+
+            int viewportCenter = left.ViewportCenterDistance.CompareTo(
+                right.ViewportCenterDistance);
+            if (viewportCenter != 0)
+            {
+                return viewportCenter;
+            }
+
+            return left.StableIdentity.CompareTo(right.StableIdentity);
+        }
+
+        private static bool IsFinite(Vector3 value)
+        {
+            return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+        }
+
+        private static bool IsFinite(float value)
+        {
+            return !float.IsNaN(value) && !float.IsInfinity(value);
         }
 
         private static bool TryGetPresentationCenter(
@@ -516,6 +582,16 @@ namespace MagicCarpet.PresentationLab.Editor
                     UnityEngine.Object.DestroyImmediate(disabledTexture);
                 }
             }
+        }
+
+        private sealed class SpellJarCandidate
+        {
+            public int SourceEntityIndex;
+            public ulong StableIdentity;
+            public MeshRenderer Renderer;
+            public Vector3 Viewport;
+            public float ProjectedRadius;
+            public float ViewportCenterDistance;
         }
 
         private static bool PixelDiffers(Color32 first, Color32 second)
