@@ -33458,13 +33458,27 @@ mod tests {
             .expect("fired row65 source");
         assert!(row65.fired);
         assert!(row65.cooldown > 0);
-        assert!(
-            session
-                .economy()
-                .mana_attraction_fields()
-                .iter()
-                .any(|field| field.authored_index == 82)
-        );
+        let row82 = session
+            .economy()
+            .mana_attraction_fields()
+            .iter()
+            .find(|field| field.authored_index == 82)
+            .copied()
+            .expect("group 5 must materialize authored model-54 row 82");
+        assert_eq!(row82.action, MANA_ATTRACTION_ACTION);
+        assert_eq!(row82.radius_squared, (64_u32 * 256).pow(2));
+        assert_eq!(row82.max_life, 528);
+        assert!(row82.active);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::ManaAttraction,
+                    ..
+                } if *source_slot == row82.source_entity_index
+            )
+        }));
         let class14_indices = session
             .economy()
             .authored_class14()
