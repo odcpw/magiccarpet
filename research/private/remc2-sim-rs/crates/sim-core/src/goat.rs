@@ -4006,6 +4006,50 @@ mod tests {
     }
 
     #[test]
+    fn action11_nonlethal_hit_uses_partner_66_and_exact_terrain_settle() {
+        let world = MaterialBoundaryWorld { all_water: false };
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 39)
+            .expect("primary action-11 Goat");
+        let partner_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 66)
+            .expect("authored action-9 partner Goat");
+        let primary_position = family.goats[primary_index].position;
+        let partner_life = family.goats[partner_index].life;
+        family.goats[primary_index].action = 11;
+        family.goats[primary_index].phase = 0;
+        family.goats[primary_index].partner_entity_index = Some(66);
+        family.goats[primary_index].position.z = 300;
+        family
+            .inject_damage(39, 100, 152)
+            .expect("nonlethal action-11 hit");
+
+        family.step_source_slot(39, &world, &[]);
+
+        let primary = &family.goats[primary_index];
+        assert_eq!(primary.life, 500);
+        assert_eq!(primary.action, 14);
+        assert_eq!(primary.target_entity_index, Some(152));
+        assert_eq!(primary.partner_entity_index, None);
+        assert_eq!(primary.position.x, primary_position.x);
+        assert_eq!(primary.position.y, primary_position.y);
+        assert_eq!(primary.position.z, 44);
+        assert_eq!(primary.pending_damage, 0);
+        assert_eq!(primary.pending_attacker, 0);
+
+        let partner = &family.goats[partner_index];
+        assert_eq!(partner.life, partner_life);
+        assert_eq!(partner.action, 14);
+        assert_eq!(partner.target_entity_index, Some(152));
+        assert_eq!(partner.partner_entity_index, None);
+    }
+
+    #[test]
     fn action10_no_damage_acquires_nearest_player_on_cadence() {
         let world = MaterialBoundaryWorld { all_water: false };
         let mut family = level_two_family();

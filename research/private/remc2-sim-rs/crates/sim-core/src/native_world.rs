@@ -40038,6 +40038,68 @@ mod tests {
     }
 
     #[test]
+    fn level_two_goat_action11_nonlethal_hit_reaches_partner_and_terrain_settle() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 owner package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Goat action-11 hit session");
+        let baseline_goat_hash = session.goat_hash();
+        let attacker = session.state.entity_index;
+        let mut primary = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .cloned()
+            .expect("authored action-11 Goat slot 39");
+        let partner_baseline = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 66)
+            .cloned()
+            .expect("authored action-9 partner Goat slot 66");
+        let original_xy = (primary.position.x, primary.position.y);
+        let ground = session.terrain.ground_height(primary.position);
+        primary.action = 11;
+        primary.phase = 0;
+        primary.partner_entity_index = Some(66);
+        primary.position.z = ground.wrapping_add(300);
+        assert!(session.goats.replace_goat_for_test(primary));
+        session
+            .submit_goat_damage(39, 100, attacker)
+            .expect("nonlethal Level 2 action-11 hit");
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let primary = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .expect("stepped action-11 Goat slot 39");
+        assert_eq!(primary.life, 500);
+        assert_eq!(primary.action, 14);
+        assert_eq!(primary.target_entity_index, Some(attacker));
+        assert_eq!(primary.partner_entity_index, None);
+        assert_eq!((primary.position.x, primary.position.y), original_xy);
+        assert_eq!(primary.position.z, ground.wrapping_add(44));
+        assert_eq!(primary.pending_damage, 0);
+        assert_eq!(primary.pending_attacker, 0);
+
+        let partner = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 66)
+            .expect("stepped partner Goat slot 66");
+        assert_eq!(partner.life, partner_baseline.life);
+        assert_eq!(partner.action, 14);
+        assert_eq!(partner.target_entity_index, Some(attacker));
+        assert_eq!(partner.partner_entity_index, None);
+
+        session.reset();
+        assert_eq!(session.goat_hash(), baseline_goat_hash);
+    }
+
+    #[test]
     fn level_two_nyphur_participant_chain_is_source_bound_and_reset_isolated() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
