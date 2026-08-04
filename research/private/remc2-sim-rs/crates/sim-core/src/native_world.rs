@@ -17966,6 +17966,8 @@ impl Level2ResetSession {
                 let is_model1 = feature.kind == 10 && feature.subtype == 1 && target_group == 20;
                 let is_class5_model4 =
                     feature.kind == 5 && feature.subtype == 4 && target_group == 20;
+                let is_class5_model3 =
+                    feature.kind == 5 && feature.subtype == 3 && target_group == 1;
                 let is_model22 = feature.kind == 10 && feature.subtype == 22;
                 let is_model59 =
                     feature.kind == 10 && feature.subtype == 59 && matches!(target_group, 19 | 23);
@@ -17981,6 +17983,7 @@ impl Level2ResetSession {
                     && (is_switch
                         || is_model1
                         || is_class5_model4
+                        || is_class5_model3
                         || is_model22
                         || is_model39
                         || is_model6
@@ -18030,6 +18033,30 @@ impl Level2ResetSession {
                         source_slot: producer_slot,
                         message: format!(
                             "Level 2 authored class5 group {target_group} row {} could not allocate",
+                            feature.index
+                        ),
+                    });
+                    continue;
+                };
+                self.level2_class5_activated.insert(feature.index);
+                activated.push((feature.index, source.source_entity_index));
+                continue;
+            }
+            if feature.kind == 5 && feature.subtype == 3 && target_group == 1 {
+                if self.level2_class5_activated.contains(&feature.index) {
+                    continue;
+                }
+                let position =
+                    feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+                let Some(source) =
+                    self.economy
+                        .allocate_authored_class5(feature.index, 3, position)
+                else {
+                    self.dispatch_events.push(Level2DispatchEvent::Error {
+                        pass,
+                        source_slot: producer_slot,
+                        message: format!(
+                            "Level 2 authored class5 model-3 group {target_group} row {} could not allocate",
                             feature.index
                         ),
                     });
@@ -34356,7 +34383,7 @@ mod tests {
 
         let expected_group1_indices = (12_u16..=15)
             .chain(17..=40)
-            .chain([41, 206])
+            .chain([41, 167, 168, 169, 206])
             .collect::<Vec<_>>();
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
@@ -34449,9 +34476,57 @@ mod tests {
             } if *source_slot == row16.source_entity_index
         )));
 
+        let class5_rows = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .filter(|source| matches!(source.authored_index, 167 | 168 | 169))
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            class5_rows
+                .iter()
+                .map(|source| source.authored_index)
+                .collect::<Vec<_>>(),
+            vec![167, 168, 169]
+        );
+        assert!(class5_rows.iter().all(|source| {
+            source.model == 3
+                && source.action == 25
+                && source.minimum_speed == 64
+                && source.maximum_speed == 16
+                && source.actual_speed == 30
+                && source.max_life == 9_000
+                && source.life == 9_000
+                && source.mana == 2_250
+                && source.max_mana == 4_500
+                && source.drawing_enabled
+                && source.active
+        }));
+        for source in &class5_rows {
+            let authored = feature(source.authored_index);
+            assert_eq!(
+                (source.position.x, source.position.y, source.position.z),
+                (
+                    authored.world_position(0).x,
+                    authored.world_position(0).y,
+                    session.terrain.ground_height(authored.world_position(0))
+                )
+            );
+            assert!(session.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::AuthoredClass5,
+                    ..
+                } if *source_slot == source.source_entity_index
+            )));
+        }
+
         session.reset();
         assert!(session.economy().authored_switch_producers().is_empty());
         assert!(session.economy().mana_attraction_fields().is_empty());
+        assert!(session.economy().authored_class5().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
