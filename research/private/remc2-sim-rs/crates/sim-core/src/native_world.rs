@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     FlightContext, FlightEffectsContext, FlightEvent, FlightProfile, FlightState, FlightWorld,
     PlayerCommand, Position, SOURCE_SPELL_INDEX_MAP, SourceAudioCallTag, SpellFireContext,
+    angle_distance,
     archer_tmap::{ArcherTmapBank, ArcherTmapClocks},
     combat_tmap::{CombatTmapBank, FireballTmapClock, PossessionTmapClock},
     conformance_hash,
@@ -6824,6 +6825,19 @@ impl Level2EconomyState {
     /// Creature action tables are intentionally separate; this preserves the
     /// constructor's live row and map relation without inventing combat AI.
     pub fn step_authored_class5_slot(&mut self, source_slot: u16) -> bool {
+        self.step_authored_class5_slot_with_target(source_slot, None)
+    }
+
+    /// Advance one authored class-5 root with the imported target snapshot
+    /// resolved by the owning reset session. The economy state does not own
+    /// the imported entity arena, so the outer session supplies this
+    /// source-backed relation without coupling the economy projection to the
+    /// world container.
+    fn step_authored_class5_slot_with_target(
+        &mut self,
+        source_slot: u16,
+        target: Option<EntitySnapshot>,
+    ) -> bool {
         let Some(source_index) = self
             .authored_class5
             .iter()
@@ -6834,9 +6848,11 @@ impl Level2EconomyState {
         let mut source = self.authored_class5[source_index];
         if source.authored_index == 238 && source.model == 3 && source.action == 25 {
             // `sub_29710` calls `sub_2A6B0` before the movement callback.
-            // Keep the mailbox transfer and byte-0x3B-zero fallback exact;
-            // the later target scan/collision and child callbacks remain
-            // outside this bounded projection.
+            // Keep the mailbox transfer and byte-0x3B-zero fallback exact.
+            // The model-3 descriptor is `str_D7BD6[74]`: its target wrapper
+            // uses a 5120-unit range and a 682-unit yaw cone.
+            const MODEL3_TARGET_RANGE: u32 = 0x1400;
+            const MODEL3_TARGET_HALF_ANGLE: i16 = 0x02aa;
             let mut run_terrain_resnap = true;
             if source.pending_word_0x62 != 0 {
                 let pending = source.pending_word_0x62;
@@ -6864,14 +6880,50 @@ impl Level2EconomyState {
             if run_terrain_resnap {
                 source.position.z = self.terrain.ground_height(source.position);
             }
-            if source.action == 25 && source.word_0x96_150 == 0 {
-                // `sub_29710`'s target wrapper treats a cleared target as
-                // lost after `sub_2AF10`: action 217, selector clear, and
-                // relation clear.  The live target scan and sprite/child
-                // callbacks remain outside this bounded projection.
-                source.action = 217;
-                source.byte_0x46_70 = 0;
-                source.word_0x96_150 = 0;
+            if source.action == 25 {
+                let target_valid = target.as_ref().is_some_and(|target| {
+                    target.active
+                        && target.life >= 0
+                        && target.control_flags & ENTITY_DRAW_DISABLED_BIT == 0
+                });
+                let mut target_lost = !target_valid;
+                if let Some(target) = target.as_ref().filter(|_| target_valid) {
+                    // `sub_2AF10` has no imported collision result in this
+                    // bounded seam, so the source's v2 != 3 branch is the
+                    // ordinary target-tracking path.
+                    if source.source_byte_3e & 3 == 0 && source.byte_0x46_70 == 0 {
+                        let heading = heading_for_positions(source.position, target.position);
+                        source.roll = i16::try_from(heading).expect("target heading fits i16");
+                    }
+                    // The angle/sprite update and range cutoff are both
+                    // gated by the source's 0x1f cadence mask. Between those
+                    // callbacks remc2 retains the current engagement state.
+                    if source.source_byte_3e & 0x1f == 0 {
+                        let heading = heading_for_positions(source.position, target.position);
+                        if angle_distance(i32::from(source.yaw), heading)
+                            <= MODEL3_TARGET_HALF_ANGLE
+                        {
+                            source.byte_0x46_70 = 1;
+                            source.particle_index = 337;
+                        } else {
+                            source.byte_0x46_70 = 0;
+                            source.particle_index = 315;
+                        }
+                        target_lost = crate::legacy_sqrt(level2_wrapping_source_distance_3d(
+                            source.position,
+                            target.position,
+                        )) >= MODEL3_TARGET_RANGE;
+                    }
+                }
+                if target_lost {
+                    // `sub_29710`'s target wrapper treats an invalid or
+                    // distant target as lost: action 217, idle sprite 315,
+                    // and cleared relation/selector.
+                    source.action = 217;
+                    source.particle_index = 315;
+                    source.byte_0x46_70 = 0;
+                    source.word_0x96_150 = 0;
+                }
             }
         } else if source.model == 9 && source.action == 72 {
             // `sub_2AF10(a1, 1)` first advances the model-9 root, resnaps Z
@@ -6887,6 +6939,10 @@ impl Level2EconomyState {
             source.position = predicted;
             source.position.z = self.terrain.ground_height(source.position);
         }
+        // `ApplyEvents_498A0` advances the live class-5 cursor after every
+        // callback; `sub_29710` consumes this pre-increment value for its
+        // 0x03/0x1f target cadence gates.
+        source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
         source.phase = source.phase.wrapping_add(1);
         self.authored_class5[source_index] = source;
         self.map_chains
@@ -19987,7 +20043,24 @@ impl Level2ResetSession {
                 self.step_level2_authored_class14(source_slot)
             }
             Level2DynamicArenaKind::AuthoredClass5 => {
-                self.economy.step_authored_class5_slot(source_slot)
+                let target = self
+                    .economy
+                    .authored_class5()
+                    .iter()
+                    .find(|source| source.active && source.source_entity_index == source_slot)
+                    .and_then(|source| {
+                        let target_index = if source.pending_word_0x62 != 0 && source.byte_0x3b != 0
+                        {
+                            source.pending_word_0x62
+                        } else {
+                            source.word_0x96_150
+                        };
+                        (target_index != 0)
+                            .then(|| self.entities.get(usize::from(target_index)).cloned())
+                            .flatten()
+                    });
+                self.economy
+                    .step_authored_class5_slot_with_target(source_slot, target)
             }
             Level2DynamicArenaKind::AuthoredSwitchProducer => {
                 self.step_level2_authored_switch_producer(pass, source_slot)
@@ -30814,9 +30887,8 @@ mod tests {
         // its `sub_29710` callback is not a phase-only no-op:
         // `sub_2AF10(a1, 0)` re-snaps the root to terrain even when movement
         // is disabled.  Tamper only the live source height, then exercise the
-        // ordinary outer cursor and require the source-backed correction plus
-        // the typed dispatch event.  Action transitions and creature target
-        // behavior remain outside this slice.
+        // ordinary outer cursor and require the source-backed correction,
+        // target retention, sprite selector, and typed dispatch event.
         let row238_before = session
             .economy()
             .authored_class5()
@@ -30826,6 +30898,17 @@ mod tests {
             .expect("model-3 row 238 remains live after model-9 callbacks");
         let row238_ground = session.terrain.ground_height(row238_before.position);
         let fragment_z = row238_ground.wrapping_add(17);
+        let tracked_target = 111_u16;
+        let tracked_target_position = Position {
+            x: row238_before.position.x.wrapping_add(1_024),
+            y: row238_before.position.y,
+            z: row238_ground,
+        };
+        session
+            .set_level2_entity_position(tracked_target, tracked_target_position)
+            .expect("live imported target row accepts a position update");
+        let tracked_target_heading =
+            heading_for_positions(row238_before.position, tracked_target_position);
         let row238_mut = session
             .economy_mut()
             .authored_class5
@@ -30833,8 +30916,10 @@ mod tests {
             .find(|source| source.authored_index == 238)
             .expect("model-3 row 238 remains mutable for terrain fragment");
         row238_mut.action = 25;
-        row238_mut.word_0x96_150 = 1;
+        row238_mut.word_0x96_150 = tracked_target;
         row238_mut.byte_0x46_70 = 0;
+        row238_mut.source_byte_3e = 0;
+        row238_mut.yaw = i16::try_from(tracked_target_heading).expect("target heading fits i16");
         row238_mut.position.z = fragment_z;
         session.step_outer_turn(PlayerCommand::default(), 0);
         let row238_after = session
@@ -30851,6 +30936,10 @@ mod tests {
             (row238_before.position.x, row238_before.position.y)
         );
         assert_eq!(row238_after.position.z, row238_ground);
+        assert_eq!(row238_after.word_0x96_150, tracked_target);
+        assert_eq!(row238_after.byte_0x46_70, 1);
+        assert_eq!(row238_after.particle_index, 337);
+        assert_eq!(row238_after.roll, tracked_target_heading as i16);
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
             Level2DispatchEvent::DynamicArena {
@@ -30860,12 +30949,83 @@ mod tests {
             } if *source_slot == row238_after.source_entity_index
         )));
 
+        // Moving only the live target beyond the descriptor range must take
+        // the source target-loss branch and clear both relation and sprite
+        // selector rather than retaining stale engagement state.
+        let out_of_range_target_position = Position {
+            x: row238_after.position.x.wrapping_add(6_000),
+            y: row238_after.position.y,
+            z: row238_ground,
+        };
+        session
+            .set_level2_entity_position(tracked_target, out_of_range_target_position)
+            .expect("live imported target row accepts the out-of-range position");
+        let row238_before_out_of_range = row238_after;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row238_after_non_cadence = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 238)
+            .copied()
+            .expect("model-3 row 238 remains live before target-loss cadence");
+        assert_eq!(
+            row238_after_non_cadence.phase,
+            row238_before_out_of_range.phase.wrapping_add(1)
+        );
+        assert_eq!(row238_after_non_cadence.action, 25);
+        assert_eq!(row238_after_non_cadence.word_0x96_150, tracked_target);
+        assert_eq!(row238_after_non_cadence.byte_0x46_70, 1);
+        assert_eq!(row238_after_non_cadence.particle_index, 337);
+        assert_eq!(row238_after_non_cadence.source_byte_3e, 2);
+        // The source callback keeps the stale engagement through the
+        // non-cadence visits. Advance the ordinary cursor to the next
+        // 0x1f-gated callback without changing the live target again.
+        for _ in 0..30 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let row238_before_cadence = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 238)
+            .copied()
+            .expect("model-3 row 238 remains live at target-loss cadence");
+        assert_eq!(row238_before_cadence.action, 25);
+        assert_eq!(row238_before_cadence.source_byte_3e, 32);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row238_after_out_of_range = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 238)
+            .copied()
+            .expect("model-3 row 238 remains live after target loss");
+        assert_eq!(
+            row238_after_out_of_range.phase,
+            row238_before_cadence.phase.wrapping_add(1)
+        );
+        assert_eq!(
+            row238_after_out_of_range.source_byte_3e,
+            row238_before_cadence.source_byte_3e.wrapping_add(1)
+        );
+        assert_eq!(
+            row238_after_out_of_range.action, 217,
+            "target loss is committed on the source 0x1f cadence"
+        );
+        assert_eq!(row238_after_out_of_range.word_0x96_150, 0);
+        assert_eq!(row238_after_out_of_range.byte_0x46_70, 0);
+        assert_eq!(row238_after_out_of_range.particle_index, 315);
+
         // The nonzero byte-0x3B branch must promote the pending mailbox word
         // into the target relation before the wrapper runs.  This prevents a
         // cleared preexisting relation from taking the action-217 fallback in
         // place of the source's tracked-target path.
-        let handoff_target = 0x4567_u16;
-        let row238_before_handoff = row238_after;
+        let handoff_target = tracked_target;
+        session
+            .set_level2_entity_position(tracked_target, tracked_target_position)
+            .expect("tracked target returns to the in-range position");
+        let row238_before_handoff = row238_after_out_of_range;
         let row238_mut = session
             .economy_mut()
             .authored_class5
@@ -30874,6 +31034,8 @@ mod tests {
             .expect("model-3 row 238 remains mutable for target handoff");
         row238_mut.pending_word_0x62 = handoff_target;
         row238_mut.byte_0x3b = 1;
+        row238_mut.action = 25;
+        row238_mut.byte_0x46_70 = 0;
         row238_mut.word_0x96_150 = 0;
         session.step_outer_turn(PlayerCommand::default(), 0);
         let row238_after_handoff = session
