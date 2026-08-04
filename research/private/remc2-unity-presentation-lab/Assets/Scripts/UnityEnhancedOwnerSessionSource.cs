@@ -311,6 +311,11 @@ namespace MagicCarpet.PresentationLab
                 1.06f);
         }
 
+        private static bool IsLuminousFireballProjectileKind(uint projectileKind)
+        {
+            return projectileKind == 1 || projectileKind == 3;
+        }
+
         public int ActiveEntityCount
         {
             get
@@ -1789,10 +1794,10 @@ namespace MagicCarpet.PresentationLab
                     continue;
                 }
 
-                // Native projectile kind 1 is the authoritative fireball. Keep
+                // Native projectile kinds 1 and 3 are authoritative fireballs. Keep
                 // the projectile entity live and moving with the Rust snapshot;
                 // the family only selects its Enhanced visual treatment.
-                int family = source.projectileKind == 1
+                int family = IsLuminousFireballProjectileKind(source.projectileKind)
                     ? (int)UnityEnhancedPresentationFamily.Fire
                     : source.projectileKind == 2
                         ? (int)UnityEnhancedPresentationFamily.ArcherArrow
@@ -1935,7 +1940,7 @@ namespace MagicCarpet.PresentationLab
                     continue;
                 }
 
-                bool fireball = source.projectileKind == 1;
+                bool fireball = IsLuminousFireballProjectileKind(source.projectileKind);
                 result.Add(new UnityEnhancedLocalLightRequest(
                     DynamicStableIdentity(0x20000000U, source.projectileId),
                     ProjectedPosition(source.x, source.y, source.z),

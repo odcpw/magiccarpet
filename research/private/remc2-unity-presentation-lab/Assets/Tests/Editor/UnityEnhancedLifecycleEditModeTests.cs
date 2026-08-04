@@ -520,7 +520,7 @@ namespace MagicCarpet.PresentationLab.Tests
                 "? (int)UnityEnhancedPresentationFamily.Fire",
                 buildEntities);
             StringAssert.Contains(
-                "int family = source.projectileKind == 1",
+                "int family = IsLuminousFireballProjectileKind(source.projectileKind)",
                 buildEntities);
             StringAssert.Contains(
                 ": (int)UnityEnhancedPresentationFamily.Impact;",
@@ -1283,7 +1283,7 @@ namespace MagicCarpet.PresentationLab.Tests
                 "UnityEnhancedPresentationFamily.ArcherArrow",
                 buildEntities);
             StringAssert.Contains(
-                "int family = source.projectileKind == 1",
+                "int family = IsLuminousFireballProjectileKind(source.projectileKind)",
                 buildEntities);
             StringAssert.Contains(
                 "short signedPitch = SignedAngle11(source.pitch);",
@@ -1320,7 +1320,9 @@ namespace MagicCarpet.PresentationLab.Tests
                 "                    continue;\n" +
                 "                }",
                 buildLights);
-            StringAssert.Contains("bool fireball = source.projectileKind == 1;", buildLights);
+            StringAssert.Contains(
+                "bool fireball = IsLuminousFireballProjectileKind(source.projectileKind);",
+                buildLights);
 
             GameObject gameObject = new GameObject("enhanced-archer-arrow-test");
             try
@@ -1454,6 +1456,194 @@ namespace MagicCarpet.PresentationLab.Tests
                 Assert.IsFalse(arrowView.Find("EnhancedFireballPlume").gameObject.activeSelf);
                 Assert.IsFalse(arrowView.Find("EnhancedFireballVolume").gameObject.activeSelf);
                 Assert.AreEqual(0, root.PooledEntityCount);
+            }
+            finally
+            {
+                Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        [Test]
+        public void AuthoritativeFireflyFireballUsesExistingLuminousProjectileStack()
+        {
+            string ownerSource = File.ReadAllText(Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "UnityEnhancedOwnerSessionSource.cs"));
+            int buildEntitiesStart = ownerSource.IndexOf(
+                "private UnityEnhancedEntitySnapshot[] BuildEntities()",
+                StringComparison.Ordinal);
+            int buildLightsStart = ownerSource.IndexOf(
+                "private UnityEnhancedLocalLightRequest[] BuildLocalLights()",
+                StringComparison.Ordinal);
+            int presentationFamilyStart = ownerSource.IndexOf(
+                "private static int PresentationFamily(",
+                StringComparison.Ordinal);
+            Assert.GreaterOrEqual(buildEntitiesStart, 0);
+            Assert.Greater(buildLightsStart, buildEntitiesStart);
+            Assert.Greater(presentationFamilyStart, buildLightsStart);
+
+            string buildEntities = ownerSource.Substring(
+                buildEntitiesStart,
+                buildLightsStart - buildEntitiesStart);
+            string buildLights = ownerSource.Substring(
+                buildLightsStart,
+                presentationFamilyStart - buildLightsStart);
+            StringAssert.Contains(
+                "private static bool IsLuminousFireballProjectileKind(uint projectileKind)",
+                ownerSource);
+            StringAssert.Contains(
+                "return projectileKind == 1 || projectileKind == 3;",
+                ownerSource);
+            StringAssert.Contains(
+                "int family = IsLuminousFireballProjectileKind(source.projectileKind)",
+                buildEntities);
+            StringAssert.Contains("source.projectileKind == 2", buildEntities);
+            StringAssert.Contains("source.projectileKind == 5", buildEntities);
+            StringAssert.Contains(
+                "UnityEnhancedPresentationFamily.Possession",
+                buildEntities);
+            StringAssert.Contains(
+                "bool fireball = IsLuminousFireballProjectileKind(source.projectileKind);",
+                buildLights);
+            StringAssert.Contains(
+                "if (source.projectileKind == 2)\n                {\n                    continue;\n                }",
+                buildLights);
+
+            GameObject gameObject = new GameObject("enhanced-firefly-fireball-test");
+            try
+            {
+                UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+                root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+                const ulong generation = 44;
+                const ulong fireflyIdentity = 0x0000002c20000003UL;
+                const ulong arrowIdentity = 0x0000002c20000002UL;
+                Vector3 fireflyPosition = new Vector3(2f, 3f, 4f);
+                Quaternion fireflyRotation = Quaternion.Euler(-9f, 37f, 0f);
+                UnityEnhancedNightLightingDescriptor night =
+                    UnityEnhancedNightLightingDescriptor.Level1Night();
+                float expectedIntensity =
+                    5.5f * UnityEnhancedOwnerSessionSource.FireballLightIntensityPulse(0, 3);
+                float expectedRange =
+                    11f * UnityEnhancedOwnerSessionSource.FireballLightRangePulse(0, 3);
+
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 0,
+                    Reset = true,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = new[]
+                    {
+                        new UnityEnhancedEntitySnapshot
+                        {
+                            StableIdentity = fireflyIdentity,
+                            Generation = generation,
+                            Position = fireflyPosition,
+                            Rotation = fireflyRotation,
+                            Visible = true,
+                            PresentationFamily = (int)UnityEnhancedPresentationFamily.Fire,
+                            Scale = 1f,
+                            RenderLayer = 2003
+                        }
+                    },
+                    NightLighting = night,
+                    LocalLights = new[]
+                    {
+                        new UnityEnhancedLocalLightRequest(
+                            fireflyIdentity,
+                            fireflyPosition,
+                            new Color(1f, 0.2f, 0.04f, 1f),
+                            expectedIntensity,
+                            expectedRange,
+                            2003)
+                    },
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+
+                Transform fireflyView = gameObject.transform.Find(
+                    "EnhancedWorldObjects/EnhancedEntity_0000002c20000003");
+                Assert.IsNotNull(fireflyView);
+                Assert.That(
+                    Quaternion.Angle(fireflyRotation, fireflyView.rotation),
+                    Is.LessThan(0.001f));
+                Assert.AreEqual(
+                    "MagicCarpet/Enhanced/Fireball",
+                    fireflyView.Find("EnhancedActorVisual").GetComponent<MeshRenderer>()
+                        .sharedMaterial.shader.name);
+                Assert.AreEqual(
+                    "MagicCarpet/Enhanced/Fireball",
+                    fireflyView.Find("EnhancedFireballHalo").GetComponent<MeshRenderer>()
+                        .sharedMaterial.shader.name);
+                Assert.AreEqual(
+                    "MagicCarpet/Enhanced/FireballTrail",
+                    fireflyView.Find("EnhancedFireballTrail").GetComponent<TrailRenderer>()
+                        .sharedMaterial.shader.name);
+                Assert.AreEqual(
+                    "MagicCarpet/Enhanced/FireballTrail",
+                    fireflyView.Find("EnhancedFireballPlume").GetComponent<MeshRenderer>()
+                        .sharedMaterial.shader.name);
+                Assert.AreEqual(
+                    "MagicCarpet/Enhanced/FireballVolume",
+                    fireflyView.Find("EnhancedFireballVolume").GetComponent<MeshRenderer>()
+                        .sharedMaterial.shader.name);
+                Assert.IsTrue(fireflyView.Find("EnhancedFireballHalo").gameObject.activeSelf);
+                Assert.IsTrue(fireflyView.Find("EnhancedFireballTrail").gameObject.activeSelf);
+                Assert.IsTrue(fireflyView.Find("EnhancedFireballPlume").gameObject.activeSelf);
+                Assert.IsTrue(fireflyView.Find("EnhancedFireballVolume").gameObject.activeSelf);
+                Assert.AreEqual(1, root.NightLighting.ActiveLocalLightCount);
+                Light fireflyLight = gameObject.transform
+                    .Find("EnhancedNightLights/EnhancedLocalLight_0")
+                    .GetComponent<Light>();
+                Assert.That(fireflyLight.intensity, Is.EqualTo(expectedIntensity).Within(0.001f));
+                Assert.That(fireflyLight.range, Is.EqualTo(expectedRange).Within(0.001f));
+
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 13,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = Array.Empty<UnityEnhancedEntitySnapshot>(),
+                    NightLighting = night,
+                    LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+                Assert.AreEqual(1, root.PooledEntityCount);
+                Assert.AreEqual(1, root.ActorPresentation.PooledVisualCount);
+                Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
+
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 14,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = new[]
+                    {
+                        new UnityEnhancedEntitySnapshot
+                        {
+                            StableIdentity = arrowIdentity,
+                            Generation = generation,
+                            Position = fireflyPosition,
+                            Rotation = Quaternion.Euler(11f, 23f, 0f),
+                            Visible = true,
+                            PresentationFamily = (int)UnityEnhancedPresentationFamily.ArcherArrow,
+                            Scale = 1f,
+                            RenderLayer = 2002
+                        }
+                    },
+                    NightLighting = night,
+                    LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+                Assert.AreEqual(0, root.PooledEntityCount);
+                Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
+                Transform reusedView = gameObject.transform.Find(
+                    "EnhancedWorldObjects/EnhancedEntity_0000002c20000002");
+                Assert.IsNotNull(reusedView);
+                Assert.IsFalse(reusedView.Find("EnhancedFireballHalo").gameObject.activeSelf);
+                Assert.IsFalse(reusedView.Find("EnhancedFireballTrail").gameObject.activeSelf);
+                Assert.IsFalse(reusedView.Find("EnhancedFireballPlume").gameObject.activeSelf);
+                Assert.IsFalse(reusedView.Find("EnhancedFireballVolume").gameObject.activeSelf);
             }
             finally
             {
