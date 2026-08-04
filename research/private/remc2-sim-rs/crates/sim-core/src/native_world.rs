@@ -32909,6 +32909,82 @@ mod tests {
     }
 
     #[test]
+    fn level_two_group1_row41_materializes_latent_from_row11_production_route() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-1 row-41 production session");
+        let baseline_hash = session.campaign_state_hash();
+        let authored_features = session.mission().authored_features().to_vec();
+        let feature = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("authored group-1 feature")
+        };
+
+        session.state.position = feature(11).world_position(0);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let expected_group1_indices = (12_u16..=15)
+            .chain(17..=40)
+            .chain([41, 206])
+            .collect::<Vec<_>>();
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 1,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == expected_group1_indices.as_slice()
+        )));
+
+        let row41 = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 41)
+            .copied()
+            .expect("group 1 must materialize row 41");
+        assert_eq!(
+            (
+                row41.source_class,
+                row41.model,
+                row41.action,
+                row41.stage_tag,
+                row41.word_10,
+                row41.dword_0x10,
+            ),
+            (11, 1, 1, 2, 34, 0)
+        );
+        let authored_row41 = feature(41);
+        assert_eq!(
+            (row41.position.x, row41.position.y, row41.position.z),
+            (
+                authored_row41.world_position(0).x,
+                authored_row41.world_position(0).y,
+                session
+                    .terrain
+                    .ground_height(authored_row41.world_position(0))
+            )
+        );
+        assert!(row41.active);
+        // Model-1 uses the inverse-overlap callback: the newly materialized
+        // row is intentionally consumed in this same source pass because the
+        // player is not on its tile.  The constructor payload remains visible
+        // even though the callback has already set its cooldown/fired state.
+        assert!(row41.fired);
+        assert_eq!(row41.cooldown, 10);
+        assert!(row41.drawing_enabled);
+
+        session.reset();
+        assert!(session.economy().authored_switch_producers().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
     fn level_two_group6_row84_materializes_from_row83_production_route() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
