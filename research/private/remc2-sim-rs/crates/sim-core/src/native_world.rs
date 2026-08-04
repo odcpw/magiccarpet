@@ -33129,6 +33129,33 @@ mod tests {
             "row 42 must activate group 3 in production"
         );
 
+        // Row 63 is the class-10/model-54 temporary field in the same
+        // authored group.  The source `sub_4A310` scan dispatches it through
+        // the shared model-54 constructor rather than the model-39 sphere
+        // list, so prove that the secondary consumer is materialized by the
+        // same production route and carries the authored stage radius/life.
+        let row63 = session
+            .economy()
+            .mana_attraction_fields()
+            .iter()
+            .find(|field| field.authored_index == 63)
+            .copied()
+            .expect("group 3 must materialize authored model-54 row 63");
+        assert_eq!(row63.action, MANA_ATTRACTION_ACTION);
+        assert_eq!(row63.radius_squared, (45_u32 * 256).pow(2));
+        assert_eq!(row63.max_life, 376);
+        assert!(row63.active);
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::ManaAttraction,
+                    ..
+                } if *source_slot == row63.source_entity_index
+            )
+        }));
+
         let expected_positions = (43_u16..=62)
             .map(feature_position)
             .map(|position| (position.x, position.y))
