@@ -137,6 +137,12 @@ namespace MagicCarpet.PresentationLab
         private const float TownReadabilityBaseHeight = 2.02f;
         private const float TownReadabilityViewportHeightFraction = 0.075f;
         private const float TownReadabilityMaximumScale = 2.25f;
+        // Spell jars are small grounded collectibles. Preserve their
+        // authoritative base while scaling only the visual toward a bounded
+        // projected height so distant jars remain readable in owner flight.
+        private const float SpellJarReadabilityBaseHeight = 1.18f;
+        private const float SpellJarReadabilityViewportHeightFraction = 0.012f;
+        private const float SpellJarReadabilityMaximumScale = 6f;
         // Keep town windows and trim alive at night without turning the
         // generated structure into a pulsing billboard. This is a bounded
         // material treatment; the owner mesh and accent mask remain intact.
@@ -416,6 +422,10 @@ namespace MagicCarpet.PresentationLab
             {
                 scale *= StructureScale(entity.StableIdentity) *
                          TownDepthReadabilityScale(entity, cameraPose);
+            }
+            if (entity.PresentationFamily == (int)UnityEnhancedPresentationFamily.SpellJar)
+            {
+                scale *= SpellJarDepthReadabilityScale(entity, cameraPose);
             }
             if (fireballProjectile)
             {
@@ -1421,6 +1431,52 @@ namespace MagicCarpet.PresentationLab
                 Mathf.Max(1f, requiredHeight / TownReadabilityBaseHeight),
                 1f,
                 TownReadabilityMaximumScale);
+        }
+
+        private static float SpellJarDepthReadabilityScale(
+            UnityEnhancedEntitySnapshot entity,
+            UnityEnhancedCameraPose cameraPose)
+        {
+            if (entity == null || !IsFinite(entity.Position) ||
+                !IsFinite(cameraPose.Position) || !IsFinite(cameraPose.Rotation))
+            {
+                return 1f;
+            }
+
+            Vector3 cameraForward = cameraPose.Rotation * Vector3.forward;
+            float forwardLength = cameraForward.magnitude;
+            if (!IsFinite(cameraForward) || !IsFinite(forwardLength) ||
+                forwardLength <= 0.0001f)
+            {
+                return 1f;
+            }
+
+            float forwardDepth = Vector3.Dot(
+                entity.Position - cameraPose.Position,
+                cameraForward / forwardLength);
+            if (!IsFinite(forwardDepth) || forwardDepth <= 0f)
+            {
+                return 1f;
+            }
+
+            float fieldOfView = cameraPose.FieldOfView;
+            if (!IsFinite(fieldOfView) || fieldOfView <= 1f || fieldOfView >= 179f)
+            {
+                fieldOfView = DefaultVerticalFieldOfView;
+            }
+
+            float requiredHeight = 2f * forwardDepth *
+                                   Mathf.Tan(fieldOfView * Mathf.Deg2Rad * 0.5f) *
+                                   SpellJarReadabilityViewportHeightFraction;
+            if (!IsFinite(requiredHeight) || requiredHeight <= 0f)
+            {
+                return 1f;
+            }
+
+            return Mathf.Clamp(
+                Mathf.Max(1f, requiredHeight / SpellJarReadabilityBaseHeight),
+                1f,
+                SpellJarReadabilityMaximumScale);
         }
 
         private static bool IsFinite(float value)

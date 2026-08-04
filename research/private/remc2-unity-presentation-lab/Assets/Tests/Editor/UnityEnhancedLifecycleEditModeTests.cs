@@ -2012,6 +2012,15 @@ namespace MagicCarpet.PresentationLab.Tests
                 "material.SetFloat(\"_EmissionStrength\", 0.34f);",
                 actorSource);
             StringAssert.Contains(
+                "SpellJarDepthReadabilityScale(entity, cameraPose)",
+                actorSource);
+            StringAssert.Contains(
+                "SpellJarReadabilityViewportHeightFraction = 0.012f",
+                actorSource);
+            StringAssert.Contains(
+                "SpellJarReadabilityMaximumScale = 6f",
+                actorSource);
+            StringAssert.Contains(
                 "case UnityEnhancedPresentationFamily.SpellJar:\n                    return CreateSpellJarMesh();",
                 actorSource);
             StringAssert.Contains(
@@ -2030,6 +2039,7 @@ namespace MagicCarpet.PresentationLab.Tests
                 const ulong castleJarIdentity = 0x0000003700000031UL;
                 const ulong speedJarIdentity = 0x0000003700000100UL;
                 Vector3 position = new Vector3(2f, 3f, 4f);
+                Vector3 farPosition = new Vector3(0f, 0f, 432.75f);
                 Quaternion castleJarRotation = Quaternion.Euler(0f, 33f, 0f);
                 UnityEnhancedNightLightingDescriptor night =
                     UnityEnhancedNightLightingDescriptor.Level1Night();
@@ -2167,6 +2177,8 @@ namespace MagicCarpet.PresentationLab.Tests
                 Assert.That(
                     jarRenderer.sharedMaterial.GetFloat("_RimStrength"),
                     Is.EqualTo(0.30f).Within(0.001f));
+                Assert.That(castleJarVisual.localScale.x, Is.EqualTo(1f).Within(0.001f));
+                Assert.That(castleJarVisual.localPosition.y, Is.EqualTo(0f).Within(0.001f));
                 Assert.IsNull(castleJarView.Find("EnhancedFireballHalo"));
                 Assert.IsNull(castleJarView.Find("EnhancedFireballTrail"));
                 Assert.IsNull(castleJarView.Find("EnhancedFireballPlume"));
@@ -2183,6 +2195,39 @@ namespace MagicCarpet.PresentationLab.Tests
                     Generation = generation,
                     Tick = 1,
                     CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = new[]
+                    {
+                        new UnityEnhancedEntitySnapshot
+                        {
+                            StableIdentity = castleJarIdentity,
+                            Generation = generation,
+                            Position = farPosition,
+                            Rotation = castleJarRotation,
+                            Visible = true,
+                            PresentationFamily = (int)UnityEnhancedPresentationFamily.SpellJar,
+                            AnimationPhase = 0.2f,
+                            Scale = 1f,
+                            RenderLayer = 3031
+                        }
+                    },
+                    NightLighting = night,
+                    LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+                Assert.AreSame(jarObject, castleJarView.gameObject);
+                Assert.That(castleJarVisual.localScale.x, Is.GreaterThan(1f));
+                Assert.That(castleJarVisual.localScale.x, Is.LessThanOrEqualTo(6f));
+                Assert.That(castleJarVisual.localPosition.y, Is.EqualTo(0f).Within(0.001f));
+                Assert.AreEqual(0, root.PooledEntityCount);
+                Assert.AreEqual(0, root.ActorPresentation.PooledVisualCount);
+                Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
+                Assert.AreEqual(0, root.VfxPresentation.ActiveEffectCount);
+
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 2,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
                     Entities = Array.Empty<UnityEnhancedEntitySnapshot>(),
                     NightLighting = night,
                     LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
@@ -2196,7 +2241,7 @@ namespace MagicCarpet.PresentationLab.Tests
                 Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
                 {
                     Generation = generation,
-                    Tick = 2,
+                    Tick = 3,
                     CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
                     Entities = new[]
                     {
@@ -2221,6 +2266,10 @@ namespace MagicCarpet.PresentationLab.Tests
                     "EnhancedWorldObjects/EnhancedEntity_0000003700000100");
                 Assert.IsNotNull(speedJarView);
                 Assert.AreSame(jarObject, speedJarView.gameObject);
+                Transform speedJarVisual = speedJarView.Find("EnhancedActorVisual");
+                Assert.IsNotNull(speedJarVisual);
+                Assert.That(speedJarVisual.localScale.x, Is.EqualTo(1f).Within(0.001f));
+                Assert.That(speedJarVisual.localPosition.y, Is.EqualTo(0f).Within(0.001f));
                 Assert.AreEqual(0, root.PooledEntityCount);
                 Assert.AreEqual(1, root.ActorPresentation.PooledVisualCount);
                 Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
