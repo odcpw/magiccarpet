@@ -36334,6 +36334,56 @@ mod tests {
         assert!(!model1.drawing_enabled);
         assert!(model1.active);
 
+        // The constructor proof above is not enough: the live source cursor
+        // must visit the authored class-5/model-4 row after group activation.
+        // The ordinary outer turn is the production route; no direct arena
+        // step is used here.  Model 4 has no movement branch in this bounded
+        // callback, so the visit advances phase while preserving the authored
+        // position and renderability.  This turn is deliberately after the
+        // model-1 cadence assertion so it cannot weaken that independent proof.
+        let archer_before_cursor = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 232)
+            .copied()
+            .expect("group-20 archer remains after model-1 cadence");
+        let archer_phase = archer_before_cursor.phase;
+        let archer_position = archer_before_cursor.position;
+        let archer_source_slot = archer_before_cursor.source_entity_index;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let stepped_archer = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 232)
+            .copied()
+            .expect("group-20 archer remains on the live source cursor");
+        assert_eq!(stepped_archer.phase, archer_phase.wrapping_add(1));
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::AuthoredClass5,
+                    ..
+                } if *source_slot == archer_source_slot
+            )
+        }));
+        assert_eq!(
+            (
+                stepped_archer.position.x,
+                stepped_archer.position.y,
+                stepped_archer.position.z,
+            ),
+            (
+                archer_position.x,
+                archer_position.y,
+                session.terrain.ground_height(archer_position),
+            )
+        );
+        assert!(stepped_archer.active && stepped_archer.drawing_enabled);
+
         session.reset();
         assert!(session.economy().authored_model1().is_empty());
         assert!(
