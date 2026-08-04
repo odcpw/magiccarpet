@@ -4216,10 +4216,10 @@ pub struct Level2AuthoredModel59Source {
 }
 
 /// Authored class-10/subtype-58 row constructed by remc2 `sub_504B0`.
-/// The source callback (action 58 / `sub_265A0`) and its `NewEvent` defaults
-/// remain separate runtime slices; this row owns the activation-presence
-/// subset, `sub_58DA0` stage binding, and arena identity needed to make the
-/// rooted group-3 source reachable.
+/// The fields include the NewEvent defaults consumed by action 58,
+/// `sub_265A0`'s mutable state, and the `sub_26500` sprite selection. The
+/// water callback records the source's type-10/subtype-5 spawn request without
+/// pretending that the broader subtype constructor family is already modeled.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2AuthoredModel53Source {
     pub source_entity_index: u16,
@@ -4232,7 +4232,16 @@ pub struct Level2AuthoredModel53Source {
     pub max_life: i16,
     pub life: i16,
     pub subspell_index: u16,
+    pub actual_speed: i16,
     pub control_flags: u32,
+    pub source_byte_39: i8,
+    pub byte_0x43: u8,
+    pub byte_0x44: u8,
+    pub byte_0x46: u8,
+    pub word_0x2c: i16,
+    pub sprite_index: u16,
+    pub last_sound_id: u16,
+    pub water_spawn_requested: bool,
     pub position: Position,
     pub phase: u8,
     pub drawing_enabled: bool,
@@ -5862,13 +5871,12 @@ impl Level2EconomyState {
             .is_ok()
     }
 
-    /// Allocate the activation-presence subset of the authored
-    /// class-10/subtype-58 row from remc2 `sub_504B0`. That constructor
-    /// intentionally does not add the row to the render map; it writes its
-    /// authored position directly, sets action 58/model 53, life 6, subspell
-    /// 3000, and clears NewEvent's default control bit 0x08. NewEvent defaults
-    /// and the action-58 callback remain separate runtime slices; the caller
-    /// performs the source-equivalent `sub_58DA0` stage-table binding.
+    /// Allocate the authored class-10/subtype-58 row from remc2 `sub_504B0`.
+    /// The constructor intentionally does not add the row to the render map;
+    /// it writes its authored position directly, sets action 58/model 53,
+    /// life 6, subspell 3000, and clears NewEvent's default control bit 0x08.
+    /// The remaining NewEvent defaults are retained because action 58 consumes
+    /// `byte_0x43` and the source RNG immediately on its live callback path.
     pub fn allocate_authored_model53(
         &mut self,
         authored_index: u16,
@@ -5887,7 +5895,16 @@ impl Level2EconomyState {
             max_life: 6,
             life: 6,
             subspell_index: 3000,
+            actual_speed: 16,
             control_flags: 0,
+            source_byte_39: -6,
+            byte_0x43: 10,
+            byte_0x44: 0,
+            byte_0x46: 0,
+            word_0x2c: 0,
+            sprite_index: 0,
+            last_sound_id: 0,
+            water_spawn_requested: false,
             position,
             phase: source_entity_index as u8,
             drawing_enabled: true,
@@ -5898,13 +5915,148 @@ impl Level2EconomyState {
         Some(source)
     }
 
-    /// The action-58 callback is intentionally outside this bounded
-    /// activation slice. Keep the row on the live source cursor without
-    /// inventing its water/spawn state machine.
+    /// Run remc2 action 58 (`sub_265A0`) for one live source turn, followed by
+    /// its `sub_26500` sprite selection. This is the outdoor/day path used by
+    /// the qualified Level 2 package; the original cave ceiling branch is not
+    /// silently approximated here. The type-10/subtype-5 water callback is
+    /// exposed as a typed request for a later constructor slice.
     pub fn step_authored_model53_slot(&mut self, source_slot: u16) -> bool {
-        self.authored_model53
+        let Some(source_index) = self
+            .authored_model53
             .iter()
-            .any(|source| source.active && source.source_entity_index == source_slot)
+            .position(|source| source.active && source.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+
+        let terrain = &self.terrain;
+        let source = &mut self.authored_model53[source_index];
+        let mut moves_down = false;
+        let mut set_control_flag = false;
+        let mut callback_sound = None;
+        source.water_spawn_requested = false;
+
+        match source.byte_0x46 {
+            0 | 1 => {
+                if source.byte_0x44 != 0 {
+                    source.byte_0x44 -= 1;
+                } else {
+                    source.byte_0x46 = 2;
+                }
+                moves_down = true;
+                set_control_flag = true;
+            }
+            2 => {
+                source.byte_0x46 = 3;
+                moves_down = true;
+                set_control_flag = true;
+            }
+            3 => {
+                source.byte_0x46 = 4;
+            }
+            4 => {
+                source.entity_rng = level2_next_rng16(source.entity_rng);
+                source.byte_0x46 = 5;
+                source.word_0x2c = (source.entity_rng % 0x64) as i16 + 140;
+            }
+            5 => {
+                if source.word_0x2c < 0 {
+                    source.byte_0x46 = 6;
+                }
+            }
+            6 => {
+                let ground = terrain.ground_height(source.position);
+                if i32::from(source.position.z) - i32::from(ground) < 230 {
+                    source.byte_0x46 = 7;
+                }
+            }
+            7 => {
+                source.byte_0x46 = 8;
+                moves_down = true;
+                set_control_flag = true;
+            }
+            8 => {
+                source.byte_0x46 = 9;
+                moves_down = true;
+                set_control_flag = true;
+            }
+            9 => {
+                source.entity_rng = level2_next_rng16(source.entity_rng);
+                if source.entity_rng % 0xB == 0 {
+                    callback_sound = Some(42);
+                }
+                if source.byte_0x43 != 0 {
+                    let divisor = u16::from(source.byte_0x43);
+                    source.entity_rng = level2_next_rng16(source.entity_rng);
+                    let remainder = source.entity_rng % divisor;
+                    source.byte_0x44 = remainder as u8;
+                    source.byte_0x46 = u8::from(remainder & 1 == 0);
+                } else {
+                    source.byte_0x44 = 1;
+                    source.byte_0x46 = 0;
+                }
+                moves_down = true;
+                set_control_flag = true;
+            }
+            10 => {
+                moves_down = true;
+            }
+            _ => {}
+        }
+
+        let ground = terrain.ground_height(source.position);
+        if moves_down {
+            source.position.z = source.position.z.saturating_sub(42);
+        } else {
+            source.position.z = source.position.z.saturating_add(source.word_0x2c);
+            source.word_0x2c = source.word_0x2c.saturating_sub(42);
+        }
+        if source.position.z < ground {
+            source.position.z = ground;
+        }
+
+        let water = terrain.material_mask(source.position) == crate::WATER_AMBIENCE_MASK;
+        if water {
+            if source.byte_0x46 == 10 {
+                if source.position.z > ground {
+                    source.byte_0x46 = 0;
+                }
+            } else if source.position.z == ground {
+                source.byte_0x46 = 10;
+                source.water_spawn_requested = true;
+            }
+            source.actual_speed = if source.action == 170 { 66 } else { 40 };
+        } else {
+            if source.byte_0x46 == 10 {
+                source.byte_0x46 = 0;
+            }
+            source.actual_speed = if source.action == 170 { 96 } else { 60 };
+        }
+
+        if let Some(sound_id) = callback_sound {
+            source.last_sound_id = sound_id;
+        }
+        source.sprite_index = match source.byte_0x46 {
+            0 => 311,
+            1..=3 | 9 => 308,
+            4 => 309,
+            5 => 310,
+            6 => 305,
+            7 => 306,
+            8 => 307,
+            10 => 312,
+            _ => source.sprite_index,
+        };
+        if set_control_flag {
+            source.control_flags |= 0x800;
+        }
+        // `sub_504B0` never calls AddEventToMap, so this source remains absent
+        // from the render map while its live cursor state advances. Keep the
+        // shared source-RNG sidecar and byte-0x3E-equivalent phase in sync
+        // with the typed row for allocation/reclaim and replay consumers.
+        self.source_rng.insert(source_slot, source.entity_rng);
+        source.phase = source.phase.wrapping_add(1);
+        true
     }
 
     /// Allocate the authored class-10/subtype-39 consumer from the generic
@@ -12161,7 +12313,18 @@ impl Level2EconomyState {
             hasher.update(source.max_life.to_le_bytes());
             hasher.update(source.life.to_le_bytes());
             hasher.update(source.subspell_index.to_le_bytes());
+            hasher.update(source.actual_speed.to_le_bytes());
             hasher.update(source.control_flags.to_le_bytes());
+            hasher.update([source.source_byte_39 as u8]);
+            hasher.update([
+                source.byte_0x43,
+                source.byte_0x44,
+                source.byte_0x46,
+                u8::from(source.water_spawn_requested),
+            ]);
+            hasher.update(source.word_0x2c.to_le_bytes());
+            hasher.update(source.sprite_index.to_le_bytes());
+            hasher.update(source.last_sound_id.to_le_bytes());
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
@@ -34012,7 +34175,20 @@ mod tests {
                 row439.subspell_index,
                 row439.control_flags,
             ),
-            (10, 53, 58, 6, 6, 3000, 0)
+            (10, 53, 58, 6, 6, 3000, 0x800)
+        );
+        assert_eq!(
+            (
+                row439.actual_speed,
+                row439.source_byte_39,
+                row439.byte_0x43,
+                row439.byte_0x44,
+                row439.byte_0x46,
+                row439.sprite_index,
+                row439.last_sound_id,
+                row439.water_spawn_requested,
+            ),
+            (60, -6, 10, 0, 2, 308, 0, false)
         );
         let authored_row439 = feature_position(439);
         assert_eq!(
@@ -34094,6 +34270,196 @@ mod tests {
             );
             assert_eq!(encoded_value, if kind == 6 { 77 } else { 78 });
         }
+    }
+
+    #[test]
+    fn level_two_model53_action58_runs_through_production_cursor() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-3 production session");
+        let baseline_hash = session.campaign_state_hash();
+        let authored_features = session.mission().authored_features().to_vec();
+        let feature_position = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("authored group-3 feature")
+                .world_position(0)
+        };
+
+        // Reach row 439 from the real row-11 -> row-42 -> group-3 switch
+        // route. The test only mutates the typed row after production has
+        // materialized it; all callbacks below still run through the live
+        // dynamic cursor.
+        session.state.position = feature_position(11);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        session.state.position = feature_position(42);
+        for _ in 0..8 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            if session
+                .economy()
+                .authored_model53()
+                .iter()
+                .any(|source| source.authored_index == 439)
+            {
+                break;
+            }
+        }
+        let row439_slot = session
+            .economy()
+            .authored_model53()
+            .iter()
+            .find(|source| source.authored_index == 439)
+            .map(|source| source.source_entity_index)
+            .expect("production route must materialize row 439");
+
+        // The constructor's first live callback advances state 0 -> 2 and
+        // selects the 308 family. Force the intermediate states so each
+        // source branch remains discriminating and deterministic.
+        {
+            let source = session
+                .economy_mut()
+                .authored_model53
+                .iter_mut()
+                .find(|source| source.source_entity_index == row439_slot)
+                .expect("live row 439");
+            assert_eq!((source.byte_0x46, source.sprite_index), (2, 308));
+            source.byte_0x46 = 3;
+            source.word_0x2c = 0;
+            source.control_flags = 0;
+            source.last_sound_id = 0;
+        }
+        let phase_before_state3 = session
+            .economy()
+            .authored_model53()
+            .iter()
+            .find(|source| source.source_entity_index == row439_slot)
+            .expect("live row 439")
+            .phase;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row439 = session
+            .economy()
+            .authored_model53()
+            .iter()
+            .find(|source| source.source_entity_index == row439_slot)
+            .copied()
+            .expect("live row 439 after state-3 callback");
+        assert_eq!((row439.byte_0x46, row439.sprite_index), (4, 309));
+        assert_eq!(row439.actual_speed, 60);
+        assert_eq!(row439.control_flags, 0);
+        assert_eq!(row439.phase, phase_before_state3.wrapping_add(1));
+
+        let rng_before_random_cycle = row439.entity_rng;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row439 = session
+            .economy()
+            .authored_model53()
+            .iter()
+            .find(|source| source.source_entity_index == row439_slot)
+            .copied()
+            .expect("live row 439 after state-4 callback");
+        assert_eq!(row439.byte_0x46, 5);
+        assert_eq!(row439.sprite_index, 310);
+        assert_eq!(
+            row439.entity_rng,
+            level2_next_rng16(rng_before_random_cycle)
+        );
+        assert_eq!(
+            session.economy().source_rng.get(&row439_slot),
+            Some(&row439.entity_rng)
+        );
+        assert!((140..=239).contains(&row439.word_0x2c));
+
+        {
+            let source = session
+                .economy_mut()
+                .authored_model53
+                .iter_mut()
+                .find(|source| source.source_entity_index == row439_slot)
+                .expect("live row 439");
+            source.byte_0x46 = 9;
+            source.word_0x2c = 0;
+            source.control_flags = 0;
+        }
+        let phase_before_state9 = row439.phase;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row439 = session
+            .economy()
+            .authored_model53()
+            .iter()
+            .find(|source| source.source_entity_index == row439_slot)
+            .copied()
+            .expect("live row 439 after state-9 callback");
+        assert_eq!(row439.phase, phase_before_state9.wrapping_add(1));
+        assert_eq!(
+            session.economy().source_rng.get(&row439_slot),
+            Some(&row439.entity_rng)
+        );
+
+        // State 5's negative-height branch reaches state 6 and clamps to the
+        // terrain height. The next turn runs the water-triggered type-10/5
+        // request branch on the same production row.
+        {
+            let position = session
+                .economy()
+                .authored_model53()
+                .iter()
+                .find(|source| source.source_entity_index == row439_slot)
+                .expect("live row 439")
+                .position;
+            let ground = session.terrain.ground_height(position);
+            let source = session
+                .economy_mut()
+                .authored_model53
+                .iter_mut()
+                .find(|source| source.source_entity_index == row439_slot)
+                .expect("live row 439");
+            source.word_0x2c = -1;
+            source.position.z = ground;
+            source.byte_0x46 = 6;
+            source.control_flags = 0;
+        }
+        {
+            let position = session
+                .economy()
+                .authored_model53()
+                .iter()
+                .find(|source| source.source_entity_index == row439_slot)
+                .expect("live row 439")
+                .position;
+            let tile = usize::from(position.x.to_be_bytes()[0])
+                + usize::from(position.y.to_be_bytes()[0]) * 256;
+            session.terrain.planes.terrain_types[tile] = 0;
+        }
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row439 = session
+            .economy()
+            .authored_model53()
+            .iter()
+            .find(|source| source.source_entity_index == row439_slot)
+            .copied()
+            .expect("live row 439 after water callback");
+        assert_eq!(
+            row439.position.z,
+            session.terrain.ground_height(row439.position)
+        );
+        assert_eq!(
+            (
+                row439.byte_0x46,
+                row439.sprite_index,
+                row439.actual_speed,
+                row439.control_flags,
+                row439.water_spawn_requested,
+            ),
+            (10, 312, 40, 0, true)
+        );
+
+        session.reset();
+        assert!(session.economy().authored_model53().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
     #[test]
