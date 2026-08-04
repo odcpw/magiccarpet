@@ -17983,7 +17983,7 @@ impl Level2ResetSession {
                 let is_class5_model4 =
                     feature.kind == 5 && feature.subtype == 4 && target_group == 20;
                 let is_class5_model3 =
-                    feature.kind == 5 && feature.subtype == 3 && target_group == 1;
+                    feature.kind == 5 && feature.subtype == 3 && matches!(target_group, 1 | 5 | 7);
                 let is_model22 = feature.kind == 10 && feature.subtype == 22;
                 let is_model59 =
                     feature.kind == 10 && feature.subtype == 59 && matches!(target_group, 19 | 23);
@@ -18058,7 +18058,7 @@ impl Level2ResetSession {
                 activated.push((feature.index, source.source_entity_index));
                 continue;
             }
-            if feature.kind == 5 && feature.subtype == 3 && target_group == 1 {
+            if feature.kind == 5 && feature.subtype == 3 && matches!(target_group, 1 | 5 | 7) {
                 if self.level2_class5_activated.contains(&feature.index) {
                     continue;
                 }
@@ -35211,6 +35211,11 @@ mod tests {
         let expected_group1_model39_indices = (12..=15).chain(17..=40).collect::<Vec<_>>();
         let expected_group5_model39_indices = (66..=81).collect::<Vec<_>>();
         let expected_group7_indices = (85..=104).collect::<Vec<_>>();
+        let expected_group7_event_indices = expected_group7_indices
+            .iter()
+            .copied()
+            .chain([165])
+            .collect::<Vec<_>>();
         let baseline_root_phase = session
             .level2_imported_switch_roots
             .iter()
@@ -35238,7 +35243,7 @@ mod tests {
         let expected_group1_indices = expected_group1_model39_indices
             .iter()
             .copied()
-            .chain([41, 206])
+            .chain([41, 167, 168, 169, 206])
             .collect::<Vec<_>>();
         assert!(session.dispatch_events().iter().any(|event| matches!(
             event,
@@ -35358,7 +35363,7 @@ mod tests {
         let expected_group5_indices = expected_group5_model39_indices
             .iter()
             .copied()
-            .chain([83])
+            .chain([83, 164])
             .collect::<Vec<_>>();
         let mut group5_activated = false;
         let mut group5_owner_mana_global_before = None;
@@ -35392,7 +35397,8 @@ mod tests {
                         group,
                         authored_indices,
                         ..
-                    } if *group == 7 && authored_indices.as_ref() == expected_group7_indices.as_slice()
+                    } if *group == 7
+                        && authored_indices.as_ref() == expected_group7_event_indices.as_slice()
                 )
             });
             if activated_this_turn {
@@ -35487,6 +35493,68 @@ mod tests {
             .map(|source| source.authored_index)
             .collect::<BTreeSet<_>>();
         assert!(class14_indices.is_superset(&BTreeSet::from([248, 249, 250, 251])));
+        let group5_class5 = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .filter(|source| matches!(source.authored_index, 164 | 165))
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            group5_class5
+                .iter()
+                .map(|source| source.authored_index)
+                .collect::<Vec<_>>(),
+            vec![164, 165]
+        );
+        for source in &group5_class5 {
+            let position = feature_position(source.authored_index);
+            assert_eq!(source.model, 3);
+            assert_eq!(source.action, 25);
+            assert_eq!(source.position.x, position.x);
+            assert_eq!(source.position.y, position.y);
+            assert_eq!(source.position.z, session.terrain.ground_height(position));
+            assert!(source.active && source.drawing_enabled);
+            assert!(session.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::AuthoredClass5,
+                    ..
+                } if *source_slot == source.source_entity_index
+            )));
+        }
+        let group7_class5 = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .filter(|source| source.authored_index == 165)
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            group7_class5
+                .iter()
+                .map(|source| source.authored_index)
+                .collect::<Vec<_>>(),
+            vec![165]
+        );
+        for source in &group7_class5 {
+            let position = feature_position(source.authored_index);
+            assert_eq!(source.model, 3);
+            assert_eq!(source.action, 25);
+            assert_eq!(source.position.x, position.x);
+            assert_eq!(source.position.y, position.y);
+            assert_eq!(source.position.z, session.terrain.ground_height(position));
+            assert!(source.active && source.drawing_enabled);
+            assert!(session.dispatch_events().iter().any(|event| matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::AuthoredClass5,
+                    ..
+                } if *source_slot == source.source_entity_index
+            )));
+        }
 
         // The source runagain cursor reaches row 83 -> row 84 -> group 7 in
         // this same production chain, so no direct allocator call is needed.
@@ -35582,6 +35650,7 @@ mod tests {
         assert!(session.economy().authored_switch_producers().is_empty());
         assert!(session.economy().authored_bees().is_empty());
         assert!(session.economy().mana_attraction_fields().is_empty());
+        assert!(session.economy().authored_class5().is_empty());
         assert!(session.economy().authored_class14().is_empty());
         assert_eq!(session.economy().spheres().len(), baseline_sphere_count);
         assert_eq!(
