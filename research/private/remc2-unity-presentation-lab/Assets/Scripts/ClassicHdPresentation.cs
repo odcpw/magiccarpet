@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.UI;
 
 namespace MagicCarpet.PresentationLab
@@ -28,6 +29,7 @@ namespace MagicCarpet.PresentationLab
         private bool applicationFocused = true;
         private bool applicationPaused;
         private int applicationLifecycleTransitions;
+        private bool startupSplashStopped;
 
         public bool IsConfigured { get; private set; }
         public string StatusLine { get; private set; }
@@ -238,6 +240,7 @@ namespace MagicCarpet.PresentationLab
             out string reason)
         {
             reason = string.Empty;
+            startupSplashStopped = false;
             if (requestedSettings == null)
             {
                 reason = "Classic HD presentation settings are null";
@@ -513,6 +516,12 @@ namespace MagicCarpet.PresentationLab
             {
                 reason = uploadError;
                 return false;
+            }
+
+            if (!startupSplashStopped && Application.isPlaying && !SplashScreen.isFinished)
+            {
+                SplashScreen.Stop(SplashScreen.StopBehavior.StopImmediate);
+                startupSplashStopped = true;
             }
 
             UpdateDisplayViewport(false);

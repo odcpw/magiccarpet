@@ -176,6 +176,32 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void ClassicHdFirstSuccessfulUploadHasPlayerOnlyStartupSplashStopPolicy()
+        {
+            string source = File.ReadAllText(Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "ClassicHdPresentation.cs"));
+
+            StringAssert.Contains("using UnityEngine.Rendering;", source);
+            StringAssert.Contains("private bool startupSplashStopped;", source);
+            StringAssert.Contains("startupSplashStopped = false;", source);
+            StringAssert.Contains(
+                "if (!startupSplashStopped && Application.isPlaying && !SplashScreen.isFinished)",
+                source);
+            StringAssert.Contains(
+                "SplashScreen.Stop(SplashScreen.StopBehavior.StopImmediate);",
+                source);
+            StringAssert.Contains("startupSplashStopped = true;", source);
+
+            int failedUpload = source.IndexOf("if (!uploaded)");
+            int splashGuard = source.IndexOf(
+                "if (!startupSplashStopped && Application.isPlaying && !SplashScreen.isFinished)");
+            Assert.GreaterOrEqual(failedUpload, 0);
+            Assert.Greater(splashGuard, failedUpload);
+        }
+
+        [Test]
         public void ClassicHdDisplayCanvasIsTopLevelAndOwnedByPresentationCleanup()
         {
             GameObject gameObject = new GameObject("classic-hd-display-canvas-test");
