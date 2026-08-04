@@ -1941,13 +1941,18 @@ namespace MagicCarpet.PresentationLab
                 }
 
                 bool fireball = IsLuminousFireballProjectileKind(source.projectileKind);
+                bool possession = source.projectileKind == 5;
                 result.Add(new UnityEnhancedLocalLightRequest(
                     DynamicStableIdentity(0x20000000U, source.projectileId),
                     ProjectedPosition(source.x, source.y, source.z),
-                    fireball ? new Color(1f, 0.2f, 0.04f, 1f) : new Color(1f, 0.32f, 0.08f, 1f),
+                    fireball
+                        ? new Color(1f, 0.2f, 0.04f, 1f)
+                        : possession
+                            ? new Color(0.92f, 0.12f, 0.82f, 1f)
+                            : new Color(1f, 0.32f, 0.08f, 1f),
                     fireball
                         ? 5.5f * FireballLightIntensityPulse(snapshot.tick, source.projectileId)
-                        : 1.8f,
+                        : possession ? 2.2f : 1.8f,
                     fireball
                         ? 11f * FireballLightRangePulse(snapshot.tick, source.projectileId)
                         : 6f,

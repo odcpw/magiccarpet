@@ -1164,6 +1164,7 @@ namespace MagicCarpet.PresentationLab
             UnityEnhancedPresentationFamily familyId = (UnityEnhancedPresentationFamily)family;
             bool fireFamily = familyId == UnityEnhancedPresentationFamily.Fire;
             bool fireflyFamily = familyId == UnityEnhancedPresentationFamily.Firefly;
+            bool possessionFamily = familyId == UnityEnhancedPresentationFamily.Possession;
             bool impactPresentation = familyId == UnityEnhancedPresentationFamily.Impact ||
                                       (fireFamily && !fireballProjectile);
             Shader shader = fireballProjectile
@@ -1171,7 +1172,7 @@ namespace MagicCarpet.PresentationLab
                               Shader.Find("MagicCarpet/Enhanced/Vfx")
                             : (impactPresentation
                                 ? Shader.Find("MagicCarpet/Enhanced/Impact")
-                                : (fireFamily || fireflyFamily
+                                : (fireFamily || fireflyFamily || possessionFamily
                                     ? Shader.Find("MagicCarpet/Enhanced/Vfx")
                                     : null)) ??
                             Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
@@ -1234,6 +1235,14 @@ namespace MagicCarpet.PresentationLab
                     material.SetFloat("_GlowIntensity", 1.4f);
                     material.SetFloat("_Opacity", 0.7f);
                     material.SetFloat("_PulseSpeed", 2.2f);
+                    material.SetFloat("_RadialMask", 1f);
+                }
+                else if (possessionFamily && shader.name == "MagicCarpet/Enhanced/Vfx")
+                {
+                    material.SetColor("_GlowColor", new Color(0.92f, 0.12f, 0.82f, 1f));
+                    material.SetFloat("_GlowIntensity", 1.6f);
+                    material.SetFloat("_Opacity", 0.82f);
+                    material.SetFloat("_PulseSpeed", 2.4f);
                     material.SetFloat("_RadialMask", 1f);
                 }
                 else
@@ -1413,7 +1422,8 @@ namespace MagicCarpet.PresentationLab
                    family == UnityEnhancedPresentationFamily.Impact ||
                    family == UnityEnhancedPresentationFamily.Fire ||
                    family == UnityEnhancedPresentationFamily.Smoke ||
-                   family == UnityEnhancedPresentationFamily.SpellJar;
+                   family == UnityEnhancedPresentationFamily.SpellJar ||
+                   family == UnityEnhancedPresentationFamily.Possession;
         }
 
         private static bool IsAnimated(int family)
@@ -1470,7 +1480,6 @@ namespace MagicCarpet.PresentationLab
                 case UnityEnhancedPresentationFamily.Goat:
                 case UnityEnhancedPresentationFamily.Villager:
                 case UnityEnhancedPresentationFamily.Archer:
-                case UnityEnhancedPresentationFamily.Possession:
                 case UnityEnhancedPresentationFamily.Generic:
                     return CreateCreatureMesh(family);
                 case UnityEnhancedPresentationFamily.ArcherArrow:
