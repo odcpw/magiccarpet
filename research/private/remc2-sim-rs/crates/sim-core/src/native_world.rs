@@ -6772,14 +6772,30 @@ impl Level2EconomyState {
     /// Creature action tables are intentionally separate; this preserves the
     /// constructor's live row and map relation without inventing combat AI.
     pub fn step_authored_class5_slot(&mut self, source_slot: u16) -> bool {
-        let Some(source) = self
+        let Some(source_index) = self
             .authored_class5
-            .iter_mut()
-            .find(|source| source.active && source.source_entity_index == source_slot)
+            .iter()
+            .position(|source| source.active && source.source_entity_index == source_slot)
         else {
             return false;
         };
+        let mut source = self.authored_class5[source_index];
+        if source.model == 9 && source.action == 72 {
+            // `sub_2AF10(a1, 1)` first advances the model-9 root, resnaps Z
+            // to terrain, and then lets `sub_29A90` settle its linked rows.
+            // The qualified Level 2 source seam has no imported collision
+            // relation for this root, so this bounded path commits the
+            // source-backed free-movement branch. Collision/alternate-yaw
+            // selection remains an explicit residual until that relation is
+            // available.
+            let mut predicted = source.position;
+            crate::move_entity(&mut predicted, source.yaw, 0, source.actual_speed);
+            predicted.z = self.terrain.ground_height(predicted);
+            source.position = predicted;
+            source.position.z = self.terrain.ground_height(source.position);
+        }
         source.phase = source.phase.wrapping_add(1);
+        self.authored_class5[source_index] = source;
         self.map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
@@ -30516,7 +30532,7 @@ mod tests {
 
         session.step_outer_turn(PlayerCommand::default(), 0);
 
-        let sources = session.economy().authored_class5();
+        let sources = session.economy().authored_class5().to_vec();
         assert_eq!(
             sources
                 .iter()
@@ -30554,6 +30570,80 @@ mod tests {
                 ..
             } if authored_indices.as_ref() == [238, 239, 240, 241, 242, 243, 245]
         )));
+
+        let row245_before = sources
+            .iter()
+            .find(|source| source.authored_index == 245)
+            .copied()
+            .expect("model-9 row 245 materialized");
+        let mut expected_row245_position = row245_before.position;
+        crate::move_entity(
+            &mut expected_row245_position,
+            row245_before.yaw,
+            0,
+            row245_before.actual_speed,
+        );
+        expected_row245_position.z = session.terrain.ground_height(expected_row245_position);
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row245_after_first_step = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 245)
+            .copied()
+            .expect("model-9 row 245 remains live after first callback");
+        assert_eq!(row245_after_first_step.position, expected_row245_position);
+        assert_eq!(
+            row245_after_first_step.phase,
+            row245_before.phase.wrapping_add(1)
+        );
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                source_slot,
+                kind: Level2DynamicArenaKind::AuthoredClass5,
+                ..
+            } if *source_slot == row245_after_first_step.source_entity_index
+        )));
+
+        // The qualified witness crosses a tile boundary after seven free
+        // callbacks. This distinguishes remc2's non-collision commit branch
+        // from a phase-only callback that leaves cross-tile candidates fixed.
+        for _ in 0..6 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+        }
+        let mut expected_row245_after_seven = row245_before.position;
+        for _ in 0..7 {
+            crate::move_entity(
+                &mut expected_row245_after_seven,
+                row245_before.yaw,
+                0,
+                row245_before.actual_speed,
+            );
+            expected_row245_after_seven.z =
+                session.terrain.ground_height(expected_row245_after_seven);
+        }
+        let row245_after_seven_steps = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 245)
+            .copied()
+            .expect("model-9 row 245 remains live after free callbacks");
+        assert_eq!(
+            row245_after_seven_steps.position,
+            expected_row245_after_seven
+        );
+        assert_eq!(
+            row245_after_seven_steps.phase,
+            row245_before.phase.wrapping_add(7)
+        );
+        assert_ne!(
+            row245_after_seven_steps.position.y >> 8,
+            row245_before.position.y >> 8,
+            "free branch must commit a cross-tile model-9 movement"
+        );
 
         session.reset();
         assert!(session.economy().authored_class5().is_empty());
