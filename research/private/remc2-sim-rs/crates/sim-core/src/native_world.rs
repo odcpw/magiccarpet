@@ -16520,21 +16520,55 @@ fn level2_wind_sub33810_accepts(parent_entity_id: u16, target: &EntitySnapshot) 
 
 impl Level2ResetSession {
     fn level2_goat_player_targets(&self) -> Vec<GoatPlayerTarget> {
-        self.entities
+        // remc2's `dword_38519` is the live class-3 source list, not an
+        // entity-pool sweep.  Action 10 narrows that list to model-0 rows
+        // before applying its strict cone/distance predicate. Preserve the
+        // remaining linked-list order because it is the tie-breaker for equal
+        // distances. The qualified reset's list starts at the first live
+        // player and each entity carries the next relation.
+        let eligible = self
+            .entities
             .iter()
             .filter(|entity| {
-                entity.index != 0 && entity.active && entity.class == 3 && entity.life >= 0
+                entity.index != 0
+                    && entity.active
+                    && entity.class == 3
+                    && entity.model == 0
+                    && entity.life >= 0
             })
-            .map(|entity| GoatPlayerTarget {
-                entity_index: entity.index,
-                position: if entity.index == self.state.entity_index {
-                    self.state.position
-                } else {
-                    entity.position
-                },
-                control_flags: entity.control_flags,
-            })
-            .collect()
+            .map(|entity| entity.index)
+            .collect::<BTreeSet<_>>();
+        let linked = eligible
+            .iter()
+            .filter_map(|index| self.entities[usize::from(*index)].next_relation)
+            .collect::<BTreeSet<_>>();
+        let Some(mut current) = eligible
+            .iter()
+            .copied()
+            .find(|index| !linked.contains(index))
+        else {
+            return Vec::new();
+        };
+        let mut visited = BTreeSet::new();
+        let mut targets = Vec::with_capacity(eligible.len());
+        while current != 0 && visited.insert(current) {
+            let Some(entity) = self.entities.get(usize::from(current)) else {
+                break;
+            };
+            if eligible.contains(&current) {
+                targets.push(GoatPlayerTarget {
+                    entity_index: entity.index,
+                    position: if entity.index == self.state.entity_index {
+                        self.state.position
+                    } else {
+                        entity.position
+                    },
+                    control_flags: entity.control_flags,
+                });
+            }
+            current = entity.next_relation.unwrap_or(0);
+        }
+        targets
     }
 
     fn new(
@@ -39185,6 +39219,14 @@ mod tests {
             .iter()
             .position(|entity| entity.index != 0 && !entity.active)
             .expect("inactive source row for synthetic class-3 candidate");
+        let second_injected_index = session
+            .entities
+            .iter()
+            .enumerate()
+            .skip(injected_index + 1)
+            .find(|(_, entity)| entity.index != 0 && !entity.active)
+            .map(|(index, _)| index)
+            .expect("second inactive source row for tie-break candidate");
         let mut primary = session
             .goats()
             .iter()
@@ -39219,7 +39261,9 @@ mod tests {
         };
         session.entities[injected_index].active = true;
         session.entities[injected_index].class = 3;
-        session.entities[injected_index].model = 0;
+        // A non-model-0 class-3 row remains in the source linked list but is
+        // not an action-10 player target (`sub_61620`'s `!model` gate).
+        session.entities[injected_index].model = 2;
         session.entities[injected_index].life = 100;
         session.entities[injected_index].position = Position {
             x: 10_000,
@@ -39227,21 +39271,61 @@ mod tests {
             z: 0,
         };
         session.entities[injected_index].control_flags = 0;
+        session.entities[second_injected_index].active = true;
+        session.entities[second_injected_index].class = 3;
+        session.entities[second_injected_index].model = 0;
+        session.entities[second_injected_index].life = 100;
+        session.entities[second_injected_index].position = Position {
+            x: 10_000,
+            y: 9_400,
+            z: 0,
+        };
+        session.entities[second_injected_index].control_flags = 0;
+        session.entities[112].model = 0;
+        session.entities[local_player_index].next_relation =
+            Some(session.entities[second_injected_index].index);
+        session.entities[local_player_index].record[4..8].copy_from_slice(
+            &(u32::from(session.entities[second_injected_index].index) + 1).to_le_bytes(),
+        );
+        session.entities[second_injected_index].next_relation = Some(session.entities[112].index);
+        session.entities[second_injected_index].record[4..8]
+            .copy_from_slice(&(u32::from(session.entities[112].index) + 1).to_le_bytes());
+        session.entities[112].next_relation = Some(session.entities[injected_index].index);
+        session.entities[112].record[4..8].copy_from_slice(
+            &(u32::from(session.entities[injected_index].index) + 1).to_le_bytes(),
+        );
+        session.entities[injected_index].next_relation = None;
+        session.entities[injected_index].record[4..8].fill(0);
         let expected_player_slots = session
             .entities
             .iter()
             .filter(|entity| {
-                entity.index != 0 && entity.active && entity.class == 3 && entity.life >= 0
+                entity.index != 0
+                    && entity.active
+                    && entity.class == 3
+                    && entity.model == 0
+                    && entity.life >= 0
             })
             .map(|entity| entity.index)
             .collect::<Vec<_>>();
         let goat_player_targets = session.level2_goat_player_targets();
+        let source_order = vec![
+            session.state.entity_index,
+            session.entities[second_injected_index].index,
+            session.entities[112].index,
+        ];
+        assert_ne!(expected_player_slots, source_order);
         assert_eq!(
             goat_player_targets
                 .iter()
                 .map(|player| player.entity_index)
                 .collect::<Vec<_>>(),
-            expected_player_slots
+            source_order
+        );
+        assert!(
+            !goat_player_targets
+                .iter()
+                .any(|player| player.entity_index == session.entities[injected_index].index)
         );
         assert_eq!(
             goat_player_targets
@@ -39261,7 +39345,7 @@ mod tests {
         assert_eq!(goat.action, 14);
         assert_eq!(
             goat.target_entity_index,
-            Some(session.entities[injected_index].index)
+            Some(session.entities[second_injected_index].index)
         );
         assert_eq!(goat.partner_entity_index, None);
     }
@@ -39345,6 +39429,12 @@ mod tests {
             z: 0,
         };
         session.entities[injected_index].control_flags = 0x20;
+        session.entities[112].next_relation = Some(session.entities[injected_index].index);
+        session.entities[112].record[4..8].copy_from_slice(
+            &(u32::from(session.entities[injected_index].index) + 1).to_le_bytes(),
+        );
+        session.entities[injected_index].next_relation = None;
+        session.entities[injected_index].record[4..8].fill(0);
 
         session.step_outer_turn(PlayerCommand::default(), 0);
         let goat = session
