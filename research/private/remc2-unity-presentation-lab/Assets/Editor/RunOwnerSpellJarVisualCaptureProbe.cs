@@ -19,6 +19,8 @@ namespace MagicCarpet.PresentationLab.Editor
         private const int FrameLimit = 512;
         private const float InnerViewportMinimum = 0.12f;
         private const float InnerViewportMaximum = 0.88f;
+        private const int ContributionRegionRadius = 48;
+        private const int ContributionPixelThreshold = 3;
 
         [MenuItem("Magic Carpet/Presentation Lab/Run Owner SpellJar Visual Capture Probe")]
         public static void Run()
@@ -172,6 +174,7 @@ namespace MagicCarpet.PresentationLab.Editor
                         if (!TryProveRendererContribution(
                                 enhanced,
                                 meshRenderer,
+                                viewport,
                                 out rendererContributes,
                                 out reason))
                         {
@@ -384,6 +387,7 @@ namespace MagicCarpet.PresentationLab.Editor
         private static bool TryProveRendererContribution(
             UnityEnhancedWorldRoot enhanced,
             MeshRenderer meshRenderer,
+            Vector3 viewport,
             out bool contributes,
             out string reason)
         {
@@ -395,63 +399,130 @@ namespace MagicCarpet.PresentationLab.Editor
                 return false;
             }
 
-            byte[] enabledPng;
-            byte[] disabledPng;
-            ulong enabledResolvedHash;
-            ulong disabledResolvedHash;
-            if (!enhanced.CapturePresentationFramePng(
-                    CaptureWidth,
-                    CaptureHeight,
-                    out enabledPng,
-                    out enabledResolvedHash,
-                    out reason))
-            {
-                return false;
-            }
-
-            bool originalEnabled = meshRenderer.enabled;
+            Texture2D enabledTexture = null;
+            Texture2D disabledTexture = null;
             try
             {
-                meshRenderer.enabled = false;
+                byte[] enabledPng;
+                byte[] disabledPng;
+                ulong resolvedHash;
                 if (!enhanced.CapturePresentationFramePng(
                         CaptureWidth,
                         CaptureHeight,
-                        out disabledPng,
-                        out disabledResolvedHash,
+                        out enabledPng,
+                        out resolvedHash,
                         out reason))
                 {
                     return false;
                 }
+
+                bool originalEnabled = meshRenderer.enabled;
+                try
+                {
+                    meshRenderer.enabled = false;
+                    if (!enhanced.CapturePresentationFramePng(
+                            CaptureWidth,
+                            CaptureHeight,
+                            out disabledPng,
+                            out resolvedHash,
+                            out reason))
+                    {
+                        return false;
+                    }
+                }
+                finally
+                {
+                    meshRenderer.enabled = originalEnabled;
+                }
+
+                enabledTexture = new Texture2D(
+                    2,
+                    2,
+                    TextureFormat.RGBA32,
+                    false,
+                    true);
+                disabledTexture = new Texture2D(
+                    2,
+                    2,
+                    TextureFormat.RGBA32,
+                    false,
+                    true);
+                if (!enabledTexture.LoadImage(enabledPng, false) ||
+                    !disabledTexture.LoadImage(disabledPng, false))
+                {
+                    reason = "resolved SpellJar contribution PNG decode failed";
+                    return false;
+                }
+
+                if (enabledTexture.width != disabledTexture.width ||
+                    enabledTexture.height != disabledTexture.height ||
+                    enabledTexture.width <= 0 ||
+                    enabledTexture.height <= 0)
+                {
+                    reason = "resolved SpellJar contribution PNG dimensions differed";
+                    return false;
+                }
+
+                Color32[] enabledPixels = enabledTexture.GetPixels32();
+                Color32[] disabledPixels = disabledTexture.GetPixels32();
+                int width = enabledTexture.width;
+                int height = enabledTexture.height;
+                if (enabledPixels == null ||
+                    disabledPixels == null ||
+                    enabledPixels.Length != disabledPixels.Length)
+                {
+                    reason = "resolved SpellJar contribution pixel readback failed";
+                    return false;
+                }
+
+                int centerX = Mathf.Clamp(
+                    Mathf.RoundToInt(viewport.x * width),
+                    0,
+                    width - 1);
+                int centerY = Mathf.Clamp(
+                    Mathf.RoundToInt(viewport.y * height),
+                    0,
+                    height - 1);
+                int minX = Mathf.Max(0, centerX - ContributionRegionRadius);
+                int maxX = Mathf.Min(width - 1, centerX + ContributionRegionRadius);
+                int minY = Mathf.Max(0, centerY - ContributionRegionRadius);
+                int maxY = Mathf.Min(height - 1, centerY + ContributionRegionRadius);
+                for (int y = minY; y <= maxY; y++)
+                {
+                    for (int x = minX; x <= maxX; x++)
+                    {
+                        int pixelIndex = y * width + x;
+                        if (PixelDiffers(
+                                enabledPixels[pixelIndex],
+                                disabledPixels[pixelIndex]))
+                        {
+                            contributes = true;
+                            return true;
+                        }
+                    }
+                }
+
+                return true;
             }
             finally
             {
-                meshRenderer.enabled = originalEnabled;
-            }
-
-            contributes = PngBytesDiffer(enabledPng, disabledPng);
-            return true;
-        }
-
-        private static bool PngBytesDiffer(byte[] first, byte[] second)
-        {
-            if (first == null || second == null)
-            {
-                return false;
-            }
-            if (first.Length != second.Length)
-            {
-                return true;
-            }
-
-            for (int index = 0; index < first.Length; index++)
-            {
-                if (first[index] != second[index])
+                if (enabledTexture != null)
                 {
-                    return true;
+                    UnityEngine.Object.DestroyImmediate(enabledTexture);
+                }
+
+                if (disabledTexture != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(disabledTexture);
                 }
             }
+        }
 
-            return false;
+        private static bool PixelDiffers(Color32 first, Color32 second)
+        {
+            return Mathf.Abs((int)first.r - second.r) > ContributionPixelThreshold ||
+                   Mathf.Abs((int)first.g - second.g) > ContributionPixelThreshold ||
+                   Mathf.Abs((int)first.b - second.b) > ContributionPixelThreshold;
         }
 
         private static void FailAndExit(string message)
