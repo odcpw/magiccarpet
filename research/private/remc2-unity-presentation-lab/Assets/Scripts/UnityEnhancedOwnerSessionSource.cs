@@ -1800,6 +1800,23 @@ namespace MagicCarpet.PresentationLab
                             ? (int)UnityEnhancedPresentationFamily.Possession
                             : (int)UnityEnhancedPresentationFamily.Projectile;
                 Vector3 position = ProjectedPosition(source.x, source.y, source.z);
+                float yawDegrees = 180f - source.yaw * (360f / 2048f);
+                Quaternion rotation = Quaternion.Euler(
+                    -source.pitch * (360f / 2048f),
+                    yawDegrees,
+                    0f);
+                if (source.projectileKind == 2)
+                {
+                    short signedPitch = SignedAngle11(source.pitch);
+                    float pitchRadians = signedPitch * (2f * Mathf.PI / 2048f);
+                    float presentationPitch = Mathf.Atan2(
+                        Mathf.Sin(pitchRadians) * EnhancedVerticalPresentationScale,
+                        Mathf.Cos(pitchRadians)) * Mathf.Rad2Deg;
+                    rotation = Quaternion.Euler(
+                        presentationPitch,
+                        180f - source.yaw * (360f / 2048f),
+                        0f);
+                }
                 result.Add(new UnityEnhancedEntitySnapshot
                 {
                     StableIdentity = DynamicStableIdentity(0x20000000U, source.projectileId),
@@ -1808,10 +1825,7 @@ namespace MagicCarpet.PresentationLab
                     SourceYaw = source.yaw,
                     CameraYaw = presentation.cameraYaw,
                     Position = position,
-                    Rotation = Quaternion.Euler(
-                        -source.pitch * (360f / 2048f),
-                        180f - source.yaw * (360f / 2048f),
-                        0f),
+                    Rotation = rotation,
                     Visible = source.active != 0,
                     PresentationFamily = family,
                     FacingDegrees = 180f - source.yaw * (360f / 2048f),

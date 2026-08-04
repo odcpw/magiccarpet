@@ -1286,6 +1286,35 @@ namespace MagicCarpet.PresentationLab.Tests
                 "int family = source.projectileKind == 1",
                 buildEntities);
             StringAssert.Contains(
+                "short signedPitch = SignedAngle11(source.pitch);",
+                buildEntities);
+            StringAssert.Contains(
+                "float pitchRadians = signedPitch * (2f * Mathf.PI / 2048f);",
+                buildEntities);
+            StringAssert.Contains(
+                "Mathf.Sin(pitchRadians) * EnhancedVerticalPresentationScale",
+                buildEntities);
+            StringAssert.Contains(
+                "Mathf.Cos(pitchRadians)) * Mathf.Rad2Deg",
+                buildEntities);
+            float positiveSourceRadians = 256f * (2f * Mathf.PI / 2048f);
+            float positivePresentationPitch = Mathf.Atan2(
+                Mathf.Sin(positiveSourceRadians) *
+                UnityEnhancedOwnerSessionSource.EnhancedVerticalPresentationScale,
+                Mathf.Cos(positiveSourceRadians)) * Mathf.Rad2Deg;
+            float negativePresentationPitch = Mathf.Atan2(
+                Mathf.Sin(-positiveSourceRadians) *
+                UnityEnhancedOwnerSessionSource.EnhancedVerticalPresentationScale,
+                Mathf.Cos(-positiveSourceRadians)) * Mathf.Rad2Deg;
+            Assert.Greater(positivePresentationPitch, 0f);
+            Assert.Less(negativePresentationPitch, 0f);
+            Assert.That(
+                Mathf.Abs(positivePresentationPitch),
+                Is.LessThan(256f * (360f / 2048f)));
+            Assert.That(
+                negativePresentationPitch,
+                Is.EqualTo(-positivePresentationPitch).Within(0.0001f));
+            StringAssert.Contains(
                 "if (source.projectileKind == 2)\n" +
                 "                {\n" +
                 "                    continue;\n" +
