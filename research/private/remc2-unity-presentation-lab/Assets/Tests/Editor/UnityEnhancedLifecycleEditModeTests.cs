@@ -1956,6 +1956,243 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void AuthoritativeManaSphereUsesRadialGlowAndExistingOwnerLight()
+        {
+            Assert.AreEqual(6, (int)UnityEnhancedPresentationFamily.Mana);
+
+            string ownerSource = File.ReadAllText(Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "UnityEnhancedOwnerSessionSource.cs"));
+            string actorSource = File.ReadAllText(Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "UnityEnhancedActorPresentation.cs"));
+            int buildLightsStart = ownerSource.IndexOf(
+                "private UnityEnhancedLocalLightRequest[] BuildLocalLights()",
+                StringComparison.Ordinal);
+            int presentationFamilyStart = ownerSource.IndexOf(
+                "private static int PresentationFamily(",
+                StringComparison.Ordinal);
+            Assert.GreaterOrEqual(buildLightsStart, 0);
+            Assert.Greater(presentationFamilyStart, buildLightsStart);
+
+            string buildLights = ownerSource.Substring(
+                buildLightsStart,
+                presentationFamilyStart - buildLightsStart);
+            StringAssert.Contains(
+                "case 39: return (int)UnityEnhancedPresentationFamily.Mana;",
+                ownerSource);
+            StringAssert.Contains(
+                "EventLevel1ManaSphereSpawned = 32;",
+                ownerSource);
+            StringAssert.Contains(
+                "kind = UnityEnhancedVfxKind.ManaPickup;",
+                ownerSource);
+            StringAssert.Contains(
+                "family != (int)UnityEnhancedPresentationFamily.Mana",
+                buildLights);
+            StringAssert.Contains(
+                "new Color(0.22f, 0.64f, 1f, 1f)",
+                buildLights);
+            StringAssert.Contains(
+                "family == (int)UnityEnhancedPresentationFamily.Impact ? 2.5f : 1.5f",
+                buildLights);
+            StringAssert.Contains(
+                "family == (int)UnityEnhancedPresentationFamily.Mana;",
+                actorSource);
+            StringAssert.Contains(
+                "fireFamily || fireflyFamily || possessionFamily || projectileFamily || manaFamily",
+                actorSource);
+            StringAssert.Contains(
+                "else if (manaFamily && shader.name == \"MagicCarpet/Enhanced/Vfx\")",
+                actorSource);
+            StringAssert.Contains(
+                "material.SetColor(\"_GlowColor\", FamilyColor(familyId));",
+                actorSource);
+            StringAssert.Contains(
+                "material.SetFloat(\"_RadialMask\", 1f);",
+                actorSource);
+            StringAssert.Contains(
+                "family == (int)UnityEnhancedPresentationFamily.Mana",
+                actorSource);
+
+            GameObject gameObject = new GameObject("enhanced-mana-sphere-test");
+            try
+            {
+                UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+                root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+                const ulong generation = 52;
+                const ulong manaIdentity = 0x0000003400000001UL;
+                const ulong reusedManaIdentity = 0x0000003400000002UL;
+                Vector3 position = new Vector3(2f, 3f, 4f);
+                Quaternion manaRotation = Quaternion.Euler(0f, 37f, 0f);
+                UnityEnhancedNightLightingDescriptor night =
+                    UnityEnhancedNightLightingDescriptor.Level1Night();
+
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 0,
+                    Reset = true,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = new[]
+                    {
+                        new UnityEnhancedEntitySnapshot
+                        {
+                            StableIdentity = manaIdentity,
+                            Generation = generation,
+                            Position = position,
+                            Rotation = manaRotation,
+                            Visible = true,
+                            PresentationFamily = (int)UnityEnhancedPresentationFamily.Mana,
+                            AnimationPhase = 0.25f,
+                            Scale = 1f,
+                            RenderLayer = 1001
+                        }
+                    },
+                    NightLighting = night,
+                    LocalLights = new[]
+                    {
+                        new UnityEnhancedLocalLightRequest(
+                            manaIdentity,
+                            position,
+                            new Color(0.22f, 0.64f, 1f, 1f),
+                            1.5f,
+                            5f,
+                            1001)
+                    },
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+
+                Transform manaView = gameObject.transform.Find(
+                    "EnhancedWorldObjects/EnhancedEntity_0000003400000001");
+                Assert.IsNotNull(manaView);
+                Assert.That(
+                    Quaternion.Angle(manaRotation, manaView.rotation),
+                    Is.LessThan(0.001f));
+                Transform manaVisual = manaView.Find("EnhancedActorVisual");
+                Assert.IsNotNull(manaVisual);
+                Assert.That(manaVisual.localPosition.y, Is.EqualTo(0.05f).Within(0.001f));
+                MeshFilter manaFilter = manaVisual.GetComponent<MeshFilter>();
+                MeshRenderer manaRenderer = manaVisual.GetComponent<MeshRenderer>();
+                Assert.AreEqual("EnhancedGeneratedMesh_Mana", manaFilter.sharedMesh.name);
+                Assert.AreEqual(8, manaFilter.sharedMesh.vertexCount);
+                Assert.AreEqual(8, manaFilter.sharedMesh.uv.Length);
+                Assert.That(
+                    manaFilter.sharedMesh.bounds.size.x,
+                    Is.EqualTo(0.7f).Within(0.001f));
+                Assert.That(
+                    manaFilter.sharedMesh.bounds.size.y,
+                    Is.EqualTo(0.7f).Within(0.001f));
+                Assert.That(
+                    manaFilter.sharedMesh.bounds.size.z,
+                    Is.EqualTo(0.7f).Within(0.001f));
+                Assert.AreEqual(
+                    "MagicCarpet/Enhanced/Vfx",
+                    manaRenderer.sharedMaterial.shader.name);
+                Color glowColor = manaRenderer.sharedMaterial.GetColor("_GlowColor");
+                Assert.That(glowColor.r, Is.EqualTo(0.3f).Within(0.001f));
+                Assert.That(glowColor.g, Is.EqualTo(0.8f).Within(0.001f));
+                Assert.That(glowColor.b, Is.EqualTo(1f).Within(0.001f));
+                Assert.Greater(glowColor.b, glowColor.g);
+                Assert.Greater(glowColor.g, glowColor.r * 2f);
+                Assert.That(
+                    manaRenderer.sharedMaterial.GetFloat("_GlowIntensity"),
+                    Is.EqualTo(1.15f).Within(0.001f));
+                Assert.That(
+                    manaRenderer.sharedMaterial.GetFloat("_Opacity"),
+                    Is.EqualTo(0.68f).Within(0.001f));
+                Assert.That(
+                    manaRenderer.sharedMaterial.GetFloat("_PulseSpeed"),
+                    Is.EqualTo(1.8f).Within(0.001f));
+                Assert.That(
+                    manaRenderer.sharedMaterial.GetFloat("_RadialMask"),
+                    Is.EqualTo(1f).Within(0.001f));
+                Assert.IsNull(manaView.Find("EnhancedFireballHalo"));
+                Assert.IsNull(manaView.Find("EnhancedFireballTrail"));
+                Assert.IsNull(manaView.Find("EnhancedFireballPlume"));
+                Assert.IsNull(manaView.Find("EnhancedFireballVolume"));
+                Assert.AreEqual(0, root.VfxPresentation.ActiveEffectCount);
+
+                Transform nightLights = gameObject.transform.Find("EnhancedNightLights");
+                Assert.IsNotNull(nightLights);
+                Assert.AreEqual(1, nightLights.GetComponentsInChildren<Light>(true).Length);
+                Assert.AreEqual(1, root.NightLighting.ActiveLocalLightCount);
+                Light manaLight = nightLights.Find("EnhancedLocalLight_0")
+                    .GetComponent<Light>();
+                Assert.That(manaLight.color.r, Is.EqualTo(0.22f).Within(0.001f));
+                Assert.That(manaLight.color.g, Is.EqualTo(0.64f).Within(0.001f));
+                Assert.That(manaLight.color.b, Is.EqualTo(1f).Within(0.001f));
+                Assert.That(manaLight.intensity, Is.EqualTo(1.5f).Within(0.001f));
+                Assert.That(manaLight.range, Is.EqualTo(5f).Within(0.001f));
+
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 1,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = Array.Empty<UnityEnhancedEntitySnapshot>(),
+                    NightLighting = night,
+                    LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+                Assert.AreEqual(1, root.PooledEntityCount);
+                Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
+                Assert.AreEqual(0, root.VfxPresentation.ActiveEffectCount);
+
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 2,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = new[]
+                    {
+                        new UnityEnhancedEntitySnapshot
+                        {
+                            StableIdentity = reusedManaIdentity,
+                            Generation = generation,
+                            Position = position,
+                            Rotation = Quaternion.Euler(0f, 19f, 0f),
+                            Visible = true,
+                            PresentationFamily = (int)UnityEnhancedPresentationFamily.Mana,
+                            AnimationPhase = 0.75f,
+                            Scale = 1f,
+                            RenderLayer = 1002
+                        }
+                    },
+                    NightLighting = night,
+                    LocalLights = new[]
+                    {
+                        new UnityEnhancedLocalLightRequest(
+                            reusedManaIdentity,
+                            position,
+                            new Color(0.22f, 0.64f, 1f, 1f),
+                            1.5f,
+                            5f,
+                            1002)
+                    },
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+                Assert.AreEqual(0, root.PooledEntityCount);
+                Assert.AreEqual(1, root.NightLighting.ActiveLocalLightCount);
+                Assert.AreEqual(0, root.VfxPresentation.ActiveEffectCount);
+                Transform reusedView = gameObject.transform.Find(
+                    "EnhancedWorldObjects/EnhancedEntity_0000003400000002");
+                Assert.IsNotNull(reusedView);
+                Assert.IsNull(reusedView.Find("EnhancedFireballHalo"));
+                Assert.IsNull(reusedView.Find("EnhancedFireballTrail"));
+                Assert.IsNull(reusedView.Find("EnhancedFireballPlume"));
+                Assert.IsNull(reusedView.Find("EnhancedFireballVolume"));
+                Assert.AreEqual(1, nightLights.GetComponentsInChildren<Light>(true).Length);
+            }
+            finally
+            {
+                Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        [Test]
         public void AuthoritativeFireflyFireballUsesExistingLuminousProjectileStack()
         {
             string ownerSource = File.ReadAllText(Path.Combine(
