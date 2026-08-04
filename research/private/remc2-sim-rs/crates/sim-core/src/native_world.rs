@@ -40948,6 +40948,108 @@ mod tests {
     }
 
     #[test]
+    fn level_two_goat_action11_partner_follow_and_linked_scan_match_source() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 owner package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Goat action-11 partner-follow session");
+        let baseline_hash = session.goat_hash();
+        let mut primary = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .cloned()
+            .expect("authored action-11 primary Goat");
+        let mut partner = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 66)
+            .cloned()
+            .expect("authored action-9 partner Goat");
+        let mut linked_peer = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 71)
+            .cloned()
+            .expect("authored linked-list peer Goat");
+
+        let primary_source_id = primary.source_id;
+        let primary_position = primary.position;
+        let far_position = Position {
+            x: primary_position.x.wrapping_add(0x1000),
+            y: primary_position.y.wrapping_add(0x1000),
+            z: primary_position.z,
+        };
+        for mut goat in session.goats().to_vec() {
+            if matches!(goat.entity_index, 39 | 66 | 71) {
+                continue;
+            }
+            // Source sub_1C560 rejects equal source IDs and then scans the
+            // global model-1 linked list, so keep every other row out of the
+            // strict 256-unit window and use the primary source ID.
+            goat.source_id = primary_source_id;
+            goat.position = far_position;
+            assert!(session.goats.replace_goat_for_test(goat));
+        }
+
+        primary.action = 11;
+        primary.phase = 0;
+        primary.partner_entity_index = Some(66);
+        primary.position = primary_position;
+        primary.actual_speed = 0;
+        primary.minimum_speed = 0;
+        primary.maximum_speed = 0;
+        assert!(session.goats.replace_goat_for_test(primary));
+
+        partner.source_id = primary_source_id;
+        partner.action = 9;
+        partner.phase = 0;
+        partner.partner_entity_index = None;
+        partner.position = Position {
+            x: primary_position.x.wrapping_add(80),
+            y: primary_position.y.wrapping_add(40),
+            z: primary_position.z,
+        };
+        partner.maximum_speed = 64;
+        partner.actual_speed = 12;
+        assert!(session.goats.replace_goat_for_test(partner));
+
+        linked_peer.source_id = primary_source_id.wrapping_add(1);
+        linked_peer.action = 9;
+        linked_peer.phase = 1;
+        linked_peer.partner_entity_index = None;
+        linked_peer.position = Position {
+            x: primary_position.x.wrapping_add(20),
+            y: primary_position.y.wrapping_add(24),
+            z: primary_position.z,
+        };
+        let linked_peer_position = linked_peer.position;
+        assert!(session.goats.replace_goat_for_test(linked_peer));
+
+        let expected_roll = i16::try_from(heading_for_positions(
+            linked_peer_position,
+            primary_position,
+        ))
+        .expect("linked peer heading fits i16");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let stepped = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 39)
+            .expect("primary Goat remains live after partner-follow callback");
+        assert_eq!(stepped.action, 11);
+        assert_eq!(stepped.partner_entity_index, Some(66));
+        assert_eq!(stepped.actual_speed, 64 + 12);
+        assert_eq!(stepped.roll, expected_roll);
+        assert_eq!(stepped.phase, 1);
+
+        session.reset();
+        assert_eq!(session.goat_hash(), baseline_hash);
+    }
+
+    #[test]
     fn level_two_nyphur_participant_chain_is_source_bound_and_reset_isolated() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -41217,6 +41319,47 @@ mod tests {
         assert_eq!(goat.position.x, original_position.x);
         assert_eq!(goat.position.y, original_position.y);
         assert_eq!(goat.action, 10);
+
+        session.reset();
+        assert_eq!(session.goat_hash(), baseline_goat_hash);
+    }
+
+    #[test]
+    fn level_two_goat_action9_uses_source_movement_cleanup_on_same_tile_production_path() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 owner package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Goat action-9 obstruction-marker session");
+        let baseline_goat_hash = session.goat_hash();
+        let mut primary = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 40)
+            .cloned()
+            .expect("authored action-9 Goat slot 40");
+        let original_position = primary.position;
+        primary.action = 9;
+        // Avoid action-9's cadence-gated acquisition; this slice isolates
+        // `sub_1B8C0`'s direct same-tile movement cleanup.
+        primary.phase = 1;
+        primary.actual_speed = 0;
+        primary.proximity_countdown = 0;
+        primary.target_entity_index = None;
+        primary.partner_entity_index = None;
+        primary.control_flags |= 0x0004_0000;
+        assert!(session.goats.replace_goat_for_test(primary));
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let goat = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 40)
+            .expect("stepped action-9 Goat slot 40");
+        assert_eq!(goat.control_flags & 0x0004_0000, 0);
+        assert_eq!(goat.position.x, original_position.x);
+        assert_eq!(goat.position.y, original_position.y);
+        assert_eq!(goat.action, 9);
 
         session.reset();
         assert_eq!(session.goat_hash(), baseline_goat_hash);

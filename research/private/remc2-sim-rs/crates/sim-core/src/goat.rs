@@ -1183,7 +1183,7 @@ impl GoatFamily {
         players: &[GoatPlayerTarget],
         events: &mut Vec<GoatStepEvent>,
     ) {
-        match self.apply_pending_damage(family_index) {
+        match self.apply_action11_damage(family_index) {
             DamageResult::Dead => {
                 self.goats[family_index].action = 12;
             }
@@ -1203,7 +1203,7 @@ impl GoatFamily {
                 );
             }
             DamageResult::None => {
-                self.move_patrol(family_index, world);
+                self.move_action11_source(family_index, world);
                 if u16::from(self.goats[family_index].phase)
                     .is_multiple_of(self.config.perception_cadence)
                 {
@@ -4625,6 +4625,94 @@ mod tests {
         );
         assert_eq!(family.goats[primary_index].life, 399);
         assert_eq!(family.goats[primary_index].current_attacker, 321);
+    }
+
+    #[test]
+    fn action9_child_chain_uses_source_damage_and_retaliation_transition() {
+        let world = MaterialBoundaryWorld { all_water: false };
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 40)
+            .expect("authored action-9 Goat");
+        let primary_position = family.goats[primary_index].position;
+        let primary_rng = family.goats[primary_index].rng;
+        family.goats[primary_index].action = 9;
+        family.goats[primary_index].phase = 1;
+        family.goats[primary_index].position.z = 300;
+        family.goats[primary_index].life = 400;
+        family.goats[primary_index].pending_damage = 0;
+        family.goats[primary_index].pending_attacker = 0;
+        family.goats[primary_index].current_attacker = 0;
+        assert!(family.set_child_link_for(40, Some(80)));
+
+        let child = family
+            .source_entities
+            .iter_mut()
+            .find(|entity| entity.entity_index == 80)
+            .expect("non-Goat source child row");
+        child.class = GOAT_CLASS.wrapping_add(1);
+        child.model = 0;
+        child.life = 399;
+        child.current_attacker = 321;
+        child.active = true;
+
+        let events = family.step_source_slot(40, &world, &[]);
+        let primary = &family.goats[primary_index];
+        assert_eq!(primary.life, 399);
+        assert_eq!(primary.action, 14);
+        assert_eq!(primary.target_entity_index, Some(321));
+        assert_eq!(primary.pending_damage, 0);
+        assert_eq!(primary.pending_attacker, 0);
+        assert_eq!(primary.position.x, primary_position.x);
+        assert_eq!(primary.position.y, primary_position.y);
+        assert_eq!(primary.position.z, 44);
+        assert_eq!(primary.actual_speed, primary.minimum_speed);
+        assert_eq!(primary.rng, next_rng(primary_rng));
+        assert_eq!(primary.phase, 2);
+        assert!(events.is_empty(), "the source tail seed emits no bleat");
+    }
+
+    #[test]
+    fn action9_uses_source_intermediate_ceiling_probe_for_retry() {
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 40)
+            .expect("authored action-9 Goat");
+        let goat = &mut family.goats[primary_index];
+        goat.action = 9;
+        goat.phase = 1;
+        goat.position = Position { x: 0, y: 0, z: 0 };
+        goat.yaw = 0;
+        goat.actual_speed = 300;
+        goat.collision_half_width = 512;
+        goat.collision_half_depth = 512;
+        goat.collision_half_height = 10;
+        goat.pending_damage = 0;
+        goat.pending_attacker = 0;
+        let world = IntermediateCeilingProbeWorld {
+            ceiling_calls: Cell::new(0),
+        };
+
+        family.step_source_slot(40, &world, &[]);
+
+        assert!(
+            world.ceiling_calls.get() >= 4,
+            "action 9 must use sub_1B8C0's intermediate ceiling probes"
+        );
+        assert_ne!(
+            family.goats[primary_index].yaw,
+            source_retry_headings(0)[0],
+            "the first heading must be rejected before the retry path accepts"
+        );
+        assert_ne!(
+            family.goats[primary_index].control_flags & 0x0004_0000,
+            0,
+            "a retry after the blocked first probe retains the obstruction marker"
+        );
     }
 
     #[test]
