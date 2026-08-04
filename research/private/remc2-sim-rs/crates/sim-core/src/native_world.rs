@@ -3059,6 +3059,41 @@ impl RuntimeSnapshot {
         }
     }
 
+    /// Bind an authored event into the stage table as remc2 `sub_58DA0` does
+    /// for stage kinds 1/2/4/6.  The exported runtime uses an authored-feature
+    /// relation for the pre-construction pointer; after construction kinds
+    /// 1/2/4 retain a one-based live-entity relation while kind 6 stores the
+    /// zero-based entity index.  The source also sets the stage's bound flag.
+    fn bind_authored_stage_entity(&mut self, authored_index: u16, source_slot: u16) -> usize {
+        let mut bound = 0;
+        for (stage_index, stage) in self.stages.iter_mut().enumerate() {
+            if !matches!(stage.kind, 1 | 2 | 4 | 6)
+                || stage.relation != RuntimeRelation::AuthoredFeature(authored_index)
+            {
+                continue;
+            }
+            stage.relation = if stage.kind == 6 {
+                RuntimeRelation::LiveEntityIndex(source_slot)
+            } else {
+                RuntimeRelation::LiveEntity(source_slot)
+            };
+            stage.flags |= 1;
+            let offset = 192 + stage_index * 14;
+            self.bytes[offset + 1] = stage.flags as u8;
+            if stage.kind == 6 {
+                self.bytes[offset + 6] = 3;
+                self.bytes[offset + 10..offset + 14]
+                    .copy_from_slice(&u32::from(source_slot).to_le_bytes());
+            } else {
+                self.bytes[offset + 6] = 2;
+                self.bytes[offset + 10..offset + 14]
+                    .copy_from_slice(&u32::from(source_slot).wrapping_add(1).to_le_bytes());
+            }
+            bound += 1;
+        }
+        bound
+    }
+
     fn mark_level2_objective_done_for(&mut self, player_color_index: u8) {
         let index = usize::from(player_color_index);
         if let Some(objective) = self.objectives.get_mut(index) {
@@ -4181,10 +4216,10 @@ pub struct Level2AuthoredModel59Source {
 }
 
 /// Authored class-10/subtype-58 row constructed by remc2 `sub_504B0`.
-/// The source callback (action 58 / `sub_265A0`) and its `NewEvent` defaults /
-/// `sub_58DA0` stage binding remain separate runtime slices; this row owns the
-/// activation-presence subset and arena identity needed to make the rooted
-/// group-3 source reachable.
+/// The source callback (action 58 / `sub_265A0`) and its `NewEvent` defaults
+/// remain separate runtime slices; this row owns the activation-presence
+/// subset, `sub_58DA0` stage binding, and arena identity needed to make the
+/// rooted group-3 source reachable.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2AuthoredModel53Source {
     pub source_entity_index: u16,
@@ -5832,8 +5867,8 @@ impl Level2EconomyState {
     /// intentionally does not add the row to the render map; it writes its
     /// authored position directly, sets action 58/model 53, life 6, subspell
     /// 3000, and clears NewEvent's default control bit 0x08. NewEvent defaults
-    /// and the `sub_58DA0` stage-table binding are retained for the separate
-    /// action-58 runtime slice.
+    /// and the action-58 callback remain separate runtime slices; the caller
+    /// performs the source-equivalent `sub_58DA0` stage-table binding.
     pub fn allocate_authored_model53(
         &mut self,
         authored_index: u16,
@@ -16620,8 +16655,12 @@ impl Level2ResetSession {
             })?;
         let position =
             feature.world_position(self.terrain.ground_height(feature.world_position(0)));
-        self.economy
-            .allocate_authored_model53(authored_index, position)
+        let source = self
+            .economy
+            .allocate_authored_model53(authored_index, position)?;
+        self.runtime
+            .bind_authored_stage_entity(authored_index, source.source_entity_index);
+        Some(source)
     }
 
     /// Materialize one authored class-11/model-32 objective switch through
@@ -25022,6 +25061,7 @@ mod tests {
     use super::*;
     use crate::render_camera::TerrainSlopeCamera;
     use crate::{regression_state::RegressionStateSequence, source_projection_hash};
+    use std::fs;
     use std::path::PathBuf;
 
     const OWNED_LEVEL_ONE_STATE_SEQUENCE: &[u8] = include_bytes!(
@@ -33745,6 +33785,7 @@ mod tests {
             .level2_reset_session()
             .expect("Level 2 group-3 production session");
         let baseline_hash = session.campaign_state_hash();
+        let baseline_stages = session.runtime().stages.to_vec();
         let baseline_sphere_count = session.economy().spheres().len();
         let authored_features = session.mission().authored_features().to_vec();
         let feature_position = |index: u16| {
@@ -33887,12 +33928,65 @@ mod tests {
                 } if *source_slot == row439.source_entity_index
             )
         }));
+        for (before, after) in baseline_stages.iter().zip(session.runtime().stages.iter()) {
+            if matches!(before.kind, 1 | 2 | 4 | 6)
+                && before.relation == RuntimeRelation::AuthoredFeature(439)
+            {
+                let expected_relation = if before.kind == 6 {
+                    RuntimeRelation::LiveEntityIndex(row439.source_entity_index)
+                } else {
+                    RuntimeRelation::LiveEntity(row439.source_entity_index)
+                };
+                assert_eq!(after.relation, expected_relation);
+                assert_eq!(after.flags, before.flags | 1);
+            } else {
+                assert_eq!(after, before);
+            }
+        }
 
         session.reset();
         assert_eq!(session.economy().spheres().len(), baseline_sphere_count);
         assert!(session.economy().authored_switch_producers().is_empty());
         assert!(session.economy().authored_model53().is_empty());
+        assert_eq!(
+            session.runtime().stages.as_ref(),
+            baseline_stages.as_slice()
+        );
         assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn model53_sub58da0_stage_binding_preserves_source_relation_encodings() {
+        let bytes = fs::read(level_two_fixture_path().join("runtime.bin"))
+            .expect("qualified Level 2 runtime snapshot");
+        let mut runtime = parse_runtime(&bytes).expect("qualified runtime snapshot");
+        for (stage_index, kind) in [1_i8, 2, 4, 6].into_iter().enumerate() {
+            let stage = &mut runtime.stages[stage_index];
+            stage.kind = kind;
+            stage.flags = 0;
+            stage.relation = RuntimeRelation::AuthoredFeature(439);
+        }
+
+        assert_eq!(runtime.bind_authored_stage_entity(439, 77), 4);
+        for (stage_index, kind) in [1_i8, 2, 4, 6].into_iter().enumerate() {
+            let stage = &runtime.stages[stage_index];
+            let expected_relation = if kind == 6 {
+                RuntimeRelation::LiveEntityIndex(77)
+            } else {
+                RuntimeRelation::LiveEntity(77)
+            };
+            assert_eq!(stage.relation, expected_relation);
+            assert_eq!(stage.flags, 1);
+            let offset = 192 + stage_index * 14;
+            assert_eq!(runtime.bytes()[offset + 1], 1);
+            assert_eq!(runtime.bytes()[offset + 6], if kind == 6 { 3 } else { 2 });
+            let encoded_value = u32::from_le_bytes(
+                runtime.bytes()[offset + 10..offset + 14]
+                    .try_into()
+                    .expect("runtime relation width"),
+            );
+            assert_eq!(encoded_value, if kind == 6 { 77 } else { 78 });
+        }
     }
 
     #[test]
