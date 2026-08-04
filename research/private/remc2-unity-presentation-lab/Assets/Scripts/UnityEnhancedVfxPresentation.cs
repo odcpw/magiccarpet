@@ -58,6 +58,8 @@ namespace MagicCarpet.PresentationLab
         public float ImpactLightBaseIntensity;
         public float ImpactProgress;
         public ulong Sequence;
+        public ulong StableIdentity;
+        public ulong Generation;
         public ulong StartTick;
         public ulong ExpireTick;
         public uint DurationTicks;
@@ -192,6 +194,8 @@ namespace MagicCarpet.PresentationLab
             EnsureHierarchy();
             UnityEnhancedVfxVisual visual = pool.Count > 0 ? pool.Pop() : CreateVisual();
             visual.Sequence = vfxEvent.Sequence;
+            visual.StableIdentity = vfxEvent.StableIdentity;
+            visual.Generation = vfxEvent.Generation;
             ulong duration = vfxEvent.DurationTicks == 0 ? 1UL : vfxEvent.DurationTicks;
             visual.StartTick = vfxEvent.Tick;
             visual.ExpireTick = vfxEvent.Tick + duration;
@@ -365,6 +369,50 @@ namespace MagicCarpet.PresentationLab
                 visual.Object.SetActive(false);
                 pool.Push(visual);
             }
+        }
+
+        /// <summary>
+        /// Copies the already-created authoritative Impact lights for the
+        /// shader warm-light field. This is presentation state only: the
+        /// caller owns publication and no Unity light is created here.
+        /// </summary>
+        public int AppendActiveImpactWarmLightRequests(
+            IList<UnityEnhancedLocalLightRequest> requests)
+        {
+            if (requests == null)
+            {
+                return 0;
+            }
+
+            int appended = 0;
+            foreach (UnityEnhancedVfxVisual visual in active.Values)
+            {
+                if (appended >= ImpactLightMaximumCount)
+                {
+                    break;
+                }
+
+                Light light = visual.ImpactLight;
+                if (visual.Generation != generation ||
+                    visual.Kind != UnityEnhancedVfxKind.Impact ||
+                    visual.StableIdentity == 0 || light == null ||
+                    !light.enabled || light.intensity <= 0f)
+                {
+                    continue;
+                }
+
+                uint impactId = (uint)(visual.StableIdentity & 0x1fffffffUL);
+                requests.Add(new UnityEnhancedLocalLightRequest(
+                    visual.StableIdentity,
+                    light.transform.position,
+                    light.color,
+                    light.intensity,
+                    light.range,
+                    3000 + (int)(impactId % 1000U)));
+                appended++;
+            }
+
+            return appended;
         }
 
         private void EnsureHierarchy()

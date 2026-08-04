@@ -86,6 +86,9 @@ namespace MagicCarpet.PresentationLab
         private const string ShaderWarmLightColorsName = "_EnhancedWarmLightColors";
         private const string ShaderWarmLightRangesName = "_EnhancedWarmLightRanges";
         private readonly List<UnityEnhancedLocalLightRequest> sortedRequests = new List<UnityEnhancedLocalLightRequest>();
+        private readonly List<UnityEnhancedLocalLightRequest> transientRequests = new List<UnityEnhancedLocalLightRequest>();
+        private readonly List<UnityEnhancedLocalLightRequest> shaderRequests = new List<UnityEnhancedLocalLightRequest>();
+        private readonly HashSet<ulong> shaderRequestIdentities = new HashSet<ulong>();
         private readonly List<Light> pooledLights = new List<Light>();
         private readonly List<Light> activeLights = new List<Light>();
         private readonly Vector4[] shaderWarmLightPositions = new Vector4[ShaderWarmLightCap];
@@ -116,6 +119,7 @@ namespace MagicCarpet.PresentationLab
         private CameraClearFlags priorCameraClearFlags;
         private Color priorCameraBackgroundColor;
         private bool capturedCameraSettings;
+        private int acceptedStaticRequestCount;
 
         public UnityEnhancedLightingQuality Quality { get { return quality; } }
         public int ActiveLocalLightCount { get { return activeLights.Count; } }
@@ -234,13 +238,14 @@ namespace MagicCarpet.PresentationLab
                 }
             }
             sortedRequests.Sort(CompareRequests);
+            acceptedStaticRequestCount = Mathf.Min(sortedRequests.Count, LocalLightCap);
             DroppedLocalLightCount = Mathf.Max(0, sortedRequests.Count - LocalLightCap);
             while (activeLights.Count > 0)
             {
                 RecycleLight(activeLights[activeLights.Count - 1]);
                 activeLights.RemoveAt(activeLights.Count - 1);
             }
-            int accepted = Mathf.Min(sortedRequests.Count, LocalLightCap);
+            int accepted = acceptedStaticRequestCount;
             for (int index = 0; index < accepted; index++)
             {
                 UnityEnhancedLocalLightRequest request = sortedRequests[index];
@@ -252,7 +257,8 @@ namespace MagicCarpet.PresentationLab
                 activeLights.Add(light);
             }
 
-            ApplyShaderWarmLightField(accepted);
+            transientRequests.Clear();
+            RebuildShaderWarmLightField();
 
             generation = nextGeneration;
             hasDescriptor = true;
@@ -266,6 +272,11 @@ namespace MagicCarpet.PresentationLab
             AppliedExposure = 0f;
             AppliedFogStartDistance = 0f;
             AppliedFogEndDistance = 0f;
+            acceptedStaticRequestCount = 0;
+            sortedRequests.Clear();
+            transientRequests.Clear();
+            shaderRequests.Clear();
+            shaderRequestIdentities.Clear();
             ClearShaderWarmLightField();
             while (activeLights.Count > 0)
             {
@@ -280,14 +291,66 @@ namespace MagicCarpet.PresentationLab
             RestoreRenderSettings();
         }
 
-        private void ApplyShaderWarmLightField(int accepted)
+        /// <summary>
+        /// Rebuilds only the shader warm-light field from the accepted
+        /// snapshot requests and transient VFX requests. Static snapshot
+        /// requests win stable-identity collisions; Unity local lights are
+        /// intentionally left untouched.
+        /// </summary>
+        public void ApplyTransientWarmLights(
+            IList<UnityEnhancedLocalLightRequest> requests)
+        {
+            transientRequests.Clear();
+            if (requests != null)
+            {
+                for (int index = 0; index < requests.Count; index++)
+                {
+                    transientRequests.Add(requests[index]);
+                }
+            }
+
+            transientRequests.Sort(CompareRequests);
+            RebuildShaderWarmLightField();
+        }
+
+        private void RebuildShaderWarmLightField()
+        {
+            shaderRequests.Clear();
+            shaderRequestIdentities.Clear();
+            int boundedStatic = Mathf.Min(
+                Mathf.Min(acceptedStaticRequestCount, LocalLightCap),
+                sortedRequests.Count);
+            for (int index = 0; index < boundedStatic; index++)
+            {
+                UnityEnhancedLocalLightRequest request = sortedRequests[index];
+                if (shaderRequestIdentities.Add(request.StableIdentity))
+                {
+                    shaderRequests.Add(request);
+                }
+            }
+
+            for (int index = 0; index < transientRequests.Count; index++)
+            {
+                UnityEnhancedLocalLightRequest request = transientRequests[index];
+                if (shaderRequestIdentities.Add(request.StableIdentity))
+                {
+                    shaderRequests.Add(request);
+                }
+            }
+
+            shaderRequests.Sort(CompareRequests);
+            ApplyShaderWarmLightField(shaderRequests);
+        }
+
+        private void ApplyShaderWarmLightField(
+            IList<UnityEnhancedLocalLightRequest> requests)
         {
             ClearShaderWarmLightField();
             int count = 0;
-            int boundedAccepted = Mathf.Min(accepted, sortedRequests.Count);
-            for (int index = 0; index < boundedAccepted && count < ShaderWarmLightCap; index++)
+            int boundedRequests = requests == null ? 0 : requests.Count;
+            for (int index = 0; index < boundedRequests && count < ShaderWarmLightCap; index++)
             {
-                UnityEnhancedLocalLightRequest request = sortedRequests[index];
+                UnityEnhancedLocalLightRequest request = requests[index];
                 if (!IsWarmLight(request.Color))
                 {
                     continue;

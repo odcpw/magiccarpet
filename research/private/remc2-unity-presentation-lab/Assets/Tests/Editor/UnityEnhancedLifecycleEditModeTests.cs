@@ -1,5 +1,6 @@
 #if UNITY_EDITOR
 using System;
+using System.Collections.Generic;
 using System.IO;
 using NUnit.Framework;
 using UnityEngine;
@@ -1508,6 +1509,167 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void TransientWarmLightMergeDeduplicatesStaticRequestsAndCapsShaderField()
+        {
+            GameObject gameObject = new GameObject("enhanced-transient-warm-light-test");
+            UnityEnhancedNightLighting lighting = gameObject.AddComponent<UnityEnhancedNightLighting>();
+            UnityEnhancedLocalLightRequest snapshotRequest = new UnityEnhancedLocalLightRequest(
+                0x4000002aUL,
+                new Vector3(1f, 2f, 3f),
+                new Color(1f, 0.18f, 0.03f, 1f),
+                2.6f,
+                8f,
+                3042);
+
+            lighting.ApplyDescriptor(
+                11,
+                UnityEnhancedNightLightingDescriptor.Level1Night(),
+                new[] { snapshotRequest },
+                true);
+            int staticLightCount = lighting.ActiveLocalLightCount;
+
+            var transientRequests = new List<UnityEnhancedLocalLightRequest>
+            {
+                new UnityEnhancedLocalLightRequest(
+                    snapshotRequest.StableIdentity,
+                    new Vector3(90f, 90f, 90f),
+                    Color.red,
+                    9f,
+                    2f,
+                    9999),
+                new UnityEnhancedLocalLightRequest(
+                    0x40000001UL,
+                    new Vector3(4f, 2f, 3f),
+                    Color.red,
+                    1f,
+                    4f,
+                    3001),
+                new UnityEnhancedLocalLightRequest(
+                    0x40000002UL,
+                    new Vector3(5f, 2f, 3f),
+                    Color.red,
+                    1f,
+                    4f,
+                    3002),
+                new UnityEnhancedLocalLightRequest(
+                    0x40000003UL,
+                    new Vector3(6f, 2f, 3f),
+                    Color.red,
+                    1f,
+                    4f,
+                    3003),
+                new UnityEnhancedLocalLightRequest(
+                    0x40000004UL,
+                    new Vector3(7f, 2f, 3f),
+                    Color.red,
+                    1f,
+                    4f,
+                    3004),
+                new UnityEnhancedLocalLightRequest(
+                    0x40000005UL,
+                    new Vector3(8f, 2f, 3f),
+                    Color.red,
+                    1f,
+                    4f,
+                    3005)
+            };
+
+            lighting.ApplyTransientWarmLights(transientRequests);
+            Assert.AreEqual(staticLightCount, lighting.ActiveLocalLightCount);
+            Assert.AreEqual(4, lighting.ShaderVisibleWarmLightCount);
+            Assert.AreEqual(4, Shader.GetGlobalInt("_EnhancedWarmLightCount"));
+            Vector4 publishedPosition = Shader.GetGlobalVectorArray(
+                "_EnhancedWarmLightPositions")[0];
+            Assert.That(publishedPosition.x, Is.EqualTo(1f).Within(0.001f));
+            Assert.That(publishedPosition.y, Is.EqualTo(2f).Within(0.001f));
+            Assert.That(publishedPosition.z, Is.EqualTo(3f).Within(0.001f));
+            Vector4 publishedColor = Shader.GetGlobalVectorArray(
+                "_EnhancedWarmLightColors")[0];
+            Assert.That(publishedColor.w, Is.EqualTo(2.6f).Within(0.001f));
+
+            lighting.ResetForGeneration(12);
+            Assert.AreEqual(0, lighting.ShaderVisibleWarmLightCount);
+            Assert.AreEqual(0, Shader.GetGlobalInt("_EnhancedWarmLightCount"));
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
+        public void OwnerImpactWarmLightPersistsAfterSnapshotRequestExpires()
+        {
+            GameObject gameObject = new GameObject("enhanced-owner-impact-warm-light-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+            const ulong generation = 15;
+            const ulong stableIdentity = 0x4000002aUL;
+            UnityEnhancedVfxEvent impact = new UnityEnhancedVfxEvent(
+                1,
+                generation,
+                10,
+                stableIdentity,
+                UnityEnhancedVfxKind.Impact,
+                new Vector3(8f, 7f, 6f),
+                1f,
+                18);
+            UnityEnhancedLocalLightRequest snapshotRequest = new UnityEnhancedLocalLightRequest(
+                stableIdentity,
+                new Vector3(1f, 2f, 3f),
+                new Color(1f, 0.18f, 0.03f, 1f),
+                2.6f,
+                8f,
+                3042);
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = generation,
+                Tick = 10,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                NightLighting = UnityEnhancedNightLightingDescriptor.Level1Night(),
+                LocalLights = new[] { snapshotRequest },
+                VfxEvents = new[] { impact }
+            }));
+            Assert.AreEqual(1, root.NightLighting.ShaderVisibleWarmLightCount);
+            Vector4 snapshotPosition = Shader.GetGlobalVectorArray(
+                "_EnhancedWarmLightPositions")[0];
+            Assert.That(snapshotPosition.x, Is.EqualTo(1f).Within(0.001f));
+            Assert.That(snapshotPosition.y, Is.EqualTo(2f).Within(0.001f));
+            Assert.That(snapshotPosition.z, Is.EqualTo(3f).Within(0.001f));
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = generation,
+                Tick = 19,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                NightLighting = UnityEnhancedNightLightingDescriptor.Level1Night(),
+                LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
+                VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+            }));
+            Assert.AreEqual(1, root.NightLighting.ShaderVisibleWarmLightCount);
+            Vector4 transientPosition = Shader.GetGlobalVectorArray(
+                "_EnhancedWarmLightPositions")[0];
+            Assert.That(transientPosition.x, Is.EqualTo(8f).Within(0.001f));
+            Assert.That(transientPosition.y, Is.EqualTo(7f).Within(0.001f));
+            Assert.That(transientPosition.z, Is.EqualTo(6f).Within(0.001f));
+            Vector4 transientColor = Shader.GetGlobalVectorArray(
+                "_EnhancedWarmLightColors")[0];
+            Assert.That(transientColor.w, Is.GreaterThan(0f));
+            Assert.That(transientColor.w, Is.LessThan(2f));
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = generation,
+                Tick = 28,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                NightLighting = UnityEnhancedNightLightingDescriptor.Level1Night(),
+                LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
+                VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+            }));
+            Assert.AreEqual(0, root.NightLighting.ShaderVisibleWarmLightCount);
+            Assert.AreEqual(0, root.VfxPresentation.ActiveImpactLightCount);
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void NightLightingAppliesReadableDescriptorAndRestoresSceneState()
         {
             GameObject root = new GameObject("enhanced-readable-night-test");
@@ -1871,6 +2033,12 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.Greater(impactLight.intensity, 0f);
             Assert.IsTrue(impactLight.enabled);
             Assert.AreEqual(1, vfx.ActiveImpactLightCount);
+            var warmRequests = new List<UnityEnhancedLocalLightRequest>();
+            Assert.AreEqual(1, vfx.AppendActiveImpactWarmLightRequests(warmRequests));
+            Assert.AreEqual(impact.StableIdentity, warmRequests[0].StableIdentity);
+            Assert.AreEqual(3042, warmRequests[0].Priority);
+            Assert.That(warmRequests[0].Position.x, Is.EqualTo(2f).Within(0.001f));
+            Assert.That(warmRequests[0].Intensity, Is.EqualTo(2f).Within(0.001f));
             Assert.IsFalse(vfx.ApplyEvent(impact));
             Assert.AreEqual(1, vfx.DuplicateEffectCount);
 
@@ -1888,6 +2056,8 @@ namespace MagicCarpet.PresentationLab.Tests
             }
             Assert.AreEqual(4, vfx.ActiveImpactLightCount);
             Assert.LessOrEqual(gameObject.GetComponentsInChildren<Light>(true).Length, 4);
+            warmRequests.Clear();
+            Assert.AreEqual(4, vfx.AppendActiveImpactWarmLightRequests(warmRequests));
 
             float initialLightIntensity = impactLight.intensity;
             vfx.SetReducedMotion(true);
@@ -1896,6 +2066,9 @@ namespace MagicCarpet.PresentationLab.Tests
             vfx.Advance(33);
             Assert.That(impactLight.intensity, Is.GreaterThan(0f));
             Assert.That(impactLight.intensity, Is.LessThan(initialLightIntensity));
+            warmRequests.Clear();
+            Assert.AreEqual(4, vfx.AppendActiveImpactWarmLightRequests(warmRequests));
+            Assert.That(warmRequests[0].Intensity, Is.LessThan(initialLightIntensity));
             vfx.Advance(43);
             Assert.AreEqual(0, vfx.ActiveEffectCount);
             Assert.AreEqual(0, vfx.ActiveImpactLightCount);

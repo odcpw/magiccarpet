@@ -174,6 +174,7 @@ namespace MagicCarpet.PresentationLab
         private readonly HashSet<ulong> seenIdentities = new HashSet<ulong>();
         private readonly Dictionary<ulong, UnityEnhancedEntityPose> entityStartPoses = new Dictionary<ulong, UnityEnhancedEntityPose>();
         private readonly Dictionary<ulong, UnityEnhancedEntityPose> entityTargetPoses = new Dictionary<ulong, UnityEnhancedEntityPose>();
+        private readonly List<UnityEnhancedLocalLightRequest> transientWarmLightRequests = new List<UnityEnhancedLocalLightRequest>();
 
         private Transform worldObjects;
         private UnityEnhancedCameraRig cameraRig;
@@ -237,6 +238,7 @@ namespace MagicCarpet.PresentationLab
                 if (diagnostics != null) diagnostics.BeginFrame();
                 InterpolatePresentation(Mathf.Clamp01(Time.unscaledDeltaTime * 30f));
                 if (vfxPresentation != null) vfxPresentation.Advance(lastTick);
+                PublishTransientWarmLights();
                 if (waterPresentation != null) waterPresentation.RenderReflection();
                 if (diagnostics != null)
                 {
@@ -499,6 +501,7 @@ namespace MagicCarpet.PresentationLab
                 vfxPresentation.ApplyEvent(snapshot.VfxEvents[index]);
             }
             vfxPresentation.Advance(snapshot.Tick);
+            PublishTransientWarmLights();
             generation = snapshot.Generation;
             lastTick = snapshot.Tick;
             hasSnapshot = true;
@@ -606,8 +609,25 @@ namespace MagicCarpet.PresentationLab
             waterPresentation.ResetPresentation(nextGeneration);
             nightLighting.ResetForGeneration(nextGeneration);
             vfxPresentation.ResetForGeneration(nextGeneration);
+            transientWarmLightRequests.Clear();
             actorPresentation.ResetForSession();
             hudPresentation.ResetForGeneration(nextGeneration);
+        }
+
+        private void PublishTransientWarmLights()
+        {
+            if (nightLighting == null)
+            {
+                return;
+            }
+
+            transientWarmLightRequests.Clear();
+            if (vfxPresentation != null)
+            {
+                vfxPresentation.AppendActiveImpactWarmLightRequests(
+                    transientWarmLightRequests);
+            }
+            nightLighting.ApplyTransientWarmLights(transientWarmLightRequests);
         }
 
         /// <summary>
