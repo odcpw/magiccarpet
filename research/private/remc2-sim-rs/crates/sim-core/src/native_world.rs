@@ -14489,6 +14489,83 @@ impl Level2SharedSpellResetSession {
         self.baseline_player_mana
     }
 
+    /// Execute the qualified local-player portion of remc2's
+    /// `AddPlayer03_00_5E010` upkeep.  The source adds the previous
+    /// `manaRegen` value, clamps mana to the signed `[0,maxMana]` interval,
+    /// then computes the next outdoor/no-Castle recharge as
+    /// `max(maxMana / 2000, 100)`.  Castle/boost and active new-spell parent
+    /// branches remain outside this bounded projection until their owner
+    /// data is available in the Level 2 session.
+    fn step_local_player_unboosted_upkeep(
+        &mut self,
+        castle_entity_index: u16,
+        projected_max_mana: Option<i32>,
+    ) -> bool {
+        const RECHARGE_BOOST_FLAG: u32 = 0x0000_1000;
+        let player_entity_index = self.player_entity.index;
+        if self.player_entity.life < 0
+            || castle_entity_index != 0
+            || self.player_entity.control_flags & RECHARGE_BOOST_FLAG != 0
+            || self.shield.is_some_and(|state| {
+                state.parent_entity_index == player_entity_index && state.active_value != 0
+            })
+            || self.invisible.is_some_and(|state| {
+                state.parent_entity_index == player_entity_index && state.active_value != 0
+            })
+            || self.beyond_sight.is_some_and(|state| {
+                state.parent_entity_index == player_entity_index && state.active_value != 0
+            })
+        {
+            return false;
+        }
+
+        if let Some(max_mana) = projected_max_mana {
+            self.player_entity.max_mana = max_mana;
+            self.player_entity.record[144..148].copy_from_slice(&max_mana.to_le_bytes());
+            if let Some(entity) = self
+                .player_entities
+                .iter_mut()
+                .find(|entity| entity.index == player_entity_index)
+            {
+                entity.max_mana = max_mana;
+                entity.record[144..148].copy_from_slice(&max_mana.to_le_bytes());
+            }
+        }
+
+        // The source entity is authoritative for this callback; the caster
+        // projection is only the activation gate and is synchronized after
+        // the upkeep write.
+        let mut mana = self
+            .player_entity
+            .mana
+            .wrapping_add(self.player_entity.mana_regen);
+        if mana < 0 {
+            mana = 0;
+        }
+        if mana > self.player_entity.max_mana {
+            mana = self.player_entity.max_mana;
+        }
+        let next_mana_regen = (self.player_entity.max_mana / 2_000).max(100);
+
+        self.player_entity.mana = mana;
+        self.player_entity.mana_regen = next_mana_regen;
+        self.player_entity.record[140..144].copy_from_slice(&next_mana_regen.to_le_bytes());
+        self.player_entity.record[148..152].copy_from_slice(&mana.to_le_bytes());
+        if let Some(entity) = self
+            .player_entities
+            .iter_mut()
+            .find(|entity| entity.index == player_entity_index)
+        {
+            entity.mana = mana;
+            entity.mana_regen = next_mana_regen;
+            entity.record[140..144].copy_from_slice(&next_mana_regen.to_le_bytes());
+            entity.record[148..152].copy_from_slice(&mana.to_le_bytes());
+        }
+        self.caster.mana = mana;
+        self.player_mana = mana;
+        true
+    }
+
     /// Execute remc2's shared `sub_5F660` activation primitive for the
     /// qualified Level 2 Fireball holder (model 0) or Possession holder
     /// (model 1). Projectile factories remain owned by their existing Level 1
@@ -20599,6 +20676,17 @@ impl Level2ResetSession {
                 &self.terrain,
                 &mut self.context,
             ));
+            // `AddPlayer03_00_5E010` runs once per complete entity pass after
+            // the player body callback.  Keep this bounded to the qualified
+            // outdoor/no-Castle Level 2 local-player branch; the source
+            // Castle/boost variants remain explicitly unclaimed here.
+            self.shared_spells.step_local_player_unboosted_upkeep(
+                self.economy.player_castle_entity_index(),
+                self.economy
+                    .owner_max_mana
+                    .get(&self.state.entity_index)
+                    .copied(),
+            );
         }
         // remc2 evaluates objectives after the complete entity update and
         // before the next outer turn's authored switch pass.  Keep that
@@ -29913,6 +30001,68 @@ mod tests {
         assert_eq!(session.state.tick, before.tick + 1);
         session.reset();
         assert_eq!(session.state, before);
+    }
+
+    #[test]
+    fn level_two_local_player_unboosted_mana_upkeep_follows_entity_pass_count_and_reset() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("qualified Level 2 reset session");
+        let baseline_campaign_hash = session.campaign_state_hash();
+        let seed = |session: &mut Level2ResetSession, mana: i32, mana_regen: i32| {
+            let shared = &mut session.shared_spells;
+            shared.player_entity.mana = mana;
+            shared.player_entity.record[148..152].copy_from_slice(&mana.to_le_bytes());
+            shared.player_entity.mana_regen = mana_regen;
+            shared.player_entity.record[140..144].copy_from_slice(&mana_regen.to_le_bytes());
+            shared.caster.mana = mana;
+            shared.player_mana = mana;
+            shared.player_entities[0] = shared.player_entity.clone();
+        };
+
+        // Unknown outer-loop speed bytes skip the entity update entirely.
+        seed(&mut session, 500, 100);
+        session.step_outer_turn(PlayerCommand::default(), u8::MAX);
+        assert_eq!(session.shared_spells().player_mana(), 500);
+
+        // The real Level2 production route applies one AddPlayer pass after
+        // the flight body: old mana + old regen, then the next outdoor rate.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.shared_spells().player_mana(), 600);
+        assert_eq!(session.shared_spells().player_entity.mana_regen, 100);
+        assert_eq!(
+            i32::from_le_bytes(
+                session.shared_spells().player_entity.record_bytes()[140..144]
+                    .try_into()
+                    .expect("mana regen field")
+            ),
+            100
+        );
+
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+        seed(&mut session, 500, 100);
+        session.step_outer_turn(PlayerCommand::default(), 1);
+        assert_eq!(session.shared_spells().player_mana(), 900);
+
+        session.reset();
+        seed(&mut session, 500, 100);
+        session.step_outer_turn(PlayerCommand::default(), 2);
+        assert_eq!(session.shared_spells().player_mana(), 1_000);
+        assert_eq!(session.shared_spells().player_entity.mana, 1_000);
+
+        // A negative-regeneration vector is the source post-active-handler
+        // prestate (`sub_68DE0`), not a claim that the bounded activation seam
+        // itself owns that later callback.
+        session.reset();
+        seed(&mut session, 1_000, -1_000);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.shared_spells().player_mana(), 0);
+        assert_eq!(session.shared_spells().player_entity.mana_regen, 100);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.shared_spells().player_mana(), 100);
     }
 
     #[test]
