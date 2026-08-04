@@ -4027,6 +4027,10 @@ pub struct Level2AuthoredBeeSource {
     pub minimum_speed: i16,
     pub maximum_speed: i16,
     pub actual_speed: i16,
+    /// `SetEvent144_49C70` initializes the Bee's death-conversion mana from
+    /// half of its max life (the pinned constructor therefore starts at
+    /// 1500, not zero).
+    pub mana: i32,
     pub max_life: i16,
     pub life: i16,
     pub subspell_index: u16,
@@ -4043,6 +4047,9 @@ pub struct Level2AuthoredBeeSource {
     pub vertical_step: i16,
     /// Descriptor row 73 `word_0x1A_26` used by the action-18 recoil latch.
     pub action_window: i16,
+    /// Source `StageVar2_0x49_73`, used by scripted action 23's movement
+    /// callback. The reset constructor starts this at zero.
+    pub stage_var2: u8,
     /// Most recent `PrepareEventSound_6E450` sound selected by the Bee helper.
     /// Zero means that this source has not emitted one yet.
     pub last_sound_id: u16,
@@ -5488,6 +5495,7 @@ impl Level2EconomyState {
             minimum_speed: 64,
             maximum_speed: 30,
             actual_speed: 32,
+            mana: 1500,
             max_life: 3000,
             life: 3000,
             subspell_index: 200,
@@ -5500,6 +5508,7 @@ impl Level2EconomyState {
             source_byte_39,
             vertical_step: -32,
             action_window,
+            stage_var2: 0,
             last_sound_id: 0,
             position,
             particle_index: 3,
@@ -5957,6 +5966,58 @@ impl Level2EconomyState {
                     source.action = 18;
                     source.dword_0x10 = 1;
                 }
+            }
+            20 => {
+                // `sub_1F830` -> `PreKillEntity_1C890(a1, 16)` changes the
+                // root and any linked children to action 21. Authored Day
+                // Bees have no child chain in this bounded arena.
+                source.action = 21;
+            }
+            21 => {
+                // `sub_1F850` -> `KillEntity_1C930`: convert constructor
+                // mana into one source-owned sphere, then disable drawing
+                // and let the normal arena reclaim the source slot.
+                let _ = self.spawn_mana_sphere_from_death(
+                    source.source_entity_index,
+                    source.position,
+                    source.yaw,
+                    source.entity_rng,
+                    source.mana,
+                    source.entity_id,
+                );
+                // The Bee has no suppression bit in its constructor state,
+                // so `KillEntity_1C930` also allocates the ordered
+                // class-10/model-1/action-1 death burst after the sphere.
+                let _ = self.spawn_death_burst_from_death_with_id(
+                    source.source_entity_index,
+                    source.entity_id,
+                    source.position,
+                );
+                source.action = 21;
+                source.drawing_enabled = false;
+                source.active = false;
+                source.life = -1;
+                source.target_entity_index = None;
+            }
+            23 => {
+                // `sub_1F8A0` applies this exact two-draw scripted roll
+                // perturbation on the byte-3E cadence after its generic
+                // StageVar2 movement callback. The generic movement family
+                // remains outside this authored Bee seam; an invalid/zero
+                // selector must not consume RNG or change orientation.
+                if source.source_byte_3e & 7 == 0 && (1..=9).contains(&source.stage_var2) {
+                    source.entity_rng = level2_next_rng16(source.entity_rng);
+                    let direction = 2 * (u32::from(source.entity_rng % 0x9d) / 79);
+                    source.entity_rng = level2_next_rng16(source.entity_rng);
+                    let delta = i32::from(source.entity_rng % 0x55)
+                        * (i32::try_from(direction).expect("Bee roll direction fits") - 1);
+                    source.roll = ((i32::from(source.roll) + delta) as i16) & 0x07ff;
+                }
+            }
+            22 => {
+                // Deliberate missing callback slot: the source body is empty,
+                // but the outer ApplyEvents bookkeeping below still advances
+                // the per-entity cursor/phase once for the visited row.
             }
             _ => {}
         }
@@ -11806,6 +11867,7 @@ impl Level2EconomyState {
             hasher.update(source.minimum_speed.to_le_bytes());
             hasher.update(source.maximum_speed.to_le_bytes());
             hasher.update(source.actual_speed.to_le_bytes());
+            hasher.update(source.mana.to_le_bytes());
             hasher.update(source.max_life.to_le_bytes());
             hasher.update(source.life.to_le_bytes());
             hasher.update(source.subspell_index.to_le_bytes());
@@ -11815,6 +11877,7 @@ impl Level2EconomyState {
             hasher.update(source.pitch.to_le_bytes());
             hasher.update(source.roll.to_le_bytes());
             hasher.update(source.source_byte_39.to_le_bytes());
+            hasher.update([source.stage_var2]);
             hasher.update(source.vertical_step.to_le_bytes());
             hasher.update(source.action_window.to_le_bytes());
             hasher.update(source.last_sound_id.to_le_bytes());
@@ -31753,6 +31816,7 @@ mod tests {
         );
         assert_eq!(source.pitch, source.roll);
         assert_eq!(source.yaw, source.roll);
+        assert_eq!(source.mana, 1500);
         assert!((-1..=2046).contains(&source.roll));
         assert_eq!(
             source.dword_0x10,
@@ -31913,6 +31977,219 @@ mod tests {
         session.reset();
         assert!(session.economy().authored_bees().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_authored_bee_actions20_to23_preserve_death_and_no_call_semantics() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 authored Bee session");
+        let baseline_hash = session.campaign_state_hash();
+
+        let dying = session
+            .allocate_level2_authored_bee(229)
+            .expect("objective-linked group-21 Bee");
+        session
+            .economy_mut()
+            .authored_bees
+            .iter_mut()
+            .find(|bee| bee.source_entity_index == dying.source_entity_index)
+            .expect("dying Bee remains in source arena")
+            .action = 20;
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_bee_slot(dying.source_entity_index, None)
+        );
+        assert_eq!(
+            session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|bee| bee.source_entity_index == dying.source_entity_index)
+                .expect("pre-kill Bee remains until kill callback")
+                .action,
+            21
+        );
+
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_bee_slot(dying.source_entity_index, None)
+        );
+        let dead = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == dying.source_entity_index)
+            .copied()
+            .expect("kill callback leaves a reclaimable source row");
+        assert!(!dead.active);
+        assert!(!dead.drawing_enabled);
+        assert_eq!(dead.life, -1);
+        assert!(session.economy().events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::ManaSphereSpawned {
+                source_entity_index,
+                mana: 1500,
+                ..
+            } if *source_entity_index == dying.source_entity_index
+        )));
+        assert!(session.economy().events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::DeathBurstSpawned {
+                parent_entity_index,
+                id_entity_index,
+                ..
+            } if *parent_entity_index == dying.source_entity_index
+                && *id_entity_index == dying.entity_id
+        )));
+        session.economy_mut().reclaim_inactive_slots();
+        assert!(
+            session
+                .economy()
+                .authored_bees()
+                .iter()
+                .all(|bee| bee.source_entity_index != dying.source_entity_index)
+        );
+
+        let no_call = session
+            .allocate_level2_authored_bee(230)
+            .expect("second objective-linked Bee");
+        {
+            let bee = session
+                .economy_mut()
+                .authored_bees
+                .iter_mut()
+                .find(|bee| bee.source_entity_index == no_call.source_entity_index)
+                .expect("no-call Bee remains in source arena");
+            bee.action = 22;
+        }
+        let before_no_call = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == no_call.source_entity_index)
+            .copied()
+            .expect("no-call Bee state");
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_bee_slot(no_call.source_entity_index, None)
+        );
+        let after_no_call = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == no_call.source_entity_index)
+            .copied()
+            .expect("no-call Bee remains live");
+        assert_eq!(after_no_call.action, before_no_call.action);
+        assert_eq!(
+            after_no_call.source_byte_3e,
+            before_no_call.source_byte_3e.wrapping_add(1)
+        );
+        assert_eq!(after_no_call.phase, before_no_call.phase.wrapping_add(1));
+        assert_eq!(after_no_call.entity_rng, before_no_call.entity_rng);
+        assert_eq!(after_no_call.roll, before_no_call.roll);
+
+        let scripted = session
+            .allocate_level2_authored_bee(231)
+            .expect("third objective-linked Bee");
+        let (expected_rng, expected_roll) = {
+            let bee = session
+                .economy_mut()
+                .authored_bees
+                .iter_mut()
+                .find(|bee| bee.source_entity_index == scripted.source_entity_index)
+                .expect("scripted Bee remains in source arena");
+            bee.action = 23;
+            bee.stage_var2 = 1;
+            bee.source_byte_3e = 0;
+            let first = level2_next_rng16(bee.entity_rng);
+            let direction = 2 * (u32::from(first % 0x9d) / 79);
+            let second = level2_next_rng16(first);
+            let delta = i32::from(second % 0x55)
+                * (i32::try_from(direction).expect("Bee roll direction fits") - 1);
+            (second, ((i32::from(bee.roll) + delta) as i16) & 0x07ff)
+        };
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_bee_slot(scripted.source_entity_index, None)
+        );
+        let stepped_scripted = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == scripted.source_entity_index)
+            .copied()
+            .expect("scripted Bee remains live");
+        assert_eq!(stepped_scripted.entity_rng, expected_rng);
+        assert_eq!(stepped_scripted.roll, expected_roll);
+
+        session.reset();
+        assert!(session.economy().authored_bees().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_authored_bee_death_runs_through_production_cursor() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-21 Bee session");
+
+        // The first ordinary turn consumes the real row-228 model-32
+        // producer and materializes row 229 in source order. Mutating only
+        // the resulting typed row keeps the death callback on the production
+        // dynamic cursor rather than calling a fixture-only helper.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row229_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.authored_index == 229)
+            .map(|bee| bee.source_entity_index)
+            .expect("production group-21 row 229 Bee");
+        session
+            .economy_mut()
+            .authored_bees
+            .iter_mut()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .expect("production row 229 source")
+            .action = 20;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|bee| bee.source_entity_index == row229_slot)
+                .expect("pre-kill row remains for the next source turn")
+                .action,
+            21
+        );
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .economy()
+                .authored_bees()
+                .iter()
+                .all(|bee| bee.source_entity_index != row229_slot)
+        );
+        assert!(session.economy().events().iter().any(|event| matches!(
+            event,
+            Level2EconomyEvent::ManaSphereSpawned {
+                source_entity_index,
+                mana: 1500,
+                ..
+            } if *source_entity_index == row229_slot
+        )));
     }
 
     #[test]
