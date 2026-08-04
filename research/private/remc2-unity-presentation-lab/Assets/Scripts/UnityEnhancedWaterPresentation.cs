@@ -46,6 +46,8 @@ namespace MagicCarpet.PresentationLab
         private const int MaximumReflectionDimension = 512;
         private const string WaterLayerName = "Water";
         private const string UiLayerName = "UI";
+        private static readonly Color DefaultRippleColor = new Color(0.28f, 0.68f, 1f, 1f);
+        private static readonly Color FireballRippleColor = new Color(1f, 0.30f, 0.04f, 1f);
         private MeshFilter waterFilter;
         private MeshRenderer waterRenderer;
         private MeshFilter shorelineFilter;
@@ -302,6 +304,7 @@ namespace MagicCarpet.PresentationLab
                 return false;
             }
 
+            waterMaterial.SetColor("_RippleColor", FireballRippleColor);
             waterMaterial.SetVector("_RippleCenter", splash.Position);
             waterMaterial.SetFloat("_RippleStartTime", Time.time);
             waterMaterial.SetFloat("_RippleStrength", Mathf.Clamp(splash.Intensity, 0.45f, 1.35f));
@@ -321,6 +324,7 @@ namespace MagicCarpet.PresentationLab
                     1f,
                     rippleMaxRadius);
                 rippleMaterial.SetVector("_RippleCenter", splash.Position);
+                rippleMaterial.SetColor("_RippleColor", FireballRippleColor);
                 rippleMaterial.SetFloat("_RippleStartTime", rippleStartTime);
                 rippleMaterial.SetFloat("_RippleStrength", Mathf.Clamp(splash.Intensity, 0.55f, 1.5f));
                 rippleMaterial.SetFloat("_RippleMaxRadius", rippleMaxRadius);
@@ -508,6 +512,7 @@ namespace MagicCarpet.PresentationLab
                 material.SetFloat("_CausticStrength", 1.15f);
                 material.SetFloat("_RippleSpeed", 2.8f);
                 material.SetFloat("_RippleWidth", 0.65f);
+                material.SetColor("_RippleColor", DefaultRippleColor);
                 material.SetVector("_RippleCenter", Vector4.zero);
                 material.SetFloat("_RippleStartTime", 0f);
                 material.SetFloat("_RippleStrength", 0f);
@@ -599,10 +604,12 @@ namespace MagicCarpet.PresentationLab
             activeRippleCount = 0;
             if (waterMaterial != null)
             {
+                waterMaterial.SetColor("_RippleColor", DefaultRippleColor);
                 waterMaterial.SetFloat("_RippleStrength", 0f);
             }
             if (rippleMaterial != null)
             {
+                rippleMaterial.SetColor("_RippleColor", DefaultRippleColor);
                 rippleMaterial.SetFloat("_RippleStrength", 0f);
             }
             if (rippleRenderer != null)

@@ -25,6 +25,7 @@ Shader "MagicCarpet/Enhanced/Water"
         _RippleStrength ("Ripple Strength", Range(0, 2)) = 0
         _RippleSpeed ("Ripple Speed", Float) = 2.8
         _RippleWidth ("Ripple Width", Float) = 0.65
+        [HDR] _RippleColor ("Impact Ripple Color", Color) = (0.28, 0.68, 1, 1)
         _ShorelineMode ("Authoritative Shoreline Foam", Float) = 0
         _ShorelineFoamStrength ("Shoreline Foam Strength", Range(0, 2)) = 0
         _ShorelineFoamScale ("Shoreline Foam Scale", Float) = 0.34
@@ -86,6 +87,7 @@ Shader "MagicCarpet/Enhanced/Water"
                 half _RippleStrength;
                 half _RippleSpeed;
                 half _RippleWidth;
+                half4 _RippleColor;
                 half _ShorelineMode;
                 half _ShorelineFoamStrength;
                 half _ShorelineFoamScale;
@@ -328,6 +330,7 @@ Shader "MagicCarpet/Enhanced/Water"
                 color += _FoamColor.rgb * crest * (0.035h + fresnel * 0.10h);
                 color += _FoamColor.rgb * rippleBand * (0.16h + fresnel * 0.58h);
                 color += _MoonColor.rgb * rippleBand * (0.06h + crest * 0.12h);
+                color += _RippleColor.rgb * rippleBand * (0.08h + fresnel * 0.34h);
                 color += _MoonColor.rgb * glint;
                 color += _MoonColor.rgb * moonSheen;
                 color += _MoonColor.rgb * fresnel * crest * 0.035h;

@@ -1999,8 +1999,12 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
-        public void OwnerWaterImpactUsesWorldTickAcrossRetainedWaterGeometry()
+        public void OwnerWaterImpactUsesWorldTickAndWarmReflectionRipple()
         {
+            string waterSource = File.ReadAllText(
+                Path.Combine(Application.dataPath, "Resources", "EnhancedWater.shader"));
+            StringAssert.Contains("_RippleColor", waterSource);
+            StringAssert.Contains("_RippleColor.rgb * rippleBand", waterSource);
             GameObject gameObject = new GameObject("enhanced-water-impact-tick-test");
             UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
             root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
@@ -2043,6 +2047,13 @@ namespace MagicCarpet.PresentationLab.Tests
             }));
             Assert.AreEqual(1, root.WaterPresentation.ActiveRippleCount);
             Assert.Greater(root.WaterPresentation.WaterMaterial.GetFloat("_RippleStrength"), 0.4f);
+            Color warmRipple = root.WaterPresentation.WaterMaterial.GetColor("_RippleColor");
+            Assert.That(warmRipple.r, Is.EqualTo(1f).Within(0.001f));
+            Assert.That(warmRipple.g, Is.EqualTo(0.30f).Within(0.001f));
+            Assert.That(warmRipple.b, Is.EqualTo(0.04f).Within(0.001f));
+            Vector4 rippleCenter = root.WaterPresentation.WaterMaterial.GetVector("_RippleCenter");
+            Assert.That(rippleCenter.x, Is.EqualTo(1f).Within(0.001f));
+            Assert.That(rippleCenter.z, Is.EqualTo(1f).Within(0.001f));
             Assert.IsFalse(root.WaterPresentation.ApplyRipple(
                 new UnityEnhancedVfxEvent(
                     2,
@@ -2055,6 +2066,13 @@ namespace MagicCarpet.PresentationLab.Tests
                     18),
                 6));
             Assert.AreEqual(1, root.WaterPresentation.ActiveRippleCount);
+
+            root.ResetPresentation(13);
+            Assert.AreEqual(0, root.WaterPresentation.ActiveRippleCount);
+            Color restoredRipple = root.WaterPresentation.WaterMaterial.GetColor("_RippleColor");
+            Assert.That(restoredRipple.r, Is.EqualTo(0.28f).Within(0.001f));
+            Assert.That(restoredRipple.g, Is.EqualTo(0.68f).Within(0.001f));
+            Assert.That(restoredRipple.b, Is.EqualTo(1f).Within(0.001f));
 
             Object.DestroyImmediate(gameObject);
         }
