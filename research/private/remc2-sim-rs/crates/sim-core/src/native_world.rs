@@ -5765,6 +5765,19 @@ impl Level2EconomyState {
         true
     }
 
+    #[cfg(test)]
+    fn replace_authored_bee_for_test(&mut self, updated: Level2AuthoredBeeSource) -> bool {
+        let Some(source) = self
+            .authored_bees
+            .iter_mut()
+            .find(|source| source.source_entity_index == updated.source_entity_index)
+        else {
+            return false;
+        };
+        *source = updated;
+        true
+    }
+
     /// Run the source `sub_1BF90` class-3 target scan for an action-17 Bee.
     ///
     /// The caller supplies the live `dword_38519` class-3 list in source
@@ -5785,7 +5798,6 @@ impl Level2EconomyState {
         };
         let mut source = self.authored_bees[source_index];
         if source.action != 17
-            || source.target_entity_index.is_some()
             || source.action_window <= 0
             || source.source_byte_3e
                 % u8::try_from(source.action_window).expect("positive Bee action window")
@@ -5807,7 +5819,6 @@ impl Level2EconomyState {
         // The source performs the two wander draws before consulting
         // byte-0x39; a zero window suppresses only the class-3 scan.
         if source.source_byte_39 == 0 {
-            source.target_entity_index = None;
             self.source_rng.insert(source_slot, source.entity_rng);
             self.authored_bees[source_index] = source;
             return None;
@@ -5850,7 +5861,12 @@ impl Level2EconomyState {
                 selected = Some((target_index, distance_squared));
             }
         }
-        source.target_entity_index = selected.map(|(target_index, _)| target_index);
+        // `sub_1BF90` writes word_0x96 only when a new class-3 target wins.
+        // On a gated or empty scan the stale relation remains in the source
+        // row; action 17 itself does not consume that relation as a target.
+        if let Some((target_index, _)) = selected {
+            source.target_entity_index = Some(target_index);
+        }
         self.source_rng.insert(source_slot, source.entity_rng);
         self.authored_bees[source_index] = source;
         selected.map(|(target_index, _)| target_index)
@@ -6465,14 +6481,14 @@ impl Level2EconomyState {
     ) -> bool {
         self.step_authored_bee_slot_with_target(
             source_slot,
-            target_position.map(|position| (position, 0)),
+            target_position.map(|position| (position, 0, true)),
         )
     }
 
     fn step_authored_bee_slot_with_target(
         &mut self,
         source_slot: u16,
-        target: Option<(Position, i16)>,
+        target: Option<(Position, i16, bool)>,
     ) -> bool {
         let Some(source_index) = self
             .authored_bees
@@ -6485,7 +6501,9 @@ impl Level2EconomyState {
         match source.action {
             16 => {
                 if target
-                    .map(|(position, _)| Self::bee_target_in_awareness_band(&source, position))
+                    .map(|(position, _, valid)| {
+                        valid && Self::bee_target_in_awareness_band(&source, position)
+                    })
                     .unwrap_or(false)
                 {
                     source.action = 18;
@@ -6494,7 +6512,9 @@ impl Level2EconomyState {
             }
             17 => {
                 if target
-                    .map(|(position, _)| Self::bee_target_in_awareness_band(&source, position))
+                    .map(|(position, _, valid)| {
+                        valid && Self::bee_target_in_awareness_band(&source, position)
+                    })
                     .unwrap_or(false)
                 {
                     source.action = 18;
@@ -6511,8 +6531,8 @@ impl Level2EconomyState {
                         source.actual_speed = 5 * source.minimum_speed / 2;
                     }
                 }
-                if let Some((target, target_yaw)) = target {
-                    let desired_z = target_yaw.wrapping_add(target.z);
+                if let Some((target, target_height_offset, target_valid)) = target {
+                    let desired_z = target_height_offset.wrapping_add(target.z);
                     let delta = source.position.z.wrapping_sub(desired_z);
                     let direction: i16 = if delta == 0 {
                         0
@@ -6525,7 +6545,28 @@ impl Level2EconomyState {
                         .position
                         .z
                         .wrapping_add(direction.wrapping_mul(source.vertical_step));
-                    if source.position.x == target.x && source.position.y == target.y {
+                    let out_of_range = target_valid
+                        && source.action_window > 0
+                        && source.source_byte_3e
+                            % u8::try_from(source.action_window)
+                                .expect("positive Bee action window")
+                            == 0
+                        && crate::legacy_sqrt(level2_wrapping_source_distance_3d(
+                            source.position,
+                            target,
+                        )) >= u32::try_from(LEVEL2_BEE_AWARENESS_RADIUS)
+                            .expect("Bee awareness radius fits");
+                    if !target_valid {
+                        source.action = 17;
+                    } else if out_of_range {
+                        // `sub_1C310` drops a live relation only at the
+                        // source cadence; the stale word_0x96 remains for
+                        // the next action-17 scan to overwrite.
+                        source.action = 17;
+                    } else if source.action == 18
+                        && source.position.x == target.x
+                        && source.position.y == target.y
+                    {
                         source.entity_rng = level2_next_rng16(source.entity_rng);
                         source.last_sound_id = (source.entity_rng & 1) + 12;
                         source.actual_speed = -source.maximum_speed;
@@ -6548,7 +6589,9 @@ impl Level2EconomyState {
                         % u8::try_from(source.action_window).expect("positive action window")
                         == 0
                     && target
-                        .map(|(position, _)| Self::bee_target_in_awareness_band(&source, position))
+                        .map(|(position, _, valid)| {
+                            valid && Self::bee_target_in_awareness_band(&source, position)
+                        })
                         .unwrap_or(false)
                 {
                     source.action = 18;
@@ -16714,6 +16757,41 @@ impl Level2ResetSession {
         targets
     }
 
+    /// Resolve the source `word_0x96` relation used by Bee action 18. The
+    /// source falls back to action 17 for a missing, dead, or draw-disabled
+    /// target, but retains the stale relation so the next action-17 scan may
+    /// overwrite it. The second tuple field is the target's
+    /// `array_0x52_82.yaw` height offset, not its orientation yaw; the third
+    /// field preserves validity so action 18 can apply the source Z step
+    /// before taking its invalid-target fallback.
+    fn level2_bee_entity_target(&self, target_index: u16) -> Option<(Position, i16, bool)> {
+        let target = self
+            .entities
+            .iter()
+            .find(|entity| entity.index == target_index)?;
+        let valid = target.active
+            && target.life >= 0
+            && target.control_flags & ENTITY_DRAW_DISABLED_BIT == 0;
+        if target.index == self.state.entity_index {
+            let local = self
+                .entities
+                .get(usize::from(self.state.entity_index))
+                .expect("local player entity row");
+            Some((self.state.position, local.array_yaw(), valid))
+        } else {
+            Some((target.position, target.array_yaw(), valid))
+        }
+    }
+
+    fn level2_bee_action18_target(
+        &self,
+        source: &Level2AuthoredBeeSource,
+    ) -> Option<(Position, i16, bool)> {
+        source
+            .target_entity_index
+            .and_then(|target_index| self.level2_bee_entity_target(target_index))
+    }
+
     fn level2_goat_player_targets(&self) -> Vec<GoatPlayerTarget> {
         // remc2's `dword_38519` is the live class-3 source list, not an
         // entity-pool sweep.  Action 10 narrows that list to model-0 rows
@@ -20108,29 +20186,39 @@ impl Level2ResetSession {
                 self.economy.step_authored_model13_slot(source_slot)
             }
             Level2DynamicArenaKind::AuthoredBee => {
-                let existing_target = self
+                let source_before = self
                     .economy
                     .authored_bees()
                     .iter()
                     .find(|source| source.active && source.source_entity_index == source_slot)
-                    .and_then(|source| source.target_entity_index);
-                let candidates = self.level2_bee_class3_targets();
-                let target_index = existing_target.or_else(|| {
+                    .copied();
+                let Some(source_before) = source_before else {
+                    return false;
+                };
+                let acquired_target = if source_before.action == 17 {
+                    let candidates = self.level2_bee_class3_targets();
                     self.economy
                         .acquire_authored_bee_target(source_slot, &candidates)
-                });
-                let target = target_index.and_then(|target| {
-                    self.entities
-                        .iter()
-                        .find(|entity| entity.index == target && entity.active)
-                        .map(|entity| {
-                            if entity.index == self.state.entity_index {
-                                (self.state.position, self.state.yaw)
-                            } else {
-                                (entity.position, entity.yaw)
-                            }
-                        })
-                });
+                } else {
+                    None
+                };
+                let source = self
+                    .economy
+                    .authored_bees()
+                    .iter()
+                    .find(|source| source.active && source.source_entity_index == source_slot)
+                    .copied()
+                    .expect("authored Bee remains live after target scan");
+                let target = if source_before.action == 17 {
+                    acquired_target
+                        .and_then(|target_index| self.level2_bee_entity_target(target_index))
+                } else if source.action == 18 {
+                    self.level2_bee_action18_target(&source)
+                } else {
+                    source
+                        .target_entity_index
+                        .and_then(|target_index| self.level2_bee_entity_target(target_index))
+                };
                 self.economy
                     .step_authored_bee_slot_with_target(source_slot, target)
             }
@@ -33979,7 +34067,9 @@ mod tests {
         // producer and materializes row 229 through the authored activation
         // graph. Mutating only that live typed row selects a discriminating
         // action state; all callback execution below remains on the normal
-        // outer-turn dynamic cursor.
+        // outer-turn dynamic cursor. Reset the source cadence so action 17
+        // performs its real two-draw awareness scan instead of relying on a
+        // hand-seeded mailbox.
         session.step_outer_turn(PlayerCommand::default(), 0);
         let row229_slot = session
             .economy()
@@ -33997,16 +34087,18 @@ mod tests {
             .copied()
             .expect("production row 229 source");
         session.state.position = initial.position;
-        session
-            .economy_mut()
-            .set_authored_bee_target(row229_slot, Some(local_player_slot));
-        session
-            .economy_mut()
-            .authored_bees
-            .iter_mut()
-            .find(|bee| bee.source_entity_index == row229_slot)
-            .expect("production row 229 source")
-            .action = 17;
+        {
+            let source = session
+                .economy_mut()
+                .authored_bees
+                .iter_mut()
+                .find(|bee| bee.source_entity_index == row229_slot)
+                .expect("production row 229 source");
+            source.action = 17;
+            source.source_byte_3e = 0;
+            source.source_byte_39 = 1;
+            source.target_entity_index = Some(local_player_slot);
+        }
 
         session.step_outer_turn(PlayerCommand::default(), 0);
         let action17 = session
@@ -34016,7 +34108,9 @@ mod tests {
             .find(|bee| bee.source_entity_index == row229_slot)
             .copied()
             .expect("action-17 Bee remains live");
-        let expected_rng_after_action17 = level2_next_rng16(initial.entity_rng);
+        let wander_first = level2_next_rng16(initial.entity_rng);
+        let wander_second = level2_next_rng16(wander_first);
+        let expected_rng_after_action17 = level2_next_rng16(wander_second);
         assert_eq!(action17.action, 18);
         assert_eq!(action17.entity_rng, expected_rng_after_action17);
         assert_eq!(
@@ -34024,10 +34118,7 @@ mod tests {
             (expected_rng_after_action17 & 1) + 12
         );
         assert_eq!(action17.dword_0x10, 1);
-        assert_eq!(
-            action17.source_byte_3e,
-            initial.source_byte_3e.wrapping_add(1)
-        );
+        assert_eq!(action17.source_byte_3e, 1);
 
         session.step_outer_turn(PlayerCommand::default(), 0);
         let action18 = session
@@ -34070,6 +34161,306 @@ mod tests {
 
         session.reset();
         assert!(session.economy().authored_bees().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_authored_bee_action18_target_loss_uses_source_validity_and_cadence() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Bee target-loss session");
+        let baseline_hash = session.campaign_state_hash();
+        let local_index = usize::from(session.state.entity_index);
+
+        // Dead target: action 18 falls back immediately, without a callback
+        // RNG draw, while retaining the source relation for action 17.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row229_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.authored_index == 229)
+            .map(|bee| bee.source_entity_index)
+            .expect("production group-21 Bee");
+        let mut source = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("production Bee source");
+        let initial_rng = source.entity_rng;
+        let target_height_offset = session.entities[local_index].array_yaw();
+        let desired_z = target_height_offset.wrapping_add(session.state.position.z);
+        let direction: i16 = if source.position.z == desired_z {
+            0
+        } else if source.position.z.wrapping_sub(desired_z) <= 0 {
+            -1
+        } else {
+            1
+        };
+        let expected_z = source
+            .position
+            .z
+            .wrapping_add(direction.wrapping_mul(source.vertical_step));
+        source.action = 18;
+        source.target_entity_index = Some(session.state.entity_index);
+        source.source_byte_3e = 1;
+        assert!(session.economy.replace_authored_bee_for_test(source));
+        session.entities[local_index].life = -1;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let dead_target = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("dead-target Bee remains live");
+        assert_eq!(dead_target.action, 17);
+        assert_eq!(dead_target.actual_speed, dead_target.minimum_speed);
+        assert_eq!(
+            dead_target.target_entity_index,
+            Some(session.state.entity_index)
+        );
+        assert_eq!(dead_target.entity_rng, initial_rng);
+        assert_eq!(dead_target.position.z, expected_z);
+
+        // Draw-disabled target is the same source-invalid branch.
+        session.reset();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row229_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.authored_index == 229)
+            .map(|bee| bee.source_entity_index)
+            .expect("production group-21 Bee after reset");
+        let mut source = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("production Bee source after reset");
+        let initial_rng = source.entity_rng;
+        let target_height_offset = session.entities[local_index].array_yaw();
+        let desired_z = target_height_offset.wrapping_add(session.state.position.z);
+        let direction: i16 = if source.position.z == desired_z {
+            0
+        } else if source.position.z.wrapping_sub(desired_z) <= 0 {
+            -1
+        } else {
+            1
+        };
+        let expected_z = source
+            .position
+            .z
+            .wrapping_add(direction.wrapping_mul(source.vertical_step));
+        source.action = 18;
+        source.target_entity_index = Some(session.state.entity_index);
+        source.source_byte_3e = 1;
+        assert!(session.economy.replace_authored_bee_for_test(source));
+        session.entities[local_index].control_flags |= ENTITY_DRAW_DISABLED_BIT;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let hidden_target = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("hidden-target Bee remains live");
+        assert_eq!(hidden_target.action, 17);
+        assert_eq!(hidden_target.actual_speed, hidden_target.minimum_speed);
+        assert_eq!(
+            hidden_target.target_entity_index,
+            Some(session.state.entity_index)
+        );
+        assert_eq!(hidden_target.entity_rng, initial_rng);
+        assert_eq!(hidden_target.position.z, expected_z);
+
+        // A live target beyond the 0x1400 3-D range is retained off cadence,
+        // then lost on the exact source cadence.
+        session.reset();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row229_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.authored_index == 229)
+            .map(|bee| bee.source_entity_index)
+            .expect("production group-21 Bee for range case");
+        let mut source = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("production Bee range source");
+        let far_position = Position {
+            x: source.position.x.wrapping_add(1_024),
+            y: source.position.y,
+            z: source.position.z.wrapping_add(0x1401),
+        };
+        session.state.position = far_position;
+        source.action = 18;
+        source.target_entity_index = Some(session.state.entity_index);
+        source.source_byte_3e = 29;
+        assert!(session.economy.replace_authored_bee_for_test(source));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let off_cadence = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("off-cadence range Bee remains live");
+        assert_eq!(off_cadence.action, 18);
+        assert_eq!(
+            off_cadence.target_entity_index,
+            Some(session.state.entity_index)
+        );
+
+        let mut cadence = off_cadence;
+        cadence.source_byte_3e = 30;
+        assert!(session.economy.replace_authored_bee_for_test(cadence));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let lost_on_cadence = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("cadence-loss Bee remains live");
+        assert_eq!(lost_on_cadence.action, 17);
+        assert_eq!(lost_on_cadence.actual_speed, lost_on_cadence.minimum_speed);
+        assert_eq!(
+            lost_on_cadence.target_entity_index,
+            Some(session.state.entity_index)
+        );
+
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_authored_bee_action17_overwrites_stale_target_on_production_reacquisition() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Bee reacquisition session");
+        let baseline_hash = session.campaign_state_hash();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row229_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.authored_index == 229)
+            .map(|bee| bee.source_entity_index)
+            .expect("production group-21 Bee");
+        let local_index = usize::from(session.state.entity_index);
+        let candidate_index = session
+            .entities
+            .iter()
+            .position(|entity| entity.index != 0 && !entity.active)
+            .expect("inactive class-3 candidate row");
+        let candidate_entity_index = session.entities[candidate_index].index;
+        let local_entity_index = session.state.entity_index;
+        for entity in &mut session.entities {
+            if entity.class == 3
+                && entity.index != local_entity_index
+                && entity.index != candidate_entity_index
+            {
+                entity.active = false;
+                entity.next_relation = None;
+                entity.record[4..8].fill(0);
+            }
+        }
+        let source = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("production Bee source");
+        let far_position = Position {
+            x: source.position.x.wrapping_add(1_024),
+            y: source.position.y,
+            z: source.position.z.wrapping_add(0x1401),
+        };
+        session.state.position = far_position;
+        let local_entity = &mut session.entities[local_index];
+        local_entity.active = true;
+        local_entity.class = 3;
+        local_entity.model = 0;
+        local_entity.life = 100;
+        local_entity.control_flags = 0;
+        local_entity.next_relation = Some(candidate_entity_index);
+        local_entity.record[4..8]
+            .copy_from_slice(&(u32::from(candidate_entity_index) + 1).to_le_bytes());
+        let candidate_position = Position {
+            x: source.position.x.wrapping_add(512),
+            y: source.position.y,
+            z: source.position.z,
+        };
+        let candidate = &mut session.entities[candidate_index];
+        candidate.active = true;
+        candidate.class = 3;
+        candidate.model = 0;
+        candidate.life = 100;
+        candidate.control_flags = 0;
+        candidate.position = candidate_position;
+        candidate.next_relation = None;
+        candidate.record[4..8].fill(0);
+
+        let mut action18 = source;
+        action18.action = 18;
+        action18.target_entity_index = Some(session.state.entity_index);
+        action18.source_byte_3e = 30;
+        assert!(session.economy.replace_authored_bee_for_test(action18));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let lost = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("range-lost Bee remains live");
+        assert_eq!(lost.action, 17);
+        assert_eq!(lost.target_entity_index, Some(session.state.entity_index));
+
+        // Hide the stale local relation from the next scan while preserving
+        // it in word_0x96; source action 17 must scan and overwrite it.
+        session.entities[local_index].control_flags = ENTITY_DRAW_DISABLED_BIT;
+        let mut reacquire = lost;
+        reacquire.source_byte_3e = 30;
+        reacquire.source_byte_39 = 1;
+        reacquire.yaw = i16::try_from(heading_for_positions(
+            reacquire.position,
+            candidate_position,
+        ))
+        .expect("Bee candidate heading fits");
+        let first = level2_next_rng16(reacquire.entity_rng);
+        let second = level2_next_rng16(first);
+        let third = level2_next_rng16(second);
+        assert!(session.economy.replace_authored_bee_for_test(reacquire));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let reacquired = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("reacquired Bee remains live");
+        assert_eq!(reacquired.action, 18);
+        assert_eq!(reacquired.target_entity_index, Some(candidate_entity_index));
+        assert_eq!(reacquired.entity_rng, third);
+        assert_eq!(reacquired.last_sound_id, (third & 1) + 12);
+        assert_eq!(reacquired.dword_0x10, 1);
+
+        session.reset();
         assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
