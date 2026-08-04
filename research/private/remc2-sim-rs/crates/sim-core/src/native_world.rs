@@ -597,6 +597,21 @@ impl EntitySnapshot {
         self.record[20..22].copy_from_slice(&value.to_le_bytes());
     }
 
+    /// Keep the local-player damage/killer words in the lossless source
+    /// record when `sub_5EFA0` applies a contact mailbox.
+    fn set_damage_result_words(&mut self, killer: u16, attacker: u16) {
+        self.record[40..42].copy_from_slice(&killer.to_le_bytes());
+        self.record[42..44].copy_from_slice(&attacker.to_le_bytes());
+    }
+
+    /// Apply the source death action and clear word-0x2C when the local
+    /// player crosses below zero life in `AddPlayer03_00_5E010`.
+    fn set_player_death_state(&mut self) {
+        self.action = 2;
+        self.record[48..50].fill(0);
+        self.record[73] = 2;
+    }
+
     #[cfg(test)]
     pub(crate) fn with_record_byte(mut self, offset: usize, value: u8) -> Self {
         self.record[offset] = value;
@@ -3469,6 +3484,12 @@ const LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX: u16 = 229;
 /// `str_D7BD6[73]` values consumed by `sub_1BF90`'s class-3 target scan.
 const LEVEL2_BEE_AWARENESS_RADIUS: i64 = 0x1400;
 const LEVEL2_BEE_AWARENESS_HALF_ANGLE: i32 = 0x02AA;
+/// `sub_1CE80` accepts a strict 3-D contact only below 1024 source units.
+const LEVEL2_BEE_CONTACT_RADIUS: u32 = 1024;
+/// Row-229's constructor subspell (`subSpellIndex_0x2A_42`) is 200 in the
+/// qualified Day package; the live source field remains authoritative below.
+#[cfg(test)]
+const LEVEL2_BEE_CONTACT_SUBSPELL: i32 = 200;
 /// Descriptor-73 movement values consumed by `sub_1B8C0` before the action-17
 /// cadence scan. These are source fields, not tuning constants: the Bee
 /// settles to 51 units above terrain, relaxes by -32 while airborne, probes
@@ -6804,6 +6825,38 @@ impl Level2EconomyState {
         distance_squared <= 5_120_i64 * 5_120_i64
     }
 
+    /// Run the `byte_0x3E & 3 == 0` steering tail in `sub_1C310`. The source
+    /// first points its roll at the live target, then lets the first nearby
+    /// same-model peer override that roll. Peer bounds use the entity's
+    /// source pitch field exactly as the decompilation does.
+    fn steer_authored_bee_source(
+        source: &mut Level2AuthoredBeeSource,
+        target: Position,
+        peers: &[(u16, Position)],
+    ) {
+        if source.source_byte_3e & 3 != 0 {
+            return;
+        }
+        source.roll = i16::try_from(heading_for_positions(source.position, target))
+            .expect("Bee target heading fits i16");
+        let peer_bound = i32::from(source.pitch);
+        if peer_bound <= 0 {
+            return;
+        }
+        for &(peer_id, peer_position) in peers {
+            if peer_id == source.entity_id {
+                continue;
+            }
+            let dx = (i32::from(source.position.x) - i32::from(peer_position.x)).abs();
+            let dy = (i32::from(source.position.y) - i32::from(peer_position.y)).abs();
+            if dx < peer_bound && dy < peer_bound {
+                source.roll = i16::try_from(heading_for_positions(peer_position, source.position))
+                    .expect("Bee peer heading fits i16");
+                break;
+            }
+        }
+    }
+
     /// Advance one authored Bee through the live action 16..19 band.  The
     /// generic creature helpers are represented only for the fields this
     /// family actually consumes: the action-18 latch, target-Z tracking,
@@ -6825,6 +6878,15 @@ impl Level2EconomyState {
         &mut self,
         source_slot: u16,
         target: Option<(Position, i16, bool)>,
+    ) -> bool {
+        self.step_authored_bee_slot_with_target_and_peers(source_slot, target, &[])
+    }
+
+    fn step_authored_bee_slot_with_target_and_peers(
+        &mut self,
+        source_slot: u16,
+        target: Option<(Position, i16, bool)>,
+        peers: &[(u16, Position)],
     ) -> bool {
         let Some(source_index) = self
             .authored_bees
@@ -6881,32 +6943,43 @@ impl Level2EconomyState {
                         .position
                         .z
                         .wrapping_add(direction.wrapping_mul(source.vertical_step));
-                    let out_of_range = target_valid
-                        && source.action_window > 0
-                        && source.source_byte_3e
-                            % u8::try_from(source.action_window)
-                                .expect("positive Bee action window")
-                            == 0
-                        && crate::legacy_sqrt(level2_wrapping_source_distance_3d(
-                            source.position,
-                            target,
-                        )) >= u32::try_from(LEVEL2_BEE_AWARENESS_RADIUS)
-                            .expect("Bee awareness radius fits");
+                    // `sub_1F6D0` updates target-Z before entering
+                    // `sub_1C310`; that helper performs movement even when
+                    // its subsequent target validity check rejects the
+                    // relation, but skips steering/cadence in that case.
+                    move_level2_bee_source(&mut source, &self.terrain);
                     if !target_valid {
                         source.action = 17;
-                    } else if out_of_range {
-                        // `sub_1C310` drops a live relation only at the
-                        // source cadence; the stale word_0x96 remains for
-                        // the next action-17 scan to overwrite.
-                        source.action = 17;
-                    } else if source.action == 18
-                        && source.position.x == target.x
-                        && source.position.y == target.y
-                    {
-                        source.entity_rng = level2_next_rng16(source.entity_rng);
-                        source.last_sound_id = (source.entity_rng & 1) + 12;
-                        source.actual_speed = -source.maximum_speed;
-                        source.dword_0x10 = i32::from(3 * source.action_window);
+                    } else {
+                        Self::steer_authored_bee_source(&mut source, target, peers);
+                        let on_action_window = source.action_window > 0
+                            && source.source_byte_3e
+                                % u8::try_from(source.action_window)
+                                    .expect("positive Bee action window")
+                                == 0;
+                        let distance_squared =
+                            level2_wrapping_source_distance_3d(source.position, target);
+                        let out_of_range = source.action_window > 0
+                            && on_action_window
+                            && crate::legacy_sqrt(distance_squared)
+                                >= u32::try_from(LEVEL2_BEE_AWARENESS_RADIUS)
+                                    .expect("Bee awareness radius fits");
+                        if out_of_range {
+                            // `sub_1C310` drops a live relation only at the
+                            // source cadence; the stale word_0x96 remains for
+                            // the next action-17 scan to overwrite.
+                            source.action = 17;
+                        } else if source.action == 18
+                            && on_action_window
+                            && distance_squared
+                                < u32::from(LEVEL2_BEE_CONTACT_RADIUS)
+                                    .saturating_mul(u32::from(LEVEL2_BEE_CONTACT_RADIUS))
+                        {
+                            source.entity_rng = level2_next_rng16(source.entity_rng);
+                            source.last_sound_id = (source.entity_rng & 1) + 12;
+                            source.actual_speed = -source.maximum_speed;
+                            source.dword_0x10 = i32::from(3 * source.action_window);
+                        }
                     }
                 } else {
                     source.action = 17;
@@ -14873,6 +14946,52 @@ impl Level2SharedSpellResetSession {
         self.baseline_player_mana
     }
 
+    /// Keep the shared spell projection's local player entity in lockstep
+    /// with the Level 2 source damage mailbox.  The raw entity record is
+    /// updated because reset/campaign hashes bind the lossless source bytes.
+    fn set_player_entity_life(&mut self, life: i32) {
+        self.player_entity.life = life;
+        self.player_entity.record[12..16].copy_from_slice(&life.to_le_bytes());
+        for entity in &mut self.player_entities {
+            if entity.index == self.player_entity.index {
+                entity.life = life;
+                entity.record[12..16].copy_from_slice(&life.to_le_bytes());
+            }
+        }
+    }
+
+    /// Keep the shared spell projection's source damage mailbox in lockstep
+    /// with the Level 2 player route.  The exported entity record carries a
+    /// four-byte header, so the source payload lives at bytes 98..102 and its
+    /// owner at bytes 102..104; bytes 104..108 remain untouched.
+    fn set_player_entity_damage_mailbox(&mut self, damage: i32, attacker: u16) {
+        self.player_entity.record[98..102].copy_from_slice(&damage.to_le_bytes());
+        self.player_entity.record[102..104].copy_from_slice(&attacker.to_le_bytes());
+        for entity in &mut self.player_entities {
+            if entity.index == self.player_entity.index {
+                entity.record[98..102].copy_from_slice(&damage.to_le_bytes());
+                entity.record[102..104].copy_from_slice(&attacker.to_le_bytes());
+            }
+        }
+    }
+
+    /// Mirror `sub_5EFA0`'s attacker/killer words and the following player
+    /// death action into the shared source projection.
+    fn set_player_entity_damage_result(&mut self, killer: u16, attacker: u16, dead: bool) {
+        self.player_entity.set_damage_result_words(killer, attacker);
+        if dead {
+            self.player_entity.set_player_death_state();
+        }
+        for entity in &mut self.player_entities {
+            if entity.index == self.player_entity.index {
+                entity.set_damage_result_words(killer, attacker);
+                if dead {
+                    entity.set_player_death_state();
+                }
+            }
+        }
+    }
+
     /// Execute the qualified local-player portion of remc2's
     /// `AddPlayer03_00_5E010` upkeep.  The source adds the previous
     /// `manaRegen` value, clamps mana to the signed `[0,maxMana]` interval,
@@ -16674,6 +16793,15 @@ pub struct Level2ResetSession {
     baseline_goats: GoatFamily,
     goats: GoatFamily,
     mission: MissionContentSession,
+    /// Source `sub_11900` player damage mailbox.  The Bee contact writes this
+    /// during its source-slot callback; the local-player route consumes it on
+    /// the next source-ordered visit.
+    baseline_player_pending_damage: i32,
+    player_pending_damage: i32,
+    baseline_player_pending_attacker: u16,
+    player_pending_attacker: u16,
+    baseline_player_life: i32,
+    player_life: i32,
     dispatch_events: Vec<Level2DispatchEvent>,
     economy_event_cursor: usize,
     baseline_level2_group8_activated: bool,
@@ -17265,6 +17393,34 @@ impl Level2ResetSession {
             .and_then(|target_index| self.level2_bee_entity_target(target_index))
     }
 
+    /// Project the source class-5 model list consumed by `sub_1C310`'s
+    /// peer-steering pass. `UpdateEntities_57730` excludes dead rows and the
+    /// action 180/232/234 no-call states, retains source-arena order, and
+    /// appends dynamically allocated authored Bees in allocation order. The
+    /// source compares `id_0x1A_26`, not the pool slot.
+    fn level2_bee_peer_rows(&self, model: u8) -> Vec<(u16, Position)> {
+        let mut peers = self
+            .entities
+            .iter()
+            .filter(|entity| {
+                entity.active
+                    && entity.life >= 0
+                    && entity.class == 5
+                    && entity.model == model
+                    && !matches!(entity.action, 0xB4 | 0xE8 | 0xEA)
+            })
+            .map(|entity| (entity.source_id, entity.position))
+            .collect::<Vec<_>>();
+        peers.extend(
+            self.economy
+                .authored_bees()
+                .iter()
+                .filter(|source| source.active && source.life >= 0 && source.model == model)
+                .map(|source| (source.entity_id, source.position)),
+        );
+        peers
+    }
+
     fn level2_goat_player_targets(&self) -> Vec<GoatPlayerTarget> {
         // remc2's `dword_38519` is the live class-3 source list, not an
         // entity-pool sweep.  Action 10 narrows that list to model-0 rows
@@ -17407,6 +17563,18 @@ impl Level2ResetSession {
             })
             .collect::<Vec<_>>()
             .into_boxed_slice();
+        let initial_player = &entities[usize::from(state.entity_index)];
+        let initial_player_pending_damage = i32::from_le_bytes(
+            initial_player.record_bytes()[98..102]
+                .try_into()
+                .expect("player damage mailbox bytes"),
+        );
+        let initial_player_pending_attacker = u16::from_le_bytes(
+            initial_player.record_bytes()[102..104]
+                .try_into()
+                .expect("player attacker mailbox bytes"),
+        );
+        let initial_player_life = initial_player.life;
         Self {
             profile,
             baseline_state: state,
@@ -17430,6 +17598,12 @@ impl Level2ResetSession {
             baseline_goats: goats.clone(),
             goats,
             mission,
+            baseline_player_pending_damage: initial_player_pending_damage,
+            player_pending_damage: initial_player_pending_damage,
+            baseline_player_pending_attacker: initial_player_pending_attacker,
+            player_pending_attacker: initial_player_pending_attacker,
+            baseline_player_life: initial_player_life,
+            player_life: initial_player_life,
             dispatch_events: Vec::new(),
             economy_event_cursor: 0,
             baseline_level2_group8_activated: false,
@@ -19742,9 +19916,9 @@ impl Level2ResetSession {
                 .or_default()
                 .push(event);
         }
-        let mut routes = [75_u16]
+        let mut routes = [(player_entity_index, 9_u8)]
             .into_iter()
-            .map(|slot| (slot, 0_u8))
+            .chain([75_u16].into_iter().map(|slot| (slot, 0_u8)))
             .chain([38_u16].into_iter().map(|slot| (slot, 8_u8)))
             .chain(
                 self.bad_stones
@@ -19791,6 +19965,32 @@ impl Level2ResetSession {
         let mut dispatched_dynamic_slots = BTreeSet::new();
         for (source_slot, kind) in routes {
             match kind {
+                9 => {
+                    // The player source owns mailbox consumption.  A Bee
+                    // contact written by a later source slot therefore stays
+                    // pending until the next outer pass, while an earlier
+                    // source consumes it in this pass.
+                    // The qualified local player body is class 3/model 0;
+                    // model-2 diagnostic rows use the same entity slot for a
+                    // wind/mailbox target and must remain on that callback.
+                    let local_player_body = self
+                        .entities
+                        .get(usize::from(player_entity_index))
+                        .is_some_and(|entity| entity.class == 3 && entity.model == 0);
+                    if local_player_body {
+                        if let Some((damage, attacker, lethal)) =
+                            self.consume_level2_player_damage()
+                        {
+                            self.economy.events.push(Level2EconomyEvent::DamageApplied {
+                                target_entity_index: player_entity_index,
+                                attacker_entity_index: attacker,
+                                damage,
+                                lethal,
+                            });
+                        }
+                        self.append_new_economy_events(pass, source_slot);
+                    }
+                }
                 0 => {
                     let result = self.shared_spells.step_shared_pickup(
                         source_slot,
@@ -20692,8 +20892,48 @@ impl Level2ResetSession {
                         .target_entity_index
                         .and_then(|target_index| self.level2_bee_entity_target(target_index))
                 };
-                self.economy
-                    .step_authored_bee_slot_with_target(source_slot, target)
+                let contact_candidate = source_before.action == 18
+                    && source_before.target_entity_index == Some(self.state.entity_index)
+                    && target.is_some_and(|(_, _, valid)| valid)
+                    && source_before.action_window > 0
+                    && source_before.source_byte_3e
+                        % u8::try_from(source_before.action_window)
+                            .expect("positive Bee action window")
+                        == 0;
+                let peers = self.level2_bee_peer_rows(source_before.model);
+                let live = self.economy.step_authored_bee_slot_with_target_and_peers(
+                    source_slot,
+                    target,
+                    &peers,
+                );
+                if contact_candidate {
+                    if let (Some((target_position, _, true)), Some(after)) = (
+                        target,
+                        self.economy
+                            .authored_bees()
+                            .iter()
+                            .find(|candidate| {
+                                candidate.active && candidate.source_entity_index == source_slot
+                            })
+                            .copied(),
+                    ) {
+                        let distance_squared =
+                            level2_wrapping_source_distance_3d(after.position, target_position);
+                        if after.action == 18
+                            && distance_squared
+                                < u32::from(LEVEL2_BEE_CONTACT_RADIUS)
+                                    .saturating_mul(u32::from(LEVEL2_BEE_CONTACT_RADIUS))
+                        {
+                            // `sub_1C310` invokes `sub_1CE80`, which queues
+                            // subspell 200 through the real player mailbox;
+                            // the player source callback consumes it at its
+                            // next source-ordered visit.
+                            let damage = i32::from(after.subspell_index);
+                            self.queue_level2_player_contact_damage(damage, after.entity_id);
+                        }
+                    }
+                }
+                live
             }
             Level2DynamicArenaKind::Model13SpawnedChild => {
                 self.economy.step_model13_spawned_child_slot(source_slot)
@@ -21015,6 +21255,10 @@ impl Level2ResetSession {
             self.level2_objective_pause,
             u8::from(self.level2_objective_done),
         ]);
+        hasher.update(b"level2-player-contact-mailbox-v1");
+        hasher.update(self.player_pending_damage.to_le_bytes());
+        hasher.update(self.player_pending_attacker.to_le_bytes());
+        hasher.update(self.player_life.to_le_bytes());
         hasher.update(self.runtime.bytes());
         for entity in &self.entities {
             hasher.update(entity.record_bytes());
@@ -21038,6 +21282,131 @@ impl Level2ResetSession {
     #[must_use]
     pub fn terrain_hash(&self) -> u64 {
         self.terrain.deterministic_hash()
+    }
+
+    /// Queue the source `sub_11900` contact payload for the local player.
+    /// Contact writes overwrite an already-owned mailbox and otherwise add to
+    /// an unowned payload, matching the generic Level 1 contact primitive.
+    fn queue_level2_player_contact_damage(&mut self, damage: i32, attacker: u16) {
+        if self.player_life < 0 || damage <= 0 || attacker == 0 {
+            return;
+        }
+        let entity = self
+            .entities
+            .iter_mut()
+            .find(|entity| entity.index == self.state.entity_index)
+            .expect("Level 2 local player entity remains present");
+        let raw_attacker = u16::from_le_bytes(
+            entity.record[102..104]
+                .try_into()
+                .expect("player attacker mailbox bytes"),
+        );
+        let raw_damage = i32::from_le_bytes(
+            entity.record[98..102]
+                .try_into()
+                .expect("player damage mailbox bytes"),
+        );
+        let next_damage = if raw_attacker != 0 {
+            damage
+        } else {
+            raw_damage.wrapping_add(damage)
+        };
+        entity.record[98..102].copy_from_slice(&next_damage.to_le_bytes());
+        entity.record[102..104].copy_from_slice(&attacker.to_le_bytes());
+        self.player_pending_damage = next_damage;
+        self.player_pending_attacker = attacker;
+        self.shared_spells
+            .set_player_entity_damage_mailbox(next_damage, attacker);
+    }
+
+    /// Consume the local-player mailbox on the player's source-cursor visit.
+    /// Return the applied payload for the typed dispatcher proof.
+    fn consume_level2_player_damage(&mut self) -> Option<(i32, u16, bool)> {
+        let player_entity_index = self.state.entity_index;
+        let (attacker, damage, previous_killer) = {
+            let entity = self
+                .entities
+                .iter()
+                .find(|entity| entity.index == player_entity_index)
+                .expect("Level 2 local player entity remains present");
+            (
+                u16::from_le_bytes(
+                    entity.record[102..104]
+                        .try_into()
+                        .expect("player attacker mailbox bytes"),
+                ),
+                i32::from_le_bytes(
+                    entity.record[98..102]
+                        .try_into()
+                        .expect("player damage mailbox bytes"),
+                ),
+                entity.word_24(),
+            )
+        };
+        let attacker_is_model67 = self.entities.iter().find(|entity| {
+            entity.index == attacker && entity.active && entity.class == 10 && entity.model == 67
+        });
+        if attacker == 0 {
+            let entity = self
+                .entities
+                .iter_mut()
+                .find(|entity| entity.index == player_entity_index)
+                .expect("Level 2 local player entity remains present");
+            entity.record[42..44].fill(0);
+            self.shared_spells
+                .set_player_entity_damage_result(previous_killer, 0, false);
+            return None;
+        }
+
+        // `sub_5EFA0` leaves a lethal player's owner mailbox intact and only
+        // clears the per-visit attacker word. It does not apply the payload
+        // again on later visits because the life guard has already failed.
+        if self.player_life < 0 {
+            let entity = self
+                .entities
+                .iter_mut()
+                .find(|entity| entity.index == player_entity_index)
+                .expect("Level 2 local player entity remains present");
+            entity.record[42..44].fill(0);
+            self.shared_spells
+                .set_player_entity_damage_result(previous_killer, 0, false);
+            return None;
+        }
+
+        self.player_life = self.player_life.wrapping_sub(damage);
+        let lethal = self.player_life < 0;
+        let killer = if lethal && attacker_is_model67.is_some() {
+            0
+        } else if lethal {
+            attacker
+        } else {
+            previous_killer
+        };
+        {
+            let entity = self
+                .entities
+                .iter_mut()
+                .find(|entity| entity.index == player_entity_index)
+                .expect("Level 2 local player entity remains present");
+            entity.set_damage_result_words(killer, attacker);
+            if lethal {
+                entity.set_player_death_state();
+            } else {
+                // `sub_5EFA0` clears only the owner word after a nonlethal
+                // visit. The payload remains for the next ownerless add.
+                entity.record[102..104].copy_from_slice(&0_u16.to_le_bytes());
+            }
+            entity.life = self.player_life;
+            entity.record[12..16].copy_from_slice(&self.player_life.to_le_bytes());
+        }
+        self.player_pending_attacker = if lethal { attacker } else { 0 };
+        self.player_pending_damage = damage;
+        self.shared_spells.set_player_entity_life(self.player_life);
+        self.shared_spells
+            .set_player_entity_damage_mailbox(damage, if lethal { attacker } else { 0 });
+        self.shared_spells
+            .set_player_entity_damage_result(killer, attacker, lethal);
+        Some((damage, attacker, lethal))
     }
 
     /// Execute one source outer turn against the Day terrain and reset state.
@@ -21098,6 +21467,9 @@ impl Level2ResetSession {
         self.ordinary.reset();
         self.goats = self.baseline_goats.clone();
         self.mission.reset();
+        self.player_pending_damage = self.baseline_player_pending_damage;
+        self.player_pending_attacker = self.baseline_player_pending_attacker;
+        self.player_life = self.baseline_player_life;
         self.dispatch_events.clear();
         self.economy_event_cursor = 0;
         self.level2_group8_activated = self.baseline_level2_group8_activated;
@@ -34304,6 +34676,58 @@ mod tests {
     }
 
     #[test]
+    fn level_two_bee_action18_moves_and_steers_off_cadence_without_damage_or_rng() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Bee action-18 movement session");
+        let source = session
+            .allocate_level2_authored_bee(210)
+            .expect("authored Day Bee row 210");
+        let mut configured = source;
+        configured.action = 18;
+        configured.source_byte_3e = 4;
+        configured.dword_0x10 = 0;
+        configured.pitch = 512;
+        configured.target_entity_index = Some(session.state.entity_index);
+        configured.control_flags &= !LEVEL2_BEE_MOVEMENT_SKIP_BIT;
+        configured.position = Position {
+            x: 0x1200,
+            y: 0x1200,
+            z: 0,
+        };
+        let target = Position {
+            x: configured.position.x.wrapping_add(1024),
+            y: configured.position.y,
+            z: configured.position.z,
+        };
+        assert!(session.economy.replace_authored_bee_for_test(configured));
+        let before = configured;
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_bee_slot(before.source_entity_index, Some(target))
+        );
+        let after = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == before.source_entity_index)
+            .copied()
+            .expect("off-cadence action-18 Bee remains live");
+        assert_eq!(after.action, 18);
+        assert_eq!(after.entity_rng, before.entity_rng);
+        assert_ne!(after.position, before.position);
+        assert_eq!(
+            after.roll,
+            i16::try_from(heading_for_positions(after.position, target))
+                .expect("Bee target heading fits i16")
+        );
+        assert_eq!(after.dword_0x10, 0);
+    }
+
+    #[test]
     fn level_two_authored_bee_constructor_and_action18_target_band() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -34481,6 +34905,8 @@ mod tests {
                 z: target.z.wrapping_add(40),
             };
             bee.dword_0x10 = 1;
+            bee.source_byte_3e = 0;
+            bee.control_flags |= LEVEL2_BEE_MOVEMENT_SKIP_BIT;
         }
         assert!(
             session
@@ -35026,6 +35452,9 @@ mod tests {
         assert_eq!(action17.dword_0x10, 1);
         assert_eq!(action17.source_byte_3e, 1);
 
+        // The first action-18 visit advances the source cadence but is not a
+        // contact window: the source value is 1 after action 17, so the
+        // source's `% action_window == 0` gate suppresses the hit callback.
         session.step_outer_turn(PlayerCommand::default(), 0);
         let action18 = session
             .economy()
@@ -35034,19 +35463,54 @@ mod tests {
             .find(|bee| bee.source_entity_index == row229_slot)
             .copied()
             .expect("action-18 Bee remains live");
-        let expected_rng_after_contact = level2_next_rng16(expected_rng_after_action17);
         assert_eq!(action18.action, 18);
-        assert_eq!(action18.entity_rng, expected_rng_after_contact);
+        assert_eq!(action18.entity_rng, expected_rng_after_action17);
         assert_eq!(
             action18.last_sound_id,
-            (expected_rng_after_contact & 1) + 12
+            (expected_rng_after_action17 & 1) + 12
         );
-        assert_eq!(action18.actual_speed, -action18.maximum_speed);
-        assert_eq!(action18.dword_0x10, 3 * i32::from(action18.action_window));
+        assert_eq!(action18.actual_speed, 5 * action18.minimum_speed / 2);
+        assert_eq!(action18.dword_0x10, 0);
         assert_eq!(
             action18.source_byte_3e,
             action17.source_byte_3e.wrapping_add(1)
         );
+
+        // A second production-cursor visit with source byte 3e reset to the
+        // contact window proves the strict 3-D `< 1024` callback path.
+        let mut contact_seed = action18;
+        contact_seed.source_byte_3e = 0;
+        contact_seed.control_flags |= LEVEL2_BEE_MOVEMENT_SKIP_BIT;
+        contact_seed.position = Position {
+            x: session.state.position.x.wrapping_add(1023),
+            y: session.state.position.y,
+            z: session.state.position.z,
+        };
+        assert!(session.economy.replace_authored_bee_for_test(contact_seed));
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let action18_contact = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("contacting action-18 Bee remains live");
+        let expected_rng_after_contact = level2_next_rng16(expected_rng_after_action17);
+        assert_eq!(action18_contact.action, 18);
+        assert_eq!(action18_contact.entity_rng, expected_rng_after_contact);
+        assert_eq!(
+            action18_contact.last_sound_id,
+            (expected_rng_after_contact & 1) + 12
+        );
+        assert_eq!(
+            action18_contact.actual_speed,
+            -action18_contact.maximum_speed
+        );
+        assert_eq!(
+            action18_contact.dword_0x10,
+            3 * i32::from(action18_contact.action_window)
+        );
+        assert_eq!(action18_contact.source_byte_3e, 1);
 
         // Clearing the explicit word_0x96 mailbox exercises the source's
         // action-18 target-loss fallback. This test proves production
@@ -35098,22 +35562,11 @@ mod tests {
             .copied()
             .expect("production Bee source");
         let initial_rng = source.entity_rng;
-        let target_height_offset = session.entities[local_index].array_yaw();
-        let desired_z = target_height_offset.wrapping_add(session.state.position.z);
-        let direction: i16 = if source.position.z == desired_z {
-            0
-        } else if source.position.z.wrapping_sub(desired_z) <= 0 {
-            -1
-        } else {
-            1
-        };
-        let expected_z = source
-            .position
-            .z
-            .wrapping_add(direction.wrapping_mul(source.vertical_step));
+        let initial_xy = (source.position.x, source.position.y);
         source.action = 18;
         source.target_entity_index = Some(session.state.entity_index);
         source.source_byte_3e = 1;
+        source.control_flags &= !LEVEL2_BEE_MOVEMENT_SKIP_BIT;
         assert!(session.economy.replace_authored_bee_for_test(source));
         session.entities[local_index].life = -1;
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -35131,7 +35584,7 @@ mod tests {
             Some(session.state.entity_index)
         );
         assert_eq!(dead_target.entity_rng, initial_rng);
-        assert_eq!(dead_target.position.z, expected_z);
+        assert_ne!((dead_target.position.x, dead_target.position.y), initial_xy);
 
         // Draw-disabled target is the same source-invalid branch.
         session.reset();
@@ -35167,6 +35620,7 @@ mod tests {
         source.action = 18;
         source.target_entity_index = Some(session.state.entity_index);
         source.source_byte_3e = 1;
+        source.control_flags |= LEVEL2_BEE_MOVEMENT_SKIP_BIT;
         assert!(session.economy.replace_authored_bee_for_test(source));
         session.entities[local_index].control_flags |= ENTITY_DRAW_DISABLED_BIT;
         session.step_outer_turn(PlayerCommand::default(), 0);
@@ -35213,6 +35667,7 @@ mod tests {
         source.action = 18;
         source.target_entity_index = Some(session.state.entity_index);
         source.source_byte_3e = 29;
+        source.control_flags |= LEVEL2_BEE_MOVEMENT_SKIP_BIT;
         assert!(session.economy.replace_authored_bee_for_test(source));
         session.step_outer_turn(PlayerCommand::default(), 0);
         let off_cadence = session
@@ -35248,6 +35703,276 @@ mod tests {
 
         session.reset();
         assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_authored_bee_action18_contact_is_strictly_below_1024_and_cadence_gated() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Bee contact session");
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row229_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+            .map(|bee| bee.source_entity_index)
+            .expect("production row-229 Bee");
+        assert!(row229_slot > session.state.entity_index);
+        let local_target = session.state.position;
+        let configure = |session: &mut Level2ResetSession, delta: u16, byte_3e: u8| {
+            let bee = session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|bee| bee.source_entity_index == row229_slot)
+                .copied()
+                .expect("production row-229 Bee source");
+            let mut configured = bee;
+            configured.action = 18;
+            configured.target_entity_index = Some(session.state.entity_index);
+            configured.source_byte_3e = byte_3e;
+            configured.control_flags |= LEVEL2_BEE_MOVEMENT_SKIP_BIT;
+            configured.position = Position {
+                x: local_target.x.wrapping_add(delta),
+                y: local_target.y,
+                z: local_target.z,
+            };
+            assert!(session.economy.replace_authored_bee_for_test(configured));
+            configured
+        };
+
+        let contact = configure(&mut session, 1023, 0);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.player_pending_damage, LEVEL2_BEE_CONTACT_SUBSPELL);
+        assert_eq!(session.player_pending_attacker, contact.entity_id);
+        let after_contact = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("contact Bee remains live");
+        assert_ne!(after_contact.entity_rng, contact.entity_rng);
+        assert_eq!(after_contact.actual_speed, -after_contact.maximum_speed);
+        assert_eq!(
+            after_contact.dword_0x10,
+            3 * i32::from(after_contact.action_window)
+        );
+        // `sub_11900` overwrites an already-owned contact mailbox rather
+        // than accumulating a second owner payload.
+        session.queue_level2_player_contact_damage(77, 222);
+        assert_eq!(session.player_pending_damage, 77);
+        assert_eq!(session.player_pending_attacker, 222);
+        let player_record =
+            session.entities[usize::from(session.state.entity_index)].record_bytes();
+        assert_eq!(
+            i32::from_le_bytes(
+                player_record[98..102]
+                    .try_into()
+                    .expect("player payload bytes")
+            ),
+            77
+        );
+        assert_eq!(
+            u16::from_le_bytes(
+                player_record[102..104]
+                    .try_into()
+                    .expect("player owner bytes")
+            ),
+            222
+        );
+
+        session.reset();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let edge = configure(&mut session, 1024, 0);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.player_pending_damage, 0);
+        let after_edge = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("edge Bee remains live");
+        assert_eq!(after_edge.entity_rng, edge.entity_rng);
+        assert_eq!(after_edge.action, 18);
+
+        session.reset();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let off_cadence = configure(&mut session, 1023, 1);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.player_pending_damage, 0);
+        let after_off_cadence = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("off-cadence Bee remains live");
+        assert_eq!(after_off_cadence.entity_rng, off_cadence.entity_rng);
+        assert_eq!(after_off_cadence.action, 18);
+    }
+
+    #[test]
+    fn level_two_authored_bee_action18_contact_is_consumed_at_next_player_source_visit() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Bee contact ordering session");
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row229_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+            .map(|bee| bee.source_entity_index)
+            .expect("production row-229 Bee");
+        assert!(row229_slot > session.state.entity_index);
+        let target = session.state.position;
+        let bee = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("production row-229 Bee source");
+        let mut configured = bee;
+        configured.action = 18;
+        configured.target_entity_index = Some(session.state.entity_index);
+        configured.source_byte_3e = 0;
+        configured.position = Position {
+            x: target.x.wrapping_add(1023),
+            y: target.y,
+            z: target.z,
+        };
+        assert!(session.economy.replace_authored_bee_for_test(configured));
+        let life_before = session.player_life;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.player_pending_damage, LEVEL2_BEE_CONTACT_SUBSPELL);
+        assert_eq!(session.player_pending_attacker, bee.entity_id);
+        assert_eq!(session.player_life, life_before);
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.player_pending_damage, LEVEL2_BEE_CONTACT_SUBSPELL);
+        assert_eq!(session.player_pending_attacker, 0);
+        assert_eq!(
+            session.player_life,
+            life_before - LEVEL2_BEE_CONTACT_SUBSPELL
+        );
+        let player_record =
+            session.entities[usize::from(session.state.entity_index)].record_bytes();
+        assert_eq!(
+            i32::from_le_bytes(
+                player_record[98..102]
+                    .try_into()
+                    .expect("player payload bytes")
+            ),
+            LEVEL2_BEE_CONTACT_SUBSPELL
+        );
+        assert_eq!(
+            u16::from_le_bytes(
+                player_record[102..104]
+                    .try_into()
+                    .expect("player owner bytes")
+            ),
+            0
+        );
+        let damage_events = session
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2DispatchEvent::Economy {
+                    event:
+                        Level2EconomyEvent::DamageApplied {
+                            target_entity_index,
+                            attacker_entity_index,
+                            damage,
+                            lethal,
+                        },
+                    ..
+                } => Some((
+                    *target_entity_index,
+                    *attacker_entity_index,
+                    *damage,
+                    *lethal,
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            damage_events.last().copied(),
+            Some((
+                session.state.entity_index,
+                bee.entity_id,
+                LEVEL2_BEE_CONTACT_SUBSPELL,
+                false
+            ))
+        );
+    }
+
+    #[test]
+    fn level_two_player_contact_lethal_visit_retains_owner_and_records_killer() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 lethal contact session");
+        let local_index = usize::from(session.state.entity_index);
+        let attacker = 222_u16;
+        session.player_life = 100;
+        session.entities[local_index].life = 100;
+        session.entities[local_index].record[12..16].copy_from_slice(&100_i32.to_le_bytes());
+        session.shared_spells.set_player_entity_life(100);
+        session.queue_level2_player_contact_damage(200, attacker);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let player = &session.entities[local_index];
+        assert_eq!(session.player_life, -100);
+        assert_eq!(player.action, 2);
+        assert_eq!(player.word_24(), attacker);
+        assert_eq!(player.word_26(), attacker);
+        assert_eq!(
+            u16::from_le_bytes(player.record_bytes()[102..104].try_into().unwrap()),
+            attacker
+        );
+        assert_eq!(
+            u16::from_le_bytes(player.record_bytes()[48..50].try_into().unwrap()),
+            0
+        );
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Economy {
+                event: Level2EconomyEvent::DamageApplied {
+                    attacker_entity_index,
+                    lethal: true,
+                    ..
+                },
+                ..
+            } if *attacker_entity_index == attacker
+        )));
+
+        // Later source visits clear word-0x26 but do not reapply damage or
+        // clear the lethal mailbox owner, matching the life<0 branch.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let player = &session.entities[local_index];
+        assert_eq!(player.word_26(), 0);
+        assert_eq!(
+            u16::from_le_bytes(player.record_bytes()[102..104].try_into().unwrap()),
+            attacker
+        );
+        assert!(!session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Economy {
+                event: Level2EconomyEvent::DamageApplied { .. },
+                ..
+            }
+        )));
     }
 
     #[test]
