@@ -50,6 +50,9 @@ namespace MagicCarpet.PresentationLab
         public GameObject VolumeObject;
         public MeshFilter VolumeFilter;
         public MeshRenderer VolumeRenderer;
+        public GameObject ContactShadowObject;
+        public MeshFilter ContactShadowFilter;
+        public MeshRenderer ContactShadowRenderer;
         public bool FireballTrailVisible;
         public bool HasFireballTrailPosition;
         public Vector3 LastFireballTrailPosition;
@@ -84,6 +87,14 @@ namespace MagicCarpet.PresentationLab
             if (VolumeObject != null)
             {
                 VolumeObject.SetActive(false);
+            }
+            if (ContactShadowRenderer != null)
+            {
+                ContactShadowRenderer.enabled = false;
+            }
+            if (ContactShadowObject != null)
+            {
+                ContactShadowObject.SetActive(false);
             }
             FireballTrailVisible = false;
             HasFireballTrailPosition = false;
@@ -152,6 +163,14 @@ namespace MagicCarpet.PresentationLab
         private const float FireballVolumeWidth = 2.2f;
         private const int FireballVolumeMeshKey = -1003;
         private const int FireballVolumeMaterialKey = -1004;
+        // The shadow is a child of the pooled entity anchor, so it follows
+        // render-time interpolation without a second entity position source.
+        private const float OwnerContactShadowHeight = 0.02f;
+        private const float OwnerContactShadowDiameterMultiplier = 1.35f;
+        private const float OwnerContactShadowMinimumDiameter = 0.20f;
+        private const float OwnerContactShadowMaximumDiameter = 3.50f;
+        private const int OwnerContactShadowMeshKey = -1005;
+        private const int OwnerContactShadowMaterialKey = -1006;
         private readonly Dictionary<int, Mesh> meshes = new Dictionary<int, Mesh>();
         private readonly Dictionary<int, Material> materials = new Dictionary<int, Material>();
         private readonly HashSet<GameObject> configuredViews = new HashSet<GameObject>();
@@ -261,6 +280,11 @@ namespace MagicCarpet.PresentationLab
                 state.VisualObject.hideFlags = HideFlags.DontSave;
             }
 
+            // Views are pooled across qualified owner sprites and generated
+            // families. Clear the presentation-only shadow before selecting
+            // the current family so it cannot leak across reuse.
+            DisableOwnerContactShadow(state);
+
             if (ownerActorCatalog != null &&
                 IsOwnerActorFamily(entity.PresentationFamily))
             {
@@ -272,6 +296,7 @@ namespace MagicCarpet.PresentationLab
                     // one of the generated diagnostic boxes.
                     DisableFireballTrail(state);
                     DisableFireballVolume(state);
+                    DisableOwnerContactShadow(state);
                     if (state.HaloObject != null) state.HaloObject.SetActive(false);
                     state.Renderer.enabled = false;
                     state.VisualObject.SetActive(false);
@@ -307,6 +332,7 @@ namespace MagicCarpet.PresentationLab
                         ownerHeight,
                         1f);
                 state.VisualObject.transform.rotation = OwnerBillboardRotation();
+                ConfigureOwnerContactShadow(state, ownerSprite, ownerScale, entity);
                 state.Renderer.sortingOrder = entity.RenderLayer;
                 LastConfiguredFamily = entity.PresentationFamily;
                 LastSortingOrder = entity.RenderLayer;
@@ -451,6 +477,16 @@ namespace MagicCarpet.PresentationLab
 
         public void ResetForSession()
         {
+            foreach (GameObject view in configuredViews)
+            {
+                UnityEnhancedActorVisualState state = view == null
+                    ? null
+                    : view.GetComponent<UnityEnhancedActorVisualState>();
+                if (state != null)
+                {
+                    state.Release();
+                }
+            }
             configuredViews.Clear();
             ActiveVisualCount = 0;
             PooledVisualCount = 0;
@@ -516,6 +552,148 @@ namespace MagicCarpet.PresentationLab
             state.HaloObject.hideFlags = HideFlags.DontSave;
             state.HaloFilter = state.HaloObject.AddComponent<MeshFilter>();
             state.HaloRenderer = state.HaloObject.AddComponent<MeshRenderer>();
+        }
+
+        private void ConfigureOwnerContactShadow(
+            UnityEnhancedActorVisualState state,
+            UnityEnhancedOwnerActorSprite ownerSprite,
+            float ownerScale,
+            UnityEnhancedEntitySnapshot entity)
+        {
+            if (state == null || ownerSprite == null || entity == null || !entity.Visible ||
+                !IsFinite(ownerSprite.Width) || ownerSprite.Width <= 0f ||
+                !IsFinite(ownerScale) || ownerScale <= 0f ||
+                !EnsureOwnerContactShadow(state))
+            {
+                DisableOwnerContactShadow(state);
+                return;
+            }
+
+            float sourceWidth = ownerSprite.Width * ownerScale;
+            if (!IsFinite(sourceWidth) || sourceWidth <= 0f)
+            {
+                DisableOwnerContactShadow(state);
+                return;
+            }
+
+            float diameter = Mathf.Clamp(
+                sourceWidth * OwnerContactShadowDiameterMultiplier,
+                OwnerContactShadowMinimumDiameter,
+                OwnerContactShadowMaximumDiameter);
+            state.ContactShadowObject.transform.localPosition =
+                new Vector3(0f, OwnerContactShadowHeight, 0f);
+            state.ContactShadowObject.transform.localRotation = Quaternion.identity;
+            state.ContactShadowObject.transform.localScale =
+                new Vector3(diameter, 1f, diameter * 0.72f);
+            state.ContactShadowRenderer.sortingOrder = entity.RenderLayer - 1;
+            state.ContactShadowRenderer.enabled = true;
+            state.ContactShadowObject.SetActive(true);
+        }
+
+        private bool EnsureOwnerContactShadow(UnityEnhancedActorVisualState state)
+        {
+            if (state.ContactShadowObject == null)
+            {
+                Transform anchor = state.VisualObject == null
+                    ? null
+                    : state.VisualObject.transform.parent;
+                if (anchor == null)
+                {
+                    return false;
+                }
+
+                state.ContactShadowObject = new GameObject("EnhancedOwnerContactShadow");
+                state.ContactShadowObject.transform.SetParent(anchor, false);
+                state.ContactShadowObject.hideFlags = HideFlags.DontSave;
+                state.ContactShadowFilter = state.ContactShadowObject.AddComponent<MeshFilter>();
+                state.ContactShadowRenderer = state.ContactShadowObject.AddComponent<MeshRenderer>();
+                state.ContactShadowFilter.sharedMesh = GetOwnerContactShadowMesh();
+                state.ContactShadowRenderer.sharedMaterial = GetOwnerContactShadowMaterial();
+                state.ContactShadowRenderer.shadowCastingMode =
+                    UnityEngine.Rendering.ShadowCastingMode.Off;
+                state.ContactShadowRenderer.receiveShadows = false;
+                state.ContactShadowObject.SetActive(false);
+            }
+
+            return state.ContactShadowRenderer != null &&
+                   state.ContactShadowRenderer.sharedMaterial != null;
+        }
+
+        private Mesh GetOwnerContactShadowMesh()
+        {
+            Mesh mesh;
+            if (meshes.TryGetValue(OwnerContactShadowMeshKey, out mesh))
+            {
+                return mesh;
+            }
+
+            mesh = new Mesh
+            {
+                name = "EnhancedGeneratedMesh_OwnerContactShadow",
+                hideFlags = HideFlags.DontSave
+            };
+            mesh.vertices = new[]
+            {
+                new Vector3(-0.5f, 0f, -0.5f),
+                new Vector3(0.5f, 0f, -0.5f),
+                new Vector3(-0.5f, 0f, 0.5f),
+                new Vector3(0.5f, 0f, 0.5f)
+            };
+            mesh.uv = new[]
+            {
+                new Vector2(0f, 0f),
+                new Vector2(1f, 0f),
+                new Vector2(0f, 1f),
+                new Vector2(1f, 1f)
+            };
+            mesh.triangles = new[] { 0, 2, 1, 1, 2, 3 };
+            mesh.RecalculateBounds();
+            meshes.Add(OwnerContactShadowMeshKey, mesh);
+            return mesh;
+        }
+
+        private Material GetOwnerContactShadowMaterial()
+        {
+            Material material;
+            if (materials.TryGetValue(OwnerContactShadowMaterialKey, out material))
+            {
+                return material;
+            }
+
+            Shader shader = Shader.Find("MagicCarpet/Enhanced/ActorContactShadow");
+            if (shader == null)
+            {
+                return null;
+            }
+
+            material = new Material(shader)
+            {
+                name = "EnhancedGeneratedMaterial_OwnerContactShadow",
+                hideFlags = HideFlags.DontSave
+            };
+            material.enableInstancing = true;
+            material.SetColor("_ShadowColor", new Color(0.015f, 0.008f, 0.02f, 1f));
+            material.SetFloat("_Opacity", 0.28f);
+            material.SetFloat("_Softness", 0.72f);
+            materials.Add(OwnerContactShadowMaterialKey, material);
+            return material;
+        }
+
+        private static void DisableOwnerContactShadow(UnityEnhancedActorVisualState state)
+        {
+            if (state == null)
+            {
+                return;
+            }
+
+            if (state.ContactShadowRenderer != null)
+            {
+                state.ContactShadowRenderer.enabled = false;
+            }
+            if (state.ContactShadowObject != null)
+            {
+                state.ContactShadowObject.SetActive(false);
+            }
         }
 
         private void EnsureFireballTrail(UnityEnhancedActorVisualState state)
