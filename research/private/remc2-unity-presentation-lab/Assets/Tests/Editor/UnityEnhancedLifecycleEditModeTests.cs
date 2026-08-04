@@ -3613,6 +3613,7 @@ namespace MagicCarpet.PresentationLab.Tests
 
             StringAssert.Contains("SetPresentationCamera", waterPresentationSource);
             StringAssert.Contains("CameraType.Reflection", waterPresentationSource);
+            StringAssert.Contains("GraphicsSettings.currentRenderPipeline == null", waterPresentationSource);
             StringAssert.Contains("CalculateReflectionMatrix", waterPresentationSource);
             StringAssert.Contains("CameraSpacePlane", waterPresentationSource);
             StringAssert.Contains("GL.invertCulling", waterPresentationSource);

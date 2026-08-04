@@ -647,7 +647,10 @@ namespace MagicCarpet.PresentationLab
             reflectionCamera.enabled = false;
             reflectionCamera.cameraType = CameraType.Reflection;
             reflectionCamera.useOcclusionCulling = false;
-            reflectionCamera.stereoTargetEye = StereoTargetEyeMask.None;
+            if (GraphicsSettings.currentRenderPipeline == null)
+            {
+                reflectionCamera.stereoTargetEye = StereoTargetEyeMask.None;
+            }
 
             UniversalAdditionalCameraData cameraData =
                 reflectionObject.AddComponent<UniversalAdditionalCameraData>();
