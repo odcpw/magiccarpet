@@ -17218,7 +17218,7 @@ impl Level2ResetSession {
                     feature.kind == 10 && feature.subtype == 59 && matches!(target_group, 19 | 23);
                 let is_model39 = feature.kind == 10
                     && feature.subtype == 39
-                    && matches!(target_group, 1 | 5 | 7 | 24 | 26);
+                    && matches!(target_group, 1 | 3 | 5 | 7 | 24 | 26);
                 let is_model6 = feature.kind == 10 && feature.subtype == 6 && target_group == 24;
                 let is_model32 = feature.kind == 11
                     && feature.subtype == 32
@@ -17305,7 +17305,7 @@ impl Level2ResetSession {
             }
             if feature.kind == 10
                 && feature.subtype == 39
-                && matches!(target_group, 1 | 5 | 7 | 24 | 26)
+                && matches!(target_group, 1 | 3 | 5 | 7 | 24 | 26)
             {
                 if self.level2_model39_activated.contains(&feature.index) {
                     continue;
@@ -33001,6 +33001,95 @@ mod tests {
         assert!(row84.fired);
 
         session.reset();
+        assert!(session.economy().authored_switch_producers().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_group3_model39_rows_materialize_from_row42_production_route() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-3 production session");
+        let baseline_hash = session.campaign_state_hash();
+        let baseline_sphere_count = session.economy().spheres().len();
+        let authored_features = session.mission().authored_features().to_vec();
+        let feature_position = |index: u16| {
+            authored_features
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("authored group-3 feature")
+                .world_position(0)
+        };
+        let expected_group3_indices = (43_u16..=62).chain([64]).collect::<Vec<_>>();
+
+        // The real row-11 root first creates row 42; putting the local player
+        // on that model-0 switch then selects group 3 through ordinary source
+        // turns. No direct allocator or narrative helper is used.
+        session.state.position = feature_position(11);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        session.state.position = feature_position(42);
+        let mut group3_activated = false;
+        for _ in 0..8 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            group3_activated |= session.dispatch_events().iter().any(|event| {
+                matches!(
+                    event,
+                    Level2DispatchEvent::AuthoredGroupActivated {
+                        group: 3,
+                        authored_indices,
+                        ..
+                    } if authored_indices.as_ref() == expected_group3_indices.as_slice()
+                )
+            });
+            if group3_activated {
+                break;
+            }
+        }
+        assert!(
+            group3_activated,
+            "row 42 must activate group 3 in production"
+        );
+
+        let expected_positions = (43_u16..=62)
+            .map(feature_position)
+            .map(|position| (position.x, position.y))
+            .collect::<BTreeSet<_>>();
+        let mut actual_position_counts = BTreeMap::new();
+        for sphere in session.economy().spheres().iter().filter(|sphere| {
+            sphere.active
+                && sphere.mana == 512
+                && expected_positions.contains(&(sphere.position.x, sphere.position.y))
+        }) {
+            *actual_position_counts
+                .entry((sphere.position.x, sphere.position.y))
+                .or_insert(0usize) += 1;
+        }
+        let expected_position_counts = expected_positions
+            .iter()
+            .copied()
+            .map(|position| (position, 1usize))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(actual_position_counts, expected_position_counts);
+
+        let row64 = session
+            .economy()
+            .authored_switch_producers()
+            .iter()
+            .find(|source| source.authored_index == 64)
+            .copied()
+            .expect("group 3 must materialize row 64");
+        assert_eq!(
+            (row64.model, row64.action, row64.stage_tag, row64.word_10),
+            (1, 1, 4, 47)
+        );
+        assert!(!row64.fired);
+        assert!(row64.drawing_enabled);
+
+        session.reset();
+        assert_eq!(session.economy().spheres().len(), baseline_sphere_count);
         assert!(session.economy().authored_switch_producers().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
