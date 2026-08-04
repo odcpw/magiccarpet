@@ -33054,6 +33054,104 @@ mod tests {
     }
 
     #[test]
+    fn level_two_authored_bee_actions16_and19_run_through_production_cursor() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-21 Bee session");
+        let baseline_hash = session.campaign_state_hash();
+
+        // The first ordinary turn is the real row-228/model-32 -> group-21
+        // producer route. Mutating the resulting live row only selects the
+        // action branch; dispatch remains on the production dynamic cursor.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row229_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.authored_index == 229)
+            .map(|bee| bee.source_entity_index)
+            .expect("production group-21 row 229 Bee");
+        let local_player_slot = session.state.entity_index;
+        let initial = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("production row 229 source");
+        session.state.position = initial.position;
+        session
+            .economy_mut()
+            .set_authored_bee_target(row229_slot, Some(local_player_slot));
+
+        // `sub_1F630` delegates to the awareness helper and enters action 18
+        // with dword_0x10 = 1. No RNG/sound draw belongs to this action-16
+        // branch. The mailbox is an explicit word_0x96 test seam, not a claim
+        // that natural AI target ownership has already been ported.
+        session
+            .economy_mut()
+            .authored_bees
+            .iter_mut()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .expect("production row 229 source")
+            .action = 16;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let action16 = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("action-16 Bee remains live");
+        assert_eq!(action16.action, 18);
+        assert_eq!(action16.dword_0x10, 1);
+        assert_eq!(action16.entity_rng, initial.entity_rng);
+        assert_eq!(action16.last_sound_id, initial.last_sound_id);
+        assert_eq!(
+            action16.source_byte_3e,
+            initial.source_byte_3e.wrapping_add(1)
+        );
+
+        // `sub_1F800` re-evaluates the linked target only on the descriptor's
+        // 30-tick byte-0x3E window. Seed that source-defined boundary on the
+        // same production row and prove action 19 enters action 18 without a
+        // synthetic helper call or extra RNG draw.
+        session
+            .economy_mut()
+            .authored_bees
+            .iter_mut()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .expect("production row 229 source")
+            .action = 19;
+        session
+            .economy_mut()
+            .authored_bees
+            .iter_mut()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .expect("production row 229 source")
+            .source_byte_3e = 0;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let action19 = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("action-19 Bee remains live");
+        assert_eq!(action19.action, 18);
+        assert_eq!(action19.dword_0x10, 1);
+        assert_eq!(action19.entity_rng, action16.entity_rng);
+        assert_eq!(action19.last_sound_id, action16.last_sound_id);
+        assert_eq!(action19.source_byte_3e, 1);
+
+        session.reset();
+        assert!(session.economy().authored_bees().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
     fn level_two_bee_activation_filters_kind_subtype_and_preserves_source_order() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
