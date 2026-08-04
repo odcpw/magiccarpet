@@ -4676,6 +4676,15 @@ pub struct Level2AuthoredClass5Source {
     pub max_mana: i32,
     pub subspell_index: u16,
     pub dword_0x10: i32,
+    /// Pending `str_0x5E_94.word_0x62_98` consumed by `sub_2A6B0`.
+    pub pending_word_0x62: u16,
+    /// Current target `word_0x26_38` written by `sub_2A6B0`.
+    pub word_0x26: u16,
+    /// Fallback/child link `word_0x24_36` written on the byte-0x3B-zero
+    /// branch of `sub_2A6B0`.
+    pub word_0x24: u16,
+    /// Source `byte_0x3B_59`, which selects the action-220 fallback branch.
+    pub byte_0x3b: u8,
     pub particle_index: u16,
     pub source_byte_3e: u8,
     pub yaw: i16,
@@ -6771,6 +6780,10 @@ impl Level2EconomyState {
             } else {
                 dword_0x10
             },
+            pending_word_0x62: 0,
+            word_0x26: 0,
+            word_0x24: 0,
+            byte_0x3b: 0,
             particle_index,
             source_byte_3e,
             yaw,
@@ -6814,14 +6827,32 @@ impl Level2EconomyState {
         };
         let mut source = self.authored_class5[source_index];
         if source.model == 3 && source.action == 25 {
+            // `sub_29710` calls `sub_2A6B0` before the movement callback.
+            // Keep the mailbox transfer and byte-0x3B-zero fallback exact;
+            // the life/word-0x96 side effects on the byte-0x3B-nonzero branch
+            // remain outside this bounded projection.
+            let mut run_terrain_resnap = true;
+            if source.pending_word_0x62 != 0 {
+                let pending = source.pending_word_0x62;
+                source.word_0x26 = pending;
+                source.pending_word_0x62 = 0;
+                if source.byte_0x3b == 0 {
+                    source.action = 220;
+                    source.word_0x24 = pending;
+                    run_terrain_resnap = false;
+                }
+            }
             // `sub_29710` reaches `sub_2AF10` for this model-3/action-25
-            // family.  This bounded projection retains the callback's
-            // unconditional terrain resnap even when movement is disabled.
+            // family.  When the pre-pass does not take the action-220
+            // fallback, this bounded projection retains the callback's
+            // terrain resnap even when movement is disabled.
             // Its `sub_2A6B0` pre-pass, action 216/217 transitions, target
             // selection, collision turns, and deferred child chain remain
             // explicit creature-family residuals until their source state is
             // projected into this arena record.
-            source.position.z = self.terrain.ground_height(source.position);
+            if run_terrain_resnap {
+                source.position.z = self.terrain.ground_height(source.position);
+            }
         } else if source.model == 9 && source.action == 72 {
             // `sub_2AF10(a1, 1)` first advances the model-9 root, resnaps Z
             // to terrain, and then lets `sub_29A90` settle its linked rows.
@@ -12843,7 +12874,7 @@ impl Level2EconomyState {
             hasher.update(source.position.z.to_le_bytes());
             hasher.update([u8::from(source.active)]);
         }
-        hasher.update(b"authored-class5-v1");
+        hasher.update(b"authored-class5-v2");
         hasher.update([
             self.class5_model3_constructor_phase,
             self.class5_model4_constructor_phase,
@@ -12870,6 +12901,10 @@ impl Level2EconomyState {
             hasher.update(source.max_mana.to_le_bytes());
             hasher.update(source.subspell_index.to_le_bytes());
             hasher.update(source.dword_0x10.to_le_bytes());
+            hasher.update(source.pending_word_0x62.to_le_bytes());
+            hasher.update(source.word_0x26.to_le_bytes());
+            hasher.update(source.word_0x24.to_le_bytes());
+            hasher.update([source.byte_0x3b]);
             hasher.update(source.particle_index.to_le_bytes());
             hasher.update(source.yaw.to_le_bytes());
             hasher.update(source.pitch.to_le_bytes());
@@ -30764,6 +30799,49 @@ mod tests {
                 ..
             } if *source_slot == row238_after.source_entity_index
         )));
+
+        // Isolate the preceding `sub_2A6B0` mailbox transfer on the same
+        // production row.  With byte 0x3B clear, the source selects action
+        // 220, copies the pending word into both target/fallback links, and
+        // clears the mailbox before returning to the cursor.
+        let pending_target = 0x3456_u16;
+        let row238_before_fallback = row238_after;
+        let fallback_z = row238_ground.wrapping_add(19);
+        session
+            .economy_mut()
+            .authored_class5
+            .iter_mut()
+            .find(|source| source.authored_index == 238)
+            .expect("model-3 row 238 remains mutable for pre-pass")
+            .pending_word_0x62 = pending_target;
+        let row238_mut = session
+            .economy_mut()
+            .authored_class5
+            .iter_mut()
+            .find(|source| source.authored_index == 238)
+            .expect("model-3 row 238 pre-pass source");
+        row238_mut.byte_0x3b = 0;
+        row238_mut.position.z = fallback_z;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row238_after_fallback = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .find(|source| source.authored_index == 238)
+            .copied()
+            .expect("model-3 row 238 remains live after pre-pass");
+        assert_eq!(
+            row238_after_fallback.phase,
+            row238_before_fallback.phase.wrapping_add(1)
+        );
+        assert_eq!(row238_after_fallback.action, 220);
+        assert_eq!(row238_after_fallback.pending_word_0x62, 0);
+        assert_eq!(row238_after_fallback.word_0x26, pending_target);
+        assert_eq!(row238_after_fallback.word_0x24, pending_target);
+        assert_eq!(
+            row238_after_fallback.position.z, fallback_z,
+            "action-220 fallback must skip the later terrain-resnap fragment"
+        );
 
         session.reset();
         assert!(session.economy().authored_class5().is_empty());
