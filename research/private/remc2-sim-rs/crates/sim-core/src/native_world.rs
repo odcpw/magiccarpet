@@ -3469,6 +3469,17 @@ const LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX: u16 = 229;
 /// `str_D7BD6[73]` values consumed by `sub_1BF90`'s class-3 target scan.
 const LEVEL2_BEE_AWARENESS_RADIUS: i64 = 0x1400;
 const LEVEL2_BEE_AWARENESS_HALF_ANGLE: i32 = 0x02AA;
+/// Descriptor-73 movement values consumed by `sub_1B8C0` before the action-17
+/// cadence scan. These are source fields, not tuning constants: the Bee
+/// settles to 51 units above terrain, relaxes by -32 while airborne, probes
+/// a 128-unit collision footprint, and rejects a tile slope of 20 or more.
+const LEVEL2_BEE_GROUND_CLEARANCE: i16 = 0x0033;
+const LEVEL2_BEE_GROUND_RELAXATION: i16 = -32;
+const LEVEL2_BEE_COLLISION_HALF_EXTENT: i16 = 128;
+const LEVEL2_BEE_TERRAIN_THRESHOLD: i32 = 20;
+const LEVEL2_BEE_TURN_LIMIT: i16 = 0x0071;
+const LEVEL2_BEE_MOVEMENT_SKIP_BIT: u32 = 0x0000_0800;
+const LEVEL2_BEE_OBSTRUCTION_BIT: u32 = 0x0004_0000;
 const LEVEL2_OBJECTIVE_POINT_RADIUS: i32 = 768;
 const LEVEL2_NYPHUR_ENTITY_SHA256: &str =
     "a240c8711868a249b2e3ebb43c59613dc88d979a07de279ece869f14ffcf888e";
@@ -4132,6 +4143,10 @@ pub struct Level2AuthoredBeeSource {
     pub minimum_speed: i16,
     pub maximum_speed: i16,
     pub actual_speed: i16,
+    /// NewEvent's source control dword. Action-17 movement consumes bit
+    /// 0x800 as the one-tick movement skip and stores the `sub_1B8C0`
+    /// obstruction marker in bit 0x40000.
+    pub control_flags: u32,
     /// `SetEvent144_49C70` initializes the Bee's death-conversion mana from
     /// half of its max life (the pinned constructor therefore starts at
     /// 1500, not zero).
@@ -4165,6 +4180,141 @@ pub struct Level2AuthoredBeeSource {
     pub phase: u8,
     pub drawing_enabled: bool,
     pub active: bool,
+}
+
+fn level2_bee_source_tile(position: Position) -> (u8, u8) {
+    (position.x.to_be_bytes()[0], position.y.to_be_bytes()[0])
+}
+
+fn level2_bee_slope_measure(terrain: &SessionTerrain, position: Position) -> i32 {
+    let (tile_x, tile_y) = level2_bee_source_tile(position);
+    let height = |x: u8, y: u8| {
+        i32::from(terrain.ground_height(Position {
+            x: u16::from(x) << 8,
+            y: u16::from(y) << 8,
+            z: 0,
+        })) >> 5
+    };
+    let point_1 = height(tile_x, tile_y);
+    let point_2 = height(tile_x.wrapping_add(1), tile_y);
+    let point_3 = height(tile_x.wrapping_add(1), tile_y.wrapping_add(1));
+    let point_4 = height(tile_x, tile_y.wrapping_add(1));
+    (point_1 + point_4 - point_2 - point_3)
+        .abs()
+        .max((point_1 + point_2 - point_4 - point_3).abs())
+}
+
+fn level2_bee_probe_blocked(terrain: &SessionTerrain, candidate: Position, heading: i16) -> bool {
+    // Descriptor 73's dword_0x14 is 0xffff_ffff, so the source's
+    // `~dword_0x14 & material_mask` test rejects no Day material. Its
+    // collision probe still has a 128-unit footprint and a Cave-only angle /
+    // ceiling branch; the authored Bee constructor is Day-only, but retaining
+    // that branch keeps this helper source-shaped if a preserved Cave row is
+    // ever supplied.
+    let mut probe = candidate;
+    let mut distance = 0_i32;
+    while distance <= i32::from(LEVEL2_BEE_COLLISION_HALF_EXTENT) {
+        if terrain.map_type == MapType::Cave {
+            let tile = crate::Tile {
+                x: probe.x.to_be_bytes()[0],
+                y: probe.y.to_be_bytes()[0],
+            };
+            if terrain.angle_flags(tile) & 8 != 0 {
+                return true;
+            }
+            if let Some(ceiling) = terrain.ceiling_height(probe) {
+                let ground = terrain.ground_height(probe);
+                if i32::from(128) + i32::from(ground) + i32::from(LEVEL2_BEE_GROUND_CLEARANCE)
+                    > i32::from(ceiling)
+                {
+                    return true;
+                }
+            }
+        }
+        distance += 256;
+        crate::move_entity(&mut probe, heading, 0, 256);
+    }
+    false
+}
+
+fn level2_bee_retry_headings(yaw: i16) -> [i16; 4] {
+    // This is the source's byte-preserving retry sequence from sub_1B8C0;
+    // the third and fourth headings are not ordinary +/-341 turns.
+    let yaw = i32::from(yaw);
+    let first = yaw & 0x07ff;
+    let second = (yaw + 341) & 0x07ff;
+    let third = ((yaw.wrapping_sub(85) as u16 & 0x00ff)
+        | ((((yaw.wrapping_sub(341) as u16) >> 8) & 7) << 8))
+        & 0x07ff;
+    let fourth = ((((yaw + 0x400) as u16) & 0x0700) | (yaw as u8 as u16)) & 0x07ff;
+    [
+        i16::try_from(first).expect("Bee source retry heading fits"),
+        i16::try_from(second).expect("Bee source retry heading fits"),
+        i16::try_from(third).expect("Bee source retry heading fits"),
+        i16::try_from(fourth).expect("Bee source retry heading fits"),
+    ]
+}
+
+fn level2_bee_turn_delta(from: i16, to: i16) -> i16 {
+    let from = i32::from(from) & 0x07ff;
+    let to = i32::from(to) & 0x07ff;
+    let mut delta = to - from;
+    if delta.abs() > 1024 {
+        delta += if delta >= 0 { -2048 } else { 2048 };
+    }
+    if delta == 0 {
+        return 0;
+    }
+    let magnitude = delta.abs().min(i32::from(LEVEL2_BEE_TURN_LIMIT));
+    i16::try_from(magnitude * delta.signum()).expect("Bee source turn delta fits")
+}
+
+fn move_level2_bee_source(source: &mut Level2AuthoredBeeSource, terrain: &SessionTerrain) {
+    if source.control_flags & LEVEL2_BEE_MOVEMENT_SKIP_BIT != 0 {
+        source.control_flags &= !LEVEL2_BEE_MOVEMENT_SKIP_BIT;
+        return;
+    }
+
+    let original = source.position;
+    let original_yaw = source.yaw;
+    for (attempt, heading) in level2_bee_retry_headings(original_yaw)
+        .into_iter()
+        .enumerate()
+    {
+        let mut candidate = original;
+        let ground = terrain.ground_height(candidate);
+        if candidate.z > ground {
+            candidate.z = candidate.z.wrapping_add(LEVEL2_BEE_GROUND_RELAXATION);
+        }
+        if candidate.z <= ground.wrapping_add(LEVEL2_BEE_GROUND_CLEARANCE) {
+            candidate.z = ground.wrapping_add(LEVEL2_BEE_GROUND_CLEARANCE);
+        }
+        crate::move_entity(&mut candidate, heading, 0, source.actual_speed);
+        let crossed_tile = level2_bee_source_tile(candidate) != level2_bee_source_tile(original);
+        let blocked = crossed_tile
+            && (level2_bee_probe_blocked(terrain, candidate, heading)
+                || level2_bee_slope_measure(terrain, candidate) >= LEVEL2_BEE_TERRAIN_THRESHOLD);
+        if blocked {
+            source.control_flags |= LEVEL2_BEE_OBSTRUCTION_BIT;
+            // The source commits each failed heading before the next retry;
+            // a later successful retry therefore retains the marker.
+            source.yaw = heading;
+            continue;
+        }
+
+        source.position = candidate;
+        source.yaw = heading.wrapping_add(level2_bee_turn_delta(heading, source.roll)) & 0x07ff;
+        if attempt == 0 {
+            source.control_flags &= !LEVEL2_BEE_OBSTRUCTION_BIT;
+        }
+        return;
+    }
+
+    // Descriptor 73 has byte_0x20 bit 0 set, so the source kills a Bee when
+    // every retry is blocked. Population-census decrementation is owned by
+    // the broader class-5 census projection and remains outside this typed
+    // economy seam.
+    source.life = -1;
 }
 
 /// Authored class-11 model-0/model-1/model-12 switch producer materialized by
@@ -5757,6 +5907,10 @@ impl Level2EconomyState {
             minimum_speed: 64,
             maximum_speed: 30,
             actual_speed: 32,
+            // NewEvent_4A050 initializes the control dword to 8. The
+            // movement helper only consumes the later byte-1 bit 8 (0x800),
+            // so the constructor's low-byte marker remains intact here.
+            control_flags: 8,
             mana: 1500,
             max_life: 3000,
             life: 3000,
@@ -5816,9 +5970,10 @@ impl Level2EconomyState {
     /// Run the source `sub_1BF90` class-3 target scan for an action-17 Bee.
     ///
     /// The caller supplies the live `dword_38519` class-3 list in source
-    /// order.  This method owns only the model-2 descriptor cadence and its
-    /// two wander RNG draws; the normal action-17 callback remains responsible
-    /// for the follow-up sound draw and action transition.
+    /// order. This method owns the action-17 `sub_1B8C0` movement prelude,
+    /// model-2 descriptor cadence, and two wander RNG draws; the normal
+    /// action-17 callback remains responsible for the follow-up sound draw
+    /// and action transition.
     pub fn acquire_authored_bee_target(
         &mut self,
         source_slot: u16,
@@ -5832,12 +5987,26 @@ impl Level2EconomyState {
             return None;
         };
         let mut source = self.authored_bees[source_index];
-        if source.action != 17
-            || source.action_window <= 0
-            || source.source_byte_3e
-                % u8::try_from(source.action_window).expect("positive Bee action window")
-                != 0
+        if source.action != 17 {
+            return None;
+        }
+
+        // `sub_1BF90(a1, 16)` always runs `sub_1B8C0` first. That movement
+        // callback is intentionally before the cadence guard: even a
+        // non-cadence action-17 turn changes position/yaw and only then
+        // decides whether to consume the two wander draws and scan targets.
+        move_level2_bee_source(&mut source, &self.terrain);
+        if source.action_window <= 0 {
+            self.source_rng.insert(source_slot, source.entity_rng);
+            self.authored_bees[source_index] = source;
+            return None;
+        }
+        if source.source_byte_3e
+            % u8::try_from(source.action_window).expect("positive Bee action window")
+            != 0
         {
+            self.source_rng.insert(source_slot, source.entity_rng);
+            self.authored_bees[source_index] = source;
             return None;
         }
 
@@ -6638,7 +6807,9 @@ impl Level2EconomyState {
     /// Advance one authored Bee through the live action 16..19 band.  The
     /// generic creature helpers are represented only for the fields this
     /// family actually consumes: the action-18 latch, target-Z tracking,
-    /// strict target contact/recoil, and source RNG/phase ordering.
+    /// strict target contact/recoil, and source RNG/phase ordering. The live
+    /// outer dispatcher runs action-17's movement/acquisition prelude through
+    /// `acquire_authored_bee_target` before calling this state transition.
     pub fn step_authored_bee_slot(
         &mut self,
         source_slot: u16,
@@ -12858,6 +13029,7 @@ impl Level2EconomyState {
             hasher.update(source.minimum_speed.to_le_bytes());
             hasher.update(source.maximum_speed.to_le_bytes());
             hasher.update(source.actual_speed.to_le_bytes());
+            hasher.update(source.control_flags.to_le_bytes());
             hasher.update(source.mana.to_le_bytes());
             hasher.update(source.max_life.to_le_bytes());
             hasher.update(source.life.to_le_bytes());
@@ -33905,6 +34077,233 @@ mod tests {
     }
 
     #[test]
+    fn level_two_bee_action17_moves_before_acquisition_rng() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Bee movement session");
+        let source = session
+            .allocate_level2_authored_bee(210)
+            .expect("authored Day Bee row 210");
+        let mut configured = source;
+        configured.position = Position {
+            x: 0x1000,
+            y: 0x1010,
+            z: 0,
+        };
+        configured.yaw = 0;
+        configured.roll = 0;
+        configured.source_byte_3e = 0;
+        configured.source_byte_39 = 0;
+        configured.control_flags = 8;
+        configured.entity_rng = 0x1234;
+        assert!(session.economy.replace_authored_bee_for_test(configured));
+
+        let ground = session.economy.terrain.ground_height(configured.position);
+        let mut expected_position = configured.position;
+        if expected_position.z > ground {
+            expected_position.z = expected_position
+                .z
+                .wrapping_add(LEVEL2_BEE_GROUND_RELAXATION);
+        }
+        if expected_position.z <= ground.wrapping_add(LEVEL2_BEE_GROUND_CLEARANCE) {
+            expected_position.z = ground.wrapping_add(LEVEL2_BEE_GROUND_CLEARANCE);
+        }
+        crate::move_entity(
+            &mut expected_position,
+            configured.yaw,
+            0,
+            configured.actual_speed,
+        );
+        let first = level2_next_rng16(configured.entity_rng);
+        let second = level2_next_rng16(first);
+        let direction = 2 * (u32::from(first % 0x9d) / 79);
+        let expected_roll = (i32::from(configured.roll)
+            + (i32::from((second & 0xff) as u8) + 85)
+                * (i32::try_from(direction).expect("Bee roll direction fits") - 1))
+            as i16
+            & 0x07ff;
+
+        // The cadence is active, but byte_0x39 suppresses only the target
+        // scan. The source must still move first and consume both wander
+        // draws after that movement.
+        assert!(
+            session
+                .economy
+                .acquire_authored_bee_target(configured.source_entity_index, &[])
+                .is_none()
+        );
+        let moved = session
+            .economy
+            .authored_bees
+            .iter()
+            .find(|bee| bee.source_entity_index == configured.source_entity_index)
+            .copied()
+            .expect("action-17 Bee remains live");
+        assert_eq!(moved.position, expected_position);
+        assert_eq!(moved.entity_rng, second);
+        assert_eq!(moved.roll, expected_roll);
+        assert_eq!(moved.control_flags, 8);
+        assert_eq!(moved.action, 17);
+    }
+
+    #[test]
+    fn level_two_bee_action17_blocked_heading_retries_source_order() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 Bee retry session");
+        let source = session
+            .allocate_level2_authored_bee(210)
+            .expect("authored Day Bee row 210");
+        let mut configured = source;
+        configured.position = Position {
+            x: 0x20f0,
+            y: 0x1010,
+            z: 0,
+        };
+        configured.yaw = 0;
+        configured.roll = 0;
+        configured.source_byte_3e = 1;
+        configured.source_byte_39 = 0;
+        configured.control_flags = 8;
+        assert!(session.economy.replace_authored_bee_for_test(configured));
+
+        let headings = level2_bee_retry_headings(configured.yaw);
+        let candidate_tile = |heading: i16| {
+            let mut candidate = configured.position;
+            crate::move_entity(&mut candidate, heading, 0, configured.actual_speed);
+            level2_bee_source_tile(candidate)
+        };
+        let first_tile = candidate_tile(headings[0]);
+        let second_tile = candidate_tile(headings[1]);
+        assert_ne!(
+            first_tile, second_tile,
+            "retry candidates must cross distinct tiles"
+        );
+
+        // Give the first candidate a source-slope rejection while leaving the
+        // second candidate flat. The shared edge is kept at 255 so the first
+        // tile's diagonal remains steep and the second tile remains level.
+        let (first_x, first_y) = first_tile;
+        let (second_x, second_y) = second_tile;
+        for (x, y) in [
+            (second_x, second_y),
+            (second_x.wrapping_add(1), second_y),
+            (second_x.wrapping_add(1), second_y.wrapping_add(1)),
+            (second_x, second_y.wrapping_add(1)),
+        ] {
+            session.economy.terrain.planes.ground_heights[terrain_index(x, y)] = 255;
+        }
+        for (x, y, height) in [
+            (first_x, first_y, 0),
+            (first_x.wrapping_add(1), first_y, 255),
+            (first_x.wrapping_add(1), first_y.wrapping_add(1), 255),
+            (first_x, first_y.wrapping_add(1), 0),
+        ] {
+            session.economy.terrain.planes.ground_heights[terrain_index(x, y)] = height;
+        }
+
+        let mut expected_position = configured.position;
+        let ground = session.economy.terrain.ground_height(expected_position);
+        if expected_position.z > ground {
+            expected_position.z = expected_position
+                .z
+                .wrapping_add(LEVEL2_BEE_GROUND_RELAXATION);
+        }
+        if expected_position.z <= ground.wrapping_add(LEVEL2_BEE_GROUND_CLEARANCE) {
+            expected_position.z = ground.wrapping_add(LEVEL2_BEE_GROUND_CLEARANCE);
+        }
+        crate::move_entity(
+            &mut expected_position,
+            headings[1],
+            0,
+            configured.actual_speed,
+        );
+        let expected_yaw =
+            headings[1].wrapping_add(level2_bee_turn_delta(headings[1], configured.roll)) & 0x07ff;
+
+        // Non-cadence still exercises the movement prelude but consumes no
+        // wander RNG, isolating retry order from acquisition bookkeeping.
+        assert!(
+            session
+                .economy
+                .acquire_authored_bee_target(configured.source_entity_index, &[])
+                .is_none()
+        );
+        let retried = session
+            .economy
+            .authored_bees
+            .iter()
+            .find(|bee| bee.source_entity_index == configured.source_entity_index)
+            .copied()
+            .expect("retried Bee remains live");
+        assert_eq!(retried.position, expected_position);
+        assert_eq!(retried.yaw, expected_yaw);
+        assert_ne!(retried.control_flags & LEVEL2_BEE_OBSTRUCTION_BIT, 0);
+        assert_eq!(retried.entity_rng, configured.entity_rng);
+    }
+
+    #[test]
+    fn level_two_bee_row229_action17_moves_on_outer_cursor_and_reset_restores_hash() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 row-229 Bee session");
+        let baseline_hash = session.campaign_state_hash();
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row229_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+            .map(|bee| bee.source_entity_index)
+            .expect("production group-21 row 229 Bee");
+        let before = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("row-229 Bee before action-17 turn");
+        {
+            let source = session
+                .economy_mut()
+                .authored_bees
+                .iter_mut()
+                .find(|bee| bee.source_entity_index == row229_slot)
+                .expect("row-229 Bee source");
+            source.action = 17;
+            source.source_byte_3e = 1;
+            source.source_byte_39 = 0;
+            source.target_entity_index = None;
+            source.control_flags = 8;
+        }
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let after = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("row-229 Bee after action-17 turn");
+        assert_eq!(after.action, 17);
+        assert_eq!(after.source_byte_3e, 2);
+        assert_ne!(
+            (after.position.x, after.position.y),
+            (before.position.x, before.position.y)
+        );
+
+        session.reset();
+        assert!(session.economy().authored_bees().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
     fn level_two_authored_bee_constructor_and_action18_target_band() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
@@ -34587,7 +34986,13 @@ mod tests {
             .find(|bee| bee.source_entity_index == row229_slot)
             .copied()
             .expect("production row 229 source");
-        session.state.position = initial.position;
+        // Action 17 now runs the source mover before its awareness scan. Put
+        // the live player one Bee step down the initial heading so the
+        // source-order target remains inside the descriptor-73 cone after
+        // that movement prelude.
+        let mut target_after_move = initial.position;
+        crate::move_entity(&mut target_after_move, initial.yaw, 0, initial.actual_speed);
+        session.state.position = target_after_move;
         {
             let source = session
                 .economy_mut()
@@ -37262,19 +37667,11 @@ mod tests {
                 .iter()
                 .any(|source| source.active && source.authored_index == *index)
         }));
-        for source in session
-            .economy()
-            .authored_bees()
-            .iter()
-            .filter(|source| expected_group4_bee_indices.contains(&source.authored_index))
-        {
-            let position = feature_position(source.authored_index);
-            assert_eq!(
-                (source.position.x, source.position.y),
-                (position.x, position.y)
-            );
-            assert_eq!(source.position.z, session.terrain.ground_height(position));
-        }
+        // Action 17 now runs its source movement callback on every subsequent
+        // cursor visit, so these live rows are expected to have moved since
+        // activation. Constructor placement is asserted on the fresh row-229
+        // production route in
+        // `level_two_bee_row229_action17_moves_on_outer_cursor_and_reset_restores_hash`.
 
         // Firing row 65 selects authored group 5.  The bounded downstream
         // consumers are already production-owned: row 83 is the next switch,
