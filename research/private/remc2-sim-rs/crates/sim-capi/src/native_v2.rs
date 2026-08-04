@@ -276,6 +276,8 @@ pub const MC_CAMPAIGN_EVENT_SPELL_ACQUISITION: u8 = 2;
 pub const MC_CAMPAIGN_EVENT_GOAT: u8 = 9;
 /// Additive Level 2 campaign economy events (`mc_sim_level2.h`, kind 10).
 pub const MC_CAMPAIGN_EVENT_ECONOMY: u8 = 10;
+/// Additive authored-group activation events (`mc_sim_level2.h`, kind 11).
+pub const MC_CAMPAIGN_EVENT_AUTHORED_GROUP: u8 = 11;
 
 pub const MC_CAMPAIGN_GOAT_BLEAT: u8 = 1;
 pub const MC_CAMPAIGN_GOAT_MANA_CONVERTED: u8 = 2;
@@ -599,6 +601,28 @@ pub struct McCampaignEventV2 {
     pub family: u8,
     pub flags: u8,
     pub source_slot: u16,
+    pub reserved_0: u16,
+    pub reserved: [u32; 4],
+}
+
+/// Additive detailed payload for a kind-11 `McCampaignEventV2` row.  One
+/// sidecar row is emitted for each authored index, preserving the source
+/// order without placing a variable-length array in the C ABI.  `ordinal`
+/// joins the sidecar to the generic event, while `event_index` identifies the
+/// authored-index position within that activation.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct McCampaignAuthoredGroupEventV2 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub generation: u64,
+    pub ordinal: u32,
+    pub pass: u8,
+    pub flags: u8,
+    pub group: u16,
+    pub source_slot: u16,
+    pub event_index: u16,
+    pub authored_index: u16,
     pub reserved_0: u16,
     pub reserved: [u32; 4],
 }
@@ -7760,6 +7784,67 @@ pub extern "C" fn mc_native_campaign_economy_events(
     })
 }
 
+/// Copy the detailed authored-group activation sidecars from the most recent
+/// outer turn.  Generic `McCampaignEventV2` rows remain the stable 48-byte
+/// event stream; callers join these rows by `generation + ordinal` and use
+/// `event_index` to reconstruct the exact source-ordered authored list.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_campaign_authored_group_events(
+    handle: u64,
+    events: *mut McCampaignAuthoredGroupEventV2,
+    event_capacity: u32,
+    event_element_size: u32,
+    out_event_count: *mut u32,
+) -> i32 {
+    boundary(|| {
+        require_output(out_event_count, "campaign authored-group event count")?;
+        require_element_size::<McCampaignAuthoredGroupEventV2>(
+            event_element_size,
+            "campaign authored-group event",
+        )?;
+        with_campaign_session(handle, |session| {
+            let CampaignSessionKind::Level2 { reset, .. } = &session.kind else {
+                return Err(AbiError::new(
+                    MC_STATUS_INVALID_ARGUMENT,
+                    "campaign authored-group events require a Level 2 campaign session",
+                ));
+            };
+            let mut rows = Vec::new();
+            for (ordinal, dispatch) in reset.dispatch_events().iter().enumerate() {
+                let Level2DispatchEvent::AuthoredGroupActivated {
+                    pass,
+                    source_slot,
+                    group,
+                    authored_indices,
+                } = dispatch
+                else {
+                    continue;
+                };
+                let flags = u8::try_from(authored_indices.len()).unwrap_or(u8::MAX);
+                for (event_index, authored_index) in authored_indices.iter().copied().enumerate() {
+                    rows.push(McCampaignAuthoredGroupEventV2 {
+                        abi_version: MC_NATIVE_ABI_VERSION,
+                        struct_size: struct_size::<McCampaignAuthoredGroupEventV2>(),
+                        generation: session.generation,
+                        ordinal: u32::try_from(ordinal)
+                            .expect("bounded campaign event ordinal fits u32"),
+                        pass: *pass,
+                        flags,
+                        group: *group,
+                        source_slot: *source_slot,
+                        event_index: u16::try_from(event_index)
+                            .expect("bounded authored-group event index fits u16"),
+                        authored_index,
+                        reserved_0: 0,
+                        reserved: [0; 4],
+                    });
+                }
+            }
+            copy_slice(&rows, events, event_capacity, out_event_count)
+        })
+    })
+}
+
 /// Copy the detailed Level 2 Goat sidecars from the most recent outer turn.
 /// Generic `McCampaignEventV2` rows remain the stable 48-byte event stream;
 /// callers join these rows by `generation + ordinal`, and use `event_index`
@@ -10924,6 +11009,7 @@ fn campaign_event_snapshot(
         Level2DispatchEvent::Economy { .. } => MC_CAMPAIGN_EVENT_ECONOMY,
         Level2DispatchEvent::Goat { .. } => MC_CAMPAIGN_EVENT_GOAT,
         Level2DispatchEvent::SpellAcquisition { .. } => MC_CAMPAIGN_EVENT_SPELL_ACQUISITION,
+        Level2DispatchEvent::AuthoredGroupActivated { .. } => MC_CAMPAIGN_EVENT_AUTHORED_GROUP,
         _ => projected_kind,
     };
     McCampaignEventV2 {
@@ -16710,6 +16796,22 @@ mod tests {
         events[..event_count as usize].to_vec()
     }
 
+    fn campaign_authored_group_events(handle: u64) -> Vec<McCampaignAuthoredGroupEventV2> {
+        let mut events = [McCampaignAuthoredGroupEventV2::default(); 4096];
+        let mut event_count = 0;
+        assert_eq!(
+            mc_native_campaign_authored_group_events(
+                handle,
+                events.as_mut_ptr(),
+                events.len() as u32,
+                struct_size::<McCampaignAuthoredGroupEventV2>(),
+                &raw mut event_count,
+            ),
+            MC_STATUS_OK
+        );
+        events[..event_count as usize].to_vec()
+    }
+
     #[test]
     fn layouts_and_versions_are_stable() {
         assert_eq!(mc_native_abi_version(), 2);
@@ -16723,11 +16825,16 @@ mod tests {
         assert_eq!(size_of::<McCampaignSelectionV2>(), 32);
         assert_eq!(size_of::<McCampaignStepInputV2>(), 80);
         assert_eq!(size_of::<McCampaignEventV2>(), 48);
+        assert_eq!(size_of::<McCampaignAuthoredGroupEventV2>(), 48);
         assert_eq!(size_of::<McCampaignEconomyEventV2>(), 64);
         assert_eq!(size_of::<McCampaignGoatEventV2>(), 64);
         assert_eq!(size_of::<McCampaignStepSnapshotV2>(), 112);
         assert_eq!(std::mem::offset_of!(McCampaignStepInputV2, command), 16);
         assert_eq!(std::mem::offset_of!(McCampaignEventV2, source_slot), 24);
+        assert_eq!(
+            std::mem::offset_of!(McCampaignAuthoredGroupEventV2, authored_index),
+            28
+        );
         assert_eq!(
             std::mem::offset_of!(McCampaignEconomyEventV2, primary_id),
             28
@@ -18870,6 +18977,48 @@ mod tests {
                 .iter()
                 .all(|event| event.abi_version == MC_NATIVE_ABI_VERSION)
         );
+        let authored_group_events = campaign_authored_group_events(handle);
+        assert!(
+            !authored_group_events.is_empty(),
+            "Level 2 source pass must expose authored-group activation"
+        );
+        for row in &authored_group_events {
+            assert_eq!(row.generation, snapshot.generation);
+            assert_eq!(
+                row.struct_size,
+                struct_size::<McCampaignAuthoredGroupEventV2>()
+            );
+            let generic = events
+                .get(row.ordinal as usize)
+                .expect("authored-group sidecar ordinal joins generic event stream");
+            assert_eq!(generic.kind, MC_CAMPAIGN_EVENT_AUTHORED_GROUP);
+            assert_eq!(generic.pass, row.pass);
+            assert_eq!(generic.family, u8::try_from(row.group).unwrap_or(u8::MAX));
+            assert_eq!(generic.source_slot, row.source_slot);
+            assert!(row.event_index < u16::from(row.flags));
+        }
+        let group21_indices = authored_group_events
+            .iter()
+            .filter(|row| row.group == 21 && row.source_slot == 76)
+            .map(|row| row.authored_index)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            group21_indices,
+            vec![229, 230, 231],
+            "group-21 model-32 producer preserves the authored source order"
+        );
+        let mut authored_group_buffer = [McCampaignAuthoredGroupEventV2::default(); 4096];
+        let mut authored_group_count = 0;
+        assert_eq!(
+            mc_native_campaign_authored_group_events(
+                handle,
+                authored_group_buffer.as_mut_ptr(),
+                authored_group_buffer.len() as u32,
+                struct_size::<McCampaignAuthoredGroupEventV2>() - 1,
+                &raw mut authored_group_count,
+            ),
+            MC_STATUS_STRUCT_TOO_SMALL
+        );
         let goat_slots = events[..event_count as usize]
             .iter()
             .filter(|event| event.kind == MC_CAMPAIGN_EVENT_GOAT)
@@ -18931,6 +19080,18 @@ mod tests {
         let stepped_hash = snapshot.state_hash;
 
         assert_eq!(mc_native_campaign_session_reset(handle), MC_STATUS_OK);
+        authored_group_count = 99;
+        assert_eq!(
+            mc_native_campaign_authored_group_events(
+                handle,
+                authored_group_buffer.as_mut_ptr(),
+                authored_group_buffer.len() as u32,
+                struct_size::<McCampaignAuthoredGroupEventV2>(),
+                &raw mut authored_group_count,
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(authored_group_count, 0);
         let mut reset_info = McCampaignWorldInfoV2::default();
         assert_eq!(
             mc_native_campaign_world_info(
@@ -20678,11 +20839,13 @@ _Static_assert(sizeof(McEntitySnapshotV2) == 52, "McEntitySnapshotV2 size");
 _Static_assert(sizeof(McCampaignSelectionV2) == 32, "McCampaignSelectionV2 size");
 _Static_assert(sizeof(McCampaignStepInputV2) == 80, "McCampaignStepInputV2 size");
 _Static_assert(sizeof(McCampaignEventV2) == 48, "McCampaignEventV2 size");
+_Static_assert(sizeof(McCampaignAuthoredGroupEventV2) == 48, "McCampaignAuthoredGroupEventV2 size");
 _Static_assert(sizeof(McCampaignEconomyEventV2) == 64, "McCampaignEconomyEventV2 size");
 _Static_assert(sizeof(McCampaignGoatEventV2) == 64, "McCampaignGoatEventV2 size");
 _Static_assert(sizeof(McCampaignStepSnapshotV2) == 112, "McCampaignStepSnapshotV2 size");
 _Static_assert(offsetof(McCampaignStepInputV2, command) == 16, "campaign step command offset");
 _Static_assert(offsetof(McCampaignEventV2, source_slot) == 24, "campaign event source offset");
+_Static_assert(offsetof(McCampaignAuthoredGroupEventV2, authored_index) == 28, "campaign authored-group index offset");
 _Static_assert(offsetof(McCampaignEconomyEventV2, primary_id) == 28, "campaign economy primary offset");
 _Static_assert(offsetof(McCampaignEconomyEventV2, value_0) == 40, "campaign economy value offset");
 _Static_assert(offsetof(McCampaignGoatEventV2, entity_0) == 28, "campaign goat entity offset");

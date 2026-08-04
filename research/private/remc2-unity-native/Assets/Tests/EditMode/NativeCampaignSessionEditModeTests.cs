@@ -168,6 +168,18 @@ namespace MagicCarpet.Native.Tests
             Assert.That(
                 stepped.events.Any(eventRow => eventRow.kind != NativeSim.CampaignEventError),
                 Is.True);
+            var authoredGroupEvents = session.AuthoredGroupEvents();
+            Assert.That(authoredGroupEvents, Is.Not.Empty);
+            Assert.That(
+                authoredGroupEvents.All(eventRow =>
+                    eventRow.abiVersion == NativeSim.AbiVersion &&
+                    eventRow.structSize == 48 &&
+                    eventRow.generation == stepped.snapshot.generation &&
+                    eventRow.ordinal < (uint)stepped.events.Length &&
+                    stepped.events[(int)eventRow.ordinal].kind ==
+                        NativeSim.CampaignEventAuthoredGroup &&
+                    eventRow.eventIndex < eventRow.flags),
+                Is.True);
             var economyEvents = session.EconomyEvents();
             // The idle Level 2 fixture may legitimately produce no economy
             // sidecars on its first turn. The accessor still has to return a
@@ -182,8 +194,17 @@ namespace MagicCarpet.Native.Tests
 
             session.Reset();
             Assert.That(session.Generation, Is.EqualTo(1));
+            Assert.That(session.AuthoredGroupEvents(), Is.Empty);
             var reset = session.WorldInfo();
             Assert.That(reset.resetStateHash, Is.EqualTo(initial.resetStateHash));
+            var rebound = session.Step(123, 456, 7);
+            var reboundAuthoredGroupEvents = session.AuthoredGroupEvents();
+            Assert.That(reboundAuthoredGroupEvents, Is.Not.Empty);
+            Assert.That(
+                reboundAuthoredGroupEvents.All(eventRow =>
+                    eventRow.generation == rebound.snapshot.generation &&
+                    eventRow.generation == 1),
+                Is.True);
         }
 
         [Test]

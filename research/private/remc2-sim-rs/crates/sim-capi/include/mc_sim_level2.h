@@ -54,6 +54,7 @@ enum {
     MC_CAMPAIGN_EVENT_CASTLE = 7,
     MC_CAMPAIGN_EVENT_DYNAMIC_ARENA = 8,
     MC_CAMPAIGN_EVENT_GOAT = 9,
+    MC_CAMPAIGN_EVENT_AUTHORED_GROUP = 11,
     MC_CAMPAIGN_EVENT_ERROR = 255
 };
 
@@ -71,6 +72,25 @@ typedef struct McCampaignEventV2 {
     uint16_t reserved_0;
     uint32_t reserved[4];
 } McCampaignEventV2;
+
+/* Detailed payload for a kind-11 McCampaignEventV2 row. One sidecar row is
+ * emitted for each authored index, preserving source order without a
+ * variable-length C payload. `ordinal` joins the row to the generic event;
+ * `event_index` identifies the authored-index position within that event. */
+typedef struct McCampaignAuthoredGroupEventV2 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t generation;
+    uint32_t ordinal;
+    uint8_t pass;
+    uint8_t flags;
+    uint16_t group;
+    uint16_t source_slot;
+    uint16_t event_index;
+    uint16_t authored_index;
+    uint16_t reserved_0;
+    uint32_t reserved[4];
+} McCampaignAuthoredGroupEventV2;
 
 /* Revisioned Level 2 outer-turn snapshot. state_hash is the composite
  * Level 2 campaign fingerprint (flight plus mutable mission subsystems), and
@@ -578,6 +598,10 @@ int32_t mc_native_campaign_mana_carriers_copy(
 
 int32_t mc_native_campaign_economy_events(
     uint64_t handle, McCampaignEconomyEventV2 *events,
+    uint32_t event_capacity, uint32_t event_element_size,
+    uint32_t *out_event_count);
+int32_t mc_native_campaign_authored_group_events(
+    uint64_t handle, McCampaignAuthoredGroupEventV2 *events,
     uint32_t event_capacity, uint32_t event_element_size,
     uint32_t *out_event_count);
 int32_t mc_native_campaign_goat_events(

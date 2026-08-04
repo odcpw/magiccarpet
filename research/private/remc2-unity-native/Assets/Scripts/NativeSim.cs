@@ -70,6 +70,7 @@ namespace MagicCarpet.Native
         internal const byte CampaignEventDynamicArena = 8;
         internal const byte CampaignEventGoat = 9;
         internal const byte CampaignEventEconomy = 10;
+        internal const byte CampaignEventAuthoredGroup = 11;
         internal const byte CampaignEventError = 255;
         internal const byte AudioActionPreparedPending = 0;
         internal const byte AudioActionStart = 1;
@@ -254,6 +255,24 @@ namespace MagicCarpet.Native
             internal byte family;
             internal byte flags;
             internal ushort sourceSlot;
+            internal ushort reserved0;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+            internal uint[] reserved;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CampaignAuthoredGroupEvent
+        {
+            internal uint abiVersion;
+            internal uint structSize;
+            internal ulong generation;
+            internal uint ordinal;
+            internal byte pass;
+            internal byte flags;
+            internal ushort group;
+            internal ushort sourceSlot;
+            internal ushort eventIndex;
+            internal ushort authoredIndex;
             internal ushort reserved0;
             [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
             internal uint[] reserved;
@@ -2029,6 +2048,14 @@ namespace MagicCarpet.Native
             out uint eventCount);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int mc_native_campaign_authored_group_events(
+            ulong handle,
+            [Out] CampaignAuthoredGroupEvent[] events,
+            uint eventCapacity,
+            uint eventElementSize,
+            out uint eventCount);
+
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         internal static extern int mc_native_campaign_goat_events(
             ulong handle,
             [Out] CampaignGoatEvent[] events,
@@ -2607,6 +2634,7 @@ namespace MagicCarpet.Native
             RequireSize<CampaignSelection>(32);
             RequireSize<CampaignStepInput>(80);
             RequireSize<CampaignEvent>(48);
+            RequireSize<CampaignAuthoredGroupEvent>(48);
             RequireSize<CampaignEconomyEvent>(64);
             RequireSize<CampaignGoatEvent>(64);
             RequireSize<CampaignStepSnapshot>(112);
@@ -2669,6 +2697,7 @@ namespace MagicCarpet.Native
             RequireOffset<CampaignSelection>(nameof(CampaignSelection.reserved), 16);
             RequireOffset<CampaignStepInput>(nameof(CampaignStepInput.command), 16);
             RequireOffset<CampaignEvent>(nameof(CampaignEvent.sourceSlot), 24);
+            RequireOffset<CampaignAuthoredGroupEvent>(nameof(CampaignAuthoredGroupEvent.authoredIndex), 28);
             RequireOffset<CampaignEconomyEvent>(nameof(CampaignEconomyEvent.primaryId), 28);
             RequireOffset<CampaignEconomyEvent>(nameof(CampaignEconomyEvent.value0), 40);
             RequireOffset<CampaignGoatEvent>(nameof(CampaignGoatEvent.entity0), 28);
