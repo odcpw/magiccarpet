@@ -32612,6 +32612,113 @@ mod tests {
     }
 
     #[test]
+    fn level_two_authored_bee_actions17_to18_run_through_production_cursor() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-21 Bee session");
+        let baseline_hash = session.campaign_state_hash();
+
+        // The first ordinary turn consumes the real row-228 model-32
+        // producer and materializes row 229 through the authored activation
+        // graph. Mutating only that live typed row selects a discriminating
+        // action state; all callback execution below remains on the normal
+        // outer-turn dynamic cursor.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row229_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.authored_index == 229)
+            .map(|bee| bee.source_entity_index)
+            .expect("production group-21 row 229 Bee");
+        let local_player_slot = session.state.entity_index;
+        let initial = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("production row 229 source");
+        session.state.position = initial.position;
+        session
+            .economy_mut()
+            .set_authored_bee_target(row229_slot, Some(local_player_slot));
+        session
+            .economy_mut()
+            .authored_bees
+            .iter_mut()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .expect("production row 229 source")
+            .action = 17;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let action17 = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("action-17 Bee remains live");
+        let expected_rng_after_action17 = level2_next_rng16(initial.entity_rng);
+        assert_eq!(action17.action, 18);
+        assert_eq!(action17.entity_rng, expected_rng_after_action17);
+        assert_eq!(
+            action17.last_sound_id,
+            (expected_rng_after_action17 & 1) + 12
+        );
+        assert_eq!(action17.dword_0x10, 1);
+        assert_eq!(
+            action17.source_byte_3e,
+            initial.source_byte_3e.wrapping_add(1)
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let action18 = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("action-18 Bee remains live");
+        let expected_rng_after_contact = level2_next_rng16(expected_rng_after_action17);
+        assert_eq!(action18.action, 18);
+        assert_eq!(action18.entity_rng, expected_rng_after_contact);
+        assert_eq!(
+            action18.last_sound_id,
+            (expected_rng_after_contact & 1) + 12
+        );
+        assert_eq!(action18.actual_speed, -action18.maximum_speed);
+        assert_eq!(action18.dword_0x10, 3 * i32::from(action18.action_window));
+        assert_eq!(
+            action18.source_byte_3e,
+            action17.source_byte_3e.wrapping_add(1)
+        );
+
+        // Clearing the explicit word_0x96 mailbox exercises the source's
+        // action-18 target-loss fallback. This test proves production
+        // consumption of the mailbox, not natural AI target ownership.
+        session
+            .economy_mut()
+            .set_authored_bee_target(row229_slot, None);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let target_lost = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .copied()
+            .expect("target-lost Bee remains live");
+        assert_eq!(target_lost.action, 17);
+        assert_eq!(target_lost.actual_speed, target_lost.minimum_speed);
+
+        session.reset();
+        assert!(session.economy().authored_bees().is_empty());
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
     fn level_two_bee_activation_filters_kind_subtype_and_preserves_source_order() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
