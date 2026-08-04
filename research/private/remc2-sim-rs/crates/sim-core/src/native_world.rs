@@ -40472,6 +40472,95 @@ mod tests {
     }
 
     #[test]
+    fn level_two_goat_action9_peer_fallback_requires_proximity_countdown() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 owner package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 action-9 peer-fallback session");
+
+        let configure = |session: &mut Level2ResetSession, proximity_countdown: i8| {
+            let mut rows = session.goats().to_vec();
+            for goat in &mut rows {
+                if !matches!(goat.entity_index, 40 | 41) {
+                    goat.position = Position {
+                        x: 30_000,
+                        y: 30_000,
+                        z: 0,
+                    };
+                    goat.partner_entity_index = Some(66);
+                }
+            }
+            let primary = rows
+                .iter_mut()
+                .find(|goat| goat.entity_index == 40)
+                .expect("authored action-9 Goat slot 40");
+            primary.action = 9;
+            primary.phase = 0;
+            primary.position = Position {
+                x: 10_000,
+                y: 10_000,
+                z: 0,
+            };
+            primary.yaw = 0;
+            primary.actual_speed = 0;
+            primary.proximity_countdown = proximity_countdown;
+            primary.target_entity_index = None;
+            primary.partner_entity_index = None;
+            let peer = rows
+                .iter_mut()
+                .find(|goat| goat.entity_index == 41)
+                .expect("authored unpaired peer slot 41");
+            peer.position = Position {
+                x: 10_000,
+                y: 9_400,
+                z: 0,
+            };
+            peer.partner_entity_index = None;
+            for goat in rows {
+                assert!(session.goats.replace_goat_for_test(goat));
+            }
+            for entity in session.entities.iter_mut().filter(|entity| {
+                entity.active && entity.class == 3 && entity.model == 0 && entity.life >= 0
+            }) {
+                entity.control_flags |= 0x20;
+            }
+        };
+
+        // `begin_source_turn` consumes one countdown tick before the entity
+        // callback, so seed two to enter action-9's nonzero source branch.
+        configure(&mut session, 2);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let goat = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 40)
+            .expect("stepped action-9 Goat slot 40");
+        assert_eq!(goat.action, 11);
+        assert_eq!(goat.partner_entity_index, Some(41));
+        assert_eq!(goat.target_entity_index, None);
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::Goat {
+                source_slot: 40,
+                ..
+            }
+        )));
+
+        session.reset();
+        configure(&mut session, 0);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let gated = session
+            .goats()
+            .iter()
+            .find(|goat| goat.entity_index == 40)
+            .expect("gated action-9 Goat slot 40");
+        assert_eq!(gated.action, 9);
+        assert_eq!(gated.partner_entity_index, None);
+        assert_eq!(gated.target_entity_index, None);
+    }
+
+    #[test]
     fn level_two_goat_death_routes_mana_and_burst_through_live_arena() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");

@@ -1216,21 +1216,29 @@ impl GoatFamily {
                         i64::from(self.goats[family_index].roll) + i64::from(sign * magnitude),
                     ) & 0x07ff;
 
-                    if self.goats[family_index].proximity_countdown != 0
-                        && let Some(target_entity_index) =
+                    if self.goats[family_index].proximity_countdown != 0 {
+                        if let Some(target_entity_index) =
                             self.nearest_player_in_cone(family_index, players)
-                    {
-                        let goat = &mut self.goats[family_index];
-                        goat.target_entity_index = Some(target_entity_index);
-                        goat.action = if self.config.behavior_flags & 8 != 0 {
-                            14
-                        } else {
-                            10
-                        };
-                        events.push(GoatStepEvent::EngagementBoundaryReached {
-                            entity_index: goat.entity_index,
-                            target_entity_index,
-                        });
+                        {
+                            let goat = &mut self.goats[family_index];
+                            goat.target_entity_index = Some(target_entity_index);
+                            goat.action = if self.config.behavior_flags & 8 != 0 {
+                                14
+                            } else {
+                                10
+                            };
+                            events.push(GoatStepEvent::EngagementBoundaryReached {
+                                entity_index: goat.entity_index,
+                                target_entity_index,
+                            });
+                        } else if self.config.behavior_flags & 4 == 0
+                            && let Some(partner_entity_index) =
+                                self.nearest_unpaired_peer_in_cone(family_index)
+                        {
+                            let goat = &mut self.goats[family_index];
+                            goat.partner_entity_index = Some(partner_entity_index);
+                            goat.action = 11;
+                        }
                     }
                 }
             }
@@ -4167,6 +4175,108 @@ mod tests {
         family.step_source_slot(39, &world, &[]);
         let primary = &family.goats[primary_index];
         assert_eq!(primary.partner_entity_index, Some(41));
+    }
+
+    #[test]
+    fn action9_peer_fallback_requires_proximity_and_uses_unpaired_peer() {
+        let world = MaterialBoundaryWorld { all_water: false };
+        let mut family = level_two_family();
+        let primary_index = family
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 40)
+            .expect("primary action-9 Goat");
+        for goat in &mut family.goats {
+            if !matches!(goat.entity_index, 40 | 41 | 42) {
+                goat.position = Position {
+                    x: 30_000,
+                    y: 30_000,
+                    z: 0,
+                };
+                goat.partner_entity_index = Some(66);
+            }
+        }
+        family.goats[primary_index].action = 9;
+        family.goats[primary_index].phase = 0;
+        family.goats[primary_index].position = Position {
+            x: 10_000,
+            y: 10_000,
+            z: 0,
+        };
+        family.goats[primary_index].yaw = 0;
+        family.goats[primary_index].actual_speed = 0;
+        family.goats[primary_index].proximity_countdown = 1;
+        family.goats[primary_index].target_entity_index = None;
+        family.goats[primary_index].partner_entity_index = None;
+        family
+            .goats
+            .iter_mut()
+            .find(|goat| goat.entity_index == 41)
+            .expect("nearest unpaired peer")
+            .position = Position {
+            x: 10_000,
+            y: 9_400,
+            z: 0,
+        };
+        let paired = family
+            .goats
+            .iter_mut()
+            .find(|goat| goat.entity_index == 42)
+            .expect("paired peer");
+        paired.position = Position {
+            x: 10_000,
+            y: 9_300,
+            z: 0,
+        };
+        paired.partner_entity_index = Some(66);
+
+        family.step_source_slot(40, &world, &[]);
+        let primary = &family.goats[primary_index];
+        assert_eq!(primary.action, 11);
+        assert_eq!(primary.partner_entity_index, Some(41));
+        assert_eq!(primary.target_entity_index, None);
+
+        let mut gated = level_two_family();
+        let gated_index = gated
+            .goats
+            .iter()
+            .position(|goat| goat.entity_index == 40)
+            .expect("gated action-9 Goat");
+        for goat in &mut gated.goats {
+            if !matches!(goat.entity_index, 40 | 41) {
+                goat.position = Position {
+                    x: 30_000,
+                    y: 30_000,
+                    z: 0,
+                };
+                goat.partner_entity_index = Some(66);
+            }
+        }
+        gated.goats[gated_index].action = 9;
+        gated.goats[gated_index].phase = 0;
+        gated.goats[gated_index].position = Position {
+            x: 10_000,
+            y: 10_000,
+            z: 0,
+        };
+        gated.goats[gated_index].yaw = 0;
+        gated.goats[gated_index].actual_speed = 0;
+        gated.goats[gated_index].proximity_countdown = 0;
+        gated.goats[gated_index].partner_entity_index = None;
+        gated
+            .goats
+            .iter_mut()
+            .find(|goat| goat.entity_index == 41)
+            .expect("gated peer")
+            .position = Position {
+            x: 10_000,
+            y: 9_400,
+            z: 0,
+        };
+        gated.step_source_slot(40, &world, &[]);
+        let gated_primary = &gated.goats[gated_index];
+        assert_eq!(gated_primary.action, 9);
+        assert_eq!(gated_primary.partner_entity_index, None);
     }
 
     #[test]
