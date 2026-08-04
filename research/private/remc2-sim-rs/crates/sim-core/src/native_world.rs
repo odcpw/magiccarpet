@@ -3052,11 +3052,27 @@ impl RuntimeSnapshot {
         &self.bytes
     }
 
-    fn set_level2_objective_stage_state(&mut self, state: u8) {
+    fn set_level2_objective_stage_selector(&mut self, stage_index: usize, state: u8) {
         if let Some(objective) = self.objectives.get_mut(0) {
-            objective.stage_selectors[3] = state;
-            self.bytes[304 + 3] = state;
+            if let Some(selector) = objective.stage_selectors.get_mut(stage_index) {
+                *selector = state;
+                self.bytes[304 + stage_index + 3] = state;
+            }
         }
+    }
+
+    #[cfg(test)]
+    fn set_level2_objective_text_selector(&mut self, stage_index: usize) {
+        if let Some(objective) = self.objectives.get_mut(0) {
+            if let Ok(selector) = u8::try_from(stage_index) {
+                objective.text_selector = selector;
+                self.bytes[305] = selector;
+            }
+        }
+    }
+
+    fn set_level2_objective_stage_state(&mut self, state: u8) {
+        self.set_level2_objective_stage_selector(LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX, state);
     }
 
     /// Bind an authored event into the stage table as remc2 `sub_58DA0` does
@@ -3414,6 +3430,8 @@ const LEVEL2_NYPHUR_POSSESSION_HOLDER_INDEX: u16 = 114;
 /// stage byte after the objective evaluator writes the source completion
 /// sentinel.
 const LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX: usize = 3;
+const LEVEL2_BEE_OBJECTIVE_STAGE_INDEX: usize = 2;
+const LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX: u16 = 229;
 const LEVEL2_OBJECTIVE_POINT_RADIUS: i32 = 768;
 const LEVEL2_NYPHUR_ENTITY_SHA256: &str =
     "a240c8711868a249b2e3ebb43c59613dc88d979a07de279ece869f14ffcf888e";
@@ -16650,6 +16668,41 @@ impl Level2ResetSession {
         }
     }
 
+    /// Evaluate the rooted type-7 objective for authored Bee row 229. The
+    /// pinned `sub_58F00_game_objectives` predicate checks the source-owned
+    /// killed-row bytearray after the complete entity pass; the typed Level 2
+    /// projection expresses that same terminal state as an activated row 229
+    /// with no live source row remaining. Other Bee rows are deliberately not
+    /// interchangeable objective targets.
+    fn advance_level2_authored_bee_objective(&mut self) {
+        let Some(objective) = self.runtime.objectives.first() else {
+            return;
+        };
+        if objective.text_selector as usize != LEVEL2_BEE_OBJECTIVE_STAGE_INDEX
+            || objective.stage_selectors[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX] != 1
+        {
+            return;
+        }
+        let Some(stage) = self.runtime.stages.get(LEVEL2_BEE_OBJECTIVE_STAGE_INDEX) else {
+            return;
+        };
+        if stage.kind != 7
+            || stage.relation != RuntimeRelation::Scalar(2)
+            || !self
+                .level2_bees_activated
+                .contains(&LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+        {
+            return;
+        }
+        let target_is_live = self.economy.authored_bees().iter().any(|source| {
+            source.active && source.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX
+        });
+        if !target_is_live {
+            self.runtime
+                .set_level2_objective_stage_selector(LEVEL2_BEE_OBJECTIVE_STAGE_INDEX, 2);
+        }
+    }
+
     #[must_use]
     pub const fn level2_selected_objective_stage_state(&self) -> u8 {
         self.level2_selected_objective_stage_state
@@ -20028,6 +20081,7 @@ impl Level2ResetSession {
         // ordering so model-32 sees the newly completed stage only on the
         // following turn, exactly as the source does.
         self.advance_level2_selected_point_objective();
+        self.advance_level2_authored_bee_objective();
         evidence
     }
 
@@ -32944,6 +32998,118 @@ mod tests {
                 ..
             } if *source_entity_index == row229_slot
         )));
+    }
+
+    #[test]
+    fn level_two_bee_row229_death_advances_type7_objective_on_production_path() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 group-21 Bee objective session");
+        let baseline_hash = session.campaign_state_hash();
+        assert_eq!(
+            session.runtime().stages[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX].kind,
+            7
+        );
+        assert_eq!(
+            session.runtime().stages[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX].relation,
+            RuntimeRelation::Scalar(2)
+        );
+        assert_eq!(
+            session.runtime().objectives[0].stage_selectors[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX],
+            1
+        );
+        assert_eq!(session.runtime().objectives[0].text_selector, 0);
+
+        // Use the real reset producer route and select only the terminal
+        // action on the resulting live authored row. The source objective
+        // predicate is gated by the currently selected objective stage, so
+        // select stage 2 explicitly without pre-marking its completion bit.
+        session
+            .runtime
+            .set_level2_objective_text_selector(LEVEL2_BEE_OBJECTIVE_STAGE_INDEX);
+        assert_eq!(session.runtime().objectives[0].text_selector, 2);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row229_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+            .map(|bee| bee.source_entity_index)
+            .expect("production group-21 row 229 Bee");
+        session
+            .economy_mut()
+            .authored_bees
+            .iter_mut()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .expect("production row 229 source")
+            .action = 20;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|bee| bee.source_entity_index == row229_slot)
+                .expect("action-21 row remains before kill callback")
+                .action,
+            21
+        );
+        assert_eq!(
+            session.runtime().objectives[0].stage_selectors[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX],
+            1
+        );
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            session
+                .economy()
+                .authored_bees()
+                .iter()
+                .all(|bee| bee.authored_index != LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+        );
+        assert_eq!(
+            session.runtime().objectives[0].stage_selectors[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX],
+            2
+        );
+        assert_eq!(
+            session.runtime().bytes()[304 + LEVEL2_BEE_OBJECTIVE_STAGE_INDEX + 3],
+            2
+        );
+
+        // Reset restores the selector and the production activation ledger.
+        // Killing the exact authored target while another objective stage is
+        // selected must not advance the type-7 slot.
+        session.reset();
+        assert_eq!(session.runtime().objectives[0].text_selector, 0);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let row229_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.authored_index == LEVEL2_BEE_OBJECTIVE_AUTHORED_INDEX)
+            .map(|bee| bee.source_entity_index)
+            .expect("production group-21 row 229 Bee for selector-negative path");
+        session
+            .economy_mut()
+            .authored_bees
+            .iter_mut()
+            .find(|bee| bee.source_entity_index == row229_slot)
+            .expect("production row 229 source for selector-negative path")
+            .action = 20;
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(
+            session.runtime().objectives[0].stage_selectors[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX],
+            1
+        );
+        session.reset();
+        assert_eq!(
+            session.runtime().objectives[0].stage_selectors[LEVEL2_BEE_OBJECTIVE_STAGE_INDEX],
+            1
+        );
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
     #[test]
