@@ -642,9 +642,20 @@ namespace MagicCarpet.PresentationLab
             }
         }
 
+        private void OnEnable()
+        {
+            if (canvasRoot != null)
+            {
+                canvasRoot.SetActive(true);
+            }
+        }
+
         private void OnDisable()
         {
-            ReleaseDisplayObjects();
+            if (canvasRoot != null)
+            {
+                canvasRoot.SetActive(false);
+            }
         }
 
         private void OnDestroy()
@@ -679,7 +690,14 @@ namespace MagicCarpet.PresentationLab
             canvasRoot = null;
             if (root != null)
             {
-                DestroyImmediate(root);
+                if (Application.isPlaying)
+                {
+                    Destroy(root);
+                }
+                else
+                {
+                    DestroyImmediate(root);
+                }
             }
 
             canvas = null;

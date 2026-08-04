@@ -188,10 +188,25 @@ namespace MagicCarpet.PresentationLab.Tests
             Assert.IsNull(canvasObject.transform.parent);
             Assert.IsNull(gameObject.transform.Find("Classic HD Display Canvas"));
 
+            MethodInfo onDisable = typeof(ClassicHdPresentation).GetMethod(
+                "OnDisable",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            MethodInfo onEnable = typeof(ClassicHdPresentation).GetMethod(
+                "OnEnable",
+                BindingFlags.Instance | BindingFlags.NonPublic);
             MethodInfo releaseDisplayObjects = typeof(ClassicHdPresentation).GetMethod(
                 "ReleaseDisplayObjects",
                 BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(onDisable);
+            Assert.IsNotNull(onEnable);
             Assert.IsNotNull(releaseDisplayObjects);
+
+            Assert.IsTrue(canvasObject.activeSelf);
+            onDisable.Invoke(presentation, null);
+            Assert.IsFalse(canvasObject.activeSelf);
+            onEnable.Invoke(presentation, null);
+            Assert.IsTrue(canvasObject.activeSelf);
+
             releaseDisplayObjects.Invoke(presentation, null);
             Object.DestroyImmediate(presentation);
             Assert.IsTrue(canvasObject == null);
