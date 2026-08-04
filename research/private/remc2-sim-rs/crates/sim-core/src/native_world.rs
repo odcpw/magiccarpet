@@ -34405,8 +34405,53 @@ mod tests {
         assert_eq!(row41.cooldown, 10);
         assert!(row41.drawing_enabled);
 
+        // Row 16 is the same source group but a class-10/model-54 field.
+        // The source `sub_4A1E0` scan reaches it through the live row-11
+        // producer after the group-1 switch callback; it is therefore a
+        // separate activation event, not part of the model-0/1 constructor
+        // batch above.  Keep this assertion on the real outer-turn route so
+        // the row cannot be proven only by direct constructor allocation.
+        let row16 = session
+            .economy()
+            .mana_attraction_fields()
+            .iter()
+            .find(|field| field.authored_index == 16)
+            .copied()
+            .expect("group 1 must reach authored row 16 model-54 field");
+        assert_eq!(row16.action, MANA_ATTRACTION_ACTION);
+        assert_eq!(row16.radius_squared, (33_u32 * 256).pow(2));
+        assert_eq!(row16.max_life, 280);
+        let authored_row16 = feature(16);
+        assert_eq!(
+            (row16.position.x, row16.position.y, row16.position.z),
+            (
+                authored_row16.world_position(0).x,
+                authored_row16.world_position(0).y,
+                session
+                    .terrain
+                    .ground_height(authored_row16.world_position(0))
+            )
+        );
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::AuthoredGroupActivated {
+                group: 1,
+                authored_indices,
+                ..
+            } if authored_indices.as_ref() == [16]
+        )));
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                source_slot,
+                kind: Level2DynamicArenaKind::ManaAttraction,
+                ..
+            } if *source_slot == row16.source_entity_index
+        )));
+
         session.reset();
         assert!(session.economy().authored_switch_producers().is_empty());
+        assert!(session.economy().mana_attraction_fields().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
     }
 
