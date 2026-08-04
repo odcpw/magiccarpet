@@ -745,6 +745,21 @@ impl EntitySnapshot {
         self.record[102..104].copy_from_slice(&parent_entity_id.to_le_bytes());
     }
 
+    /// Apply the `sub_10C80(a2 = 0)` class-3/model-2 branch used by the
+    /// Fire-Spheres callback. Unlike the wind pulse branch above, this source
+    /// path only replaces an empty owner mailbox and adds to an already-owned
+    /// payload; it does not write the wind cooldown/parent relation fields.
+    fn apply_model76_model2_mailbox(&mut self, owner_entity_id: u16, payload: u16) {
+        let next_payload = if self.source_wind_spell_owner() != 0 {
+            self.source_wind_spell_payload()
+                .wrapping_add(i32::from(payload))
+        } else {
+            i32::from(payload)
+        };
+        self.record[98..102].copy_from_slice(&next_payload.to_le_bytes());
+        self.record[102..104].copy_from_slice(&owner_entity_id.to_le_bytes());
+    }
+
     /// Raw source `word_0x4A_74`, the return-side hand override consumed by
     /// `sub_68FF0` before it installs a holder.
     #[must_use]
@@ -4412,6 +4427,14 @@ pub struct Level2Model76Child {
     pub pitch: i16,
     pub roll: i16,
     pub fov: i16,
+    /// `array_0x52_82` copied by `SetEntityIndexAndRot_49CD0` from particle
+    /// row 340. These are kept separate from the orbit words above: the
+    /// callback mutates yaw/pitch/roll/fov while the collision owner consumes
+    /// the copied selector axes.
+    pub collision_yaw: i16,
+    pub collision_pitch: i16,
+    pub collision_roll: i16,
+    pub collision_fov: i16,
     pub shift_rot_x: i16,
     pub shift_rot_y: i16,
     pub position: Position,
@@ -5156,6 +5179,32 @@ impl Level2EconomyState {
     #[must_use]
     pub fn model76_children(&self) -> &[Level2Model76Child] {
         &self.model76_children
+    }
+
+    /// Bind the exact `array_0x52_82` collision selectors copied by the
+    /// source `SetEntityIndexAndRot_49CD0` constructor. The orbit words are
+    /// intentionally not overwritten: they are a separate callback state.
+    pub fn bind_model76_collision_axes(
+        &mut self,
+        parent_entity_index: u16,
+        collision_yaw: i16,
+        collision_pitch: i16,
+        collision_roll: i16,
+        collision_fov: i16,
+    ) -> bool {
+        let mut bound = false;
+        for child in self
+            .model76_children
+            .iter_mut()
+            .filter(|child| child.parent_entity_index == parent_entity_index)
+        {
+            child.collision_yaw = collision_yaw;
+            child.collision_pitch = collision_pitch;
+            child.collision_roll = collision_roll;
+            child.collision_fov = collision_fov;
+            bound = true;
+        }
+        bound
     }
 
     #[must_use]
@@ -7436,6 +7485,10 @@ impl Level2EconomyState {
                 pitch,
                 roll,
                 fov,
+                collision_yaw: 0,
+                collision_pitch: 0,
+                collision_roll: 0,
+                collision_fov: 0,
                 shift_rot_x: root.shift_rot_x,
                 shift_rot_y: root.shift_rot_y,
                 position: child_position,
@@ -12182,6 +12235,10 @@ impl Level2EconomyState {
             hasher.update(child.pitch.to_le_bytes());
             hasher.update(child.roll.to_le_bytes());
             hasher.update(child.fov.to_le_bytes());
+            hasher.update(child.collision_yaw.to_le_bytes());
+            hasher.update(child.collision_pitch.to_le_bytes());
+            hasher.update(child.collision_roll.to_le_bytes());
+            hasher.update(child.collision_fov.to_le_bytes());
             hasher.update(child.shift_rot_x.to_le_bytes());
             hasher.update(child.shift_rot_y.to_le_bytes());
             hasher.update(child.position.x.to_le_bytes());
@@ -15770,6 +15827,50 @@ fn level2_compare_axis_with_shift(
         && i32::from(dy) < i32::from(event_half_y) + i32::from(target_half_y)
 }
 
+/// Exact signed-axis predicate used by remc2 `sub_10630`/`sub_106C0`.
+/// X/Y narrow the subtraction to signed 16 bits before `abs`; Z keeps the
+/// promoted sum of the four signed 16-bit operands.
+fn level2_model76_sub106c0_matches(
+    source_position: Position,
+    source_yaw: i16,
+    source_pitch: i16,
+    source_roll: i16,
+    source_fov: i16,
+    target_position: Position,
+    target_yaw: i16,
+    target_pitch: i16,
+    target_roll: i16,
+    target_fov: i16,
+) -> bool {
+    let dx = i16::from_ne_bytes(
+        source_position
+            .x
+            .wrapping_sub(target_position.x)
+            .to_ne_bytes(),
+    )
+    .unsigned_abs();
+    let dy = i16::from_ne_bytes(
+        source_position
+            .y
+            .wrapping_sub(target_position.y)
+            .to_ne_bytes(),
+    )
+    .unsigned_abs();
+    let dz = (i32::from(source_position.z) + i32::from(source_yaw)
+        - i32::from(target_position.z)
+        - i32::from(target_yaw))
+    .abs();
+    let pitch_limit = i32::from(source_pitch) + i32::from(target_pitch);
+    let roll_limit = i32::from(source_roll) + i32::from(target_roll);
+    let fov_limit = i32::from(source_fov) + i32::from(target_fov);
+    pitch_limit > 0
+        && roll_limit > 0
+        && fov_limit > 0
+        && i32::from(dx) < pitch_limit
+        && i32::from(dy) < roll_limit
+        && dz < fov_limit
+}
+
 /// Exact source target filter for remc2 `sub_33810(a1x, a2x)`.
 ///
 /// The caller supplies the wind parent's source `id_0x1A_26`; the source
@@ -16471,8 +16572,29 @@ impl Level2ResetSession {
             })?;
         let position =
             feature.world_position(self.terrain.ground_height(feature.world_position(0)));
-        self.economy
-            .allocate_authored_model76(authored_index, position)
+        let source = self
+            .economy
+            .allocate_authored_model76(authored_index, position)?;
+        // `AddFireSpheres_4F2A0` calls `SetEntityIndexAndRot_49CD0` with
+        // particle 340 for every linked child. The presentation table is the
+        // authoritative owner of that selector row, so bind its four axes
+        // once after the atomic economy allocation.
+        if let Some(particle) = self.presentation.particles.get(340) {
+            let collision_yaw =
+                i16::try_from(particle.rotation_speed / 2).expect("model-76 particle yaw fits i16");
+            let collision_pitch =
+                i16::try_from(particle.speed / 2).expect("model-76 particle pitch fits i16");
+            let collision_roll = collision_pitch;
+            let collision_fov = collision_yaw;
+            debug_assert!(self.economy.bind_model76_collision_axes(
+                source.source_entity_index,
+                collision_yaw,
+                collision_pitch,
+                collision_roll,
+                collision_fov,
+            ));
+        }
+        Some(source)
     }
 
     /// Materialize one authored class-10/model-13 row through the pinned
@@ -18657,6 +18779,76 @@ impl Level2ResetSession {
         }
     }
 
+    /// Bounded `sub_33C00`/`sub_10C80(a2 = 0)` owner path for authored
+    /// Fire-Spheres. The source's first target scan is the live class-3/model-2
+    /// list; retain that exact branch here and leave the broader map/filter
+    /// scans for a separate collision-owner slice.
+    fn step_level2_authored_model76_collision_effect(&mut self, source_slot: u16) {
+        let Some(parent) = self
+            .economy
+            .authored_model76()
+            .iter()
+            .find(|source| source.active && source.source_entity_index == source_slot)
+            .copied()
+        else {
+            return;
+        };
+        let source_children = self
+            .economy
+            .model76_children()
+            .iter()
+            .filter(|child| {
+                child.active && child.parent_entity_index == source_slot && child.column_index == 0
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        if source_children.is_empty() {
+            return;
+        }
+        let local_player_index = self.state.entity_index;
+        let local_player_position = self.state.position;
+        let target_slots = self
+            .entities
+            .iter()
+            .filter(|entity| {
+                entity.active
+                    && entity.life >= 0
+                    && entity.class == 3
+                    && entity.model == 2
+                    && entity.index != parent.entity_id
+            })
+            .map(|entity| entity.index)
+            .collect::<Vec<_>>();
+        for child in source_children {
+            for target_index in &target_slots {
+                let Some(target) = self.entities.get(usize::from(*target_index)) else {
+                    continue;
+                };
+                let target_position = if target.index == local_player_index {
+                    local_player_position
+                } else {
+                    target.position
+                };
+                if level2_model76_sub106c0_matches(
+                    child.position,
+                    child.collision_yaw,
+                    child.collision_pitch,
+                    child.collision_roll,
+                    child.collision_fov,
+                    target_position,
+                    target.array_yaw(),
+                    target.array_pitch(),
+                    target.array_roll(),
+                    target.array_fov(),
+                ) {
+                    if let Some(target) = self.entities.get_mut(usize::from(*target_index)) {
+                        target.apply_model76_model2_mailbox(child.entity_id, parent.subspell_index);
+                    }
+                }
+            }
+        }
+    }
+
     /// Bounded eligible-target branch of remc2 `sub_33340`.
     ///
     /// The source scans map-cell candidates, applies `sub_33810`, then runs a
@@ -18971,7 +19163,21 @@ impl Level2ResetSession {
                 self.economy.step_model22_spawned_child_slot(source_slot)
             }
             Level2DynamicArenaKind::AuthoredModel76 => {
-                self.economy.step_authored_model76_slot(source_slot)
+                // `sub_339B0` calls `sub_33C00` only on its state 0/1 route;
+                // state 2 runs the terminal countdown and returns before the
+                // collision/effect callback. Capture the pre-callback state
+                // because a state-1 row may become state 2 after life--.
+                let probe_collision = self
+                    .economy
+                    .authored_model76()
+                    .iter()
+                    .find(|source| source.active && source.source_entity_index == source_slot)
+                    .is_some_and(|source| source.state != 2);
+                let live = self.economy.step_authored_model76_slot(source_slot);
+                if live && probe_collision {
+                    self.step_level2_authored_model76_collision_effect(source_slot);
+                }
+                live
             }
             Level2DynamicArenaKind::Model76Child => {
                 self.economy.step_model76_child_slot(source_slot)
@@ -35340,6 +35546,107 @@ mod tests {
             .map(|child| child.position)
             .expect("model-76 child after terminal state");
         assert_eq!(child_after, child_before);
+    }
+
+    #[test]
+    fn level_two_model76_column_zero_owner_reaches_model2_mailbox_on_production_turn() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-76 collision session");
+        let baseline_hash = session.campaign_state_hash();
+        let source = session
+            .allocate_level2_authored_model76(112)
+            .expect("authored model-76 row 112");
+        // The qualified reset does not carry a live model-2 target. Reuse the
+        // local class-3 player row as an explicit diagnostic fixture for the
+        // source's model-2 mailbox branch; the cursor and owner code remain
+        // the production path, while reset reachability stays a residual.
+        let target_slot = session.state.entity_index;
+        let target_index = usize::from(target_slot);
+        session.entities[target_index].model = 2;
+        session.entities[target_index].active = true;
+        session.entities[target_index].life = 500;
+        let target = session
+            .entities()
+            .iter()
+            .find(|entity| entity.index == target_slot)
+            .expect("model-2 target");
+        assert_eq!((target.class, target.model), (3, 2));
+        let first_column_zero = session
+            .economy()
+            .model76_children()
+            .iter()
+            .find(|child| child.parent_entity_index == source.source_entity_index)
+            .copied()
+            .expect("model-76 column-zero child");
+        assert!(first_column_zero.column_index == 0);
+        assert!(first_column_zero.collision_pitch > 0);
+        assert!(first_column_zero.collision_fov > 0);
+        // Keep the production turn focused on the explicitly allocated root;
+        // the reset's independent class-11 producer rows would otherwise
+        // activate their own model-76 families on this same pass.
+        session
+            .level2_model76_activated
+            .extend([116_u16, 120_u16, 124_u16]);
+        let expected_hits = session
+            .economy()
+            .model76_children()
+            .iter()
+            .filter(|child| child.column_index == 0)
+            .count();
+
+        // Use a state-1 row with a one-tick life so the production callback
+        // moves the child, probes collision, then transitions the root to
+        // state 2. Widen only this diagnostic target's axes so the test does
+        // not depend on an unqualified reset target's orbit position.
+        session.state.position = first_column_zero.position;
+        session
+            .set_level2_entity_position(target_slot, first_column_zero.position)
+            .expect("model-2 target position");
+        session.entities[target_index].record[86..88].copy_from_slice(&0_i16.to_le_bytes());
+        session.entities[target_index].record[88..90].copy_from_slice(&i16::MAX.to_le_bytes());
+        session.entities[target_index].record[90..92].copy_from_slice(&i16::MAX.to_le_bytes());
+        session.entities[target_index].record[92..94].copy_from_slice(&i16::MAX.to_le_bytes());
+        session.entities[target_index].record[98..102].copy_from_slice(&9_i32.to_le_bytes());
+        session.entities[target_index].record[102..104].copy_from_slice(&7_u16.to_le_bytes());
+        session
+            .economy_mut()
+            .authored_model76
+            .iter_mut()
+            .find(|candidate| candidate.source_entity_index == source.source_entity_index)
+            .expect("model-76 root")
+            .life = 1;
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+
+        let target = session
+            .entities()
+            .iter()
+            .find(|entity| entity.index == target_slot)
+            .expect("model-2 target after owner callback");
+        assert_eq!(
+            target.source_wind_spell_payload(),
+            9 + 70 * expected_hits as i32
+        );
+        assert_eq!(
+            target.source_wind_spell_owner(),
+            first_column_zero.entity_id
+        );
+        assert!(session.dispatch_events().iter().any(|event| matches!(
+            event,
+            Level2DispatchEvent::DynamicArena {
+                kind: Level2DynamicArenaKind::AuthoredModel76,
+                source_slot,
+                ..
+            } if *source_slot == source.source_entity_index
+        )));
+
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        assert!(session.economy().authored_model76().is_empty());
+        assert!(session.economy().model76_children().is_empty());
     }
 
     #[test]
