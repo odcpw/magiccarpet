@@ -518,11 +518,11 @@ namespace MagicCarpet.Native
         internal const string ExpectedNativePluginHash =
             "b315562e2b91d4bdef2067a2c26d13ffe82d7f7e7975707f043724984c1f80fa";
         internal const ulong ExpectedLevel2ResetStateHash =
-            // GOLDEN-CHANGE: 8d3de2d binds the qualified frame-zero
-            // objective selector to source state 1. Authored group-8/22/27
-            // rows remain latent until objective completion, so the reset
-            // projection is no longer the pre-8d3de2d activated hash.
-            0x7100_56d1_c447_5ea5UL;
+            // GOLDEN-CHANGE: the Level 2 campaign hash now binds the
+            // authored activation/runtime state added after the original
+            // 8d3de2d golden. This matches the freshly built sim-capi reset
+            // projection and the C-ABI contract test.
+            0xd370_611d_4e19_0c50UL;
 
         private NativeSession session;
         private NativeCampaignSession campaignSession;
@@ -530,6 +530,8 @@ namespace MagicCarpet.Native
         private NativeSim.CampaignStepSnapshot level2StepSnapshot;
         private NativeSim.CampaignTerrainState level2TerrainState;
         private NativeSim.CampaignEvent[] level2StepEvents = Array.Empty<NativeSim.CampaignEvent>();
+        private NativeSim.CampaignAuthoredGroupEvent[] level2AuthoredGroupEvents =
+            Array.Empty<NativeSim.CampaignAuthoredGroupEvent>();
         private ushort level2StepInputX;
         private ushort level2StepInputY;
         private short level2StepInputZ;
@@ -917,6 +919,9 @@ namespace MagicCarpet.Native
 
         internal NativeSim.CampaignEvent[] Level2ProductionStepEvents =>
             level2StepEvents;
+
+        internal NativeSim.CampaignAuthoredGroupEvent[] Level2ProductionAuthoredGroupEvents =>
+            level2AuthoredGroupEvents;
 
         internal (ushort x, ushort y, short z) Level2ProductionLastStepInput =>
             (level2LastStepInputX, level2LastStepInputY, level2LastStepInputZ);
@@ -2079,6 +2084,7 @@ namespace MagicCarpet.Native
                 flags: 1);
             level2StepSnapshot = result.snapshot;
             level2StepEvents = result.events;
+            level2AuthoredGroupEvents = campaignSession.AuthoredGroupEvents();
             level2TerrainState = campaignSession.TerrainState();
             level2StepInputX = result.snapshot.x;
             level2StepInputY = result.snapshot.y;
@@ -11208,6 +11214,7 @@ namespace MagicCarpet.Native
             level2StepSnapshot = default;
             level2TerrainState = default;
             level2StepEvents = Array.Empty<NativeSim.CampaignEvent>();
+            level2AuthoredGroupEvents = Array.Empty<NativeSim.CampaignAuthoredGroupEvent>();
             level2StepInputX = 0;
             level2StepInputY = 0;
             level2StepInputZ = 0;

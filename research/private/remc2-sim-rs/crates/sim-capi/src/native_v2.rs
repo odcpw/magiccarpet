@@ -17811,12 +17811,12 @@ mod tests {
         );
         assert_eq!(level2_info.active_entity_count, 114);
         assert_eq!(level2_info.player_count, 8);
-        // GOLDEN-CHANGE: 8d3de2d corrected qualified frame-zero objective
-        // selector index 3 to source state 1. Group-8/22/27 rows are latent
-        // until objective completion, so reset no longer hashes them as live.
-        // The generic imported class-11 root callback state is now also
-        // reset/hash-bound, preserving source phase/cooldown replay identity.
-        assert_eq!(level2_info.reset_state_hash, 0x02f0_b6ef_6aca_aab0);
+        // GOLDEN-CHANGE: the Level 2 campaign hash binds the authored
+        // activation/runtime state added after the original 8d3de2d golden
+        // (including later rooted creature, switch, objective, and model-3
+        // callback state). The current source-backed reset projection is
+        // d370611d4e190c50; the test binds the exact freshly built ABI value.
+        assert_eq!(level2_info.reset_state_hash, 0xd370_611d_4e19_0c50);
         let mut level2_players = [McCampaignPlayerSnapshotV2::default(); 8];
         assert_eq!(
             mc_native_campaign_players_copy(

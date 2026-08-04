@@ -98,6 +98,7 @@ namespace MagicCarpet.Native.Tests
                 runtime.QualificationDriveLevel2Frames(1);
                 var first = runtime.Level2ProductionStepSnapshot;
                 var firstInput = runtime.Level2ProductionLastStepInput;
+                var firstAuthoredGroupEvents = runtime.Level2ProductionAuthoredGroupEvents;
                 Assert.That(first.abiVersion, Is.EqualTo(NativeSim.AbiVersion));
                 Assert.That(first.structSize, Is.EqualTo(112));
                 Assert.That(first.generation, Is.Zero);
@@ -106,6 +107,15 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(
                     runtime.Level2ProductionStepEvents,
                     Has.Length.EqualTo((int)first.eventCount));
+                Assert.That(runtime.Level2ProductionAuthoredGroupEvents, Is.Not.Empty);
+                Assert.That(
+                    runtime.Level2ProductionAuthoredGroupEvents.All(eventRow =>
+                        eventRow.abiVersion == NativeSim.AbiVersion &&
+                        eventRow.generation == first.generation &&
+                        eventRow.ordinal < (uint)runtime.Level2ProductionStepEvents.Length &&
+                        runtime.Level2ProductionStepEvents[(int)eventRow.ordinal].kind ==
+                            NativeSim.CampaignEventAuthoredGroup),
+                    Is.True);
                 Assert.That(
                     runtime.Level2ProductionTerrainState.tick,
                     Is.EqualTo(first.revision));
@@ -124,10 +134,24 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(
                     runtime.Level2ProductionTerrainState.generation,
                     Is.Zero);
+                var secondAuthoredGroupEvents = runtime.Level2ProductionAuthoredGroupEvents;
+                Assert.That(secondAuthoredGroupEvents, Is.Not.SameAs(firstAuthoredGroupEvents));
+                Assert.That(
+                    secondAuthoredGroupEvents,
+                    Is.Empty,
+                    "the runtime cache reflects the second turn rather than retaining first-turn sidecars");
+                Assert.That(
+                    runtime.Level2ProductionStepEvents.Any(eventRow =>
+                        eventRow.kind == NativeSim.CampaignEventAuthoredGroup),
+                    Is.False);
             }
             finally
             {
-                runtime?.QualificationDisposeNativeOwners();
+                if (runtime != null)
+                {
+                    runtime.QualificationDisposeNativeOwners();
+                    Assert.That(runtime.Level2ProductionAuthoredGroupEvents, Is.Empty);
+                }
                 UnityEngine.Object.DestroyImmediate(root);
             }
 
