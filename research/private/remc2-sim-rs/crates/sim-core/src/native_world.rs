@@ -30156,6 +30156,21 @@ mod tests {
         assert_eq!(source.max_mana, source_state.max_mana);
         assert_eq!(source.mana, source_state.mana);
 
+        // `sub_68FF0` updates only the chosen hand's spell/subspell pair and
+        // leaves the player's current menu selection untouched. Seed a
+        // non-default selection so a pickup cannot pass by retaining the
+        // frame-zero zeros accidentally.
+        session.shared_spells_mut().players[0].selected_spell_ui_index = 24;
+        session.shared_spells_mut().players[0].selected_subspell_index = 2;
+        session.shared_spells_mut().players[0].record[561] = 24;
+        session.shared_spells_mut().players[0].record[562] = 2;
+        let selected_menu_before = (
+            session.shared_spells().players[0].selected_spell_ui_index,
+            session.shared_spells().players[0].selected_subspell_index,
+            session.shared_spells().players[0].record_bytes()[561],
+            session.shared_spells().players[0].record_bytes()[562],
+        );
+
         // Change the owner's selected tier after reset. SetSpell reads the
         // current array_0x437 value and must derive the holder payload from
         // the pinned family-12 tier-1 row, not copy the tier-0 pickup bytes.
@@ -30211,6 +30226,15 @@ mod tests {
         assert_eq!(state.mana_regen, 10_000);
         assert_eq!(state.max_mana, 2_400);
         assert_eq!(state.mana, 9);
+        assert_eq!(
+            (
+                session.shared_spells().players[0].selected_spell_ui_index,
+                session.shared_spells().players[0].selected_subspell_index,
+                session.shared_spells().players[0].record_bytes()[561],
+                session.shared_spells().players[0].record_bytes()[562],
+            ),
+            selected_menu_before
+        );
         assert!(!pickup.drawing_disabled());
         assert_eq!(pickup.record_bytes()[17] & 4, 0);
         assert_eq!(pickup.control_flags & ENTITY_DRAW_DISABLED_BIT, 0);
