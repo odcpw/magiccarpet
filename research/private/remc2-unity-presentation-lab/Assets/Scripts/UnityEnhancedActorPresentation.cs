@@ -1165,6 +1165,7 @@ namespace MagicCarpet.PresentationLab
             bool fireFamily = familyId == UnityEnhancedPresentationFamily.Fire;
             bool fireflyFamily = familyId == UnityEnhancedPresentationFamily.Firefly;
             bool possessionFamily = familyId == UnityEnhancedPresentationFamily.Possession;
+            bool projectileFamily = familyId == UnityEnhancedPresentationFamily.Projectile;
             bool impactPresentation = familyId == UnityEnhancedPresentationFamily.Impact ||
                                       (fireFamily && !fireballProjectile);
             Shader shader = fireballProjectile
@@ -1172,7 +1173,7 @@ namespace MagicCarpet.PresentationLab
                               Shader.Find("MagicCarpet/Enhanced/Vfx")
                             : (impactPresentation
                                 ? Shader.Find("MagicCarpet/Enhanced/Impact")
-                                : (fireFamily || fireflyFamily || possessionFamily
+                                : (fireFamily || fireflyFamily || possessionFamily || projectileFamily
                                     ? Shader.Find("MagicCarpet/Enhanced/Vfx")
                                     : null)) ??
                             Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
@@ -1243,6 +1244,14 @@ namespace MagicCarpet.PresentationLab
                     material.SetFloat("_GlowIntensity", 1.6f);
                     material.SetFloat("_Opacity", 0.82f);
                     material.SetFloat("_PulseSpeed", 2.4f);
+                    material.SetFloat("_RadialMask", 1f);
+                }
+                else if (projectileFamily && shader.name == "MagicCarpet/Enhanced/Vfx")
+                {
+                    material.SetColor("_GlowColor", FamilyColor(familyId));
+                    material.SetFloat("_GlowIntensity", 1.35f);
+                    material.SetFloat("_Opacity", 0.76f);
+                    material.SetFloat("_PulseSpeed", 2.6f);
                     material.SetFloat("_RadialMask", 1f);
                 }
                 else
