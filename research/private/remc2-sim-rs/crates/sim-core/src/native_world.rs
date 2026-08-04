@@ -34160,7 +34160,6 @@ mod tests {
             group26_activated,
             "row 356 must activate group 26 through production turns"
         );
-
         let expected_positions = expected_group26_indices
             .iter()
             .map(|index| {
@@ -34195,6 +34194,69 @@ mod tests {
         let owner_mana_global_after =
             group26_owner_mana_global_after.expect("group 26 owner-mana projection captured");
         assert!(owner_mana_global_after >= owner_mana_global_before + 4 * 512);
+
+        // The generic class-11 producer bridge runs at the next source-pass
+        // boundary after row 356's switch callback. Keep this follow-up
+        // turn outside the model-39 sphere assertions above so those checks
+        // remain about the direct group-26 allocation turn.
+        let model13_indices = BTreeSet::from([365_u16, 366, 367, 368]);
+        let mut model13_activated = BTreeSet::new();
+        for _ in 0..4 {
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            for event in session.dispatch_events() {
+                if let Level2DispatchEvent::AuthoredGroupActivated {
+                    group: 26,
+                    authored_indices,
+                    ..
+                } = event
+                {
+                    if let [authored_index] = authored_indices.as_ref() {
+                        if model13_indices.contains(authored_index) {
+                            model13_activated.insert(*authored_index);
+                        }
+                    }
+                }
+            }
+            if model13_activated == model13_indices {
+                break;
+            }
+        }
+        assert_eq!(model13_activated, model13_indices);
+        for index in model13_indices {
+            let source = session
+                .economy()
+                .authored_model13()
+                .iter()
+                .find(|source| source.authored_index == index)
+                .copied()
+                .expect("group 26 must materialize model-13 rows");
+            assert_eq!(
+                (
+                    source.source_class,
+                    source.model,
+                    source.action,
+                    source.subspell_index,
+                    source.max_life,
+                    source.dword_0x10,
+                    source.particle_index,
+                    source.control_flags,
+                    source.shift_rot_x,
+                    source.shift_rot_y,
+                ),
+                (10, 19, 19, 200, 240, 0, 228, 0x0002_0001, 512, 512)
+            );
+            assert!((0..=source.max_life).contains(&source.life));
+            let position = feature_position(index);
+            assert_eq!(
+                (source.position.x, source.position.y, source.position.z),
+                (
+                    position.x,
+                    position.y,
+                    session.terrain.ground_height(position)
+                )
+            );
+            assert!(source.active && source.drawing_enabled);
+        }
 
         session.reset();
         assert_eq!(session.economy().spheres().len(), baseline_sphere_count);
