@@ -50,6 +50,7 @@ namespace MagicCarpet.PresentationLab
         public GameObject VolumeObject;
         public MeshFilter VolumeFilter;
         public MeshRenderer VolumeRenderer;
+        public Light FireballLight;
         public bool FireballTrailVisible;
         public bool HasFireballTrailPosition;
         public Vector3 LastFireballTrailPosition;
@@ -84,6 +85,11 @@ namespace MagicCarpet.PresentationLab
             if (VolumeObject != null)
             {
                 VolumeObject.SetActive(false);
+            }
+            if (FireballLight != null)
+            {
+                FireballLight.enabled = false;
+                FireballLight.intensity = 0f;
             }
             FireballTrailVisible = false;
             HasFireballTrailPosition = false;
@@ -152,9 +158,14 @@ namespace MagicCarpet.PresentationLab
         private const float FireballVolumeWidth = 2.2f;
         private const int FireballVolumeMeshKey = -1003;
         private const int FireballVolumeMaterialKey = -1004;
+        private const int FireballLightMaximumCount = 4;
+        private const float FireballLightRange = 6f;
+        private const float FireballLightIntensity = 1.6f;
+        private static readonly Color FireballLightColor = new Color(1f, 0.18f, 0.025f, 1f);
         private readonly Dictionary<int, Mesh> meshes = new Dictionary<int, Mesh>();
         private readonly Dictionary<int, Material> materials = new Dictionary<int, Material>();
         private readonly HashSet<GameObject> configuredViews = new HashSet<GameObject>();
+        private readonly Stack<Light> fireballLightPool = new Stack<Light>();
         private Camera presentationCamera;
         private UnityEnhancedOwnerActorCatalog ownerActorCatalog;
         private bool reducedMotion;
@@ -162,6 +173,7 @@ namespace MagicCarpet.PresentationLab
 
         public int ActiveVisualCount { get; private set; }
         public int PooledVisualCount { get; private set; }
+        public int ActiveFireballLightCount { get; private set; }
         public int LastConfiguredFamily { get; private set; } = -1;
         public int LastSortingOrder { get; private set; }
         public bool VolumetricEffectsEnabled { get { return volumetricEffectsEnabled; } }
@@ -198,6 +210,11 @@ namespace MagicCarpet.PresentationLab
                     state.VolumeObject.SetActive(
                         !value && volumetricEffectsEnabled && state.FireballVolumeVisible);
                 }
+                if (state != null && state.FireballLight != null)
+                {
+                    ConfigureFireballLight(state, state.FireballProjectileMaterial &&
+                        state.VisualObject != null && state.VisualObject.activeSelf);
+                }
             }
         }
 
@@ -213,6 +230,11 @@ namespace MagicCarpet.PresentationLab
                 {
                     state.VolumeObject.SetActive(
                         !reducedMotion && volumetricEffectsEnabled && state.FireballVolumeVisible);
+                }
+                if (state != null && state.FireballLight != null)
+                {
+                    ConfigureFireballLight(state, state.FireballProjectileMaterial &&
+                        state.VisualObject != null && state.VisualObject.activeSelf);
                 }
             }
         }
@@ -272,6 +294,7 @@ namespace MagicCarpet.PresentationLab
                     // one of the generated diagnostic boxes.
                     DisableFireballTrail(state);
                     DisableFireballVolume(state);
+                    ReleaseFireballLight(state);
                     if (state.HaloObject != null) state.HaloObject.SetActive(false);
                     state.Renderer.enabled = false;
                     state.VisualObject.SetActive(false);
@@ -326,6 +349,7 @@ namespace MagicCarpet.PresentationLab
             {
                 DisableFireballTrail(state);
                 DisableFireballVolume(state);
+                ReleaseFireballLight(state);
             }
             if (state.Family != entity.PresentationFamily ||
                 state.FireballProjectileMaterial != fireballProjectile)
@@ -417,6 +441,10 @@ namespace MagicCarpet.PresentationLab
             {
                 state.HaloRenderer.sortingOrder = entity.RenderLayer;
             }
+            if (fireballProjectile)
+            {
+                ConfigureFireballLight(state, entity.Visible);
+            }
             LastConfiguredFamily = entity.PresentationFamily;
             LastSortingOrder = entity.RenderLayer;
             if (configuredViews.Add(view))
@@ -436,6 +464,7 @@ namespace MagicCarpet.PresentationLab
             if (state != null)
             {
                 state.Release();
+                ReleaseFireballLight(state);
                 if (state.HaloObject != null)
                 {
                     state.HaloObject.SetActive(false);
@@ -451,9 +480,17 @@ namespace MagicCarpet.PresentationLab
 
         public void ResetForSession()
         {
+            foreach (GameObject view in configuredViews)
+            {
+                UnityEnhancedActorVisualState state = view == null
+                    ? null
+                    : view.GetComponent<UnityEnhancedActorVisualState>();
+                ReleaseFireballLight(state);
+            }
             configuredViews.Clear();
             ActiveVisualCount = 0;
             PooledVisualCount = 0;
+            ActiveFireballLightCount = 0;
             LastConfiguredFamily = -1;
             LastSortingOrder = 0;
             reducedMotion = false;
@@ -462,6 +499,23 @@ namespace MagicCarpet.PresentationLab
 
         private void OnDestroy()
         {
+            foreach (GameObject view in configuredViews)
+            {
+                UnityEnhancedActorVisualState state = view == null
+                    ? null
+                    : view.GetComponent<UnityEnhancedActorVisualState>();
+                ReleaseFireballLight(state);
+            }
+            foreach (Light light in fireballLightPool)
+            {
+                if (light != null)
+                {
+                    if (Application.isPlaying) Destroy(light.gameObject);
+                    else DestroyImmediate(light.gameObject);
+                }
+            }
+            fireballLightPool.Clear();
+
             if (ownerActorCatalog != null)
             {
                 ownerActorCatalog.Dispose();
@@ -615,6 +669,66 @@ namespace MagicCarpet.PresentationLab
             state.VolumeRenderer.receiveShadows = false;
             state.VolumeRenderer.enabled = true;
             state.VolumeObject.SetActive(false);
+        }
+
+        private void ConfigureFireballLight(
+            UnityEnhancedActorVisualState state,
+            bool visible)
+        {
+            if (state == null)
+            {
+                return;
+            }
+
+            bool enabled = visible && !reducedMotion && volumetricEffectsEnabled;
+            if (state.FireballLight == null && enabled &&
+                ActiveFireballLightCount < FireballLightMaximumCount)
+            {
+                Light light = fireballLightPool.Count > 0
+                    ? fireballLightPool.Pop()
+                    : null;
+                if (light == null)
+                {
+                    GameObject lightObject = new GameObject("EnhancedFireballLight");
+                    lightObject.hideFlags = HideFlags.DontSave;
+                    light = lightObject.AddComponent<Light>();
+                }
+
+                state.FireballLight = light;
+                ActiveFireballLightCount++;
+            }
+
+            if (state.FireballLight == null)
+            {
+                return;
+            }
+
+            Light fireballLight = state.FireballLight;
+            fireballLight.transform.SetParent(state.VisualObject.transform.parent, false);
+            fireballLight.transform.localPosition = Vector3.zero;
+            fireballLight.transform.localRotation = Quaternion.identity;
+            fireballLight.type = LightType.Point;
+            fireballLight.color = FireballLightColor;
+            fireballLight.shadows = LightShadows.None;
+            fireballLight.range = FireballLightRange;
+            fireballLight.intensity = enabled ? FireballLightIntensity : 0f;
+            fireballLight.enabled = enabled;
+        }
+
+        private void ReleaseFireballLight(UnityEnhancedActorVisualState state)
+        {
+            if (state == null || state.FireballLight == null)
+            {
+                return;
+            }
+
+            Light light = state.FireballLight;
+            light.enabled = false;
+            light.intensity = 0f;
+            light.transform.SetParent(transform, false);
+            fireballLightPool.Push(light);
+            state.FireballLight = null;
+            ActiveFireballLightCount = Mathf.Max(0, ActiveFireballLightCount - 1);
         }
 
         private void ConfigureFireballPlume(

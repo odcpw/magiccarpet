@@ -1249,6 +1249,131 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void AuthoritativeFireballLocalLightFollowsPoseIsCappedAndHonorsQualityGates()
+        {
+            GameObject gameObject = new GameObject("enhanced-fireball-local-light-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+            const ulong generation = 21;
+            UnityEnhancedQualitySettings wholeHog =
+                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog);
+
+            UnityEnhancedEntitySnapshot[] initialEntities =
+            {
+                FireballEntity(generation, 0x0000000020000001UL, new Vector3(1f, 2f, 3f)),
+                FireballEntity(generation, 0x0000000020000002UL, new Vector3(2f, 2f, 3f)),
+                FireballEntity(generation, 0x0000000020000003UL, new Vector3(3f, 2f, 3f)),
+                FireballEntity(generation, 0x0000000020000004UL, new Vector3(4f, 2f, 3f)),
+                FireballEntity(generation, 0x0000000020000005UL, new Vector3(5f, 2f, 3f))
+            };
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = generation,
+                Tick = 0,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Quality = wholeHog,
+                Entities = initialEntities
+            }));
+
+            Assert.AreEqual(4, root.ActorPresentation.ActiveFireballLightCount);
+            Transform lightTransform = gameObject.transform.Find(
+                "EnhancedWorldObjects/EnhancedEntity_0000000020000001/EnhancedFireballLight");
+            Assert.IsNotNull(lightTransform);
+            Light fireballLight = lightTransform.GetComponent<Light>();
+            Assert.IsNotNull(fireballLight);
+            Assert.IsTrue(fireballLight.enabled);
+            Assert.AreEqual(LightType.Point, fireballLight.type);
+            Assert.AreEqual(LightShadows.None, fireballLight.shadows);
+            Assert.That(fireballLight.color.r, Is.EqualTo(1f).Within(0.001f));
+            Assert.That(fireballLight.color.g, Is.EqualTo(0.18f).Within(0.001f));
+            Assert.That(fireballLight.color.b, Is.EqualTo(0.025f).Within(0.001f));
+            Assert.That(fireballLight.range, Is.EqualTo(6f).Within(0.001f));
+            Assert.That(fireballLight.intensity, Is.EqualTo(1.6f).Within(0.001f));
+            Assert.That(fireballLight.transform.position.x, Is.EqualTo(1f).Within(0.001f));
+            Assert.That(fireballLight.transform.position.y, Is.EqualTo(2f).Within(0.001f));
+            Assert.That(fireballLight.transform.position.z, Is.EqualTo(3f).Within(0.001f));
+
+            Vector3 movedPosition = new Vector3(1.75f, 2.4f, 3.25f);
+            UnityEnhancedEntitySnapshot[] movedEntities =
+            {
+                FireballEntity(generation, 0x0000000020000001UL, movedPosition),
+                FireballEntity(generation, 0x0000000020000002UL, new Vector3(2f, 2f, 3f)),
+                FireballEntity(generation, 0x0000000020000003UL, new Vector3(3f, 2f, 3f)),
+                FireballEntity(generation, 0x0000000020000004UL, new Vector3(4f, 2f, 3f)),
+                FireballEntity(generation, 0x0000000020000005UL, new Vector3(5f, 2f, 3f))
+            };
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = generation,
+                Tick = 1,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Quality = wholeHog,
+                Entities = movedEntities
+            }));
+            root.InterpolatePresentation(1f);
+            Assert.That(fireballLight.transform.position.x, Is.EqualTo(movedPosition.x).Within(0.001f));
+            Assert.That(fireballLight.transform.position.y, Is.EqualTo(movedPosition.y).Within(0.001f));
+            Assert.That(fireballLight.transform.position.z, Is.EqualTo(movedPosition.z).Within(0.001f));
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = generation,
+                Tick = 2,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Quality = wholeHog,
+                Entities = Array.Empty<UnityEnhancedEntitySnapshot>()
+            }));
+            Assert.AreEqual(0, root.ActorPresentation.ActiveFireballLightCount);
+            Assert.IsFalse(fireballLight.enabled);
+
+            UnityEnhancedQualitySettings medium =
+                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.Medium);
+            const ulong qualityGeneration = 22;
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = qualityGeneration,
+                Tick = 0,
+                Reset = true,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Quality = medium,
+                Entities = new[]
+                {
+                    FireballEntity(qualityGeneration, 0x0000000020000001UL, movedPosition)
+                }
+            }));
+            Assert.IsFalse(root.ActorPresentation.VolumetricEffectsEnabled);
+            Assert.AreEqual(0, root.ActorPresentation.ActiveFireballLightCount);
+            Assert.IsFalse(fireballLight.enabled);
+
+            UnityEnhancedQualitySettings reducedMotion =
+                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog);
+            reducedMotion.ReducedMotion = true;
+            reducedMotion.CameraShake = false;
+            reducedMotion.SpeedStreaks = false;
+            reducedMotion.MotionBlur = false;
+            const ulong reducedGeneration = 23;
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = reducedGeneration,
+                Tick = 0,
+                Reset = true,
+                CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                Quality = reducedMotion,
+                Entities = new[]
+                {
+                    FireballEntity(reducedGeneration, 0x0000000020000001UL, movedPosition)
+                }
+            }));
+            Assert.IsTrue(root.ActorPresentation.VolumetricEffectsEnabled);
+            Assert.AreEqual(0, root.ActorPresentation.ActiveFireballLightCount);
+            Assert.IsFalse(fireballLight.enabled);
+
+            root.Close();
+            Assert.AreEqual(0, root.ActorPresentation.ActiveFireballLightCount);
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void OwnerActualSpeedDrivesBoundedSpeedStreaksAndReducedMotionDisablesThem()
         {
             GameObject gameObject = new GameObject("enhanced-speed-readability-test");
@@ -2700,6 +2825,18 @@ namespace MagicCarpet.PresentationLab.Tests
                 Rotation = Quaternion.identity,
                 Visible = true
             };
+        }
+
+        private static UnityEnhancedEntitySnapshot FireballEntity(
+            ulong generation,
+            ulong identity,
+            Vector3 position)
+        {
+            UnityEnhancedEntitySnapshot entity = Entity(generation, identity, position);
+            entity.PresentationFamily = (int)UnityEnhancedPresentationFamily.Fire;
+            entity.Scale = 1f;
+            entity.RenderLayer = 2201;
+            return entity;
         }
     }
 }
