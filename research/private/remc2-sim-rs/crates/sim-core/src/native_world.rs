@@ -33943,6 +33943,75 @@ mod tests {
     }
 
     #[test]
+    fn level_two_authored_bee_action23_invalid_selector_is_production_noop() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 owner package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 scripted Bee session");
+        let baseline_hash = session.campaign_state_hash();
+
+        // The real group-21 producer materializes the authored row 231. The
+        // following mutations select only its source action; dispatch still
+        // enters through the live dynamic cursor.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let source_slot = session
+            .economy()
+            .authored_bees()
+            .iter()
+            .find(|bee| bee.authored_index == 231)
+            .map(|bee| bee.source_entity_index)
+            .expect("production group-21 row 231 Bee");
+
+        for invalid_stage_var in [0_u8, 11_u8] {
+            let before = session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|bee| bee.source_entity_index == source_slot)
+                .copied()
+                .expect("live scripted Bee before invalid-selector step");
+            session
+                .economy_mut()
+                .authored_bees
+                .iter_mut()
+                .find(|bee| bee.source_entity_index == source_slot)
+                .expect("live scripted Bee source")
+                .action = 23;
+            let bee = session
+                .economy_mut()
+                .authored_bees
+                .iter_mut()
+                .find(|bee| bee.source_entity_index == source_slot)
+                .expect("live scripted Bee selector");
+            bee.stage_var2 = invalid_stage_var;
+            bee.source_byte_3e = 0;
+
+            session.step_outer_turn(PlayerCommand::default(), 0);
+            let after = session
+                .economy()
+                .authored_bees()
+                .iter()
+                .find(|bee| bee.source_entity_index == source_slot)
+                .copied()
+                .expect("live scripted Bee after invalid-selector step");
+            assert_eq!(after.action, 23);
+            assert_eq!(after.stage_var2, invalid_stage_var);
+            assert_eq!(after.entity_rng, before.entity_rng);
+            assert_eq!(after.roll, before.roll);
+            assert_eq!(after.position, before.position);
+            assert_eq!(after.dword_0x10, before.dword_0x10);
+            assert_eq!(after.last_sound_id, before.last_sound_id);
+            assert_eq!(after.actual_speed, before.actual_speed);
+            assert_eq!(after.source_byte_3e, 1);
+            assert_eq!(after.phase, before.phase.wrapping_add(1));
+        }
+
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
     fn level_two_bee_row229_death_advances_type7_objective_on_production_path() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
