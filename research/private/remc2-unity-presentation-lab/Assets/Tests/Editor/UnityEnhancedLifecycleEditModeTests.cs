@@ -1956,6 +1956,216 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void AuthoritativeSmokeImpactUsesSoftRadialVfxWithoutLightOrFireballStack()
+        {
+            Assert.AreEqual(14, (int)UnityEnhancedPresentationFamily.Smoke);
+
+            string ownerSource = File.ReadAllText(Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "UnityEnhancedOwnerSessionSource.cs"));
+            string actorSource = File.ReadAllText(Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "UnityEnhancedActorPresentation.cs"));
+            int buildEntitiesStart = ownerSource.IndexOf(
+                "private UnityEnhancedEntitySnapshot[] BuildEntities()",
+                StringComparison.Ordinal);
+            int buildLightsStart = ownerSource.IndexOf(
+                "private UnityEnhancedLocalLightRequest[] BuildLocalLights()",
+                StringComparison.Ordinal);
+            int presentationFamilyStart = ownerSource.IndexOf(
+                "private static int PresentationFamily(",
+                StringComparison.Ordinal);
+            Assert.GreaterOrEqual(buildEntitiesStart, 0);
+            Assert.Greater(buildLightsStart, buildEntitiesStart);
+            Assert.Greater(presentationFamilyStart, buildLightsStart);
+
+            string buildEntities = ownerSource.Substring(
+                buildEntitiesStart,
+                buildLightsStart - buildEntitiesStart);
+            string buildLights = ownerSource.Substring(
+                buildLightsStart,
+                presentationFamilyStart - buildLightsStart);
+            string familyMapping = ownerSource.Substring(presentationFamilyStart);
+            StringAssert.Contains(
+                "source.model == 13\n                        ? (int)UnityEnhancedPresentationFamily.Smoke",
+                buildEntities);
+            StringAssert.Contains(
+                "Scale = source.model == 13 ? 1.15f : 1f",
+                buildEntities);
+            StringAssert.Contains(
+                "case 13:\n                    case 59: return (int)UnityEnhancedPresentationFamily.Smoke;",
+                familyMapping);
+            StringAssert.DoesNotContain(
+                "UnityEnhancedPresentationFamily.Smoke",
+                buildLights);
+            StringAssert.Contains(
+                "bool smokeFamily = familyId == UnityEnhancedPresentationFamily.Smoke;",
+                actorSource);
+            StringAssert.Contains(
+                "fireFamily || fireflyFamily || possessionFamily || projectileFamily || manaFamily || smokeFamily",
+                actorSource);
+            StringAssert.Contains(
+                "else if (smokeFamily && shader.name == \"MagicCarpet/Enhanced/Vfx\")",
+                actorSource);
+            StringAssert.Contains(
+                "material.SetFloat(\"_RadialMask\", 1f);",
+                actorSource);
+
+            GameObject gameObject = new GameObject("enhanced-smoke-impact-test");
+            try
+            {
+                UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+                root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+                const ulong generation = 54;
+                const ulong smokeIdentity = 0x0000003600000013UL;
+                const ulong reusedSmokeIdentity = 0x0000003600000059UL;
+                Vector3 position = new Vector3(1f, 2f, 3f);
+                Quaternion smokeRotation = Quaternion.Euler(0f, 25f, 0f);
+                UnityEnhancedNightLightingDescriptor night =
+                    UnityEnhancedNightLightingDescriptor.Level1Night();
+
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 0,
+                    Reset = true,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = new[]
+                    {
+                        new UnityEnhancedEntitySnapshot
+                        {
+                            StableIdentity = smokeIdentity,
+                            Generation = generation,
+                            Position = position,
+                            Rotation = smokeRotation,
+                            Visible = true,
+                            PresentationFamily = (int)UnityEnhancedPresentationFamily.Smoke,
+                            AnimationPhase = 0.4f,
+                            Scale = 1.15f,
+                            RenderLayer = 3013
+                        }
+                    },
+                    NightLighting = night,
+                    LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+
+                Transform smokeView = gameObject.transform.Find(
+                    "EnhancedWorldObjects/EnhancedEntity_0000003600000013");
+                Assert.IsNotNull(smokeView);
+                Assert.That(
+                    Quaternion.Angle(smokeRotation, smokeView.rotation),
+                    Is.LessThan(0.001f));
+                Transform smokeVisual = smokeView.Find("EnhancedActorVisual");
+                Assert.IsNotNull(smokeVisual);
+                Assert.That(smokeVisual.localScale.x, Is.EqualTo(1.15f).Within(0.001f));
+                MeshFilter smokeFilter = smokeVisual.GetComponent<MeshFilter>();
+                MeshRenderer smokeRenderer = smokeVisual.GetComponent<MeshRenderer>();
+                Assert.AreEqual("EnhancedGeneratedMesh_Smoke", smokeFilter.sharedMesh.name);
+                Assert.AreEqual(8, smokeFilter.sharedMesh.vertexCount);
+                Assert.AreEqual(8, smokeFilter.sharedMesh.uv.Length);
+                Assert.That(
+                    smokeFilter.sharedMesh.bounds.size.x,
+                    Is.EqualTo(1.4f).Within(0.001f));
+                Assert.That(
+                    smokeFilter.sharedMesh.bounds.size.y,
+                    Is.EqualTo(1.4f).Within(0.001f));
+                Assert.That(
+                    smokeFilter.sharedMesh.bounds.size.z,
+                    Is.EqualTo(1.4f).Within(0.001f));
+                Assert.AreEqual(
+                    "MagicCarpet/Enhanced/Vfx",
+                    smokeRenderer.sharedMaterial.shader.name);
+                Color glowColor = smokeRenderer.sharedMaterial.GetColor("_GlowColor");
+                Assert.That(glowColor.r, Is.EqualTo(0.3f).Within(0.001f));
+                Assert.That(glowColor.g, Is.EqualTo(0.32f).Within(0.001f));
+                Assert.That(glowColor.b, Is.EqualTo(0.4f).Within(0.001f));
+                Assert.Greater(glowColor.b, glowColor.g);
+                Assert.Greater(glowColor.g, glowColor.r);
+                Assert.That(
+                    smokeRenderer.sharedMaterial.GetFloat("_GlowIntensity"),
+                    Is.EqualTo(0.28f).Within(0.001f));
+                Assert.That(
+                    smokeRenderer.sharedMaterial.GetFloat("_Opacity"),
+                    Is.EqualTo(0.28f).Within(0.001f));
+                Assert.That(
+                    smokeRenderer.sharedMaterial.GetFloat("_PulseSpeed"),
+                    Is.EqualTo(2.5f).Within(0.001f));
+                Assert.That(
+                    smokeRenderer.sharedMaterial.GetFloat("_RadialMask"),
+                    Is.EqualTo(1f).Within(0.001f));
+                Assert.IsNull(smokeView.Find("EnhancedFireballHalo"));
+                Assert.IsNull(smokeView.Find("EnhancedFireballTrail"));
+                Assert.IsNull(smokeView.Find("EnhancedFireballPlume"));
+                Assert.IsNull(smokeView.Find("EnhancedFireballVolume"));
+                Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
+                Assert.AreEqual(0, root.VfxPresentation.ActiveEffectCount);
+                Assert.AreEqual(0, gameObject.transform
+                    .Find("EnhancedNightLights")
+                    .GetComponentsInChildren<Light>(true).Length);
+
+                GameObject smokeObject = smokeView.gameObject;
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 1,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = Array.Empty<UnityEnhancedEntitySnapshot>(),
+                    NightLighting = night,
+                    LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+                Assert.AreEqual(1, root.PooledEntityCount);
+                Assert.AreEqual(1, root.ActorPresentation.PooledVisualCount);
+                Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
+                Assert.AreEqual(0, root.VfxPresentation.ActiveEffectCount);
+
+                Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+                {
+                    Generation = generation,
+                    Tick = 2,
+                    CameraPose = new UnityEnhancedCameraPose(Vector3.zero, Quaternion.identity, 70f),
+                    Entities = new[]
+                    {
+                        new UnityEnhancedEntitySnapshot
+                        {
+                            StableIdentity = reusedSmokeIdentity,
+                            Generation = generation,
+                            Position = position,
+                            Rotation = Quaternion.Euler(0f, 41f, 0f),
+                            Visible = true,
+                            PresentationFamily = (int)UnityEnhancedPresentationFamily.Smoke,
+                            AnimationPhase = 0.8f,
+                            Scale = 1.15f,
+                            RenderLayer = 3059
+                        }
+                    },
+                    NightLighting = night,
+                    LocalLights = Array.Empty<UnityEnhancedLocalLightRequest>(),
+                    VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+                }));
+                Transform reusedView = gameObject.transform.Find(
+                    "EnhancedWorldObjects/EnhancedEntity_0000003600000059");
+                Assert.IsNotNull(reusedView);
+                Assert.AreSame(smokeObject, reusedView.gameObject);
+                Assert.AreEqual(0, root.PooledEntityCount);
+                Assert.AreEqual(1, root.ActorPresentation.PooledVisualCount);
+                Assert.AreEqual(0, root.NightLighting.ActiveLocalLightCount);
+                Assert.AreEqual(0, root.VfxPresentation.ActiveEffectCount);
+                Assert.IsNull(reusedView.Find("EnhancedFireballHalo"));
+                Assert.IsNull(reusedView.Find("EnhancedFireballTrail"));
+                Assert.IsNull(reusedView.Find("EnhancedFireballPlume"));
+                Assert.IsNull(reusedView.Find("EnhancedFireballVolume"));
+            }
+            finally
+            {
+                Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        [Test]
         public void AuthoritativeManaSphereUsesRadialGlowAndExistingOwnerLight()
         {
             Assert.AreEqual(6, (int)UnityEnhancedPresentationFamily.Mana);

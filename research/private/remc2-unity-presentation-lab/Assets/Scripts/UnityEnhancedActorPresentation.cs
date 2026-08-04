@@ -1167,6 +1167,7 @@ namespace MagicCarpet.PresentationLab
             bool possessionFamily = familyId == UnityEnhancedPresentationFamily.Possession;
             bool projectileFamily = familyId == UnityEnhancedPresentationFamily.Projectile;
             bool manaFamily = familyId == UnityEnhancedPresentationFamily.Mana;
+            bool smokeFamily = familyId == UnityEnhancedPresentationFamily.Smoke;
             bool impactPresentation = familyId == UnityEnhancedPresentationFamily.Impact ||
                                       (fireFamily && !fireballProjectile);
             Shader shader = fireballProjectile
@@ -1174,7 +1175,7 @@ namespace MagicCarpet.PresentationLab
                               Shader.Find("MagicCarpet/Enhanced/Vfx")
                             : (impactPresentation
                                 ? Shader.Find("MagicCarpet/Enhanced/Impact")
-                                : (fireFamily || fireflyFamily || possessionFamily || projectileFamily || manaFamily
+                                : (fireFamily || fireflyFamily || possessionFamily || projectileFamily || manaFamily || smokeFamily
                                     ? Shader.Find("MagicCarpet/Enhanced/Vfx")
                                     : null)) ??
                             Shader.Find("MagicCarpet/Enhanced/VertexColorLit") ??
@@ -1261,6 +1262,14 @@ namespace MagicCarpet.PresentationLab
                     material.SetFloat("_GlowIntensity", 1.15f);
                     material.SetFloat("_Opacity", 0.68f);
                     material.SetFloat("_PulseSpeed", 1.8f);
+                    material.SetFloat("_RadialMask", 1f);
+                }
+                else if (smokeFamily && shader.name == "MagicCarpet/Enhanced/Vfx")
+                {
+                    material.SetColor("_GlowColor", FamilyColor(familyId));
+                    material.SetFloat("_GlowIntensity", 0.28f);
+                    material.SetFloat("_Opacity", 0.28f);
+                    material.SetFloat("_PulseSpeed", 2.5f);
                     material.SetFloat("_RadialMask", 1f);
                 }
                 else
