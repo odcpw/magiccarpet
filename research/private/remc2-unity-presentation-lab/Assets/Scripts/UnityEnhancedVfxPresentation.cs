@@ -49,6 +49,20 @@ namespace MagicCarpet.PresentationLab
         }
     }
 
+    public struct UnityEnhancedCameraImpulseSample
+    {
+        public Vector3 LocalTranslation;
+        public Vector3 LocalRotationEuler;
+
+        public UnityEnhancedCameraImpulseSample(
+            Vector3 localTranslation,
+            Vector3 localRotationEuler)
+        {
+            LocalTranslation = localTranslation;
+            LocalRotationEuler = localRotationEuler;
+        }
+    }
+
     internal sealed class UnityEnhancedVfxVisual
     {
         public GameObject Object;
@@ -63,6 +77,7 @@ namespace MagicCarpet.PresentationLab
         public ulong StartTick;
         public ulong ExpireTick;
         public uint DurationTicks;
+        public float ImpactIntensity;
         public UnityEnhancedVfxKind Kind;
         public MaterialPropertyBlock PropertyBlock;
     }
@@ -83,6 +98,10 @@ namespace MagicCarpet.PresentationLab
         private const float ImpactLightRange = 6f;
         private const float ImpactLightIntensityScale = 2f;
         private const float ImpactLightReducedMotionScale = 0.5f;
+        private const float CameraImpulseMaximumTranslation = 0.035f;
+        private const float CameraImpulseMaximumRotationDegrees = 0.45f;
+        private const float CameraImpulseNearDistance = 4f;
+        private const float CameraImpulseFarDistance = 28f;
         private static readonly Color ImpactLightColor = new Color(1f, 0.18f, 0.025f, 1f);
         private const int SpeedReadabilityBaseCount = 8;
         private const int SpeedReadabilityMaximumCount = 12;
@@ -209,6 +228,9 @@ namespace MagicCarpet.PresentationLab
                     presentationCamera.transform.up)
                 : Quaternion.identity;
             float intensity = Mathf.Clamp(vfxEvent.Intensity <= 0f ? 1f : vfxEvent.Intensity, 0.1f, 4f);
+            visual.ImpactIntensity = vfxEvent.Kind == UnityEnhancedVfxKind.Impact
+                ? intensity
+                : 0f;
             float eventScale = vfxEvent.Kind == UnityEnhancedVfxKind.Fire
                 ? FireballEventVisualScale
                 : vfxEvent.Kind == UnityEnhancedVfxKind.Impact
@@ -415,6 +437,97 @@ namespace MagicCarpet.PresentationLab
             return appended;
         }
 
+        /// <summary>
+        /// Samples only accepted, still-active owner Impact events. The hash
+        /// is a stable identity-derived direction, while tick progress and
+        /// camera distance provide deterministic decay and falloff.
+        /// </summary>
+        public UnityEnhancedCameraImpulseSample SampleCameraImpulse(ulong tick)
+        {
+            Vector3 cameraPosition = presentationCamera == null
+                ? Vector3.zero
+                : presentationCamera.transform.position;
+            return SampleCameraImpulse(tick, cameraPosition);
+        }
+
+        public UnityEnhancedCameraImpulseSample SampleCameraImpulse(
+            ulong tick,
+            Vector3 cameraPosition)
+        {
+            if (!CameraComfortEnabled || reducedMotion || presentationCamera == null)
+            {
+                return new UnityEnhancedCameraImpulseSample(Vector3.zero, Vector3.zero);
+            }
+
+            Vector3 translation = Vector3.zero;
+            Vector3 rotation = Vector3.zero;
+            foreach (UnityEnhancedVfxVisual visual in active.Values)
+            {
+                if (visual == null || visual.Kind != UnityEnhancedVfxKind.Impact ||
+                    visual.Generation != generation || visual.Object == null ||
+                    visual.DurationTicks == 0)
+                {
+                    continue;
+                }
+
+                float progress = tick <= visual.StartTick
+                    ? 0f
+                    : Mathf.Clamp01((float)(tick - visual.StartTick) / visual.DurationTicks);
+                float remaining = 1f - progress;
+                if (remaining <= 0f)
+                {
+                    continue;
+                }
+
+                float distance = Vector3.Distance(cameraPosition, visual.Object.transform.position);
+                float distanceBlend = Mathf.Clamp01(
+                    (CameraImpulseFarDistance - distance) /
+                    (CameraImpulseFarDistance - CameraImpulseNearDistance));
+                float distanceFade = distanceBlend * distanceBlend * (3f - 2f * distanceBlend);
+                float weight = Mathf.Clamp01(visual.ImpactIntensity) * remaining * distanceFade;
+                if (weight <= 0f)
+                {
+                    continue;
+                }
+
+                uint hash = (uint)(visual.StableIdentity ^ (visual.StableIdentity >> 32));
+                translation += StableImpulseVector(hash, 0x9e3779b9U) *
+                               (CameraImpulseMaximumTranslation * weight);
+                rotation += StableImpulseVector(hash, 0x85ebca6bU) *
+                            (CameraImpulseMaximumRotationDegrees * weight);
+            }
+
+            if (translation.sqrMagnitude > CameraImpulseMaximumTranslation * CameraImpulseMaximumTranslation)
+            {
+                translation = translation.normalized * CameraImpulseMaximumTranslation;
+            }
+            if (rotation.sqrMagnitude > CameraImpulseMaximumRotationDegrees * CameraImpulseMaximumRotationDegrees)
+            {
+                rotation = rotation.normalized * CameraImpulseMaximumRotationDegrees;
+            }
+
+            return new UnityEnhancedCameraImpulseSample(translation, rotation);
+        }
+
+        private static Vector3 StableImpulseVector(uint hash, uint salt)
+        {
+            Vector3 vector = new Vector3(
+                SignedHash(hash ^ salt),
+                SignedHash(hash ^ (salt * 3U)),
+                SignedHash(hash ^ (salt * 7U)));
+            return vector.sqrMagnitude > 0.000001f ? vector.normalized : Vector3.right;
+        }
+
+        private static float SignedHash(uint value)
+        {
+            value ^= value >> 16;
+            value *= 0x7feb352dU;
+            value ^= value >> 15;
+            value *= 0x846ca68bU;
+            value ^= value >> 16;
+            return (value & 0xffffU) / 32767.5f - 1f;
+        }
+
         private void EnsureHierarchy()
         {
             if (effectRoot != null)
@@ -490,7 +603,13 @@ namespace MagicCarpet.PresentationLab
 
         private void ReleaseImpactLight(UnityEnhancedVfxVisual visual)
         {
-            if (visual == null || visual.ImpactLight == null)
+            if (visual == null)
+            {
+                return;
+            }
+
+            visual.ImpactIntensity = 0f;
+            if (visual.ImpactLight == null)
             {
                 return;
             }

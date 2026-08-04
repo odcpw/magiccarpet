@@ -2078,6 +2078,172 @@ namespace MagicCarpet.PresentationLab.Tests
         }
 
         [Test]
+        public void OwnerImpactAppliesBoundedCameraImpulseAndReducedMotionDisablesIt()
+        {
+            GameObject gameObject = new GameObject("enhanced-impact-camera-impulse-test");
+            UnityEnhancedWorldRoot root = gameObject.AddComponent<UnityEnhancedWorldRoot>();
+            root.OpenDiagnostic(PresentationModeId.UnityEnhanced);
+
+            UnityEnhancedCameraPose authoritativePose = new UnityEnhancedCameraPose(
+                new Vector3(10f, 12f, 14f),
+                Quaternion.Euler(7f, 23f, -4f),
+                70f);
+            UnityEnhancedQualitySettings comfort =
+                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog);
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 7,
+                Tick = 20,
+                CameraPose = authoritativePose,
+                Quality = comfort,
+                VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+            }));
+            root.InterpolatePresentation(1f);
+
+            Vector3 impactPosition = authoritativePose.Position +
+                                     authoritativePose.Rotation * new Vector3(0f, 0f, 6f);
+            UnityEnhancedVfxEvent impact = new UnityEnhancedVfxEvent(
+                1,
+                7,
+                24,
+                0x4000002aUL,
+                UnityEnhancedVfxKind.Impact,
+                impactPosition,
+                1f,
+                18);
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 7,
+                Tick = 24,
+                CameraPose = authoritativePose,
+                Quality = comfort,
+                VfxEvents = new[] { impact }
+            }));
+            root.InterpolatePresentation(1f);
+
+            Camera camera = root.CameraRig.PresentationCamera;
+            Vector3 firstLocalTranslation = Quaternion.Inverse(authoritativePose.Rotation) *
+                                             (camera.transform.position - authoritativePose.Position);
+            float firstRotationDegrees = Quaternion.Angle(
+                authoritativePose.Rotation,
+                camera.transform.rotation);
+            Assert.Greater(firstLocalTranslation.magnitude, 0.0001f);
+            Assert.LessOrEqual(firstLocalTranslation.magnitude, 0.0351f);
+            Assert.Greater(firstRotationDegrees, 0.0001f);
+            Assert.LessOrEqual(firstRotationDegrees, 0.4501f);
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 7,
+                Tick = 24,
+                CameraPose = authoritativePose,
+                Quality = comfort,
+                VfxEvents = new[] { impact }
+            }));
+            root.InterpolatePresentation(1f);
+            Vector3 repeatedLocalTranslation = Quaternion.Inverse(authoritativePose.Rotation) *
+                                                (camera.transform.position - authoritativePose.Position);
+            float repeatedRotationDegrees = Quaternion.Angle(
+                authoritativePose.Rotation,
+                camera.transform.rotation);
+            Assert.That(Vector3.Distance(firstLocalTranslation, repeatedLocalTranslation),
+                Is.LessThan(0.00001f));
+            Assert.That(repeatedRotationDegrees, Is.EqualTo(firstRotationDegrees).Within(0.00001f));
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 7,
+                Tick = 33,
+                CameraPose = authoritativePose,
+                Quality = comfort,
+                VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+            }));
+            root.InterpolatePresentation(1f);
+            Vector3 decayedLocalTranslation = Quaternion.Inverse(authoritativePose.Rotation) *
+                                               (camera.transform.position - authoritativePose.Position);
+            Assert.Greater(decayedLocalTranslation.magnitude, 0.0001f);
+            Assert.Less(decayedLocalTranslation.magnitude, firstLocalTranslation.magnitude);
+
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 7,
+                Tick = 42,
+                CameraPose = authoritativePose,
+                Quality = comfort,
+                VfxEvents = Array.Empty<UnityEnhancedVfxEvent>()
+            }));
+            root.InterpolatePresentation(1f);
+            Assert.AreEqual(0, root.VfxPresentation.ActiveEffectCount);
+            Assert.That(Vector3.Distance(camera.transform.position, authoritativePose.Position),
+                Is.LessThan(0.0001f));
+            Assert.That(Quaternion.Angle(camera.transform.rotation, authoritativePose.Rotation),
+                Is.LessThan(0.001f));
+
+            UnityEnhancedQualitySettings noShake =
+                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog);
+            noShake.CameraShake = false;
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 8,
+                Tick = 0,
+                Reset = true,
+                CameraPose = authoritativePose,
+                Quality = noShake,
+                VfxEvents = new[]
+                {
+                    new UnityEnhancedVfxEvent(
+                        1,
+                        8,
+                        0,
+                        0x4000002bUL,
+                        UnityEnhancedVfxKind.Impact,
+                        impactPosition,
+                        1f,
+                        18)
+                }
+            }));
+            root.InterpolatePresentation(1f);
+            Assert.That(Vector3.Distance(camera.transform.position, authoritativePose.Position),
+                Is.LessThan(0.0001f));
+            Assert.That(Quaternion.Angle(camera.transform.rotation, authoritativePose.Rotation),
+                Is.LessThan(0.001f));
+
+            UnityEnhancedQualitySettings reducedMotion =
+                UnityEnhancedQualitySettings.ForTier(UnityEnhancedQualityTier.WholeHog);
+            reducedMotion.ReducedMotion = true;
+            reducedMotion.CameraShake = false;
+            reducedMotion.SpeedStreaks = false;
+            reducedMotion.MotionBlur = false;
+            Assert.IsTrue(root.ApplySnapshot(new UnityEnhancedWorldSnapshot
+            {
+                Generation = 9,
+                Tick = 0,
+                Reset = true,
+                CameraPose = authoritativePose,
+                Quality = reducedMotion,
+                VfxEvents = new[]
+                {
+                    new UnityEnhancedVfxEvent(
+                        1,
+                        9,
+                        0,
+                        0x4000002cUL,
+                        UnityEnhancedVfxKind.Impact,
+                        impactPosition,
+                        1f,
+                        18)
+                }
+            }));
+            root.InterpolatePresentation(1f);
+            Assert.That(Vector3.Distance(camera.transform.position, authoritativePose.Position),
+                Is.LessThan(0.0001f));
+            Assert.That(Quaternion.Angle(camera.transform.rotation, authoritativePose.Rotation),
+                Is.LessThan(0.001f));
+
+            Object.DestroyImmediate(gameObject);
+        }
+
+        [Test]
         public void ImpactVfxProgressesShockwaveAcrossAuthoritativeTicks()
         {
             GameObject gameObject = new GameObject("enhanced-impact-progress-test");

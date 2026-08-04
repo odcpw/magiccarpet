@@ -238,6 +238,7 @@ namespace MagicCarpet.PresentationLab
                 if (diagnostics != null) diagnostics.BeginFrame();
                 InterpolatePresentation(Mathf.Clamp01(Time.unscaledDeltaTime * 30f));
                 if (vfxPresentation != null) vfxPresentation.Advance(lastTick);
+                ApplyCameraImpulse();
                 PublishTransientWarmLights();
                 if (waterPresentation != null) waterPresentation.RenderReflection();
                 if (diagnostics != null)
@@ -295,6 +296,7 @@ namespace MagicCarpet.PresentationLab
             if (waterPresentation != null) waterPresentation.ResetPresentation(0);
             if (nightLighting != null) nightLighting.ResetForSession();
             if (vfxPresentation != null) vfxPresentation.ResetForGeneration(0);
+            if (cameraRig != null) cameraRig.ClearLocalImpulse();
             if (actorPresentation != null) actorPresentation.ResetForSession();
             if (qualityAndPost != null) qualityAndPost.ResetForSession();
             if (hudPresentation != null) hudPresentation.ResetForSession();
@@ -538,6 +540,7 @@ namespace MagicCarpet.PresentationLab
             }
 
             cameraRig.InterpolateToTarget(alpha);
+            ApplyCameraImpulse();
         }
 
         public bool TryGetFireballViewportEvidence(
@@ -610,6 +613,7 @@ namespace MagicCarpet.PresentationLab
             nightLighting.ResetForGeneration(nextGeneration);
             vfxPresentation.ResetForGeneration(nextGeneration);
             transientWarmLightRequests.Clear();
+            cameraRig.ClearLocalImpulse();
             actorPresentation.ResetForSession();
             hudPresentation.ResetForGeneration(nextGeneration);
         }
@@ -628,6 +632,26 @@ namespace MagicCarpet.PresentationLab
                     transientWarmLightRequests);
             }
             nightLighting.ApplyTransientWarmLights(transientWarmLightRequests);
+        }
+
+        private void ApplyCameraImpulse()
+        {
+            if (cameraRig == null)
+            {
+                return;
+            }
+
+            if (vfxPresentation == null)
+            {
+                cameraRig.ClearLocalImpulse();
+                return;
+            }
+
+            UnityEnhancedCameraImpulseSample sample =
+                vfxPresentation.SampleCameraImpulse(
+                    lastTick,
+                    cameraRig.InterpolatedBasePosition);
+            cameraRig.ApplyLocalImpulse(sample.LocalTranslation, sample.LocalRotationEuler);
         }
 
         /// <summary>

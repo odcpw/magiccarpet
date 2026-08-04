@@ -11,9 +11,22 @@ namespace MagicCarpet.PresentationLab
     {
         private Camera presentationCamera;
         private UnityEnhancedCameraPose targetPose;
+        private UnityEnhancedCameraPose interpolatedBasePose;
         private bool hasTargetPose;
+        private bool hasInterpolatedBasePose;
+        private Vector3 localImpulseTranslation;
+        private Quaternion localImpulseRotation = Quaternion.identity;
 
         public Camera PresentationCamera { get { return presentationCamera; } }
+        public Vector3 InterpolatedBasePosition
+        {
+            get
+            {
+                return hasInterpolatedBasePose
+                    ? interpolatedBasePose.Position
+                    : (presentationCamera == null ? Vector3.zero : presentationCamera.transform.position);
+            }
+        }
 
         private void Awake()
         {
@@ -46,14 +59,11 @@ namespace MagicCarpet.PresentationLab
         public void ApplyPose(UnityEnhancedCameraPose pose)
         {
             EnsureCamera();
-            presentationCamera.transform.SetPositionAndRotation(pose.Position, pose.Rotation);
-            if (pose.FieldOfView > 1f && pose.FieldOfView < 179f)
-            {
-                presentationCamera.fieldOfView = pose.FieldOfView;
-            }
-
             targetPose = pose;
             hasTargetPose = true;
+            interpolatedBasePose = pose;
+            hasInterpolatedBasePose = true;
+            ApplyInterpolatedBasePose();
         }
 
         public void SetTargetPose(UnityEnhancedCameraPose pose)
@@ -71,20 +81,27 @@ namespace MagicCarpet.PresentationLab
             }
 
             EnsureCamera();
-            UnityEnhancedCameraPose current = new UnityEnhancedCameraPose(
-                presentationCamera.transform.position,
-                presentationCamera.transform.rotation,
-                presentationCamera.fieldOfView);
+            EnsureInterpolatedBasePose();
             alpha = Mathf.Clamp01(alpha);
-            UnityEnhancedCameraPose next = new UnityEnhancedCameraPose(
-                Vector3.Lerp(current.Position, targetPose.Position, alpha),
-                Quaternion.Slerp(current.Rotation, targetPose.Rotation, alpha),
-                Mathf.Lerp(current.FieldOfView, targetPose.FieldOfView, alpha));
-            presentationCamera.transform.SetPositionAndRotation(next.Position, next.Rotation);
-            if (next.FieldOfView > 1f && next.FieldOfView < 179f)
-            {
-                presentationCamera.fieldOfView = next.FieldOfView;
-            }
+            interpolatedBasePose = new UnityEnhancedCameraPose(
+                Vector3.Lerp(interpolatedBasePose.Position, targetPose.Position, alpha),
+                Quaternion.Slerp(interpolatedBasePose.Rotation, targetPose.Rotation, alpha),
+                Mathf.Lerp(interpolatedBasePose.FieldOfView, targetPose.FieldOfView, alpha));
+            ApplyInterpolatedBasePose();
+        }
+
+        public void ApplyLocalImpulse(Vector3 localTranslation, Vector3 localRotationEuler)
+        {
+            EnsureCamera();
+            EnsureInterpolatedBasePose();
+            localImpulseTranslation = localTranslation;
+            localImpulseRotation = Quaternion.Euler(localRotationEuler);
+            ApplyInterpolatedBasePose();
+        }
+
+        public void ClearLocalImpulse()
+        {
+            ApplyLocalImpulse(Vector3.zero, Vector3.zero);
         }
 
         public void Interpolate(UnityEnhancedCameraPose from, UnityEnhancedCameraPose to, float alpha)
@@ -94,6 +111,32 @@ namespace MagicCarpet.PresentationLab
                 Vector3.Lerp(from.Position, to.Position, alpha),
                 Quaternion.Slerp(from.Rotation, to.Rotation, alpha),
                 Mathf.Lerp(from.FieldOfView, to.FieldOfView, alpha)));
+        }
+
+        private void EnsureInterpolatedBasePose()
+        {
+            if (hasInterpolatedBasePose)
+            {
+                return;
+            }
+
+            interpolatedBasePose = new UnityEnhancedCameraPose(
+                presentationCamera.transform.position,
+                presentationCamera.transform.rotation,
+                presentationCamera.fieldOfView);
+            hasInterpolatedBasePose = true;
+        }
+
+        private void ApplyInterpolatedBasePose()
+        {
+            Vector3 position = interpolatedBasePose.Position +
+                               interpolatedBasePose.Rotation * localImpulseTranslation;
+            Quaternion rotation = interpolatedBasePose.Rotation * localImpulseRotation;
+            presentationCamera.transform.SetPositionAndRotation(position, rotation);
+            if (interpolatedBasePose.FieldOfView > 1f && interpolatedBasePose.FieldOfView < 179f)
+            {
+                presentationCamera.fieldOfView = interpolatedBasePose.FieldOfView;
+            }
         }
     }
 }
