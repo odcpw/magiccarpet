@@ -4247,9 +4247,9 @@ pub struct Level2AuthoredModel32Source {
 /// `ArriveCheckpoint_4EB50`. The constructor is source-backed here: action
 /// 64/model 59, two entity-local RNG draws for the 800..899 lifetime and
 /// 0..16 speed, the NewEvent byte-0x3E seed, and the direct authored position
-/// write. The broader action-64 visual callback remains outside this bounded
-/// activation slice, but the row is live in the shared arena so source
-/// ordering, map linkage, reset, and reclaim are real.
+/// write. Its live action-64 callback emits mapped model-13/action-13 smoke
+/// children, while the checkpoint parent intentionally remains unlinked from
+/// the render map; source ordering, reset, and reclaim are real.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Level2AuthoredModel59Source {
     pub source_entity_index: u16,
@@ -4264,6 +4264,32 @@ pub struct Level2AuthoredModel59Source {
     pub actual_speed: i16,
     pub control_flags: u32,
     pub source_byte_3e: u8,
+    pub position: Position,
+    pub phase: u8,
+    pub drawing_enabled: bool,
+    pub active: bool,
+}
+
+/// A class-10/model-13/action-13 smoke child emitted by the authored
+/// model-59 checkpoint callback.  This is deliberately a separate type from
+/// the model-13/action-14 children emitted by the rooted model-13 family:
+/// remc2 uses the same `sub_32160` motion callback but a different particle
+/// threshold (74/67) and constructor path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Level2Model59SmokeChild {
+    pub source_entity_index: u16,
+    pub entity_rng: u16,
+    pub source_class: u8,
+    pub model: u8,
+    pub action: u8,
+    pub max_life: i16,
+    pub life: i16,
+    pub max_speed: i16,
+    pub actual_speed: i16,
+    pub dword_0x10: i32,
+    pub particle_index: u16,
+    pub yaw: i16,
+    pub control_flags: u32,
     pub position: Position,
     pub phase: u8,
     pub drawing_enabled: bool,
@@ -4905,6 +4931,8 @@ pub struct Level2EconomyState {
     authored_model32: Vec<Level2AuthoredModel32Source>,
     baseline_authored_model59: Vec<Level2AuthoredModel59Source>,
     authored_model59: Vec<Level2AuthoredModel59Source>,
+    baseline_model59_smoke_children: Vec<Level2Model59SmokeChild>,
+    model59_smoke_children: Vec<Level2Model59SmokeChild>,
     baseline_authored_model53: Vec<Level2AuthoredModel53Source>,
     authored_model53: Vec<Level2AuthoredModel53Source>,
     baseline_authored_model5_water_splashes: Vec<Level2AuthoredModel5WaterSplashSource>,
@@ -5130,6 +5158,8 @@ impl Level2EconomyState {
             authored_model32: Vec::new(),
             baseline_authored_model59: Vec::new(),
             authored_model59: Vec::new(),
+            baseline_model59_smoke_children: Vec::new(),
+            model59_smoke_children: Vec::new(),
             baseline_authored_model53: Vec::new(),
             authored_model53: Vec::new(),
             baseline_authored_model5_water_splashes: Vec::new(),
@@ -5302,6 +5332,11 @@ impl Level2EconomyState {
     #[must_use]
     pub fn authored_model59(&self) -> &[Level2AuthoredModel59Source] {
         &self.authored_model59
+    }
+
+    #[must_use]
+    pub fn model59_smoke_children(&self) -> &[Level2Model59SmokeChild] {
+        &self.model59_smoke_children
     }
 
     #[must_use]
@@ -6012,25 +6047,17 @@ impl Level2EconomyState {
         authored_index: u16,
         position: Position,
     ) -> Option<Level2AuthoredModel59Source> {
+        // `ArriveCheckpoint_4EB50` checks the shared NewEvent free count
+        // before it consumes either constructor RNG draw.
+        if self.free_slots.len() < 32 {
+            return None;
+        }
         let source_entity_index = self.allocate_slot()?;
         let initial_rng = self.new_event_rng(source_entity_index);
         let life_rng = level2_next_rng16(initial_rng);
         let max_life = i16::try_from(life_rng % 0x64).expect("checkpoint life fits i16") + 800;
         let speed_rng = level2_next_rng16(life_rng);
         let actual_speed = i16::try_from(speed_rng % 0x11).expect("checkpoint speed fits i16");
-        if self
-            .map_chains
-            .sync_entity(RenderableMapSeed {
-                entity_index: source_entity_index,
-                active: true,
-                x: position.x,
-                y: position.y,
-            })
-            .is_err()
-        {
-            self.release_slot(source_entity_index, None);
-            return None;
-        }
         let source = Level2AuthoredModel59Source {
             source_entity_index,
             entity_id: source_entity_index,
@@ -6043,8 +6070,8 @@ impl Level2EconomyState {
             life: max_life,
             actual_speed,
             // NewEvent starts with dword 8; ArriveCheckpoint applies
-            // `(byte0 & 0xf6) | 1`, yielding the little-endian dword 9.
-            control_flags: 9,
+            // `(byte0 & 0xf6) | 1`, yielding the little-endian control dword 1.
+            control_flags: 1,
             source_byte_3e: source_entity_index as u8,
             position,
             phase: source_entity_index as u8,
@@ -6056,25 +6083,163 @@ impl Level2EconomyState {
         Some(source)
     }
 
-    /// The full action-64 visual callback is a later presentation slice. Keep
-    /// the live source cursor observable now: advance byte 0x3E/phase and
-    /// retain the map row without inventing effects not yet source-backed.
+    fn allocate_model59_smoke_child(&mut self, position: Position) -> Option<u16> {
+        // `SetParticleSmoke3B_4E9E0` advances the process-global stream before
+        // `SetSmoke4_4EAA0` attempts NewEvent. The draw survives failure.
+        self.global_rng = level2_next_rng32(self.global_rng);
+        let source_entity_index = self.allocate_slot()?;
+        let initial_rng = self.new_event_rng(source_entity_index);
+        let entity_rng = level2_next_rng16(initial_rng);
+        let actual_speed =
+            i16::try_from(entity_rng % 0x35 + 51).expect("model-59 smoke child speed fits");
+        if self
+            .map_chains
+            .sync_entity(RenderableMapSeed {
+                entity_index: source_entity_index,
+                active: true,
+                x: position.x,
+                y: position.y,
+            })
+            .is_err()
+        {
+            self.release_slot(source_entity_index, Some(entity_rng));
+            return None;
+        }
+        self.source_rng.insert(source_entity_index, entity_rng);
+        self.model59_smoke_children.push(Level2Model59SmokeChild {
+            source_entity_index,
+            entity_rng,
+            source_class: 10,
+            model: 13,
+            action: 13,
+            max_life: 32,
+            life: 32,
+            max_speed: 30,
+            actual_speed,
+            dword_0x10: 0,
+            particle_index: 67,
+            yaw: 0,
+            control_flags: 0x0002_0000,
+            position,
+            phase: source_entity_index as u8,
+            drawing_enabled: true,
+            active: true,
+        });
+        Some(source_entity_index)
+    }
+
+    /// Advance the authored action-64 checkpoint callback. The parent emits
+    /// one model-13/action-13 smoke child per successful callback allocation;
+    /// the child then follows the source `sub_32160` motion/expiry path.
     pub fn step_authored_model59_slot(&mut self, source_slot: u16) -> bool {
-        let Some(source) = self
+        let Some(source_index) = self
             .authored_model59
-            .iter_mut()
-            .find(|source| source.active && source.source_entity_index == source_slot)
+            .iter()
+            .position(|source| source.active && source.source_entity_index == source_slot)
         else {
             return false;
         };
+        let life_before = self.authored_model59[source_index].life;
+        let mut source = self.authored_model59[source_index];
+        source.life = source.life.wrapping_sub(1);
+        if life_before < 0 {
+            source.drawing_enabled = false;
+            source.active = true;
+            source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
+            source.phase = source.phase.wrapping_add(1);
+            self.source_rng.insert(source_slot, source.entity_rng);
+            self.authored_model59[source_index] = source;
+            return true;
+        }
+
+        let mut smoke_position = source.position;
+        source.entity_rng = level2_next_rng16(source.entity_rng);
+        smoke_position.x = smoke_position.x.wrapping_add(source.entity_rng % 0xA0);
+        source.entity_rng = level2_next_rng16(source.entity_rng);
+        smoke_position.z = smoke_position
+            .z
+            .wrapping_add(i16::try_from(source.entity_rng % 0xA0).expect("smoke z offset"));
+        if let Some(child_slot) = self.allocate_model59_smoke_child(smoke_position) {
+            // `AddParticleSmoke0A_3D` consumes the parent's third draw only
+            // after SetSmoke4 returns a live child.
+            source.entity_rng = level2_next_rng16(source.entity_rng);
+            if let Some(child) = self
+                .model59_smoke_children
+                .iter_mut()
+                .find(|child| child.source_entity_index == child_slot)
+            {
+                child.actual_speed = child
+                    .actual_speed
+                    .wrapping_add(source.actual_speed)
+                    .wrapping_add(
+                        i16::try_from(source.entity_rng % 0x4D)
+                            .expect("model-59 smoke parent speed draw fits"),
+                    );
+            }
+        }
         source.source_byte_3e = source.source_byte_3e.wrapping_add(1);
         source.phase = source.phase.wrapping_add(1);
+        self.source_rng.insert(source_slot, source.entity_rng);
+        self.authored_model59[source_index] = source;
+        true
+    }
+
+    /// Advance one model-59 smoke child through the pinned `sub_32160`
+    /// callback. Its particle ramp differs from the rooted model-13 family:
+    /// it rises toward selector 74 and falls back toward selector 67.
+    pub fn step_model59_smoke_child_slot(&mut self, source_slot: u16) -> bool {
+        let Some(child_index) = self
+            .model59_smoke_children
+            .iter()
+            .position(|child| child.active && child.source_entity_index == source_slot)
+        else {
+            return false;
+        };
+        let mut child = self.model59_smoke_children[child_index];
+        let life_before = child.life;
+        child.life = child.life.wrapping_sub(1);
+        if life_before < 0 {
+            child.drawing_enabled = false;
+            child.active = true;
+            child.phase = child.phase.wrapping_add(1);
+            self.model59_smoke_children[child_index] = child;
+            self.map_chains
+                .sync_entity(RenderableMapSeed {
+                    entity_index: source_slot,
+                    active: true,
+                    x: child.position.x,
+                    y: child.position.y,
+                })
+                .expect("Level 2 model-59 smoke child fits the map chain");
+            return true;
+        }
+        child.actual_speed = (child.actual_speed - 4).clamp(64, 128);
+        let mut predicted = child.position;
+        predicted.z = predicted
+            .z
+            .wrapping_add(child.actual_speed)
+            .max(self.terrain.ground_height(predicted));
+        child.dword_0x10 += 1;
+        if child.dword_0x10 < 16 {
+            crate::move_entity(&mut predicted, child.yaw, 0, child.max_speed);
+            child.max_speed = (child.max_speed - 52).clamp(30, 1024);
+            if child.dword_0x10 & 1 == 0 && child.particle_index < 74 {
+                child.particle_index += 1;
+            }
+        }
+        if child.life < 6 && child.particle_index > 67 {
+            child.particle_index -= 1;
+        }
+        child.position = predicted;
+        child.phase = child.phase.wrapping_add(1);
+        self.model59_smoke_children[child_index] = child;
+        self.source_rng.insert(source_slot, child.entity_rng);
         self.map_chains
             .sync_entity(RenderableMapSeed {
                 entity_index: source_slot,
                 active: true,
-                x: source.position.x,
-                y: source.position.y,
+                x: child.position.x,
+                y: child.position.y,
             })
             .is_ok()
     }
@@ -8960,6 +9125,16 @@ impl Level2EconomyState {
             visit(
                 source.source_entity_index,
                 Level2DynamicArenaKind::AuthoredModel59,
+            );
+        }
+        for child in self
+            .model59_smoke_children
+            .iter()
+            .filter(|child| child.active)
+        {
+            visit(
+                child.source_entity_index,
+                Level2DynamicArenaKind::Model59SmokeChild,
             );
         }
         for source in self.authored_model53.iter().filter(|source| source.active) {
@@ -12192,6 +12367,16 @@ impl Level2EconomyState {
             .collect::<Vec<_>>();
         self.authored_model59.retain(|source| source.active);
         for (slot, entity_rng) in reclaimed_model59 {
+            self.release_slot(slot, Some(entity_rng));
+        }
+        let reclaimed_model59_smoke_children = self
+            .model59_smoke_children
+            .iter()
+            .filter(|child| !child.active)
+            .map(|child| (child.source_entity_index, child.entity_rng))
+            .collect::<Vec<_>>();
+        self.model59_smoke_children.retain(|child| child.active);
+        for (slot, entity_rng) in reclaimed_model59_smoke_children {
             let _ = self.map_chains.sync_entity(RenderableMapSeed {
                 entity_index: slot,
                 active: false,
@@ -12767,6 +12952,32 @@ impl Level2EconomyState {
             hasher.update(source.position.x.to_le_bytes());
             hasher.update(source.position.y.to_le_bytes());
             hasher.update(source.position.z.to_le_bytes());
+        }
+        if !self.model59_smoke_children.is_empty() {
+            hasher.update(b"level2-model59-smoke-child-v1");
+            for child in &self.model59_smoke_children {
+                hasher.update(child.source_entity_index.to_le_bytes());
+                hasher.update(child.entity_rng.to_le_bytes());
+                hasher.update([
+                    child.source_class,
+                    child.model,
+                    child.action,
+                    child.phase,
+                    u8::from(child.drawing_enabled),
+                    u8::from(child.active),
+                ]);
+                hasher.update(child.max_life.to_le_bytes());
+                hasher.update(child.life.to_le_bytes());
+                hasher.update(child.max_speed.to_le_bytes());
+                hasher.update(child.actual_speed.to_le_bytes());
+                hasher.update(child.dword_0x10.to_le_bytes());
+                hasher.update(child.particle_index.to_le_bytes());
+                hasher.update(child.yaw.to_le_bytes());
+                hasher.update(child.control_flags.to_le_bytes());
+                hasher.update(child.position.x.to_le_bytes());
+                hasher.update(child.position.y.to_le_bytes());
+                hasher.update(child.position.z.to_le_bytes());
+            }
         }
         hasher.update(b"level2-authored-model53-v1");
         for source in &self.authored_model53 {
@@ -13390,6 +13601,7 @@ impl Level2EconomyState {
         self.authored_switch_producers = self.baseline_authored_switch_producers.clone();
         self.authored_model32 = self.baseline_authored_model32.clone();
         self.authored_model59 = self.baseline_authored_model59.clone();
+        self.model59_smoke_children = self.baseline_model59_smoke_children.clone();
         self.authored_model53 = self.baseline_authored_model53.clone();
         self.authored_model5_water_splashes = self.baseline_authored_model5_water_splashes.clone();
         self.model13_spawned_children = self.baseline_model13_spawned_children.clone();
@@ -16463,6 +16675,7 @@ pub enum Level2DynamicArenaKind {
     AuthoredSwitchProducer,
     AuthoredModel32,
     AuthoredModel59,
+    Model59SmokeChild,
     AuthoredModel53,
     AuthoredModel5WaterSplash,
     BeyondSightPulseEffect,
@@ -16602,6 +16815,7 @@ pub const fn level2_dynamic_arena_family(kind: Level2DynamicArenaKind) -> u8 {
         Level2DynamicArenaKind::AuthoredSwitchProducer => 27,
         Level2DynamicArenaKind::AuthoredModel32 => 29,
         Level2DynamicArenaKind::AuthoredModel59 => 28,
+        Level2DynamicArenaKind::Model59SmokeChild => 34,
         Level2DynamicArenaKind::AuthoredModel53 => 32,
         Level2DynamicArenaKind::AuthoredModel5WaterSplash => 33,
         Level2DynamicArenaKind::BeyondSightPulseEffect => 14,
@@ -20389,6 +20603,9 @@ impl Level2ResetSession {
             }
             Level2DynamicArenaKind::AuthoredModel59 => {
                 self.economy.step_authored_model59_slot(source_slot)
+            }
+            Level2DynamicArenaKind::Model59SmokeChild => {
+                self.economy.step_model59_smoke_child_slot(source_slot)
             }
             Level2DynamicArenaKind::AuthoredModel53 => {
                 self.economy.step_authored_model53_slot(source_slot)
@@ -37610,10 +37827,13 @@ mod tests {
                 checkpoint.position.z,
                 session.terrain.ground_height(position)
             );
-            assert_eq!(checkpoint.life, checkpoint.max_life);
+            // The live source cursor revisits newly allocated model-59 rows
+            // in the same runagain sweep, consuming the first action-64 life
+            // tick before this production assertion observes them.
+            assert_eq!(checkpoint.life, checkpoint.max_life - 1);
             assert!((800..=899).contains(&checkpoint.max_life));
             assert!((0..=16).contains(&checkpoint.actual_speed));
-            assert_eq!(checkpoint.control_flags, 9);
+            assert_eq!(checkpoint.control_flags, 1);
         }
         assert!(
             !session
@@ -38028,10 +38248,19 @@ mod tests {
             checkpoint.position.z,
             session.terrain.ground_height(checkpoint_position)
         );
-        assert_eq!(checkpoint.life, checkpoint.max_life);
+        // The newly allocated row is visited by the same source runagain
+        // sweep, so its action-64 callback consumes one life tick.
+        assert_eq!(checkpoint.life, checkpoint.max_life - 1);
         assert!((800..=899).contains(&checkpoint.max_life));
         assert!((0..=16).contains(&checkpoint.actual_speed));
-        assert_eq!(checkpoint.control_flags, 9);
+        assert_eq!(checkpoint.control_flags, 1);
+        assert!(
+            !session
+                .economy()
+                .map_chains()
+                .is_linked(checkpoint.source_entity_index),
+            "ArriveCheckpoint writes a direct position and does not link the parent"
+        );
         // The newly allocated row is visited by the same source runagain
         // sweep once, so the constructor seed has advanced by one callback.
         assert_eq!(
@@ -38040,6 +38269,44 @@ mod tests {
         );
         assert!(checkpoint.drawing_enabled);
         assert!(checkpoint.active);
+        let smoke_child = session
+            .economy()
+            .model59_smoke_children()
+            .first()
+            .copied()
+            .expect("checkpoint callback must allocate a model-13 smoke child");
+        assert_eq!(
+            (
+                smoke_child.source_class,
+                smoke_child.model,
+                smoke_child.action,
+                smoke_child.max_life,
+                smoke_child.life,
+                smoke_child.particle_index,
+                smoke_child.control_flags,
+            ),
+            (10, 13, 13, 32, 31, 67, 0x0002_0000)
+        );
+        assert_eq!(
+            smoke_child.phase,
+            (smoke_child.source_entity_index as u8).wrapping_add(1)
+        );
+        assert!(
+            session
+                .economy()
+                .map_chains()
+                .is_linked(smoke_child.source_entity_index)
+        );
+        assert!(session.dispatch_events().iter().any(|event| {
+            matches!(
+                event,
+                Level2DispatchEvent::DynamicArena {
+                    source_slot,
+                    kind: Level2DynamicArenaKind::Model59SmokeChild,
+                    ..
+                } if *source_slot == smoke_child.source_entity_index
+            )
+        }));
         assert!(
             session
                 .economy()
@@ -38048,13 +38315,310 @@ mod tests {
                 .any(|source| source.authored_index == 344)
         );
         assert_eq!(session.economy().authored_model59().len(), 1);
+        assert_eq!(session.economy().model59_smoke_children().len(), 1);
 
         session.reset();
         assert_eq!(
             session.economy().authored_model59().len(),
             baseline_model59_count
         );
+        assert!(session.economy().model59_smoke_children().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_model59_checkpoint_smoke_constructor_rng_and_capacity_gate() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 model-59 smoke session");
+        let position = session
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 343)
+            .expect("authored checkpoint row")
+            .world_position(0);
+        let initial_global = session.economy().global_rng;
+        let checkpoint = session
+            .economy_mut()
+            .allocate_authored_model59(343, position)
+            .expect("checkpoint constructor has the source 32-row capacity");
+        let expected_life_rng = level2_next_rng16(
+            checkpoint
+                .source_entity_index
+                .wrapping_add(initial_global as u16),
+        );
+        let expected_parent_rng = level2_next_rng16(expected_life_rng);
+        assert_eq!(checkpoint.max_life, (expected_life_rng % 0x64) as i16 + 800);
+        assert_eq!(checkpoint.actual_speed, (expected_parent_rng % 0x11) as i16);
+
+        let parent_rng_before_callback = checkpoint.entity_rng;
+        let global_before_callback = session.economy().global_rng;
+        assert!(
+            session
+                .economy_mut()
+                .step_authored_model59_slot(checkpoint.source_entity_index)
+        );
+        let parent_rng_after_first = level2_next_rng16(parent_rng_before_callback);
+        let parent_rng_after_two = level2_next_rng16(parent_rng_after_first);
+        let parent_rng_after_child = level2_next_rng16(parent_rng_after_two);
+        let child = session
+            .economy()
+            .model59_smoke_children()
+            .first()
+            .copied()
+            .expect("checkpoint callback allocates a smoke child");
+        let child_initial_rng = level2_next_rng16(
+            child
+                .source_entity_index
+                .wrapping_add(level2_next_rng32(global_before_callback) as u16),
+        );
+        let expected_child_speed = (child_initial_rng % 0x35) as i16
+            + 51
+            + checkpoint.actual_speed
+            + (parent_rng_after_child % 0x4D) as i16;
+        assert_eq!(
+            (
+                session.economy().global_rng,
+                parent_rng_after_child,
+                child.entity_rng,
+                child.actual_speed,
+                child.life,
+                child.particle_index,
+            ),
+            (
+                level2_next_rng32(global_before_callback),
+                parent_rng_after_child,
+                child_initial_rng,
+                expected_child_speed,
+                32,
+                67,
+            )
+        );
+        assert!(
+            session
+                .economy_mut()
+                .step_model59_smoke_child_slot(child.source_entity_index)
+        );
+        let stepped_child = session
+            .economy()
+            .model59_smoke_children()
+            .first()
+            .copied()
+            .expect("smoke child remains live after its first callback");
+        assert_eq!(
+            (
+                stepped_child.life,
+                stepped_child.actual_speed,
+                stepped_child.dword_0x10,
+                stepped_child.particle_index,
+            ),
+            (31, (expected_child_speed - 4).clamp(64, 128), 1, 67)
+        );
+        let child_position_before_zero = stepped_child.position;
+        let child_phase_before_zero = stepped_child.phase;
+        let child_rng_before_zero = stepped_child.entity_rng;
+        session
+            .economy_mut()
+            .model59_smoke_children
+            .first_mut()
+            .expect("model-59 child for life-zero callback")
+            .life = 0;
+        assert!(
+            session
+                .economy_mut()
+                .step_model59_smoke_child_slot(stepped_child.source_entity_index)
+        );
+        let child_after_zero = session
+            .economy()
+            .model59_smoke_children()
+            .first()
+            .copied()
+            .expect("model-59 child survives life-zero callback");
+        assert_eq!(child_after_zero.life, -1);
+        assert!(child_after_zero.drawing_enabled);
+        assert_eq!(
+            child_after_zero.phase,
+            child_phase_before_zero.wrapping_add(1)
+        );
+        assert_ne!(child_after_zero.position, child_position_before_zero);
+        assert_eq!(child_after_zero.entity_rng, child_rng_before_zero);
+
+        let child_position_before_negative = child_after_zero.position;
+        let child_phase_before_negative = child_after_zero.phase;
+        session
+            .economy_mut()
+            .model59_smoke_children
+            .first_mut()
+            .expect("model-59 child for terminal callback")
+            .life = -1;
+        assert!(
+            session
+                .economy_mut()
+                .step_model59_smoke_child_slot(child_after_zero.source_entity_index)
+        );
+        let child_after_negative = session
+            .economy()
+            .model59_smoke_children()
+            .first()
+            .copied()
+            .expect("model-59 child remains retained after terminal callback");
+        assert_eq!(child_after_negative.life, -2);
+        assert!(!child_after_negative.drawing_enabled);
+        assert_eq!(
+            child_after_negative.phase,
+            child_phase_before_negative.wrapping_add(1)
+        );
+        assert_eq!(
+            child_after_negative.position,
+            child_position_before_negative
+        );
+
+        let mut zero_parent = inspection
+            .level2_reset_session()
+            .expect("life-zero model-59 parent session");
+        let zero_parent_position = zero_parent
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 343)
+            .expect("authored checkpoint row for life-zero parent")
+            .world_position(0);
+        let zero_parent_source = zero_parent
+            .economy_mut()
+            .allocate_authored_model59(343, zero_parent_position)
+            .expect("life-zero parent constructor");
+        let zero_parent_phase = zero_parent_source.phase;
+        zero_parent
+            .economy_mut()
+            .authored_model59
+            .first_mut()
+            .expect("life-zero parent source")
+            .life = 0;
+        assert!(
+            zero_parent
+                .economy_mut()
+                .step_authored_model59_slot(zero_parent_source.source_entity_index)
+        );
+        let zero_parent_after = zero_parent
+            .economy()
+            .authored_model59()
+            .first()
+            .copied()
+            .expect("life-zero parent remains live");
+        assert_eq!(zero_parent_after.life, -1);
+        assert!(zero_parent_after.drawing_enabled);
+        assert_eq!(zero_parent_after.phase, zero_parent_phase.wrapping_add(1));
+        assert_eq!(zero_parent.economy().model59_smoke_children().len(), 1);
+
+        let mut negative_parent = inspection
+            .level2_reset_session()
+            .expect("terminal model-59 parent session");
+        let negative_parent_position = negative_parent
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 343)
+            .expect("authored checkpoint row for terminal parent")
+            .world_position(0);
+        let negative_parent_source = negative_parent
+            .economy_mut()
+            .allocate_authored_model59(343, negative_parent_position)
+            .expect("terminal parent constructor");
+        let negative_parent_global = negative_parent.economy().global_rng;
+        let negative_parent_rng = negative_parent_source.entity_rng;
+        let negative_parent_phase = negative_parent_source.phase;
+        negative_parent
+            .economy_mut()
+            .authored_model59
+            .first_mut()
+            .expect("terminal parent source")
+            .life = -1;
+        assert!(
+            negative_parent
+                .economy_mut()
+                .step_authored_model59_slot(negative_parent_source.source_entity_index)
+        );
+        let negative_parent_after = negative_parent
+            .economy()
+            .authored_model59()
+            .first()
+            .copied()
+            .expect("terminal parent remains retained");
+        assert_eq!(negative_parent_after.life, -2);
+        assert!(!negative_parent_after.drawing_enabled);
+        assert_eq!(
+            negative_parent_after.phase,
+            negative_parent_phase.wrapping_add(1)
+        );
+        assert_eq!(negative_parent_after.entity_rng, negative_parent_rng);
+        assert_eq!(negative_parent.economy().global_rng, negative_parent_global);
+        assert!(
+            negative_parent
+                .economy()
+                .model59_smoke_children()
+                .is_empty()
+        );
+
+        let mut exhausted = inspection
+            .level2_reset_session()
+            .expect("second Level 2 model-59 smoke session");
+        let exhausted_position = exhausted
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 343)
+            .expect("authored checkpoint row")
+            .world_position(0);
+        let exhausted_checkpoint = exhausted
+            .economy_mut()
+            .allocate_authored_model59(343, exhausted_position)
+            .expect("checkpoint constructor allocates before exhaustion");
+        let global_before_exhaustion_callback = exhausted.economy().global_rng;
+        let parent_rng_before_exhaustion_callback = exhausted_checkpoint.entity_rng;
+        exhausted.economy_mut().free_slots.clear();
+        assert!(
+            exhausted
+                .economy_mut()
+                .step_authored_model59_slot(exhausted_checkpoint.source_entity_index)
+        );
+        let exhausted_parent = exhausted
+            .economy()
+            .authored_model59()
+            .first()
+            .copied()
+            .expect("exhausted checkpoint remains live");
+        assert!(exhausted.economy().model59_smoke_children().is_empty());
+        assert_eq!(
+            (exhausted.economy().global_rng, exhausted_parent.entity_rng,),
+            (
+                level2_next_rng32(global_before_exhaustion_callback),
+                level2_next_rng16(level2_next_rng16(parent_rng_before_exhaustion_callback)),
+            )
+        );
+
+        let mut gated = inspection
+            .level2_reset_session()
+            .expect("third Level 2 model-59 smoke session");
+        let gated_position = gated
+            .mission()
+            .authored_features()
+            .iter()
+            .find(|feature| feature.index == 343)
+            .expect("authored checkpoint row")
+            .world_position(0);
+        gated.economy_mut().free_slots.truncate(31);
+        let gated_global = gated.economy().global_rng;
+        assert!(
+            gated
+                .economy_mut()
+                .allocate_authored_model59(343, gated_position)
+                .is_none()
+        );
+        assert_eq!(gated.economy().global_rng, gated_global);
+        assert_eq!(gated.economy().free_slot_count(), 31);
     }
 
     #[test]
