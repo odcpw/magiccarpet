@@ -38023,6 +38023,108 @@ mod tests {
     }
 
     #[test]
+    fn level_two_outer_turn_family12_honors_remote_owner_and_return_hand_override() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 family-12 owner-selection session");
+        let baseline_hash = session.campaign_state_hash();
+        let source_position = session.shared_spells().pickups()[0].position;
+
+        let configure_remote_owner =
+            |session: &mut Level2ResetSession, source_position: Position| {
+                // Keep the local candidate overlapping only in the source list.
+                // Its non-zero SpellEnabled relation makes sub_68FF0 continue to
+                // the next live model-0 player instead of claiming the row.
+                session.shared_spells_mut().players[0].enabled_spell_holders[12] = 999;
+                session.shared_spells_mut().players[0].record[268 + 12 * 2..270 + 12 * 2]
+                    .copy_from_slice(&999_u16.to_le_bytes());
+                let shared = session.shared_spells_mut();
+                let remote = &mut shared.player_entities[1];
+                remote.active = true;
+                remote.model = 0;
+                remote.life = 1;
+                remote.position = source_position;
+                remote.record[2] = 1;
+                remote.record[68] = 0;
+                remote.record[80..82].copy_from_slice(&source_position.x.to_le_bytes());
+                remote.record[82..84].copy_from_slice(&source_position.y.to_le_bytes());
+                remote.record[84..86].copy_from_slice(&source_position.z.to_le_bytes());
+                shared.players[1].enabled_spell_holders[12] = 0;
+                shared.pickups[0].phase = 0;
+                shared.pickups[0].record[66] = 0;
+                // Source word_0x4A_74: non-zero value 2 selects the left hand,
+                // even when both raw hand slots are already occupied.
+                shared.pickups[0].record[78..80].copy_from_slice(&2_i16.to_le_bytes());
+                shared.players[0].left_spell_slot_raw = 4;
+                shared.players[0].right_spell_slot_raw = 5;
+                shared.players[0].record[554..556].copy_from_slice(&4_i16.to_le_bytes());
+                shared.players[0].record[556..558].copy_from_slice(&5_i16.to_le_bytes());
+                shared.players[1].left_spell_slot_raw = 4;
+                shared.players[1].right_spell_slot_raw = 5;
+                shared.players[1].record[554..556].copy_from_slice(&4_i16.to_le_bytes());
+                shared.players[1].record[556..558].copy_from_slice(&5_i16.to_le_bytes());
+                // Keep local player 111 overlapping too; its occupied
+                // SpellEnabled relation, rather than distance, must be the
+                // reason the source scan continues to remote player 112.
+                session.state.position = source_position;
+            };
+        configure_remote_owner(&mut session, source_position);
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let outcome = session
+            .dispatch_events()
+            .iter()
+            .find_map(|event| match event {
+                Level2DispatchEvent::SpellAcquisition {
+                    source_slot: 38,
+                    family: 12,
+                    result: Some(outcome),
+                    ..
+                } => Some(*outcome),
+                _ => None,
+            })
+            .expect("outer cursor acquires the row-38 family-12 holder");
+        assert_eq!(outcome.parent_entity_index, 112);
+        assert_eq!(outcome.hand, crate::spell_activation::SpellHand::Left);
+        assert_eq!(
+            session.shared_spells().players[0].enabled_spell_holders[12],
+            999
+        );
+        assert_eq!(
+            session.shared_spells().players[1].enabled_spell_holders[12],
+            38
+        );
+        assert_eq!(session.shared_spells().players[1].left_spell_slot_raw, 12);
+        assert_eq!(session.shared_spells().players[1].right_spell_slot_raw, 5);
+        assert_eq!(session.shared_spells().pickups()[0].action, 36);
+        assert_eq!(
+            session.shared_spells().pickups()[0].record_bytes()[78..80],
+            [0, 0]
+        );
+        let stepped_hash = session.campaign_state_hash();
+        assert_ne!(stepped_hash, baseline_hash);
+
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        assert_eq!(
+            session.shared_spells().players[0].enabled_spell_holders[12],
+            0
+        );
+        assert_eq!(
+            session.shared_spells().players[1].enabled_spell_holders[12],
+            0
+        );
+
+        configure_remote_owner(&mut session, source_position);
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.campaign_state_hash(), stepped_hash);
+        session.reset();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
     fn level_two_setspell_clamps_holder_payload_but_preserves_raw_hand_tier() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
