@@ -39354,6 +39354,22 @@ mod tests {
     }
 
     #[test]
+    fn level_two_goat_production_rejects_wrong_source_row_order() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut tampered = inspection;
+        tampered.entities.swap(39, 40);
+        let error = tampered
+            .level2_reset_session()
+            .expect_err("swapped authored Goat rows must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("reset source slot order mismatch")
+        );
+    }
+
+    #[test]
     fn level_two_outer_turn_dispatches_each_source_pass_in_order() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 package");
