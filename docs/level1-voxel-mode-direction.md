@@ -1,16 +1,17 @@
 # Level 1, VoxelMode, and future structure direction
 
-Date: 2026-07-26
-Status: approved planning direction; implementation remains gated
+Date: 2026-08-01
+Status: approved direction; Level 1 baseline gate closed, VoxelMode implementation authorized
 Track: `track:shared`
 
 ## Decision
 
-Finish and qualify the native Level 1 Unity experience first. Preserve that
-result as an immutable baseline. Then add an explicit, owner-local
-**VoxelMode** as a separate world and rendering path for one independently
-authored, hollow pointy house. Do not layer voxel buildings over the qualified
-native frame and do not make voxel work a new blocker for Level 1.
+The native Level 1 Unity experience is qualified and preserved as an immutable
+baseline. Add an explicit, owner-local **VoxelMode** as a separate world and
+rendering path for exactly one retained BUILD-29 private-lab house. Its exterior
+is owner-derived; its rooms and furniture are newly authored. Do not layer voxel
+buildings over the qualified native frame and do not make voxel work a new
+blocker for Level 1.
 
 In parallel, Track S may continue its existing bounded-structure research with
 wholly original assets and its own technical gates. The private Level 1
@@ -46,13 +47,64 @@ VoxelMode therefore starts with these invariants:
 This gives the experiment room to become visually and physically ambitious
 without quietly changing what “Level 1 complete” means.
 
+## Current Unity/Rust bridge finding
+
+The completed private Level 1 client confirms that houses are not Unity
+prefabs. Rust owns the 47 class-10/model-45 house rows, their source positions,
+building indices, life, occupants, ownership, action lifecycle and source
+collision extents. Fatal damage still follows the native house action 53 path,
+including BUILD-footprint removal and resident/possession consequences.
+
+The qualified Unity route receives a complete native 320x200 indexed frame and
+does not receive recovered house depth. Its current C ABI entity projection is
+also intentionally too narrow for a structure renderer: it does not expose
+`building_index`, life, occupants, ownership or collision half-extents. The
+existing Unity runtime therefore cannot replace a house by swapping a prefab.
+
+The first shared-runtime implementation slice must add a profile-scoped,
+opt-in, additive sidecar rather than extending `McEntitySnapshotV2` or the
+ordinary event journal. It carries at least:
+
+- source entity ID and building/profile ID;
+- generation and simulation tick;
+- source position and action/active state;
+- life, occupants and owner state;
+- source collision half-width, half-depth and half-height; and
+- an ordered damage, destruction-start, footprint-removal and possession
+  sequence with a bounded deterministic cursor.
+
+The sidecar is disabled unless `-mc-voxel-level1` configures the private
+profile before the first simulation step. With the profile off, it allocates no
+VoxelMode state, adds nothing to ordinary hashes and changes no existing ABI
+row or event code. A dedicated journal captures the target, position and
+payload while Rust processes the authoritative Fireball impact; Unity must not
+reconstruct the hit target from proximity.
+
+The VoxelMode renderer consumes that contract after mode selection and anchors
+visuals with the existing `SourceToUnity(x, y, z)` transform. Gameplay keeps the
+source collision AABB and house authority; the Blender house envelope is only
+visual presentation. This matters because the retained BUILD-29 lookdev
+envelope and the source gameplay blocker are different scales. VoxelMode must
+not silently substitute the visible mesh dimensions for the collision target.
+
+The clean startup seam is the existing pre-assembly branch in
+`MagicCarpetRuntime.Awake`/`ConfigureWorld`: add the explicit
+`-mc-voxel-level1` profile, skip the native indexed-frame composite, create a
+`VoxelWorldRoot`, and leave `-mc-qualified` behavior byte-for-byte unchanged.
+VoxelMode reuses the upgraded-GFX branch's accepted 3D terrain, actor, input,
+camera and HUD providers and substitutes one building provider; it must not
+copy those registries. Do not overload `-mc-debug`, and do not put VoxelMode
+objects or hashes into the qualified corpus.
+
 ## Program order
 
-### Phase 0 — complete Level 1
+### Phase 0 — complete Level 1 (closed)
 
-`mc-dl0r.17.11.20` remains the P0 gate: clear the declared fidelity flags and
-publish the final desktop qualification. No private VoxelMode implementation
-bead is actionable before this closes.
+`mc-dl0r.17.11.20` is closed. The final desktop qualification cleared the
+declared fidelity flags and published the pinned owner-cache, native plug-in,
+managed runtime, build, capture and corpus evidence. The VoxelMode baseline and
+renderer decisions are recorded in `mc-jnt0.1` and `mc-jnt0.2`; later beads
+remain gated by their own structure, provenance and performance evidence.
 
 The completed baseline records the owner cache, native plug-in, managed
 runtime, build identity, qualification corpus, captures, mode-off invariants,
@@ -82,31 +134,41 @@ snapshot, safe overload behavior, and a clean 20-minute accumulation run.
 Those numbers are owned by `mc-c4p2`; downstream work cites rather than copies
 or silently changes them.
 
+`mc-c4p2` governs the Track S `mc-9224` experiment only. The private Track P
+profile is frozen independently in `mc-jnt0.3.1`; neither branch may imply that
+budgets, fixtures or acceptance evidence are shared.
+
 Track S authors must not inspect corresponding owner-game buildings, sprites,
 screenshots, private captures, reconstructed source, or the private Level 1
 adapter while producing this kit.
 
 ### Phase 2 — private owner-local VoxelMode
 
-`mc-jnt0` is the Track P epic and is blocked by final Level 1 qualification.
-Its children form this gated chain:
+Level 1 qualification is closed. `mc-jnt0.1` and `mc-jnt0.2` are closed;
+the remaining Track P work is gated by its own contract, provenance,
+determinism, integration, performance, placement and mode-off evidence.
+The work now forms four bounded lanes:
 
 1. `mc-jnt0.1` freezes the qualified baseline and integration boundary.
 2. `mc-jnt0.2` chooses the separate renderer and synthetic-depth policy.
-3. `mc-jnt0.3` authors the private original house and freezes its structure
-   contract.
-4. `mc-jnt0.4` implements deterministic Rust structure authority.
-5. `mc-jnt0.5` builds the separate Unity presentation.
-6. `mc-jnt0.6` decides whether one named Level 1 location may receive a
-   manufactured representation.
-7. `mc-jnt0.7` accepts, limits, or rejects the experiment from evidence.
+3. `mc-jnt0.3.*` freezes `VoxelHouseManifest v1`, exports and qualifies the
+   retained BUILD-29 asset package.
+4. `mc-jnt0.4.*` implements and qualifies the isolated Rust detail authority
+   and additive sidecar.
+5. `mc-jnt0.5.*` builds and qualifies the exclusive Unity presentation.
+6. `mc-jnt0.8` defers shared-file integration until the active Level 2 and
+   upgraded-GFX writers hand off exact SHAs and one merge owner.
+7. `mc-jnt0.9` selects the lowest stable active BUILD-29 source house;
+   `mc-jnt0.6` then accepts, limits or rejects that one placement.
+8. `mc-jnt0.7` accepts, limits or rejects the complete experiment.
 
-The private house is original and synthetic. It may evoke the broad category
-of a compact pointy-roofed house, but it is not traced, redrawn, generated
-from, or described as recovered or voxelized owner geometry. If the placement
-gate accepts a particular Level 1 location, it creates a new implementation
-slice and a separate qualification corpus; it never edits the completed Level
-1 corpus or pass criteria.
+The private asset has two explicitly different provenance layers. The exterior
+shape and palette are owner-derived BUILD-29 private-lab content; the interior
+rooms and furniture are newly authored interpretation because the owner data
+contains no interior. A tiny wholly synthetic house remains only a schema and
+unit-test fixture. Neither asset class is a Track S asset. The placement and
+VoxelMode evidence corpus never edit the completed Level 1 corpus or its pass
+criteria.
 
 ### Phase 3 — better assets and more archetypes
 
@@ -177,12 +239,20 @@ room layouts, limited furniture, and lit windows. The exporter should derive
 runtime cells from authored semantic parts rather than requiring artists to
 hand-place every cell.
 
+The v1 contract is now implemented in the private lab at
+`research/private/generated/voxel-house-lookdev/contract/`: a pinned JSON
+schema, dependency-free validator, golden synthetic fixture, negative
+fixtures, canonical semantic hash, and focused rejection/determinism tests.
+The fixture is deliberately owner-free; the retained BUILD-29 package gets its
+own provenance and export qualification in `mc-jnt0.3.2` and `.3.3`.
+
 ### Runtime authority
 
-Rust owns deterministic gameplay state:
+Rust owns deterministic VoxelMode detail state:
 
 - material, health, occupancy, support, and connection state;
-- Fireball damage commands and deterministic affected-cell ordering;
+- a mirror of source-authoritative house/Fireball occurrences and
+  deterministic affected-cell ordering;
 - supported-component discovery and detached-component IDs;
 - mass from cell volume and a versioned `density_kg_m3` material field;
 - center of mass and coarse inertia for a detached component;
@@ -198,18 +268,28 @@ Unity owns presentation:
 - pooled transient fragments, dust, sound, and cosmetic secondary breakup; and
 - profiling and visible overload diagnostics.
 
-Unity does not decide whether a support failed, which cells were damaged, or
-which authoritative component detached.
+Existing `HouseState`, terrain and collision code remain authoritative for
+Fireball targeting, house life, residents, possession, action 53, source
+collision and BUILD-footprint removal. The detail module cannot feed back into
+those systems. Unity does not decide whether a support failed, which cells were
+damaged, or which authoritative component detached.
 
 ### Collapse and material mass
 
 Each connected component computes mass and center of mass from occupied cell
 volume and its versioned material density. A support test determines whether
 the center-of-mass projection and remaining support connections are stable.
-When a component detaches, it becomes one bounded compound body or an
-authoritative coarse cluster, not one body per voxel. Impact energy may split
-it into a strictly capped number of additional clusters while cosmetic debris
-remains client-local.
+When a component detaches, it becomes one bounded compound body or a coarse
+cluster, not one body per voxel. Rust owns membership, mass, center of mass and
+the fall/topple classification. Unity may animate the bounded body and cosmetic
+debris, but no PhysX transform, collision or raycast can write gameplay state
+back to Rust.
+
+The first rendering profile uses hidden semantic cell truth plus batched
+authored masonry surfaces. The retained study has 2,252 boxes and about 27,024
+base-mesh triangles; those are authoring data, not permission to create 2,252
+GameObjects, colliders or rigid bodies. `mc-jnt0.3.1` freezes the private
+one-house caps before runtime work proceeds.
 
 Real-world density ranges can seed profiles, but gameplay density, strength,
 damage threshold, fracture behavior, and apparent rubble volume are separate
@@ -250,10 +330,15 @@ the two modes cannot remain exclusive, or provenance is unclear.
 
 ## Parallel-work rule
 
-Level 1 work continues in its current private checkout and remains the program
-priority. Track S original-asset and bounded-structure work may proceed through
-its own gates in the separate successor repository and checkout. Only one
-writer owns a checkout at a time.
+Level 2 and upgraded-GFX work continue as the active shared-runtime writers.
+Voxel schema/Blender work, the isolated Rust module and recorded-fixture Unity
+rendering may proceed in separate worktrees. Work that touches `native_v2.rs`,
+the generated C header, `NativeSim.cs`, `NativeSession.cs` or
+`MagicCarpetRuntime.cs` waits behind `mc-jnt0.8`. Only one writer owns a checkout
+and one integration owner resolves those shared seams.
+
+Track S original-asset and bounded-structure work may proceed through its own
+gates in the separate successor repository and checkout.
 
 The two programs are joined later by reviewed general lessons and documented
 interfaces, not by merging their implementations. The private deterministic
@@ -266,20 +351,15 @@ architecture decision.
 - Level 1 gate: `mc-dl0r.17.11.20` at P0.
 - Track S bounded program: `mc-9224` at P2, with new direct children
   `mc-72xz` and `mc-dl7p`; branch selection remains `mc-szx2`.
-- Track P private experiment: `mc-jnt0` at P2 with children
-  `mc-jnt0.1` through `mc-jnt0.7`; both the epic and baseline gate are blocked
-  by final Level 1 qualification.
+- Track P private experiment: `mc-jnt0` at P2. The Level 1 dependency and
+  baseline/renderer gates are closed. Asset and isolated-Rust leaves are ready;
+  shared-runtime leaves are held by deferred handoff gate `mc-jnt0.8`.
 - Future city program: `mc-w1r8` parked at P4.
 - No direct Track P/Track S blocking or parent edges were added.
-- `br ready --json` returned none of the new experiment beads as actionable.
-- `bv --robot-insights` reported `cycles: []` with data hash
-  `1651fec3ff50081a` before this document was registered.
-- After registration, scoped `bv --robot-insights` passes for both
-  `track:preservation` and `track:successor` again reported zero cycles; a
-  direct database check reported zero Track P/Track S dependency edges.
-- Standalone `br dep cycles` exceeded the practical interactive bound and was
-  stopped; this is a known tool-performance limitation, not positive cycle
-  evidence.
+- The refined graph has explicit contract, asset, isolated-Rust, shared-ABI,
+  Unity-fixture, placement and qualification dependencies. Current robot graph
+  evidence and hashes are recorded in the epic notes after each graph edit.
+- No Track P/Track S dependency edge is permitted.
 
 ## Related records
 
