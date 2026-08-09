@@ -8,7 +8,8 @@
 //! complete before primary water triangles are submitted.
 
 use crate::mode5_raster::{
-    Mode5Scanline, Mode5Span, Mode5Vertex, setup_mode5_triangle, span_from_scanline,
+    Mode5Scanline, Mode5Span, Mode5TextureAddressing, Mode5Vertex, setup_mode5_triangle,
+    span_from_scanline, tile_texture_address,
 };
 
 /// Exact byte count of the qualified MC2 night renderer table resource.
@@ -75,6 +76,54 @@ pub fn rasterize_mode26_span_from_atlas(
     tablesn: &[u8],
     framebuffer_row: &mut [u8],
 ) -> Vec<Mode26Pixel> {
+    let mut pixels = Vec::new();
+    visit_mode26_span_from_atlas(
+        span,
+        viewport_width,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        framebuffer_row,
+        Mode5TextureAddressing::Full256,
+        |pixel| pixels.push(pixel),
+    );
+    pixels
+}
+
+pub(crate) fn rasterize_mode26_span_from_tile_atlas(
+    span: Mode5Span,
+    viewport_width: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    framebuffer_row: &mut [u8],
+) -> Vec<Mode26Pixel> {
+    let mut pixels = Vec::new();
+    visit_mode26_span_from_atlas(
+        span,
+        viewport_width,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        framebuffer_row,
+        Mode5TextureAddressing::Tile32,
+        |pixel| pixels.push(pixel),
+    );
+    pixels
+}
+
+fn visit_mode26_span_from_atlas<F>(
+    span: Mode5Span,
+    viewport_width: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    framebuffer_row: &mut [u8],
+    addressing: Mode5TextureAddressing,
+    mut visitor: F,
+) where
+    F: FnMut(Mode26Pixel),
+{
     assert!(
         texture_base < texture_atlas.len(),
         "mode-26 texture base must point inside its atlas"
@@ -95,7 +144,7 @@ pub fn rasterize_mode26_span_from_atlas(
     let start = span.left_x.max(0);
     let end = span.right_x.min(viewport_width);
     if end <= start {
-        return Vec::new();
+        return;
     }
 
     let clipped = start.wrapping_sub(span.left_x);
@@ -104,17 +153,32 @@ pub fn rasterize_mode26_span_from_atlas(
     let mut pnt5 = span
         .left_pnt5
         .wrapping_add(span.dpnt5.wrapping_mul(clipped));
-    let mut pixels =
-        Vec::with_capacity(usize::try_from(end - start).expect("positive span width fits usize"));
-
     for x in start..end {
-        let texture_address = (u16::from(fixed_byte(v)) << 8) | u16::from(fixed_byte(u));
+        let texture_address = match addressing {
+            Mode5TextureAddressing::Full256 => {
+                (u16::from(fixed_byte(v)) << 8) | u16::from(fixed_byte(u))
+            }
+            Mode5TextureAddressing::Tile32 => {
+                let Some(texture_address) = tile_texture_address(u, v) else {
+                    break;
+                };
+                texture_address
+            }
+        };
         let atlas_address = texture_base
             .checked_add(usize::from(texture_address))
             .expect("mode-26 atlas address fits usize");
-        let source_index = *texture_atlas
-            .get(atlas_address)
-            .expect("mode-26 stepped texture address remains inside its source atlas");
+        let source_index = match addressing {
+            Mode5TextureAddressing::Full256 => *texture_atlas
+                .get(atlas_address)
+                .expect("mode-26 stepped texture address remains inside its source atlas"),
+            Mode5TextureAddressing::Tile32 => {
+                let Some(source_index) = texture_atlas.get(atlas_address) else {
+                    break;
+                };
+                *source_index
+            }
+        };
         let shade_address = (u16::from(fixed_byte(pnt5)) << 8) | u16::from(source_index);
         let shaded_index = tablesn[usize::from(shade_address)];
         let frame_index = usize::try_from(x).expect("clipped mode-26 X is non-negative");
@@ -131,7 +195,7 @@ pub fn rasterize_mode26_span_from_atlas(
             )
         };
         framebuffer_row[frame_index] = output_index;
-        pixels.push(Mode26Pixel {
+        visitor(Mode26Pixel {
             x,
             u,
             v,
@@ -148,8 +212,6 @@ pub fn rasterize_mode26_span_from_atlas(
         v = v.wrapping_add(span.dv);
         pnt5 = pnt5.wrapping_add(span.dpnt5);
     }
-
-    pixels
 }
 
 /// Setup and composite one complete mode-26 triangle into an indexed frame.
@@ -189,6 +251,49 @@ pub fn rasterize_mode26_triangle_from_atlas_into_framebuffer(
     tablesn: &[u8],
     framebuffer: &mut [u8],
 ) -> Vec<Mode26FramePixel> {
+    rasterize_mode26_triangle_from_atlas_with_addressing(
+        vertices,
+        viewport_width,
+        viewport_height,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        framebuffer,
+        Mode5TextureAddressing::Full256,
+    )
+}
+
+pub(crate) fn rasterize_mode26_triangle_from_tile_atlas_into_framebuffer(
+    vertices: [Mode5Vertex; 3],
+    viewport_width: i32,
+    viewport_height: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    framebuffer: &mut [u8],
+) -> Vec<Mode26FramePixel> {
+    rasterize_mode26_triangle_from_atlas_with_addressing(
+        vertices,
+        viewport_width,
+        viewport_height,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        framebuffer,
+        Mode5TextureAddressing::Tile32,
+    )
+}
+
+fn rasterize_mode26_triangle_from_atlas_with_addressing(
+    vertices: [Mode5Vertex; 3],
+    viewport_width: i32,
+    viewport_height: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    framebuffer: &mut [u8],
+    addressing: Mode5TextureAddressing,
+) -> Vec<Mode26FramePixel> {
     assert!(
         viewport_width >= 0 && viewport_height >= 0,
         "mode-26 viewport dimensions must be non-negative"
@@ -223,14 +328,24 @@ pub fn rasterize_mode26_triangle_from_atlas_into_framebuffer(
             .checked_mul(width)
             .expect("mode-26 framebuffer row offset fits usize");
         let row_end = row_start + width;
-        let pixels = rasterize_mode26_span_from_atlas(
-            span,
-            viewport_width,
-            texture_atlas,
-            texture_base,
-            tablesn,
-            &mut framebuffer[row_start..row_end],
-        );
+        let pixels = match addressing {
+            Mode5TextureAddressing::Full256 => rasterize_mode26_span_from_atlas(
+                span,
+                viewport_width,
+                texture_atlas,
+                texture_base,
+                tablesn,
+                &mut framebuffer[row_start..row_end],
+            ),
+            Mode5TextureAddressing::Tile32 => rasterize_mode26_span_from_tile_atlas(
+                span,
+                viewport_width,
+                texture_atlas,
+                texture_base,
+                tablesn,
+                &mut framebuffer[row_start..row_end],
+            ),
+        };
         frame_pixels.extend(
             pixels
                 .into_iter()
@@ -238,6 +353,94 @@ pub fn rasterize_mode26_triangle_from_atlas_into_framebuffer(
         );
     }
     frame_pixels
+}
+
+/// Visit a complete mode-26 triangle without retaining one `Mode26Pixel`
+/// record per sampled pixel. Classic HD uses this streaming seam because
+/// large profile-sized water triangles otherwise spend most of their time
+/// growing and copying temporary sample vectors.
+pub(crate) fn visit_mode26_triangle_from_tile_atlas_into_framebuffer<F>(
+    vertices: [Mode5Vertex; 3],
+    viewport_width: i32,
+    viewport_height: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    framebuffer: &mut [u8],
+    visitor: F,
+) where
+    F: FnMut(Mode26FramePixel),
+{
+    visit_mode26_triangle_from_atlas_with_addressing(
+        vertices,
+        viewport_width,
+        viewport_height,
+        texture_atlas,
+        texture_base,
+        tablesn,
+        framebuffer,
+        Mode5TextureAddressing::Tile32,
+        visitor,
+    );
+}
+
+fn visit_mode26_triangle_from_atlas_with_addressing<F>(
+    vertices: [Mode5Vertex; 3],
+    viewport_width: i32,
+    viewport_height: i32,
+    texture_atlas: &[u8],
+    texture_base: usize,
+    tablesn: &[u8],
+    framebuffer: &mut [u8],
+    addressing: Mode5TextureAddressing,
+    mut visitor: F,
+) where
+    F: FnMut(Mode26FramePixel),
+{
+    assert!(
+        viewport_width >= 0 && viewport_height >= 0,
+        "mode-26 viewport dimensions must be non-negative"
+    );
+    assert!(
+        texture_base < texture_atlas.len(),
+        "mode-26 texture base must point inside its atlas"
+    );
+    let width = usize::try_from(viewport_width).expect("viewport width fits usize");
+    let height = usize::try_from(viewport_height).expect("viewport height fits usize");
+    assert_eq!(
+        framebuffer.len(),
+        width
+            .checked_mul(height)
+            .expect("mode-26 framebuffer extent fits usize"),
+        "mode-26 framebuffer must match the viewport"
+    );
+
+    let Some(setup) = setup_mode5_triangle(vertices[0], vertices[1], vertices[2], viewport_height)
+    else {
+        return;
+    };
+    for row in setup.scanlines {
+        let Some(span) =
+            mode26_span_from_scanline(row, setup.du, setup.dv, setup.dpnt5, viewport_width)
+        else {
+            continue;
+        };
+        let row_start = usize::try_from(row.y)
+            .expect("mode-26 setup clips Y non-negative")
+            .checked_mul(width)
+            .expect("mode-26 framebuffer row offset fits usize");
+        let row_end = row_start + width;
+        visit_mode26_span_from_atlas(
+            span,
+            viewport_width,
+            texture_atlas,
+            texture_base,
+            tablesn,
+            &mut framebuffer[row_start..row_end],
+            addressing,
+            |sample| visitor(Mode26FramePixel { y: row.y, sample }),
+        );
+    }
 }
 
 fn mode26_span_from_scanline(
@@ -370,6 +573,39 @@ mod tests {
         );
         assert_eq!(pixels[0].texture_address, 0x0201);
         assert_eq!(pixels[0].shade_address, 0x0314);
+    }
+
+    #[test]
+    fn tile_atlas_addressing_aborts_span_before_out_of_range_dereference() {
+        let mut atlas = vec![0; 152 * 32 * 32];
+        let base = (151 / 8) * 32 * 256 + (151 % 8) * 32;
+        atlas[base + 0x0010] = 12;
+        let tablesn = tables();
+        let mut row = vec![77, 77];
+        let pixels = rasterize_mode26_span_from_tile_atlas(
+            Mode5Span {
+                left_x: 0,
+                right_x: 2,
+                left_u: 16 << 16,
+                left_v: 0,
+                dv: -(1 << 16),
+                ..Mode5Span::default()
+            },
+            2,
+            &atlas,
+            base,
+            &tablesn,
+            &mut row,
+        );
+        assert_eq!(pixels.len(), 1);
+        assert_eq!(
+            pixels
+                .iter()
+                .map(|pixel| pixel.texture_address)
+                .collect::<Vec<_>>(),
+            vec![0x0010]
+        );
+        assert_eq!(row, [12, 77]);
     }
 
     #[test]

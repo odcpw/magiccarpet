@@ -5,9 +5,16 @@ use std::cmp::Ordering;
 use spell_activation::{SpellActivationHolder, SpellCasterState, activate_spell};
 
 pub mod archer_tmap;
+pub mod classic_hd;
+pub mod classic_hd_display;
+pub mod classic_hd_raster;
+pub mod classic_hd_render_graph;
+pub mod classic_hd_sprites;
+pub mod classic_hd_terrain;
 pub mod combat_tmap;
 pub mod dynamic_lighting;
 pub mod economy_tmap;
+pub mod enhanced_presentation;
 pub mod firefly_tmap;
 pub mod frozen_actor_tmap;
 pub mod goat;

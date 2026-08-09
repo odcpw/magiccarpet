@@ -390,6 +390,207 @@ pub fn render_level1_source_world_frame(
     render_level1_frame(camera, resources, Some(world), Some(source_sprites), false)
 }
 
+/// Receipt for a source-ordered world-sprite pass rendered into a caller-owned
+/// profile-sized indexed plane.
+///
+/// The terrain and sky are intentionally outside this helper. Classic HD
+/// supplies those from its resolution-aware terrain graph, then uses this
+/// adapter for the complete source compositor so legacy families retain their
+/// existing clocks, banks, painter order, reflection gates, and shadow rules.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Level1SourceWorldSpriteRasterReceipt {
+    pub primary: Mode20SpriteRasterStats,
+    pub reflected: Mode20SpriteRasterStats,
+    pub shadows: Mode20SpriteRasterStats,
+    pub reflection_pass_evaluated: bool,
+    pub shadow_pass_evaluated: bool,
+}
+
+/// Render the complete source-ordered Level 1 world-sprite compositor into a
+/// profile-sized indexed plane.
+///
+/// This is deliberately additive to `render_level1_source_world_frame`: the
+/// latter remains the sealed 320x200 Exact path. The caller supplies a
+/// profile-sized projection and matching output plane; the source world grid
+/// still owns chain traversal and painter order, while the existing sprite
+/// kernels write at the supplied projection extent.
+pub fn raster_level1_source_world_sprites(
+    camera: Level1TerrainFrameCamera,
+    projection: OutdoorProjection,
+    resources: Level1TerrainFrameResources<'_>,
+    world: Level1WorldFrameResources<'_>,
+    source_sprites: SourceSpriteWorldResources<'_>,
+    indices: &mut [u8],
+) -> Result<Level1SourceWorldSpriteRasterReceipt, TerrainFrameError> {
+    let width = usize::try_from(projection.viewport_width).map_err(|_| {
+        TerrainFrameError("profile-sized source sprite viewport width is negative".to_owned())
+    })?;
+    let height = usize::try_from(projection.viewport_height).map_err(|_| {
+        TerrainFrameError("profile-sized source sprite viewport height is negative".to_owned())
+    })?;
+    let expected = width.checked_mul(height).ok_or_else(|| {
+        TerrainFrameError("profile-sized source sprite extent overflow".to_owned())
+    })?;
+    if width == 0 || height == 0 || indices.len() != expected {
+        return Err(TerrainFrameError(format!(
+            "profile-sized source sprite plane requires {width}x{height}={expected} bytes, got {}",
+            indices.len()
+        )));
+    }
+    let expected_plane = 256 * 256;
+    for (name, length) in [
+        ("terrain_types", resources.terrain_types.len()),
+        ("ground_heights", resources.ground_heights.len()),
+        ("shading", resources.shading.len()),
+        ("angles", resources.angles.len()),
+    ] {
+        if length != expected_plane {
+            return Err(TerrainFrameError(format!(
+                "profile-sized source sprite {name} plane requires {expected_plane} bytes, got {length}"
+            )));
+        }
+    }
+
+    let lattice = outdoor_grid(OutdoorGridInput {
+        render_x: camera.render_x,
+        render_y: camera.render_y,
+        yaw: camera.yaw,
+        turn: camera.source_turn,
+        shading: resources.shading,
+        angles: resources.angles,
+    });
+    let mut goat_raster_stats = Mode20SpriteRasterStats::default();
+    let mut goat_selector_mask = 0_u8;
+    let mut frozen_actor_raster_stats = Mode20SpriteRasterStats::default();
+    let mut frozen_actor_selector_mask = 0_u16;
+    let mut ambient_raster_stats = Mode20SpriteRasterStats::default();
+    let mut archer_raster_stats = Mode20SpriteRasterStats::default();
+    let mut archer_selector_mask = 0_u8;
+    let mut firefly_raster_stats = Mode20SpriteRasterStats::default();
+    let mut firefly_selector_mask = 0_u8;
+    let mut combat_raster_stats = Mode20SpriteRasterStats::default();
+    let mut objective_prop_raster_stats = Mode20SpriteRasterStats::default();
+    let mut economy_raster_stats = Mode20SpriteRasterStats::default();
+    let mut reflected_sprite_raster_stats = Mode20SpriteRasterStats::default();
+    let mut shadow_sprite_raster_stats = Mode20SpriteRasterStats::default();
+    let mut fireball_draw_attempted = false;
+    let mut possession_draw_attempted = false;
+    let mut castle_draw_attempted = false;
+
+    if camera.reflections && camera.eye_z < crate::terrain_reflection::REFLECTION_EYE_Z_LIMIT {
+        for owner_index in primary_owner_schedule(&lattice) {
+            raster_world_chain(
+                WorldChainPass::Reflection,
+                owner_index,
+                camera,
+                projection,
+                &lattice,
+                &resources,
+                &world,
+                Some(&source_sprites),
+                indices,
+                &mut goat_raster_stats,
+                &mut goat_selector_mask,
+                &mut frozen_actor_raster_stats,
+                &mut frozen_actor_selector_mask,
+                &mut ambient_raster_stats,
+                &mut archer_raster_stats,
+                &mut archer_selector_mask,
+                &mut firefly_raster_stats,
+                &mut firefly_selector_mask,
+                &mut combat_raster_stats,
+                &mut objective_prop_raster_stats,
+                &mut economy_raster_stats,
+                &mut reflected_sprite_raster_stats,
+                &mut shadow_sprite_raster_stats,
+                &mut fireball_draw_attempted,
+                &mut possession_draw_attempted,
+                &mut castle_draw_attempted,
+            )?;
+        }
+    }
+
+    let mut primary_raster_stats = Mode20SpriteRasterStats::default();
+    for owner_index in primary_owner_schedule(&lattice) {
+        let before = [
+            goat_raster_stats,
+            frozen_actor_raster_stats,
+            ambient_raster_stats,
+            archer_raster_stats,
+            firefly_raster_stats,
+            combat_raster_stats,
+            objective_prop_raster_stats,
+            economy_raster_stats,
+        ];
+        raster_world_chain(
+            WorldChainPass::PrimaryWithShadow,
+            owner_index,
+            camera,
+            projection,
+            &lattice,
+            &resources,
+            &world,
+            Some(&source_sprites),
+            indices,
+            &mut goat_raster_stats,
+            &mut goat_selector_mask,
+            &mut frozen_actor_raster_stats,
+            &mut frozen_actor_selector_mask,
+            &mut ambient_raster_stats,
+            &mut archer_raster_stats,
+            &mut archer_selector_mask,
+            &mut firefly_raster_stats,
+            &mut firefly_selector_mask,
+            &mut combat_raster_stats,
+            &mut objective_prop_raster_stats,
+            &mut economy_raster_stats,
+            &mut reflected_sprite_raster_stats,
+            &mut shadow_sprite_raster_stats,
+            &mut fireball_draw_attempted,
+            &mut possession_draw_attempted,
+            &mut castle_draw_attempted,
+        )?;
+        let after = [
+            goat_raster_stats,
+            frozen_actor_raster_stats,
+            ambient_raster_stats,
+            archer_raster_stats,
+            firefly_raster_stats,
+            combat_raster_stats,
+            objective_prop_raster_stats,
+            economy_raster_stats,
+        ];
+        for (before, after) in before.into_iter().zip(after) {
+            primary_raster_stats.candidate_pixels = primary_raster_stats
+                .candidate_pixels
+                .wrapping_add(after.candidate_pixels.wrapping_sub(before.candidate_pixels));
+            primary_raster_stats.transparent_pixels =
+                primary_raster_stats.transparent_pixels.wrapping_add(
+                    after
+                        .transparent_pixels
+                        .wrapping_sub(before.transparent_pixels),
+                );
+            primary_raster_stats.clipped_pixels = primary_raster_stats
+                .clipped_pixels
+                .wrapping_add(after.clipped_pixels.wrapping_sub(before.clipped_pixels));
+            primary_raster_stats.framebuffer_writes =
+                primary_raster_stats.framebuffer_writes.wrapping_add(
+                    after
+                        .framebuffer_writes
+                        .wrapping_sub(before.framebuffer_writes),
+                );
+        }
+    }
+
+    Ok(Level1SourceWorldSpriteRasterReceipt {
+        primary: primary_raster_stats,
+        reflected: reflected_sprite_raster_stats,
+        shadows: shadow_sprite_raster_stats,
+        reflection_pass_evaluated: camera.reflections,
+        shadow_pass_evaluated: true,
+    })
+}
+
 /// Render the map branch's real second `DrawWorld_411A0` call.  The fixed
 /// profile viewport is source `(384, 0, 256, 400)`, therefore VGA1 pixels
 /// occupy columns 192..319 with a 128 by 200 projection.  The returned frame
@@ -2700,6 +2901,19 @@ fn raster_world_sprite_pass(
     reflected_aggregate: &mut Mode20SpriteRasterStats,
     shadow_aggregate: &mut Mode20SpriteRasterStats,
 ) -> Result<(), String> {
+    let output_width = usize::try_from(sprite_camera.projection.viewport_width)
+        .map_err(|_| "sprite projection viewport width is negative".to_owned())?;
+    let output_height = usize::try_from(sprite_camera.projection.viewport_height)
+        .map_err(|_| "sprite projection viewport height is negative".to_owned())?;
+    let expected_extent = output_width
+        .checked_mul(output_height)
+        .ok_or_else(|| "sprite projection viewport extent overflow".to_owned())?;
+    if output_width == 0 || output_height == 0 || indices.len() != expected_extent {
+        return Err(format!(
+            "sprite projection viewport requires {output_width}x{output_height}={expected_extent} bytes, got {}",
+            indices.len()
+        ));
+    }
     match pass {
         WorldChainPass::Reflection => {
             let reflected =
@@ -2707,8 +2921,8 @@ fn raster_world_sprite_pass(
             let stats = if possession {
                 rasterize_reflected_possession_sprite(
                     indices,
-                    LEVEL1_VIEW_WIDTH,
-                    LEVEL1_VIEW_HEIGHT,
+                    output_width,
+                    output_height,
                     reflected,
                     source_width,
                     source_height,
@@ -2719,8 +2933,8 @@ fn raster_world_sprite_pass(
             } else {
                 rasterize_reflected_sprite(
                     indices,
-                    LEVEL1_VIEW_WIDTH,
-                    LEVEL1_VIEW_HEIGHT,
+                    output_width,
+                    output_height,
                     reflected,
                     source_width,
                     source_height,
@@ -2747,8 +2961,8 @@ fn raster_world_sprite_pass(
             {
                 let stats = rasterize_shadow_sprite(
                     indices,
-                    LEVEL1_VIEW_WIDTH,
-                    LEVEL1_VIEW_HEIGHT,
+                    output_width,
+                    output_height,
                     shadow,
                     source_width,
                     source_height,
@@ -2761,8 +2975,8 @@ fn raster_world_sprite_pass(
             let stats = if possession {
                 rasterize_possession_sprite(
                     indices,
-                    LEVEL1_VIEW_WIDTH,
-                    LEVEL1_VIEW_HEIGHT,
+                    output_width,
+                    output_height,
                     placement,
                     source_width,
                     source_height,
@@ -2773,8 +2987,8 @@ fn raster_world_sprite_pass(
             } else {
                 rasterize_mode20_sprite(
                     indices,
-                    LEVEL1_VIEW_WIDTH,
-                    LEVEL1_VIEW_HEIGHT,
+                    output_width,
+                    output_height,
                     placement,
                     source_width,
                     source_height,

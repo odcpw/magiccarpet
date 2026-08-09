@@ -1,0 +1,226 @@
+{
+  "schema_version": 1,
+  "measurement": "Rust ClassicHdRenderGraph synthetic owner-free release workload plus an owner-bound Unity profile-rerender binding smoke",
+  "machine": "T14",
+  "presentation_budget_ns": 33333333,
+  "sample_count": 32,
+  "owner_payload_embedded": false,
+  "unity_gpu_and_owner_route": "owner-route-qualified; gpu-timing-pending",
+  "owner_route_qualification_status": "qualified-owner-lab-capture",
+  "owner_route_profiles": ["classic-hd-640x480", "classic-hd-960x720"],
+  "owner_route_owner_payload_embedded": false,
+  "owner_route_owner_inputs_external": true,
+  "owner_route_gpu_timing": "not-captured",
+  "owner_route_binding_status": "Owner route qualified at 640x480 and 960x720: profile-sized source compositor rerender, persistent Unity upload, 32-frame reset/replay sequences, 49-frame route smokes, and the supported/rejected performance decision are all proven; automatic high-speed postprocess, GPU timing, window, and visual-corpus promotion remain pending",
+  "owner_route_scenario": {
+    "artifact": "qualification/classic-hd-owner-route-scenarios.json",
+    "profile": "hd-640x480",
+    "frame_count": 49,
+    "status": "idle-town-combat-flight-death-restart-route-pass; owner route qualified; automatic high-speed postprocess, GPU timing, window, and corpus qualification remain open",
+    "owner_payload_embedded": false
+  },
+  "owner_route_960x720_scenario": {
+    "artifact": "qualification/classic-hd-owner-route-960x720-scenarios.json",
+    "profile": "hd-960x720",
+    "frame_count": 49,
+    "status": "idle-town-combat-flight-death-restart-route-pass; owner route qualified as a rejected 30 Hz candidate; automatic high-speed postprocess, GPU timing, window, and corpus promotion remain pending",
+    "owner_payload_embedded": false,
+    "log_sha256": "3193a66b8aad19fe3bd8d45693e3157bd3ae416286e9f2b7c11a7de20f2bbb75"
+  },
+  "owner_route_smoke": {
+    "artifact": "qualification/classic-hd-owner-route-smoke.json",
+    "profile": "classic-hd-640x480",
+    "frame_count": 1,
+    "graphics_api": "OpenGLCore",
+    "graphics_device": "Mesa Intel(R) Graphics (LNL)",
+    "status": "profile-rerender-frame-and-upload-pass",
+    "owner_payload_embedded": false
+  },
+  "owner_route_sequence_smoke": {
+    "artifact": "qualification/classic-hd-owner-route-sequence-smoke.json",
+    "profile": "classic-hd-640x480",
+    "frames_per_pass": 32,
+    "pass_count": 2,
+    "upload_count": 64,
+    "allocation_epoch": 1,
+    "status": "profile-rerender-sequence-and-reset-replay-pass",
+    "owner_payload_embedded": false
+  },
+  "owner_route_960x720_smoke": {
+    "artifact": "qualification/classic-hd-owner-route-960x720-smoke.json",
+    "profile": "classic-hd-960x720",
+    "frame_count": 1,
+    "upload_count": 1,
+    "status": "profile-rerender-frame-and-upload-pass",
+    "owner_payload_embedded": false
+  },
+  "owner_route_960x720_sequence_probe": {
+    "artifact": "qualification/classic-hd-owner-route-960x720-sequence-smoke.json",
+    "profile": "classic-hd-960x720",
+    "target_frame_count": 64,
+    "observed_frame_receipts": 64,
+    "upload_count": 64,
+    "allocation_epoch": 1,
+    "reset_replay_match": true,
+    "status": "profile-rerender-sequence-and-reset-replay-pass; real-time/GPU/scenario promotion remains open",
+    "owner_payload_embedded": false
+  },
+  "window_resolution_is_separate_from_internal_render_resolution": true,
+  "profiles": [
+    {
+      "profile": "classic-hd-640x480",
+      "internal_width": 640,
+      "internal_height": 480,
+      "frame_bytes": 307200,
+      "graph_memory_bytes": 1232896,
+      "p95_cpu_ns": 10949142,
+      "deterministic_reset": true,
+      "status": "supported-cpu-and-deterministic",
+      "unity_gpu_copy_status": "640x480 profile rerender, persistent Unity upload, owner idle/town/combat/flight/death-restart route smoke, and 8+64 performance sample pass the 30 Hz owner budget with zero measured steady allocation; sustained GPU/window/corpus qualification remains pending"
+    },
+    {
+      "profile": "classic-hd-960x720",
+      "internal_width": 960,
+      "internal_height": 720,
+      "frame_bytes": 691200,
+      "graph_memory_bytes": 2768896,
+      "p95_cpu_ns": 26112476,
+      "deterministic_reset": true,
+      "status": "rejected-by-owner-real-time-budget",
+      "unity_gpu_copy_status": "single owner profile rerender, 64-frame two-pass reset replay, and 49-frame idle/town/combat/flight/death-restart route smoke with persistent Unity uploads passed; the optimized 8+64 owner sample is deterministic and zero-allocation but measures 56.5 ms p95, so 30 Hz real-time promotion is rejected"
+    },
+    {
+      "profile": "classic-hd-1280x960",
+      "internal_width": 1280,
+      "internal_height": 960,
+      "frame_bytes": 1228800,
+      "graph_memory_bytes": 4919296,
+      "p95_cpu_ns": 45642670,
+      "deterministic_reset": true,
+      "status": "rejected-by-measured-cpu-or-determinism",
+      "unity_gpu_copy_status": "not-promoted"
+    }
+  ],
+  "window_profiles": [
+    { "window_width": 1280, "window_height": 960, "internal_profile": "classic-hd-640x480" },
+    { "window_width": 1920, "window_height": 1080, "internal_profile": "classic-hd-640x480" },
+    { "window_width": 2560, "window_height": 1440, "internal_profile": "classic-hd-960x720" }
+  ],
+  "owner_high_speed_probe": {
+    "artifact": "qualification/classic-hd-owner-high-speed-probe.json",
+    "profiles": ["hd-640x480", "hd-960x720"],
+    "status": "open-owner-route-does-not-reach-automatic-high-speed-mode",
+    "automatic_postprocess_mode": 1,
+    "observed_max_actual_speed": 80,
+    "observed_max_effective_postprocess_mode": 0,
+    "gpu_readback_fence": "not-captured",
+    "owner_payload_embedded": false
+  },
+  "owner_performance_smoke": {
+    "artifact": "qualification/classic-hd-owner-performance-smoke.json",
+    "profiles": ["hd-640x480", "hd-960x720"],
+    "status": "resolution-matrix-qualified; 640x480-pass; 960x720-rejected-owner-real-time-budget; GPU timing remains open",
+    "presentation_budget_ns": 33333333,
+    "p95_total_ns": {
+      "hd-640x480": 31652900,
+      "hd-960x720": 56518500
+    },
+    "steady_allocations": true,
+    "gpu_timing": "not-captured",
+    "owner_payload_embedded": false
+  },
+  "owner_gpu_fence_probe": {
+    "artifact": "qualification/classic-hd-owner-gpu-fence.json",
+    "profiles": ["hd-640x480", "hd-960x720"],
+    "status": "open-readback-pass-fence-unavailable",
+    "readback_status": "pass",
+    "fence_status": "open-platform-unsupported",
+    "gpu_timing": "not-captured",
+    "owner_payload_embedded": false
+  },
+  "owner_asset_tier_fallback": {
+    "artifact": "qualification/classic-hd-owner-asset-fallback.json",
+    "profile": "hd-960x720",
+    "requested_asset_tier": "optional-high-resolution",
+    "resolved_asset_tier": "original-indexed",
+    "fallback_applied": true,
+    "optional_pack_present": false,
+    "scenario_frame_count": 49,
+    "upload_count": 49,
+    "status": "fallback-pass; optional native-tier consumption remains open",
+    "owner_payload_embedded": false
+  },
+  "owner_focus_pause_probe": {
+    "artifact": "qualification/classic-hd-owner-focus-pause.json",
+    "profile": "hd-640x480",
+    "status": "lifecycle-pass; OS fullscreen/window/alt-tab capture remains open",
+    "native_pause_contract": true,
+    "owner_payload_embedded": false
+  },
+  "owner_exit_sidecar_probe": {
+    "artifact": "qualification/classic-hd-owner-exit-sidecar.json",
+    "profile": "hd-640x480",
+    "status": "sidecar-pass; full authored completion/postgame route is separately verified by the external owner completion artifact",
+    "owner_payload_embedded": false
+  },
+  "owner_completion_replay_smoke": {
+    "artifact": "qualification/classic-hd-owner-completion-replay-smoke.json",
+    "profile": "hd-640x480",
+    "journal_command_count": 1112,
+    "frame_count": 1112,
+    "upload_count": 1112,
+    "allocation_epoch": 1,
+    "authoritative_tick_range": "1..1112",
+    "presentation_tick_range": "0..1111",
+    "status": "dual-clock-owner-journal-replay-pass; authored completion/postgame not reached",
+    "owner_payload_embedded": false
+  },
+  "owner_completion_route": {
+    "artifact": "qualification/classic-hd-owner-completion-route.json",
+    "profile": "hd-640x480",
+    "journal_command_count": 16232,
+    "frame_count": 16232,
+    "upload_count": 16232,
+    "allocation_epoch": 1,
+    "generation": 2,
+    "authoritative_tick_range": "1..16232",
+    "presentation_tick_range": "0..16231",
+    "exit_result_code": 10,
+    "tasks_completed": 1,
+    "index_route_hash": "f687550aa6b035ba",
+    "provenance_route_hash": "afcfb751a19b86bd",
+    "journal_manifest_sha256": "768f42fdbfe72d58d5d6caf97eec3ac35e7b49e8e046f0947859f2eaa2a8a5f8",
+    "journal_commands_sha256": "d2b82d5e4b7902955841c09ebcd5f78c12b48c2c917c16996339e45b29c9e8b1",
+    "native_plugin_sha256": "f3a628cfad02faa72f395cb1455670b2b927f61a1359a3399be85a0a385fb875",
+    "runner_log": "/tmp/magiccarpet-gfx-spec-owner-command-route-full-v6.log",
+    "runner_log_sha256": "737997cd837323d609d8ed65f1f710ffd22afb6bc92e3b7fd6a4925836a96775",
+    "status": "owner-external-journal-full-completion-postgame-pass; source-faithful-tile-span-guard",
+    "owner_payload_embedded": false
+  },
+  "owner_effects_matrix_probe": {
+    "artifact": "qualification/classic-hd-owner-effects-matrix.json",
+    "profile": "hd-640x480",
+    "blur_modes": ["off", "spatial-2x2", "tablesn"],
+    "reflections_enabled": true,
+    "dynamic_lighting_enabled": true,
+    "disabled_reflections_and_lighting": "rejected-before-native-session",
+    "status": "effects-settings-pass; visual capture and automatic high-speed postprocess remain open",
+    "owner_payload_embedded": false
+  },
+  "route_cases": {
+    "idle": "owner-hd-640x480-scenario-pass",
+    "town": "owner-hd-640x480-scenario-pass",
+    "combat": "owner-hd-640x480-scenario-pass",
+    "high_speed_flight": "owner-hd-640x480-ordinary-flight-route-pass; automatic-speed-postprocess-remains-open",
+    "death_restart": "owner-hd-640x480-scenario-pass",
+    "completion_postgame": "owner-external-journal-full-completion-postgame-pass",
+    "fullscreen_window_alt_tab": "owner-hd-640x480-windowed-and-fullscreen-window-capture-pass-open-human-review",
+    "asset_tier_fallback": "owner-hd-960x720-optional-tier-fallback-pass",
+    "reflection_lighting_blur": "owner-hd-640x480-effects-settings-matrix-pass",
+    "invalid_config": "covered-by-launcher-and-settings-tests"
+  },
+  "reproduce": {
+    "command": "cargo run --release -p sim-cli -- classic-hd-qualify",
+    "fixture_note": "The private atlas generated semantics fixture is supplied by the owner lab at run time; it is not committed or embedded."
+  }
+}

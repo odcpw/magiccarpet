@@ -280,11 +280,11 @@ optional only for the explicit `-mc-debug` fallback. Pass
 bindings, every size and SHA-256, and its aggregate content identity before
 accepting it. The cache remains external; raw DAT/TAB files are never loaded.
 The current qualified identity is 1,249 outputs, manifest SHA-256
-`1050b4f1e3f0e63fa292fe7798d19f4b390c063aa5afd5a350fba9e300298082`
+`1eeb90e39927cb28e214e017c2603f3200ee2d3899f3f81ce53063f6d64a63d6`
 and content SHA-256
-`b664ad00c94e3f9393bc92ecac91a821673222cd365ed47617c4fab63db733bf`.
+`cb58b2190d3f6ed7c676e0180d0dfc909c7fe692e42946a927f887568be2eb8a`.
 Its `frame/source-frame-census.json` SHA-256 is
-`8a9fb362badbeb37d0b5ef4dae15be4fcdee92c690e0f2017689c5cf0af31f5e`
+`60b6be08f57ab7feadf59d014d161129c5df31a8c5a752ceb04bc7fcc9634a21`
 and is part of the exact FINAL MAIN admission contract.
 
 TMAP actor selection and native indexed presentation are qualified and loaded.

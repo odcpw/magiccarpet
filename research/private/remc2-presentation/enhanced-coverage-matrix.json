@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "matrix_id": "mc-unity-enhanced-level1-coverage-v1",
+  "track": "P-private-owner-data",
+  "source_census": {
+    "repository": "research/private/remc2-sim-rs",
+    "occupant_enum": "crates/sim-core/src/source_sprite_tmap.rs::Level1SourceSpawnKind",
+    "typed_census": "crates/sim-core/src/source_sprite_tmap.rs::level1_source_sprite_dispositions",
+    "pinned_source_commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+    "read_policy": "use pinned source objects and owned typed Rust surfaces; never infer from a dirty upstream worktree"
+  },
+  "authority": {
+    "gameplay": "Rust simulation core",
+    "presentation": "Unity may consume immutable snapshots and events only",
+    "unity_feedback_to_gameplay": false,
+    "owner_payloads_in_player_build": false,
+    "exact_project_mutable": false,
+    "unknown_tuple_policy": "fail closed before presentation submission"
+  },
+  "unity_surfaces": {
+    "existing_native_api": "research/private/remc2-sim-rs/crates/sim-capi/src/native_v2.rs",
+    "presentation_abi": "research/private/remc2-sim-rs/crates/sim-capi/src/classic_hd_abi.rs",
+    "managed_lab_router": "research/private/remc2-unity-presentation-lab/Assets/Scripts/PresentationModeRouter.cs::PresentationModeRouter",
+    "managed_session_lease": "research/private/remc2-unity-presentation-lab/Assets/Scripts/PresentationSessionLease.cs::PresentationSessionLease",
+    "enhanced_consumer_status": "contract-only until GFX-Q adds the generation-bound snapshot/event bridge"
+  },
+  "failure_policy": [
+    "unknown generation, source tuple, family, selector, profile, or lifecycle state is an error",
+    "duplicate stable identity or reused identity without a tombstone is an error",
+    "stale generation or presentation tick is rejected before Unity-visible state changes",
+    "missing source-derived coverage is recorded as a named blocking gap, never replaced by a wildcard renderer"
+  ],
+  "work_packages": {
+    "terrain": "GFX-Q terrain/profile/dirty-region fields",
+    "actors": "GFX-Q source-ordered entity records and typed disposition coverage",
+    "buildings": "GFX-Q building/castle lifecycle records",
+    "effects": "GFX-Q projectiles/impacts/particles/spell-light events",
+    "hud_audio": "GFX-Q HUD/minimap/objective/audio references",
+    "lifecycle": "GFX-Q generation/reset/despawn/tombstone semantics"
+  },
+  "coverage": [
+    {
+      "id": "terrain.height-shading-angle",
+      "domain": "terrain",
+      "source_owner": "crates/sim-core/src/terrain_frame.rs::Level1TerrainFrameResources",
+      "current_rust_surface": "native-v2 terrain frame and Classic HD terrain planner",
+      "unity_consumer": "not present in the presentation lab",
+      "route": "new-gfx-q",
+      "state_fields": ["terrain types", "ground heights", "shading", "angles", "profile identity", "dirty regions"]
+    },
+    {
+      "id": "terrain.pnt5-reflection-lighting",
+      "domain": "terrain",
+      "source_owner": "crates/sim-core/src/terrain_presentation.rs::outdoor_terrain_pnt5",
+      "current_rust_surface": "native-v2 terrain vertices and Classic HD raster receipts",
+      "unity_consumer": "not present in the presentation lab",
+      "route": "new-gfx-q",
+      "state_fields": ["pnt5", "tablesn row", "material", "reflection eligibility", "dynamic-lighting state"]
+    },
+    {
+      "id": "camera.player-pose",
+      "domain": "camera",
+      "source_owner": "crates/sim-capi/src/native_v2.rs::McRenderCameraStateV2",
+      "current_rust_surface": "additive native-v2 render camera state",
+      "unity_consumer": "presentation lab has no gameplay camera consumer",
+      "route": "new-gfx-q",
+      "state_fields": ["generation", "tick", "position", "eye height", "yaw", "pitch", "roll", "fov", "slope target"]
+    },
+    {
+      "id": "profile.classic-and-enhanced",
+      "domain": "profile",
+      "source_owner": "crates/sim-core/src/classic_hd.rs::ClassicHdRenderProfile",
+      "current_rust_surface": "checked Classic HD profile and additive presentation ABI",
+      "unity_consumer": "PresentationModeRouter selects mode before session open",
+      "route": "new-gfx-q",
+      "state_fields": ["mode id", "profile revision", "internal dimensions", "viewport", "asset tier", "quality flags"]
+    },
+    {
+      "id": "lifecycle.generation-reset-despan",
+      "domain": "lifecycle",
+      "source_owner": "crates/sim-capi/src/native_v2.rs::McSessionSnapshotV2 and McEventV2",
+      "current_rust_surface": "generation/tick fields and event query exist; complete tombstone contract is not unified",
+      "unity_consumer": "PresentationSessionLease owns only mode/session lifetime",
+      "route": "new-gfx-q",
+      "state_fields": ["generation", "tick", "reset reason", "despawn", "tombstone", "identity reuse fence"]
+    },
+    {
+      "id": "hud.minimap-objective-menu",
+      "domain": "hud",
+      "source_owner": "crates/sim-capi/src/native_v2.rs::McLevel1HudSnapshotV2, McLevel1MinimapMarksV2, McPresentationFrameQueryV2",
+      "current_rust_surface": "typed HUD, minimap, objective, menu, cursor, and presentation-input snapshots exist",
+      "unity_consumer": "UnityEnhancedHudPresentation consumes generation/tick-bound life, mana, spell, objective, speed, death, and completion state; UnityEnhancedMinimapPresentation consumes the native-v2 marks, arrow, and source-ordered entity-command stream; audio remains separate",
+      "route": "new-gfx-q",
+      "state_fields": ["life/mana", "spell slots", "minimap marks/entities", "objective", "pause/options/help", "cursor", "death/restart/completion"]
+    },
+    {
+      "id": "audio.sound-music-references",
+      "domain": "audio",
+      "source_owner": "crates/sim-capi/src/native_v2.rs::McAudioCommandV2",
+      "current_rust_surface": "Rust-owned audio commands and event batches",
+      "unity_consumer": "no Enhanced audio consumer",
+      "route": "new-gfx-q",
+      "state_fields": ["event id", "sound id", "entity", "volume", "pan", "rate", "loop", "play type"]
+    },
+
+    {"id":"occupant.Reserved","domain":"occupant","family_key":"Reserved","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::Level1SourceSpawnKind::Reserved","current_rust_surface":"typed reserved slot","unity_consumer":"must never submit a sprite","route":"explicit-exclusion","exclusion_reason":"reserved source slot has no visual disposition","state_fields":[]},
+    {"id":"occupant.ImportedResetTuple","domain":"occupant","family_key":"ImportedResetTuple","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::Level1SourceSpawnKind::ImportedResetTuple","current_rust_surface":"typed source disposition and native-v2 mission snapshot","unity_consumer":"missing generation-bound Enhanced entity record","route":"new-gfx-q","state_fields":["source slot","class/model/action","position/yaw","selector/frame","logical height","palette owner","shadow/reflection flags"]},
+    {"id":"occupant.AuthoredActivationTuple","domain":"occupant","family_key":"AuthoredActivationTuple","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::Level1SourceSpawnKind::AuthoredActivationTuple","current_rust_surface":"authored census and typed source disposition","unity_consumer":"missing generation-bound Enhanced entity record","route":"new-gfx-q","state_fields":["authored index","activation group","typed tuple","position","selector/frame","visibility"]},
+    {"id":"occupant.AuthoredTerrainFeature","domain":"occupant","family_key":"AuthoredTerrainFeature","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::Level1SourceSpawnKind::AuthoredTerrainFeature","current_rust_surface":"authored census and terrain feature state","unity_consumer":"missing typed presentation record","route":"new-gfx-q","state_fields":["source identity","terrain feature","transform","material/palette","visibility"]},
+    {"id":"occupant.AuthoredPlayerMarker","domain":"occupant","family_key":"AuthoredPlayerMarker","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::Level1SourceSpawnKind::AuthoredPlayerMarker","current_rust_surface":"typed authored marker row","unity_consumer":"missing typed presentation record","route":"new-gfx-q","state_fields":["stable identity","position","marker selector","ownership","visibility"]},
+    {"id":"occupant.AuthoredSwitch","domain":"occupant","family_key":"AuthoredSwitch","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::Level1SourceSpawnKind::AuthoredSwitch","current_rust_surface":"typed authored switch row","unity_consumer":"missing typed presentation record","route":"new-gfx-q","state_fields":["stable identity","position","switch state","selector","visibility"]},
+    {"id":"occupant.PlayerFireball","domain":"projectile","family_key":"PlayerFireball","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::PlayerFireball","current_rust_surface":"native-v2 fireball/projectile snapshot","unity_consumer":"missing Enhanced projectile record","route":"new-gfx-q","state_fields":["source identity","position","velocity/heading","owner","selector/clock","impact eligibility"]},
+    {"id":"occupant.ArcherArrow","domain":"projectile","family_key":"ArcherArrow","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::ArcherArrow","current_rust_surface":"typed archer projectile state","unity_consumer":"missing Enhanced projectile record","route":"new-gfx-q","state_fields":["source identity","position","heading","owner","selector/clock","visibility"]},
+    {"id":"occupant.FireflyFireball","domain":"projectile","family_key":"FireflyFireball","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::FireflyFireball","current_rust_surface":"typed firefly projectile state","unity_consumer":"missing Enhanced projectile record","route":"new-gfx-q","state_fields":["source identity","position","heading","owner","selector/clock","impact eligibility"]},
+    {"id":"occupant.CastleBuild","domain":"building","family_key":"CastleBuild","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::CastleBuild","current_rust_surface":"native-v2 castle lifecycle and projectile state","unity_consumer":"missing Enhanced building/event record","route":"new-gfx-q","state_fields":["castle identity","construction phase","position","owner","weapon/effect state"]},
+    {"id":"occupant.CastleRoot","domain":"building","family_key":"CastleRoot","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::CastleRoot","current_rust_surface":"native-v2 castle snapshot/lifecycle","unity_consumer":"missing Enhanced building record","route":"new-gfx-q","state_fields":["castle identity","position","life","mana","owner","stage"]},
+    {"id":"occupant.CastleConstruction","domain":"building","family_key":"CastleConstruction","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::SourceSpriteExclusionReason::CastleConstruction","current_rust_surface":"construction is a typed gameplay lifecycle, not a sprite wildcard","unity_consumer":"must consume lifecycle event only when GFX-Q defines it","route":"explicit-exclusion","exclusion_reason":"source contract excludes the sprite; lifecycle may still emit a non-sprite event","state_fields":[]},
+    {"id":"occupant.CastleDefenseController","domain":"building","family_key":"CastleDefenseController","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::CastleDefense","current_rust_surface":"typed castle defense controller state","unity_consumer":"missing Enhanced building/effect record","route":"new-gfx-q","state_fields":["castle identity","position","target","life/active","weapon state"]},
+    {"id":"occupant.CastleDefenseShot","domain":"projectile","family_key":"CastleDefenseShot","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::CastleDefenseShot","current_rust_surface":"native-v2 event/projectile source state","unity_consumer":"missing Enhanced projectile record","route":"new-gfx-q","state_fields":["source identity","position","heading","owner","impact event"]},
+    {"id":"occupant.CastleAssociation","domain":"effect","family_key":"CastleAssociation","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::CastleAssociation","current_rust_surface":"typed association effect state","unity_consumer":"missing Enhanced effect event","route":"new-gfx-q","state_fields":["source identity","position","target castle","phase","palette/light flags"]},
+    {"id":"occupant.Possession","domain":"effect","family_key":"Possession","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::Possession","current_rust_surface":"typed possession gameplay/event state","unity_consumer":"missing Enhanced spell/effect event","route":"new-gfx-q","state_fields":["source identity","position","target","owner","spell tier","lifecycle"]},
+    {"id":"occupant.PossessionImpact","domain":"effect","family_key":"PossessionImpact","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::SourceSpriteExclusionReason::HiddenSourceModel","current_rust_surface":"typed impact state with explicit hidden-source-model disposition","unity_consumer":"must not invent a sprite; event route remains explicit","route":"explicit-exclusion","exclusion_reason":"source sprite is hidden-source-model; any modern VFX must be a reviewed event presentation","state_fields":[]},
+    {"id":"occupant.GroundFire","domain":"effect","family_key":"GroundFire","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::GroundFire","current_rust_surface":"typed ground-fire state and render parameters","unity_consumer":"missing Enhanced effect event","route":"new-gfx-q","state_fields":["source identity","position","life","fire phase","light radius","palette/night flags"]},
+    {"id":"occupant.PossessionAttraction","domain":"effect","family_key":"PossessionAttraction","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::SourceSpriteExclusionReason::HiddenSourceModel","current_rust_surface":"typed attraction state with explicit hidden-source-model disposition","unity_consumer":"must not invent a sprite","route":"explicit-exclusion","exclusion_reason":"source sprite is hidden-source-model","state_fields":[]},
+    {"id":"occupant.StrongPossessionImpact","domain":"effect","family_key":"StrongPossessionImpact","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::SourceSpriteExclusionReason::HiddenSourceModel","current_rust_surface":"typed impact state with explicit hidden-source-model disposition","unity_consumer":"must not invent a sprite","route":"explicit-exclusion","exclusion_reason":"source sprite is hidden-source-model","state_fields":[]},
+    {"id":"occupant.FireballImpact","domain":"effect","family_key":"FireballImpact","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::FireballImpact","current_rust_surface":"native-v2 impact snapshot/event state","unity_consumer":"missing Enhanced impact/VFX event","route":"new-gfx-q","state_fields":["source identity","position","impact kind","owner","life","light/sound references"]},
+    {"id":"occupant.WaterSplash","domain":"effect","family_key":"WaterSplash","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::WaterSplash","current_rust_surface":"typed water splash state and mode-26 terrain path","unity_consumer":"missing Enhanced water event","route":"new-gfx-q","state_fields":["source identity","position","surface cell","phase","reflection eligibility","sound reference"]},
+    {"id":"occupant.ManaSphere","domain":"economy","family_key":"ManaSphere","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::ManaSphere","current_rust_surface":"native-v2 mana sphere snapshot","unity_consumer":"missing Enhanced economy entity record","route":"new-gfx-q","state_fields":["source identity","position","owner","mana","size ordinal","selector","lifecycle"]},
+    {"id":"occupant.ManaCarrier","domain":"economy","family_key":"ManaCarrier","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::ManaCarrier","current_rust_surface":"native-v2 mana carrier snapshot","unity_consumer":"missing Enhanced economy entity record","route":"new-gfx-q","state_fields":["source identity","position","owner","held mana","life","animation clock"]},
+    {"id":"occupant.DeathBurst","domain":"effect","family_key":"DeathBurst","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::DeathBurst","current_rust_surface":"typed death burst state","unity_consumer":"missing Enhanced lifecycle/VFX event","route":"new-gfx-q","state_fields":["source identity","position","victim/owner","phase","sound/light references"]},
+    {"id":"occupant.PlayerDeathMarker","domain":"effect","family_key":"PlayerDeathMarker","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::PlayerDeathMarker","current_rust_surface":"typed player death marker and lifecycle snapshot","unity_consumer":"missing Enhanced lifecycle/VFX event","route":"new-gfx-q","state_fields":["source identity","position","player identity","phase","restart/death state"]},
+    {"id":"occupant.SpeedTrail","domain":"effect","family_key":"SpeedTrail","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::SourceSpriteExclusionReason::UnlinkedSpeedTrail","current_rust_surface":"typed speed trail with explicit unlinked disposition","unity_consumer":"must not infer trails from velocity","route":"explicit-exclusion","exclusion_reason":"unlinked speed trail is excluded from the source sprite compositor","state_fields":[]},
+    {"id":"occupant.CheckpointSmoke","domain":"effect","family_key":"CheckpointSmoke","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::CheckpointSmoke","current_rust_surface":"typed checkpoint smoke state","unity_consumer":"missing Enhanced VFX event","route":"new-gfx-q","state_fields":["source identity","position","phase","objective/lifecycle reference"]},
+    {"id":"occupant.SpellPickup","domain":"pickup","family_key":"SpellPickup","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::Level1SourceSpawnKind::SpellPickup","current_rust_surface":"typed spell-pickup source disposition and mission state","unity_consumer":"missing Enhanced pickup record","route":"new-gfx-q","state_fields":["source identity","position","spell family/tier","selector","collectible state"]},
+    {"id":"occupant.Ambient","domain":"ambient","family_key":"Ambient","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::Ambient","current_rust_surface":"typed ambient entity state","unity_consumer":"missing Enhanced ambient entity record","route":"new-gfx-q","state_fields":["source identity","position","ambient kind","selector/clock","visibility"]},
+    {"id":"occupant.MultipartSegment","domain":"actor","family_key":"MultipartSegment","source_owner":"crates/sim-core/src/level1_mission.rs::SourceOccupant::MultipartSegment","current_rust_surface":"native-v2 multipart segment snapshot","unity_consumer":"missing Enhanced multipart entity records","route":"new-gfx-q","state_fields":["parent identity","segment index","position","yaw","selector/frame","visibility"]},
+    {"id":"occupant.ResidentArcher","domain":"actor","family_key":"ResidentArcher","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::resident_spawn_kind","current_rust_surface":"native-v2 resident observation and typed source disposition","unity_consumer":"missing Enhanced resident entity record","route":"new-gfx-q","state_fields":["source identity","resident role","position/yaw","life/active","animation selector","ownership"]},
+    {"id":"occupant.ResidentBuilder","domain":"actor","family_key":"ResidentBuilder","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::resident_spawn_kind","current_rust_surface":"native-v2 resident observation and typed source disposition","unity_consumer":"missing Enhanced resident entity record","route":"new-gfx-q","state_fields":["source identity","resident role","position/yaw","life/active","animation selector","ownership"]},
+    {"id":"occupant.ResidentVillager","domain":"actor","family_key":"ResidentVillager","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::resident_spawn_kind","current_rust_surface":"native-v2 resident observation and typed source disposition","unity_consumer":"missing Enhanced resident entity record","route":"new-gfx-q","state_fields":["source identity","resident role","position/yaw","life/active","animation selector","ownership"]},
+    {"id":"occupant.ResidentTrader","domain":"actor","family_key":"ResidentTrader","source_owner":"crates/sim-core/src/source_sprite_tmap.rs::resident_spawn_kind","current_rust_surface":"native-v2 resident observation and typed source disposition","unity_consumer":"missing Enhanced resident entity record","route":"new-gfx-q","state_fields":["source identity","resident role","position/yaw","life/active","animation selector","ownership"]},
+    {"id":"occupant.Goat","domain":"actor","family_key":"Goat","source_owner":"crates/sim-core/src/goat.rs and goat_sprite_raster.rs","current_rust_surface":"typed Goat state, clocks, damage, and native-v2 presentation path","unity_consumer":"missing Enhanced Goat entity record","route":"new-gfx-q","state_fields":["stable identity","position/yaw","life","animation clock","selector/facing","shadow/reflection flags"]},
+
+    {
+      "id": "extension.level2-profile",
+      "domain": "extension",
+      "source_owner": "research/private/remc2-presentation/mode-contract.json",
+      "current_rust_surface": "Level 1 only in the current qualified presentation contract",
+      "unity_consumer": "no Level 2 consumer is claimed",
+      "route": "blocking-gap",
+      "gap_reason": "Level 2 requires a separately reviewed profile/census extension before any renderer work",
+      "state_fields": ["profile extension id", "new terrain/occupant census", "new snapshot/event fields"]
+    },
+    {
+      "id": "extension.high-resolution-owner-banks",
+      "domain": "assets",
+      "source_owner": "research/private/remc2-presentation/asset-tier-schema.json",
+      "current_rust_surface": "original indexed banks mandatory; optional high-resolution capability is validated pre-session",
+      "unity_consumer": "no owner payload is embedded in the Unity lab or player build",
+      "route": "blocking-gap",
+      "gap_reason": "Enhanced replacement-bank coverage is not enabled by this audit; it needs an independent owner-data review",
+      "state_fields": ["family coverage", "hash", "dimensions", "format", "fallback policy"]
+    }
+  ]
+}

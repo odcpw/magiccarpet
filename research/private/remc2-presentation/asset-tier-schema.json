@@ -1,0 +1,65 @@
+{
+  "schema_id": "mc-classic-hd-asset-tier-v1",
+  "schema_version": 1,
+  "source": {
+    "repository": "upstream/magic-carpet-2-hd",
+    "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
+    "read_policy": "pinned source object only; owner files remain external"
+  },
+  "roots": {
+    "owner_package": "external owner-selected package root",
+    "owner_cache": "external validated cache root",
+    "high_resolution": "external optional owner-local root"
+  },
+  "families": {
+    "terrain": {
+      "original": {"dimensions": [32, 32], "format": "indexed-r8", "selector_count": 152},
+      "high_resolution": {"dimensions": [128, 128], "format": "indexed-r8", "selector_count": 152}
+    },
+    "sky": {
+      "original": {"dimensions": [256, 256], "format": "indexed-r8", "bank_ids": ["skyd", "skyn"]},
+      "high_resolution": {"dimensions": [1024, 1024], "format": "indexed-r8", "bank_ids": ["skyd1024", "skyn1024"]}
+    },
+    "sprites": {
+      "original": {"scale": 1, "format": "indexed-r8", "selector_coverage": "owner-cache census"},
+      "high_resolution": {"scale": 4, "format": "indexed-r8", "selector_coverage": "complete family coverage required"}
+    }
+  },
+  "selection_policy": {
+    "baseline_tier": "original-indexed",
+    "optional_tier": "optional-high-resolution",
+    "select_before_session": true,
+    "family_mixing": "forbidden",
+    "missing_optional_bank": "fallback-complete-family-to-original",
+    "hash_required": true,
+    "owner_payload_embedded": false,
+    "gameplay_authority": "rust-simulation"
+  },
+  "required_entry_fields": [
+    "family",
+    "tier",
+    "status",
+    "source_path_class",
+    "dimensions",
+    "format",
+    "selector_coverage",
+    "sha256",
+    "fallback_reason"
+  ],
+  "statuses": ["not-discovered", "validated", "rejected", "fallback-original"],
+  "fallback_reasons": [
+    "optional-root-not-configured",
+    "file-missing",
+    "sha256-mismatch",
+    "dimension-mismatch",
+    "format-mismatch",
+    "selector-coverage-incomplete",
+    "mixed-family-tier-rejected"
+  ],
+  "provenance": {
+    "original_binary_oracle": false,
+    "dosbox": false,
+    "replacement_art": false,
+    "owner_assets_in_repository": false
+  }
+}

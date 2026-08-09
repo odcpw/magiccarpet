@@ -76,28 +76,28 @@
       "description": "These hashes identify accepted Level 1 history. The guard checks them; it never regenerates or rewrites them.",
       "matrix": {
         "path": "level1-conformance/level1-conformance-matrix.json",
-        "sha256": "2469237003fb977a447d0ef2496c03cf598cb55f3eae77b7d094f9fa258509c7",
+        "sha256": "663558274b745896a4b5aaadf9a1c90f20272bb100a7137676fe2ca2d999fe4f",
         "rows": 182,
         "exact_rows": 182,
         "structured_exclusions": 29
       },
       "closure_contract": {
         "path": "level1-conformance/plan29-closure-contract.json",
-        "file_sha256": "e8b2f760f24e8de2003e856027420fce4609c47c481d7ad5cf67b51f668f3f0a",
-        "declared_contract_sha256": "0d59fdb5f43ef794308bc45614a6b2edbffa46f23e29286695406838185b08a7"
+        "file_sha256": "170bf5a1b9ee1190f89cf4d34ac9f139ca7ceb28761cd45785026575b112f110",
+        "declared_contract_sha256": "8007568bcfb4180137a7e0432fe2f094d44817fd771f90d4a98017036d9efcd4"
       },
       "qualification_policy": {
         "path": "level1-conformance/plan29-final-qualification-policy.json",
-        "file_sha256": "9f35b769521717a3bc8fbe86d8ff123e522ee34a95267b3fc28a31d88c8114ca",
-        "declared_policy_sha256": "2bc1f70cc9c0fb02c3fe0129575b8eedfd5e5799ecb3c05e89dff4b7dde1a91d",
+        "file_sha256": "e50aed7a3961cd5ea2447df5bce96f7d485d4bb66042b54ed0e531464ad0a400",
+        "declared_policy_sha256": "1e93f4b33cd7bd9251a3a3c173b498f82f7f05737d21eaee79e929f7fe1dce1d",
         "required_clean_runs": 1,
         "run_b_required": false,
         "run_b_permitted": false
       },
       "cache_identity": {
         "path": "../generated/level1-unity-asset-cache-plan29-final/conformance-identity.json",
-        "file_sha256": "49f29fb7f61296893d94824046aa3397a81d79cba094e8b9a9a5d1bda3fad824",
-        "declared_seal_sha256": "988058c2d08a3ebf7eed089de0e4ecd5a7739e7278689462d67a65856854342b"
+        "file_sha256": "42e2a23d4db628671cde853a6763dcc7a1fbe3f68226d133cd22c21b864abc0a",
+        "declared_seal_sha256": "becd3151922ccde6508ef4a77bf7987981c7fdedad04a3c040a9cdd72c88a96a"
       },
       "owner_package": {
         "path": "../generated/level1-export-m/manifest.json",

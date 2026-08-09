@@ -74,6 +74,29 @@ pub struct Mode20SpriteRasterStats {
     pub framebuffer_writes: u32,
 }
 
+/// Profile-specific admission limits for the shared source sprite projector.
+/// Exact callers use the original constants; Classic HD supplies the
+/// profile-scaled cutoffs while retaining the same fixed-point geometry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Mode20SpriteProjectionLimits {
+    pub render_cutoff_squared: u32,
+    pub fog_start_squared: u32,
+    pub fog_end_squared: u32,
+    pub fog_thickness_squared: i64,
+}
+
+impl Mode20SpriteProjectionLimits {
+    #[must_use]
+    pub const fn exact() -> Self {
+        Self {
+            render_cutoff_squared: TERRAIN_RENDER_CUTOFF_SQUARED,
+            fog_start_squared: TERRAIN_FOG_START_SQUARED,
+            fog_end_squared: TERRAIN_FOG_END_SQUARED,
+            fog_thickness_squared: TERRAIN_FOG_THICKNESS_SQUARED,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode20SpriteReject {
     BehindObjectNearPlane,
@@ -220,6 +243,31 @@ pub fn project_mode20_sprite_with_definition(
     )
 }
 
+/// Profile-aware mode-20 projection. The compatibility profile should use
+/// [`Mode20SpriteProjectionLimits::exact`] and is byte-compatible with the
+/// existing wrapper.
+#[must_use]
+pub fn project_mode20_sprite_with_definition_and_limits(
+    definition: Mode20SpriteDefinition,
+    camera: Mode20SpriteCamera,
+    entity: Mode20SpriteEntity,
+    source_width: u16,
+    source_height: u16,
+    limits: Mode20SpriteProjectionLimits,
+) -> Result<Mode20SpritePlacement, Mode20SpriteReject> {
+    project_source_sprite_with_limits(
+        SourceSpriteSelectorMode::Mode20,
+        definition,
+        camera,
+        entity,
+        source_width,
+        source_height,
+        false,
+        false,
+        limits,
+    )
+}
+
 /// Reproduce render mode 17's selector choice and common source sprite
 /// projection.
 #[must_use]
@@ -239,6 +287,28 @@ pub fn project_mode17_sprite_with_definition(
         source_height,
         false,
         false,
+    )
+}
+
+#[must_use]
+pub fn project_mode17_sprite_with_definition_and_limits(
+    definition: Mode20SpriteDefinition,
+    camera: Mode20SpriteCamera,
+    entity: Mode20SpriteEntity,
+    source_width: u16,
+    source_height: u16,
+    limits: Mode20SpriteProjectionLimits,
+) -> Result<Mode20SpritePlacement, Mode20SpriteReject> {
+    project_source_sprite_with_limits(
+        SourceSpriteSelectorMode::Mode17,
+        definition,
+        camera,
+        entity,
+        source_width,
+        source_height,
+        false,
+        false,
+        limits,
     )
 }
 
@@ -273,6 +343,34 @@ pub fn project_fixed_sprite_with_definition(
     )
 }
 
+#[must_use]
+pub fn project_fixed_sprite_with_definition_and_limits(
+    definition: Mode20SpriteDefinition,
+    entity_frame: Option<u8>,
+    quarter_sum_anchor: bool,
+    camera: Mode20SpriteCamera,
+    entity: Mode20SpriteEntity,
+    source_width: u16,
+    source_height: u16,
+    limits: Mode20SpriteProjectionLimits,
+) -> Result<Mode20SpritePlacement, Mode20SpriteReject> {
+    let shadow_quarter_sum_anchor = quarter_sum_anchor && entity_frame.is_some();
+    project_source_sprite_with_limits(
+        entity_frame.map_or(
+            SourceSpriteSelectorMode::Fixed,
+            SourceSpriteSelectorMode::EntityFrame,
+        ),
+        definition,
+        camera,
+        entity,
+        source_width,
+        source_height,
+        quarter_sum_anchor,
+        shadow_quarter_sum_anchor,
+        limits,
+    )
+}
+
 /// Reproduce mode 19's five-frame directional selection.
 #[must_use]
 pub fn project_mode19_sprite_with_definition(
@@ -294,6 +392,28 @@ pub fn project_mode19_sprite_with_definition(
     )
 }
 
+#[must_use]
+pub fn project_mode19_sprite_with_definition_and_limits(
+    definition: Mode20SpriteDefinition,
+    camera: Mode20SpriteCamera,
+    entity: Mode20SpriteEntity,
+    source_width: u16,
+    source_height: u16,
+    limits: Mode20SpriteProjectionLimits,
+) -> Result<Mode20SpritePlacement, Mode20SpriteReject> {
+    project_source_sprite_with_limits(
+        SourceSpriteSelectorMode::Mode19,
+        definition,
+        camera,
+        entity,
+        source_width,
+        source_height,
+        false,
+        false,
+        limits,
+    )
+}
+
 fn project_source_sprite(
     selector_mode: SourceSpriteSelectorMode,
     definition: Mode20SpriteDefinition,
@@ -303,6 +423,30 @@ fn project_source_sprite(
     source_height: u16,
     quarter_sum_anchor: bool,
     shadow_quarter_sum_anchor: bool,
+) -> Result<Mode20SpritePlacement, Mode20SpriteReject> {
+    project_source_sprite_with_limits(
+        selector_mode,
+        definition,
+        camera,
+        entity,
+        source_width,
+        source_height,
+        quarter_sum_anchor,
+        shadow_quarter_sum_anchor,
+        Mode20SpriteProjectionLimits::exact(),
+    )
+}
+
+fn project_source_sprite_with_limits(
+    selector_mode: SourceSpriteSelectorMode,
+    definition: Mode20SpriteDefinition,
+    camera: Mode20SpriteCamera,
+    entity: Mode20SpriteEntity,
+    source_width: u16,
+    source_height: u16,
+    quarter_sum_anchor: bool,
+    shadow_quarter_sum_anchor: bool,
+    limits: Mode20SpriteProjectionLimits,
 ) -> Result<Mode20SpritePlacement, Mode20SpriteReject> {
     if source_width == 0 || source_height == 0 {
         return Err(Mode20SpriteReject::EmptySource);
@@ -332,15 +476,15 @@ fn project_source_sprite(
         .wrapping_mul(lateral)
         .wrapping_add(forward_depth.wrapping_mul(forward_depth))
         .cast_unsigned();
-    if distance_squared >= TERRAIN_RENDER_CUTOFF_SQUARED {
+    if distance_squared >= limits.render_cutoff_squared {
         return Err(Mode20SpriteReject::BeyondRenderCutoff);
     }
 
-    let brightness = if distance_squared <= TERRAIN_FOG_START_SQUARED {
+    let brightness = if distance_squared <= limits.fog_start_squared {
         0x2000
-    } else if distance_squared < TERRAIN_FOG_END_SQUARED {
-        let remaining = TERRAIN_FOG_END_SQUARED - distance_squared;
-        i32::try_from(32_i64 * i64::from(remaining) / TERRAIN_FOG_THICKNESS_SQUARED)
+    } else if distance_squared < limits.fog_end_squared {
+        let remaining = limits.fog_end_squared - distance_squared;
+        i32::try_from(32_i64 * i64::from(remaining) / limits.fog_thickness_squared)
             .expect("bounded sprite fog value fits i32")
             .wrapping_shl(8)
     } else {
@@ -639,6 +783,37 @@ fn rasterize_source_sprite(
     compositor: SourceSpriteCompositor,
     pass: SourceSpritePass,
 ) -> Result<Mode20SpriteRasterStats, String> {
+    rasterize_source_sprite_with_clipping(
+        framebuffer,
+        viewport_width,
+        viewport_height,
+        placement,
+        source_width,
+        source_height,
+        source_pixels,
+        tablesn,
+        roll,
+        compositor,
+        pass,
+        viewport_width > 320 || viewport_height > 200,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rasterize_source_sprite_with_clipping(
+    framebuffer: &mut [u8],
+    viewport_width: usize,
+    viewport_height: usize,
+    placement: Mode20SpritePlacement,
+    source_width: u16,
+    source_height: u16,
+    source_pixels: &[u8],
+    tablesn: &[u8],
+    roll: i16,
+    compositor: SourceSpriteCompositor,
+    pass: SourceSpritePass,
+    clip_to_profile_viewport: bool,
+) -> Result<Mode20SpriteRasterStats, String> {
     let source_extent = usize::from(source_width) * usize::from(source_height);
     if source_width == 0 || source_height == 0 || source_pixels.len() != source_extent {
         return Err(format!(
@@ -768,11 +943,36 @@ fn rasterize_source_sprite(
     let max_y = corners.iter().map(|point| point.1).max().unwrap_or(top_y);
     let mut stats = Mode20SpriteRasterStats::default();
 
+    // The owner Classic HD profiles deliberately admit the larger source
+    // lattice and project sprites at the profile scale. A near-plane sprite
+    // can therefore have a very large transformed bounding box even when
+    // only a small part of it is on screen. Keep the exact 320x200 loop below
+    // byte/stat-identical and clip only the profile-sized presentation path
+    // before doing the fixed-point inverse walk. This is presentation-space
+    // work only: every in-viewport sample retains the same transform, source
+    // phase, compositor, and write order.
+    let (draw_min_x, draw_max_x, draw_min_y, draw_max_y) = if clip_to_profile_viewport {
+        let viewport_max_x = i32::try_from(viewport_width.saturating_sub(1)).unwrap_or(i32::MAX);
+        let viewport_max_y = i32::try_from(viewport_height.saturating_sub(1)).unwrap_or(i32::MAX);
+        (
+            min_x.max(0),
+            max_x.min(viewport_max_x),
+            min_y.max(0),
+            max_y.min(viewport_max_y),
+        )
+    } else {
+        (min_x, max_x, min_y, max_y)
+    };
+
+    if draw_min_x > draw_max_x || draw_min_y > draw_max_y {
+        return Ok(stats);
+    }
+
     // Include the transformed maximum edge in the candidate box. The inverse
     // extent checks remove the ordinary positive edge, while retaining the
     // first pixel when an axis runs in the negative screen direction.
-    for screen_y in min_y..=max_y {
-        for screen_x in min_x..=max_x {
+    for screen_y in draw_min_y..=draw_max_y {
+        for screen_x in draw_min_x..=draw_max_x {
             stats.candidate_pixels = stats.candidate_pixels.wrapping_add(1);
             let delta_x = screen_x.wrapping_sub(top_x);
             let delta_y = screen_y.wrapping_sub(top_y);
@@ -1153,6 +1353,56 @@ mod tests {
         // source index 3, proving clipping did not restart the sample phase.
         assert_eq!(&frame[2 * 4..2 * 4 + 3], &[253, 252, 251]);
         assert_eq!(&frame[3 * 4..3 * 4 + 3], &[249, 248, 247]);
+    }
+
+    #[test]
+    fn profile_viewport_clipping_preserves_visible_source_output() {
+        let source = [1_u8; 8];
+        let mut large_placement = placement(false, 0x2000);
+        large_placement.bottom_x = 3;
+        large_placement.bottom_y = 4;
+        large_placement.projected_width = 200;
+        large_placement.projected_height = 100;
+
+        let mut reference = vec![9_u8; 640 * 480];
+        let mut clipped = reference.clone();
+        let reference_stats = rasterize_source_sprite_with_clipping(
+            &mut reference,
+            640,
+            480,
+            large_placement,
+            4,
+            2,
+            &source,
+            &[],
+            0,
+            SourceSpriteCompositor::Standard,
+            SourceSpritePass::Primary,
+            false,
+        )
+        .expect("unclipped profile reference");
+        let clipped_stats = rasterize_source_sprite_with_clipping(
+            &mut clipped,
+            640,
+            480,
+            large_placement,
+            4,
+            2,
+            &source,
+            &[],
+            0,
+            SourceSpriteCompositor::Standard,
+            SourceSpritePass::Primary,
+            true,
+        )
+        .expect("profile-clipped raster");
+
+        assert_eq!(clipped, reference);
+        assert_eq!(
+            clipped_stats.framebuffer_writes,
+            reference_stats.framebuffer_writes
+        );
+        assert!(clipped_stats.candidate_pixels < reference_stats.candidate_pixels);
     }
 
     #[test]

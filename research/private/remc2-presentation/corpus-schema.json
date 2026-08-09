@@ -1,0 +1,151 @@
+{
+  "schema_id": "mc-presentation-corpus-v1",
+  "schema_version": 1,
+  "scope": "private Track P presentation evidence",
+  "modes": {
+    "exact": {
+      "corpus_directory": "exact",
+      "renderer": "exact-indexed-final-main",
+      "hash_policy": "indexed-byte-hash",
+      "reference_policy": "protected-reference-only",
+      "project": "research/private/remc2-unity-native",
+      "profile": "level1-night-exact-320x200"
+    },
+    "classic-hd": {
+      "corpus_directory": "classic-hd",
+      "renderer": "indexed-high-resolution-rerender",
+      "hash_policy": "indexed-byte-hash-when-deterministic",
+      "reference_policy": "separate-classic-hd-corpus",
+      "project": "research/private/remc2-unity-presentation-lab",
+      "profile": "level1-night-classic-hd-4x3"
+    },
+    "unity-enhanced": {
+      "corpus_directory": "unity-enhanced",
+      "renderer": "urp-enhanced",
+      "hash_policy": "structural-region-metrics-plus-human-review",
+      "reference_policy": "separate-unity-enhanced-corpus",
+      "project": "research/private/remc2-unity-presentation-lab",
+      "profile": "level1-night-unity-enhanced-v1"
+    }
+  },
+  "required_manifest_fields": [
+    "schema_id",
+    "schema_version",
+    "mode",
+    "profile",
+    "corpus_directory",
+    "capture_status",
+    "renderer",
+    "build_metadata",
+    "display_metadata",
+    "determinism",
+    "capture_plan",
+    "visual_review",
+    "provenance"
+  ],
+  "build_metadata_fields": [
+    "source_commit",
+    "build_id",
+    "unity_editor",
+    "gpu",
+    "driver",
+    "capture_tool_version"
+  ],
+  "display_profiles": {
+    "level1-night-exact-320x200": {
+      "internal_width": 320,
+      "internal_height": 200,
+      "present_aspect": "4:3-corrected",
+      "display_policy": "protected-exact-profile"
+    },
+    "level1-night-classic-hd-4x3": {
+      "internal_profiles": [
+        {"width": 640, "height": 480, "stride_policy": "width"},
+        {"width": 1280, "height": 960, "stride_policy": "width"}
+      ],
+      "present_aspect": "4:3-pillarboxed",
+      "display_policy": "integer-hud-scale-no-reflow"
+    },
+    "level1-night-unity-enhanced-v1": {
+      "internal_profiles": [
+        {"width": 1280, "height": 720, "stride_policy": "render-target-width"},
+        {"width": 1920, "height": 1080, "stride_policy": "render-target-width"}
+      ],
+      "present_aspect": "widescreen-quality-profile",
+      "display_policy": "enhanced-presentation-only"
+    }
+  },
+  "capture_plan": [
+    {
+      "id": "town-approach",
+      "capture_name": "l1-night-town-approach",
+      "purpose": "approach the Night settlement from low altitude",
+      "input_route": ["reset", "forward-latch", "yaw-left-small", "release-forward", "settle"],
+      "camera_state": "low-altitude-forward",
+      "required_regions": ["town-silhouette", "horizon", "hud"]
+    },
+    {
+      "id": "town-overflight",
+      "capture_name": "l1-night-town-overflight",
+      "purpose": "overfly the settlement at speed",
+      "input_route": ["reset", "forward-latch", "climb", "hold-heading", "release-forward", "settle"],
+      "camera_state": "high-speed-flight",
+      "required_regions": ["town-emissives", "terrain", "horizon"]
+    },
+    {
+      "id": "fireball-fight",
+      "capture_name": "l1-night-fireball-fight",
+      "purpose": "cast and resolve an active Fireball encounter",
+      "input_route": ["reset", "forward-latch", "select-fireball", "cast", "hold-aim", "release-forward"],
+      "camera_state": "combat-forward",
+      "required_regions": ["spell-light", "actor-silhouettes", "impact", "hud"]
+    },
+    {
+      "id": "mana-castle",
+      "capture_name": "l1-night-mana-castle",
+      "purpose": "show mana/castle activity and settlement glow",
+      "input_route": ["reset", "yaw-right-small", "select-castle", "hold-aim", "settle"],
+      "camera_state": "settlement-oblique",
+      "required_regions": ["mana-hud", "castle", "settlement-emissive"]
+    },
+    {
+      "id": "reflective-water",
+      "capture_name": "l1-night-reflective-water",
+      "purpose": "cross reflective water without losing terrain readability",
+      "input_route": ["reset", "forward-latch", "descend", "hold-heading", "release-forward", "settle"],
+      "camera_state": "water-graze",
+      "required_regions": ["water-reflection", "shoreline", "terrain"]
+    },
+    {
+      "id": "fog-depth",
+      "capture_name": "l1-night-fog-depth",
+      "purpose": "measure atmospheric depth from near terrain to horizon",
+      "input_route": ["reset", "forward-latch", "hold-heading", "sample-near-mid-far", "release-forward"],
+      "camera_state": "depth-probe",
+      "required_regions": ["near-terrain", "mid-depth", "fog-ramp", "horizon"]
+    },
+    {
+      "id": "high-speed-flight",
+      "capture_name": "l1-night-high-speed-flight",
+      "purpose": "hold high speed through the Night world",
+      "input_route": ["reset", "forward-latch", "hold-speed", "yaw-sweep", "release-forward", "settle"],
+      "camera_state": "high-speed-flight",
+      "required_regions": ["terrain-motion", "horizon", "hud", "temporal-history"]
+    }
+  ],
+  "visual_review_failure_ids": [
+    "over-bloom",
+    "crushed-blacks",
+    "fog-washout",
+    "unreadable-hud",
+    "unstable-exposure",
+    "temporal-ghosting",
+    "concept-art-only-detail"
+  ],
+  "provenance_rules": [
+    "Exact captures remain in the protected Exact corpus and are referenced, never copied or rewritten.",
+    "Classic HD and Unity Enhanced manifests are separate roots and may not be used as Exact evidence.",
+    "No original executable, DOSBox, decompiler, or original-binary oracle comparison is a visual acceptance source.",
+    "No replacement art is required for the Level 1 Night quality target; geometry and lighting must be the measured implementation surface."
+  ]
+}

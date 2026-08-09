@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "kind": "classic-hd-owner-effects-matrix-probe/v1",
+  "captured_at_utc": "2026-08-02T07:50:33Z",
+  "machine": "T14",
+  "source_revision": "b4ef362",
+  "unity_version": "6000.3.20f1",
+  "graphics_api": "OpenGLCore",
+  "graphics_device": "Mesa Intel(R) Graphics (LNL)",
+  "mode": "classic-hd",
+  "profile": "hd-640x480",
+  "internal_width": 640,
+  "internal_height": 480,
+  "native_abi": "sim-capi-v2",
+  "owner_payload_embedded": false,
+  "owner_inputs_external": true,
+  "blur_cases": [
+    {
+      "blur": "off",
+      "reflections": true,
+      "dynamic_lighting": true,
+      "status": "pass",
+      "uploads": 1,
+      "allocation_epoch": 1,
+      "effective_postprocess_mode": 0,
+      "index_hash": "6655b64aacd9c0dd",
+      "provenance_hash": "2fc796aaa4ec61f8"
+    },
+    {
+      "blur": "spatial-2x2",
+      "reflections": true,
+      "dynamic_lighting": true,
+      "status": "pass",
+      "uploads": 1,
+      "allocation_epoch": 1,
+      "effective_postprocess_mode": 0,
+      "index_hash": "97919bd7405795c1",
+      "provenance_hash": "a7efb522f195a094"
+    },
+    {
+      "blur": "tablesn",
+      "reflections": true,
+      "dynamic_lighting": true,
+      "status": "pass",
+      "uploads": 1,
+      "allocation_epoch": 1,
+      "effective_postprocess_mode": 0,
+      "index_hash": "6655b64aacd9c0dd",
+      "provenance_hash": "2fc796aaa4ec61f8"
+    }
+  ],
+  "reflection_off": {
+    "status": "rejected",
+    "reason": "owner Classic HD currently requires reflections and dynamic lighting to remain enabled"
+  },
+  "dynamic_lighting_off": {
+    "status": "rejected",
+    "reason": "owner Classic HD currently requires reflections and dynamic lighting to remain enabled"
+  },
+  "visual_capture_status": "open-corpus-capture-required",
+  "status": "effects-settings-pass",
+  "qualification_status": "owner-bound 640x480 accepts all three qualified blur tokens with reflections and dynamic lighting enabled, and rejects disabled reflection/lighting settings before opening the native session; visual corpus and automatic high-speed postprocess remain open",
+  "native_plugin_sha256": "804163dd1a0a5a50da3ec7ad5c191126ea7209714ff3f041851540c47d9342a7",
+  "log_sha256": "4551e14187afad1f4c53bed658b46d5f75f982d9cb7beb88862fae3a93a0767b",
+  "log_path": "/tmp/magiccarpet-gfx-spec-owner-classic-hd-effects-matrix.log",
+  "reproduce_command_template": "Unity -batchmode -force-glcore -projectPath research/private/remc2-unity-presentation-lab -executeMethod MagicCarpet.PresentationLab.Editor.CreatePresentationLabAssets.RunOwnerClassicHdEffectsMatrixProbe -mc-package <external-owner-package> -mc-closure <external-owner-closure> -mc-asset-cache <external-owner-cache>"
+}

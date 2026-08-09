@@ -1,0 +1,202 @@
+{
+  "build_metadata": {
+    "build_id": "dry-run-unrecorded",
+    "capture_tool_version": "mc-presentation-capture-manifest/1",
+    "driver": "unrecorded",
+    "gpu": "unrecorded",
+    "metadata_complete": false,
+    "source_commit": "unrecorded",
+    "unity_editor": "unrecorded"
+  },
+  "capture_plan": [
+    {
+      "camera_state": "low-altitude-forward",
+      "capture_name": "l1-night-town-approach",
+      "id": "town-approach",
+      "input_route": [
+        "reset",
+        "forward-latch",
+        "yaw-left-small",
+        "release-forward",
+        "settle"
+      ],
+      "purpose": "approach the Night settlement from low altitude",
+      "required_regions": [
+        "town-silhouette",
+        "horizon",
+        "hud"
+      ]
+    },
+    {
+      "camera_state": "high-speed-flight",
+      "capture_name": "l1-night-town-overflight",
+      "id": "town-overflight",
+      "input_route": [
+        "reset",
+        "forward-latch",
+        "climb",
+        "hold-heading",
+        "release-forward",
+        "settle"
+      ],
+      "purpose": "overfly the settlement at speed",
+      "required_regions": [
+        "town-emissives",
+        "terrain",
+        "horizon"
+      ]
+    },
+    {
+      "camera_state": "combat-forward",
+      "capture_name": "l1-night-fireball-fight",
+      "id": "fireball-fight",
+      "input_route": [
+        "reset",
+        "forward-latch",
+        "select-fireball",
+        "cast",
+        "hold-aim",
+        "release-forward"
+      ],
+      "purpose": "cast and resolve an active Fireball encounter",
+      "required_regions": [
+        "spell-light",
+        "actor-silhouettes",
+        "impact",
+        "hud"
+      ]
+    },
+    {
+      "camera_state": "settlement-oblique",
+      "capture_name": "l1-night-mana-castle",
+      "id": "mana-castle",
+      "input_route": [
+        "reset",
+        "yaw-right-small",
+        "select-castle",
+        "hold-aim",
+        "settle"
+      ],
+      "purpose": "show mana/castle activity and settlement glow",
+      "required_regions": [
+        "mana-hud",
+        "castle",
+        "settlement-emissive"
+      ]
+    },
+    {
+      "camera_state": "water-graze",
+      "capture_name": "l1-night-reflective-water",
+      "id": "reflective-water",
+      "input_route": [
+        "reset",
+        "forward-latch",
+        "descend",
+        "hold-heading",
+        "release-forward",
+        "settle"
+      ],
+      "purpose": "cross reflective water without losing terrain readability",
+      "required_regions": [
+        "water-reflection",
+        "shoreline",
+        "terrain"
+      ]
+    },
+    {
+      "camera_state": "depth-probe",
+      "capture_name": "l1-night-fog-depth",
+      "id": "fog-depth",
+      "input_route": [
+        "reset",
+        "forward-latch",
+        "hold-heading",
+        "sample-near-mid-far",
+        "release-forward"
+      ],
+      "purpose": "measure atmospheric depth from near terrain to horizon",
+      "required_regions": [
+        "near-terrain",
+        "mid-depth",
+        "fog-ramp",
+        "horizon"
+      ]
+    },
+    {
+      "camera_state": "high-speed-flight",
+      "capture_name": "l1-night-high-speed-flight",
+      "id": "high-speed-flight",
+      "input_route": [
+        "reset",
+        "forward-latch",
+        "hold-speed",
+        "yaw-sweep",
+        "release-forward",
+        "settle"
+      ],
+      "purpose": "hold high speed through the Night world",
+      "required_regions": [
+        "terrain-motion",
+        "horizon",
+        "hud",
+        "temporal-history"
+      ]
+    }
+  ],
+  "capture_status": "placeholder-not-captured",
+  "corpus_directory": "unity-enhanced",
+  "determinism": {
+    "frame_hash": null,
+    "gpu_lit_requires_region_metrics": true,
+    "hash_status": "not-captured",
+    "input_route_is_authoritative": true,
+    "policy": "structural-region-metrics-plus-human-review",
+    "state_hash": null
+  },
+  "display_metadata": {
+    "display_policy": "enhanced-presentation-only",
+    "internal_profiles": [
+      {
+        "height": 720,
+        "stride_policy": "render-target-width",
+        "width": 1280
+      },
+      {
+        "height": 1080,
+        "stride_policy": "render-target-width",
+        "width": 1920
+      }
+    ],
+    "present_aspect": "widescreen-quality-profile",
+    "profile_id": "level1-night-unity-enhanced-v1"
+  },
+  "manifest_id": "unity-enhanced-level1-night-unity-enhanced-v1-dry-run",
+  "mode": "unity-enhanced",
+  "profile": "level1-night-unity-enhanced-v1",
+  "provenance": {
+    "gameplay_authority": "Rust simulation core",
+    "oracle_comparison": "not-used",
+    "owner_inputs": "external paths only; not embedded in this corpus",
+    "owner_payload_embedded": false,
+    "project": "research/private/remc2-unity-presentation-lab",
+    "reference_policy": "separate-unity-enhanced-corpus",
+    "track": "P"
+  },
+  "renderer": "urp-enhanced",
+  "schema_id": "mc-presentation-corpus-v1",
+  "schema_version": 1,
+  "visual_review": {
+    "failure_ids": [
+      "over-bloom",
+      "crushed-blacks",
+      "fog-washout",
+      "unreadable-hud",
+      "unstable-exposure",
+      "temporal-ghosting",
+      "concept-art-only-detail"
+    ],
+    "human_review_required": true,
+    "quality_target_id": "level1-night-presentation-v1",
+    "status": "not-reviewed"
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "kind": "unity-enhanced-owner-route-scenarios/v1",
+  "captured_at_utc": "2026-08-02T05:51:29Z",
+  "machine": "T14",
+  "source_revision": "46971bed4fe6e4714ae33ec0b11ff9ab595755c8",
+  "unity_version": "6000.3.20f1",
+  "graphics_api": "OpenGLCore",
+  "graphics_device": "Mesa Intel(R) Graphics (LNL)",
+  "mode": "unity-enhanced",
+  "native_abi": "sim-capi-v2",
+  "owner_payload_embedded": false,
+  "owner_inputs_external": true,
+  "route": "PresentationModeRouter -> Rust native session -> immutable Enhanced snapshots -> Unity Enhanced world root",
+  "scenario_frame_count": 49,
+  "routes": {
+    "idle": {
+      "status": "pass",
+      "frame_count": 8,
+      "state_hashes_nonzero": true,
+      "snapshot_application": "pass"
+    },
+    "town": {
+      "status": "pass",
+      "frame_count": 12,
+      "event_rows": 79,
+      "moving_populated_view": true,
+      "snapshot_application": "pass"
+    },
+    "combat": {
+      "status": "pass",
+      "frame_count": 12,
+      "event_rows": 79,
+      "projectile_rows": 1,
+      "impact_rows": 1,
+      "snapshot_application": "pass"
+    },
+    "high_speed_flight": {
+      "status": "pass",
+      "frame_count": 16,
+      "max_actual_speed": 80,
+      "camera_distance_units": 19.915,
+      "snapshot_application": "pass"
+    },
+    "death_restart": {
+      "status": "pass",
+      "damage": 100000,
+      "attacker_entity_index": 10,
+      "death_observed": true,
+      "restart_generation": 3,
+      "restart_tick": 0,
+      "snapshot_application": "pass"
+    }
+  },
+  "state_route_hash": "7400fbad46eb28dc",
+  "event_route_hash": "5d77f2931d7f9bb4",
+  "night_lighting": true,
+  "reflection": true,
+  "native_plugin_sha256": "c878b9d1acd8c14123240cfb54af59275026defd98ef540c5fc0431a88f2b644",
+  "log_sha256": "a741877447b69bf6e2cb1eaffaae936357aa104941b5560983726dd5fda1c81b",
+  "log_path": "/tmp/magiccarpet-gfx-spec-owner-unity-enhanced-scenario2.log",
+  "visual_capture_status": "not-captured-by-this-route-smoke",
+  "qualification_status": "owner-bound idle, moving town, combat event/projectile/impact, high-speed flight, and lethal death/restart route observations pass; visual corpus, owner/GPU matrix, Classic HD route parity, completion/postgame, and window/alt-tab evidence remain open",
+  "reproduce_command_template": "Unity -batchmode -force-glcore -projectPath research/private/remc2-unity-presentation-lab -executeMethod MagicCarpet.PresentationLab.Editor.CreatePresentationLabAssets.RunOwnerUnityEnhancedScenarioSmoke -mc-presentation-mode unity-enhanced -mc-package <external-owner-package> -mc-closure <external-owner-closure> -mc-asset-cache <external-owner-cache>"
+}

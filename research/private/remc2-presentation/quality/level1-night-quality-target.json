@@ -1,0 +1,76 @@
+{
+  "quality_target_id": "level1-night-presentation-v1",
+  "schema_version": 1,
+  "scope": "Level 1 Night town, combat, water, fog, and flight presentation",
+  "renderer_claim": "presentation quality target only; not an Exact gameplay claim",
+  "look_definition": {
+    "night_readability": "deep blue night values preserve near-terrain and actor silhouettes",
+    "settlements": "warm emissive settlements read as navigational anchors without clipping the frame",
+    "silhouettes": "player, enemies, castle, and terrain remain distinguishable during motion",
+    "bloom": "restrained and localized around spell/settlement emitters",
+    "atmosphere": "depth increases monotonically from near terrain through fog to a readable horizon",
+    "spell_light": "cast/impact light is event-driven and responsive without becoming a permanent exposure change",
+    "horizon": "the horizon remains legible and does not collapse into a flat wash",
+    "art_boundary": "no replacement art is needed to pass this target; concept art alone is not evidence"
+  },
+  "machine_review": {
+    "exact": {
+      "frame_hash": "sha256 of indexed FINAL MAIN bytes",
+      "state_hash": "required when the checkpoint provides one",
+      "comparison": "byte equality within the protected 320x200 profile"
+    },
+    "classic-hd": {
+      "frame_hash": "sha256 of indexed rerender bytes when deterministic",
+      "comparison": "byte equality within a fixed profile; otherwise structural regions plus human review",
+      "forbidden_claim": "a final-frame upscale is not a Classic HD pass"
+    },
+    "unity-enhanced": {
+      "frame_hash": "not authoritative for GPU-lit pixels",
+      "comparison": "tolerant structural/region metrics plus human review",
+      "regions": ["horizon", "town-emissives", "actor-silhouettes", "spell-light", "water", "hud", "near-mid-far-depth"]
+    }
+  },
+  "failure_thresholds": {
+    "over-bloom": {
+      "rule": "emissive halos obscure required silhouettes or clipped-highlight fraction exceeds 0.5 percent of the reviewed frame",
+      "severity": "blocker"
+    },
+    "crushed-blacks": {
+      "rule": "near-terrain or actor silhouette region loses its required shape at review exposure",
+      "severity": "blocker"
+    },
+    "fog-washout": {
+      "rule": "fog makes the required horizon or near/mid/far separation unreadable",
+      "severity": "blocker"
+    },
+    "unreadable-hud": {
+      "rule": "required life/mana/spell/objective regions cannot be read at the target display profile",
+      "severity": "blocker"
+    },
+    "unstable-exposure": {
+      "rule": "identical input-only route changes exposure or settlement/spell readability without a gameplay event",
+      "severity": "blocker"
+    },
+    "temporal-ghosting": {
+      "rule": "history leaves a visible duplicate of the player, actor, spell, or terrain after the route changes",
+      "severity": "blocker"
+    },
+    "concept-art-only-detail": {
+      "rule": "a review relies on an illustration or replacement asset not produced by the measured renderer path",
+      "severity": "blocker"
+    }
+  },
+  "human_review": {
+    "required": true,
+    "reviewers": 2,
+    "required_views": [
+      "town approach/overflight",
+      "active Fireball fight",
+      "mana/castle activity",
+      "reflective water/terrain",
+      "fog depth",
+      "high-speed flight"
+    ],
+    "decision": "all blocker criteria must pass; record per-region notes and build metadata"
+  }
+}

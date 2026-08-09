@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "contract_id": "mc-presentation-modes-v1",
+  "scope": "private Track P owner-data presentation",
+  "authority": {
+    "simulation": "Rust remc2-sim-rs",
+    "rendering": "selected presentation mode",
+    "mode_selection": "launcher before native session and Unity scene assembly",
+    "pipeline_switching": "forbidden during a presentation session"
+  },
+  "launcher": {
+    "argument": "-mc-presentation-mode",
+    "values": ["exact", "classic-hd", "unity-enhanced"],
+    "default": "exact",
+    "invalid_value": "error",
+    "missing_owner_input": "clear error for Classic HD and Unity Enhanced; explicit debug fallback only for Exact",
+    "selection_phase": "before_session_open",
+    "mode_change": "restart_presentation_session"
+  },
+  "modes": {
+    "exact": {
+      "project": "research/private/remc2-unity-native",
+      "renderer": "built-in-exact-indexed",
+      "qualified": true,
+      "exact_claim": true,
+      "owner_inputs": "qualified package, closure, and owner cache",
+      "internal_viewport": {"width": 320, "height": 200, "format": "R8 indexed FINAL MAIN"},
+      "window_policy": "corrected 4:3 rectangle; pillarbox widescreen window only",
+      "corpus_root": "research/private/remc2-unity-native/qualification",
+      "fallback": "-mc-debug is an explicit diagnostic mode, never an implicit HD/Enhanced fallback"
+    },
+    "classic-hd": {
+      "project": "research/private/remc2-unity-presentation-lab",
+      "renderer": "indexed-high-resolution-rerender",
+      "qualified": false,
+      "exact_claim": false,
+      "owner_inputs": "same external package, closure, and owner cache; never embedded",
+      "internal_profiles": [
+        {"id": "hd-640", "width": 640, "height": 480, "stride": 640, "aspect": "4:3"},
+        {"id": "hd-1280", "width": 1280, "height": 960, "stride": 1280, "aspect": "4:3"}
+      ],
+      "window_policy": "4:3 game viewport pillarboxed in widescreen window",
+      "hud_policy": "integer-scaled 640x480 source-style HUD; no widescreen reflow in v1",
+      "rerender_rule": "recompute indexed world at the selected internal resolution; never upscale Exact FINAL MAIN",
+      "corpus_root": "research/private/remc2-presentation/corpora/classic-hd"
+    },
+    "unity-enhanced": {
+      "project": "research/private/remc2-unity-presentation-lab",
+      "renderer": "urp-enhanced",
+      "qualified": false,
+      "exact_claim": false,
+      "owner_inputs": "same external package, closure, and owner cache; never embedded",
+      "internal_viewport": "quality-profile-selected widescreen or 4:3 presentation",
+      "window_policy": "quality-profile-selected; gameplay state is unchanged",
+      "corpus_root": "research/private/remc2-presentation/corpora/unity-enhanced",
+      "fallback": "diagnostic no-owner-input scene with a non-qualified badge"
+    }
+  },
+  "invariants": {
+    "command_stream": "identical bytes and order for the same input recording",
+    "gameplay_event_stream": "identical Rust-authoritative events after presentation-only fields are removed",
+    "gameplay_state_hash": "identical at every available checkpoint",
+    "conformance_hash": "identical at every available checkpoint",
+    "reset_and_restart": "fresh session reset returns the same package-bound reset hashes",
+    "checkpoint_hashes": "compare when a checkpoint exists; do not invent persistent-save equivalence",
+    "persistent_save_support": false,
+    "presentation_only_fields": ["selector_clock", "frame_history", "exposure", "postprocess_history", "gpu_timing"],
+    "presentation_fields_must_not_mutate": ["rng", "entity_state", "terrain_edits", "objectives", "spell_state", "audio_gameplay_events"]
+  },
+  "corpus_policy": {
+    "exact_root": "research/private/remc2-unity-native/qualification",
+    "classic_hd_root": "research/private/remc2-presentation/corpora/classic-hd",
+    "unity_enhanced_root": "research/private/remc2-presentation/corpora/unity-enhanced",
+    "cross_mode_writes": "forbidden",
+    "exact_reference_reuse": "read-only comparison only"
+  },
+  "invalid_combinations": [
+    "mode-off",
+    "mid-session-pipeline-family-switch",
+    "unity-enhanced-exact-claim",
+    "classic-hd-final-main-upscale",
+    "exact-widescreen-world-expansion",
+    "owner-payload-embedded-in-player",
+    "voxel-mode-as-enhanced-authority"
+  ],
+  "future_profile_rule": "Later Day/cave profiles add a new profile record and corpus root; they do not clone Level 1 session or mode logic."
+}

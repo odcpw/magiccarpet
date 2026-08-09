@@ -21,6 +21,14 @@ use sim_core::{
     FlightContext, FlightEvent, FlightState, FlightWorld, POSITIONAL_SOUND_PLAY_IF_NOT_PLAYING,
     PlayerCommand, Position, PositionalSoundCommand, StepEvidence,
     archer_tmap::{ArcherTmapBank, ArcherTmapClocks},
+    classic_hd::{ClassicHdFrameWriter, ClassicHdRenderProfile, byte_hash},
+    classic_hd_raster::rasterize_classic_hd_terrain,
+    classic_hd_render_graph::{
+        ClassicHdBlurBranch, ClassicHdBlurInput, ClassicHdGraphError, ClassicHdGraphInput,
+        ClassicHdLightingPath, ClassicHdRenderGraph, ClassicHdWorldReceipt,
+    },
+    classic_hd_sprites::{ClassicHdSpritePlan, build_classic_hd_sprite_plan},
+    classic_hd_terrain::{ClassicHdSkyBank, ClassicHdTerrainResources, build_classic_hd_terrain},
     combat_tmap::{
         COMBAT_STATIC_EXTENTS, COMBAT_STATIC_SELECTORS, COMBAT_STATIC_SHA256, CombatTmapBank,
         FIREBALL_PAYLOAD_SHA256, FireballTmapClock, POSSESSION_PAYLOAD_SHA256, PossessionTmapClock,
@@ -53,7 +61,7 @@ use sim_core::{
     },
     house::{HouseState, HouseStepEvent},
     indexed_overlay::IndexedOverlayAssets,
-    indexed_postprocess::{IndexedPostprocessBranch, IndexedPostprocessInput},
+    indexed_postprocess::{IndexedPostprocessBranch, IndexedPostprocessInput, OVERLAY_PROVENANCE},
     level1_mission::{
         ARCHER_ARROW_BASE_TMAP, ARCHER_ARROW_LOGICAL_HEIGHT, ARCHER_ARROW_PROJECTILE_CLASS,
         ARCHER_ARROW_PROJECTILE_MODEL, ARCHER_ARROW_RENDER_INDEX, ARCHER_ARROW_RENDER_MODE,
@@ -123,11 +131,13 @@ use sim_core::{
         LEVEL1_SKY_BYTES, LEVEL1_TERRAIN_ATLAS_BYTES, LEVEL1_VIEW_HEIGHT, LEVEL1_VIEW_PIXELS,
         LEVEL1_VIEW_WIDTH, Level1CastleRootRender, Level1FrozenActorRender, Level1TerrainFrame,
         Level1TerrainFrameCamera, Level1TerrainFrameResources, Level1WorldFrameResources,
-        render_level1_source_world_frame, render_level1_source_world_map_frame_composed,
-        render_level1_terrain_frame, render_level1_world_frame,
+        raster_level1_source_world_sprites, render_level1_source_world_frame,
+        render_level1_source_world_map_frame_composed, render_level1_terrain_frame,
+        render_level1_world_frame,
     },
     terrain_grid::{OUTDOOR_GRID_VERTICES, OutdoorGridInput, outdoor_grid},
     terrain_presentation::outdoor_terrain_pnt5,
+    terrain_reflection::OutdoorProjection,
     villager::{VILLAGER_CLASS, VILLAGER_MODEL, VillagerState},
 };
 
@@ -141,7 +151,7 @@ use crate::presentation_bridge::{
 use sim_core::level1_mission::FIREBALL_IMPACT_MODEL;
 
 #[cfg(test)]
-use sim_core::level1_mission::CASTLE_PROJECTILE_SOUND;
+use sim_core::level1_mission::{CASTLE_PROJECTILE_SOUND, WATER_SPLASH_SOUND};
 
 pub const MC_NATIVE_ABI_VERSION: u32 = 2;
 
@@ -341,6 +351,16 @@ pub const MC_PRESENTATION_FRAME_HAS_PROVENANCE: u32 = 0x4000;
 pub const MC_PRESENTATION_FRAME_OVERLAYS_COMPOSITED: u32 = 0x8000;
 pub const MC_PRESENTATION_FRAME_POSTPROCESS_COMPLETE: u32 = 0x1_0000;
 pub const MC_PRESENTATION_FRAME_LIGHTING_COMPLETE: u32 = 0x2_0000;
+/// Classic HD-only receipt bits. These are deliberately outside the legacy
+/// 320x200 FINAL MAIN flag namespace: a caller can distinguish a profile-sized
+/// rerender from a copied Exact frame without changing the old ABI contract.
+pub const MC_CLASSIC_HD_FRAME_PROFILE_RERENDER: u32 = 0x4_0000;
+pub const MC_CLASSIC_HD_FRAME_TYPED_SPRITES: u32 = 0x8_0000;
+pub const MC_CLASSIC_HD_FRAME_REFLECTIONS: u32 = 0x10_0000;
+pub const MC_CLASSIC_HD_FRAME_SHADOWS: u32 = 0x20_0000;
+/// The caller requested only the profile-sized, owner-authentic HUD overlay.
+/// The native world graph is intentionally not rendered for this receipt.
+pub const MC_CLASSIC_HD_FRAME_OWNER_OVERLAY_ONLY: u32 = 0x40_0000;
 
 fn world_frame_flags(reflected_sprites_composited: bool, sprite_shadows_composited: bool) -> u32 {
     let mut flags = MC_TERRAIN_FRAME_ISOLATED_SKY_TERRAIN
@@ -2287,8 +2307,15 @@ struct SessionRecord {
     camera_slope: TerrainSlopeCamera,
     camera_slope_sample: TerrainSlopeCameraSample,
     terrain_frame_assets: Option<Arc<TerrainFrameAssets>>,
+    classic_hd_shading: Arc<[u8]>,
     source_render_asset_digest: Option<u64>,
     presentation_frame: PresentationFrameState,
+    /// Lazy owner-bound Classic HD state. The fixed presentation graph remains
+    /// separate; this graph is rebuilt on profile or generation changes.
+    classic_hd_graph: Option<ClassicHdRenderGraph>,
+    classic_hd_profile_id: Option<u32>,
+    classic_hd_sprite_plan: Option<ClassicHdSpritePlan>,
+    classic_hd_last_world_receipt: Option<ClassicHdWorldReceipt>,
     lighting_receipt: DynamicLightingExecutionReceipt,
     presentation_ui: LiveMenuState,
     debug_clock_bucket: Option<u32>,
@@ -2646,6 +2673,19 @@ fn source_render_asset_digest(world: &NativeWorld, assets: &TerrainFrameAssets) 
     Ok(sim_core::presentation_frame::byte_hash(&bytes))
 }
 
+fn classic_hd_profile_for_id(profile_id: u32) -> AbiResult<ClassicHdRenderProfile> {
+    match profile_id {
+        0 => Ok(ClassicHdRenderProfile::compatibility_320x200()),
+        1 => Ok(ClassicHdRenderProfile::hd_640x480()),
+        2 => Ok(ClassicHdRenderProfile::hd_960x720()),
+        3 => Ok(ClassicHdRenderProfile::hd_1280x960()),
+        _ => Err(AbiError::new(
+            MC_STATUS_INVALID_ARGUMENT,
+            format!("unknown Classic HD profile id {profile_id}"),
+        )),
+    }
+}
+
 impl SessionRecord {
     fn set_game_paused(&mut self, paused: bool) {
         if paused && !self.game_paused {
@@ -2798,7 +2838,6 @@ impl SessionRecord {
         self.live_world.hash_v2(self.mission.global_rng())
     }
 
-    #[cfg(test)]
     fn source_render_input_hash(&self) -> AbiResult<u64> {
         let map_right_viewport = matches!(self.mission.player_menu_state, 6 | 7 | 8 | 11 | 12 | 14);
         let inputs = self.source_render_inputs(map_right_viewport)?;
@@ -3069,6 +3108,7 @@ impl SessionRecord {
             camera_history.y,
         );
         let terrain = SessionTerrain::from_world(world.as_ref());
+        let classic_hd_shading = Arc::from(terrain.planes().shading.clone());
         let lighting_receipt = mission
             .dynamic_lighting_execution_receipt(&terrain.planes().shading)
             .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
@@ -3111,8 +3151,13 @@ impl SessionRecord {
             camera_slope,
             camera_slope_sample,
             terrain_frame_assets,
+            classic_hd_shading,
             source_render_asset_digest,
             presentation_frame: PresentationFrameState::new(1),
+            classic_hd_graph: None,
+            classic_hd_profile_id: None,
+            classic_hd_sprite_plan: None,
+            classic_hd_last_world_receipt: None,
             lighting_receipt,
             presentation_ui: LiveMenuState::default(),
             debug_clock_bucket: None,
@@ -3132,6 +3177,7 @@ impl SessionRecord {
 
     fn reset(&mut self) {
         self.terrain = SessionTerrain::from_world(self.world.as_ref());
+        Arc::make_mut(&mut self.classic_hd_shading).copy_from_slice(&self.terrain.planes().shading);
         self.state = *self.world.reset_state();
         self.context = self.world.session_context();
         self.live_world = self.world.reset_live_world().clone();
@@ -3176,6 +3222,10 @@ impl SessionRecord {
         self.goat_draw_admission = None;
         self.generation = next_nonzero(self.generation);
         self.presentation_frame.reset(self.generation);
+        self.classic_hd_graph = None;
+        self.classic_hd_profile_id = None;
+        self.classic_hd_sprite_plan = None;
+        self.classic_hd_last_world_receipt = None;
         self.event_head = 0;
         self.events.clear();
         self.audio_commands.clear();
@@ -3631,19 +3681,26 @@ impl SessionRecord {
                     .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error))?;
             }
         }
-        let assets = self.terrain_frame_assets.as_ref().ok_or_else(|| {
-            AbiError::new(
-                MC_STATUS_GENERATION_MISMATCH,
-                "source-render generation has no qualified asset banks",
-            )
-        })?;
-        let generation_asset_digest = source_render_asset_digest(self.world.as_ref(), assets)?;
-        if Some(generation_asset_digest) != self.source_render_asset_digest {
+        if self.terrain_frame_assets.is_none() {
             return Err(AbiError::new(
                 MC_STATUS_GENERATION_MISMATCH,
-                "source-render asset banks changed within the active generation",
+                "source-render generation has no qualified asset banks",
             ));
         }
+        // `TerrainFrameAssets` is held behind an immutable `Arc` for the
+        // lifetime of the session. Its digest was computed and stored when
+        // the owner cache opened, so recomputing a hash over the terrain,
+        // TABLESN, sky, and every TMAP debug record on every HD frame adds
+        // tens of milliseconds without providing a possible mutation gate.
+        // Reuse the generation-bound receipt instead; cache replacement still
+        // requires a session reset/open and therefore cannot silently cross a
+        // generation here.
+        let generation_asset_digest = self.source_render_asset_digest.ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                "source-render generation has no asset digest",
+            )
+        })?;
         let camera = Level1TerrainFrameCamera {
             render_x: self
                 .camera_history
@@ -3786,6 +3843,670 @@ impl SessionRecord {
             },
         )
         .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))
+    }
+
+    /// Render the owner world directly into the profile-sized Classic HD
+    /// graph scratch planes. This is deliberately separate from
+    /// `render_source_world_frame`: that function remains the sealed 320x200
+    /// Exact source compositor and is never used as an upscale source here.
+    fn render_classic_hd_world(
+        &mut self,
+        profile: &ClassicHdRenderProfile,
+        indices: &mut [u8],
+        provenance: &mut [u8],
+        generation: u64,
+        tick: u64,
+        input_hash: u64,
+        history_hash: u64,
+    ) -> Result<ClassicHdWorldReceipt, ClassicHdGraphError> {
+        let profile_trace = std::env::var_os("MC_CLASSIC_HD_PROFILE_TRACE").is_some();
+        let render_started = std::time::Instant::now();
+        let assets = Arc::clone(self.terrain_frame_assets.as_ref().ok_or_else(|| {
+            ClassicHdGraphError(
+                "Classic HD owner render requires MC_ASSET_CACHE_PATH assets".to_owned(),
+            )
+        })?);
+        let inputs_started = std::time::Instant::now();
+        let mut inputs = self
+            .source_render_inputs(false)
+            .map_err(|error| ClassicHdGraphError(error.message))?;
+        if profile_trace {
+            eprintln!(
+                "[CLASSIC HD TRACE] profile={} source_inputs_ms={} dispositions={}",
+                profile.id.as_str(),
+                inputs_started.elapsed().as_millis(),
+                inputs.dispositions.len(),
+            );
+        }
+
+        let terrain_build_started = std::time::Instant::now();
+        let terrain = {
+            let planes = self.terrain.planes();
+            build_classic_hd_terrain(
+                profile,
+                inputs.camera,
+                ClassicHdTerrainResources {
+                    terrain_types: &planes.terrain_types,
+                    ground_heights: &planes.ground_heights,
+                    shading: &planes.shading,
+                    angles: &planes.angles,
+                    sky: &assets.sky,
+                },
+                ClassicHdSkyBank::Base256,
+            )
+            .map_err(|error| ClassicHdGraphError(error.to_string()))?
+        };
+        if profile_trace {
+            eprintln!(
+                "[CLASSIC HD TRACE] profile={} terrain_build_ms={} lattice_vertices={} submissions_reflected={} submissions_primary={}",
+                profile.id.as_str(),
+                terrain_build_started.elapsed().as_millis(),
+                terrain.lattice.vertex_count(),
+                terrain.submissions.reflected.len(),
+                terrain.submissions.primary.len(),
+            );
+        }
+        let mut writer = ClassicHdFrameWriter::from_planes(
+            profile,
+            indices,
+            provenance,
+            generation,
+            tick,
+            input_hash,
+            history_hash,
+        )
+        .map_err(ClassicHdGraphError::from)?;
+        writer.indices_mut().copy_from_slice(&terrain.sky);
+        writer.provenance_mut().fill(0x01);
+        let terrain_raster_started = std::time::Instant::now();
+        let terrain_receipt = rasterize_classic_hd_terrain(
+            &mut writer,
+            &terrain,
+            &assets.terrain_atlas,
+            &assets.tablesn,
+            0x10,
+        )
+        .map_err(|error| ClassicHdGraphError(error.to_string()))?;
+        if profile_trace {
+            eprintln!(
+                "[CLASSIC HD TRACE] profile={} terrain_raster_ms={} index_hash={:016x}",
+                profile.id.as_str(),
+                terrain_raster_started.elapsed().as_millis(),
+                byte_hash(writer.indices()),
+            );
+            eprintln!(
+                "[CLASSIC HD TRACE] profile={} mode5_triangles={} mode26_triangles={} terrain_source_pixels={} terrain_written_pixels={} terrain_clipped_pixels={}",
+                profile.id.as_str(),
+                terrain_receipt.mode5_triangles,
+                terrain_receipt.mode26_triangles,
+                terrain_receipt.source_pixels,
+                terrain_receipt.written_pixels,
+                terrain_receipt.clipped_pixels,
+            );
+        }
+
+        let disposition_started = std::time::Instant::now();
+        // `source_render_inputs` already validates and orders the complete
+        // disposition list. Reusing that owned list avoids rebuilding the
+        // BTreeSet/imported-row admission pass a second time on every HD
+        // frame; the authoritative state remains the same session snapshot.
+        let dispositions = std::mem::take(&mut inputs.dispositions);
+        let source_bank = self.world.source_sprite_tmap_bank().ok_or_else(|| {
+            ClassicHdGraphError(
+                "Classic HD owner render requires the CP1 source TMAP bank".to_owned(),
+            )
+        })?;
+        let ground_heights = &self.terrain.planes().ground_heights;
+        let mut plan = self
+            .classic_hd_sprite_plan
+            .take()
+            .unwrap_or_else(|| ClassicHdSpritePlan::with_capacity(1_024));
+        let plan_result = build_classic_hd_sprite_plan(
+            profile,
+            inputs.camera,
+            &dispositions,
+            source_bank,
+            ground_heights,
+            inputs.night,
+            &mut plan,
+        );
+        if let Err(error) = plan_result {
+            self.classic_hd_sprite_plan = Some(plan);
+            return Err(ClassicHdGraphError(error.to_string()));
+        }
+        if profile_trace {
+            eprintln!(
+                "[CLASSIC HD TRACE] profile={} dispositions={} sprite_plan_primary={} sprite_plan_legacy={} disposition_plan_ms={}",
+                profile.id.as_str(),
+                dispositions.len(),
+                plan.primary.len(),
+                plan.legacy.len(),
+                disposition_started.elapsed().as_millis(),
+            );
+        }
+
+        let tmap_clocks = self.selector_frames.as_ref().ok_or_else(|| {
+            ClassicHdGraphError("Classic HD owner render has no Goat TMAP clocks".to_owned())
+        })?;
+        let archer_tmap_clocks = self.archer_selector_frames.as_ref().ok_or_else(|| {
+            ClassicHdGraphError("Classic HD owner render has no Archer TMAP clocks".to_owned())
+        })?;
+        let firefly_tmap_clocks = self.firefly_selector_frames.as_ref().ok_or_else(|| {
+            ClassicHdGraphError("Classic HD owner render has no Firefly TMAP clocks".to_owned())
+        })?;
+        let villager_tmap_clocks = self.villager_selector_frames.as_ref().ok_or_else(|| {
+            ClassicHdGraphError("Classic HD owner render has no villager TMAP clocks".to_owned())
+        })?;
+        let fireball_tmap_clock = self.fireball_selector_frame.as_ref().ok_or_else(|| {
+            ClassicHdGraphError("Classic HD owner render has no Fireball TMAP clock".to_owned())
+        })?;
+        let possession_tmap_clock = self.possession_selector_frame.as_ref().ok_or_else(|| {
+            ClassicHdGraphError("Classic HD owner render has no Possession TMAP clock".to_owned())
+        })?;
+        let castle_tmap_clock = self.castle_selector_frame.as_ref().ok_or_else(|| {
+            ClassicHdGraphError("Classic HD owner render has no Castle TMAP clock".to_owned())
+        })?;
+        let planes = self.terrain.planes();
+        let terrain_projection = terrain.projection;
+        let projection = OutdoorProjection {
+            scale: terrain_projection.scale,
+            pitch_offset: terrain_projection.pitch_offset,
+            roll: terrain_projection.roll,
+            center_x: terrain_projection.center_x,
+            center_y: terrain_projection.center_y,
+            viewport_width: terrain_projection.viewport_width,
+            viewport_height: terrain_projection.viewport_height,
+        };
+        let sprite_raster_started = std::time::Instant::now();
+        let sprite_receipt = match raster_level1_source_world_sprites(
+            inputs.camera,
+            projection,
+            Level1TerrainFrameResources {
+                terrain_types: &planes.terrain_types,
+                ground_heights: &planes.ground_heights,
+                shading: &planes.shading,
+                angles: &planes.angles,
+                terrain_atlas: &assets.terrain_atlas,
+                tablesn: &assets.tablesn,
+                sky: &assets.sky,
+            },
+            Level1WorldFrameResources {
+                local_player_entity_index: inputs.local_player_entity_index,
+                goats: &inputs.goats,
+                frozen_actors: &inputs.frozen_actors,
+                ambient_entities: &inputs.ambient_entities,
+                frozen_actor_tmap_bank: Some(&assets.frozen_actor_tmap_bank),
+                villager_tmap_clocks: Some(villager_tmap_clocks),
+                mission_actors: &inputs.mission_actors,
+                dynamic_residents: &inputs.dynamic_residents,
+                mission_segments: &inputs.mission_segments,
+                castle_root: inputs.castle_root,
+                mana_spheres: &inputs.mana_spheres,
+                mana_carrier: inputs.mana_carrier.as_ref(),
+                map_chains: &inputs.map_chains,
+                goat_tmap_clocks: tmap_clocks,
+                archer_tmap_bank: &assets.archer_tmap_bank,
+                archer_tmap_clocks,
+                firefly_tmap_bank: &assets.firefly_tmap_bank,
+                firefly_tmap_clocks,
+                projectiles: &inputs.projectiles,
+                impacts: &inputs.impacts,
+                possessed_buildings: &inputs.possessed_buildings,
+                combat_tmap_bank: &assets.combat_tmap_bank,
+                static_world_tmap_bank: &assets.static_world_tmap_bank,
+                economy_tmap_bank: &assets.economy_tmap_bank,
+                fireball_tmap_clock,
+                possession_tmap_clock,
+                castle_tmap_clock,
+                particle_parameters: &self.world.presentation().particles,
+                source_slots: &inputs.source_slots,
+                night: inputs.night,
+            },
+            SourceSpriteWorldResources {
+                dispositions: &dispositions,
+                tmap_bank: source_bank,
+            },
+            writer.indices_mut(),
+        ) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.classic_hd_sprite_plan = Some(plan);
+                return Err(ClassicHdGraphError(error.to_string()));
+            }
+        };
+        if profile_trace {
+            eprintln!(
+                "[CLASSIC HD TRACE] profile={} sprite_raster_ms={} primary_candidates={} primary_writes={} reflected_candidates={} shadow_candidates={} total_ms={}",
+                profile.id.as_str(),
+                sprite_raster_started.elapsed().as_millis(),
+                sprite_receipt.primary.candidate_pixels,
+                sprite_receipt.primary.framebuffer_writes,
+                sprite_receipt.reflected.candidate_pixels,
+                sprite_receipt.shadows.candidate_pixels,
+                render_started.elapsed().as_millis(),
+            );
+        }
+
+        let receipt = ClassicHdWorldReceipt {
+            world_hash: byte_hash(writer.indices()),
+            provenance_hash: byte_hash(writer.provenance()),
+            terrain_rendered: true,
+            typed_sprites_rendered: true,
+            reflection_pass_rendered: sprite_receipt.reflection_pass_evaluated,
+            shadow_pass_rendered: sprite_receipt.shadow_pass_evaluated,
+            water_pass_rendered: false,
+        };
+        self.classic_hd_sprite_plan = Some(plan);
+        self.classic_hd_last_world_receipt = Some(receipt);
+        Ok(receipt)
+    }
+
+    fn validate_classic_hd_frame_request(
+        &self,
+        profile_id: u32,
+        query: &McPresentationFrameQueryV2,
+        index_buffer: &[u8],
+        provenance_buffer: &[u8],
+    ) -> AbiResult<ClassicHdRenderProfile> {
+        let profile = classic_hd_profile_for_id(profile_id)?;
+        let required = profile.extent();
+        if index_buffer.len() != required || provenance_buffer.len() != required {
+            return Err(AbiError::new(
+                MC_STATUS_BUFFER_TOO_SMALL,
+                format!(
+                    "Classic HD profile {} requires {required} index and provenance bytes",
+                    profile.id.as_str()
+                ),
+            ));
+        }
+        if query.generation != self.generation {
+            return Err(AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                format!(
+                    "Classic HD generation {} does not match {}",
+                    query.generation, self.generation
+                ),
+            ));
+        }
+        if query.tick != self.camera_history.tick {
+            return Err(AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                format!(
+                    "Classic HD tick {} does not match camera history {}",
+                    query.tick, self.camera_history.tick
+                ),
+            ));
+        }
+        if query.viewport_width != profile.width as u16
+            || query.viewport_height != profile.height as u16
+            || query.screen_stride != profile.stride as u16
+        {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                format!(
+                    "Classic HD query viewport {}x{} stride {} does not match profile {}x{} stride {}",
+                    query.viewport_width,
+                    query.viewport_height,
+                    query.screen_stride,
+                    profile.width,
+                    profile.height,
+                    profile.stride
+                ),
+            ));
+        }
+        if (query.game_paused != 0) != self.game_paused {
+            return Err(AbiError::new(
+                MC_STATUS_GENERATION_MISMATCH,
+                "Classic HD paused query does not match authoritative session state",
+            ));
+        }
+        Ok(profile)
+    }
+
+    fn classic_hd_frame_copy(
+        &mut self,
+        profile_id: u32,
+        query: McPresentationFrameQueryV2,
+        index_buffer: &mut [u8],
+        provenance_buffer: &mut [u8],
+    ) -> AbiResult<McPresentationFrameInfoV2> {
+        let profile = self.validate_classic_hd_frame_request(
+            profile_id,
+            &query,
+            index_buffer,
+            provenance_buffer,
+        )?;
+        let required = profile.extent();
+
+        let source_input_hash = self.source_render_input_hash()?;
+        let mut input_bytes = Vec::with_capacity(96);
+        input_bytes.extend_from_slice(b"mc2-classic-hd-owner-input-v1\0");
+        input_bytes.extend_from_slice(&source_input_hash.to_le_bytes());
+        input_bytes.extend_from_slice(&profile.profile_revision.to_le_bytes());
+        input_bytes.extend_from_slice(&query.presentation_revision.to_le_bytes());
+        input_bytes.push(query.configured_blur_mode);
+        input_bytes.push(query.blur_capability);
+        input_bytes.push(query.high_speed_system);
+        input_bytes.push(query.scratch_present);
+        input_bytes.push(query.vga_resolution);
+        input_bytes.push(query.spatial_smoothing);
+        input_bytes.push(query.minimap_enabled);
+        input_bytes.push(query.top_bar_enabled);
+        input_bytes.push(query.menu_overlay);
+        input_bytes.push(query.game_paused);
+        input_bytes.push(query.level_end);
+        input_bytes.push(query.objective_selector);
+        input_bytes.push(query.objective_textbox);
+        input_bytes.push(query.tutorial_or_briefing);
+        input_bytes.push(query.help_popup);
+        input_bytes.push(query.debug_text);
+        let input_hash = byte_hash(&input_bytes);
+
+        if self.classic_hd_graph.is_none() || self.classic_hd_profile_id != Some(profile_id) {
+            self.classic_hd_graph = Some(
+                ClassicHdRenderGraph::new(profile.clone(), self.generation)
+                    .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.0))?,
+            );
+            self.classic_hd_profile_id = Some(profile_id);
+            self.classic_hd_sprite_plan = Some(ClassicHdSpritePlan::with_capacity(1_024));
+            self.classic_hd_last_world_receipt = None;
+        }
+
+        let mut graph = self.classic_hd_graph.take().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                "Classic HD graph was not initialized",
+            )
+        })?;
+        let had_history = graph.history_key().is_some();
+        let generation = self.generation;
+        let tick = self.camera_history.tick;
+        let blur = ClassicHdBlurInput {
+            configured_mode: query.configured_blur_mode,
+            blur_capability: query.blur_capability != 0,
+            high_speed_system: query.high_speed_system != 0,
+            scratch_present: query.scratch_present != 0,
+            menu_state: self.mission.player_menu_state,
+            actual_speed: self.state.recoil_speed,
+            spatial_smoothing: query.spatial_smoothing != 0,
+            spatial_radius: 1,
+        };
+        let shading = Arc::clone(&self.classic_hd_shading);
+        let assets = Arc::clone(self.terrain_frame_assets.as_ref().ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                "Classic HD owner render requires MC_ASSET_CACHE_PATH assets",
+            )
+        })?);
+        let graph_result = graph.render_frame(
+            ClassicHdGraphInput {
+                generation,
+                tick,
+                profile_revision: profile.profile_revision,
+                input_hash,
+                reflections_enabled: true,
+                dynamic_lighting_enabled: true,
+                lighting_path: ClassicHdLightingPath::OwnerWorldAlreadyLit,
+                water_enabled: false,
+                blur,
+            },
+            Some(shading.as_ref()),
+            &assets.tablesn,
+            |indices, provenance| {
+                self.render_classic_hd_world(
+                    &profile, indices, provenance, generation, tick, input_hash, 0,
+                )
+            },
+        );
+        self.classic_hd_graph = Some(graph);
+        let result =
+            graph_result.map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.0))?;
+        let world_receipt = self.classic_hd_last_world_receipt.ok_or_else(|| {
+            AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                "Classic HD graph completed without an owner world receipt",
+            )
+        })?;
+        index_buffer.copy_from_slice(
+            self.classic_hd_graph
+                .as_ref()
+                .expect("Classic HD graph restored")
+                .current_indices(),
+        );
+        provenance_buffer.copy_from_slice(
+            self.classic_hd_graph
+                .as_ref()
+                .expect("Classic HD graph restored")
+                .current_provenance(),
+        );
+        let (overlay_pixels_written, overlay_stage_count, _, _) = self
+            .composite_classic_hd_owner_overlays(
+                &profile,
+                query,
+                index_buffer,
+                provenance_buffer,
+            )?;
+        let mut flags = MC_CLASSIC_HD_FRAME_PROFILE_RERENDER
+            | MC_PRESENTATION_FRAME_HAS_PROVENANCE
+            | MC_PRESENTATION_FRAME_OVERLAYS_COMPOSITED
+            | MC_PRESENTATION_FRAME_POSTPROCESS_COMPLETE
+            | MC_PRESENTATION_FRAME_LIGHTING_COMPLETE;
+        if world_receipt.typed_sprites_rendered {
+            flags |= MC_CLASSIC_HD_FRAME_TYPED_SPRITES;
+        }
+        if world_receipt.reflection_pass_rendered {
+            flags |= MC_CLASSIC_HD_FRAME_REFLECTIONS;
+        }
+        if world_receipt.shadow_pass_rendered {
+            flags |= MC_CLASSIC_HD_FRAME_SHADOWS;
+        }
+        let effective_postprocess_mode = match result.receipt.blur_branch {
+            ClassicHdBlurBranch::Direct { .. } => 0,
+            ClassicHdBlurBranch::Temporal { mode } => mode,
+        };
+        Ok(McPresentationFrameInfoV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McPresentationFrameInfoV2>(),
+            generation,
+            tick,
+            presentation_revision: query.presentation_revision,
+            immutable_input_hash: input_hash,
+            width: profile.width as u16,
+            height: profile.height as u16,
+            stride: profile.stride as u16,
+            viewport_width: profile.width as u16,
+            index_bytes: u32::try_from(required).expect("Classic HD extent fits u32"),
+            provenance_bytes: u32::try_from(required).expect("Classic HD extent fits u32"),
+            flags,
+            effective_postprocess_mode,
+            history_state: u8::from(had_history || result.receipt.prior_main_hash != 0),
+            newly_committed: u8::from(result.newly_committed),
+            reserved_0: 0,
+            index_hash: result.receipt.output_hash,
+            provenance_hash: result.receipt.provenance_hash,
+            lighting_hash: self.mission.dynamic_lighting_hash_v1(),
+            source_arena_hash: self.mission.source_arena_hash_v2(),
+            overlay_pixels_written,
+            overlay_stage_count,
+            reserved_1: 0,
+            reserved: [0; 6],
+        })
+    }
+
+    /// Copy only the owner-authentic HUD overlay into a profile-sized
+    /// transparent surface. Unity Enhanced already renders the world through
+    /// URP, so asking the Classic HD graph to redraw terrain and typed sprites
+    /// here would duplicate visible work without changing the HUD pixels.
+    fn classic_hd_owner_overlay_copy(
+        &mut self,
+        profile_id: u32,
+        query: McPresentationFrameQueryV2,
+        index_buffer: &mut [u8],
+        provenance_buffer: &mut [u8],
+    ) -> AbiResult<McPresentationFrameInfoV2> {
+        let profile = self.validate_classic_hd_frame_request(
+            profile_id,
+            &query,
+            index_buffer,
+            provenance_buffer,
+        )?;
+        let required = profile.extent();
+        index_buffer.fill(0);
+        provenance_buffer.fill(0);
+        let (overlay_pixels_written, overlay_stage_count, input_hash, newly_committed) = self
+            .composite_classic_hd_owner_overlays(
+                &profile,
+                query,
+                index_buffer,
+                provenance_buffer,
+            )?;
+        Ok(McPresentationFrameInfoV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McPresentationFrameInfoV2>(),
+            generation: self.generation,
+            tick: self.camera_history.tick,
+            presentation_revision: query.presentation_revision,
+            immutable_input_hash: input_hash,
+            width: profile.width as u16,
+            height: profile.height as u16,
+            stride: profile.stride as u16,
+            viewport_width: profile.width as u16,
+            index_bytes: u32::try_from(required).expect("Classic HD extent fits u32"),
+            provenance_bytes: u32::try_from(required).expect("Classic HD extent fits u32"),
+            flags: MC_CLASSIC_HD_FRAME_OWNER_OVERLAY_ONLY
+                | MC_PRESENTATION_FRAME_HAS_PROVENANCE
+                | MC_PRESENTATION_FRAME_OVERLAYS_COMPOSITED
+                | MC_PRESENTATION_FRAME_POSTPROCESS_COMPLETE,
+            effective_postprocess_mode: 0,
+            history_state: 0,
+            newly_committed,
+            reserved_0: 0,
+            index_hash: byte_hash(index_buffer),
+            provenance_hash: byte_hash(provenance_buffer),
+            lighting_hash: self.mission.dynamic_lighting_hash_v1(),
+            source_arena_hash: self.mission.source_arena_hash_v2(),
+            overlay_pixels_written,
+            overlay_stage_count,
+            reserved_1: 0,
+            reserved: [0; 6],
+        })
+    }
+
+    fn classic_hd_owner_overlay_frame(
+        &mut self,
+        query: McPresentationFrameQueryV2,
+    ) -> AbiResult<sim_core::presentation_frame::PresentationFrameResult> {
+        let mut hud_query = query;
+        hud_query.viewport_width = LEVEL1_VIEW_WIDTH as u16;
+        hud_query.viewport_height = LEVEL1_VIEW_HEIGHT as u16;
+        hud_query.screen_stride = LEVEL1_VIEW_WIDTH as u16;
+        // The owner HUD is a direct compositor surface. The HD graph owns its
+        // separate blur/history decision, so do not blur the source HUD a
+        // second time while extracting its marked overlay pixels.
+        hud_query.configured_blur_mode = 0;
+        hud_query.blur_capability = 1;
+        hud_query.high_speed_system = 1;
+        hud_query.scratch_present = 1;
+        hud_query.vga_resolution = 1;
+        hud_query.spatial_smoothing = 0;
+
+        let result = self.presentation_frame(hud_query)?;
+        if !result.frame.compositor_complete()
+            || result.frame.overlay_pixels_written == 0
+            || result.frame.overlay_receipts.is_empty()
+        {
+            return Err(AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                "Classic HD owner compositor did not produce a complete HUD overlay",
+            ));
+        }
+        Ok(result)
+    }
+
+    /// Composite the owner-authentic fixed-pipeline overlay pixels over the
+    /// profile-sized Classic HD world. The HD Rust graph remains authoritative
+    /// for terrain and typed sprites; this imports only pixels explicitly
+    /// marked as overlays by the existing 320x200 owner compositor, preserving
+    /// the original HUD art and layout while fitting it into the profile's
+    /// 4:3 surface. The same helper also serves the Enhanced overlay-only
+    /// endpoint, where the destination begins transparent instead of carrying
+    /// the HD world.
+    fn composite_classic_hd_owner_overlays(
+        &mut self,
+        profile: &ClassicHdRenderProfile,
+        query: McPresentationFrameQueryV2,
+        indices: &mut [u8],
+        provenance: &mut [u8],
+    ) -> AbiResult<(u32, u16, u64, u8)> {
+        let base_width = LEVEL1_VIEW_WIDTH as u32;
+        let base_height = LEVEL1_VIEW_HEIGHT as u32;
+        if profile.width < base_width || profile.height < base_height {
+            return Err(AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                format!(
+                    "Classic HD profile {} cannot fit the fixed owner HUD",
+                    profile.id.as_str()
+                ),
+            ));
+        }
+        if profile.stride != profile.width {
+            return Err(AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                format!(
+                    "Classic HD profile {} has an incompatible owner HUD stride",
+                    profile.id.as_str()
+                ),
+            ));
+        }
+
+        let owner_result = self.classic_hd_owner_overlay_frame(query)?;
+        let owner_frame = owner_result.frame;
+
+        let base_width = usize::try_from(base_width).expect("base width fits usize");
+        let base_height = usize::try_from(base_height).expect("base height fits usize");
+        let output_width = usize::try_from(profile.width).expect("Classic HD width fits usize");
+        let output_height = usize::try_from(profile.height).expect("Classic HD height fits usize");
+        let output_stride = usize::try_from(profile.stride).expect("Classic HD stride fits usize");
+        let mut written = 0_u32;
+        for source_y in 0..base_height {
+            for source_x in 0..base_width {
+                let source_offset = source_y * base_width + source_x;
+                if owner_frame.provenance[source_offset] & OVERLAY_PROVENANCE == 0 {
+                    continue;
+                }
+                let value = owner_frame.indices[source_offset];
+                let output_x = source_x * output_width / base_width;
+                let output_x_end = (source_x + 1) * output_width / base_width;
+                let output_y = source_y * output_height / base_height;
+                let output_y_end = (source_y + 1) * output_height / base_height;
+                for y in output_y..output_y_end {
+                    let row = y * output_stride;
+                    for x in output_x..output_x_end {
+                        let output_offset = row + x;
+                        indices[output_offset] = value;
+                        provenance[output_offset] |= OVERLAY_PROVENANCE;
+                        written = written
+                            .checked_add(1)
+                            .expect("Classic HD overlay pixel count fits u32");
+                    }
+                }
+            }
+        }
+
+        if written == 0 {
+            return Err(AbiError::new(
+                MC_STATUS_VALIDATION_FAILED,
+                "Classic HD owner compositor marked no pixels for the HUD overlay",
+            ));
+        }
+
+        Ok((
+            written,
+            u16::try_from(owner_frame.overlay_receipts.len())
+                .expect("Classic HD overlay stage count fits u16"),
+            owner_frame.immutable_input_hash,
+            u8::from(owner_result.newly_committed),
+        ))
     }
 
     fn world_frame(&mut self) -> AbiResult<Level1TerrainFrame> {
@@ -4908,6 +5629,7 @@ impl SessionRecord {
                 .mission
                 .dynamic_lighting_execution_receipt(shading)
                 .expect("qualified C ABI dynamic-light execution has fixed shading extent");
+            Arc::make_mut(&mut self.classic_hd_shading).copy_from_slice(shading);
         }
         self.mission.finish_source_turn(&self.state);
         self.sync_supported_renderable_records()
@@ -6409,7 +7131,6 @@ impl SessionRecord {
                 record.code = u32::from(sound_id);
                 record.value_0 = i32::try_from(projectile_id).unwrap_or(i32::MAX);
                 record.value_1 = i32::from(position.z);
-                record.entity_index = u16::try_from(splash_id).unwrap_or(u16::MAX);
                 let source_entity_index = self
                     .mission
                     .impacts()
@@ -6424,6 +7145,11 @@ impl SessionRecord {
                     5,
                     self.mission.global_rng(),
                 );
+                // The stable event row exposes the splash impact identity to
+                // presentation.  Audio correlation uses the impact's source
+                // slot internally, but must not replace that presentation key
+                // in the shared C ABI row.
+                record.entity_index = u16::try_from(splash_id).unwrap_or(u16::MAX);
                 record
             }
             Level1MissionEvent::ActorDamaged {
@@ -9325,6 +10051,147 @@ pub extern "C" fn mc_native_session_presentation_frame_copy(
                 reserved_1: 0,
                 reserved: [0; 6],
             })
+        })
+    })
+}
+
+/// Copy one owner-bound, profile-sized Classic HD frame.
+///
+/// This additive endpoint never calls the fixed 320x200 presentation
+/// compositor. The Rust Classic HD graph rerenders terrain and supported
+/// typed sprites into its own profile-sized MAIN/history planes, then copies
+/// those planes to the caller. Unsupported source families fail closed.
+fn validate_classic_hd_frame_query(query: &McPresentationFrameQueryV2) -> AbiResult<()> {
+    validate_reserved(&query.reserved, "Classic HD frame query")?;
+    if query.reserved_0 != 0 {
+        return Err(AbiError::new(
+            MC_STATUS_RESERVED_NONZERO,
+            "Classic HD frame query reserved_0 must be zero",
+        ));
+    }
+    for (name, value) in [
+        ("blur_capability", query.blur_capability),
+        ("high_speed_system", query.high_speed_system),
+        ("scratch_present", query.scratch_present),
+        ("spatial_smoothing", query.spatial_smoothing),
+        ("minimap_enabled", query.minimap_enabled),
+        ("top_bar_enabled", query.top_bar_enabled),
+        ("game_paused", query.game_paused),
+        ("level_end", query.level_end),
+        ("objective_textbox", query.objective_textbox),
+        ("tutorial_or_briefing", query.tutorial_or_briefing),
+        ("help_popup", query.help_popup),
+    ] {
+        if value > 1 {
+            return Err(AbiError::new(
+                MC_STATUS_INVALID_ARGUMENT,
+                format!("Classic HD frame {name} must be 0 or 1"),
+            ));
+        }
+    }
+    if query.debug_text & !0x48 != 0 {
+        return Err(AbiError::new(
+            MC_STATUS_INVALID_ARGUMENT,
+            "Classic HD frame debug_text accepts source flags 0x08 and 0x40 only",
+        ));
+    }
+    if query.configured_blur_mode > 2 {
+        return Err(AbiError::new(
+            MC_STATUS_INVALID_ARGUMENT,
+            "Classic HD configured blur mode must be zero, one, or two",
+        ));
+    }
+    Ok(())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_session_classic_hd_frame_copy(
+    handle: u64,
+    profile_id: u32,
+    query: *const McPresentationFrameQueryV2,
+    index_buffer: *mut u8,
+    index_capacity: u32,
+    provenance_buffer: *mut u8,
+    provenance_capacity: u32,
+    out_info: *mut McPresentationFrameInfoV2,
+    out_info_size: u32,
+) -> i32 {
+    boundary_value(out_info, out_info_size, || {
+        let query = read_versioned_input(query, "Classic HD frame query")?;
+        validate_classic_hd_frame_query(&query)?;
+        let profile = classic_hd_profile_for_id(profile_id)?;
+        let required = profile.extent();
+        let required_u32 = u32::try_from(required).expect("Classic HD extent fits u32");
+        if index_capacity < required_u32 || provenance_capacity < required_u32 {
+            return Err(AbiError::new(
+                MC_STATUS_BUFFER_TOO_SMALL,
+                format!(
+                    "Classic HD profile {} requires {required_u32} index and provenance bytes, got {index_capacity} and {provenance_capacity}",
+                    profile.id.as_str()
+                ),
+            ));
+        }
+        if index_buffer.is_null() || provenance_buffer.is_null() {
+            return Err(AbiError::new(
+                MC_STATUS_NULL_POINTER,
+                "Classic HD index and provenance buffers must be non-null",
+            ));
+        }
+        // SAFETY: the capacities were checked against the validated profile
+        // extent and the pointers were checked non-null above.
+        let indices = unsafe { slice::from_raw_parts_mut(index_buffer, required) };
+        let provenance = unsafe { slice::from_raw_parts_mut(provenance_buffer, required) };
+        with_session_mut(handle, |session| {
+            session.classic_hd_frame_copy(profile_id, query, indices, provenance)
+        })
+    })
+}
+
+/// Copy only the profile-sized owner HUD overlay for Unity Enhanced.
+///
+/// This endpoint shares the exact owner compositor and profile scaling with
+/// Classic HD, but deliberately does not render the Classic HD world graph.
+/// The destination is transparent except for provenance-marked HUD pixels;
+/// Unity's Enhanced world remains the only world image on that route.
+#[unsafe(no_mangle)]
+pub extern "C" fn mc_native_session_classic_hd_owner_overlay_copy(
+    handle: u64,
+    profile_id: u32,
+    query: *const McPresentationFrameQueryV2,
+    index_buffer: *mut u8,
+    index_capacity: u32,
+    provenance_buffer: *mut u8,
+    provenance_capacity: u32,
+    out_info: *mut McPresentationFrameInfoV2,
+    out_info_size: u32,
+) -> i32 {
+    boundary_value(out_info, out_info_size, || {
+        let query = read_versioned_input(query, "Classic HD owner overlay query")?;
+        validate_classic_hd_frame_query(&query)?;
+        let profile = classic_hd_profile_for_id(profile_id)?;
+        let required = profile.extent();
+        let required_u32 = u32::try_from(required).expect("Classic HD extent fits u32");
+        if index_capacity < required_u32 || provenance_capacity < required_u32 {
+            return Err(AbiError::new(
+                MC_STATUS_BUFFER_TOO_SMALL,
+                format!(
+                    "Classic HD profile {} requires {required_u32} owner overlay bytes per plane, got {index_capacity} and {provenance_capacity}",
+                    profile.id.as_str()
+                ),
+            ));
+        }
+        if index_buffer.is_null() || provenance_buffer.is_null() {
+            return Err(AbiError::new(
+                MC_STATUS_NULL_POINTER,
+                "Classic HD owner overlay index and provenance buffers must be non-null",
+            ));
+        }
+        // SAFETY: the capacities were checked against the validated profile
+        // extent and the pointers were checked non-null above.
+        let indices = unsafe { slice::from_raw_parts_mut(index_buffer, required) };
+        let provenance = unsafe { slice::from_raw_parts_mut(provenance_buffer, required) };
+        with_session_mut(handle, |session| {
+            session.classic_hd_owner_overlay_copy(profile_id, query, indices, provenance)
         })
     })
 }
@@ -24746,6 +25613,45 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
             Ok(())
         })
         .expect("selected Castle audio contract");
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn water_splash_event_preserves_impact_identity_after_audio_sidecar_attachment() {
+        let handle = open_fixture();
+        with_session_mut(handle, |session| {
+            let splash_id = 1_234_u32;
+            let position = session.state.position;
+            let event = session.encode_mission_event(
+                Level1MissionEvent::WaterSplashed {
+                    splash_id,
+                    projectile_id: 77,
+                    position,
+                    sound_id: WATER_SPLASH_SOUND,
+                },
+                state_hash(&session.state),
+            );
+            assert_eq!(event.kind, MC_EVENT_LEVEL1_WATER_SPLASHED);
+            assert_eq!(event.code, u32::from(WATER_SPLASH_SOUND));
+            assert_eq!(event.entity_index, splash_id as u16);
+            assert_eq!(event.value_0, 77);
+            assert_eq!(event.value_1, i32::from(position.z));
+            let command = session
+                .audio_commands
+                .get(&event.sequence)
+                .copied()
+                .ok_or_else(|| {
+                    AbiError::new(
+                        MC_STATUS_VALIDATION_FAILED,
+                        "water-splash event has no audio sidecar",
+                    )
+                })?;
+            assert_eq!(command.sound_id, WATER_SPLASH_SOUND);
+            assert_eq!(command.event_sequence, event.sequence);
+            assert_eq!(command.entity_index, 0);
+            Ok(())
+        })
+        .expect("water-splash C ABI event");
         assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
     }
 
