@@ -204,6 +204,8 @@ DISPATCH_CONTRADICTION_OWNER = {
     "DSP-L2-313": "mc-38gs.3",
     # class-5 model-9: constructor + action 72 (token 0x002A5BEC)
     "DSP-L2-318": "mc-38gs.2", "DSP-L2-145": "mc-38gs.2",
+    # class-5 model-10 Whirlwind: reachable action 82 (token 0x002A5BF0)
+    "DSP-L2-155": "mc-hgk9.1",
     # class-5 model-14 (trader): constructor + actions 112-119 (token 0x002A5C00)
     "DSP-L2-323": "mc-38gs.4",
     "DSP-L2-185": "mc-38gs.4", "DSP-L2-186": "mc-38gs.4", "DSP-L2-187": "mc-38gs.4",
@@ -214,13 +216,7 @@ DISPATCH_CONTRADICTION_OWNER = {
 # Owners for the dispatch rows the pinned ledger already classifies
 # reachable_level2/reachable_no_call (58 rows), derived from each row's
 # resolved_function/runtime_class/group_token_hex identity (see the
-# packet's closure report for the per-id join).  DSP-L2-155
-# ("the reachable action-82 dispatch row", mc-hgk9.1) is a known residual:
-# it is claimed by a leaf bead's ownership text but the ledger still
-# classifies it mechanically_unreachable_level2 and it falls outside this
-# packet's named contradiction set (DSP-L2-089..096, DSP-L2-312/313/318/323,
-# and action bands 112-130/216-232), so it is intentionally left excluded
-# here and flagged in the closure report rather than silently reclassified.
+# packet's closure report for the per-id join).
 DISPATCH_LIVE_OWNER: dict[str, str] = {}
 for _id in ("DSP-L2-011", "DSP-L2-012", "DSP-L2-013", "DSP-L2-036", "DSP-L2-014",
             "DSP-L2-037", "DSP-L2-017", "DSP-L2-020"):

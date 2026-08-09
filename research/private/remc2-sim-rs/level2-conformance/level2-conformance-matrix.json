@@ -3726,6 +3726,9 @@
       "DSP-L2-145": [
         "ROW-mc-38gs.2"
       ],
+      "DSP-L2-155": [
+        "ROW-mc-hgk9.1"
+      ],
       "DSP-L2-323": [
         "ROW-mc-38gs.4"
       ],
@@ -3878,7 +3881,6 @@
       "DSP-L2-152": "EXC-L2-DISPATCH-NONROOTED",
       "DSP-L2-153": "EXC-L2-DISPATCH-NONROOTED",
       "DSP-L2-154": "EXC-L2-DISPATCH-NONROOTED",
-      "DSP-L2-155": "EXC-L2-DISPATCH-NONROOTED",
       "DSP-L2-156": "EXC-L2-DISPATCH-NONROOTED",
       "DSP-L2-157": "EXC-L2-DISPATCH-NONROOTED",
       "DSP-L2-158": "EXC-L2-DISPATCH-NONROOTED",
@@ -4517,8 +4519,8 @@
       "DSP-L2-844": "EXC-L2-DISPATCH-NONROOTED"
     },
     "partition_proof": {
-      "included_slots": 85,
-      "excluded_slots": 760,
+      "included_slots": 86,
+      "excluded_slots": 759,
       "disjoint": true,
       "union_equals_slot_set": true
     }
@@ -8886,7 +8888,7 @@
     {
       "id": "ROW-mc-hgk9.1",
       "subsystem": "gameplay",
-      "family": "authored",
+      "family": "dispatch",
       "title": "[L2-30A] Complete Whirlwind action-82 player-overlap spell handoff",
       "reachability": {
         "status": "reachable",
@@ -8895,10 +8897,10 @@
       "source": {
         "commit": "6806c7204d17220ecc0430759f784aea8ee2ddb2",
         "symbols": [
-          "sub_49270_generate_level_features"
+          "sub_4A1E0"
         ],
-        "path": "remc2/engine/Level.cpp",
-        "lines": "437",
+        "path": "remc2/engine/EventsFunctions.cpp",
+        "lines": "28173",
         "dispatch": null
       },
       "preconditions": [
@@ -8950,7 +8952,9 @@
         "activation_groups": [],
         "producer_edges": [],
         "objectives": [],
-        "dispatch": [],
+        "dispatch": [
+          "DSP-L2-155"
+        ],
         "tuples": [],
         "ai_helpers": [],
         "rng": [],
@@ -15043,7 +15047,6 @@
           "DSP-L2-152",
           "DSP-L2-153",
           "DSP-L2-154",
-          "DSP-L2-155",
           "DSP-L2-156",
           "DSP-L2-157",
           "DSP-L2-158",

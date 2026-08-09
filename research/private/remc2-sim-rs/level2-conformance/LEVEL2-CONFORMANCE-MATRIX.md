@@ -78,7 +78,7 @@ Pinned remc2: `6806c7204d17220ecc0430759f784aea8ee2ddb2`. Generated: `2026-08-04
 | `ROW-mc-fgrh` | gameplay | **Missing** | `mc-fgrh` | — |
 | `ROW-mc-fi4n` | gameplay | **Unproved** | `mc-fi4n` | — |
 | `ROW-mc-hgk9` | gameplay | **Unproved** | `mc-hgk9` | — |
-| `ROW-mc-hgk9.1` | gameplay | **Missing** | `mc-hgk9.1` | — |
+| `ROW-mc-hgk9.1` | gameplay | **Missing** | `mc-hgk9.1` | dispatch |
 | `ROW-mc-hgk9.2` | gameplay | **Missing** | `mc-hgk9.2` | dispatch |
 | `ROW-mc-jc4w` | gameplay | **Unproved** | `mc-jc4w` | — |
 | `ROW-mc-jmcp` | gameplay | **Unproved** | `mc-jmcp` | — |
