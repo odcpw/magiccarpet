@@ -14906,7 +14906,7 @@
     },
     {
       "id": "EXC-L2-DISPATCH-NONROOTED",
-      "scope": "787 non-rooted/disabled/null dispatch slots",
+      "scope": "759 non-rooted/disabled/null dispatch slots",
       "description": "Pinned denominator members outside the selected Level 2 rooted behavior profile.",
       "mechanical_proof": "dispatch ledger partitions every non-live slot as null sentinel, disabled, or mechanically unreachable under Level 2",
       "source_anchors": [

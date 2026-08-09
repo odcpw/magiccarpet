@@ -67,6 +67,15 @@ class Level2ConformanceMatrixTests(unittest.TestCase):
             for family in validator.FAMILIES
         }
         self.assertEqual(covered, counts)
+        dispatch_exclusion = next(
+            item for item in self.matrix["exclusions"]
+            if item["id"] == "EXC-L2-DISPATCH-NONROOTED"
+        )
+        excluded_count = len(dispatch_exclusion["coverage"]["dispatch"])
+        self.assertEqual(
+            dispatch_exclusion["scope"],
+            f"{excluded_count} non-rooted/disabled/null dispatch slots",
+        )
 
     def test_activation_reachable_dispatch_cannot_be_excluded(self) -> None:
         value = copy.deepcopy(self.matrix)

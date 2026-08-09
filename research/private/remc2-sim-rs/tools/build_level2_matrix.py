@@ -508,7 +508,13 @@ def build() -> dict[str, Any]:
     for sid, owner in dispatch_owner.items():
         add(owner_row(owner)["coverage"], "dispatch", [sid])
     excluded = [r["id"] for r in dispatch if r["id"] not in live]
-    exclusions.append(exclusion("EXC-L2-DISPATCH-NONROOTED", "787 non-rooted/disabled/null dispatch slots", "dispatch ledger partitions every non-live slot as null sentinel, disabled, or mechanically unreachable under Level 2", {"dispatch": excluded}, "dispatch"))
+    exclusions.append(exclusion(
+        "EXC-L2-DISPATCH-NONROOTED",
+        f"{len(excluded)} non-rooted/disabled/null dispatch slots",
+        "dispatch ledger partitions every non-live slot as null sentinel, disabled, or mechanically unreachable under Level 2",
+        {"dispatch": excluded},
+        "dispatch",
+    ))
 
     # -- tuples --------------------------------------------------------
     for row in d["tuple_denominator"]["rows"]:

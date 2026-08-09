@@ -123,7 +123,7 @@ Pinned remc2: `6806c7204d17220ecc0430759f784aea8ee2ddb2`. Generated: `2026-08-04
 | `EXC-L2-AUTHORED-MECHANICAL` | 87 mechanically excluded authored records |
 | `EXC-L2-RESET-INACTIVE` | 886 inactive reset slots |
 | `EXC-L2-GROUP-30` | activation group 30 |
-| `EXC-L2-DISPATCH-NONROOTED` | 787 non-rooted/disabled/null dispatch slots |
+| `EXC-L2-DISPATCH-NONROOTED` | 759 non-rooted/disabled/null dispatch slots |
 | `EXC-L2-RNG-NONROOTED` | 414 non-rooted RNG occurrences |
 | `EXC-L2-AUDIO-NONROOTED` | 93 non-rooted audio calls |
 | `EXC-L2-CACHE-NONROOTED` | 967 presentation cache records |
