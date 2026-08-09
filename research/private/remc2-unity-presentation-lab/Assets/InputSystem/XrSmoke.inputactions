@@ -1,0 +1,135 @@
+{
+    "version": 1,
+    "name": "XrSmoke",
+    "maps": [
+        {
+            "name": "XR Smoke",
+            "id": "f3e57dcb-6ac9-4685-b9d1-d70d0f7c65e1",
+            "actions": [
+                {
+                    "name": "LeftYoke",
+                    "type": "Value",
+                    "id": "2e8e1d94f4f94b2aa8ae6fd5b7d6d3b7",
+                    "expectedControlType": "Vector2",
+                    "processors": "",
+                    "interactions": "",
+                    "initialStateCheck": true
+                },
+                {
+                    "name": "LeftGrip",
+                    "type": "Button",
+                    "id": "b0f42ca4e6e14c39a4ae7e0f77c3ca33",
+                    "expectedControlType": "Button",
+                    "processors": "",
+                    "interactions": "",
+                    "initialStateCheck": false
+                },
+                {
+                    "name": "Recenter",
+                    "type": "Button",
+                    "id": "21da9d9c3d27436cb1b66c0bfebad874",
+                    "expectedControlType": "Button",
+                    "processors": "",
+                    "interactions": "",
+                    "initialStateCheck": false
+                },
+                {
+                    "name": "RightAim",
+                    "type": "Value",
+                    "id": "a2e7197b370e46e98f45e5ee4abfa97f",
+                    "expectedControlType": "Quaternion",
+                    "processors": "",
+                    "interactions": "",
+                    "initialStateCheck": true
+                },
+                {
+                    "name": "Cast",
+                    "type": "Button",
+                    "id": "4a6660ab7a79487ebc1bfcb697986112",
+                    "expectedControlType": "Button",
+                    "processors": "",
+                    "interactions": "",
+                    "initialStateCheck": false
+                },
+                {
+                    "name": "SpellSelect",
+                    "type": "Value",
+                    "id": "7ed0d735b47e458e9f91c5d9af0dd2bb",
+                    "expectedControlType": "Vector2",
+                    "processors": "",
+                    "interactions": "",
+                    "initialStateCheck": true
+                }
+            ],
+            "bindings": [
+                {
+                    "name": "Left thumbstick flight",
+                    "id": "6ae6ac7b11d94508b7b9c2fc6b7745f9",
+                    "path": "<XRController>{LeftHand}/thumbstick",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "LeftYoke",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                },
+                {
+                    "name": "Left grip boost",
+                    "id": "e6b5b8d0c64a45f1a06e28170c4ee3e5",
+                    "path": "<XRController>{LeftHand}/grip",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "LeftGrip",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                },
+                {
+                    "name": "Left menu recenter",
+                    "id": "d9c8080f5df546c1bfe4a1a54e15c96e",
+                    "path": "<XRController>{LeftHand}/menuButton",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "Recenter",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                },
+                {
+                    "name": "Right aim pose",
+                    "id": "b4d0c87a0e0c44e1a4f7a3f7bf58f0bb",
+                    "path": "<XRController>{RightHand}/deviceRotation",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "RightAim",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                },
+                {
+                    "name": "Right trigger cast",
+                    "id": "0b67b7a1c73b41a5b926d22a8d4af6f3",
+                    "path": "<XRController>{RightHand}/trigger",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "Cast",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                },
+                {
+                    "name": "Right thumbstick spell select",
+                    "id": "7d4a101c4d354c04bb00c68fe487b0d8",
+                    "path": "<XRController>{RightHand}/thumbstick",
+                    "interactions": "",
+                    "processors": "",
+                    "groups": "",
+                    "action": "SpellSelect",
+                    "isComposite": false,
+                    "isPartOfComposite": false
+                }
+            ]
+        }
+    ],
+    "controlSchemes": []
+}

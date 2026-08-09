@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "bead": "mc-dl0r.19.2",
+  "project": "research/private/remc2-unity-presentation-lab",
+  "profiles": {
+    "flat-disabled": {
+      "argument": "-mc-xr-profile=off",
+      "xr_loader": "none",
+      "xr_origin": false,
+      "owner_data": "none",
+      "simulation": "none"
+    },
+    "pc-openxr": {
+      "argument": "-mc-xr-profile=pc-openxr",
+      "xr_loader": "com.unity.xr.openxr",
+      "xr_origin": true,
+      "owner_data": "none",
+      "simulation": "none",
+      "runtime": "SteamVR OpenXR"
+    }
+  },
+  "required_actions": [
+    "LeftYoke",
+    "LeftGrip",
+    "Recenter",
+    "RightAim",
+    "Cast",
+    "SpellSelect"
+  ],
+  "rollback": {
+    "disable_argument": "-mc-xr-profile=off",
+    "package_removal": "remove only the four XR/input direct dependencies and restore the prior packages-lock.json",
+    "cache_cleanup": "remove this project's Library/PackageCache and Temp only"
+  }
+}
