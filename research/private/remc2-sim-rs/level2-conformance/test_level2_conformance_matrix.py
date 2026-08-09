@@ -56,6 +56,28 @@ class Level2ConformanceMatrixTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "multiply owned"):
             validator.validate_coverage(value)
 
+    def test_worker_ownership_is_disjoint_and_complete(self) -> None:
+        validator.validate_source_and_ownership(self.matrix)
+        counts = validator.validate_coverage(self.matrix)
+        covered = {
+            family: sum(
+                len(entry["coverage"][family])
+                for entry in self.matrix["rows"] + self.matrix["exclusions"]
+            )
+            for family in validator.FAMILIES
+        }
+        self.assertEqual(covered, counts)
+
+    def test_activation_reachable_dispatch_cannot_be_excluded(self) -> None:
+        value = copy.deepcopy(self.matrix)
+        identifier = "DSP-L2-089"
+        owner = next(row for row in value["rows"] if identifier in row["coverage"]["dispatch"])
+        exclusion = next(item for item in value["exclusions"] if item["id"] == "EXC-L2-DISPATCH-NONROOTED")
+        owner["coverage"]["dispatch"].remove(identifier)
+        exclusion["coverage"]["dispatch"].append(identifier)
+        with self.assertRaisesRegex(ValueError, "activation-reachable dispatch"):
+            validator.validate_coverage(value)
+
     def test_mutation_negative_rejects_stale_source_and_missing_chain(self) -> None:
         value = copy.deepcopy(self.matrix)
         value["rows"][0]["source"]["commit"] = "0" * 40

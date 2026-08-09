@@ -19,6 +19,22 @@ FAMILIES = (
     "presentation_refs",
 )
 
+# These dispatch rows are mechanically classified as unreachable by the
+# sealed dispatch scan, but the independent activation closure proves their
+# class/model routes reachable. L2-08A explicitly moved this bounded set into
+# worker ownership, so the validator must prevent them drifting back into an
+# exclusion.
+ACTIVATION_REACHABLE_DISPATCH_IDS = frozenset({
+    "DSP-L2-089", "DSP-L2-090", "DSP-L2-091", "DSP-L2-092",
+    "DSP-L2-093", "DSP-L2-094", "DSP-L2-095", "DSP-L2-096",
+    "DSP-L2-098", "DSP-L2-145", "DSP-L2-185", "DSP-L2-186",
+    "DSP-L2-187", "DSP-L2-188", "DSP-L2-189", "DSP-L2-190",
+    "DSP-L2-191", "DSP-L2-192", "DSP-L2-289", "DSP-L2-290",
+    "DSP-L2-291", "DSP-L2-292", "DSP-L2-293", "DSP-L2-312",
+    "DSP-L2-313", "DSP-L2-318", "DSP-L2-323",
+})
+MATRIX_CONTROL_BEAD_IDS = {"mc-a4ir", "mc-a4ir.1"}
+
 
 class Level2MatrixError(ValueError):
     pass
@@ -64,7 +80,7 @@ def open_bead_ids() -> set[str]:
             continue
         if not isinstance(value, dict) or value.get("status") != "open":
             continue
-        if "level-2" in (value.get("labels") or []) and value.get("id") != "mc-a4ir":
+        if "level-2" in (value.get("labels") or []) and value.get("id") not in MATRIX_CONTROL_BEAD_IDS:
             result.add(value["id"])
     return result
 
@@ -102,6 +118,12 @@ def validate_coverage(document: dict[str, Any]) -> dict[str, int]:
         missing = sorted(expected[family] - set(seen[family]))
         if missing:
             raise Level2MatrixError(f"{family}: uncovered denominator IDs (first {missing[0]})")
+    for identifier in sorted(ACTIVATION_REACHABLE_DISPATCH_IDS):
+        if identifier not in expected["dispatch"]:
+            raise Level2MatrixError(f"activation-reachable dispatch ID {identifier} is absent from the sealed ledger")
+        owner = seen["dispatch"][identifier]
+        if not owner.startswith("row:"):
+            raise Level2MatrixError(f"activation-reachable dispatch ID {identifier} is assigned to {owner}")
     declared = document["meta"].get("denominators")
     if declared != {family: len(expected[family]) for family in FAMILIES}:
         raise Level2MatrixError("meta.denominators does not match the sealed artifacts")

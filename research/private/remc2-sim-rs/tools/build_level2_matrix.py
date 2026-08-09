@@ -38,6 +38,8 @@ FAMILIES = (
     "presentation_refs",
 )
 
+MATRIX_CONTROL_BEAD_IDS = {"mc-a4ir", "mc-a4ir.1"}
+
 SOURCE = {
     "authored": ("remc2/engine/Level.cpp", "437", "sub_49270_generate_level_features"),
     "reset": ("remc2/engine/EventsFunctions.cpp", "39441-39480", "sub_56D60"),
@@ -294,7 +296,7 @@ def beads() -> dict[str, dict[str, Any]]:
             continue
         if "level-2" not in (value.get("labels") or []):
             continue
-        if value.get("id") == "mc-a4ir":
+        if value.get("id") in MATRIX_CONTROL_BEAD_IDS:
             continue
         result[value["id"]] = value
     return dict(sorted(result.items()))
