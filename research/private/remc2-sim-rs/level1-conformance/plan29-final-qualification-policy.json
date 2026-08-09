@@ -2,8 +2,8 @@
   "schema": "mc2-plan29-final-qualification-policy/v1",
   "behavior_contract": {
     "path": "research/private/remc2-sim-rs/level1-conformance/plan29-closure-contract.json",
-    "file_sha256": "170bf5a1b9ee1190f89cf4d34ac9f139ca7ceb28761cd45785026575b112f110",
-    "self_sha256": "8007568bcfb4180137a7e0432fe2f094d44817fd771f90d4a98017036d9efcd4"
+    "file_sha256": "e8b2f760f24e8de2003e856027420fce4609c47c481d7ad5cf67b51f668f3f0a",
+    "self_sha256": "0d59fdb5f43ef794308bc45614a6b2edbffa46f23e29286695406838185b08a7"
   },
   "acceptance": {
     "required_clean_runs": 1,
@@ -19,5 +19,5 @@
     "effective_date": "2026-08-01",
     "reason": "Run A is the one and only required clean end-to-end Level 1 qualification; no run B is permitted."
   },
-  "policy_sha256": "1e93f4b33cd7bd9251a3a3c173b498f82f7f05737d21eaee79e929f7fe1dce1d"
+  "policy_sha256": "2bc1f70cc9c0fb02c3fe0129575b8eedfd5e5799ecb3c05e89dff4b7dde1a91d"
 }

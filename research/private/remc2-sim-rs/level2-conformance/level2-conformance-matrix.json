@@ -58,7 +58,7 @@
     ],
     "test_inventory": {
       "command": "cd research/private/remc2-sim-rs && cargo test --workspace --locked -- --list",
-      "count": 762
+      "count": 821
     },
     "census_method": "independent join of L2-04 authored/reset census, L2-05 rooted activation closure, and L2-06 dispatch/RNG/audio/presentation ledger",
     "totals": {

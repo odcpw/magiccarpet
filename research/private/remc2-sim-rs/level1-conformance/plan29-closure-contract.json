@@ -8,7 +8,7 @@
     "authored_index_count": 308
   },
   "trusted_identity": {
-    "matrix_sha256": "663558274b745896a4b5aaadf9a1c90f20272bb100a7137676fe2ca2d999fe4f",
+    "matrix_sha256": "2469237003fb977a447d0ef2496c03cf598cb55f3eae77b7d094f9fa258509c7",
     "row_id_sha256": "fb46af635311660bfa9d2715dabfca26757c509c3a38de41039c2bbd8a35e0c3",
     "source_span_sha256": "825a45ca32c8d64fd9310d76a8b1529e750ab9d24b5747a04336178f27c0c5af",
     "ordered_behavior_sha256": "f060b210fa93683240ad04caa872d41c4f1acc07cce23b66d30e794e2d74f6d8",
@@ -221,5 +221,5 @@
     "provenance": true,
     "clean_run_count": 2
   },
-  "contract_sha256": "8007568bcfb4180137a7e0432fe2f094d44817fd771f90d4a98017036d9efcd4"
+  "contract_sha256": "0d59fdb5f43ef794308bc45614a6b2edbffa46f23e29286695406838185b08a7"
 }
