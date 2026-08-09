@@ -159,6 +159,26 @@ namespace MagicCarpet.PresentationLab
         {
             get { return ownerSession == null ? (byte)0 : ownerSession.EffectivePostprocessMode; }
         }
+        public byte MaxEffectivePostprocessMode
+        {
+            get { return ownerSession == null ? (byte)0 : ownerSession.MaxEffectivePostprocessMode; }
+        }
+        public short MaxActualSpeed
+        {
+            get { return ownerSession == null ? (short)0 : ownerSession.MaxActualSpeed; }
+        }
+        public bool SpeedSpellObserved
+        {
+            get { return ownerSession != null && ownerSession.SpeedSpellObserved; }
+        }
+        public int AutomaticHighSpeedFrames
+        {
+            get { return ownerSession == null ? 0 : ownerSession.AutomaticHighSpeedFrames; }
+        }
+        public ulong FirstHighSpeedTick
+        {
+            get { return ownerSession == null ? ulong.MaxValue : ownerSession.FirstHighSpeedTick; }
+        }
         public byte TasksCompleted
         {
             get { return ownerSession == null ? (byte)0 : ownerSession.TasksCompleted; }

@@ -83,6 +83,11 @@ namespace MagicCarpet.PresentationLab
         public uint LastFlags { get; private set; }
         public byte LastHistoryState { get; private set; }
         public byte EffectivePostprocessMode { get; private set; }
+        public byte MaxEffectivePostprocessMode { get; private set; }
+        public short MaxActualSpeed { get; private set; }
+        public bool SpeedSpellObserved { get; private set; }
+        public int AutomaticHighSpeedFrames { get; private set; }
+        public ulong FirstHighSpeedTick { get; private set; }
         public long LastNativeFrameNanoseconds { get; private set; }
         public string RequestedAssetTier
         {
@@ -468,6 +473,22 @@ namespace MagicCarpet.PresentationLab
             LastHistoryState = info.HistoryState;
             LastReceiptHash = ReceiptHash(info);
             EffectivePostprocessMode = info.EffectivePostprocessMode;
+            MaxEffectivePostprocessMode = Math.Max(
+                MaxEffectivePostprocessMode,
+                EffectivePostprocessMode);
+            MaxActualSpeed = Math.Max(
+                MaxActualSpeed,
+                (short)Math.Abs((int)snapshot.ActualSpeed));
+            SpeedSpellObserved |= mission.HasSpeedSpell != 0;
+            if (Math.Abs((int)snapshot.ActualSpeed) > 80 &&
+                EffectivePostprocessMode == 1)
+            {
+                AutomaticHighSpeedFrames++;
+                if (FirstHighSpeedTick == ulong.MaxValue)
+                {
+                    FirstHighSpeedTick = snapshot.Tick;
+                }
+            }
             LastNativeFrameNanoseconds = ElapsedNanoseconds(nativeFrameStart);
             return true;
         }
@@ -616,6 +637,11 @@ namespace MagicCarpet.PresentationLab
             LastFlags = 0;
             LastHistoryState = 0;
             EffectivePostprocessMode = 0;
+            MaxEffectivePostprocessMode = 0;
+            MaxActualSpeed = 0;
+            SpeedSpellObserved = false;
+            AutomaticHighSpeedFrames = 0;
+            FirstHighSpeedTick = ulong.MaxValue;
             LastNativeFrameNanoseconds = 0;
             exitPresentation = default(McLevel1ExitPresentationV2);
             assetTierResolution = null;

@@ -1739,6 +1739,7 @@ namespace MagicCarpet.PresentationLab.Editor
                 var receipt = new ClassicHdOwnerCompletionReceipt
                 {
                     schema_version = 1,
+                    captured_at_utc = DateTime.UtcNow.ToString("o"),
                     mode = "classic-hd",
                     route = "level1-completion-postgame",
                     status = status,
@@ -1770,6 +1771,16 @@ namespace MagicCarpet.PresentationLab.Editor
                     tasks_completed = classic.TasksCompleted,
                     max_target_speed = maxTargetSpeed,
                     max_actual_speed = maxActualSpeed,
+                    max_effective_postprocess_mode = classic.MaxEffectivePostprocessMode,
+                    speed_spell_present = classic.SpeedSpellObserved,
+                    automatic_high_speed_frames = classic.AutomaticHighSpeedFrames,
+                    first_high_speed_tick = classic.FirstHighSpeedTick == ulong.MaxValue
+                        ? string.Empty
+                        : classic.FirstHighSpeedTick.ToString(),
+                    gpu_readback_fence = "not-captured",
+                    high_speed_qualification_status = classic.AutomaticHighSpeedFrames > 0
+                        ? "owner-journal-observed-automatic-high-speed-postprocess"
+                        : "owner-journal-did-not-observe-automatic-high-speed-postprocess",
                     index_route_hash = SequenceHash(indexHashes).ToString("x16"),
                     provenance_route_hash = SequenceHash(provenanceHashes).ToString("x16"),
                     reason = routeReason
@@ -2897,6 +2908,7 @@ namespace MagicCarpet.PresentationLab.Editor
         private sealed class ClassicHdOwnerCompletionReceipt
         {
             public int schema_version;
+            public string captured_at_utc;
             public string mode;
             public string route;
             public string status;
@@ -2927,6 +2939,12 @@ namespace MagicCarpet.PresentationLab.Editor
             public byte tasks_completed;
             public short max_target_speed;
             public short max_actual_speed;
+            public byte max_effective_postprocess_mode;
+            public bool speed_spell_present;
+            public int automatic_high_speed_frames;
+            public string first_high_speed_tick;
+            public string gpu_readback_fence;
+            public string high_speed_qualification_status;
             public string index_route_hash;
             public string provenance_route_hash;
             public string reason;
