@@ -186,13 +186,35 @@ FINAL MAIN components or COMPLETE flags, `NON_TERRAIN_OMITTED` acceptance,
 non-atomic failure semantics, duplicate Unity planes, missing profile
 exclusions, present omitted proxies, and unregistered layers.
 
-## Unity lifecycle, bulk ABI, and privacy gate
+## Current Level 2 EditMode development lane
+
+Use the focused current Level 2 command for ordinary iteration. From the
+Unity project root, it selects the real `NativeCampaignSessionEditModeTests`
+class through Unity's test filter, requires a fresh non-empty EditMode result,
+and fails if any selected case is unrelated or non-passing:
+
+```bash
+python3 qualification/run_level2_editmode.py \
+  --project "$PWD" \
+  --results /tmp/magiccarpet-level2-editmode.xml \
+  --log /tmp/magiccarpet-level2-editmode.log
+```
+
+The report accepts legitimate added Level 2 tests and does not pin the
+assembly's global test count. At this revision the selected class contains 19
+tests; that number is observational, not an acceptance contract. This lane
+proves only the current managed Level 2 EditMode/production-path selection.
+It does not run the built-player privacy gate or qualify the historical Level
+1 release. A future Level 2 PlayMode class remains a separate explicit
+selection rather than being swept into this command.
+
+## PLAN29 archival/distributable milestone: Unity lifecycle, bulk ABI, and privacy gate
 
 The production scripts compile into `MagicCarpet.Native.Runtime.dll`; test
 code remains in separate EditMode and PlayMode assemblies and is not included
-in the player. The focused suite is:
+in the player. The archival/release suite is:
 
-- thirty-one Linux EditMode native-integration tests for ABI/layout, exact input and
+- thirty-one archival PLAN29 Linux EditMode native-integration tests for ABI/layout, exact input and
   camera routing, reset/generation behavior, two-session isolation,
   idempotent disposal, bad owner inputs, preallocated bulk copying, and the
   qualified selector-clock seam, live Level 1 actor/exit exposure,
@@ -216,6 +238,7 @@ Run the tests sequentially:
   -batchmode -nographics -projectPath "$PWD" \
   -runTests -testPlatform EditMode \
   -assemblyNames MagicCarpet.Native.EditModeTests \
+  -testFilter MagicCarpet.Native.Tests.NativeSessionEditModeTests \
   -testResults /tmp/magiccarpet-unity-editmode.xml \
   -logFile /tmp/magiccarpet-unity-editmode.log
 
@@ -237,28 +260,32 @@ player-boundary gate:
 
 ```bash
 python3 qualification/verify_unity_lifecycle_privacy.py \
+  --release-milestone \
   --edit-composite /absolute/path/to/editmode-composite.json \
   --edit-log /tmp/magiccarpet-unity-editmode.log \
   --play-results /tmp/magiccarpet-unity-playmode.xml \
   --play-log /tmp/magiccarpet-unity-playmode.log
 ```
 
-The composite receipt is permitted only when one full 31-case XML and one
-focused XML prove the exact failed-case replacement set. It rejects missing,
-duplicate, or unrelated focused cases and binds both XML files plus the native
-plug-in, runtime source, and EditMode source hashes. It does not rerun cases
-that are already green.
+The composite receipt is archival PLAN29 evidence only. It is permitted only
+when one full 31-case XML and one focused XML prove the exact failed-case
+replacement set. It rejects missing, duplicate, or unrelated focused cases and
+binds both XML files plus the native plug-in, runtime source, and EditMode
+source hashes. It does not rerun cases that are already green and is never
+compared with the evolving current Level 2 assembly.
 
-The privacy gate requires exactly 31/31 and 1/1 tests; pins the rebuilt launcher, runtime
+The privacy gate is distributable-milestone-only. It requires exactly 31/31
+archival EditMode and 1/1 PlayMode tests; pins the rebuilt launcher, runtime
 assembly, global managers, plug-in, and build GUID; inspects Unity build
 metadata; rejects StreamingAssets, symlinks, owner container/audio
 extensions, and registered owner-payload hash intersections; reruns the full
 built-player self-test; and exercises seven isolated negative launches.
-Missing inputs and package/closure/cache corruption all exit 2 without a PASS.
-The ordinary graphical missing-input case is included, so a failed player can
-no longer remain as a frozen window.
+Invocation requires `--release-milestone`, and missing inputs plus
+package/closure/cache corruption all exit 2 without a PASS. The ordinary
+graphical missing-input case is included, so a failed player can no longer
+remain as a frozen window.
 
-## PLAN29 final closure
+## PLAN29 final closure (archival/release-only)
 
 The final qualification policy requires exactly one clean end-to-end run:
 run A. Run B is neither required nor permitted. The cache remains sealed to
@@ -272,6 +299,11 @@ python3 qualification/run_plan29_full_gate.py \
   --exact-runs 1 \
   --output-root /absolute/new/plan29-final-root
 ```
+
+This 75+ minute route is the intentional Level 1 preservation/distributable
+milestone command, not a Level 2 iteration command. It runs the explicit
+Level 1-only filter above and invokes the privacy gate with the
+`--release-milestone` confirmation.
 
 To finalize preserved run-A checkpoints after targeted failure resumes without
 replaying green suites:

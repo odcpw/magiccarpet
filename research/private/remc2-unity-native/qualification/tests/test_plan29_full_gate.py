@@ -61,6 +61,36 @@ def aggregate() -> dict:
 
 
 class Plan29FullGateTests(unittest.TestCase):
+    def test_editmode_command_filters_archival_level1_class(self) -> None:
+        command = gate.plan29_editmode_command(
+            Path("/tmp/plan29-project"),
+            Path("/tmp/plan29-edit.xml"),
+            Path("/tmp/plan29-edit.log"),
+        )
+        self.assertEqual(command[command.index("-testFilter") + 1], gate.PLAN29_EDITMODE_FILTER)
+        self.assertNotIn("NativeCampaignSessionEditModeTests", command)
+
+    def test_privacy_digest_inputs_are_the_distributable_command(self) -> None:
+        command = gate.build_privacy_command(
+            Path("/tmp/edit.xml"),
+            Path("/tmp/edit.log"),
+            Path("/tmp/play.xml"),
+            Path("/tmp/play.log"),
+            Path("/tmp/project"),
+            Path("/tmp/package"),
+            Path("/tmp/closure.json"),
+            Path("/tmp/cache"),
+            Path("/tmp/corpus.json"),
+        )
+        self.assertIn("--release-milestone", command)
+        self.assertIn("--project", command)
+        self.assertNotEqual(
+            gate.sha256_bytes(gate.canonical_json(command)),
+            gate.sha256_bytes(gate.canonical_json(gate.plan29_editmode_command(
+                Path("/tmp/project"), Path("/tmp/edit.xml"), Path("/tmp/edit.log")
+            ))),
+        )
+
     def test_exact_one_aggregate_passes(self) -> None:
         gate.validate_aggregate(aggregate())
 

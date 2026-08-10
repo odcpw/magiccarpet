@@ -42,7 +42,7 @@ class CompositeEditModeTests(unittest.TestCase):
         self.focused = self.root / "focused.xml"
         self.source = self.root / "source.cs"
         self.source.write_text("sealed source\n")
-        self.names = sorted(composite.EXPECTED_EDITMODE_NAMES)
+        self.names = sorted(composite.PLAN29_ARCHIVAL_EDITMODE_NAMES)
         self.failed = self.names[:3]
         write_xml(
             self.base,

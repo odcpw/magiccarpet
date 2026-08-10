@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Build and validate a fail-closed composite Unity EditMode receipt."""
+"""Build and validate a fail-closed archival PLAN29 EditMode receipt.
+
+The exact registry in this module is historical Level 1 evidence only.  The
+current Level 2 development lane uses ``run_level2_editmode.py`` and must not
+reuse this frozen name set.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +18,7 @@ from typing import Any
 
 SCHEMA = "mc2-plan29-composite-editmode/v1"
 EDIT_PREFIX = "MagicCarpet.Native.Tests.NativeSessionEditModeTests."
-EXPECTED_EDITMODE_NAMES = {
+PLAN29_ARCHIVAL_EDITMODE_NAMES = {
     EDIT_PREFIX + name
     for name in (
         "AbiAndManagedLayoutsArePinned",
@@ -121,7 +126,7 @@ def build_composite(
     base_xml: Path,
     focused_xml: Path,
     sources: dict[str, Path],
-    expected_names: set[str] = EXPECTED_EDITMODE_NAMES,
+    expected_names: set[str] = PLAN29_ARCHIVAL_EDITMODE_NAMES,
 ) -> dict[str, Any]:
     base = parse_xml(base_xml, "base")
     focused = parse_xml(focused_xml, "focused")
@@ -177,7 +182,7 @@ def build_composite(
 
 def validate_composite(
     receipt: dict[str, Any],
-    expected_names: set[str] = EXPECTED_EDITMODE_NAMES,
+    expected_names: set[str] = PLAN29_ARCHIVAL_EDITMODE_NAMES,
 ) -> list[str]:
     if receipt.get("schema") != SCHEMA or receipt.get("status") != "PASS":
         raise CompositeError("wrong composite schema or status")
@@ -266,7 +271,12 @@ def main() -> int:
         require_file(args.receipt, "composite receipt")
         receipt = json.loads(args.receipt.read_text())
         validate_composite(receipt)
-    print(json.dumps({"ok": True, "status": "PASS", "tests": 31}, sort_keys=True))
+    print(json.dumps({
+        "ok": True,
+        "status": "PASS",
+        "archival": "PLAN29",
+        "tests": len(PLAN29_ARCHIVAL_EDITMODE_NAMES),
+    }, sort_keys=True))
     return 0
 
 

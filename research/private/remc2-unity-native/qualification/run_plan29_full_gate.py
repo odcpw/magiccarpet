@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Run the one required clean PLAN29 Level 1 qualification pass."""
+"""Run the archival/distributable-milestone PLAN29 Level 1 pass.
+
+This is not the current Level 2 development command.  Its EditMode filter is
+deliberately restricted to the historical Level 1 class so evolving Level 2
+tests never enter the frozen PLAN29 registry.
+"""
 
 from __future__ import annotations
 
@@ -34,6 +39,7 @@ PRESENTATION_TEST = HERE / "tests/test_presentation_correspondence.py"
 PUBLIC_BOUNDARY_TEST = REPO / "tools/provenance/test_public_boundary.py"
 PUBLIC_SANDBOX_TEST = REPO / "tools/provenance/test_public_sandbox.py"
 UNITY = Path("/home/oliver/Unity/Hub/Editor/6000.3.20f1/Editor/Unity")
+PLAN29_EDITMODE_FILTER = "MagicCarpet.Native.Tests.NativeSessionEditModeTests"
 EXPECTED_CONTRACT_SHA256 = (
     "170bf5a1b9ee1190f89cf4d34ac9f139ca7ceb28761cd45785026575b112f110"
 )
@@ -267,6 +273,67 @@ def composite_edit_names(path: Path) -> list[str]:
     return module.validate_composite(receipt)
 
 
+def plan29_editmode_command(project: Path, edit_xml: Path, edit_log: Path) -> list[str]:
+    """Return the archival PLAN29 Level 1-only EditMode invocation."""
+
+    return [
+        str(UNITY),
+        "-batchmode",
+        "-nographics",
+        "-projectPath",
+        str(project),
+        "-runTests",
+        "-testPlatform",
+        "EditMode",
+        "-assemblyNames",
+        "MagicCarpet.Native.EditModeTests",
+        "-testFilter",
+        PLAN29_EDITMODE_FILTER,
+        "-testResults",
+        str(edit_xml),
+        "-logFile",
+        str(edit_log),
+    ]
+
+
+def build_privacy_command(
+    edit_xml: Path,
+    edit_log: Path,
+    play_xml: Path,
+    play_log: Path,
+    project: Path,
+    package: Path,
+    closure: Path,
+    cache: Path,
+    corpus: Path,
+) -> list[str]:
+    """Return the explicit distributable-milestone privacy invocation."""
+
+    return [
+        sys.executable,
+        str(PRIVACY),
+        "--release-milestone",
+        "--edit-results",
+        str(edit_xml),
+        "--edit-log",
+        str(edit_log),
+        "--play-results",
+        str(play_xml),
+        "--play-log",
+        str(play_log),
+        "--project",
+        str(project),
+        "--package",
+        str(package),
+        "--closure",
+        str(closure),
+        "--cache",
+        str(cache),
+        "--corpus",
+        str(corpus),
+    ]
+
+
 def require_log(path: Path, required: tuple[str, ...], forbidden: tuple[str, ...] = ()) -> str:
     if not path.is_file() or path.is_symlink():
         raise GateError(f"missing preserved log: {path}")
@@ -434,12 +501,12 @@ def qualify_run(label: str, root: Path, contract: dict[str, Any]) -> dict[str, A
     shutil.copy2(plugin, destination)
 
     edit_xml, edit_log = receipts / "editmode.xml", logs / "unity-editmode.log"
-    run_command([
-        str(UNITY), "-batchmode", "-nographics", "-projectPath", str(project),
-        "-runTests", "-testPlatform", "EditMode", "-assemblyNames",
-        "MagicCarpet.Native.EditModeTests", "-testResults", str(edit_xml),
-        "-logFile", str(edit_log),
-    ], project, logs / "unity-editmode-command.log", environment)
+    run_command(
+        plan29_editmode_command(project, edit_xml, edit_log),
+        project,
+        logs / "unity-editmode-command.log",
+        environment,
+    )
     run_command([
         str(UNITY), "-batchmode", "-nographics", "-quit", "-projectPath", str(project),
         "-executeMethod", "MagicCarpet.Native.Editor.BuildNativePlayer.BuildLinuxPlayer",
@@ -459,14 +526,18 @@ def qualify_run(label: str, root: Path, contract: dict[str, Any]) -> dict[str, A
     runtime_corpus(CORPUS, project, cache, corpus)
     output_digests["runtime_corpus"] = sha256_file(corpus)
     privacy_log = logs / "privacy.log"
-    privacy_command = [
-        sys.executable, str(PRIVACY), "--edit-results", str(edit_xml),
-        "--edit-log", str(edit_log), "--play-results", str(play_xml),
-        "--play-log", str(play_log), "--project", str(project),
-        "--package", str(package), "--closure", str(closure), "--cache", str(cache),
-        "--corpus", str(corpus),
-    ]
-    command_digests["privacy"] = sha256_bytes(canonical_json(command))
+    privacy_command = build_privacy_command(
+        edit_xml,
+        edit_log,
+        play_xml,
+        play_log,
+        project,
+        package,
+        closure,
+        cache,
+        corpus,
+    )
+    command_digests["privacy"] = sha256_bytes(canonical_json(privacy_command))
     output_digests["privacy"] = run_command(privacy_command, project, privacy_log, environment)
     provenance_commands = [
         [sys.executable, str(PUBLIC_BOUNDARY_TEST)],

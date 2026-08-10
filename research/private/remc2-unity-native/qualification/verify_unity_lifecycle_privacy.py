@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Verify Unity lifecycle tests and the owner-data-free player boundary."""
+"""Verify the archival/distributable-milestone Unity player boundary.
+
+This gate consumes a real built player and is not part of the current Level 2
+development lane.  ``--release-milestone`` is required to make that boundary
+explicit at invocation time.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +19,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from composite_editmode import EXPECTED_EDITMODE_NAMES, validate_composite
+from composite_editmode import PLAN29_ARCHIVAL_EDITMODE_NAMES, validate_composite
 
 
 HERE = Path(__file__).resolve().parent
@@ -84,11 +89,11 @@ def verify_test_evidence(args: argparse.Namespace) -> int:
     if args.edit_composite is not None:
         composite = json.loads(args.edit_composite.read_text())
         require(
-            set(validate_composite(composite)) == EXPECTED_EDITMODE_NAMES,
+            set(validate_composite(composite)) == PLAN29_ARCHIVAL_EDITMODE_NAMES,
             "composite EditMode registry changed",
         )
     else:
-        parse_test_result(args.edit_results, EXPECTED_EDITMODE_NAMES, "EditMode")
+        parse_test_result(args.edit_results, PLAN29_ARCHIVAL_EDITMODE_NAMES, "EditMode")
     parse_test_result(
         args.play_results,
         {
@@ -406,7 +411,14 @@ def verify_negative_player_paths() -> int:
 
 def main() -> None:
     global PROJECT, BUILD, PLAYER, PACKAGE, CLOSURE, CACHE, CORPUS_PATH
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Run the archival PLAN29/distributable-milestone player gate."
+    )
+    parser.add_argument(
+        "--release-milestone",
+        action="store_true",
+        help="confirm this invocation consumes a real distributable milestone build",
+    )
     edit_evidence = parser.add_mutually_exclusive_group(required=True)
     edit_evidence.add_argument("--edit-results", type=Path)
     edit_evidence.add_argument("--edit-composite", type=Path)
@@ -420,6 +432,8 @@ def main() -> None:
     parser.add_argument("--cache", type=Path, default=CACHE)
     parser.add_argument("--corpus", type=Path, default=CORPUS_PATH)
     args = parser.parse_args()
+    if not args.release_milestone:
+        parser.error("--release-milestone is required; this gate is not a development-lane check")
 
     PROJECT = args.project.resolve()
     BUILD = (args.build or PROJECT / "Builds/Linux").resolve()
