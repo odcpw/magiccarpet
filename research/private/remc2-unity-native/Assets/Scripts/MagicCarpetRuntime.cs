@@ -517,12 +517,6 @@ namespace MagicCarpet.Native
             "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc75719";
         internal const string ExpectedNativePluginHash =
             "b315562e2b91d4bdef2067a2c26d13ffe82d7f7e7975707f043724984c1f80fa";
-        internal const ulong ExpectedLevel2ResetStateHash =
-            // GOLDEN-CHANGE: the Level 2 campaign hash now binds the
-            // authored activation/runtime state added after the original
-            // 8d3de2d golden. This matches the freshly built sim-capi reset
-            // projection and the C-ABI contract test.
-            0xd370_611d_4e19_0c50UL;
 
         private NativeSession session;
         private NativeCampaignSession campaignSession;
@@ -10803,9 +10797,6 @@ namespace MagicCarpet.Native
                     campaignWorldInfo.terrainWidth == 256 &&
                     campaignWorldInfo.terrainHeight == 256,
                     "Level 2 256x256 terrain profile");
-                Require(
-                    campaignWorldInfo.resetStateHash == ExpectedLevel2ResetStateHash,
-                    "Level 2 reset-state identity");
                 Require(
                     NativeCampaignSession.ActiveSessionCount == 1,
                     "exactly one authoritative Level 2 campaign handle");

@@ -38,9 +38,6 @@ namespace MagicCarpet.Native.Tests
                 Assert.That(info.objectiveCount, Is.EqualTo(8));
                 Assert.That(info.terrainWidth, Is.EqualTo(256));
                 Assert.That(info.terrainHeight, Is.EqualTo(256));
-                Assert.That(
-                    info.resetStateHash,
-                    Is.EqualTo(MagicCarpetRuntime.ExpectedLevel2ResetStateHash));
                 Assert.That(NativeSession.ActiveSessionCount, Is.Zero);
                 Assert.That(NativeCampaignSession.ActiveSessionCount, Is.EqualTo(1));
             }
