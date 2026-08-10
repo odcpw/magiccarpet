@@ -142,13 +142,15 @@ identity, current compiled-source hashes, private permissions, and byte
 identity between two independent exports.
 
 Focused selector tests use the production header and make the native CLI gate
-explicit:
+explicit. This is a touch-triggered auxiliary lane, separate from the default
+remc2/Rust/Unity development lane. Pytest is the canonical runner: it discovers
+the existing tests and exits nonzero when zero tests are selected.
 
 ```sh
-python3 tests/test_exporter_cli.py
+python3 -m pytest tests -v
 MC2_LEVEL_EXPORTER_BIN=/absolute/path/to/remc2-level-exporter \
 MC2_LEVEL_EXPORTER_RUN_FULL=1 \
-  python3 tests/test_exporter_cli.py
+  python3 -m pytest tests -v
 ```
 
 The first command always runs the external-to-internal mapping and rejection

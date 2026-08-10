@@ -4,6 +4,10 @@ This directory implements bead `mc-51m.5` with project-authored known-source
 synthetic fixtures only. It exercises the behavioral-research registry without
 reading, describing, or inferring anything about Magic Carpet 2.
 
+This is a touch-triggered auxiliary lane. It is not part of the default
+remc2/Rust/Unity development command; run it when the protocol-smoke surface or
+its declared fixtures change.
+
 ## One-command fresh reproduction
 
 From `/home/oliver/Projects/odcpw/magiccarpet`, with the output path absent:
@@ -32,8 +36,10 @@ exact caller-supplied directory after recording the sanitized result.
 - `fixtures/`: original known-source synthetic programs and provenance.
 - `protocol_smoke.py`: deterministic scenario and registry harness.
 - `runner.py`: one-command CLI.
-- `expected.json`: input hashes plus exact roots, counts, status maps, negative
-  error classes, and byte/root-preservation evidence.
+- `expected.json`: critical fixture/interpreter locks plus semantic phase
+  counts, status maps, and negative error classes. Runtime roots and
+  byte-preservation hashes remain emitted and are checked for repeatability by
+  the focused tests rather than frozen to incidental environment metadata.
 - `test_protocol_smoke.py`: focused conformance and repeatability tests.
 - `COVERAGE.md`: bead-requirement coverage accounting.
 - `DISCREPANCIES.md`: explicit registry-contract accommodations.

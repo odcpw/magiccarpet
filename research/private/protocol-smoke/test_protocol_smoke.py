@@ -35,6 +35,28 @@ EXPECTED_NEGATIVE_CASES = {
 
 
 class ProtocolSmokeTest(unittest.TestCase):
+    def test_protocol_contract_is_deterministic(self) -> None:
+        self.assertEqual(
+            protocol_smoke.protocol_contract(),
+            {
+                "schema_version": protocol_smoke.registry.SCHEMA_VERSION,
+                "transport": "local-registry",
+                "incompatible_schema": "reject-before-append",
+            },
+        )
+
+    def test_protocol_incompatibility_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            protocol_smoke.ScenarioError,
+            "protocol incompatibility: packet schema version",
+        ):
+            protocol_smoke.require_protocol_compatibility(
+                {"schema_version": protocol_smoke.registry.SCHEMA_VERSION + 1}
+            )
+
+    def test_host_release_is_not_an_input(self) -> None:
+        self.assertNotIn("/etc/os-release", protocol_smoke.artifact_manifest())
+
     def test_all_phases_match_expected_lock(self) -> None:
         protocol_smoke.verify_inputs()
         with tempfile.TemporaryDirectory(prefix="mc-protocol-smoke-", dir="/tmp") as root:
