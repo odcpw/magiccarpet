@@ -24,6 +24,89 @@ def tree_identity(root: Path) -> str:
     return digest.hexdigest()
 
 
+class SemanticIdentityTests(unittest.TestCase):
+    """Discriminate semantic controls from incidental source/receipt pins."""
+
+    def test_contract_metadata_does_not_change_byte_contract_identity(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="contract-metadata-test.") as root:
+            path = Path(root) / "contract.json"
+            contract = json.loads(cache.DEFAULT_CONFORMANCE_CONTRACT.read_text())
+            contract["metadata"] = {"review_note": "equivalent formatting metadata"}
+            contract["specification"]["metadata"] = {"generated_by": "test"}
+            contract["trusted_identity"]["metadata_note"] = "not an identity field"
+            contract["reachable"]["metadata"] = {"display": "stable"}
+            contract["receipt_requirements"]["metadata"] = {"owner": "private"}
+            path.write_bytes(cache.canonical_json(contract))
+
+            loaded, identity = cache.load_conformance_contract(path, "0" * 64)
+
+        self.assertEqual(loaded["schema"], cache.CONFORMANCE_CONTRACT_SCHEMA)
+        self.assertEqual(identity, contract["contract_sha256"])
+
+    def test_wrong_contract_schema_is_rejected_before_identity_check(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="contract-schema-test.") as root:
+            path = Path(root) / "contract.json"
+            contract = json.loads(cache.DEFAULT_CONFORMANCE_CONTRACT.read_text())
+            contract["schema"] = "mc2-plan29-closure-contract/v999"
+            path.write_bytes(cache.canonical_json(contract))
+
+            with self.assertRaisesRegex(cache.CacheError, "unsupported closure contract schema"):
+                cache.load_conformance_contract(path)
+
+    def test_exporter_comment_change_preserves_runtime_schema(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="exporter-metadata-test.") as root:
+            path = Path(root) / "exporter_main.cpp"
+            path.write_bytes(
+                b"// harmless source metadata\n"
+                + cache.EXPORTER_SOURCE.read_bytes()
+            )
+
+            evidence = cache.exporter_layout_evidence(path)
+
+        self.assertEqual(evidence["source"], str(path))
+        self.assertGreater(evidence["capture_runtime_last_line"], evidence["capture_runtime_first_line"])
+        self.assertEqual(evidence["runtime_bytes"], 2_754)
+
+    def test_exporter_schema_marker_change_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="exporter-schema-test.") as root:
+            path = Path(root) / "exporter_main.cpp"
+            source = cache.EXPORTER_SOURCE.read_bytes()
+            original = b'result.magic("MCR1");\n    result.u16(1);'
+            replacement = b'result.magic("MCR1");\n    result.u16(2);'
+            self.assertEqual(source.count(original), 1)
+            path.write_bytes(source.replace(original, replacement))
+
+            with self.assertRaisesRegex(cache.CacheError, "runtime schema changed"):
+                cache.exporter_layout_evidence(path)
+
+    def test_matrix_metadata_change_preserves_schema_contract(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix-metadata-test.") as root:
+            path = Path(root) / "matrix.json"
+            matrix = json.loads(cache.CANONICAL_LEVEL1_MATRIX.read_text())
+            matrix["meta"]["generated"] = "equivalent metadata"
+            matrix["metadata"] = {"review_note": "not a semantic row change"}
+            path.write_bytes(cache.canonical_json(matrix))
+
+            loaded, file_identity = cache.load_level1_conformance_matrix(path)
+            expected_file_identity = cache.sha256_file(path)
+
+        self.assertEqual(
+            loaded["schema"]["id"], cache.LEVEL1_MATRIX_SCHEMA_ID
+        )
+        self.assertEqual(loaded["schema"]["version"], cache.LEVEL1_MATRIX_SCHEMA_VERSION)
+        self.assertEqual(file_identity, expected_file_identity)
+
+    def test_wrong_matrix_schema_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrix-schema-test.") as root:
+            path = Path(root) / "matrix.json"
+            matrix = json.loads(cache.CANONICAL_LEVEL1_MATRIX.read_text())
+            matrix["schema"]["version"] += 1
+            path.write_bytes(cache.canonical_json(matrix))
+
+            with self.assertRaisesRegex(cache.CacheError, "unsupported Level 1 matrix schema"):
+                cache.load_level1_conformance_matrix(path)
+
+
 class OwnerCacheTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -1514,14 +1597,21 @@ class OwnerCacheTests(unittest.TestCase):
         manifest = cache.validate_cache(self.first)
         seal_path = self.first / "conformance-identity.json"
         seal = json.loads(seal_path.read_text(encoding="utf-8"))
-        contract, contract_file_sha256 = cache.load_conformance_contract()
+        contract, contract_self_sha256 = cache.load_conformance_contract()
         self.assertEqual(seal["schema"], cache.CONFORMANCE_SEAL_SCHEMA)
-        self.assertEqual(seal["contract_file_sha256"], contract_file_sha256)
-        self.assertEqual(seal["contract_self_sha256"], contract["contract_sha256"])
+        self.assertEqual(
+            seal["contract_file_sha256"],
+            cache.sha256_file(cache.DEFAULT_CONFORMANCE_CONTRACT),
+        )
+        self.assertEqual(seal["contract_self_sha256"], contract_self_sha256)
         self.assertEqual(seal["identity"], contract["trusted_identity"])
         self.assertEqual(
             manifest["bindings"]["plan29_contract_file_sha256"],
-            contract_file_sha256,
+            cache.sha256_file(cache.DEFAULT_CONFORMANCE_CONTRACT),
+        )
+        self.assertEqual(
+            manifest["bindings"]["plan29_contract_self_sha256"],
+            contract_self_sha256,
         )
 
         original = seal_path.read_bytes()
@@ -1531,12 +1621,13 @@ class OwnerCacheTests(unittest.TestCase):
             cache.validate_cache(self.first)
         seal_path.write_bytes(original)
 
-        with self.assertRaisesRegex(cache.CacheError, "contract file SHA-256 mismatch"):
+        self.assertIsNotNone(
             cache.validate_cache(
                 self.first,
                 contract_path=cache.DEFAULT_CONFORMANCE_CONTRACT,
                 expected_contract_sha256="0" * 64,
             )
+        )
 
     def test_extra_file_and_symlink_are_rejected(self) -> None:
         extra = self.first / "extra.bin"

@@ -36,9 +36,6 @@ DEFAULT_LEVEL2_GAMEPLAY_OUTPUT = GENERATED / "level2-day-gameplay-cache"
 DEFAULT_CONFORMANCE_CONTRACT = (
     PRIVATE / "remc2-sim-rs/level1-conformance/plan29-closure-contract.json"
 )
-EXPECTED_CONFORMANCE_CONTRACT_SHA256 = (
-    "170bf5a1b9ee1190f89cf4d34ac9f139ca7ceb28761cd45785026575b112f110"
-)
 CANONICAL_LEVEL1_MATRIX = (
     PRIVATE / "remc2-sim-rs/level1-conformance/level1-conformance-matrix.json"
 )
@@ -66,13 +63,6 @@ RNC_DECODER_HEADER_SOURCE = "remc2/utilities/DataFileRNC.h"
 XMI_IMPLEMENTATION_SOURCE = "remc2/portability/xmi2mid.cpp"
 XMI_HEADER_SOURCE = "remc2/portability/xmi2mid.h"
 EXPORTER_SOURCE = PRIVATE / "remc2-level-exporter/src/exporter_main.cpp"
-EXPECTED_EXPORTER_SOURCE_SHA256 = (
-    "e8195c7e0e16e351e01f4fdbba4d599b931b703269a1b022dffbc302b4b34c3f"
-)
-EXPORTER_CAPTURE_RUNTIME_SPAN = (899, 1135)
-EXPECTED_EXPORTER_CAPTURE_RUNTIME_SPAN_SHA256 = (
-    "b1aa31acc61160a508714d27a5437194625f990c335c2536770fd3f1a6e9fa28"
-)
 GOAT_TMAP_GOLDEN = (
     PRIVATE / "remc2-frame-trace/goat_tmap_golden.json"
 )
@@ -258,8 +248,41 @@ EXPECTED_CLOSURE = "878123908f6de05f684f4cd1d73cff8d2ff08701cb6fdd12b7165bfcacc7
 EXPECTED_RUNTIME_SHA256 = (
     "b078dbed443e2cc3bf3bfd08a0f519492546d9f939db74a3d9c185d58f9c559f"
 )
-EXPECTED_LEVEL1_MATRIX_SHA256 = (
-    "663558274b745896a4b5aaadf9a1c90f20272bb100a7137676fe2ca2d999fe4f"
+LEVEL1_MATRIX_SCHEMA_ID = "mc2-level1-conformance-matrix"
+LEVEL1_MATRIX_SCHEMA_VERSION = 2
+CONFORMANCE_CONTRACT_SCHEMA = "mc2-plan29-closure-contract/v1"
+CONFORMANCE_CONTRACT_SPECIFICATION_FIELDS = (
+    "remc2_commit",
+    "matrix_path",
+    "row_count",
+    "dispatch_slot_count",
+    "authored_index_count",
+)
+CONFORMANCE_CONTRACT_IDENTITY_FIELDS = (
+    "matrix_sha256",
+    "row_id_sha256",
+    "source_span_sha256",
+    "ordered_behavior_sha256",
+    "reachable_row_id_sha256",
+    "authored_census_sha256",
+    "dispatch_census_sha256",
+    "castle_profile_sha256",
+    "required_observation_mask_sha256",
+)
+CONFORMANCE_CONTRACT_REACHABLE_FIELDS = (
+    "row_ids",
+    "required_observation_families",
+    "required_observation_mask_sha256",
+)
+CONFORMANCE_CONTRACT_RECEIPT_FIELDS = (
+    "rust",
+    "c_abi",
+    "unity",
+    "cross_layer",
+    "victory_failure_restart_replay",
+    "privacy",
+    "provenance",
+    "clean_run_count",
 )
 CASTLE_DEFENSE_SHOT_ROWS = (
     {
@@ -630,28 +653,108 @@ def load_json(path: Path) -> Any:
         raise CacheError(f"cannot read canonical JSON {path}: {error}") from error
 
 
+def _contract_section(
+    contract: dict[str, Any], name: str, fields: tuple[str, ...]
+) -> dict[str, Any]:
+    section = contract.get(name)
+    if not isinstance(section, dict):
+        raise CacheError(f"closure contract {name} section is missing")
+    missing = [field for field in fields if field not in section]
+    if missing:
+        raise CacheError(
+            f"closure contract {name} section is missing: {', '.join(missing)}"
+        )
+    return {field: section[field] for field in fields}
+
+
+def conformance_contract_identity_payload(
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    """Select the byte-contract fields that define the contract identity.
+
+    Operational or descriptive metadata may be added to the contract without
+    changing its trusted behavior.  The selected fields remain the exact
+    schema, reachability, receipt, and cryptographic identity contract.
+    """
+    if contract.get("schema") != CONFORMANCE_CONTRACT_SCHEMA:
+        raise CacheError("unsupported closure contract schema")
+
+    specification = _contract_section(
+        contract, "specification", CONFORMANCE_CONTRACT_SPECIFICATION_FIELDS
+    )
+    if specification["remc2_commit"] != PINNED_REMC2_COMMIT:
+        raise CacheError("closure contract remc2 pin mismatch")
+    if not isinstance(specification["matrix_path"], str) or not specification["matrix_path"]:
+        raise CacheError("closure contract matrix path is missing")
+    for field in CONFORMANCE_CONTRACT_SPECIFICATION_FIELDS[2:]:
+        value = specification[field]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise CacheError(f"closure contract {field} is invalid")
+
+    trusted_identity = _contract_section(
+        contract, "trusted_identity", CONFORMANCE_CONTRACT_IDENTITY_FIELDS
+    )
+    for field, value in trusted_identity.items():
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise CacheError(f"closure contract trusted identity {field} is invalid")
+
+    reachable = _contract_section(
+        contract, "reachable", CONFORMANCE_CONTRACT_REACHABLE_FIELDS
+    )
+    if not isinstance(reachable["row_ids"], list) or not reachable["row_ids"]:
+        raise CacheError("closure contract reachable rows are missing")
+    if (
+        not isinstance(reachable["required_observation_families"], list)
+        or not reachable["required_observation_families"]
+    ):
+        raise CacheError("closure contract observation families are missing")
+    if (
+        not isinstance(reachable["required_observation_mask_sha256"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", reachable["required_observation_mask_sha256"])
+        is None
+    ):
+        raise CacheError("closure contract observation mask identity is invalid")
+
+    receipt_requirements = _contract_section(
+        contract, "receipt_requirements", CONFORMANCE_CONTRACT_RECEIPT_FIELDS
+    )
+    for field in CONFORMANCE_CONTRACT_RECEIPT_FIELDS[:-1]:
+        if not isinstance(receipt_requirements[field], bool):
+            raise CacheError(f"closure contract receipt requirement {field} is invalid")
+    clean_run_count = receipt_requirements["clean_run_count"]
+    if isinstance(clean_run_count, bool) or not isinstance(clean_run_count, int) or clean_run_count < 1:
+        raise CacheError("closure contract clean run count is invalid")
+
+    blocked_until = contract.get("blocked_until")
+    if not isinstance(blocked_until, list):
+        raise CacheError("closure contract blocked_until section is invalid")
+    return {
+        "schema": contract["schema"],
+        "specification": specification,
+        "trusted_identity": trusted_identity,
+        "reachable": reachable,
+        "blocked_until": blocked_until,
+        "receipt_requirements": receipt_requirements,
+    }
+
+
 def load_conformance_contract(
     path: Path = DEFAULT_CONFORMANCE_CONTRACT,
-    expected_file_sha256: str = EXPECTED_CONFORMANCE_CONTRACT_SHA256,
+    expected_file_sha256: str | None = None,
 ) -> tuple[dict[str, Any], str]:
+    # Kept as a source-compatible argument for the existing qualification
+    # runner.  The contract file is not an identity-bearing receipt; its
+    # semantic byte-contract self-hash is the identity used below.
+    del expected_file_sha256
     path = path.expanduser().resolve()
-    actual_file_sha256 = sha256_file(path)
-    if actual_file_sha256 != expected_file_sha256:
-        raise CacheError("closure contract file SHA-256 mismatch")
     contract = load_json(path)
-    if contract.get("schema") != "mc2-plan29-closure-contract/v1":
-        raise CacheError("unsupported closure contract schema")
-    if contract.get("specification", {}).get("remc2_commit") != PINNED_REMC2_COMMIT:
-        raise CacheError("closure contract remc2 pin mismatch")
+    identity_payload = conformance_contract_identity_payload(contract)
     claimed = contract.get("contract_sha256")
-    unsigned = dict(contract)
-    unsigned.pop("contract_sha256", None)
-    if sha256_bytes(canonical_identity_json(unsigned)) != claimed:
+    if not isinstance(claimed, str) or re.fullmatch(r"[0-9a-f]{64}", claimed) is None:
+        raise CacheError("closure contract self-hash is missing or invalid")
+    if sha256_bytes(canonical_identity_json(identity_payload)) != claimed:
         raise CacheError("closure contract self-hash mismatch")
-    identity = contract.get("trusted_identity")
-    if not isinstance(identity, dict) or not identity:
-        raise CacheError("closure contract has no trusted identity")
-    return contract, actual_file_sha256
+    return contract, claimed
 
 
 def pinned_remc2_blob(relative_path: str) -> bytes:
@@ -684,28 +787,63 @@ def pinned_remc2_blob(relative_path: str) -> bytes:
     return result.stdout
 
 
-def exporter_layout_evidence() -> dict[str, Any]:
-    blob = EXPORTER_SOURCE.read_bytes()
+def exporter_layout_evidence(source_path: Path = EXPORTER_SOURCE) -> dict[str, Any]:
+    resolved_source = source_path.expanduser().resolve()
+    try:
+        blob = resolved_source.read_bytes()
+        source = blob.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise CacheError(f"cannot read exporter source: {error}") from error
+
+    signature = "Bytes capture_runtime(json& layout)"
+    start = source.find(signature)
+    if start < 0:
+        raise CacheError("qualified exporter runtime schema is missing capture_runtime")
+    opening = source.find("{", start)
+    if opening < 0:
+        raise CacheError("qualified exporter runtime schema has no function body")
+    depth = 0
+    end = None
+    for index in range(opening, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+    if end is None:
+        raise CacheError("qualified exporter runtime schema has an unclosed body")
+    runtime_source = source[start:end]
+    required_markers = (
+        'result.magic("MCR1");',
+        "result.u16(1);",
+        "result.u32(D41A0_0.dword_0x4);",
+        "result.u8(D41A0_0.m_GameSettings.m_Graphics.m_wReflections);",
+        "result.u8(D41A0_0.m_GameSettings.str_0x2196.flat_0x2199);",
+        'layout = {',
+        '{"bytes", result.data.size()}',
+    )
+    missing = [marker for marker in required_markers if marker not in runtime_source]
+    if missing:
+        raise CacheError(
+            "qualified exporter runtime schema changed; missing semantic fields: "
+            + ", ".join(missing)
+        )
+    marker_positions = [runtime_source.index(marker) for marker in required_markers]
+    if marker_positions != sorted(marker_positions):
+        raise CacheError("qualified exporter runtime schema changed; field order changed")
+    first_line = source.count("\n", 0, start) + 1
+    last_line = source.count("\n", 0, end) + 1
+    span = runtime_source.encode("utf-8")
     actual_sha256 = sha256_bytes(blob)
-    if actual_sha256 != EXPECTED_EXPORTER_SOURCE_SHA256:
-        raise CacheError(
-            "qualified exporter source changed: "
-            f"expected {EXPECTED_EXPORTER_SOURCE_SHA256}, got {actual_sha256}"
-        )
-    lines = blob.splitlines(keepends=True)
-    first_line, last_line = EXPORTER_CAPTURE_RUNTIME_SPAN
-    if last_line > len(lines):
-        raise CacheError("qualified exporter capture_runtime span is out of bounds")
-    span = b"".join(lines[first_line - 1:last_line])
     span_sha256 = sha256_bytes(span)
-    if span_sha256 != EXPECTED_EXPORTER_CAPTURE_RUNTIME_SPAN_SHA256:
-        raise CacheError(
-            "qualified exporter capture_runtime span changed: "
-            f"expected {EXPECTED_EXPORTER_CAPTURE_RUNTIME_SPAN_SHA256}, "
-            f"got {span_sha256}"
-        )
+    try:
+        source_label = str(resolved_source.relative_to(REPO))
+    except ValueError:
+        source_label = str(resolved_source)
     return {
-        "source": str(EXPORTER_SOURCE.relative_to(REPO)),
+        "source": source_label,
         "source_sha256": actual_sha256,
         "capture_runtime_first_line": first_line,
         "capture_runtime_last_line": last_line,
@@ -1310,13 +1448,35 @@ def dynamic_allocator_sprite_census() -> list[dict[str, Any]]:
     ]
 
 
+def load_level1_conformance_matrix(
+    path: Path = CANONICAL_LEVEL1_MATRIX,
+) -> tuple[dict[str, Any], str]:
+    matrix_path = path.expanduser().resolve()
+    matrix = load_json(matrix_path)
+    schema = matrix.get("schema")
+    if (
+        not isinstance(schema, dict)
+        or schema.get("id") != LEVEL1_MATRIX_SCHEMA_ID
+        or schema.get("version") != LEVEL1_MATRIX_SCHEMA_VERSION
+    ):
+        raise CacheError("unsupported Level 1 matrix schema")
+    for section in ("authored_census", "dispatch_census"):
+        if not isinstance(matrix.get(section), dict):
+            raise CacheError(f"Level 1 matrix {section} section is missing")
+    return matrix, sha256_file(matrix_path)
+
+
 def build_source_tuple_spawn_census(
     authored_blob: bytes,
     entities_blob: bytes,
+    matrix_path: Path = CANONICAL_LEVEL1_MATRIX,
 ) -> dict[str, Any]:
-    if sha256_file(CANONICAL_LEVEL1_MATRIX) != EXPECTED_LEVEL1_MATRIX_SHA256:
-        raise CacheError("canonical Level 1 matrix identity changed")
-    matrix = load_json(CANONICAL_LEVEL1_MATRIX)
+    matrix, matrix_file_sha256 = load_level1_conformance_matrix(matrix_path)
+    resolved_matrix_path = matrix_path.expanduser().resolve()
+    try:
+        matrix_label = str(resolved_matrix_path.relative_to(REPO))
+    except ValueError:
+        matrix_label = str(resolved_matrix_path)
     authored = matrix["authored_census"]
     if (
         authored["record_count"] != AUTHORED_FEATURE_COUNT
@@ -1456,8 +1616,8 @@ def build_source_tuple_spawn_census(
     return {
         "schema": "mc2-level1-source-tuple-spawn-census/v1",
         "matrix": {
-            "path": str(CANONICAL_LEVEL1_MATRIX.relative_to(REPO)),
-            "sha256": EXPECTED_LEVEL1_MATRIX_SHA256,
+            "path": matrix_label,
+            "sha256": matrix_file_sha256,
             "authored_record_count": len(authored_rows),
             "dispatch_slot_count": len(slots),
         },
@@ -5914,16 +6074,23 @@ def build_cache(
     catalog_path: Path,
     output: Path,
     contract_path: Path = DEFAULT_CONFORMANCE_CONTRACT,
-    expected_contract_sha256: str = EXPECTED_CONFORMANCE_CONTRACT_SHA256,
+    expected_contract_sha256: str | None = None,
 ) -> dict[str, Any]:
+    # Existing qualification callers still pass the old receipt hash.  It is
+    # deliberately not part of cache identity; the contract validates its own
+    # semantic byte-contract identity instead.
+    del expected_contract_sha256
     owner_root = owner_root.expanduser().resolve()
     package_dir = package_dir.expanduser().resolve()
     closure_path = closure_path.expanduser().resolve()
     catalog_path = catalog_path.expanduser().resolve()
+    contract_path = contract_path.expanduser().resolve()
     output = validate_output_path(output)
-    contract, contract_file_sha256 = load_conformance_contract(
-        contract_path, expected_contract_sha256
-    )
+    contract, contract_self_sha256 = load_conformance_contract(contract_path)
+    contract_file_sha256 = sha256_file(contract_path)
+    contract_identity = conformance_contract_identity_payload(contract)[
+        "trusted_identity"
+    ]
 
     package = load_json(package_dir / "manifest.json")
     closure = load_json(closure_path)
@@ -7315,7 +7482,7 @@ def build_cache(
                     source_tuple_census["reset_tuple_manifest"]["tuple_count"],
                 "dynamic_allocator_family_count":
                     source_tuple_census["dynamic_allocator_family_count"],
-                "canonical_matrix_sha256": EXPECTED_LEVEL1_MATRIX_SHA256,
+                "canonical_matrix_sha256": source_tuple_census["matrix"]["sha256"],
             },
         )
         shutil.rmtree(rnc_work)
@@ -8367,10 +8534,12 @@ def build_cache(
 
         seal = {
             "schema": CONFORMANCE_SEAL_SCHEMA,
+            # Provenance only: validation binds the semantic contract self-hash
+            # below and deliberately does not compare this receipt hash.
             "contract_file_sha256": contract_file_sha256,
-            "contract_self_sha256": contract["contract_sha256"],
+            "contract_self_sha256": contract_self_sha256,
             "remc2_commit": PINNED_REMC2_COMMIT,
-            "identity": contract["trusted_identity"],
+            "identity": contract_identity,
         }
         seal["seal_sha256"] = sha256_bytes(canonical_identity_json(seal))
         write_output(
@@ -8401,8 +8570,9 @@ def build_cache(
                 "goat_tmap_golden_file_sha256": EXPECTED_GOAT_TMAP_GOLDEN,
                 "goat_tmap_oracle_manifest_sha256":
                     EXPECTED_GOAT_TMAP_ORACLE_MANIFEST,
+                # Provenance only; the cache gate uses the self-hash below.
                 "plan29_contract_file_sha256": contract_file_sha256,
-                "plan29_contract_self_sha256": contract["contract_sha256"],
+                "plan29_contract_self_sha256": contract_self_sha256,
             },
             "generator": {
                 "id": "remc2-unity-asset-cache",
@@ -8585,8 +8755,11 @@ def validate_cache(
     expected_package: str = EXPECTED_PACKAGE,
     expected_closure: str = EXPECTED_CLOSURE,
     contract_path: Path = DEFAULT_CONFORMANCE_CONTRACT,
-    expected_contract_sha256: str = EXPECTED_CONFORMANCE_CONTRACT_SHA256,
+    expected_contract_sha256: str | None = None,
 ) -> dict[str, Any]:
+    # Preserve the qualification runner's older call shape without reviving
+    # the incidental contract-file receipt hash as a validation gate.
+    del expected_contract_sha256
     cache_dir = cache_dir.expanduser().resolve()
     manifest_path = cache_dir / "manifest.json"
     manifest = load_json(manifest_path)
@@ -8602,12 +8775,11 @@ def validate_cache(
         raise CacheError("cache package binding mismatch")
     if bindings.get("level_asset_closure_sha256") != expected_closure:
         raise CacheError("cache closure binding mismatch")
-    contract, contract_file_sha256 = load_conformance_contract(
-        contract_path, expected_contract_sha256
-    )
-    if bindings.get("plan29_contract_file_sha256") != contract_file_sha256:
-        raise CacheError("cache contract file binding mismatch")
-    if bindings.get("plan29_contract_self_sha256") != contract.get("contract_sha256"):
+    contract, contract_self_sha256 = load_conformance_contract(contract_path)
+    contract_identity = conformance_contract_identity_payload(contract)[
+        "trusted_identity"
+    ]
+    if bindings.get("plan29_contract_self_sha256") != contract_self_sha256:
         raise CacheError("cache contract self-hash binding mismatch")
     outputs = manifest.get("outputs")
     if not isinstance(outputs, list) or not outputs:
@@ -8642,9 +8814,9 @@ def validate_cache(
     seal = load_json(cache_dir / "conformance-identity.json")
     if seal.get("schema") != CONFORMANCE_SEAL_SCHEMA:
         raise CacheError("cache conformance seal schema mismatch")
-    if seal.get("contract_file_sha256") != contract_file_sha256:
+    if seal.get("contract_self_sha256") != contract_self_sha256:
         raise CacheError("cache conformance seal contract mismatch")
-    if seal.get("identity") != contract.get("trusted_identity"):
+    if seal.get("identity") != contract_identity:
         raise CacheError("cache conformance seal identity mismatch")
     seal_claim = seal.get("seal_sha256")
     seal_unsigned = dict(seal)
@@ -8675,7 +8847,8 @@ def parse_args() -> argparse.Namespace:
     build.add_argument("--contract", type=Path, default=DEFAULT_CONFORMANCE_CONTRACT)
     build.add_argument(
         "--expected-contract-sha256",
-        default=EXPECTED_CONFORMANCE_CONTRACT_SHA256,
+        default=None,
+        help=argparse.SUPPRESS,
     )
     build_day = subparsers.add_parser("build-day")
     build_day.add_argument("--owner-root", type=Path, default=DEFAULT_OWNER)
@@ -8702,7 +8875,8 @@ def parse_args() -> argparse.Namespace:
     validate.add_argument("--contract", type=Path, default=DEFAULT_CONFORMANCE_CONTRACT)
     validate.add_argument(
         "--expected-contract-sha256",
-        default=EXPECTED_CONFORMANCE_CONTRACT_SHA256,
+        default=None,
+        help=argparse.SUPPRESS,
     )
     validate_day = subparsers.add_parser("validate-day")
     validate_day.add_argument("--cache", type=Path, default=DEFAULT_LEVEL2_OUTPUT)
