@@ -5243,7 +5243,7 @@ pub struct Level2AuthoredClass5Source {
     pub source_byte_3e: u8,
     /// AddTrader_4C0B0's fixed byte-0x39 cadence value; other authored
     /// class-5 constructors leave this field at the NewEvent zero.
-    pub source_byte_39: i16,
+    pub source_byte_39: u8,
     pub yaw: i16,
     pub pitch: i16,
     pub roll: i16,
@@ -38543,18 +38543,116 @@ mod tests {
             .level2_reset_session()
             .expect("allocation-failure session");
         allocation_failure.select_level2_campaign_entry_stage();
-        allocation_failure.economy.free_slots.clear();
-        allocation_failure
-            .set_level2_entity_position(local_player, feature_position(11))
-            .expect("public player-position input");
-        allocation_failure.step_outer_turn(PlayerCommand::default(), 0);
+        let mut allocation_trace = Vec::new();
+        step_at(
+            &mut allocation_failure,
+            feature_position(11),
+            1,
+            &mut allocation_trace,
+        );
+        step_at(
+            &mut allocation_failure,
+            feature_position(42),
+            7,
+            &mut allocation_trace,
+        );
+
+        // Leave exactly thirty real arena slots for the next public source
+        // pass: the established group-3 batch consumes 22 main rows plus
+        // model-54 row 63, leaving seven slots for a partial trader batch.
+        let expected_group3_main_indices = (43_u16..=62).chain([64, 439]).collect::<Vec<_>>();
+        let established_allocation_count = expected_group3_main_indices.len() + 1;
+        assert_eq!(established_allocation_count, 23);
+        allocation_failure.economy.free_slots.truncate(30);
+        let trader_capacity =
+            allocation_failure.economy.free_slots.len() - established_allocation_count;
+        assert_eq!(trader_capacity, 7);
+        let pre_trader_free_slots =
+            allocation_failure.economy.free_slots[..trader_capacity].to_vec();
+        let pre_trader_global_rng = allocation_failure.economy.global_rng;
+        let snapshot_free_slot_state = |economy: &Level2EconomyState, slots: &[u16]| {
+            slots
+                .iter()
+                .map(|slot| {
+                    (
+                        *slot,
+                        economy.slot_generations.get(slot).copied(),
+                        economy.slot_rng.get(slot).copied(),
+                        economy.source_rng.get(slot).copied(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let pre_trader_slot_state =
+            snapshot_free_slot_state(&allocation_failure.economy, &pre_trader_free_slots);
+        let pre_trader_model14_phase = allocation_failure.economy.class5_model14_constructor_phase;
+
+        step_at(
+            &mut allocation_failure,
+            feature_position(42),
+            1,
+            &mut allocation_trace,
+        );
+        let group3_main_batches = allocation_failure
+            .dispatch_events()
+            .iter()
+            .filter_map(|event| match event {
+                Level2DispatchEvent::AuthoredGroupActivated {
+                    group: 3,
+                    authored_indices,
+                    ..
+                } => Some(authored_indices),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let established_group3_batch = group3_main_batches
+            .iter()
+            .find(|batch| batch.as_ref() == expected_group3_main_indices.as_slice())
+            .expect("group-3 established main batch");
+        assert_eq!(established_group3_batch.len(), 22);
+        assert_eq!(
+            allocation_failure
+                .economy
+                .mana_attraction_fields()
+                .iter()
+                .filter(|field| field.authored_index == 63)
+                .count(),
+            1
+        );
         assert!(
             allocation_failure
                 .dispatch_events()
                 .iter()
-                .any(|event| matches!(event, Level2DispatchEvent::Error { .. }))
+                .any(|event| matches!(
+                    event,
+                    Level2DispatchEvent::Error { message, .. }
+                        if message.contains("model-14 row 132")
+                ))
         );
-        assert!(allocation_failure.economy.authored_model45().is_empty());
+        assert!(
+            allocation_failure
+                .economy
+                .authored_class5()
+                .iter()
+                .all(|source| !(125..=151).contains(&source.authored_index))
+        );
+        assert!(
+            (125_u16..=151)
+                .all(|index| { !allocation_failure.level2_class5_activated.contains(&index) })
+        );
+        assert_eq!(allocation_failure.economy.free_slots, pre_trader_free_slots);
+        assert_eq!(
+            allocation_failure.economy.global_rng,
+            level2_next_rng32(pre_trader_global_rng)
+        );
+        assert_eq!(
+            allocation_failure.economy.class5_model14_constructor_phase,
+            pre_trader_model14_phase
+        );
+        assert_eq!(
+            snapshot_free_slot_state(&allocation_failure.economy, &pre_trader_free_slots),
+            pre_trader_slot_state
+        );
         allocation_failure.reset();
         assert_eq!(allocation_failure.campaign_state_hash(), baseline_hash);
     }
