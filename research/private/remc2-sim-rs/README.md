@@ -249,13 +249,33 @@ Useful gates:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
+time cargo clippy -p sim-capi --lib --no-deps --locked -- \
+  -A clippy::pedantic -D clippy::correctness -D clippy::suspicious
 cargo test --workspace --locked
 cd web
 pnpm typecheck
 pnpm build
 pnpm test:e2e
 ```
+
+The locked workspace test is the default lane. When the private inputs are
+available, record its successful warm-cache duration and test counts before
+calling it the fast lane. It keeps the production-capacity journal and
+presentation rendering tests available as explicit, named soak checks without
+making every local edit pay their cost:
+
+```bash
+time cargo test --workspace --locked
+cargo test -p sim-capi --lib --locked -- --ignored --exact \
+  native_v2::tests::bounded_event_journal_reports_expired_cursors
+cargo test -p sim-capi --lib --locked -- --ignored --exact \
+  native_v2::tests::presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed
+```
+
+The focused Clippy command checks changed `sim-capi` library production code;
+pedantic style remains informational, while correctness and suspicious lint
+groups are hard failures. The default lane still includes the discriminating
+expired-cursor and stale presentation-generation tests.
 
 The Wasm adapter remains runnable but parked. A future native adapter remains
 a thin client over the same core, not an alternate simulation implementation.

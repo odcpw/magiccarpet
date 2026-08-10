@@ -2294,6 +2294,8 @@ struct SessionRecord {
     generation: u64,
     event_head: u64,
     events: VecDeque<McEventV2>,
+    #[cfg(test)]
+    event_capacity: usize,
     audio_commands: BTreeMap<u64, McAudioCommandV2>,
     audio_voices: [Option<AudioVoice>; AUDIO_VOICE_COUNT],
     music_start_armed: bool,
@@ -3138,6 +3140,8 @@ impl SessionRecord {
             generation: 1,
             event_head: 0,
             events: VecDeque::new(),
+            #[cfg(test)]
+            event_capacity: EVENT_CAPACITY,
             audio_commands: BTreeMap::new(),
             audio_voices: [None; AUDIO_VOICE_COUNT],
             music_start_armed: true,
@@ -5101,8 +5105,18 @@ impl SessionRecord {
         }
     }
 
+    #[cfg(test)]
+    fn event_capacity(&self) -> usize {
+        self.event_capacity
+    }
+
+    #[cfg(not(test))]
+    fn event_capacity(&self) -> usize {
+        EVENT_CAPACITY
+    }
+
     fn append_event(&mut self, event: McEventV2) {
-        if self.events.len() == EVENT_CAPACITY
+        if self.events.len() == self.event_capacity()
             && let Some(expired) = self.events.pop_front()
         {
             // Audio sidecars have an explicit client release lifecycle. They
@@ -15124,6 +15138,133 @@ mod tests {
     }
 
     #[test]
+    fn presentation_frame_abi_layout_is_stable() {
+        assert_eq!(size_of::<McPresentationFrameQueryV2>(), 64);
+        assert_eq!(size_of::<McLevel1PresentationInputV2>(), 740);
+        assert_eq!(size_of::<McPresentationFrameInfoV2>(), 128);
+        assert_eq!(
+            std::mem::offset_of!(McPresentationFrameQueryV2, configured_blur_mode),
+            40
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1PresentationInputV2, mouse_x),
+            38
+        );
+        assert_eq!(
+            std::mem::offset_of!(McLevel1PresentationInputV2, debug_clock_bucket),
+            704
+        );
+        assert_eq!(
+            std::mem::offset_of!(McPresentationFrameInfoV2, immutable_input_hash),
+            32
+        );
+        assert_eq!(
+            std::mem::offset_of!(McPresentationFrameInfoV2, index_hash),
+            64
+        );
+        assert_eq!(
+            std::mem::offset_of!(McPresentationFrameInfoV2, reserved),
+            104
+        );
+    }
+
+    #[test]
+    fn presentation_frame_copy_is_idempotent_for_same_generation_and_revision() {
+        let handle = open_fixture_with_presentation_cache();
+        let query = valid_presentation_frame_query();
+        let mut indices = vec![0_u8; LEVEL1_VIEW_PIXELS];
+        let mut provenance = vec![0_u8; LEVEL1_VIEW_PIXELS];
+        let mut info = McPresentationFrameInfoV2::default();
+        let copy =
+            |indices: &mut [u8], provenance: &mut [u8], info: &mut McPresentationFrameInfoV2| {
+                mc_native_session_presentation_frame_copy(
+                    handle,
+                    &raw const query,
+                    indices.as_mut_ptr(),
+                    indices.len() as u32,
+                    provenance.as_mut_ptr(),
+                    provenance.len() as u32,
+                    info,
+                    struct_size::<McPresentationFrameInfoV2>(),
+                )
+            };
+
+        assert_eq!(copy(&mut indices, &mut provenance, &mut info), MC_STATUS_OK);
+        assert_eq!(info.history_state, 1);
+        assert_eq!(info.newly_committed, 1);
+        let first_indices = indices.clone();
+        let first_provenance = provenance.clone();
+        let first_info = info;
+
+        assert_eq!(copy(&mut indices, &mut provenance, &mut info), MC_STATUS_OK);
+        assert_eq!(info.history_state, first_info.history_state);
+        assert_eq!(info.newly_committed, 0);
+        assert_eq!(info.immutable_input_hash, first_info.immutable_input_hash);
+        assert_eq!(info.index_hash, first_info.index_hash);
+        assert_eq!(info.provenance_hash, first_info.provenance_hash);
+        assert_eq!(indices, first_indices);
+        assert_eq!(provenance, first_provenance);
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    fn presentation_frame_rejects_stale_generation_without_committing() {
+        let handle = open_fixture_with_presentation_cache();
+        let mut before_reset = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_snapshot(
+                handle,
+                &raw mut before_reset,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        let mut after_reset = McSessionSnapshotV2::default();
+        assert_eq!(
+            mc_native_session_reset(
+                handle,
+                &raw mut after_reset,
+                struct_size::<McSessionSnapshotV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_ne!(after_reset.generation, before_reset.generation);
+
+        let mut query = valid_presentation_frame_query();
+        query.generation = before_reset.generation;
+        let mut indices = vec![0_u8; LEVEL1_VIEW_PIXELS];
+        let mut provenance = vec![0_u8; LEVEL1_VIEW_PIXELS];
+        let sentinel = McPresentationFrameInfoV2 {
+            generation: 0xdead_beef,
+            ..McPresentationFrameInfoV2::default()
+        };
+        let mut info = sentinel;
+        assert_eq!(
+            mc_native_session_presentation_frame_copy(
+                handle,
+                &raw const query,
+                indices.as_mut_ptr(),
+                indices.len() as u32,
+                provenance.as_mut_ptr(),
+                provenance.len() as u32,
+                &raw mut info,
+                struct_size::<McPresentationFrameInfoV2>(),
+            ),
+            MC_STATUS_GENERATION_MISMATCH
+        );
+        assert_eq!(info, sentinel, "stale generation leaves output untouched");
+        with_session(handle, |session| {
+            assert_eq!(session.generation, after_reset.generation);
+            assert_eq!(session.presentation_frame.history(), MainHistory::Unprimed);
+            assert!(session.presentation_frame.cached().is_none());
+            Ok(())
+        })
+        .expect("stale presentation generation remains fail-closed");
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    #[ignore = "production-capacity presentation rendering/coverage soak; run explicitly"]
     fn presentation_frame_abi_is_revisioned_complete_idempotent_and_fail_closed() {
         assert_eq!(size_of::<McPresentationFrameQueryV2>(), 64);
         assert_eq!(size_of::<McLevel1PresentationInputV2>(), 740);
@@ -17178,6 +17319,17 @@ mod tests {
             .expect("cache-free fixture session registers")
     }
 
+    fn open_fixture_with_event_capacity(capacity: usize) -> u64 {
+        assert!(capacity > 0, "event journal capacity must be non-zero");
+        let handle = open_fixture();
+        with_session_mut(handle, |session| {
+            session.event_capacity = capacity;
+            Ok(())
+        })
+        .expect("test event journal capacity installs");
+        handle
+    }
+
     fn configured_goat_pitch_handle(retain_action_14: bool) -> u64 {
         const BLEATING_GOAT: u16 = 102;
         const BLEATING_GOAT_RESET_RNG: u16 = 32_616;
@@ -17575,6 +17727,37 @@ mod tests {
             struct_size: struct_size::<McCommandV2>(),
             requested_spell: MC_REQUESTED_SPELL_NONE,
             ..McCommandV2::default()
+        }
+    }
+
+    fn valid_presentation_frame_query() -> McPresentationFrameQueryV2 {
+        McPresentationFrameQueryV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McPresentationFrameQueryV2>(),
+            generation: 1,
+            tick: 0,
+            presentation_revision: 1,
+            viewport_width: LEVEL1_VIEW_WIDTH as u16,
+            viewport_height: LEVEL1_VIEW_HEIGHT as u16,
+            screen_stride: LEVEL1_VIEW_WIDTH as u16,
+            reserved_0: 0,
+            configured_blur_mode: 0,
+            blur_capability: 0,
+            high_speed_system: 1,
+            scratch_present: 1,
+            vga_resolution: 1,
+            spatial_smoothing: 0,
+            minimap_enabled: 1,
+            top_bar_enabled: 1,
+            menu_overlay: 0,
+            game_paused: 0,
+            level_end: 0,
+            objective_selector: u8::MAX,
+            objective_textbox: 0,
+            tutorial_or_briefing: 0,
+            help_popup: 0,
+            debug_text: 0,
+            reserved: [0; 2],
         }
     }
 
@@ -23670,6 +23853,48 @@ _Static_assert(offsetof(McPresentationFrameInfoV2, reserved) == 104, "presentati
     }
 
     #[test]
+    fn fast_event_journal_reports_expired_cursors() {
+        const TEST_EVENT_CAPACITY: usize = 4;
+        let handle = open_fixture_with_event_capacity(TEST_EVENT_CAPACITY);
+        let command = valid_command();
+        let mut snapshot = McSessionSnapshotV2::default();
+        for _ in 0..=TEST_EVENT_CAPACITY {
+            assert_eq!(
+                mc_native_session_step(
+                    handle,
+                    &raw const command,
+                    &raw mut snapshot,
+                    struct_size::<McSessionSnapshotV2>(),
+                ),
+                MC_STATUS_OK
+            );
+        }
+        let query = McEventQueryV2 {
+            abi_version: MC_NATIVE_ABI_VERSION,
+            struct_size: struct_size::<McEventQueryV2>(),
+            generation: snapshot.generation,
+            cursor: 0,
+            reserved: [0; 4],
+        };
+        let mut batch = McEventBatchV2::default();
+        assert_eq!(
+            mc_native_events_copy_since(
+                handle,
+                &raw const query,
+                std::ptr::null_mut(),
+                0,
+                struct_size::<McEventV2>(),
+                &raw mut batch,
+                struct_size::<McEventBatchV2>(),
+            ),
+            MC_STATUS_CURSOR_EXPIRED,
+            "a deliberately too-old cursor remains rejected in the fast lane"
+        );
+        assert_eq!(mc_native_session_destroy(handle), MC_STATUS_OK);
+    }
+
+    #[test]
+    #[ignore = "production-capacity journal soak; run explicitly"]
     fn bounded_event_journal_reports_expired_cursors() {
         let handle = open_fixture();
         let command = valid_command();
