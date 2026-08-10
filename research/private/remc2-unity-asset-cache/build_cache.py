@@ -70,8 +70,31 @@ GOAT_TMAP_GOLDEN = (
 SCHEMA = "mc2-owner-unity-asset-cache/v1"
 LEVEL2_MATERIAL_SCHEMA = "mc2-level2-day-material-cache/v1"
 LEVEL2_GAMEPLAY_SCHEMA = "mc2-level2-day-gameplay-cache/v1"
+LEVEL2_DAY_HUD_SCHEMA = "mc2-level2-day-hud/v1"
 LEVEL2_AUDIO_SCHEMA = "mc2-level2-day-audio-cache/v1"
 LEVEL2_AGGREGATE_SCHEMA = "mc2-level2-day-owner-cache/v1"
+LEVEL2_DAY_HUD_BITMAP_SELECTORS = (
+    1,
+    2,
+    40,
+    41,
+    42,
+    43,
+    54,
+    55,
+    *range(123, 149),
+)
+LEVEL2_DAY_HUD_ROMAN_TEXT = ("I", "II", "III", "IV", "V")
+LEVEL2_DAY_HUD_BITMAP_NAMES = {
+    1: "SPELL_TOPTILE_BAR",
+    2: "SPELL_TOPTILE_BAR_GLOW",
+    40: "MINI_MAP_PANEL",
+    41: "HEALTH_PANEL",
+    42: "HEALTH_MANA_ICONS",
+    43: "PLAYER_ICON",
+    54: "PANEL",
+    55: "HEALTH_PANEL_HIT",
+}
 EXPECTED_LEVEL2_SOUND_RECORDS_SHA256 = "23c6a8fbb3ff907e72ce127bbe3163ee6a4955e0319371268a7e8d65b1422555"
 EXPECTED_LEVEL2_MUSIC_RECORDS_SHA256 = "1cb48c36ee4f3d8ec12ca8f3572ad9ec2b171026aa09a2039dfbd80309c0dcb5"
 LEVEL2_AUDIO_DENOMINATOR = (
@@ -4850,6 +4873,356 @@ def _level2_gameplay_asset_bytes(
     return data, metadata
 
 
+def _level2_decode_indexed_catalog_entry(
+    dat: bytes,
+    records: list[tuple[int, int, int]],
+    selector: int,
+    catalog_entry: dict[str, Any],
+    proven_decode: Any,
+    label: str,
+) -> tuple[bytes, bytes, int, int, int]:
+    """Decode one owner bitmap and reconcile TAB, RLE, and catalog identity."""
+    if selector < 0 or selector >= len(records):
+        raise CacheError(f"{label} selector is out of bounds: {selector}")
+    if catalog_entry.get("index") != selector:
+        raise CacheError(f"{label} catalog index disagreement at {selector}")
+    offset, width, height = records[selector]
+    dimensions = catalog_entry.get("dimensions")
+    if dimensions != {"height": height, "width": width}:
+        raise CacheError(f"{label} TAB/catalog dimensions disagree at {selector}")
+    if (
+        catalog_entry.get("decoder_status") != "decoded_indexed_rle"
+        or catalog_entry.get("offset") != offset
+        or not isinstance(catalog_entry.get("encoded_length"), int)
+    ):
+        raise CacheError(f"{label} catalog extent is not qualified at {selector}")
+    encoded_length = catalog_entry["encoded_length"]
+    if offset < 0 or encoded_length <= 0 or offset + encoded_length > len(dat):
+        raise CacheError(f"{label} catalog span exceeds source at {selector}")
+    pixels, mask, actual_length = materialize_indexed_rle(
+        dat, offset, width, height
+    )
+    proven = proven_decode(dat, offset, width, height)
+    encoded = dat[offset : offset + encoded_length]
+    if (
+        actual_length != encoded_length
+        or proven.get("status") != "decoded_indexed_rle"
+        or proven.get("encoded_length") != actual_length
+        or proven.get("indexed_pixels_sha256") != sha256_bytes(pixels)
+        or proven.get("transparency_mask_sha256") != sha256_bytes(mask)
+        or catalog_entry.get("content_address") != f"sha256:{sha256_bytes(encoded)}"
+        or catalog_entry.get("indexed_pixels_sha256") != sha256_bytes(pixels)
+        or catalog_entry.get("transparency_mask_sha256") != sha256_bytes(mask)
+    ):
+        raise CacheError(f"{label} decoder/catalog disagreement at {selector}")
+    return pixels, mask, width, height, actual_length
+
+
+def _level2_day_hud_products(
+    stage: Path,
+    outputs: list[dict[str, Any]],
+    profile: dict[str, Any],
+    source_bytes: dict[str, bytes],
+    catalog_rows: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Materialize the qualified Day MSPRD/FONT1 HUD products in gameplay."""
+    proven_decode = load_proven_decoder()
+    palette_asset_id = "owner_data:DATA/PALD-0.DAT"
+    palette_catalog = catalog_rows.get("DATA/PALD-0.DAT")
+    palette = source_bytes.get("DATA/PALD-0.DAT")
+    if (
+        not isinstance(palette_catalog, dict)
+        or palette_catalog.get("asset_id") != palette_asset_id
+        or palette is None
+        or len(palette) != 256 * 3
+        or palette_catalog.get("sha256") != sha256_bytes(palette)
+        or any(value > 63 for value in palette)
+    ):
+        raise CacheError("Level 2 Day HUD PALD source is not the qualified RGB6 palette")
+    palette_rgb8 = bytes(value * 4 for value in palette)
+    palette_rgb6_output = write_output(
+        stage,
+        outputs,
+        "gameplay/hud/palette/pald.rgb6",
+        palette,
+        kind="ordered_rgb6_day_hud_palette",
+        source_asset_ids=[palette_asset_id],
+        extra={"entries": 256, "channel_bits": 6},
+    )
+    palette_rgb8_output = write_output(
+        stage,
+        outputs,
+        "gameplay/hud/palette/pald.rgb8",
+        palette_rgb8,
+        kind="ordered_rgb8_day_hud_palette",
+        source_asset_ids=[palette_asset_id],
+        extra={"entries": 256, "channel_bits": 8, "expansion": "rgb6_value * 4"},
+    )
+    hud_outputs = [palette_rgb6_output, palette_rgb8_output]
+
+    mspr_asset_prefix = "owner_data:DATA/MSPRD0-0.DAT#"
+    mspr_dat = source_bytes["DATA/MSPRD0-0.DAT"]
+    mspr_records = bitmap_records(source_bytes["DATA/MSPRD0-0.TAB"])
+    mspr_dat_asset_id = "owner_data:DATA/MSPRD0-0.DAT"
+    mspr_tab_asset_id = "owner_data:DATA/MSPRD0-0.TAB"
+    bitmap_assets = []
+    for selector in LEVEL2_DAY_HUD_BITMAP_SELECTORS:
+        asset_id = f"{mspr_asset_prefix}{selector}"
+        catalog_entry = catalog_rows.get(asset_id)
+        if not isinstance(catalog_entry, dict):
+            raise CacheError(f"Level 2 Day HUD MSPRD catalog entry is missing: {asset_id}")
+        pixels, mask, width, height, encoded_length = (
+            _level2_decode_indexed_catalog_entry(
+                mspr_dat,
+                mspr_records,
+                selector,
+                catalog_entry,
+                proven_decode,
+                "Level 2 Day HUD MSPRD",
+            )
+        )
+        source_asset_ids = [mspr_dat_asset_id, mspr_tab_asset_id, palette_asset_id]
+        stem = f"gameplay/hud/bitmaps/msprd0-0/{selector:03d}"
+        indices_output = write_output(
+            stage,
+            outputs,
+            f"{stem}.indices.u8",
+            pixels,
+            kind="indexed_image_u8_day_hud",
+            source_asset_ids=source_asset_ids,
+            extra={
+                "selector": selector,
+                "bank": "MSPRD0-0",
+                "width": width,
+                "height": height,
+                "runtime_width": width * 2,
+                "runtime_height": height * 2,
+                "source_scale": 2,
+                "encoded_length": encoded_length,
+                "authority": "SourceMappedLive",
+            },
+        )
+        mask_output = write_output(
+            stage,
+            outputs,
+            f"{stem}.mask.u8",
+            mask,
+            kind="visibility_mask_u8_0_or_1_day_hud",
+            source_asset_ids=source_asset_ids,
+            extra={
+                "selector": selector,
+                "bank": "MSPRD0-0",
+                "width": width,
+                "height": height,
+                "runtime_width": width * 2,
+                "runtime_height": height * 2,
+                "source_scale": 2,
+                "encoded_length": encoded_length,
+                "authority": "SourceMappedLive",
+            },
+        )
+        hud_outputs.extend([indices_output, mask_output])
+        bitmap_assets.append(
+            {
+                "selector": selector,
+                "name": LEVEL2_DAY_HUD_BITMAP_NAMES.get(
+                    selector, f"SPELL_ICON_{selector - 122:02d}"
+                ),
+                "bank": "MSPRD0-0",
+                "source_asset_id": asset_id,
+                "tab_asset_id": mspr_tab_asset_id,
+                "palette_asset_id": palette_asset_id,
+                "indices_path": indices_output["path"],
+                "mask_path": mask_output["path"],
+                "indices_sha256": indices_output["sha256"],
+                "mask_sha256": mask_output["sha256"],
+                "stored_width": width,
+                "stored_height": height,
+                "runtime_width": width * 2,
+                "runtime_height": height * 2,
+                "runtime_dimensions": {"width": width * 2, "height": height * 2},
+                "source_scale": 2,
+                "encoded_length": encoded_length,
+                "indexed_pixels_sha256": sha256_bytes(pixels),
+                "transparency_mask_sha256": sha256_bytes(mask),
+                "row_order": "top_to_bottom",
+                "origin": "top_left",
+                "mask_semantics": "one_visible_zero_transparent",
+                "filter": "nearest",
+                "authority": "SourceMappedLive",
+            }
+        )
+
+    font_dat = source_bytes["DATA/FONT1.DAT"]
+    font_records = bitmap_records(source_bytes["DATA/FONT1.TAB"])
+    font_blob = bytearray()
+    roman_glyph_indices = sorted(
+        {ord(value) + 1 for text in LEVEL2_DAY_HUD_ROMAN_TEXT for value in text}
+    )
+    glyph_rows: list[dict[str, Any]] = [{} for _ in font_records]
+    font_asset_prefix = "owner_data:DATA/FONT1.DAT#"
+    for index in roman_glyph_indices:
+        asset_id = f"{font_asset_prefix}{index}"
+        catalog_entry = catalog_rows.get(asset_id)
+        if not isinstance(catalog_entry, dict):
+            raise CacheError(f"Level 2 Day HUD FONT1 catalog entry is missing: {asset_id}")
+        pixels, mask, width, height, encoded_length = (
+            _level2_decode_indexed_catalog_entry(
+                font_dat,
+                font_records,
+                index,
+                catalog_entry,
+                proven_decode,
+                "Level 2 Day HUD FONT1",
+            )
+        )
+        offset = len(font_blob)
+        font_blob.extend(mask)
+        glyph_rows[index] = {
+            "index": index,
+            "offset": offset,
+            "length": len(mask),
+            "width": width,
+            "height": height,
+            "mask_sha256": sha256_bytes(mask),
+            "indexed_pixels_sha256": sha256_bytes(pixels),
+            "encoded_length": encoded_length,
+            "source_asset_id": asset_id,
+        }
+    if (
+        len(glyph_rows) <= max(roman_glyph_indices)
+        or any(not glyph_rows[index] for index in roman_glyph_indices)
+    ):
+        raise CacheError("Level 2 Day HUD FONT1 has no bounded Roman tier glyphs")
+    font_asset_id = "owner_data:DATA/FONT1.DAT"
+    font_tab_asset_id = "owner_data:DATA/FONT1.TAB"
+    clrd_asset_id = "owner_data:DATA/CLRD-0.DAT"
+    clrd = source_bytes.get("DATA/CLRD-0.DAT")
+    if not clrd:
+        raise CacheError("Level 2 Day HUD CLRD source is empty")
+    font_palette_index = clrd[0]
+    font_source_asset_ids = [
+        font_asset_id,
+        font_tab_asset_id,
+        palette_asset_id,
+        clrd_asset_id,
+    ]
+    tier_rows = []
+    for tier, text in enumerate(LEVEL2_DAY_HUD_ROMAN_TEXT):
+        text_bytes = text.encode("ascii")
+        raster, width, height, glyph_indices = build_hud_text_raster(
+            text_bytes,
+            glyph_rows,
+            bytes(font_blob),
+            palette_rgb8,
+            font_palette_index,
+        )
+        expected_glyph_indices = [value + 1 for value in text_bytes]
+        if glyph_indices != expected_glyph_indices:
+            raise CacheError(f"Level 2 Day HUD Roman glyph mapping changed for {text}")
+        raster_output = write_output(
+            stage,
+            outputs,
+            f"gameplay/hud/font/font1/roman-{text.lower()}.rgba8",
+            raster,
+            kind="rgba8_source_mapped_day_font1_spell_tier",
+            source_asset_ids=font_source_asset_ids,
+            extra={
+                "tier": tier,
+                "text": text,
+                "glyph_indices": glyph_indices,
+                "width": width,
+                "height": height,
+                "runtime_width": width * 2,
+                "runtime_height": height * 2,
+                "source_scale": 2,
+                "palette_index": font_palette_index,
+                "authority": "SourceMappedLive",
+            },
+        )
+        hud_outputs.append(raster_output)
+        tier_rows.append(
+            {
+                "tier": tier,
+                "text": text,
+                "text_bytes": list(text_bytes),
+                "glyph_indices": glyph_indices,
+                "glyphs": [
+                    {
+                        "index": index,
+                        "source_asset_id": glyph_rows[index]["source_asset_id"],
+                        "width": glyph_rows[index]["width"],
+                        "height": glyph_rows[index]["height"],
+                        "mask_sha256": glyph_rows[index]["mask_sha256"],
+                    }
+                    for index in glyph_indices
+                ],
+                "font_bank": "FONT1",
+                "raster_path": raster_output["path"],
+                "raster_sha256": raster_output["sha256"],
+                "width": width,
+                "height": height,
+                "pixel_format": "RGBA8",
+                "stored_width": width,
+                "stored_height": height,
+                "runtime_width": width * 2,
+                "runtime_height": height * 2,
+                "runtime_dimensions": {"width": width * 2, "height": height * 2},
+                "source_scale": 2,
+                "palette_asset_id": palette_asset_id,
+                "palette_index": font_palette_index,
+                "authority": "SourceMappedLive",
+            }
+        )
+    hud_descriptor = {
+        "schema": LEVEL2_DAY_HUD_SCHEMA,
+        "profile": profile,
+        "authority": "SourceMappedLive",
+        "source": {
+            "remc2_commit": PINNED_REMC2_COMMIT,
+            "bitmap_bank": "MSPRD0-0",
+            "palette_bank": "PALD-0",
+            "font_bank": "FONT1",
+            "font_glyph_index_rule": "ASCII byte + 1",
+        },
+        "palette": {
+            "bank": "PALD-0",
+            "asset_id": palette_asset_id,
+            "rgb6_path": palette_rgb6_output["path"],
+            "rgb6_sha256": palette_rgb6_output["sha256"],
+            "rgb8_path": palette_rgb8_output["path"],
+            "rgb8_sha256": palette_rgb8_output["sha256"],
+            "entries": 256,
+            "channel_bits": 6,
+            "rgb8_expansion": "rgb6_value * 4",
+        },
+        "bitmap_bank": "MSPRD0-0",
+        "bitmap_selectors": list(LEVEL2_DAY_HUD_BITMAP_SELECTORS),
+        "bitmap_assets": bitmap_assets,
+        "font_bank": "FONT1",
+        "spell_tier_text": {
+            "texts": list(LEVEL2_DAY_HUD_ROMAN_TEXT),
+            "font_bank": "FONT1",
+            "glyph_index_rule": "ASCII byte + 1",
+            "font_asset_id": font_asset_id,
+            "font_tab_asset_id": font_tab_asset_id,
+            "palette_asset_id": palette_asset_id,
+            "palette_selector_source_asset_id": clrd_asset_id,
+            "palette_index": font_palette_index,
+            "tiers": tier_rows,
+        },
+        "semantics": {
+            "decoded_bitmap_products": True,
+            "indexed_pixels_and_visibility_masks": True,
+            "owner_palette_required": True,
+            "owner_font_required": True,
+            "level1_products_reused": False,
+            "unknown_selectors": "fail_closed",
+        },
+    }
+    return hud_descriptor, hud_outputs
+
+
 def build_day_gameplay_cache(
     owner_root: Path,
     package_dir: Path,
@@ -4906,21 +5279,36 @@ def build_day_gameplay_cache(
                 "content_address": row.get("content_address"),
                 **metadata,
             })
+        hud_descriptor, hud_outputs = _level2_day_hud_products(
+            stage,
+            outputs,
+            profile,
+            source_bytes,
+            catalog_rows,
+        )
         descriptor = {
             "schema": "mc2-level2-day-gameplay/v1",
             "profile": profile,
             "assets": descriptors,
+            "hud": hud_descriptor,
+            "hud_outputs": hud_outputs,
             "excluded": excluded,
             "source_sets": {
                 "scene_reachable": len(scene),
                 "dynamic_dependencies": len(dynamic),
                 "materialized": len(descriptors),
+                "day_hud": {
+                    "bitmap_selector_count": len(LEVEL2_DAY_HUD_BITMAP_SELECTORS),
+                    "roman_tier_count": len(LEVEL2_DAY_HUD_ROMAN_TEXT),
+                    "output_count": len(hud_outputs),
+                },
             },
             "semantics": {
                 "owner_bytes_only": True,
                 "selector_metadata_required": True,
                 "unknown_selectors": "fail_closed",
                 "hud_localization_roots": ["DATA/POINTERS.DAT", "DATA/MSPRD0-0.DAT", "DATA/MWEBD0-0.DAT", "DATA/FONT1.DAT", "LANGUAGE/L1.TXT"],
+                "day_hud_products": "decoded_MSPRD0-0_bitmaps_and_FONT1_Roman_tiers",
             },
         }
         descriptor_bytes = canonical_json(descriptor)
@@ -4930,7 +5318,12 @@ def build_day_gameplay_cache(
             "gameplay/descriptor.json",
             descriptor_bytes,
             kind="canonical_json_level2_gameplay_descriptor",
-            source_asset_ids=sorted({item["asset_id"] for item in descriptors}),
+            source_asset_ids=sorted(
+                {
+                    *[item["asset_id"] for item in descriptors],
+                    *[source for row in hud_outputs for source in row["source_asset_ids"]],
+                }
+            ),
         )
         manifest = {
             "schema": LEVEL2_GAMEPLAY_SCHEMA,
@@ -4956,6 +5349,215 @@ def build_day_gameplay_cache(
         if stage.exists():
             shutil.rmtree(stage)
         raise
+
+
+def _validate_level2_day_hud_descriptor(
+    descriptor: dict[str, Any],
+    profile: dict[str, Any],
+    outputs: list[dict[str, Any]],
+) -> set[str]:
+    """Validate the additive Day HUD descriptor and every derived output row."""
+    hud = descriptor.get("hud")
+    if not isinstance(hud, dict) or hud.get("schema") != LEVEL2_DAY_HUD_SCHEMA:
+        raise CacheError("Level 2 Day HUD descriptor schema changed")
+    if hud.get("profile") != profile or hud.get("authority") != "SourceMappedLive":
+        raise CacheError("Level 2 Day HUD descriptor identity changed")
+    if hud.get("source") != {
+        "remc2_commit": PINNED_REMC2_COMMIT,
+        "bitmap_bank": "MSPRD0-0",
+        "palette_bank": "PALD-0",
+        "font_bank": "FONT1",
+        "font_glyph_index_rule": "ASCII byte + 1",
+    }:
+        raise CacheError("Level 2 Day HUD source selector identity changed")
+    output_by_path = {row.get("path"): row for row in outputs}
+    hud_output_rows = descriptor.get("hud_outputs")
+    if not isinstance(hud_output_rows, list) or not hud_output_rows:
+        raise CacheError("Level 2 Day HUD output ledger is missing")
+    hud_paths: set[str] = set()
+    for output_row in hud_output_rows:
+        path = output_row.get("path") if isinstance(output_row, dict) else None
+        if (
+            not isinstance(path, str)
+            or path in hud_paths
+            or not path.startswith("gameplay/hud/")
+            or output_by_path.get(path) != output_row
+        ):
+            raise CacheError("Level 2 Day HUD output ledger changed")
+        source_ids = output_row.get("source_asset_ids")
+        if (
+            not isinstance(source_ids, list)
+            or not source_ids
+            or any(
+                not isinstance(source, str) or not source.startswith("owner_data:")
+                for source in source_ids
+            )
+        ):
+            raise CacheError(f"Level 2 Day HUD output is not owner-backed: {path}")
+        hud_paths.add(path)
+    if hud_paths != {
+        row["path"]
+        for row in outputs
+        if isinstance(row.get("path"), str) and row["path"].startswith("gameplay/hud/")
+    }:
+        raise CacheError("Level 2 Day HUD output set changed")
+
+    palette = hud.get("palette")
+    if (
+        not isinstance(palette, dict)
+        or palette.get("bank") != "PALD-0"
+        or palette.get("asset_id") != "owner_data:DATA/PALD-0.DAT"
+        or palette.get("entries") != 256
+        or palette.get("channel_bits") != 6
+        or palette.get("rgb8_expansion") != "rgb6_value * 4"
+    ):
+        raise CacheError("Level 2 Day HUD palette descriptor changed")
+    for path_key, hash_key in (
+        ("rgb6_path", "rgb6_sha256"),
+        ("rgb8_path", "rgb8_sha256"),
+    ):
+        path = palette.get(path_key)
+        output_row = output_by_path.get(path)
+        if (
+            path not in hud_paths
+            or not isinstance(output_row, dict)
+            or palette.get(hash_key) != output_row.get("sha256")
+            or output_row.get("bytes") != 768
+        ):
+            raise CacheError("Level 2 Day HUD palette output binding changed")
+
+    expected_selectors = list(LEVEL2_DAY_HUD_BITMAP_SELECTORS)
+    if hud.get("bitmap_bank") != "MSPRD0-0" or hud.get("bitmap_selectors") != expected_selectors:
+        raise CacheError("Level 2 Day HUD bitmap selector set changed")
+    bitmap_assets = hud.get("bitmap_assets")
+    if not isinstance(bitmap_assets, list) or [
+        row.get("selector") for row in bitmap_assets
+    ] != expected_selectors:
+        raise CacheError("Level 2 Day HUD bitmap rows changed")
+    for row in bitmap_assets:
+        selector = row.get("selector")
+        width, height = row.get("stored_width"), row.get("stored_height")
+        source_asset_id = f"owner_data:DATA/MSPRD0-0.DAT#{selector}"
+        if (
+            row.get("bank") != "MSPRD0-0"
+            or row.get("source_asset_id") != source_asset_id
+            or row.get("tab_asset_id") != "owner_data:DATA/MSPRD0-0.TAB"
+            or row.get("palette_asset_id") != "owner_data:DATA/PALD-0.DAT"
+            or not isinstance(width, int)
+            or not isinstance(height, int)
+            or width <= 0
+            or height <= 0
+            or row.get("source_scale") != 2
+            or row.get("runtime_width") != width * 2
+            or row.get("runtime_height") != height * 2
+            or row.get("runtime_dimensions")
+            != {"width": width * 2, "height": height * 2}
+            or row.get("row_order") != "top_to_bottom"
+            or row.get("origin") != "top_left"
+            or row.get("mask_semantics") != "one_visible_zero_transparent"
+            or row.get("authority") != "SourceMappedLive"
+        ):
+            raise CacheError(f"Level 2 Day HUD bitmap descriptor changed: {selector}")
+        indices_path = row.get("indices_path")
+        mask_path = row.get("mask_path")
+        indices_output = output_by_path.get(indices_path)
+        mask_output = output_by_path.get(mask_path)
+        if (
+            indices_path not in hud_paths
+            or mask_path not in hud_paths
+            or not isinstance(indices_output, dict)
+            or not isinstance(mask_output, dict)
+            or indices_output.get("bytes") != width * height
+            or mask_output.get("bytes") != width * height
+            or any(
+                output.get("width") != width
+                or output.get("height") != height
+                or output.get("runtime_width") != width * 2
+                or output.get("runtime_height") != height * 2
+                or output.get("source_scale") != 2
+                for output in (indices_output, mask_output)
+            )
+            or row.get("indices_sha256") != indices_output.get("sha256")
+            or row.get("mask_sha256") != mask_output.get("sha256")
+            or row.get("indexed_pixels_sha256") != indices_output.get("sha256")
+            or row.get("transparency_mask_sha256") != mask_output.get("sha256")
+            or indices_output.get("selector") != selector
+            or mask_output.get("selector") != selector
+        ):
+            raise CacheError(f"Level 2 Day HUD bitmap output binding changed: {selector}")
+
+    spell_text = hud.get("spell_tier_text")
+    if (
+        not isinstance(spell_text, dict)
+        or spell_text.get("texts") != list(LEVEL2_DAY_HUD_ROMAN_TEXT)
+        or spell_text.get("font_bank") != "FONT1"
+        or spell_text.get("glyph_index_rule") != "ASCII byte + 1"
+        or spell_text.get("font_asset_id") != "owner_data:DATA/FONT1.DAT"
+        or spell_text.get("font_tab_asset_id") != "owner_data:DATA/FONT1.TAB"
+        or spell_text.get("palette_asset_id") != "owner_data:DATA/PALD-0.DAT"
+        or spell_text.get("palette_selector_source_asset_id")
+        != "owner_data:DATA/CLRD-0.DAT"
+        or not isinstance(spell_text.get("palette_index"), int)
+        or not 0 <= spell_text["palette_index"] < 256
+    ):
+        raise CacheError("Level 2 Day HUD Roman font descriptor changed")
+    tiers = spell_text.get("tiers")
+    if not isinstance(tiers, list) or [row.get("text") for row in tiers] != list(
+        LEVEL2_DAY_HUD_ROMAN_TEXT
+    ):
+        raise CacheError("Level 2 Day HUD Roman tier set changed")
+    for tier, text in enumerate(LEVEL2_DAY_HUD_ROMAN_TEXT):
+        row = tiers[tier]
+        text_bytes = text.encode("ascii")
+        glyph_indices = [value + 1 for value in text_bytes]
+        width, height = row.get("width"), row.get("height")
+        raster_path = row.get("raster_path")
+        raster_output = output_by_path.get(raster_path)
+        glyphs = row.get("glyphs")
+        if (
+            row.get("tier") != tier
+            or row.get("text_bytes") != list(text_bytes)
+            or row.get("glyph_indices") != glyph_indices
+            or row.get("font_bank") != "FONT1"
+            or row.get("palette_asset_id") != "owner_data:DATA/PALD-0.DAT"
+            or row.get("palette_index") != spell_text["palette_index"]
+            or row.get("pixel_format") != "RGBA8"
+            or row.get("authority") != "SourceMappedLive"
+            or not isinstance(width, int)
+            or not isinstance(height, int)
+            or width <= 0
+            or height <= 0
+            or row.get("stored_width") != width
+            or row.get("stored_height") != height
+            or row.get("source_scale") != 2
+            or row.get("runtime_width") != width * 2
+            or row.get("runtime_height") != height * 2
+            or row.get("runtime_dimensions")
+            != {"width": width * 2, "height": height * 2}
+            or raster_path not in hud_paths
+            or not isinstance(raster_output, dict)
+            or row.get("raster_sha256") != raster_output.get("sha256")
+            or raster_output.get("bytes") != width * height * 4
+            or raster_output.get("width") != width
+            or raster_output.get("height") != height
+            or raster_output.get("runtime_width") != width * 2
+            or raster_output.get("runtime_height") != height * 2
+            or raster_output.get("source_scale") != 2
+            or not isinstance(glyphs, list)
+            or [glyph.get("index") for glyph in glyphs] != glyph_indices
+        ):
+            raise CacheError(f"Level 2 Day HUD Roman tier binding changed: {text}")
+        for glyph in glyphs:
+            index = glyph.get("index")
+            if (
+                glyph.get("source_asset_id")
+                != f"owner_data:DATA/FONT1.DAT#{index}"
+                or not isinstance(glyph.get("width"), int)
+                or not isinstance(glyph.get("height"), int)
+                or not isinstance(glyph.get("mask_sha256"), str)
+            ):
+                raise CacheError(f"Level 2 Day HUD Roman glyph binding changed: {text}")
+    return hud_paths
 
 
 def validate_day_gameplay_cache(
@@ -5016,7 +5618,17 @@ def validate_day_gameplay_cache(
         raise CacheError("Level 2 gameplay descriptor identity mismatch")
     if descriptor.get("source_sets", {}).get("materialized", 0) != len(descriptor.get("assets", [])):
         raise CacheError("Level 2 gameplay descriptor materialization count mismatch")
-    descriptor_outputs = {row.get("output") for row in descriptor.get("assets", [])}
+    hud_paths = _validate_level2_day_hud_descriptor(descriptor, profile, outputs)
+    day_hud_counts = descriptor.get("source_sets", {}).get("day_hud")
+    if (
+        not isinstance(day_hud_counts, dict)
+        or day_hud_counts.get("bitmap_selector_count")
+        != len(LEVEL2_DAY_HUD_BITMAP_SELECTORS)
+        or day_hud_counts.get("roman_tier_count") != len(LEVEL2_DAY_HUD_ROMAN_TEXT)
+        or day_hud_counts.get("output_count") != len(hud_paths)
+    ):
+        raise CacheError("Level 2 gameplay Day HUD materialization count changed")
+    descriptor_outputs = {row.get("output") for row in descriptor.get("assets", [])} | hud_paths
     if descriptor_outputs != seen - {"gameplay/descriptor.json"}:
         raise CacheError("Level 2 gameplay descriptor/output set mismatch")
     actual_tree = {

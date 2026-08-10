@@ -1843,6 +1843,128 @@ class Level2DayGameplayTests(unittest.TestCase):
             self.assertTrue(row["mode_status"])
             self.assertTrue(row["hotspot_status"])
 
+    def test_day_hud_decodes_exact_day_selectors_and_roman_tiers(self) -> None:
+        expected_selectors = [
+            1,
+            2,
+            40,
+            41,
+            42,
+            43,
+            54,
+            55,
+            *range(123, 149),
+        ]
+        self.assertEqual(tree_identity(self.first), tree_identity(self.second))
+        manifest = cache.validate_day_gameplay_cache(self.first)
+        descriptor = json.loads(
+            (self.first / "gameplay/descriptor.json").read_text(encoding="utf-8")
+        )
+        hud = descriptor["hud"]
+        self.assertEqual(hud["schema"], "mc2-level2-day-hud/v1")
+        self.assertEqual(hud["source"]["bitmap_bank"], "MSPRD0-0")
+        self.assertEqual(hud["source"]["palette_bank"], "PALD-0")
+        self.assertEqual(hud["source"]["font_bank"], "FONT1")
+        self.assertEqual(hud["bitmap_selectors"], expected_selectors)
+        self.assertEqual(
+            [row["selector"] for row in hud["bitmap_assets"]], expected_selectors
+        )
+        self.assertEqual(
+            hud["spell_tier_text"]["texts"], ["I", "II", "III", "IV", "V"]
+        )
+        self.assertEqual(len(descriptor["hud_outputs"]), 75)
+        self.assertEqual(descriptor["source_sets"]["day_hud"]["output_count"], 75)
+        self.assertNotIn("HSPRN", json.dumps(hud, sort_keys=True))
+        output_by_path = {row["path"]: row for row in manifest["outputs"]}
+        for row in hud["bitmap_assets"]:
+            self.assertEqual(
+                row["source_asset_id"],
+                f"owner_data:DATA/MSPRD0-0.DAT#{row['selector']}",
+            )
+            self.assertEqual(row["tab_asset_id"], "owner_data:DATA/MSPRD0-0.TAB")
+            self.assertEqual(row["palette_asset_id"], "owner_data:DATA/PALD-0.DAT")
+            expected_bytes = row["stored_width"] * row["stored_height"]
+            self.assertEqual(row["source_scale"], 2)
+            self.assertEqual(row["runtime_width"], row["stored_width"] * 2)
+            self.assertEqual(row["runtime_height"], row["stored_height"] * 2)
+            self.assertEqual(
+                row["runtime_dimensions"],
+                {"width": row["runtime_width"], "height": row["runtime_height"]},
+            )
+            indices_output = output_by_path[row["indices_path"]]
+            mask_output = output_by_path[row["mask_path"]]
+            self.assertEqual(indices_output["bytes"], expected_bytes)
+            self.assertEqual(mask_output["bytes"], expected_bytes)
+            self.assertTrue(
+                set((self.first / row["mask_path"]).read_bytes()).issubset({0, 1})
+            )
+            self.assertEqual(indices_output["source_asset_ids"], [
+                "owner_data:DATA/MSPRD0-0.DAT",
+                "owner_data:DATA/MSPRD0-0.TAB",
+                "owner_data:DATA/PALD-0.DAT",
+            ])
+        for text, tier in zip(
+            ["I", "II", "III", "IV", "V"], hud["spell_tier_text"]["tiers"]
+        ):
+            self.assertEqual(tier["text"], text)
+            self.assertEqual(tier["glyph_indices"], [ord(value) + 1 for value in text])
+            self.assertEqual(tier["font_bank"], "FONT1")
+            self.assertEqual(tier["stored_width"], tier["width"])
+            self.assertEqual(tier["stored_height"], tier["height"])
+            self.assertEqual(tier["source_scale"], 2)
+            self.assertEqual(tier["runtime_width"], tier["width"] * 2)
+            self.assertEqual(tier["runtime_height"], tier["height"] * 2)
+            self.assertEqual(
+                tier["runtime_dimensions"],
+                {"width": tier["runtime_width"], "height": tier["runtime_height"]},
+            )
+            self.assertEqual(
+                output_by_path[tier["raster_path"]]["bytes"],
+                tier["width"] * tier["height"] * 4,
+            )
+            self.assertTrue(all(
+                glyph["source_asset_id"].startswith("owner_data:DATA/FONT1.DAT#")
+                for glyph in tier["glyphs"]
+            ))
+
+    def test_day_hud_unknown_selector_and_missing_outputs_fail_closed(self) -> None:
+        tampered = self.temp_root / "hud-selector-tamper"
+        shutil.copytree(self.first, tampered)
+        descriptor_path = tampered / "gameplay/descriptor.json"
+        descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+        descriptor["hud"]["bitmap_assets"][0]["selector"] = 999
+        descriptor_path.write_bytes(cache.canonical_json(descriptor))
+        manifest_path = tampered / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for output in manifest["outputs"]:
+            if output["path"] == "gameplay/descriptor.json":
+                output["bytes"] = descriptor_path.stat().st_size
+                output["sha256"] = cache.sha256_file(descriptor_path)
+        manifest["cache_content_sha256"] = cache._level2_cache_identity(
+            manifest["outputs"]
+        )
+        unsigned = dict(manifest)
+        unsigned.pop("manifest_payload_sha256", None)
+        manifest["manifest_payload_sha256"] = cache.sha256_bytes(
+            cache.canonical_json(unsigned)
+        )
+        manifest_path.write_bytes(cache.canonical_json(manifest))
+        with self.assertRaisesRegex(cache.CacheError, "bitmap rows changed"):
+            cache.validate_day_gameplay_cache(tampered)
+
+        missing = self.temp_root / "hud-output-missing"
+        shutil.copytree(self.first, missing)
+        victim = next((missing / "gameplay/hud").rglob("*.u8"))
+        victim.unlink()
+        with self.assertRaisesRegex(cache.CacheError, "output hash mismatch"):
+            cache.validate_day_gameplay_cache(missing)
+
+        descriptor_missing = self.temp_root / "hud-descriptor-missing"
+        shutil.copytree(self.first, descriptor_missing)
+        (descriptor_missing / "gameplay/descriptor.json").unlink()
+        with self.assertRaisesRegex(cache.CacheError, "output hash mismatch"):
+            cache.validate_day_gameplay_cache(descriptor_missing)
+
     def test_cross_level_and_unknown_closure_inputs_fail_closed(self) -> None:
         with self.assertRaisesRegex(cache.CacheError, "requires external=2"):
             cache.build_day_gameplay_cache(
@@ -2077,6 +2199,22 @@ class Level2DayAggregateTests(unittest.TestCase):
         self.assertEqual(
             len(manifest["outputs"]),
             sum(row["output_count"] + 1 for row in manifest["components"].values()),
+        )
+        gameplay_hud_paths = [
+            row["path"]
+            for row in manifest["outputs"]
+            if row["path"].startswith("components/gameplay/gameplay/hud/")
+        ]
+        self.assertEqual(len(gameplay_hud_paths), 75)
+        gameplay_descriptor = json.loads(
+            (
+                self.first
+                / "components/gameplay/gameplay/descriptor.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            gameplay_descriptor["hud"]["bitmap_selectors"],
+            [1, 2, 40, 41, 42, 43, 54, 55, *range(123, 149)],
         )
         for row in manifest["outputs"]:
             if row["kind"] != "level2_child_manifest":
