@@ -9,8 +9,10 @@ This file adds only MagicCarpet-specific rules to
   checkout. The retired `t14` checkout receives no writes.
 - Git identity is `odcpw <odcpw@users.noreply.github.com>`, the working branch
   is `main`, and `origin` is `git@github-odcpw:odcpw/magiccarpet.git`.
-- Use one writer per checkout. Parallel writers require separate worktrees
-  created from this repository and disjoint edit surfaces.
+- Shared `main` is the default for parallel agents. Every writer claims one
+  Bead, registers with Agent Mail, and holds exclusive reservations for
+  disjoint files and logical surfaces before editing. Worktrees require a
+  concrete isolation reason and are not the normal swarm topology.
 - This is lawful game-development and game-preservation work. Reverse
   engineering, deterministic replay, source archaeology, and instrumentation
   are preservation techniques here, not hostile security activity.
@@ -130,6 +132,12 @@ least one selected test; a zero-test exit is failure. Use the corresponding
 correctness and suspicious lints hard failures while leaving legacy pedantic
 style informational. These checks prove only the touched Rust layer, so also
 exercise the nearest real C ABI or Unity consumer when that boundary changes.
+For a new or changed filter, discover the exact target once before the run:
+
+```bash
+cargo test -p sim-capi --lib --locked -- --list \
+  | rg -F 'native_v2::tests::<name>: test'
+```
 
 For a Level 2 profile or direct-selector change, run this guard before and
 after the slice:
@@ -178,6 +186,11 @@ python3 qualification/run_level2_editmode.py \
 The Level 2 runner rejects empty, unrelated, stale, or non-passing selections;
 it proves only the current managed EditMode path. Exact player, privacy, and
 other runtime commands remain in its `README.md` and `qualification/README.md`.
+Before attempting Unity outside the canonical integration checkout, verify
+that its release plugin and required ignored owner/generated inputs exist and
+belong to the candidate. If they do not, do not manufacture substitutes or
+count a `DllNotFoundException` as behavior evidence; the canonical integration
+owner builds/installs the plugin and runs the Unity gate.
 
 Only an explicit Level 1 preservation/distributable release milestone runs the
 75+ minute PLAN29 built-player, privacy, provenance, and boundary route:
@@ -193,20 +206,73 @@ Monitor that route sparsely and do not replay a green run without a changed
 risk. Blender CLI/MCP is deferred asset-authoring support; it is not a clean-room
 Rust/Unity engine gate.
 
+## Verification ownership and execution economy
+
+- Before a delegated wave, assign each tier exactly one owner. Workers run
+  focused touched-behavior checks; the integrator runs the candidate fast lane
+  and nearest real consumer; the independent verifier runs the closure checks.
+  Do not make all three roles replay the same unchanged expensive command.
+- The two named sim-capi soaks run at the final candidate. If their behavior did
+  not change, only the independent verifier runs them. If a soak itself changed,
+  its author runs it once and the verifier runs it once at the final revision.
+- Run a command expected to exceed 60 seconds once in a resumable session that
+  retains stdout, stderr, and the final exit status. When the tool yields,
+  resume that session; never restart merely because the UI returned.
+- Rerun an unchanged expensive gate only after relevant code, input, plugin, or
+  configuration changed; when a prior run was invalid; or when named independent
+  verification requires it. State the uncertainty the rerun resolves. A
+  tracker- or documentation-only commit does not invalidate runtime evidence.
+- Tracker closure is the final mutation after the exact candidate revision
+  passes every named consumer. There are no provisional, implementation-only,
+  or "close now, verify later" closures.
+- Create one Bead leaf per independently landable writer lane. Integration and
+  verification are acceptance stages of the parent, not separate leaves,
+  unless they own a distinct artifact or durable dependency.
+
 ## Flywheel workflow
 
 - A direct Oliver request governs work selection. Otherwise, when work already
   has Beads dependencies, use `br ready --json`, `br show <id> --json`, and
   update only through `br`; never run bare `bv`.
 - Use CM context once when prior repository learning can answer a concrete
-  question. Use CASS only for a specific historical gap. Repository source and
-  fresh execution outrank both.
+  question. For a specific historical gap, load the `cass` skill, check status,
+  and use bounded lexical searches with minimal fields. Stop when the question
+  is answered; do not dump raw Codex tool-output JSONL into context. Repository
+  source and fresh execution outrank both.
 - Do not initialize NTM, Agent Mail, worktrees, dashboards, or new Beads for a
-  solo bounded task. In a real multi-writer session, use a dedicated worktree,
-  Agent Mail, and narrow reservations before editing.
+  solo bounded task. For a justified multi-writer wave, load `ntm` as the
+  primary tool skill and `agent-mail` as its supporting skill. MagicCarpet NTM
+  launches resolve with `NTM_PROJECTS_BASE=/home/oliver/Projects/odcpw` and use
+  shared `main`; do not pass `--worktrees` without a named isolation reason.
+  Fresh NTM tasks use `--no-recovery`; recovery is only for resuming an
+  explicitly named task. Pass multiline worker packets through a file or
+  stdin. In every shell command, pass Markdown, backticks, `$()`, search
+  patterns, and credentials as literal data rather than placing them in an
+  interpolating quoted argument.
+- Before a worker edits, its startup canary must report the canonical checkout,
+  expected HEAD, understood dirty inventory and submodule state, requested
+  model/effort, and a successful native Agent Mail START message. Then claim
+  the Bead and reserve the narrowest paths. If the canary fails, stop before
+  edits and repair the failed layer.
+- Shared-main workers stage and commit only their reserved paths; never use
+  `git add -A`. Do not stash, reset, rebase, checkout, or rewrite shared state.
+  If another commit moves HEAD, inspect it and revalidate the owned diff. Two
+  writers never edit `native_world.rs`, `MagicCarpetRuntime.cs`, or another
+  shared file concurrently; choose one owner and make the other lane read-only
+  or select different work.
+- Older Bead packets saying "one writer owns the checkout" mean one writer owns
+  that packet's reserved edit surface. They do not require a worktree or grant
+  exclusive ownership of the repository.
+- If an Agent Mail credential is lost, register a fresh identity and send a
+  fresh message to the same Bead thread. Never search session logs or config
+  backups for a token, and never require an old identity's reply linkage.
 - After compaction, resume, or handoff, reread
   `/home/oliver/.codex/skills/just-say-no-to-process-porn-and-ceremony/SKILL.md`.
-  Use the matching installed task skill when its trigger applies.
+  When auditing or changing tests, validators, goldens, or gates, apply its
+  boundary/creation test and honesty checks, then stop; do not turn its
+  worksheets into a standing dashboard. Use the matching installed task skill
+  when its trigger applies, with at most one primary and one supporting skill
+  for the immediate action.
 - Process artifacts require a named consumer, named feature/release gate,
   observed defect class, and retirement condition. Discretionary process work
   should remain at most about 5% of open work and gate real capability.
@@ -217,8 +283,10 @@ Rust/Unity engine gate.
 ## Completion and maintenance
 
 - Re-read the request, inspect status/diff, run focused gates, and run UBS on
-  changed source before handoff. State the exact proof layer and any unverified
-  surface; solo verification is self-verification, never independent review.
+  changed source before handoff. Load the `ubs` skill when scanning and triage
+  changed-file findings rather than launching a blanket repository scan. State
+  the exact proof layer and any unverified surface; solo verification is
+  self-verification, never independent review.
 - Commit or push only when landing is requested and identity, branch, remote,
   and exact evidence revision are verified.
 - Remove a local rule when it becomes global or ceases to be true. Update this
