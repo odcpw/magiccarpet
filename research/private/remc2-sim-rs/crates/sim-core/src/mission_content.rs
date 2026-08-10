@@ -7,8 +7,9 @@
 //! established [`Level1MissionTemplate`] constructors; Level 2 is deliberately
 //! fail-closed at dispatch boundaries.
 
-use std::fmt;
+use std::{collections::BTreeSet, fmt};
 
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -86,6 +87,237 @@ pub struct MissionMappings {
     pub initial_activation_group: i16,
     pub player_marker_index: u16,
     pub objective_selectors: &'static [u8],
+}
+
+const LEVEL2_ACTIVATION_CLOSURE_JSON: &str =
+    include_str!("../../../level2-conformance/activation/level2-activation-closure.json");
+
+/// One source-backed stage-tag edge in the bounded Level 2 activation closure.
+/// The producer row and source/target groups are read from the immutable
+/// activation artifact; no showcase route is encoded in the dispatcher.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Level2ActivationEdge {
+    pub source_group: u16,
+    pub target_group: u16,
+    pub producer_index: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Level2ActivationGroup {
+    pub id: u16,
+    pub rows: Box<[u16]>,
+}
+
+/// The validated artifact view consumed by the Level 2 source dispatcher.
+/// Membership is retained in artifact/source order and is hashed through the
+/// generic mission session so reset/replay identity includes the carrier.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Level2ActivationPlan {
+    groups: Box<[Level2ActivationGroup]>,
+    owned_rows: Box<[u16]>,
+    edges: Box<[Level2ActivationEdge]>,
+    artifact_sha256: Box<[u8]>,
+}
+
+impl Level2ActivationPlan {
+    #[must_use]
+    pub(crate) fn group_rows(&self, group: u16) -> Option<&[u16]> {
+        self.groups
+            .iter()
+            .find(|candidate| candidate.id == group)
+            .map(|candidate| candidate.rows.as_ref())
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn owned_rows(&self) -> &[u16] {
+        &self.owned_rows
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn edges(&self) -> &[Level2ActivationEdge] {
+        &self.edges
+    }
+}
+
+fn artifact_index(value: &Value, field: &str) -> Result<u16, String> {
+    value
+        .get(field)
+        .and_then(Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| format!("activation artifact field {field} is not a u16"))
+}
+
+fn artifact_authored_index(value: &Value, field: &str) -> Result<u16, String> {
+    let authored_id = value
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("activation artifact field {field} is not an authored id"))?;
+    authored_id
+        .strip_prefix("AUT-L2-")
+        .ok_or_else(|| format!("activation artifact authored id {authored_id} is malformed"))?
+        .parse::<u16>()
+        .map_err(|error| format!("activation artifact authored id {authored_id}: {error}"))
+}
+
+fn activation_artifact_array<'a>(root: &'a Value, field: &str) -> Result<&'a [Value], String> {
+    root.get(field)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .ok_or_else(|| format!("activation artifact field {field} is not an array"))
+}
+
+fn activation_artifact_authored_rows(root: &Value) -> Result<&[Value], String> {
+    root.get("authored_rows")
+        .and_then(|rows| rows.get("rows"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .ok_or_else(|| "activation artifact field authored_rows.rows is not an array".to_owned())
+}
+
+/// Validate the checked-in closure against the decoded owner authored table.
+/// This is also the negative-test seam: changing a member, group, or
+/// producer edge fails closed before a Level 2 reset session is constructed.
+pub(crate) fn validate_level2_activation_closure_json(
+    closure_json: &str,
+    authored_features: &[AuthoredFeature],
+) -> Result<Level2ActivationPlan, String> {
+    let root: Value = serde_json::from_str(closure_json)
+        .map_err(|error| format!("invalid Level 2 activation artifact JSON: {error}"))?;
+    let groups = activation_artifact_array(&root, "groups")?;
+    let authored_rows = activation_artifact_authored_rows(&root)?;
+    let mut owned_rows = Vec::new();
+    let mut seen_rows = BTreeSet::new();
+    let mut parsed_groups = Vec::new();
+
+    for group_id in 1_u16..=8 {
+        let group = groups
+            .iter()
+            .find(|candidate| {
+                candidate.get("group").and_then(Value::as_u64) == Some(u64::from(group_id))
+            })
+            .ok_or_else(|| format!("activation artifact is missing group {group_id}"))?;
+        let expected_count = artifact_index(group, "dispatchable_row_count")?;
+        let authored_ids = activation_artifact_array(group, "authored_ids")?;
+        if usize::from(expected_count) != authored_ids.len() {
+            return Err(format!(
+                "activation group {group_id} count {} does not match authored-id list {}",
+                expected_count,
+                authored_ids.len()
+            ));
+        }
+        let expected_owner = format!("group_{group_id}_dispatch");
+        let mut rows = Vec::with_capacity(authored_ids.len());
+        for authored_id in authored_ids {
+            let authored_index = authored_id
+                .as_str()
+                .ok_or_else(|| "activation artifact authored_ids contains a non-string".to_owned())?
+                .strip_prefix("AUT-L2-")
+                .ok_or_else(|| "activation artifact authored id is malformed".to_owned())?
+                .parse::<u16>()
+                .map_err(|error| format!("activation artifact authored id parse: {error}"))?;
+            if !seen_rows.insert(authored_index) {
+                return Err(format!(
+                    "activation authored row {authored_index} appears more than once"
+                ));
+            }
+            let row = authored_rows
+                .iter()
+                .find(|candidate| {
+                    candidate.get("index").and_then(Value::as_u64)
+                        == Some(u64::from(authored_index))
+                })
+                .ok_or_else(|| {
+                    format!("activation artifact is missing authored row {authored_index}")
+                })?;
+            if row.get("activation_group").and_then(Value::as_i64) != Some(i64::from(group_id))
+                || row.get("closure_state").and_then(Value::as_str)
+                    != Some("conditionally_reachable")
+                || row.get("planned_owner").and_then(Value::as_str) != Some(expected_owner.as_str())
+            {
+                return Err(format!(
+                    "activation authored row {authored_index} has mismatched group/state/owner"
+                ));
+            }
+            let feature = authored_features
+                .iter()
+                .find(|feature| feature.index == authored_index)
+                .ok_or_else(|| format!("owner authored table is missing row {authored_index}"))?;
+            if feature.activation_group != i16::try_from(group_id).expect("bounded group id") {
+                return Err(format!(
+                    "owner authored row {authored_index} belongs to group {}, expected {group_id}",
+                    feature.activation_group
+                ));
+            }
+            rows.push(authored_index);
+            owned_rows.push(authored_index);
+        }
+        parsed_groups.push(Level2ActivationGroup {
+            id: group_id,
+            rows: rows.into_boxed_slice(),
+        });
+    }
+
+    let producer_edges = activation_artifact_array(&root, "producer_edges")?;
+    let mut edges = Vec::new();
+    let mut edge_targets = BTreeSet::new();
+    for edge in producer_edges {
+        let source_group = artifact_index(edge, "source_group")?;
+        let target_group = artifact_index(edge, "target_group")?;
+        if source_group > 8 || !(1..=8).contains(&target_group) {
+            continue;
+        }
+        if edge.get("producer").and_then(Value::as_str) != Some("class11.stageTag") {
+            return Err(format!(
+                "activation edge {source_group}->{target_group} is not a class11.stageTag producer"
+            ));
+        }
+        let producer_index = artifact_authored_index(edge, "producer_row")?;
+        let producer = authored_features
+            .iter()
+            .find(|feature| feature.index == producer_index)
+            .ok_or_else(|| format!("activation producer row {producer_index} is absent"))?;
+        if producer.activation_group != i16::try_from(source_group).expect("bounded group id")
+            || producer.kind != 11
+            || producer.stage_tag != i16::try_from(target_group).expect("bounded group id")
+        {
+            return Err(format!(
+                "activation producer row {producer_index} does not carry {source_group}->{target_group}"
+            ));
+        }
+        if !edge_targets.insert(target_group) {
+            return Err(format!(
+                "activation target group {target_group} has duplicate edges"
+            ));
+        }
+        edges.push(Level2ActivationEdge {
+            source_group,
+            target_group,
+            producer_index,
+        });
+    }
+    if edge_targets.len() != 8 {
+        return Err(format!(
+            "activation closure has {} of 8 owned producer targets",
+            edge_targets.len()
+        ));
+    }
+
+    Ok(Level2ActivationPlan {
+        groups: parsed_groups.into_boxed_slice(),
+        owned_rows: owned_rows.into_boxed_slice(),
+        edges: edges.into_boxed_slice(),
+        artifact_sha256: Sha256::digest(closure_json.as_bytes())
+            .to_vec()
+            .into_boxed_slice(),
+    })
+}
+
+pub(crate) fn checked_in_level2_activation_plan(
+    authored_features: &[AuthoredFeature],
+) -> Result<Level2ActivationPlan, String> {
+    validate_level2_activation_closure_json(LEVEL2_ACTIVATION_CLOSURE_JSON, authored_features)
 }
 
 /// The immutable level profile used by both the generic reset seam and the
@@ -243,6 +475,7 @@ pub struct MissionContentTemplate {
     authored_features: Box<[AuthoredFeature]>,
     reset_source_slots: Box<[Level1ResetSourceSlot]>,
     wizard_map_settings: Box<[MissionWizardMapSettings]>,
+    level2_activation_plan: Option<Level2ActivationPlan>,
     initial_global_rng: u32,
 }
 
@@ -301,11 +534,20 @@ impl MissionContentTemplate {
         } else {
             Vec::new()
         };
+        let level2_activation_plan = if profile.is_level2() {
+            Some(
+                checked_in_level2_activation_plan(&features)
+                    .map_err(MissionContentError::InvalidReset)?,
+            )
+        } else {
+            None
+        };
         Ok(Self {
             profile,
             authored_features: features.into_boxed_slice(),
             reset_source_slots: reset_source_slots.to_vec().into_boxed_slice(),
             wizard_map_settings: wizard_map_settings.into_boxed_slice(),
+            level2_activation_plan,
             initial_global_rng,
         })
     }
@@ -385,6 +627,7 @@ pub struct MissionContentSession {
     baseline_slots: Box<[Level1ResetSourceSlot]>,
     source_slots: Box<[Level1ResetSourceSlot]>,
     wizard_map_settings: Box<[MissionWizardMapSettings]>,
+    level2_activation_plan: Option<Level2ActivationPlan>,
     initial_global_rng: u32,
     global_rng: u32,
 }
@@ -446,6 +689,59 @@ mod tests {
     }
 
     #[test]
+    fn level_two_activation_plan_binds_full_denominator_and_rejects_tampered_edges() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 owner package");
+        let template = inspection
+            .mission_content_template()
+            .expect("Level 2 activation plan");
+        let session = template.session();
+        let plan = session
+            .level2_activation_plan()
+            .expect("Level 2 activation plan is present");
+        assert_eq!(plan.owned_rows().len(), 138);
+        assert_eq!(plan.edges().len(), 8);
+
+        let mut member_tamper: Value = serde_json::from_str(LEVEL2_ACTIVATION_CLOSURE_JSON)
+            .expect("checked-in activation artifact JSON");
+        let group = member_tamper["groups"]
+            .as_array_mut()
+            .expect("activation groups")
+            .iter_mut()
+            .find(|group| group["group"] == 1)
+            .expect("group 1");
+        group["authored_ids"]
+            .as_array_mut()
+            .expect("group 1 authored ids")
+            .pop();
+        assert!(
+            validate_level2_activation_closure_json(
+                &serde_json::to_string(&member_tamper).expect("member tamper JSON"),
+                template.authored_features(),
+            )
+            .is_err()
+        );
+
+        let mut edge_tamper: Value = serde_json::from_str(LEVEL2_ACTIVATION_CLOSURE_JSON)
+            .expect("checked-in activation artifact JSON");
+        let edges = edge_tamper["producer_edges"]
+            .as_array_mut()
+            .expect("producer edges");
+        let owned_edge = edges
+            .iter()
+            .position(|edge| edge["target_group"] == 7)
+            .expect("owned target group 7 producer edge");
+        edges.remove(owned_edge);
+        assert!(
+            validate_level2_activation_closure_json(
+                &serde_json::to_string(&edge_tamper).expect("edge tamper JSON"),
+                template.authored_features(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn independent_level_two_sessions_do_not_share_reset_state() {
         let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
             .expect("qualified Level 2 owner package");
@@ -471,6 +767,7 @@ impl MissionContentSession {
             baseline_slots: template.reset_source_slots.clone(),
             source_slots: template.reset_source_slots.clone(),
             wizard_map_settings: template.wizard_map_settings.clone(),
+            level2_activation_plan: template.level2_activation_plan.clone(),
             initial_global_rng: template.initial_global_rng,
             global_rng: template.initial_global_rng,
         }
@@ -494,6 +791,19 @@ impl MissionContentSession {
     #[must_use]
     pub fn wizard_map_settings(&self) -> &[MissionWizardMapSettings] {
         &self.wizard_map_settings
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn level2_activation_plan(&self) -> Option<&Level2ActivationPlan> {
+        self.level2_activation_plan.as_ref()
+    }
+
+    #[must_use]
+    pub(crate) fn level2_dispatch_group_rows(&self, group: u16) -> Option<&[u16]> {
+        self.level2_activation_plan
+            .as_ref()
+            .and_then(|plan| plan.group_rows(group))
     }
 
     #[must_use]
@@ -553,6 +863,21 @@ impl MissionContentSession {
         }
         for settings in &self.wizard_map_settings {
             hasher.update(settings.record_bytes());
+        }
+        if let Some(plan) = &self.level2_activation_plan {
+            hasher.update(b"level2-activation-plan-v1");
+            hasher.update(plan.artifact_sha256.as_ref());
+            for group in plan.groups.iter() {
+                hasher.update(group.id.to_le_bytes());
+                for authored_index in &group.rows {
+                    hasher.update(authored_index.to_le_bytes());
+                }
+            }
+            for edge in plan.edges.iter() {
+                hasher.update(edge.source_group.to_le_bytes());
+                hasher.update(edge.target_group.to_le_bytes());
+                hasher.update(edge.producer_index.to_le_bytes());
+            }
         }
         format!("{:x}", hasher.finalize())
     }

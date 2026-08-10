@@ -108,6 +108,9 @@ use crate::{
     },
 };
 
+#[cfg(test)]
+use crate::mission_content::checked_in_level2_activation_plan;
+
 const MANIFEST_SCHEMA: &str = "mc2-owner-level-export/v2";
 const CLOSURE_SCHEMA: &str = "mc2-level-asset-closure/v2";
 const AUDIO_CACHE_SCHEMA: &str = "mc2-owner-unity-asset-cache/v1";
@@ -5238,6 +5241,9 @@ pub struct Level2AuthoredClass5Source {
     pub byte_0x46_70: u8,
     pub particle_index: u16,
     pub source_byte_3e: u8,
+    /// AddTrader_4C0B0's fixed byte-0x39 cadence value; other authored
+    /// class-5 constructors leave this field at the NewEvent zero.
+    pub source_byte_39: i16,
     pub yaw: i16,
     pub pitch: i16,
     pub roll: i16,
@@ -5482,6 +5488,8 @@ pub struct Level2EconomyState {
     class5_model3_constructor_phase: u8,
     baseline_class5_model9_constructor_phase: u8,
     class5_model9_constructor_phase: u8,
+    baseline_class5_model14_constructor_phase: u8,
+    class5_model14_constructor_phase: u8,
     baseline_class5_model4_constructor_phase: u8,
     class5_model4_constructor_phase: u8,
     /// Source `word_0x36DFE`, written by `sub_51570` for the latest model-3
@@ -5709,6 +5717,8 @@ impl Level2EconomyState {
             class5_model3_constructor_phase: 0,
             baseline_class5_model9_constructor_phase: 0,
             class5_model9_constructor_phase: 0,
+            baseline_class5_model14_constructor_phase: 0,
+            class5_model14_constructor_phase: 0,
             baseline_class5_model4_constructor_phase: 0,
             class5_model4_constructor_phase: 0,
             baseline_class14_model3_handle: 0,
@@ -7622,6 +7632,7 @@ impl Level2EconomyState {
             3 => (25, 64, 16, 30, 9_000, 2_250, 4_500, 0, 0, 88),
             4 => (33, 30, 0, 30, 1_000, 500, 0, 500, 0, 0),
             9 => (72, 20, 0, 20, 1_000, 500, 0, 500, 16, 220),
+            14 => (113, 54, 18, 18, 1_000, 0, 0, 500, 2, 219),
             _ => return None,
         };
         let source_entity_index = self.allocate_slot()?;
@@ -7643,6 +7654,11 @@ impl Level2EconomyState {
                 self.class5_model9_constructor_phase = phase.wrapping_add(1);
                 phase
             }
+            14 => {
+                let phase = self.class5_model14_constructor_phase;
+                self.class5_model14_constructor_phase = phase.wrapping_add(1);
+                phase
+            }
             _ => unreachable!("validated authored class-5 model"),
         };
         // AddArchers consumes the random orientation draw, then
@@ -7650,6 +7666,9 @@ impl Level2EconomyState {
         // pose: rotation_speed/2 = 125 and speed/2 = 66.
         let (yaw, pitch, roll, fov) = if model == 4 {
             (125, 66, 66, 125)
+        } else if model == 14 {
+            let angle = i16::try_from(entity_rng & 0x07ff).expect("Trader angle fits") - 1;
+            (angle, angle, angle, 0)
         } else {
             (0, 0, 0, 0)
         };
@@ -7695,20 +7714,21 @@ impl Level2EconomyState {
             byte_0x46_70: 0,
             particle_index,
             source_byte_3e,
+            source_byte_39: if model == 14 { 64 } else { 0 },
             yaw,
             pitch,
             roll,
             fov,
             shift_rot_x: if model == 4 {
                 128
-            } else if model == 9 {
+            } else if matches!(model, 9 | 14) {
                 128
             } else {
                 0
             },
             shift_rot_y: if model == 4 {
                 256
-            } else if model == 9 {
+            } else if matches!(model, 9 | 14) {
                 128
             } else {
                 0
@@ -13904,6 +13924,7 @@ impl Level2EconomyState {
             self.class5_model3_constructor_phase,
             self.class5_model4_constructor_phase,
             self.class5_model9_constructor_phase,
+            self.class5_model14_constructor_phase,
         ]);
         for source in &self.authored_class5 {
             hasher.update(source.source_entity_index.to_le_bytes());
@@ -13933,6 +13954,7 @@ impl Level2EconomyState {
             hasher.update(source.word_0x96_150.to_le_bytes());
             hasher.update([source.byte_0x46_70]);
             hasher.update(source.particle_index.to_le_bytes());
+            hasher.update(source.source_byte_39.to_le_bytes());
             hasher.update(source.yaw.to_le_bytes());
             hasher.update(source.pitch.to_le_bytes());
             hasher.update(source.roll.to_le_bytes());
@@ -14211,6 +14233,7 @@ impl Level2EconomyState {
         self.class5_model3_constructor_phase = self.baseline_class5_model3_constructor_phase;
         self.class5_model4_constructor_phase = self.baseline_class5_model4_constructor_phase;
         self.class5_model9_constructor_phase = self.baseline_class5_model9_constructor_phase;
+        self.class5_model14_constructor_phase = self.baseline_class5_model14_constructor_phase;
         self.beyond_sight_effects = self.baseline_beyond_sight_effects.clone();
         self.mana_attraction_fields = self.baseline_mana_attraction_fields.clone();
         self.carriers = self.baseline_carriers.clone();
@@ -17267,6 +17290,11 @@ pub struct Level2ResetSession {
     /// callback. Retain authored identity across repeatable source scans.
     baseline_level2_class5_activated: BTreeSet<u16>,
     level2_class5_activated: BTreeSet<u16>,
+    /// Authored class-10/model-45 rows consumed by the bounded groups 3 and
+    /// 8 scans. The source group scan is repeatable, but each authored row is
+    /// consumed only once when `a2 == 1`.
+    baseline_level2_model45_activated: BTreeSet<u16>,
+    level2_model45_activated: BTreeSet<u16>,
 }
 
 /// One lossless, source-ordered result from the bounded Level 2 dispatcher.
@@ -18076,6 +18104,8 @@ impl Level2ResetSession {
             level2_class14_activated: BTreeSet::new(),
             baseline_level2_class5_activated: BTreeSet::new(),
             level2_class5_activated: BTreeSet::new(),
+            baseline_level2_model45_activated: BTreeSet::new(),
+            level2_model45_activated: BTreeSet::new(),
         }
     }
 
@@ -18249,7 +18279,10 @@ impl Level2ResetSession {
     }
 
     /// Move one imported source entity through the lossless Level 2 seam.
-    /// Callers cannot create an entity or alter its class/model identity.
+    /// Callers cannot create an entity or alter its class/model identity. The
+    /// local player's flight state and entity projection are one public input
+    /// carrier; keep them coherent so source overlap callbacks observe the
+    /// same position whichever projection they use.
     pub fn set_level2_entity_position(
         &mut self,
         entity_index: u16,
@@ -18261,6 +18294,9 @@ impl Level2ResetSession {
             )));
         };
         entity.set_position(position);
+        if entity_index == self.state.entity_index {
+            self.state.position = position;
+        }
         Ok(())
     }
 
@@ -19168,12 +19204,23 @@ impl Level2ResetSession {
             });
             return;
         };
-        let group_rows = self
-            .mission
-            .authored_features()
+        let Some(group_row_indices) = self.mission.level2_dispatch_group_rows(8) else {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: root_slot,
+                message: "Level 2 activation artifact has no group-8 membership".to_owned(),
+            });
+            return;
+        };
+        let group_rows = group_row_indices
             .iter()
-            .copied()
-            .filter(|feature| feature.activation_group == 8)
+            .filter_map(|authored_index| {
+                self.mission
+                    .authored_features()
+                    .iter()
+                    .copied()
+                    .find(|feature| feature.index == *authored_index)
+            })
             .collect::<Vec<_>>();
         if group_rows.len() != 2 {
             self.dispatch_events.push(Level2DispatchEvent::Error {
@@ -19227,6 +19274,8 @@ impl Level2ResetSession {
             });
             return;
         }
+        self.level2_model45_activated
+            .extend(constructed.iter().map(|(index, _)| *index));
         if let Some(root) = self.entities.get_mut(usize::from(root_slot)) {
             root.disable_drawing();
         }
@@ -19629,6 +19678,138 @@ impl Level2ResetSession {
         }
     }
 
+    /// Consume authored model-45 rows whose source `xtype` is zero.  The
+    /// pinned `GenerateEvents_49290` path visits these rows but returns before
+    /// `NewEvent`; retain the authored-row dispatch evidence without coercing
+    /// the row into the BUILD[21] model-45 allocator.
+    fn activate_level2_authored_model45_noop(
+        &mut self,
+        pass: u8,
+        producer_slot: u16,
+        target_group: u16,
+    ) {
+        let Some(group_row_indices) = self.mission.level2_dispatch_group_rows(target_group) else {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: producer_slot,
+                message: format!(
+                    "Level 2 activation artifact has no group-{target_group} membership"
+                ),
+            });
+            return;
+        };
+        let rows = group_row_indices
+            .iter()
+            .filter_map(|authored_index| {
+                self.mission
+                    .authored_features()
+                    .iter()
+                    .copied()
+                    .find(|feature| feature.index == *authored_index)
+            })
+            .filter(|feature| {
+                feature.kind == 10
+                    && feature.subtype == 45
+                    && feature.parameter_2 == 0
+                    && !self.level2_model45_activated.contains(&feature.index)
+            })
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            return;
+        }
+        let authored_indices = rows
+            .iter()
+            .map(|feature| {
+                self.level2_model45_activated.insert(feature.index);
+                feature.index
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        self.dispatch_events
+            .push(Level2DispatchEvent::AuthoredGroupActivated {
+                pass,
+                source_slot: producer_slot,
+                group: target_group,
+                authored_indices,
+            });
+    }
+
+    /// Consume authored class-5/model-14 rows through the typed AddTrader
+    /// constructor.  This is a distinct same-pass consumer from the retained
+    /// switch/model-39 batch, preserving source event grouping and making
+    /// allocation failure transactional for the complete trader band.
+    fn activate_level2_authored_class5_model14_group(
+        &mut self,
+        pass: u8,
+        producer_slot: u16,
+        target_group: u16,
+    ) {
+        let Some(group_row_indices) = self.mission.level2_dispatch_group_rows(target_group) else {
+            self.dispatch_events.push(Level2DispatchEvent::Error {
+                pass,
+                source_slot: producer_slot,
+                message: format!(
+                    "Level 2 activation artifact has no group-{target_group} membership"
+                ),
+            });
+            return;
+        };
+        let rows = group_row_indices
+            .iter()
+            .filter_map(|authored_index| {
+                self.mission
+                    .authored_features()
+                    .iter()
+                    .copied()
+                    .find(|feature| feature.index == *authored_index)
+            })
+            .filter(|feature| {
+                feature.kind == 5
+                    && feature.subtype == 14
+                    && !self.level2_class5_activated.contains(&feature.index)
+            })
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            return;
+        }
+        let economy_before = self.economy.clone();
+        let activated_before = self.level2_class5_activated.clone();
+        let mut activated = Vec::with_capacity(rows.len());
+        for feature in rows {
+            let position =
+                feature.world_position(self.terrain.ground_height(feature.world_position(0)));
+            let Some(source) = self
+                .economy
+                .allocate_authored_class5(feature.index, 14, position)
+            else {
+                self.economy = economy_before;
+                self.level2_class5_activated = activated_before;
+                self.dispatch_events.push(Level2DispatchEvent::Error {
+                    pass,
+                    source_slot: producer_slot,
+                    message: format!(
+                        "Level 2 authored class5 model-14 row {} could not allocate",
+                        feature.index
+                    ),
+                });
+                return;
+            };
+            self.level2_class5_activated.insert(feature.index);
+            activated.push((feature.index, source.source_entity_index));
+        }
+        self.dispatch_events
+            .push(Level2DispatchEvent::AuthoredGroupActivated {
+                pass,
+                source_slot: producer_slot,
+                group: target_group,
+                authored_indices: activated
+                    .into_iter()
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            });
+    }
+
     /// Materialize the next authored model-0/model-1 producer group selected
     /// by a live switch.  Row 274 is deliberately left to the existing
     /// group-31 constructor because it owns the exit-switch countdown state.
@@ -19638,43 +19819,72 @@ impl Level2ResetSession {
         producer_slot: u16,
         target_group: u16,
     ) {
-        let rows = self
-            .mission
-            .authored_features()
-            .iter()
-            .copied()
-            .filter(|feature| {
-                let is_switch =
-                    feature.kind == 11 && matches!(feature.subtype, 0 | 1) && feature.index != 274;
-                let is_model1 = feature.kind == 10 && feature.subtype == 1 && target_group == 20;
-                let is_class5_model4 =
-                    feature.kind == 5 && feature.subtype == 4 && target_group == 20;
-                let is_class5_model3 =
-                    feature.kind == 5 && feature.subtype == 3 && matches!(target_group, 1 | 5 | 7);
-                let is_model22 = feature.kind == 10 && feature.subtype == 22;
-                let is_model59 =
-                    feature.kind == 10 && feature.subtype == 59 && matches!(target_group, 19 | 23);
-                let is_model53 = feature.kind == 10 && feature.subtype == 58 && target_group == 3;
-                let is_model39 = feature.kind == 10
-                    && feature.subtype == 39
-                    && matches!(target_group, 1 | 3 | 5 | 7 | 24 | 26);
-                let is_model6 = feature.kind == 10 && feature.subtype == 6 && target_group == 24;
-                let is_model32 = feature.kind == 11
-                    && feature.subtype == 32
-                    && matches!(target_group, 1 | 17 | 18);
-                feature.activation_group == i16::try_from(target_group).unwrap_or(-1)
-                    && (is_switch
-                        || is_model1
-                        || is_class5_model4
-                        || is_class5_model3
-                        || is_model22
-                        || is_model39
-                        || is_model6
-                        || is_model59
-                        || is_model53
-                        || is_model32)
-            })
-            .collect::<Vec<_>>();
+        let rows = if (1..=8).contains(&target_group) {
+            let Some(group_row_indices) = self.mission.level2_dispatch_group_rows(target_group)
+            else {
+                self.dispatch_events.push(Level2DispatchEvent::Error {
+                    pass,
+                    source_slot: producer_slot,
+                    message: format!(
+                        "Level 2 activation artifact has no group-{target_group} membership"
+                    ),
+                });
+                return;
+            };
+            group_row_indices
+                .iter()
+                .filter_map(|authored_index| {
+                    self.mission
+                        .authored_features()
+                        .iter()
+                        .copied()
+                        .find(|feature| feature.index == *authored_index)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            self.mission
+                .authored_features()
+                .iter()
+                .copied()
+                .filter(|feature| {
+                    let is_switch = feature.kind == 11
+                        && matches!(feature.subtype, 0 | 1)
+                        && feature.index != 274;
+                    let is_model1 =
+                        feature.kind == 10 && feature.subtype == 1 && target_group == 20;
+                    let is_class5_model4 =
+                        feature.kind == 5 && feature.subtype == 4 && target_group == 20;
+                    let is_class5_model3 = feature.kind == 5
+                        && feature.subtype == 3
+                        && matches!(target_group, 1 | 5 | 7);
+                    let is_model22 = feature.kind == 10 && feature.subtype == 22;
+                    let is_model59 = feature.kind == 10
+                        && feature.subtype == 59
+                        && matches!(target_group, 19 | 23);
+                    let is_model53 =
+                        feature.kind == 10 && feature.subtype == 58 && target_group == 3;
+                    let is_model39 = feature.kind == 10
+                        && feature.subtype == 39
+                        && matches!(target_group, 1 | 3 | 5 | 7 | 24 | 26);
+                    let is_model6 =
+                        feature.kind == 10 && feature.subtype == 6 && target_group == 24;
+                    let is_model32 = feature.kind == 11
+                        && feature.subtype == 32
+                        && matches!(target_group, 1 | 17 | 18);
+                    feature.activation_group == i16::try_from(target_group).unwrap_or(-1)
+                        && (is_switch
+                            || is_model1
+                            || is_class5_model4
+                            || is_class5_model3
+                            || is_model22
+                            || is_model39
+                            || is_model6
+                            || is_model59
+                            || is_model53
+                            || is_model32)
+                })
+                .collect::<Vec<_>>()
+        };
         let mut activated = Vec::new();
         for feature in rows {
             if feature.kind == 10 && feature.subtype == 1 && target_group == 20 {
@@ -19888,6 +20098,9 @@ impl Level2ResetSession {
             {
                 continue;
             }
+            if feature.kind != 11 || !matches!(feature.subtype, 0 | 1) {
+                continue;
+            }
             let model = u8::try_from(feature.subtype).unwrap_or(u8::MAX);
             let position =
                 feature.world_position(self.terrain.ground_height(feature.world_position(0)));
@@ -19929,6 +20142,8 @@ impl Level2ResetSession {
             self.activate_level2_authored_mana_attraction_fields(pass);
             self.activate_level2_authored_class14(pass);
             self.activate_level2_authored_bees(pass);
+            self.activate_level2_authored_model45_noop(pass, producer_slot, target_group);
+            self.activate_level2_authored_class5_model14_group(pass, producer_slot, target_group);
         }
     }
 
@@ -20748,6 +20963,7 @@ impl Level2ResetSession {
                             .iter()
                             .find(|source| source.source_entity_index == source_slot)
                             .map(|source| source.target_group)
+                            .filter(|target_group| *target_group != 0)
                         {
                             self.activate_level2_authored_spell_group(
                                 pass,
@@ -20844,6 +21060,7 @@ impl Level2ResetSession {
                         .iter()
                         .find(|source| source.source_entity_index == source_slot)
                         .map(|source| source.target_group)
+                        .filter(|target_group| *target_group != 0)
                     {
                         self.activate_level2_authored_spell_group(pass, source_slot, target_group);
                     }
@@ -21868,6 +22085,10 @@ impl Level2ResetSession {
         for authored_index in &self.level2_class5_activated {
             hasher.update(authored_index.to_le_bytes());
         }
+        hasher.update(b"level2-model45-activation-v1");
+        for authored_index in &self.level2_model45_activated {
+            hasher.update(authored_index.to_le_bytes());
+        }
         hasher.update(b"level2-objective-switch-state-v1");
         hasher.update([
             self.level2_selected_objective_stage_state,
@@ -22187,6 +22408,7 @@ impl Level2ResetSession {
         self.level2_group31_switch28 = self.baseline_level2_group31_switch28;
         self.level2_class14_activated = self.baseline_level2_class14_activated.clone();
         self.level2_class5_activated = self.baseline_level2_class5_activated.clone();
+        self.level2_model45_activated = self.baseline_level2_model45_activated.clone();
     }
 }
 
@@ -38130,6 +38352,211 @@ mod tests {
         session.reset();
         assert!(session.economy().authored_switch_producers().is_empty());
         assert_eq!(session.campaign_state_hash(), baseline_hash);
+    }
+
+    #[test]
+    fn level_two_switch_band_a_is_complete_and_tamper_sensitive() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 switch-band production session");
+        // This is the same campaign-entry seam used by sim-capi before the
+        // first generation is exposed; it is not a test-only runtime edit.
+        session.select_level2_campaign_entry_stage();
+        let baseline_hash = session.campaign_state_hash();
+        let local_player = session.state.entity_index;
+        let authored = session.mission().authored_features().to_vec();
+        let feature_position = |index: u16| {
+            authored
+                .iter()
+                .copied()
+                .find(|feature| feature.index == index)
+                .expect("owned activation feature")
+                .world_position(0)
+        };
+        let objective_position = |session: &Level2ResetSession| {
+            let stage = session
+                .runtime()
+                .stages
+                .get(LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX)
+                .expect("selected objective stage");
+            Position {
+                x: stage.axis_x as u16,
+                y: stage.axis_y as u16,
+                z: 0,
+            }
+        };
+        let mut activation_trace = Vec::<(u16, u16)>::new();
+        let step_at = |session: &mut Level2ResetSession,
+                       position: Position,
+                       turns: usize,
+                       trace: &mut Vec<(u16, u16)>| {
+            session
+                .set_level2_entity_position(local_player, position)
+                .expect("public player-position input");
+            assert_eq!(
+                session.state.position,
+                session.entities()[usize::from(local_player)].position,
+                "public local-player position input keeps state/entity projections coherent"
+            );
+            for _ in 0..turns {
+                session.step_outer_turn(PlayerCommand::default(), 0);
+                for event in session.dispatch_events() {
+                    if let Level2DispatchEvent::AuthoredGroupActivated {
+                        group,
+                        authored_indices,
+                        ..
+                    } = event
+                    {
+                        if (1..=8).contains(group) {
+                            trace.extend(
+                                authored_indices
+                                    .iter()
+                                    .copied()
+                                    .map(|authored_index| (*group, authored_index)),
+                            );
+                        }
+                    }
+                }
+            }
+        };
+
+        // Ordinary public input follows the rooted row-11 -> row-41 -> row-42
+        // chain, then the row-65 switch and the source objective point. No
+        // group activation or authored constructor is called by the test.
+        step_at(&mut session, feature_position(11), 1, &mut activation_trace);
+        step_at(
+            &mut session,
+            feature_position(42),
+            16,
+            &mut activation_trace,
+        );
+        step_at(
+            &mut session,
+            feature_position(65),
+            16,
+            &mut activation_trace,
+        );
+        let objective_input_position = objective_position(&session);
+        step_at(
+            &mut session,
+            objective_input_position,
+            3,
+            &mut activation_trace,
+        );
+        let plan = session
+            .mission()
+            .level2_activation_plan()
+            .expect("artifact-derived owned activation plan");
+        assert_eq!(plan.owned_rows().len(), 138);
+        assert_eq!(plan.edges().len(), 8);
+        let mut expected = plan.owned_rows().to_vec();
+        expected.sort_unstable();
+        let mut actual = activation_trace
+            .iter()
+            .map(|(_, authored_index)| *authored_index)
+            .collect::<Vec<_>>();
+        actual.sort_unstable();
+        assert_eq!(
+            actual, expected,
+            "every owned row must activate exactly once"
+        );
+        let mut counts = BTreeMap::<u16, usize>::new();
+        for (_, authored_index) in &activation_trace {
+            *counts.entry(*authored_index).or_default() += 1;
+        }
+        assert!(counts.values().all(|count| *count == 1));
+        assert!(activation_trace.contains(&(3, 108)));
+        assert!(
+            (125_u16..=151)
+                .all(|authored_index| { activation_trace.contains(&(3, authored_index)) })
+        );
+        let traders = session
+            .economy()
+            .authored_class5()
+            .iter()
+            .filter(|source| (125..=151).contains(&source.authored_index))
+            .collect::<Vec<_>>();
+        assert_eq!(traders.len(), 27);
+        assert!(traders.iter().all(|source| {
+            source.model == 14
+                && source.action == 113
+                && source.minimum_speed == 54
+                && source.maximum_speed == 18
+                && source.actual_speed == 18
+                && source.max_life == 1_000
+                && source.life == 1_000
+                && source.mana == 0
+                && source.subspell_index == 500
+                && source.source_byte_39 == 64
+                && source.active
+        }));
+
+        let first_trace = activation_trace.clone();
+        session.reset();
+        session.select_level2_campaign_entry_stage();
+        assert_eq!(session.campaign_state_hash(), baseline_hash);
+        assert!(session.economy().authored_class5().is_empty());
+        activation_trace.clear();
+        step_at(&mut session, feature_position(11), 1, &mut activation_trace);
+        step_at(
+            &mut session,
+            feature_position(42),
+            16,
+            &mut activation_trace,
+        );
+        step_at(
+            &mut session,
+            feature_position(65),
+            16,
+            &mut activation_trace,
+        );
+        let objective_input_position = objective_position(&session);
+        step_at(
+            &mut session,
+            objective_input_position,
+            3,
+            &mut activation_trace,
+        );
+        assert_eq!(
+            activation_trace, first_trace,
+            "reset/replay must preserve the route"
+        );
+
+        let mut tampered_group = session.mission().authored_features().to_vec();
+        tampered_group
+            .iter_mut()
+            .find(|feature| feature.index == 41)
+            .expect("producer-owned row 41")
+            .activation_group = 8;
+        assert!(checked_in_level2_activation_plan(&tampered_group).is_err());
+        let mut tampered_edge = session.mission().authored_features().to_vec();
+        tampered_edge
+            .iter_mut()
+            .find(|feature| feature.index == 11)
+            .expect("root producer row 11")
+            .stage_tag = 8;
+        assert!(checked_in_level2_activation_plan(&tampered_edge).is_err());
+
+        let mut allocation_failure = inspection
+            .level2_reset_session()
+            .expect("allocation-failure session");
+        allocation_failure.select_level2_campaign_entry_stage();
+        allocation_failure.economy.free_slots.clear();
+        allocation_failure
+            .set_level2_entity_position(local_player, feature_position(11))
+            .expect("public player-position input");
+        allocation_failure.step_outer_turn(PlayerCommand::default(), 0);
+        assert!(
+            allocation_failure
+                .dispatch_events()
+                .iter()
+                .any(|event| matches!(event, Level2DispatchEvent::Error { .. }))
+        );
+        assert!(allocation_failure.economy.authored_model45().is_empty());
+        allocation_failure.reset();
+        assert_eq!(allocation_failure.campaign_state_hash(), baseline_hash);
     }
 
     #[test]
