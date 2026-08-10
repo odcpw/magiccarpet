@@ -2,7 +2,7 @@
 
 This is the first Level 2 implementation seam. It freezes the selection
 contract before any Level 2 behavior is ported. The machine-readable contract
-is [`level2-profile.json`](level2-profile.json); the fast guard is
+is [`level2-profile.json`](level2-profile.json); the active guard is
 [`../tools/verify_level2_profile.py`](../tools/verify_level2_profile.py).
 
 ## Profile
@@ -35,13 +35,17 @@ those declarations include the additive header explicitly.
 ## What this includes
 
 This contract makes the external-to-internal selector and runtime profile
-explicit. It is a prerequisite for Level 2 matrix rows and means that a
-loader, exporter, C ABI, or Unity session cannot silently infer a different
-level, map type, player ordering, language, or desktop mode from host state.
+explicit. It is the input contract for the Level 2 selection seam and means
+that a loader, exporter, C ABI, or Unity session cannot silently infer a
+different level, map type, player ordering, language, or desktop mode from
+host state. The focused Rust selector test independently proves that the
+accepted tuple selects Level 2 and that invalid metadata does not fall back to
+Level 1.
 
-It also freezes Level 1 as a prerequisite: the accepted matrix identity is
-182/182 Exact with 29 structured exclusions, with the accepted closure,
-qualification policy, and Level 1 asset-cache identity all bound by hash.
+The census, activation, denominator, and generated matrix files under this
+directory remain historical/reference artifacts. They explain prior research
+coverage but are not ordinary development proof and are not read by the
+active profile guard.
 
 ## What this does not claim
 
@@ -55,7 +59,7 @@ explicitly outside this profile.
 The long Unity/PLAN29 qualification remains a milestone gate. The guard does
 not rerun it and does not rewrite any accepted receipt.
 
-## Fast guard
+## Active development guard
 
 From this Rust workspace:
 
@@ -63,30 +67,27 @@ From this Rust workspace:
 python3 tools/verify_level2_profile.py --json
 ```
 
-The guard has two deliberately separate sections in its JSON result:
+The guard validates only the runtime profile schema/values and runs the
+focused direct Rust selector test. It does not hash frozen Level 1 receipts,
+load generated matrices or ledgers, read `.beads/issues.jsonl`, or rerun
+unrelated Level 1 checks. The direct Rust test is independently responsible
+for rejecting a wrong level/map tuple and fallback behavior.
 
-* `historical_receipts` checks immutable hashes and declared identities for the
-  Level 1 matrix, owner-package manifest, asset closure, PLAN29 artifacts,
-  cache seal, and native ABI header/event-code witness. It never regenerates
-  any of those receipts.
-* `current_checks` reruns the cheap matrix/render checks, the production-path
-  Rust reset/loader tests, and the native ABI layout/header/presentation tests.
-  These checks are regenerable evidence and are not
-  promoted to historical receipts.
-
-For a metadata-only check (useful while reviewing a mutation-negative test):
+For a profile-only mutation-negative check (without running Cargo):
 
 ```bash
-python3 tools/verify_level2_profile.py --no-current-tests --json
+python3 tools/verify_level2_profile.py --no-runtime-tests --json
 ```
 
-Every shared Level 2 change runs the full command. The long Unity/PLAN29 gate
-belongs only to the milestone bead that accepts the Level 2 matrix; it is not a
-per-slice repetition.
+The historical matrix/census/activation/denominator suites and Level 1
+receipt checks have explicit archival/milestone uses only. They are not part
+of this per-slice command and are not evidence that the Level 2 mission is
+implemented.
 
 ## Broadening rule
 
-To add a Level 2 claim, create a reviewed matrix/profile revision with source
-evidence at the pinned remc2 commit, add discriminating production-path tests,
-and add a new owner-data/presentation receipt. Never regenerate or overwrite a
-sealed Level 1 artifact in place.
+To add a Level 2 claim, create a reviewed profile revision with source
+evidence at the pinned remc2 commit and add discriminating production-path
+tests. Historical matrix/reference artifacts may document the research
+context, but they do not become per-slice runtime proof. Never regenerate or
+overwrite a sealed Level 1 artifact in place.

@@ -1,5 +1,8 @@
 # Level 2 dispatch/RNG/audio/presentation denominator
 
+> Status: historical/reference-only. This denominator is not part of the
+> ordinary Level 2 development gate and is not runtime behavior proof.
+
 `level2-dispatch-rng-audio-presentation.json` is the pinned Level 2
 denominator for the dispatch slots, authored/reset tuple join, AI helper
 closure, global/entity RNG sites, the existing 119-call
@@ -33,7 +36,8 @@ mechanical exclusions in the source inventory; they are not silently dropped.
 The Day profile also records the cave RNG/audio exclusions, including their
 stable exclusion IDs and proof.
 
-Regenerate/check from the repository root:
+Explicit archival regeneration/check from the repository root (not a
+per-slice command):
 
 ```text
 python3 research/private/remc2-sim-rs/level2-conformance/denominator/build_level2_denominator.py --write

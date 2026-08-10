@@ -1,5 +1,8 @@
 # Level 2 authored/reset census
 
+> Status: historical/reference-only. This denominator is not part of the
+> ordinary Level 2 development gate and is not runtime behavior proof.
+
 `level2-authored-reset-census.json` is the machine-readable Level 2 denominator
 for the pinned remc2 specification (`6806c7204d17220ecc0430759f784aea8ee2ddb2`).
 It is derived from two qualified external-2/internal-1 Day exports:
@@ -15,7 +18,7 @@ presentation records.  The authored partition explicitly distinguishes the
 terrain auxiliaries, and 22 sentinel rows.  This is a denominator/reset
 contract; it makes no simulation-completeness claim.
 
-Rebuild and validate:
+Explicit archival rebuild/validation (not a per-slice command):
 
 ```sh
 python3 research/private/remc2-sim-rs/level2-conformance/census/build_level2_census.py \

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Build the independent Level 2 conformance matrix from sealed denominators.
+"""Build the historical/reference Level 2 conformance matrix.
 
-The Level 2 matrix is deliberately a join over the already-qualified census,
-activation closure, and dispatch/presentation ledgers.  It never reads the
-protected upstream worktree and never treats a generated fixture as behavior
-evidence.  ``--check`` is the production-path guard used by the matrix tests.
+This command is an explicit archival research control, not an ordinary Level
+2 development gate.  Its matrix is deliberately a join over the historical
+census, activation closure, and dispatch/presentation ledgers, including the
+historical Beads ownership declarations needed to explain those rows.  It
+never reads the protected upstream worktree and never treats a generated
+fixture as runtime behavior evidence.  ``--check`` is retained for explicit
+archival review; the active profile guard and direct runtime tests do not call
+this builder.
 
 Ownership is resolved by joining stable denominator IDs (and, where the
 ledger's own classification field is contradicted by the activation closure,
