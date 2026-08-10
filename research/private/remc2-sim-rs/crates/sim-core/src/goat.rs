@@ -1173,6 +1173,7 @@ impl GoatFamily {
         players: &[GoatPlayerTarget],
         events: &mut Vec<GoatStepEvent>,
     ) {
+        let event_action = self.goats[family_index].action;
         match self.apply_action11_damage(family_index) {
             DamageResult::Dead => {
                 self.goats[family_index].action = 12;
@@ -1233,7 +1234,7 @@ impl GoatFamily {
                 }
             }
         }
-        self.advance_action_9_tail(family_index, events);
+        self.advance_action_9_tail(family_index, event_action, events);
     }
 
     fn step_retaliation<W: FlightWorld>(
@@ -1295,9 +1296,10 @@ impl GoatFamily {
                 false
             }
         };
-        if direct_hit {
+        if direct_hit || self.goats[family_index].action != 14 {
             // remc2 HitGoat_1F530 uses a distinct modulo-43 audio/RNG tail
-            // from ordinary retaliation turns.
+            // from ordinary retaliation turns. The same callback is reached
+            // when retaliation loses its target and transitions to action 9.
             self.advance_action_14_hit_tail(family_index, events);
         } else {
             // remc2 sub_1F340/sub_1F3C0 use the shared action-08 wrapper and
@@ -1572,7 +1574,12 @@ impl GoatFamily {
         };
     }
 
-    fn advance_action_9_tail(&mut self, family_index: usize, events: &mut Vec<GoatStepEvent>) {
+    fn advance_action_9_tail(
+        &mut self,
+        family_index: usize,
+        event_action: u8,
+        events: &mut Vec<GoatStepEvent>,
+    ) {
         let goat = &mut self.goats[family_index];
         goat.rng = next_rng(goat.rng);
         if goat.rng.is_multiple_of(77) {
@@ -1583,7 +1590,7 @@ impl GoatFamily {
                 entity_index: goat.entity_index,
                 sound_id: 46,
                 position: goat.position,
-                action: goat.action,
+                action: event_action,
             });
         }
         if goat.action == 14 {

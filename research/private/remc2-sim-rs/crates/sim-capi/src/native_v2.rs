@@ -7949,9 +7949,10 @@ pub extern "C" fn mc_native_campaign_session_open(
         let session = if expected.is_level2() {
             let inspection = NativeWorld::inspect_level2(&package)
                 .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
-            let reset = inspection
+            let mut reset = inspection
                 .level2_reset_session()
                 .map_err(|error| AbiError::new(MC_STATUS_VALIDATION_FAILED, error.to_string()))?;
+            reset.select_level2_campaign_entry_stage();
             CampaignSessionRecord {
                 kind: CampaignSessionKind::Level2 {
                     inspection: Arc::new(inspection),

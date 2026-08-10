@@ -17666,6 +17666,16 @@ impl Level2ResetSession {
         self.profile
     }
 
+    /// Select the authored Level 2 campaign entry objective for the C ABI
+    /// campaign route. Generic inspection resets intentionally preserve the
+    /// package's raw selector; the campaign route binds its own entry state
+    /// before the first generation is exposed.
+    pub fn select_level2_campaign_entry_stage(&mut self) {
+        self.runtime
+            .set_level2_objective_text_selector_for(0, LEVEL2_SELECTED_OBJECTIVE_STAGE_INDEX);
+        self.baseline_runtime = self.runtime.clone();
+    }
+
     #[must_use]
     pub fn entities(&self) -> &[EntitySnapshot] {
         &self.entities
