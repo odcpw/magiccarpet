@@ -3422,6 +3422,11 @@ impl NativeWorldInspection {
             self.players[0].enabled_spell_holders[2],
             self.runtime.random_state,
         )?;
+        let nyphur_dispatcher = Level2NyphurDispatcher::from_qualified_reset(
+            &self.players,
+            &self.entities,
+            &self.runtime,
+        )?;
         Ok(Level2ResetSession::new(
             self.metadata.map_type.profile(),
             state,
@@ -3436,6 +3441,7 @@ impl NativeWorldInspection {
             ordinary,
             goats,
             mission,
+            nyphur_dispatcher,
         ))
     }
 
@@ -3504,6 +3510,10 @@ const LEVEL2_BEE_OBSTRUCTION_BIT: u32 = 0x0004_0000;
 const LEVEL2_OBJECTIVE_POINT_RADIUS: i32 = 768;
 const LEVEL2_NYPHUR_ENTITY_SHA256: &str =
     "a240c8711868a249b2e3ebb43c59613dc88d979a07de279ece869f14ffcf888e";
+/// Qualified frame-zero `byte_0x3E_62` for the Nyphur entity. The source
+/// dispatcher increments this byte after its callback, so the census hash
+/// below normalizes only this known mutable field.
+const LEVEL2_NYPHUR_INITIAL_PHASE: u8 = 113;
 const LEVEL2_NYPHUR_PLAYER_SHA256: &str =
     "3859adcd13d8f32f27220c29e678581f4563fd051275ecc8b48390352dda5159";
 const LEVEL2_NYPHUR_FIREBALL_SHA256: &str =
@@ -3543,6 +3553,190 @@ pub struct Level2NyphurParticipant {
     pub possession_parent_entity_index: u16,
     pub possession_next_entity: u16,
     pub objective_stage_relation: RuntimeRelation,
+}
+
+/// The mode-specific helper selected by `sub_12910`'s one-byte state field.
+///
+/// Keep the source symbol on each variant: the later mode slices implement the
+/// helper bodies, while this dispatcher owns the exact selection and common
+/// tail order.  The two memory helpers are distinct source calls even though
+/// both are weak allocation-failure hooks in the pinned C++ source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Level2NyphurDispatchHelper {
+    Sub12ff0,
+    Nmemneed,
+    Sub13100,
+    Sub131f0,
+    Nmemneed0,
+    Sub135c0,
+    Sub13710,
+    Sub13830,
+    Sub13870,
+    Sub133b0,
+    Sub13270,
+    Sub13850,
+    Sub161a0,
+}
+
+/// One call in the pinned `sub_12910` sequence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Level2NyphurDispatchCall {
+    Sub12a70,
+    Helper(Level2NyphurDispatchHelper),
+    Sub12e70,
+}
+
+impl Level2NyphurDispatchCall {
+    #[must_use]
+    pub const fn hash_tag(self) -> u8 {
+        match self {
+            Self::Sub12a70 => 1,
+            Self::Helper(helper) => match helper {
+                Level2NyphurDispatchHelper::Sub12ff0 => 2,
+                Level2NyphurDispatchHelper::Nmemneed => 3,
+                Level2NyphurDispatchHelper::Sub13100 => 4,
+                Level2NyphurDispatchHelper::Sub131f0 => 5,
+                Level2NyphurDispatchHelper::Nmemneed0 => 6,
+                Level2NyphurDispatchHelper::Sub135c0 => 7,
+                Level2NyphurDispatchHelper::Sub13710 => 8,
+                Level2NyphurDispatchHelper::Sub13830 => 9,
+                Level2NyphurDispatchHelper::Sub13870 => 10,
+                Level2NyphurDispatchHelper::Sub133b0 => 11,
+                Level2NyphurDispatchHelper::Sub13270 => 12,
+                Level2NyphurDispatchHelper::Sub13850 => 13,
+                Level2NyphurDispatchHelper::Sub161a0 => 14,
+            },
+            Self::Sub12e70 => 15,
+        }
+    }
+}
+
+/// Observable call order for one production `sub_12910` dispatch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Level2NyphurDispatchTrace {
+    pub pass: u8,
+    pub source_slot: u16,
+    /// Source `Type_str_164::byte_0x1C1_449`, preserved at signed one-byte
+    /// width.  The owner package's model-1 reset writes this byte to zero.
+    pub state_byte: i8,
+    pub calls: Box<[Level2NyphurDispatchCall]>,
+}
+
+impl Level2NyphurDispatchTrace {
+    #[must_use]
+    pub fn tail_call_count(&self) -> usize {
+        self.calls
+            .iter()
+            .filter(|call| matches!(call, Level2NyphurDispatchCall::Sub12e70))
+            .count()
+    }
+}
+
+/// Production carrier for the source AI dispatch state byte.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Level2NyphurDispatcher {
+    state_byte: i8,
+}
+
+impl Level2NyphurDispatcher {
+    /// `sub_5C950`/the model-1 reset path clears byte `0x1C1` at the pinned
+    /// `EventsFunctions.cpp:43893` seam.  The qualified package does not
+    /// serialize the 1,136-byte `Type_str_164`; derive only this reset value
+    /// after validating the source-bound participant chain.
+    fn from_qualified_reset(
+        players: &[PlayerSnapshot],
+        entities: &[EntitySnapshot],
+        runtime: &RuntimeSnapshot,
+    ) -> Result<Self> {
+        let participant = level2_nyphur_participant(players, entities, runtime)?;
+        if participant.entity_model != 1 || participant.entity_action != 1 {
+            return Err(NativeWorldError::new(
+                "Level 2 Nyphur dispatcher requires the qualified model-1 action-1 row",
+            ));
+        }
+        Ok(Self { state_byte: 0 })
+    }
+
+    #[must_use]
+    const fn state_byte(self) -> i8 {
+        self.state_byte
+    }
+
+    /// Apply the pinned `sub_12910` selector without executing a mode helper.
+    /// Mode helper bodies are owned by their separate Level 2 slices; this
+    /// common dispatcher records their exact source call and tail position.
+    #[must_use]
+    fn dispatch_trace(self, pass: u8, source_slot: u16) -> Level2NyphurDispatchTrace {
+        Self::trace_for_state(self.state_byte, pass, source_slot)
+    }
+
+    /// Pure selector used by the production carrier and boundary tests. It
+    /// has no mutable state of its own, so later mode slices can reuse the
+    /// exact branch map without introducing a test-only state setter.
+    #[must_use]
+    fn trace_for_state(state_byte: i8, pass: u8, source_slot: u16) -> Level2NyphurDispatchTrace {
+        let mut calls = Vec::with_capacity(3);
+        calls.push(Level2NyphurDispatchCall::Sub12a70);
+        match state_byte {
+            0 => {
+                // Source case 0 calls sub_12E70 once for its side effect and
+                // once more for the returned result.
+                calls.push(Level2NyphurDispatchCall::Sub12e70);
+                calls.push(Level2NyphurDispatchCall::Sub12e70);
+            }
+            1 => calls.push(Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Sub12ff0,
+            )),
+            2 => calls.push(Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Nmemneed,
+            )),
+            3 => calls.push(Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Sub13100,
+            )),
+            4 => calls.push(Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Sub131f0,
+            )),
+            5 => calls.push(Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Nmemneed0,
+            )),
+            6 => calls.push(Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Sub135c0,
+            )),
+            7 => calls.push(Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Sub13710,
+            )),
+            8 => calls.push(Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Sub13830,
+            )),
+            9 => calls.push(Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Sub13870,
+            )),
+            11 => calls.push(Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Sub133b0,
+            )),
+            12 => calls.push(Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Sub13270,
+            )),
+            13 => calls.push(Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Sub13850,
+            )),
+            14 => calls.push(Level2NyphurDispatchCall::Helper(
+                Level2NyphurDispatchHelper::Sub161a0,
+            )),
+            i8::MIN..=-1 | 10 | 15..=i8::MAX => {
+                // Pinned default: no mode helper, then the common tail.
+            }
+        }
+        if !matches!(state_byte, 0) {
+            calls.push(Level2NyphurDispatchCall::Sub12e70);
+        }
+        Level2NyphurDispatchTrace {
+            pass,
+            source_slot,
+            state_byte,
+            calls: calls.into_boxed_slice(),
+        }
+    }
 }
 
 /// Source visibility decision for the authored Level 2 Nyphur participant.
@@ -16793,6 +16987,10 @@ pub struct Level2ResetSession {
     baseline_goats: GoatFamily,
     goats: GoatFamily,
     mission: MissionContentSession,
+    baseline_nyphur_dispatcher: Level2NyphurDispatcher,
+    nyphur_dispatcher: Level2NyphurDispatcher,
+    baseline_nyphur_dispatch_traces: Vec<Level2NyphurDispatchTrace>,
+    nyphur_dispatch_traces: Vec<Level2NyphurDispatchTrace>,
     /// Source `sub_11900` player damage mailbox.  The Bee contact writes this
     /// during its source-slot callback; the local-player route consumes it on
     /// the next source-ordered visit.
@@ -17487,6 +17685,7 @@ impl Level2ResetSession {
         ordinary: Level2OrdinaryResetSession,
         goats: GoatFamily,
         mission: MissionContentSession,
+        nyphur_dispatcher: Level2NyphurDispatcher,
     ) -> Self {
         // Pinned `sub_56D60` reset order (6806c7204d17):
         // ClearSettings -> LevelDecompress -> GenerateLevelMap /
@@ -17598,6 +17797,10 @@ impl Level2ResetSession {
             baseline_goats: goats.clone(),
             goats,
             mission,
+            baseline_nyphur_dispatcher: nyphur_dispatcher,
+            nyphur_dispatcher,
+            baseline_nyphur_dispatch_traces: Vec::new(),
+            nyphur_dispatch_traces: Vec::new(),
             baseline_player_pending_damage: initial_player_pending_damage,
             player_pending_damage: initial_player_pending_damage,
             baseline_player_pending_attacker: initial_player_pending_attacker,
@@ -17918,6 +18121,19 @@ impl Level2ResetSession {
     /// Focused reset/replay digest for the typed Nyphur participant chain.
     pub fn nyphur_state_hash(&self) -> Result<String> {
         Ok(level2_nyphur_state_hash(&self.nyphur_participant()?))
+    }
+
+    /// Read the signed one-byte `Type_str_164::byte_0x1C1_449` carrier used by
+    /// the production Nyphur dispatcher.
+    #[must_use]
+    pub const fn nyphur_dispatch_state_byte(&self) -> i8 {
+        self.nyphur_dispatcher.state_byte()
+    }
+
+    /// Ordered `sub_12910` traces emitted by the real Level 2 source pass.
+    #[must_use]
+    pub fn nyphur_dispatch_traces(&self) -> &[Level2NyphurDispatchTrace] {
+        &self.nyphur_dispatch_traces
     }
 
     /// Evaluate the pinned `sub_63570` visibility consumer for Nyphur.
@@ -19953,6 +20169,17 @@ impl Level2ResetSession {
                     .iter()
                     .map(|dolmen| (dolmen.entity.index, 4_u8)),
             )
+            .chain(
+                self.entities
+                    .iter()
+                    .filter(|entity| {
+                        entity.active
+                            && entity.class == 3
+                            && entity.model == 1
+                            && entity.action == 1
+                    })
+                    .map(|entity| (entity.index, 10_u8)),
+            )
             .chain(LEVEL_TWO_GOAT_INDICES.into_iter().map(|slot| (slot, 7_u8)))
             .collect::<Vec<_>>();
         if let Some(castle) = self.economy.castle().filter(|castle| castle.active) {
@@ -20215,6 +20442,19 @@ impl Level2ResetSession {
                         source_slot,
                         events: events.into_boxed_slice(),
                     });
+                }
+                10 => {
+                    let trace = self.nyphur_dispatcher.dispatch_trace(pass, source_slot);
+                    self.nyphur_dispatch_traces.push(trace);
+                    // `ApplyEvents_498A0` advances byte_0x3E after every
+                    // action callback, including the class-3/model-1 AI row.
+                    if let Some(entity) = self
+                        .entities
+                        .iter_mut()
+                        .find(|entity| entity.index == source_slot)
+                    {
+                        entity.set_phase(entity.phase.wrapping_add(1));
+                    }
                 }
                 _ => unreachable!("bounded Level 2 source route"),
             }
@@ -21126,6 +21366,20 @@ impl Level2ResetSession {
             hasher.update([pass, kind, family, flags]);
             hasher.update(source_slot.to_le_bytes());
         }
+        hasher.update(b"level2-nyphur-dispatch-traces-v1");
+        for trace in &self.nyphur_dispatch_traces {
+            hasher.update([trace.pass]);
+            hasher.update(trace.source_slot.to_le_bytes());
+            hasher.update(trace.state_byte.to_le_bytes());
+            hasher.update(
+                u32::try_from(trace.calls.len())
+                    .expect("sub_12910 trace call count is bounded")
+                    .to_le_bytes(),
+            );
+            for call in &trace.calls {
+                hasher.update([call.hash_tag()]);
+            }
+        }
         format!("{:x}", hasher.finalize())
     }
 
@@ -21265,6 +21519,21 @@ impl Level2ResetSession {
             self.level2_objective_pause,
             u8::from(self.level2_objective_done),
         ]);
+        hasher.update(b"level2-nyphur-dispatcher-v1");
+        hasher.update(self.nyphur_dispatcher.state_byte().to_le_bytes());
+        for trace in &self.nyphur_dispatch_traces {
+            hasher.update([trace.pass]);
+            hasher.update(trace.source_slot.to_le_bytes());
+            hasher.update(trace.state_byte.to_le_bytes());
+            hasher.update(
+                u32::try_from(trace.calls.len())
+                    .expect("sub_12910 trace call count is bounded")
+                    .to_le_bytes(),
+            );
+            for call in &trace.calls {
+                hasher.update([call.hash_tag()]);
+            }
+        }
         hasher.update(b"level2-player-contact-mailbox-v1");
         hasher.update(self.player_pending_damage.to_le_bytes());
         hasher.update(self.player_pending_attacker.to_le_bytes());
@@ -21426,6 +21695,7 @@ impl Level2ResetSession {
         speed_index: u8,
     ) -> Vec<crate::StepEvidence> {
         self.dispatch_events.clear();
+        self.nyphur_dispatch_traces.clear();
         self.economy_event_cursor = self.economy.events().len();
         self.shared_spells.set_beyond_sight_player_input(
             self.state.entity_index,
@@ -21477,6 +21747,9 @@ impl Level2ResetSession {
         self.ordinary.reset();
         self.goats = self.baseline_goats.clone();
         self.mission.reset();
+        self.nyphur_dispatcher = self.baseline_nyphur_dispatcher;
+        self.nyphur_dispatch_traces
+            .clone_from(&self.baseline_nyphur_dispatch_traces);
         self.player_pending_damage = self.baseline_player_pending_damage;
         self.player_pending_attacker = self.baseline_player_pending_attacker;
         self.player_life = self.baseline_player_life;
@@ -21598,7 +21871,7 @@ fn level2_nyphur_participant(
         || entity.max_life != 3_085
         || entity.mana != 1_000
         || entity.max_mana != 1_000
-        || sha256_hex(entity.record_bytes()) != LEVEL2_NYPHUR_ENTITY_SHA256
+        || !level2_nyphur_entity_record_matches_census(entity)
     {
         return Err(NativeWorldError::new(
             "Level 2 Nyphur constructor/ownership census row changed",
@@ -21674,6 +21947,18 @@ fn level2_nyphur_participant(
         possession_next_entity: possession.next_entity(),
         objective_stage_relation,
     })
+}
+
+fn level2_nyphur_entity_record_matches_census(entity: &EntitySnapshot) -> bool {
+    let record = entity.record_bytes();
+    if record.get(66) != Some(&entity.phase) {
+        return false;
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(&record[..66]);
+    hasher.update([LEVEL2_NYPHUR_INITIAL_PHASE]);
+    hasher.update(&record[67..]);
+    format!("{:x}", hasher.finalize()) == LEVEL2_NYPHUR_ENTITY_SHA256
 }
 
 fn level2_bad_stones(
@@ -42269,6 +42554,141 @@ mod tests {
         holder_owner_tampered.players[1].enabled_spell_holders[0] = 114;
         holder_owner_tampered.players[1].record[268..270].copy_from_slice(&114_u16.to_le_bytes());
         assert!(holder_owner_tampered.nyphur_participant().is_err());
+    }
+
+    #[test]
+    fn level_two_ai_dispatcher_0008_preserves_mode_and_tail_order() {
+        let inspection = NativeWorld::inspect_level2(level_two_fixture_path())
+            .expect("qualified Level 2 package");
+        let mut session = inspection
+            .level2_reset_session()
+            .expect("Level 2 AI dispatcher production session");
+        let participant = session
+            .nyphur_participant()
+            .expect("qualified Nyphur dispatcher participant");
+        assert_eq!(participant.entity_index, 112);
+        assert_eq!(session.nyphur_dispatch_state_byte(), 0);
+        assert!(session.nyphur_dispatch_traces().is_empty());
+
+        let baseline_campaign_hash = session.campaign_state_hash();
+        let baseline_dispatch_hash = session.dispatch_observability_hash();
+        let baseline_economy_hash = session.economy.reset_hash();
+        let baseline_shared_spells_hash = session.shared_spells.reset_hash();
+        let baseline_global_rng = session.economy.global_rng;
+        let baseline_runtime = session.runtime.clone();
+        let baseline_entity_record = session.entities[112].record_bytes().to_vec();
+        let baseline_entity_phase = session.entities[112].phase;
+
+        // This is the ordinary production route: the qualified class-3,
+        // model-1, action-1 source row is discovered from the indexed entity
+        // table and is not made live by a test-only selector or action write.
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        let traces = session.nyphur_dispatch_traces();
+        assert_eq!(traces.len(), 1);
+        let trace = traces[0].clone();
+        assert_eq!(
+            (trace.pass, trace.source_slot, trace.state_byte),
+            (0, 112, 0)
+        );
+        assert_eq!(trace.tail_call_count(), 2);
+        assert_eq!(
+            trace.calls.as_ref(),
+            &[
+                Level2NyphurDispatchCall::Sub12a70,
+                Level2NyphurDispatchCall::Sub12e70,
+                Level2NyphurDispatchCall::Sub12e70,
+            ]
+        );
+        assert_eq!(
+            session.entities[112].phase,
+            baseline_entity_phase.wrapping_add(1)
+        );
+        assert_eq!(
+            session.entities[112].record_bytes()[66],
+            baseline_entity_phase.wrapping_add(1)
+        );
+        assert!(
+            session.nyphur_participant().is_ok(),
+            "the source-owned phase increment is the only mutable census byte"
+        );
+        let mut phase_record_mismatch = session.clone();
+        phase_record_mismatch.entities[112].record[66] ^= 1;
+        assert!(phase_record_mismatch.nyphur_participant().is_err());
+        let mut non_phase_record_mutation = session.clone();
+        non_phase_record_mutation.entities[112].record[67] ^= 1;
+        assert!(non_phase_record_mutation.nyphur_participant().is_err());
+        assert_ne!(session.campaign_state_hash(), baseline_campaign_hash);
+        let stepped_campaign_hash = session.campaign_state_hash();
+        let stepped_dispatch_hash = session.dispatch_observability_hash();
+
+        session.reset();
+        assert_eq!(session.nyphur_dispatch_state_byte(), 0);
+        assert!(session.nyphur_dispatch_traces().is_empty());
+        assert!(session.dispatch_events().is_empty());
+        assert_eq!(session.economy.global_rng, baseline_global_rng);
+        assert_eq!(session.economy.reset_hash(), baseline_economy_hash);
+        assert_eq!(
+            session.shared_spells.reset_hash(),
+            baseline_shared_spells_hash
+        );
+        assert_eq!(session.runtime, baseline_runtime);
+        assert_eq!(session.entities[112].record_bytes(), baseline_entity_record);
+        assert_eq!(
+            session.dispatch_observability_hash(),
+            baseline_dispatch_hash
+        );
+        assert_eq!(session.campaign_state_hash(), baseline_campaign_hash);
+
+        session.step_outer_turn(PlayerCommand::default(), 0);
+        assert_eq!(session.nyphur_dispatch_traces(), &[trace]);
+        assert_eq!(session.campaign_state_hash(), stepped_campaign_hash);
+        assert_eq!(session.dispatch_observability_hash(), stepped_dispatch_hash);
+
+        // Isolated selector probes cover the signed i8 carrier and every
+        // denominator-owned case without mutating the qualified production
+        // session. A generic "helper then one tail" implementation fails the
+        // mode-0 case, while a thresholded u8 carrier fails the signed/default
+        // cases below.
+        let mode_helpers = [
+            (1_i8, Level2NyphurDispatchHelper::Sub12ff0),
+            (2, Level2NyphurDispatchHelper::Nmemneed),
+            (3, Level2NyphurDispatchHelper::Sub13100),
+            (4, Level2NyphurDispatchHelper::Sub131f0),
+            (5, Level2NyphurDispatchHelper::Nmemneed0),
+            (6, Level2NyphurDispatchHelper::Sub135c0),
+            (7, Level2NyphurDispatchHelper::Sub13710),
+            (8, Level2NyphurDispatchHelper::Sub13830),
+            (9, Level2NyphurDispatchHelper::Sub13870),
+            (11, Level2NyphurDispatchHelper::Sub133b0),
+            (12, Level2NyphurDispatchHelper::Sub13270),
+            (13, Level2NyphurDispatchHelper::Sub13850),
+            (14, Level2NyphurDispatchHelper::Sub161a0),
+        ];
+        for (state_byte, helper) in mode_helpers {
+            let trace = Level2NyphurDispatcher::trace_for_state(state_byte, 0, 112);
+            assert_eq!(trace.state_byte, state_byte);
+            assert_eq!(trace.tail_call_count(), 1);
+            assert_eq!(
+                trace.calls.as_ref(),
+                &[
+                    Level2NyphurDispatchCall::Sub12a70,
+                    Level2NyphurDispatchCall::Helper(helper),
+                    Level2NyphurDispatchCall::Sub12e70,
+                ]
+            );
+        }
+        for state_byte in [10_i8, -1_i8, i8::MIN, i8::MAX] {
+            let trace = Level2NyphurDispatcher::trace_for_state(state_byte, 0, 112);
+            assert_eq!(trace.state_byte, state_byte);
+            assert_eq!(trace.tail_call_count(), 1);
+            assert_eq!(
+                trace.calls.as_ref(),
+                &[
+                    Level2NyphurDispatchCall::Sub12a70,
+                    Level2NyphurDispatchCall::Sub12e70,
+                ]
+            );
+        }
     }
 
     #[test]
