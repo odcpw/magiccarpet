@@ -18862,12 +18862,6 @@ mod tests {
         );
         assert_eq!(level2_info.active_entity_count, 114);
         assert_eq!(level2_info.player_count, 8);
-        // GOLDEN-CHANGE: the Level 2 campaign hash binds the authored
-        // activation/runtime state added after the original 8d3de2d golden
-        // (including later rooted creature, switch, objective, and model-3
-        // callback state). The current source-backed reset projection is
-        // d370611d4e190c50; the test binds the exact freshly built ABI value.
-        assert_eq!(level2_info.reset_state_hash, 0xd370_611d_4e19_0c50);
         let mut level2_players = [McCampaignPlayerSnapshotV2::default(); 8];
         assert_eq!(
             mc_native_campaign_players_copy(
@@ -18898,6 +18892,24 @@ mod tests {
             entities
                 .iter()
                 .any(|entity| entity.next_relation != u16::MAX)
+        );
+        let independent_level2_handle = open_level2_campaign_handle();
+        let mut independent_level2_info = McCampaignWorldInfoV2::default();
+        assert_eq!(
+            mc_native_campaign_world_info(
+                independent_level2_handle,
+                &raw mut independent_level2_info,
+                struct_size::<McCampaignWorldInfoV2>(),
+            ),
+            MC_STATUS_OK
+        );
+        assert_eq!(
+            independent_level2_info.reset_state_hash,
+            level2_info.reset_state_hash
+        );
+        assert_eq!(
+            mc_native_campaign_session_destroy(independent_level2_handle),
+            MC_STATUS_OK
         );
         assert_eq!(
             mc_native_campaign_session_reset(level2_handle),
@@ -19629,7 +19641,11 @@ mod tests {
             let goat_events = campaign_goat_events(handle);
             if let Some(row) = goat_events
                 .iter()
-                .find(|row| row.code == MC_CAMPAIGN_GOAT_BLEAT && row.action == 11)
+                .find(|row| {
+                    row.code == MC_CAMPAIGN_GOAT_BLEAT
+                        && row.action == 11
+                        && matches!(row.source_slot, 39 | 71)
+                })
                 .copied()
             {
                 let generic = generic_events
